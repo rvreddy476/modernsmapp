@@ -3197,7 +3197,10 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 // or more content types. Used by the Posttube/Reels "Trending" tabs and the
 // general discover surface. cursor is the same opaque base64 string used by
 // the hashtag top sort.
-func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, limit int, cursor string) ([]PostDetail, string, error) {
+// viewerID is used only to label the channel card (its subscribed state);
+// it does NOT widen what the page returns — trending is public rows only,
+// selected in SQL.
+func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
 	posts, nextCursor, err := s.pgStore.GetTrendingPosts(ctx, contentTypes, limit, cursor)
 	if err != nil {
 		return nil, "", err
@@ -3214,6 +3217,19 @@ func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, l
 	if err != nil {
 		return nil, "", err
 	}
+	// A trending long video arrived with no channel, so the watch card had
+	// no name or avatar to draw a poster with. Same best-effort attach
+	// GetBookmarks and the watch-progress list do — one batched lookup for
+	// the page's distinct authors, and the page reads the same without it.
+	ptrs := make([]*PostDetail, len(details))
+	for i := range details {
+		ptrs[i] = &details[i]
+	}
+	attachViewer := uuid.Nil
+	if viewerID != nil {
+		attachViewer = *viewerID
+	}
+	s.attachChannelRefs(ctx, attachViewer, ptrs)
 	return details, nextCursor, nil
 }
 

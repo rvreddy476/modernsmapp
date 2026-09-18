@@ -283,8 +283,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		playlists.POST("", h.CreatePlaylist)
 		playlists.GET("/:playlistId", h.GetPlaylist)
+		// A playlist could be created and added to but never edited: no
+		// rename, no re-description, no cover, no reorder and no way to
+		// make one public or private after the fact.
+		playlists.PATCH("/:playlistId", h.UpdatePlaylist)
 		playlists.DELETE("/:playlistId", h.DeletePlaylist)
 		playlists.POST("/:playlistId/items", h.AddPlaylistItem)
+		playlists.PATCH("/:playlistId/items/:postId", h.MovePlaylistItem)
 		playlists.DELETE("/:playlistId/items/:postId", h.RemovePlaylistItem)
 		playlists.GET("/:playlistId/items", h.GetPlaylistItems)
 	}
@@ -2092,43 +2097,89 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 // GetTrendingPosts handles GET /v1/posts/trending?content_type=...&limit=...&cursor=...
 //
 // Returns posts ranked by the same engagement score as the hashtag "top"
-// sort, optionally filtered by content_type. Multiple content_type query
-// params are allowed (e.g. ?content_type=long_video&content_type=flick) so
-// callers can blend Posttube + Reels in one trending stream.
+// sort, optionally filtered by content_type.
+//
+// ── Brought into line with /v1/posts/recent (2026-09-18) ──────────────────
+// This endpoint cost every client three special cases that its neighbour
+// does not. All three are fixed WITHOUT dropping the old form:
+//
+//   - the cursor was inside data ({"items":[…],"next_cursor":"…"}) while
+//     every other list puts it in meta.next_cursor. It is now in BOTH: meta
+//     carries it for a client that pages the way it pages /recent, and the
+//     data envelope keeps items + next_cursor verbatim so nothing already
+//     shipped breaks. The envelope is what could not be changed
+//     compatibly — data cannot be an object and a bare array at once — so
+//     it stays, and meta is the addition.
+//   - content_type took REPEATED params only (?content_type=a&content_type=b)
+//     while /recent takes a comma-separated list. Both work now: every
+//     repetition is split on commas and merged.
+//   - "video" and "reel", which /recent accepts and maps to long_video /
+//     flick, were rejected here with a 400. They now normalise, through the
+//     same parseContentTypeFilter → service.CanonicalContentType that
+//     /recent uses, so the two endpoints cannot drift again.
 func (h *Handler) GetTrendingPosts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
 	cursor := c.Query("cursor")
-	contentTypes := c.QueryArray("content_type")
 
-	// Validate content types: either drop unknown ones or surface them as-is.
-	// Be strict and reject so the client knows quickly that "video" should
-	// have been "long_video".
-	allowed := map[string]bool{
-		"post": true, "poll": true, "flick": true, "long_video": true,
-	}
-	for _, ct := range contentTypes {
-		if !allowed[ct] {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE",
-				fmt.Sprintf("unknown content_type %q", ct), nil)
-			return
-		}
+	contentTypes, err := mergeContentTypeFilters(c.QueryArray("content_type"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE",
+			err.Error(), nil)
+		return
 	}
 
-	posts, nextCursor, err := h.svc.GetTrendingPosts(c.Request.Context(), contentTypes, limit, cursor)
+	posts, nextCursor, err := h.svc.GetTrendingPosts(c.Request.Context(), contentTypes, limit, cursor, optionalCallerID(c))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
+	writeTrendingPage(c, posts, nextCursor)
+}
+
+// mergeContentTypeFilters accepts BOTH shapes: /v1/posts/trending's repeated
+// ?content_type=a&content_type=b and /v1/posts/recent's comma-separated
+// ?content_type=a,b — every repetition is itself split on commas. Legacy
+// spellings normalise through the same parseContentTypeFilter →
+// service.CanonicalContentType path /recent uses ("video" → long_video,
+// "reel" → flick), duplicates collapse, and an unknown type is an error
+// naming the value.
+func mergeContentTypeFilters(raws []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range raws {
+		parsed, err := parseContentTypeFilter(raw)
+		if err != nil {
+			return nil, err
+		}
+		for _, ct := range parsed {
+			if !seen[ct] {
+				seen[ct] = true
+				out = append(out, ct)
+			}
+		}
+	}
+	return out, nil
+}
+
+// writeTrendingPage writes BOTH cursor placements: meta.next_cursor, which is
+// where /v1/posts/recent and the rest of this service put it, and the
+// data.next_cursor this endpoint shipped with, kept so already-released
+// clients keep paging. data.items is likewise unchanged.
+func writeTrendingPage(c *gin.Context, posts []service.PostDetail, nextCursor string) {
 	if posts == nil {
 		posts = []service.PostDetail{}
+	}
+	var meta *api.Meta
+	if nextCursor != "" {
+		meta = &api.Meta{NextCursor: nextCursor}
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"items":       posts,
 		"next_cursor": nextCursor,
-	}, nil)
+	}, meta)
 }
 
 // GetTrendingHashtagsFeed handles GET /v1/hashtags/trending?limit=...

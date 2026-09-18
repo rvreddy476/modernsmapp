@@ -29,6 +29,13 @@ type fakeAuthoringStore struct {
 	items       []postgres.PlaylistItem
 	meta        *postgres.VideoMetadata
 
+	// listed is the creator's whole shelf; the fake applies the same
+	// owner-view filter the SQL does, so the listing tests exercise the
+	// decision rather than restating it.
+	listed   []postgres.Playlist
+	listErr  error
+	lastList *bool
+
 	authorCalls   int
 	playlistCalls int
 }
@@ -41,6 +48,26 @@ func (f *fakeAuthoringStore) GetPostAuthorID(_ context.Context, _ uuid.UUID) (uu
 func (f *fakeAuthoringStore) GetPlaylist(_ context.Context, _ uuid.UUID) (*postgres.Playlist, error) {
 	f.playlistCalls++
 	return f.playlist, f.playlistErr
+}
+
+func (f *fakeAuthoringStore) ListPlaylistsByCreator(_ context.Context, creatorID uuid.UUID, ownerView bool, _, _ int) ([]postgres.Playlist, error) {
+	f.lastList = &ownerView
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []postgres.Playlist
+	for _, p := range f.listed {
+		if p.CreatorID != creatorID {
+			continue
+		}
+		// The same shelf the SQL returns: everything for the creator,
+		// public only for everyone else.
+		if !ownerView && p.Visibility != "public" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func (f *fakeAuthoringStore) GetPlaylistItems(_ context.Context, _ uuid.UUID) ([]postgres.PlaylistItem, error) {

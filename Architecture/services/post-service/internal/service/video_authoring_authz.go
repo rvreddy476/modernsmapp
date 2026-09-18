@@ -56,6 +56,13 @@ var (
 	// ErrPlaylistPrivate is the read-side refusal GetPlaylist has always
 	// returned; declared here so the items endpoint can return the same one.
 	ErrPlaylistPrivate = errors.New("forbidden: playlist is private")
+	// ErrPlaylistItemNotFound is the refusal for re-positioning a post that
+	// is not in the playlist — a 404, the way a missing playlist is.
+	ErrPlaylistItemNotFound = errors.New("playlist item not found")
+	// ErrPlaylistTitleRequired / ErrPlaylistPositionInvalid are the edit-side
+	// validation refusals; 400, not 500 from a column constraint.
+	ErrPlaylistTitleRequired   = errors.New("title is required")
+	ErrPlaylistPositionInvalid = errors.New("position must be zero or greater")
 	// ErrAuthoringStoreUnavailable is the fail-closed answer when the
 	// ownership lookups have no store behind them.
 	ErrAuthoringStoreUnavailable = errors.New("ownership store not configured")
@@ -69,6 +76,11 @@ var (
 type videoAuthoringStore interface {
 	GetPostAuthorID(ctx context.Context, postID uuid.UUID) (uuid.UUID, error)
 	GetPlaylist(ctx context.Context, id uuid.UUID) (*postgres.Playlist, error)
+	// ListPlaylistsByCreator is here, and not on the concrete pgStore, for
+	// the same reason GetPlaylist is: the creator listing makes a visibility
+	// decision, so it must fail closed when the store is unwired and it must
+	// be testable without a live database.
+	ListPlaylistsByCreator(ctx context.Context, creatorID uuid.UUID, ownerView bool, limit, offset int) ([]postgres.Playlist, error)
 	GetPlaylistItems(ctx context.Context, playlistID uuid.UUID) ([]postgres.PlaylistItem, error)
 	GetVideoMetadata(ctx context.Context, postID uuid.UUID) (*postgres.VideoMetadata, error)
 }

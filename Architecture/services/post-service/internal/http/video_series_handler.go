@@ -34,9 +34,18 @@ import (
 func writeVideoAuthoringError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrPostNotFound),
-		errors.Is(err, service.ErrPlaylistNotFound):
+		errors.Is(err, service.ErrPlaylistNotFound),
+		errors.Is(err, service.ErrPlaylistItemNotFound):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	// The playlist-edit validation refusals: a bad value is the client's
+	// mistake, so it is named in a 400 rather than reaching the column's
+	// CHECK and coming back as a 500 with a constraint name in it.
+	case errors.Is(err, service.ErrInvalidPlaylistVisibility),
+		errors.Is(err, service.ErrPlaylistTitleRequired),
+		errors.Is(err, service.ErrPlaylistPositionInvalid):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 	case errors.Is(err, service.ErrNotPostAuthor),
 		errors.Is(err, service.ErrNotPlaylistOwner),
 		errors.Is(err, service.ErrPlaylistPrivate):
@@ -553,14 +562,7 @@ func (h *Handler) GetPlaylist(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
 		return
 	}
-	var callerID *uuid.UUID
-	if raw := c.GetHeader("X-User-Id"); raw != "" {
-		if id, err := uuid.Parse(raw); err == nil {
-			callerID = &id
-		}
-	}
-
-	p, err := h.svc.GetPlaylist(c.Request.Context(), playlistID, callerID)
+	p, err := h.svc.GetPlaylist(c.Request.Context(), playlistID, optionalCallerID(c))
 	if err != nil {
 		writeVideoAuthoringError(c, err)
 		return
@@ -650,13 +652,107 @@ func (h *Handler) GetPlaylistItems(c *gin.Context) {
 	}
 	// Same visibility rule as GET /v1/playlists/:playlistId — a private
 	// playlist's contents are its creator's alone.
-	var callerID *uuid.UUID
-	if raw := c.GetHeader("X-User-Id"); raw != "" {
-		if id, err := uuid.Parse(raw); err == nil {
-			callerID = &id
-		}
+	//
+	// The rows are hydrated (service.PlaylistItemDetail): the four pointer
+	// fields stay exactly where they were and `post` is added alongside, so
+	// this is additive — anything already reading post_id/position keeps
+	// working, and a client no longer has to follow every playlist read with
+	// POST /v1/posts/batch to draw one row. It is that same helper doing the
+	// hydration, so the two shapes cannot drift.
+	items, err := h.svc.GetPlaylistItemsHydrated(c.Request.Context(), playlistID, optionalCallerID(c))
+	if err != nil {
+		writeVideoAuthoringError(c, err)
+		return
 	}
-	items, err := h.svc.GetPlaylistItems(c.Request.Context(), playlistID, callerID)
+	if items == nil {
+		items = []service.PlaylistItemDetail{}
+	}
+	api.JSON(c.Writer, http.StatusOK, items, nil)
+}
+
+type updatePlaylistRequest struct {
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+	Visibility  *string `json:"visibility"`
+	CoverURL    *string `json:"cover_url"`
+}
+
+// UpdatePlaylist is PATCH /v1/playlists/:playlistId. Any subset of title,
+// description, visibility and cover_url; a field left out is left alone.
+// The creator's own playlists only — the same rule DeletePlaylist and the
+// item writes apply, mapped through the one authoring error mapping.
+//
+// A playlist could be created, and items added and removed, but never
+// renamed, re-described or made public/private: the only way to change a
+// playlist's visibility was to delete it and build it again.
+func (h *Handler) UpdatePlaylist(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	playlistID, err := uuid.Parse(c.Param("playlistId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
+		return
+	}
+	var req updatePlaylistRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	p, err := h.svc.UpdatePlaylist(c.Request.Context(), userID, playlistID, postgres.PlaylistPatch{
+		Title:       req.Title,
+		Description: req.Description,
+		Visibility:  req.Visibility,
+		CoverURL:    req.CoverURL,
+	})
+	if err != nil {
+		writeVideoAuthoringError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, p, nil)
+}
+
+// Position is a pointer WITHOUT binding:"required": the validator's
+// "required" dereferences the pointer and treats 0 as absent, which would
+// refuse the commonest move of all — to the top of the list. Absence is
+// checked explicitly below instead.
+type movePlaylistItemRequest struct {
+	Position *int `json:"position"`
+}
+
+// MovePlaylistItem is PATCH /v1/playlists/:playlistId/items/:postId, the
+// reorder. playlist_items carries a position and it is half the primary key,
+// so this is a re-write of the whole ordering (see the store); the response
+// is the playlist's items in their new order, positions renumbered
+// contiguously from zero.
+func (h *Handler) MovePlaylistItem(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	playlistID, err := uuid.Parse(c.Param("playlistId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	var req movePlaylistItemRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	if req.Position == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "position is required", nil)
+		return
+	}
+	items, err := h.svc.MovePlaylistItem(c.Request.Context(), userID, playlistID, postID, *req.Position)
 	if err != nil {
 		writeVideoAuthoringError(c, err)
 		return
@@ -674,9 +770,13 @@ func (h *Handler) ListCreatorPlaylists(c *gin.Context) {
 		return
 	}
 	limit, offset := parseLimitOffset(c)
-	playlists, err := h.svc.ListPlaylistsByCreator(c.Request.Context(), creatorID, limit, offset)
+	// The creator's private playlists are the creator's alone. Until this
+	// gate existed, a private playlist's title and item_count were returned
+	// to anyone holding the creator's user id — only the CONTENTS were
+	// protected, by the items endpoint.
+	playlists, err := h.svc.ListPlaylistsByCreator(c.Request.Context(), creatorID, optionalCallerID(c), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	if playlists == nil {

@@ -55,12 +55,19 @@ func (s *Store) GetPlaylist(ctx context.Context, id uuid.UUID) (*Playlist, error
 }
 
 // ListPlaylistsByCreator returns paginated playlists for a creator.
-func (s *Store) ListPlaylistsByCreator(ctx context.Context, creatorID uuid.UUID, limit, offset int) ([]Playlist, error) {
+//
+// ownerView is the visibility decision, made by the caller (the service
+// knows who is asking; the store does not). True returns the creator's whole
+// shelf; false returns the public shelf — public only, because 'unlisted'
+// means "reachable with the link, not discoverable in a list". It is applied
+// in SQL rather than by filtering the page afterwards: a post-hoc filter
+// would hand back short pages and make limit/offset lie about what is left.
+func (s *Store) ListPlaylistsByCreator(ctx context.Context, creatorID uuid.UUID, ownerView bool, limit, offset int) ([]Playlist, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at
-		FROM playlists WHERE creator_id = $1
+		FROM playlists WHERE creator_id = $1 AND ($4 OR visibility = 'public')
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-		creatorID, limit, offset)
+		creatorID, limit, offset, ownerView)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +81,128 @@ func (s *Store) ListPlaylistsByCreator(ctx context.Context, creatorID uuid.UUID,
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+// PlaylistPatch is a partial update: a nil field is "leave it alone". Same
+// shape and same COALESCE-per-column treatment VideoSeriesPatch gets — the
+// nullable cover can be set but not cleared through this shape, because the
+// wire contract carries no explicit "set to null" signal.
+type PlaylistPatch struct {
+	Title       *string
+	Description *string
+	Visibility  *string
+	CoverURL    *string
+}
+
+// UpdatePlaylist applies the non-nil fields of patch and returns the row as
+// it now stands. Returns nil, nil when there is no such playlist.
+func (s *Store) UpdatePlaylist(ctx context.Context, id uuid.UUID, patch PlaylistPatch) (*Playlist, error) {
+	p := &Playlist{}
+	err := s.db.QueryRow(ctx, `
+		UPDATE playlists SET
+			title       = COALESCE($2, title),
+			description = COALESCE($3, description),
+			visibility  = COALESCE($4, visibility),
+			cover_url   = COALESCE($5, cover_url),
+			updated_at  = NOW()
+		WHERE id = $1
+		RETURNING id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at`,
+		id, patch.Title, patch.Description, patch.Visibility, patch.CoverURL,
+	).Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
+}
+
+// MovePlaylistItem moves one post to newPosition and returns the playlist's
+// items in their new order.
+//
+// playlist_items' PRIMARY KEY is (playlist_id, position), so a position is
+// not a free-standing attribute that can simply be rewritten: the moved row
+// would collide with whatever already sits at the target, and a bulk
+// "position = position - 1" shift can collide with itself mid-statement
+// (the PK is not deferrable). The whole ordering is therefore rewritten
+// inside one transaction — read the rows FOR UPDATE, reorder in Go, delete
+// and re-insert with contiguous positions, preserving added_at. A playlist
+// is small, and the rewrite also normalises any gaps or client-chosen
+// positions AddPlaylistItem let through.
+//
+// Returns pgx.ErrNoRows when the post is not in the playlist.
+func (s *Store) MovePlaylistItem(ctx context.Context, playlistID, postID uuid.UUID, newPosition int) ([]PlaylistItem, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	rows, err := tx.Query(ctx, `
+		SELECT post_id, added_at FROM playlist_items
+		WHERE playlist_id = $1 ORDER BY position ASC, added_at ASC
+		FOR UPDATE`, playlistID)
+	if err != nil {
+		return nil, err
+	}
+	type row struct {
+		postID  uuid.UUID
+		addedAt time.Time
+	}
+	var ordered []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.postID, &r.addedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ordered = append(ordered, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	from := -1
+	for i, r := range ordered {
+		if r.postID == postID {
+			from = i
+			break
+		}
+	}
+	if from < 0 {
+		return nil, pgx.ErrNoRows
+	}
+	to := newPosition
+	if to < 0 {
+		to = 0
+	}
+	if to > len(ordered)-1 {
+		to = len(ordered) - 1
+	}
+	moved := ordered[from]
+	ordered = append(ordered[:from], ordered[from+1:]...)
+	ordered = append(ordered, row{})
+	copy(ordered[to+1:], ordered[to:])
+	ordered[to] = moved
+
+	if _, err := tx.Exec(ctx, `DELETE FROM playlist_items WHERE playlist_id = $1`, playlistID); err != nil {
+		return nil, err
+	}
+	items := make([]PlaylistItem, 0, len(ordered))
+	for i, r := range ordered {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO playlist_items (playlist_id, post_id, position, added_at)
+			VALUES ($1, $2, $3, $4)`, playlistID, r.postID, i, r.addedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, PlaylistItem{PlaylistID: playlistID, PostID: r.postID, Position: i, AddedAt: r.addedAt})
+	}
+	if _, err := tx.Exec(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // DeletePlaylist removes a playlist by ID.
