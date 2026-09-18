@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/notification-service/internal/service"
 	"github.com/atpost/shared/events"
+	"github.com/google/uuid"
 )
 
 // Mopedu pushes (2026-09-18): the customer's ride lifecycle and payment reach
@@ -328,5 +329,118 @@ func TestRiderConsumer_OtherRiderEventsStayClaimedAndSilent(t *testing.T) {
 	}
 	if handled, _ := c.handleRiderEvent(context.Background(), rideEnvelope("food.order.placed", map[string]any{})); handled {
 		t.Fatal("a food event was claimed by the rider handler")
+	}
+}
+
+// --- Captain account pushes (2026-09-19) -----------------------------------
+
+const rxSubscription = "f6f6f6f6-6666-4666-8666-f6f6f6f6f6f6"
+
+func subscriptionPayload(extra map[string]any) map[string]any {
+	m := map[string]any{"subscription_id": rxSubscription, "partner_id": rxPartner, "partner_user_id": rxPartnerUser, "plan_id": "weekly", "occurred_at": "2026-09-18T10:00:00Z"}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return m
+}
+
+// The partner's approval / review and every subscription event reach the
+// Mopedu Captain app as the exact captain.* account types on the
+// captain_account channel, addressed to partner_user_id, with the partner or
+// subscription as entity_id and no ride. The copy is plain, keeps every
+// action in the app and carries nothing from the payload but "₹x due" and a
+// date — never the admin's reason or a wallet transaction id.
+func TestRiderConsumer_CaptainAccountEventsBecomeCaptainTypes(t *testing.T) {
+	cases := []struct {
+		event, pushType, entityType, entityID, deepLink, bodyHas string
+		payload                                                  map[string]any
+	}{
+		{events.EventRiderPartnerApproved, "captain.approved", "rider_partner", rxPartner, "/captain/account", "Go online in the app",
+			map[string]any{"partner_id": rxPartner, "partner_user_id": rxPartnerUser, "status": "approved", "reason": "docs ok", "actor_id": rxCustomer, "occurred_at": "2026-09-18T10:00:00Z"}},
+		{"rider.partner.under_review", "captain.under_review", "rider_partner", rxPartner, "/captain/account", "Still needed: driving licence, vehicle RC.",
+			map[string]any{"partner_id": rxPartner, "partner_user_id": rxPartnerUser, "pending": []string{"driving licence", " ", "vehicle RC"}}},
+		{events.EventRiderSubscriptionExpiring, "captain.subscription.expiring", "rider_subscription", rxSubscription, "/captain/subscription", "expires on 21 Sep",
+			subscriptionPayload(map[string]any{"expires_at": "2026-09-21T10:00:00Z"})},
+		{events.EventRiderSubscriptionGracePeriod, "captain.subscription.expired", "rider_subscription", rxSubscription, "/captain/subscription", "has expired. Renew in the app by 24 Sep",
+			subscriptionPayload(map[string]any{"expires_at": "2026-09-21T10:00:00Z", "grace_ends_at": "2026-09-24T10:00:00Z"})},
+		{events.EventRiderSubscriptionExpired, "captain.subscription.expired", "rider_subscription", rxSubscription, "/captain/subscription", "has expired. Renew in the app to get ride offers again.",
+			subscriptionPayload(map[string]any{"expires_at": "2026-09-21T10:00:00Z", "grace_ends_at": "2026-09-24T10:00:00Z"})},
+		{events.EventRiderSubscriptionRenewed, "captain.subscription.renewed", "rider_subscription", rxSubscription, "/captain/subscription", "renewed until 21 Oct.",
+			subscriptionPayload(map[string]any{"amount_paise": 49900, "new_expires_at": "2026-10-21T10:00:00Z", "wallet_txn_id": "wtx-1"})},
+		{events.EventRiderSubscriptionRenewalFailed, "captain.subscription.payment_failed", "rider_subscription", rxSubscription, "/captain/subscription", "₹499 due. Pay in the app",
+			subscriptionPayload(map[string]any{"amount_paise": 49900, "failure_count": 2, "auto_renew_off": true, "reason": "insufficient wallet balance"})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.event, func(t *testing.T) {
+			c, d := rideConsumer()
+			handled, err := c.handleRiderEvent(context.Background(), rideEnvelope(tc.event, tc.payload))
+			if !handled || err != nil {
+				t.Fatalf("handled=%v err=%v", handled, err)
+			}
+			if len(d.pushes) != 1 {
+				t.Fatalf("pushes = %d, want 1: %+v", len(d.pushes), d.pushes)
+			}
+			p := d.pushes[0]
+			if p.Type != tc.pushType || p.App != service.AppMopeduCaptain || p.AndroidChannel != service.CaptainChannelAccount {
+				t.Fatalf("push routing = %s/%s/%s", p.Type, p.App, p.AndroidChannel)
+			}
+			if p.RecipientID.String() != rxPartnerUser || p.EntityID.String() != tc.entityID || p.RideID != uuid.Nil {
+				t.Fatalf("push ids = recipient %s entity %s ride %s", p.RecipientID, p.EntityID, p.RideID)
+			}
+			if p.DeepLink != tc.deepLink || p.DedupKey != "event:evt-"+tc.event+":"+tc.event {
+				t.Fatalf("deep link %q dedup %q", p.DeepLink, p.DedupKey)
+			}
+			if entity, ok := service.CaptainAccountInboxEntityFor(p.Type); !ok || entity != tc.entityType {
+				t.Fatalf("inbox entity = %s,%v want %s", entity, ok, tc.entityType)
+			}
+			if p.Title == "" || !strings.Contains(p.Body, tc.bodyHas) {
+				t.Fatalf("copy = %q / %q, want body containing %q", p.Title, p.Body, tc.bodyHas)
+			}
+			for _, leak := range []string{"http", "://", "www.", "docs ok", "insufficient", "wtx-1", "weekly", "₹499."} {
+				if strings.Contains(p.Body, leak) || strings.Contains(p.Title, leak) {
+					t.Fatalf("copy leaks %q: %q / %q", leak, p.Title, p.Body)
+				}
+			}
+			if tc.event != events.EventRiderSubscriptionRenewalFailed && strings.Contains(p.Body, "₹") {
+				t.Fatalf("an amount outside payment_failed: %q", p.Body)
+			}
+			if p.TTL != 0 {
+				t.Fatalf("account push has a ttl: %s", p.TTL)
+			}
+			if data := service.RidePushData(p); data["type"] != tc.pushType || data["entity_id"] != tc.entityID {
+				t.Fatalf("data = %v", data)
+			}
+		})
+	}
+}
+
+// Without partner_user_id the push falls back to partner_id (rider-service
+// is told); without either the event is claimed and counted, never pushed;
+// a missing subscription id is a decode error, not a silent drop. A payment
+// failure with no amount asks for payment without inventing one.
+func TestRiderConsumer_CaptainAccountRecipientFallbackAndMissing(t *testing.T) {
+	c, d := rideConsumer()
+	handled, err := c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderPartnerApproved, map[string]any{"partner_id": rxPartner, "status": "approved"}))
+	if !handled || err != nil || len(d.pushes) != 1 || d.pushes[0].RecipientID.String() != rxPartner {
+		t.Fatalf("partner_id fallback: handled=%v err=%v pushes=%+v", handled, err, d.pushes)
+	}
+
+	c, d = rideConsumer()
+	handled, err = c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderSubscriptionExpiring, map[string]any{"subscription_id": rxSubscription, "expires_at": "2026-09-21T10:00:00Z"}))
+	if !handled || err != nil || len(d.pushes) != 0 {
+		t.Fatalf("no recipient: handled=%v err=%v pushes=%+v", handled, err, d.pushes)
+	}
+
+	c, d = rideConsumer()
+	if _, err := c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderSubscriptionRenewed, map[string]any{"partner_id": rxPartner, "partner_user_id": rxPartnerUser})); err == nil || len(d.pushes) != 0 {
+		t.Fatalf("missing subscription_id: err=%v pushes=%+v", err, d.pushes)
+	}
+
+	c, d = rideConsumer()
+	if _, err := c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderSubscriptionRenewalFailed, subscriptionPayload(map[string]any{"reason": "gateway timeout"}))); err != nil || len(d.pushes) != 1 {
+		t.Fatalf("no amount: err=%v pushes=%+v", err, d.pushes)
+	}
+	if body := d.pushes[0].Body; strings.Contains(body, "₹") || !strings.Contains(body, "Pay in the app") || strings.Contains(body, "Auto-renew") {
+		t.Fatalf("no-amount body = %q", body)
 	}
 }

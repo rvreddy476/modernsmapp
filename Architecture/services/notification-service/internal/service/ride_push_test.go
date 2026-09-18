@@ -331,3 +331,152 @@ func TestRidePush_ValidateRejectsMisroutedPushes(t *testing.T) {
 		}
 	}
 }
+
+// --- Captain account pushes (2026-09-19) -----------------------------------
+
+var (
+	rideTestPartner      = uuid.MustParse("54444444-4444-4444-8444-444444444444")
+	rideTestSubscription = uuid.MustParse("55555555-5555-4555-8555-555555555555")
+)
+
+// The six account types the captain app maps, with the inbox entity each
+// keeps.
+var captainAccountCases = map[string]string{
+	CaptainTypeApproved:                  CaptainPartnerInboxEntityType,
+	CaptainTypeUnderReview:               CaptainPartnerInboxEntityType,
+	CaptainTypeSubscriptionExpiring:      CaptainSubscriptionInboxEntityType,
+	CaptainTypeSubscriptionExpired:       CaptainSubscriptionInboxEntityType,
+	CaptainTypeSubscriptionRenewed:       CaptainSubscriptionInboxEntityType,
+	CaptainTypeSubscriptionPaymentFailed: CaptainSubscriptionInboxEntityType,
+}
+
+func captainAccountPush(typ string) RidePush {
+	p := RidePush{
+		DedupKey: "event:e3:" + typ, RecipientID: rideTestUser,
+		App: AppMopeduCaptain, Type: typ, AndroidChannel: CaptainChannelAccount,
+		Title: "Plan expiring soon", Body: "Your captain plan expires on 21 Sep. Renew in the app to keep getting ride offers.",
+		DeepLink: "/captain/subscription", EntityID: rideTestSubscription, CreatedAt: time.Now(),
+	}
+	if captainAccountCases[typ] == CaptainPartnerInboxEntityType {
+		p.Title, p.Body = "You're approved", "Your captain account is approved."
+		p.DeepLink, p.EntityID = "/captain/account", rideTestPartner
+	}
+	return p
+}
+
+// The six captain account types are captain-only: routed to mopedu_captain
+// by the table, rejected on every other app, and sent only to the captain
+// install even when the device lookup hands back every app's tokens.
+func TestRidePush_CaptainAccountTypesAreCaptainOnly(t *testing.T) {
+	if len(captainAccountCases) != 6 {
+		t.Fatalf("%d account types under test, want 6", len(captainAccountCases))
+	}
+	for typ := range captainAccountCases {
+		t.Run(typ, func(t *testing.T) {
+			if app, ok := RidePushAppFor(typ); !ok || app != AppMopeduCaptain {
+				t.Fatalf("RidePushAppFor(%s) = %s,%v want %s", typ, app, ok, AppMopeduCaptain)
+			}
+			for _, wrong := range []string{AppMomentum, AppFeastRider, AppFeastKitchen} {
+				p := captainAccountPush(typ)
+				p.App = wrong
+				f := newFakeRideTransports(everyAppDevices()...)
+				if _, err := runRidePush(context.Background(), f, p); err == nil || len(f.sends) != 0 {
+					t.Errorf("%s on %s: err=%v sends=%d", typ, wrong, err, len(f.sends))
+				}
+			}
+			f := newFakeRideTransports(everyAppDevices()...)
+			outcome, err := runRidePush(context.Background(), f, captainAccountPush(typ))
+			if err != nil || outcome != RidePushSent {
+				t.Fatalf("outcome=%s err=%v", outcome, err)
+			}
+			var got []string
+			for _, s := range f.sends {
+				if s.app != AppMopeduCaptain {
+					t.Errorf("%s sent to the %s install (%s)", typ, s.app, s.token)
+				}
+				got = append(got, s.token)
+			}
+			if strings.Join(got, ",") != "captain-phone,captain-spare" {
+				t.Fatalf("sent to %v", got)
+			}
+		})
+	}
+}
+
+// A captain account push keeps an inbox row — entity rider_partner or
+// rider_subscription with the partner / subscription id — without consulting
+// Momentum preferences, and its data is the app contract with a per-entity
+// collapse key, the captain_account channel and no ttl.
+func TestRidePush_CaptainAccountInboxAndData(t *testing.T) {
+	for typ, wantEntity := range captainAccountCases {
+		t.Run(typ, func(t *testing.T) {
+			f := newFakeRideTransports(rideDevice("captain-phone", AppMopeduCaptain))
+			f.inboxWanted = false // a Momentum in-app toggle must not matter
+			p := captainAccountPush(typ)
+			if outcome, err := runRidePush(context.Background(), f, p); err != nil || outcome != RidePushSent {
+				t.Fatalf("outcome=%s err=%v", outcome, err)
+			}
+			if len(f.inbox) != 1 || len(f.inboxAsked) != 0 {
+				t.Fatalf("inbox rows=%d preferences asked=%v", len(f.inbox), f.inboxAsked)
+			}
+			entityType, entityID, ok := f.inbox[0].inboxEntity()
+			if !ok || entityType != wantEntity || entityID != p.EntityID {
+				t.Fatalf("inbox entity = %s/%s/%v want %s/%s", entityType, entityID, ok, wantEntity, p.EntityID)
+			}
+			if got, ok := CaptainAccountInboxEntityFor(typ); !ok || got != wantEntity {
+				t.Fatalf("CaptainAccountInboxEntityFor(%s) = %s,%v", typ, got, ok)
+			}
+			data := f.sends[0].data
+			for k := range data {
+				if !RidePushDataKeys[k] {
+					t.Errorf("unexpected data key %q", k)
+				}
+			}
+			if data["type"] != typ || data["entity_id"] != p.EntityID.String() || data["deep_link"] != p.DeepLink ||
+				data["title"] != p.Title || data["body"] != p.Body {
+				t.Fatalf("data = %v", data)
+			}
+			if data["collapse_key"] != wantEntity+":"+p.EntityID.String() || data[push.AndroidChannelDataKey] != "captain_account" {
+				t.Fatalf("transport keys = %v", data)
+			}
+			if _, has := data[push.AndroidTTLDataKey]; has {
+				t.Fatal("an account push carries no ttl")
+			}
+		})
+	}
+	// The captain's ride pushes still keep no row.
+	f := newFakeRideTransports(rideDevice("captain-phone", AppMopeduCaptain))
+	if _, err := runRidePush(context.Background(), f, captainPaidPush()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.inbox) != 0 {
+		t.Fatalf("payment notice wrote an inbox row: %+v", f.inbox)
+	}
+}
+
+// An account push is about no ride: a ride id, or a missing partner /
+// subscription id, is rejected before anything is sent.
+func TestRidePush_ValidateRejectsAccountPushWithARide(t *testing.T) {
+	bad := []RidePush{
+		func() RidePush { p := captainAccountPush(CaptainTypeApproved); p.RideID = rideTestRide; return p }(),
+		func() RidePush {
+			p := captainAccountPush(CaptainTypeSubscriptionExpired)
+			p.RideID = rideTestRide
+			return p
+		}(),
+		func() RidePush {
+			p := captainAccountPush(CaptainTypeSubscriptionRenewed)
+			p.EntityID = uuid.Nil
+			return p
+		}(),
+	}
+	for i, p := range bad {
+		f := newFakeRideTransports(everyAppDevices()...)
+		if _, err := runRidePush(context.Background(), f, p); err == nil {
+			t.Errorf("case %d (%s) accepted", i, p.Type)
+		}
+		if len(f.sends) != 0 || len(f.inbox) != 0 {
+			t.Errorf("case %d sends=%d inbox=%d", i, len(f.sends), len(f.inbox))
+		}
+	}
+}

@@ -226,7 +226,10 @@ func categoryForEvent(eventType string) prefCategory {
 	// (the inbox row) is ever resolved for them, and it is not category-gated.
 	case RideTypeAssigned, RideTypeArriving, RideTypeArrived, RideTypeStarted,
 		RideTypeCompleted, RideTypeCancelled, RideTypePaymentPaid,
-		CaptainTypeOffer, CaptainTypePaymentReceived:
+		CaptainTypeOffer, CaptainTypePaymentReceived,
+		CaptainTypeApproved, CaptainTypeUnderReview,
+		CaptainTypeSubscriptionExpiring, CaptainTypeSubscriptionExpired,
+		CaptainTypeSubscriptionRenewed, CaptainTypeSubscriptionPaymentFailed:
 		return catAlwaysOn
 	// Calls are time-critical: a missed-call notice the user asked the app
 	// not to show would hide that a human tried to reach them. Only the

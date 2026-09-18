@@ -1,7 +1,7 @@
 // Rider event handlers — mirrors qa_consumer.go / dating_consumer.go.
-// Sprint 3 covers safety SOS, complaint raised, partner approved, and
-// subscription expiring notifications. Other rider.* events are claimed
-// and silently ignored so the default branch doesn't log a warning.
+// Sprint 3 covers safety SOS and complaint raised through the generic
+// notification path. Other rider.* events are claimed and silently ignored
+// so the default branch doesn't log a warning.
 //
 // Mopedu pushes (2026-09-18): the customer's ride lifecycle and payment go
 // to their Momentum install as the app's `ride.*` types; the captain's offer
@@ -9,6 +9,13 @@
 // ride_push.go). Recipients come from payload fields only — this service
 // never reads rider-service's database — and an event without its recipient
 // is counted and logged with the exact field rider-service must add.
+//
+// Captain account pushes (2026-09-19): partner approval / review and the
+// subscription lifecycle also go to the Mopedu Captain install as the app's
+// `captain.*` account types on the captain_account channel, with an inbox row
+// (rider_partner / rider_subscription). They used to go through the generic
+// CreateNotification path, which is not app-aware, so a captain saw them on
+// Momentum, if at all.
 package events
 
 import (
@@ -57,16 +64,16 @@ func (c *Consumer) handleRiderEvent(ctx context.Context, envelope events.EventEn
 		return true, c.handleRiderSafetyContactAlert(ctx, envelope.Payload)
 	case events.EventRiderComplaintRaised:
 		return true, c.handleRiderComplaintRaised(ctx, envelope.Payload)
-	case events.EventRiderPartnerApproved:
-		return true, c.handleRiderPartnerApproved(ctx, envelope.Payload)
-	case events.EventRiderSubscriptionExpiring:
-		return true, c.handleRiderSubscriptionExpiring(ctx, envelope.Payload)
-	case events.EventRiderSubscriptionGracePeriod:
-		return true, c.handleRiderSubscriptionGracePeriod(ctx, envelope.Payload)
-	case events.EventRiderSubscriptionRenewed:
-		return true, c.handleRiderSubscriptionRenewed(ctx, envelope.Payload)
-	case events.EventRiderSubscriptionRenewalFailed:
-		return true, c.handleRiderSubscriptionRenewalFailed(ctx, envelope.Payload)
+	case events.EventRiderPartnerApproved,
+		eventRiderPartnerUnderReview,
+		events.EventRiderSubscriptionExpiring,
+		events.EventRiderSubscriptionGracePeriod,
+		events.EventRiderSubscriptionExpired,
+		events.EventRiderSubscriptionRenewed,
+		events.EventRiderSubscriptionRenewalFailed:
+		// captain.approved / under_review / subscription.* → the partner's
+		// Mopedu Captain devices on the captain_account channel.
+		return true, c.handleRiderCaptainAccount(ctx, envelope.EventType, envelope.EventID, envelope.Payload)
 	case events.EventRiderDocumentExpiring:
 		return true, c.handleRiderDocumentExpiring(ctx, envelope.Payload)
 	case events.EventRiderPartnerFraudFlagged:
@@ -112,7 +119,6 @@ func (c *Consumer) handleRiderEvent(ctx context.Context, envelope events.EventEn
 		events.EventRiderSubscriptionPaymentVerified,
 		events.EventRiderSubscriptionPaymentRejected,
 		events.EventRiderSubscriptionActivated,
-		events.EventRiderSubscriptionExpired,
 		events.EventRiderSafetyIncidentAcknowledged,
 		events.EventRiderSafetyIncidentResolved,
 		events.EventRiderComplaintUpdated,
@@ -612,165 +618,184 @@ func (c *Consumer) handleRiderComplaintRaised(ctx context.Context, raw json.RawM
 	return nil
 }
 
-// rider.partner.approved → welcome push to the partner.
-type riderPartnerStatusPayload struct {
-	PartnerID  string    `json:"partner_id"`
-	Status     string    `json:"status"`
-	Reason     string    `json:"reason,omitempty"`
-	ActorID    string    `json:"actor_id,omitempty"`
-	OccurredAt time.Time `json:"occurred_at"`
-}
+// --- Captain account pushes (2026-09-19) -----------------------------------
 
-func (c *Consumer) handleRiderPartnerApproved(ctx context.Context, raw json.RawMessage) error {
-	var e riderPartnerStatusPayload
-	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
-	}
-	partnerID, err := uuid.Parse(e.PartnerID)
-	if err != nil {
-		return fmt.Errorf("invalid partner_id in rider.partner.approved: %w", err)
-	}
-	deepLink := "/rider/partner/dashboard"
-	// We don't have the partner's user_id directly in this payload; the
-	// partner_id column on rider_partners maps to user_id but resolving it
-	// requires a rider-service callback. For MVP we use partner_id as the
-	// recipient key — notification-service routes by user_id but the
-	// rider partner's notification flow uses the partner-id directly.
-	if err := c.service.CreateNotification(ctx, partnerID, partnerID, "rider.partner.approved", "rider_partner", partnerID, deepLink, e.OccurredAt); err != nil {
-		slog.Warn("rider partner approved: notify failed", "partner_id", partnerID, "error", err)
-	}
-	return nil
-}
+// eventRiderPartnerUnderReview is matched by its string: shared/events has no
+// constant for it yet (payload {partner_id, partner_user_id, pending
+// []string}). When EventRiderPartnerUnderReview lands there, switch to it.
+const eventRiderPartnerUnderReview = "rider.partner.under_review"
 
-// rider.subscription.expiring → push to partner so they renew before the
-// grace period kicks in.
-type riderSubscriptionExpiringPayload struct {
-	SubscriptionID string    `json:"subscription_id"`
+// riderCaptainAccountPayload is the union of rider-service's partner-status
+// and subscription payloads, decoded to the fields the copy may use: never
+// the admin's reason, never a wallet transaction id. The recipient is the
+// partner's USER id (partner_user_id), with the partner_id fallback the offer
+// path uses — rider_partners.id is not a user id.
+type riderCaptainAccountPayload struct {
 	PartnerID      string    `json:"partner_id"`
-	PlanID         string    `json:"plan_id,omitempty"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	OccurredAt     time.Time `json:"occurred_at,omitempty"`
-}
-
-func (c *Consumer) handleRiderSubscriptionExpiring(ctx context.Context, raw json.RawMessage) error {
-	var e riderSubscriptionExpiringPayload
-	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
-	}
-	partnerID, err := uuid.Parse(e.PartnerID)
-	if err != nil {
-		return fmt.Errorf("invalid partner_id in rider.subscription.expiring: %w", err)
-	}
-	subID, _ := uuid.Parse(e.SubscriptionID)
-	deepLink := "/rider/partner/subscription"
-	occurred := e.OccurredAt
-	if occurred.IsZero() {
-		occurred = time.Now().UTC()
-	}
-	if err := c.service.CreateNotification(ctx, partnerID, partnerID, "rider.subscription.expiring", "rider_subscription", subID, deepLink, occurred); err != nil {
-		slog.Warn("rider subscription expiring: notify failed", "partner_id", partnerID, "error", err)
-	}
-	return nil
-}
-
-// --- Sprint 4: subscription grace, renewal, doc expiry, fraud, summary --
-
-// rider.subscription.grace_period → push to partner that the grace
-// window has started (or that they've now been moved to expired — the
-// payload's status field carries the distinction in production).
-type riderSubscriptionGracePayload struct {
+	PartnerUserID  string    `json:"partner_user_id"`
+	Pending        []string  `json:"pending"`
 	SubscriptionID string    `json:"subscription_id"`
-	PartnerID      string    `json:"partner_id"`
-	PlanID         string    `json:"plan_id,omitempty"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	GraceEndsAt    time.Time `json:"grace_ends_at,omitempty"`
-	OccurredAt     time.Time `json:"occurred_at,omitempty"`
-}
-
-func (c *Consumer) handleRiderSubscriptionGracePeriod(ctx context.Context, raw json.RawMessage) error {
-	var e riderSubscriptionGracePayload
-	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
-	}
-	partnerID, err := uuid.Parse(e.PartnerID)
-	if err != nil {
-		return fmt.Errorf("invalid partner_id in rider.subscription.grace_period: %w", err)
-	}
-	subID, _ := uuid.Parse(e.SubscriptionID)
-	deepLink := "/rider/partner/subscription"
-	occurred := e.OccurredAt
-	if occurred.IsZero() {
-		occurred = time.Now().UTC()
-	}
-	if err := c.service.CreateNotification(ctx, partnerID, partnerID, "rider.subscription.grace_period", "rider_subscription", subID, deepLink, occurred); err != nil {
-		slog.Warn("rider subscription grace: notify failed", "partner_id", partnerID, "error", err)
-	}
-	return nil
-}
-
-// rider.subscription.renewed → push confirming the auto-renewal succeeded.
-type riderSubscriptionRenewedPayload struct {
-	SubscriptionID string    `json:"subscription_id"`
-	PartnerID      string    `json:"partner_id"`
-	PlanID         string    `json:"plan_id"`
 	AmountPaise    int64     `json:"amount_paise"`
+	AutoRenewOff   bool      `json:"auto_renew_off"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	GraceEndsAt    time.Time `json:"grace_ends_at"`
 	NewExpiresAt   time.Time `json:"new_expires_at"`
 	OccurredAt     time.Time `json:"occurred_at"`
 }
 
-func (c *Consumer) handleRiderSubscriptionRenewed(ctx context.Context, raw json.RawMessage) error {
-	var e riderSubscriptionRenewedPayload
+// captainAccountTypes maps each account event to the captain app's push
+// type. grace_period and expired are both "expired" to the captain — the
+// plan has lapsed either way; the grace copy names the renew-by date.
+var captainAccountTypes = map[string]string{
+	events.EventRiderPartnerApproved:           service.CaptainTypeApproved,
+	eventRiderPartnerUnderReview:               service.CaptainTypeUnderReview,
+	events.EventRiderSubscriptionExpiring:      service.CaptainTypeSubscriptionExpiring,
+	events.EventRiderSubscriptionGracePeriod:   service.CaptainTypeSubscriptionExpired,
+	events.EventRiderSubscriptionExpired:       service.CaptainTypeSubscriptionExpired,
+	events.EventRiderSubscriptionRenewed:       service.CaptainTypeSubscriptionRenewed,
+	events.EventRiderSubscriptionRenewalFailed: service.CaptainTypeSubscriptionPaymentFailed,
+}
+
+// istZone renders plan dates the way the captain reads them.
+var istZone = time.FixedZone("IST", 5*60*60+30*60)
+
+func captainDate(t time.Time) string { return t.In(istZone).Format("2 Jan") }
+
+// cleanPending keeps the non-empty pending items, trimmed, in order.
+func cleanPending(items []string) []string {
+	var out []string
+	for _, item := range items {
+		if s := strings.TrimSpace(item); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// captainAccountCopy is the push text: plain, every action "in the app", no
+// amount beyond "₹x due", never a link to pay anywhere else.
+func captainAccountCopy(eventType string, e riderCaptainAccountPayload) rideCopy {
+	switch eventType {
+	case events.EventRiderPartnerApproved:
+		return rideCopy{"You're approved", "Your captain account is approved. Go online in the app to start receiving ride offers."}
+	case eventRiderPartnerUnderReview:
+		body := "We're reviewing your documents and will let you know when it's done."
+		if pending := cleanPending(e.Pending); len(pending) > 0 {
+			body = "We're reviewing your documents. Still needed: " + strings.Join(pending, ", ") + ". Complete them in the app."
+		}
+		return rideCopy{"Account under review", body}
+	case events.EventRiderSubscriptionExpiring:
+		body := "Your captain plan expires soon. Renew in the app to keep getting ride offers."
+		if !e.ExpiresAt.IsZero() {
+			body = "Your captain plan expires on " + captainDate(e.ExpiresAt) + ". Renew in the app to keep getting ride offers."
+		}
+		return rideCopy{"Plan expiring soon", body}
+	case events.EventRiderSubscriptionGracePeriod:
+		body := "Your captain plan has expired. Renew in the app to keep getting ride offers."
+		if !e.GraceEndsAt.IsZero() {
+			body = "Your captain plan has expired. Renew in the app by " + captainDate(e.GraceEndsAt) + " to keep getting ride offers."
+		}
+		return rideCopy{"Plan expired", body}
+	case events.EventRiderSubscriptionExpired:
+		return rideCopy{"Plan expired", "Your captain plan has expired. Renew in the app to get ride offers again."}
+	case events.EventRiderSubscriptionRenewed:
+		body := "Your captain plan is renewed."
+		if !e.NewExpiresAt.IsZero() {
+			body = "Your captain plan is renewed until " + captainDate(e.NewExpiresAt) + "."
+		}
+		return rideCopy{"Plan renewed", body}
+	case events.EventRiderSubscriptionRenewalFailed:
+		body := "We couldn't renew your captain plan. Pay in the app to keep getting ride offers."
+		if e.AmountPaise > 0 {
+			body = "We couldn't renew your captain plan. " + rupees(e.AmountPaise) + " due. Pay in the app to keep getting ride offers."
+		}
+		if e.AutoRenewOff {
+			body += " Auto-renew is now off."
+		}
+		return rideCopy{"Plan payment failed", body}
+	}
+	return rideCopy{}
+}
+
+// planCaptainAccountPush renders one captain account push. missing names the
+// payload field rider-service must add; fallback says partner_id stood in
+// for partner_user_id. The entity is the partner (approval / review) or the
+// subscription (plan state); there is no ride.
+func planCaptainAccountPush(eventType, eventID string, raw json.RawMessage, now time.Time) (p service.RidePush, fallback bool, missing string, err error) {
+	var e riderCaptainAccountPayload
 	if err := unmarshalPayload(raw, &e); err != nil {
+		return service.RidePush{}, false, "", fmt.Errorf("captain account: decode %s: %w", eventType, err)
+	}
+	pushType, known := captainAccountTypes[eventType]
+	if !known {
+		return service.RidePush{}, false, "", fmt.Errorf("captain account: %s is not a captain account event", eventType)
+	}
+	entityType, _ := service.CaptainAccountInboxEntityFor(pushType)
+	var (
+		entityID uuid.UUID
+		deepLink string
+	)
+	switch entityType {
+	case service.CaptainPartnerInboxEntityType:
+		id, perr := uuid.Parse(strings.TrimSpace(e.PartnerID))
+		if perr != nil || id == uuid.Nil {
+			return service.RidePush{}, false, "", fmt.Errorf("captain account: invalid partner_id in %s: %w", eventType, perr)
+		}
+		entityID, deepLink = id, "/captain/account"
+	default:
+		id, serr := uuid.Parse(strings.TrimSpace(e.SubscriptionID))
+		if serr != nil || id == uuid.Nil {
+			return service.RidePush{}, false, "", fmt.Errorf("captain account: invalid subscription_id in %s: %w", eventType, serr)
+		}
+		entityID, deepLink = id, "/captain/subscription"
+	}
+	captain, fromUserID, ok := captainRecipient(e.PartnerUserID, e.PartnerID)
+	if !ok {
+		return service.RidePush{}, false, "partner_user_id", nil
+	}
+	created := e.OccurredAt
+	if created.IsZero() {
+		created = now
+	}
+	dedup := "event:" + eventID + ":" + eventType
+	if eventID == "" {
+		dedup = entityType + ":" + entityID.String() + ":" + eventType
+	}
+	text := captainAccountCopy(eventType, e)
+	return service.RidePush{
+		DedupKey:       dedup,
+		RecipientID:    captain,
+		App:            service.AppMopeduCaptain,
+		Type:           pushType,
+		AndroidChannel: service.CaptainChannelAccount,
+		Title:          text.title,
+		Body:           text.body,
+		DeepLink:       deepLink,
+		EntityID:       entityID,
+		CreatedAt:      created.UTC(),
+	}, !fromUserID, "", nil
+}
+
+func (c *Consumer) handleRiderCaptainAccount(ctx context.Context, eventType, eventID string, raw json.RawMessage) error {
+	p, fallback, missing, err := planCaptainAccountPush(eventType, eventID, raw, time.Now().UTC())
+	if err != nil {
 		return err
 	}
-	partnerID, err := uuid.Parse(e.PartnerID)
-	if err != nil {
-		return fmt.Errorf("invalid partner_id in rider.subscription.renewed: %w", err)
+	if missing != "" {
+		ridePushesTotal.WithLabelValues(captainAccountTypes[eventType], service.AppMopeduCaptain, "missing_recipient").Inc()
+		slog.Warn("captain account: event lacks its push recipient; rider-service must add the field",
+			"event", eventType, "field", missing)
+		return nil
 	}
-	subID, _ := uuid.Parse(e.SubscriptionID)
-	deepLink := "/rider/partner/subscription"
-	occurred := e.OccurredAt
-	if occurred.IsZero() {
-		occurred = time.Now().UTC()
+	if fallback {
+		slog.Warn("captain account: no partner_user_id on the event; pushing to partner_id, which reaches a device only if it is the captain's user id",
+			"event", eventType)
 	}
-	if err := c.service.CreateNotification(ctx, partnerID, partnerID, "rider.subscription.renewed", "rider_subscription", subID, deepLink, occurred); err != nil {
-		slog.Warn("rider subscription renewed: notify failed", "partner_id", partnerID, "error", err)
-	}
+	c.deliverRidePush(ctx, eventType, p)
 	return nil
 }
 
-// rider.subscription.renewal_failed → "renewal failed; please top up wallet".
-type riderSubscriptionRenewalFailedPayload struct {
-	SubscriptionID string    `json:"subscription_id"`
-	PartnerID      string    `json:"partner_id"`
-	PlanID         string    `json:"plan_id"`
-	AmountPaise    int64     `json:"amount_paise"`
-	FailureCount   int       `json:"failure_count"`
-	AutoRenewOff   bool      `json:"auto_renew_off"`
-	Reason         string    `json:"reason"`
-	OccurredAt     time.Time `json:"occurred_at"`
-}
-
-func (c *Consumer) handleRiderSubscriptionRenewalFailed(ctx context.Context, raw json.RawMessage) error {
-	var e riderSubscriptionRenewalFailedPayload
-	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
-	}
-	partnerID, err := uuid.Parse(e.PartnerID)
-	if err != nil {
-		return fmt.Errorf("invalid partner_id in rider.subscription.renewal_failed: %w", err)
-	}
-	subID, _ := uuid.Parse(e.SubscriptionID)
-	deepLink := "/rider/partner/subscription"
-	occurred := e.OccurredAt
-	if occurred.IsZero() {
-		occurred = time.Now().UTC()
-	}
-	if err := c.service.CreateNotification(ctx, partnerID, partnerID, "rider.subscription.renewal_failed", "rider_subscription", subID, deepLink, occurred); err != nil {
-		slog.Warn("rider subscription renewal failed: notify failed", "partner_id", partnerID, "error", err)
-	}
-	return nil
-}
+// --- Sprint 4: doc expiry, fraud, summary ---------------------------------
 
 // rider.document.expiring → push to the partner so they re-upload before
 // the document fully expires.

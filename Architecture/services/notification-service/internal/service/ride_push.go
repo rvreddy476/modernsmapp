@@ -20,6 +20,9 @@ import (
 //	ride.payment.paid        → customer  → momentum        (channel ride_updates)
 //	captain.offer            → captain   → mopedu_captain  (channel captain_offer)
 //	captain.payment.received → captain   → mopedu_captain  (channel captain_earnings)
+//	captain.approved / under_review
+//	captain.subscription.expiring / expired / renewed / payment_failed
+//	                         → captain   → mopedu_captain  (channel captain_account)
 //
 // The type strings are the Momentum app's PushDestinations.RIDE_TYPES and the
 // captain app's NotificationChannelSpec.forType — change one here and the
@@ -30,8 +33,13 @@ import (
 // not a "like" — so no Momentum category toggle, quiet hours or master push
 // switch silences them; the ride_updates Android channel is the customer's
 // control. The customer copy also writes an inbox row (entity rider_ride)
-// when the user's in-app preferences allow one. Captain pushes write no inbox
-// row: the captain app has no inbox. Account suppression applies to everyone.
+// when the user's in-app preferences allow one. Captain ride pushes (offer,
+// payment notice) write no inbox row: the captain app has no ride inbox. The
+// captain ACCOUNT pushes (approval, plan state) do keep an inbox row — entity
+// rider_partner or rider_subscription — so the account history survives the
+// notification tray; no Momentum preference is consulted for it, because a
+// captain has no category toggle for their captain account. Account
+// suppression applies to everyone.
 //
 // A push NEVER carries an OTP, a fare breakdown, a phone number or a
 // location: the data map is built from typed fields only (RidePushData), and
@@ -54,10 +62,20 @@ const (
 	CaptainTypeOffer           = "captain.offer"
 	CaptainTypePaymentReceived = "captain.payment.received"
 
+	// Captain account pushes (2026-09-19): the partner's approval and plan
+	// state. These carry no ride: entity_id is the partner or subscription.
+	CaptainTypeApproved                  = "captain.approved"
+	CaptainTypeUnderReview               = "captain.under_review"
+	CaptainTypeSubscriptionExpiring      = "captain.subscription.expiring"
+	CaptainTypeSubscriptionExpired       = "captain.subscription.expired"
+	CaptainTypeSubscriptionRenewed       = "captain.subscription.renewed"
+	CaptainTypeSubscriptionPaymentFailed = "captain.subscription.payment_failed"
+
 	RideChannelUpdates     = "ride_updates"
 	CaptainChannelOffer    = "captain_offer"
 	CaptainChannelOnDuty   = "captain_on_duty"
 	CaptainChannelEarnings = "captain_earnings"
+	CaptainChannelAccount  = "captain_account"
 
 	AppMopeduCaptain = postgres.AppMopeduCaptain
 )
@@ -66,18 +84,50 @@ const (
 // notification; the entity id is the ride id.
 const RideInboxEntityType = "rider_ride"
 
+// Inbox entity types for the captain account pushes; the entity id is the
+// partner id or the subscription id.
+const (
+	CaptainPartnerInboxEntityType      = "rider_partner"
+	CaptainSubscriptionInboxEntityType = "rider_subscription"
+)
+
+// captainAccountInbox pins each captain account type to its inbox entity
+// type. A captain type absent here (offer, payment notice) writes no inbox
+// row and is bound to a ride.
+var captainAccountInbox = map[string]string{
+	CaptainTypeApproved:                  CaptainPartnerInboxEntityType,
+	CaptainTypeUnderReview:               CaptainPartnerInboxEntityType,
+	CaptainTypeSubscriptionExpiring:      CaptainSubscriptionInboxEntityType,
+	CaptainTypeSubscriptionExpired:       CaptainSubscriptionInboxEntityType,
+	CaptainTypeSubscriptionRenewed:       CaptainSubscriptionInboxEntityType,
+	CaptainTypeSubscriptionPaymentFailed: CaptainSubscriptionInboxEntityType,
+}
+
 // ridePushApps is the routing table: which installed app each type reaches.
 // A type absent here is not a Mopedu push.
 var ridePushApps = map[string]string{
-	RideTypeAssigned:           AppMomentum,
-	RideTypeArriving:           AppMomentum,
-	RideTypeArrived:            AppMomentum,
-	RideTypeStarted:            AppMomentum,
-	RideTypeCompleted:          AppMomentum,
-	RideTypeCancelled:          AppMomentum,
-	RideTypePaymentPaid:        AppMomentum,
-	CaptainTypeOffer:           AppMopeduCaptain,
-	CaptainTypePaymentReceived: AppMopeduCaptain,
+	RideTypeAssigned:                     AppMomentum,
+	RideTypeArriving:                     AppMomentum,
+	RideTypeArrived:                      AppMomentum,
+	RideTypeStarted:                      AppMomentum,
+	RideTypeCompleted:                    AppMomentum,
+	RideTypeCancelled:                    AppMomentum,
+	RideTypePaymentPaid:                  AppMomentum,
+	CaptainTypeOffer:                     AppMopeduCaptain,
+	CaptainTypePaymentReceived:           AppMopeduCaptain,
+	CaptainTypeApproved:                  AppMopeduCaptain,
+	CaptainTypeUnderReview:               AppMopeduCaptain,
+	CaptainTypeSubscriptionExpiring:      AppMopeduCaptain,
+	CaptainTypeSubscriptionExpired:       AppMopeduCaptain,
+	CaptainTypeSubscriptionRenewed:       AppMopeduCaptain,
+	CaptainTypeSubscriptionPaymentFailed: AppMopeduCaptain,
+}
+
+// CaptainAccountInboxEntityFor returns the inbox entity type of a captain
+// account push type, and false for every other type.
+func CaptainAccountInboxEntityFor(pushType string) (string, bool) {
+	entity, ok := captainAccountInbox[pushType]
+	return entity, ok
 }
 
 // RidePushAppFor returns the app a Mopedu push type is delivered to.
@@ -113,10 +163,13 @@ type RidePush struct {
 	DeepLink       string
 
 	// EntityID is the push's entity_id: the ride for every customer push and
-	// the payment notice, the OFFER for captain.offer.
+	// the payment notice, the OFFER for captain.offer, the PARTNER for
+	// captain.approved / under_review and the SUBSCRIPTION for the
+	// captain.subscription.* types.
 	EntityID uuid.UUID
 	// RideID is the ride the push is about (the inbox row's entity, and the
-	// collapse key for customer pushes).
+	// collapse key for customer pushes). Nil — and only Nil — for the captain
+	// account pushes, which are about no ride.
 	RideID uuid.UUID
 	// TTL, when set, is how long FCM may hold the push before dropping it
 	// (offers: until the offer expires). Zero means the provider default.
@@ -146,6 +199,39 @@ func rideDedupID(p RidePush) uuid.UUID {
 
 func (p RidePush) customerFacing() bool { return p.App == AppMomentum }
 
+// captainAccount reports whether p is a captain account push (approval or
+// plan state): bound to a partner or subscription, never to a ride.
+func (p RidePush) captainAccount() bool {
+	_, ok := captainAccountInbox[p.Type]
+	return ok
+}
+
+// inboxEntity is the inbox row p writes, if any: the ride for a customer
+// push, the partner or subscription for a captain account push. ok=false for
+// the captain's ride pushes (offer, payment notice), which keep no row.
+func (p RidePush) inboxEntity() (entityType string, entityID uuid.UUID, ok bool) {
+	if p.customerFacing() {
+		return RideInboxEntityType, p.RideID, true
+	}
+	if entity, isAccount := captainAccountInbox[p.Type]; isAccount {
+		return entity, p.EntityID, true
+	}
+	return "", uuid.Nil, false
+}
+
+// collapseKey is the device-side replace key: one notification per ride for
+// the customer, one per offer, one per partner or subscription for the
+// account pushes ("expired" replaces "expiring").
+func (p RidePush) collapseKey() string {
+	switch {
+	case p.Type == CaptainTypeOffer:
+		return "ride_offer:" + p.EntityID.String()
+	case p.captainAccount():
+		return captainAccountInbox[p.Type] + ":" + p.EntityID.String()
+	}
+	return "ride:" + p.RideID.String()
+}
+
 func (p RidePush) validate() error {
 	if p.RecipientID == uuid.Nil {
 		return errors.New("ride push: no recipient")
@@ -153,15 +239,24 @@ func (p RidePush) validate() error {
 	if p.DedupKey == "" {
 		return errors.New("ride push: no dedup key")
 	}
-	if p.EntityID == uuid.Nil || p.RideID == uuid.Nil {
-		return errors.New("ride push: no entity or ride id")
-	}
 	app, known := ridePushApps[p.Type]
 	if !known {
 		return fmt.Errorf("ride push: unknown type %q", p.Type)
 	}
 	if p.App != app {
 		return fmt.Errorf("ride push: %s belongs to app %s, not %q", p.Type, app, p.App)
+	}
+	if p.EntityID == uuid.Nil {
+		return errors.New("ride push: no entity id")
+	}
+	if p.captainAccount() {
+		if p.RideID != uuid.Nil {
+			return fmt.Errorf("ride push: %s is an account push and carries no ride", p.Type)
+		}
+		return nil
+	}
+	if p.RideID == uuid.Nil {
+		return errors.New("ride push: no ride id")
 	}
 	if p.Type == CaptainTypeOffer && p.EntityID == p.RideID {
 		return errors.New("ride push: captain.offer must carry the offer id, not the ride id")
@@ -180,12 +275,9 @@ func RidePushData(p RidePush) map[string]string {
 		"body":      p.Body,
 	}
 	// One notification per ride on the customer's device: "arriving"
-	// replaces "assigned". Each offer stands alone.
-	collapse := "ride:" + p.RideID.String()
-	if p.Type == CaptainTypeOffer {
-		collapse = "ride_offer:" + p.EntityID.String()
-	}
-	data["collapse_key"] = collapse
+	// replaces "assigned". Each offer stands alone. One per partner or
+	// subscription for the account pushes.
+	data["collapse_key"] = p.collapseKey()
 	if p.AndroidChannel != "" {
 		data[push.AndroidChannelDataKey] = p.AndroidChannel
 	}
@@ -230,7 +322,14 @@ func runRidePush(ctx context.Context, t ridePushTransports, p RidePush) (RidePus
 		return RidePushDuplicate, nil
 	}
 
-	if p.customerFacing() && t.rideInboxWanted(ctx, p.RecipientID, p.Type) {
+	// The customer's row follows their in-app preference; the captain
+	// account row is unconditional (no preference exists for it); the
+	// captain's ride pushes keep no row.
+	wantInbox := false
+	if _, _, hasInbox := p.inboxEntity(); hasInbox {
+		wantInbox = p.captainAccount() || t.rideInboxWanted(ctx, p.RecipientID, p.Type)
+	}
+	if wantInbox {
 		if err := t.writeRideInbox(ctx, p); err != nil {
 			slog.Warn("ride push: inbox row failed", "type", p.Type, "error", err)
 		}
@@ -280,15 +379,20 @@ func (s *Service) rideInboxWanted(ctx context.Context, userID uuid.UUID, pushTyp
 	return s.resolveGeneralDelivery(ctx, userID, pushType).CreateInbox
 }
 
-// writeRideInbox records the customer's inbox row (and realtime frame) under
-// the push's deterministic identity, without a second push.
+// writeRideInbox records the push's inbox row (and realtime frame) — the
+// customer's ride, or the captain's partner / subscription — under the push's
+// deterministic identity, without a second push.
 func (s *Service) writeRideInbox(ctx context.Context, p RidePush) error {
 	if s.scyllaStore == nil {
 		return nil
 	}
+	entityType, entityID, ok := p.inboxEntity()
+	if !ok {
+		return nil
+	}
 	decision := DeliveryDecision{CreateInbox: true, SendWebSocket: true}
 	return s.deliverWithDecision(ctx, decision, p.RecipientID, p.RecipientID, p.Type,
-		RideInboxEntityType, p.RideID, p.DeepLink, p.CreatedAt, rideDedupID(p).String(),
+		entityType, entityID, p.DeepLink, p.CreatedAt, rideDedupID(p).String(),
 		RenderOverride{Title: p.Title, Body: p.Body})
 }
 
