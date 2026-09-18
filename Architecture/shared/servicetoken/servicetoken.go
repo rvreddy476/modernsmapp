@@ -51,15 +51,15 @@ type Header struct {
 // commerce order: a bare "this is a trusted service" assertion is not enough
 // when two different domains share one payments-service.
 type Claims struct {
-	Issuer   string   `json:"iss"`
-	Subject  string   `json:"sub"`
-	Audience string   `json:"aud"`
-	Expiry   int64    `json:"exp"`
-	NotBefore int64   `json:"nbf"`
-	IssuedAt int64    `json:"iat"`
-	JTI      string   `json:"jti"`
-	Scope    []string `json:"scope"`
-	RefTypes []string `json:"ref_types"`
+	Issuer    string   `json:"iss"`
+	Subject   string   `json:"sub"`
+	Audience  string   `json:"aud"`
+	Expiry    int64    `json:"exp"`
+	NotBefore int64    `json:"nbf"`
+	IssuedAt  int64    `json:"iat"`
+	JTI       string   `json:"jti"`
+	Scope     []string `json:"scope"`
+	RefTypes  []string `json:"ref_types"`
 	// Actor is the human user a service acts for — for example the admin on
 	// whose behalf admin-service calls a product's moderation route. It is
 	// signed like every other claim, so a verifier can attribute an action to
@@ -390,12 +390,14 @@ const (
 
 // Reference types. `order` belongs to commerce; `food_order` to food;
 // `dating_premium` (a one-off Premium pass or Boost) to dating;
-// `mopedu_ride` (one ride's fare) to rider-service (Mopedu).
+// `mopedu_ride` (one ride's fare) and `mopedu_subscription` (one captain
+// plan period) to rider-service (Mopedu).
 const (
-	RefOrder         = "order"
-	RefFoodOrder     = "food_order"
-	RefDatingPremium = "dating_premium"
-	RefMopeduRide    = "mopedu_ride"
+	RefOrder              = "order"
+	RefFoodOrder          = "food_order"
+	RefDatingPremium      = "dating_premium"
+	RefMopeduRide         = "mopedu_ride"
+	RefMopeduSubscription = "mopedu_subscription"
 )
 
 // AudiencePayments is the audience string payments-service accepts.

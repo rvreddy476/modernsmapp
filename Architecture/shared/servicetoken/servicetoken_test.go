@@ -191,6 +191,17 @@ func TestDatingTokenHasNoPaymentFetch(t *testing.T) {
 
 // The wire string is a contract with payments-service's owner map, migration
 // 012 and every stored intent; a rename would orphan them.
+func TestRefMopeduSubscriptionWireValue(t *testing.T) {
+	if RefMopeduSubscription != "mopedu_subscription" {
+		t.Fatalf("RefMopeduSubscription = %q, want mopedu_subscription", RefMopeduSubscription)
+	}
+	for _, other := range []string{RefOrder, RefFoodOrder, RefDatingPremium, RefMopeduRide} {
+		if other == RefMopeduSubscription {
+			t.Fatalf("RefMopeduSubscription collides with %q", other)
+		}
+	}
+}
+
 func TestRefMopeduRideWireValue(t *testing.T) {
 	if RefMopeduRide != "mopedu_ride" {
 		t.Fatalf("RefMopeduRide = %q, want mopedu_ride", RefMopeduRide)
