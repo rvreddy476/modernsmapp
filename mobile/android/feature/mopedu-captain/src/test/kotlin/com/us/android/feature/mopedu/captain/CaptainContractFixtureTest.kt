@@ -10,8 +10,15 @@ import com.us.android.feature.mopedu.captain.data.CaptainError
 import com.us.android.feature.mopedu.captain.data.CaptainErrorEnvelopeDto
 import com.us.android.feature.mopedu.captain.data.CaptainOfferDto
 import com.us.android.feature.mopedu.captain.data.PartnerProfileDto
+import com.us.android.feature.mopedu.captain.data.ReviewState
 import com.us.android.feature.mopedu.captain.data.RidePaymentDto
+import com.us.android.feature.mopedu.captain.data.SubscriptionCheckoutResponseDto
+import com.us.android.feature.mopedu.captain.data.SubscriptionPaymentDto
+import com.us.android.feature.mopedu.captain.data.SubscriptionPaymentStatus
+import com.us.android.feature.mopedu.captain.data.SubscriptionPlanDto
+import com.us.android.feature.mopedu.captain.data.toDomain
 import com.us.android.feature.mopedu.captain.data.toOffer
+import com.us.android.feature.mopedu.captain.data.toReview
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -64,6 +71,50 @@ class CaptainContractFixtureTest {
     private val pending: Map<String, (raw: String) -> Unit> = mapOf(
         "partner_me.json" to data(PartnerProfileDto.serializer()) { assertThat(it.id).isNotEmpty() },
         "partner_me_not_found.json" to error(status = 404) { assertThat(it).isEqualTo(CaptainError.NotFound) },
+        // The onboarding verdict (2026-09-18): `review {state, pending}` on GET /v1/rider/partners/me.
+        "partner_me_under_review.json" to data(PartnerProfileDto.serializer()) { dto ->
+            val review = checkNotNull(dto.review) { "the fixture must carry review" }
+            assertThat(review.state).isEqualTo("under_review")
+            assertThat(dto.toReview().state).isEqualTo(ReviewState.UNDER_REVIEW)
+            assertThat(dto.toReview().pending).isEqualTo(review.pending)
+        },
+        "partner_me_approved.json" to data(PartnerProfileDto.serializer()) { dto ->
+            assertThat(checkNotNull(dto.review).state).isEqualTo("approved")
+            assertThat(dto.toReview().isApproved).isTrue()
+        },
+        // Subscriptions through payments-service (2026-09-18).
+        "subscription_plans.json" to data(ListSerializer(SubscriptionPlanDto.serializer())) { list ->
+            val trial = list.first { it.code == "trial_7d" }
+            assertThat(trial.priceAmount).isEqualTo(0.0)
+            assertThat(trial.toDomain().price.isZero).isTrue()
+            assertThat(trial.toDomain().isTrial).isTrue()
+            list.filter { it.code != "trial_7d" }.forEach { plan ->
+                assertThat(plan.billingPeriodDays).isGreaterThan(0)
+                assertThat(plan.toDomain().price.paise).isGreaterThan(0L)
+            }
+        },
+        // POST /v1/rider/subscriptions/checkout for the trial: active, once ever, no client_session.
+        "subscription_checkout_trial.json" to data(SubscriptionCheckoutResponseDto.serializer()) { dto ->
+            assertThat(dto.status).isEqualTo("active")
+            assertThat(dto.clientSession.orEmpty()).isEmpty()
+            assertThat(dto.subscriptionId).isNotEmpty()
+        },
+        // POST /v1/rider/subscriptions/checkout for a paid plan: the sheet's session, the subscription id as reference.
+        "subscription_checkout_paid.json" to data(SubscriptionCheckoutResponseDto.serializer()) { dto ->
+            assertThat(dto.status).isNotEqualTo("active")
+            assertThat(dto.amountPaise).isGreaterThan(0L)
+            val session = checkNotNull(dto.clientSession)
+            assertThat(session.keys).containsAtLeast("provider", "order_id", "key_id")
+            assertThat(checkNotNull(dto.intentId)).isNotEmpty()
+        },
+        // GET /v1/rider/subscriptions/me/payment 200: the only source of "paid" for a plan.
+        "subscription_payment_paid.json" to data(SubscriptionPaymentDto.serializer()) { dto ->
+            assertThat(dto.status).isEqualTo("paid")
+            assertThat(SubscriptionPaymentStatus.fromCode(dto.status)).isEqualTo(SubscriptionPaymentStatus.PAID)
+        },
+        "subscription_payment_pending.json" to data(SubscriptionPaymentDto.serializer()) { dto ->
+            assertThat(SubscriptionPaymentStatus.fromCode(dto.status)).isEqualTo(SubscriptionPaymentStatus.PENDING)
+        },
         "offers_incoming.json" to data(ListSerializer(CaptainOfferDto.serializer())) { list ->
             list.forEach { assertThat(it.toOffer().estimatedEarnings.paise).isGreaterThan(0L) }
         },

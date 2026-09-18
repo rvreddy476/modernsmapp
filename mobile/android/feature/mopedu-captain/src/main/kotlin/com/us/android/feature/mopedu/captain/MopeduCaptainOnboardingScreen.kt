@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,10 +31,10 @@ import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.mobility.model.PartnerDocument
 import com.us.android.core.mobility.model.PartnerProfile
-import com.us.android.core.mobility.model.PartnerSubscription
-import com.us.android.core.mobility.model.SubscriptionPlan
 import com.us.android.core.mobility.model.Vehicle
 import com.us.android.core.mobility.model.VehicleType
+import com.us.android.feature.mopedu.captain.data.PartnerReview
+import com.us.android.feature.mopedu.captain.data.ReviewState
 import com.us.android.feature.mopedu.captain.ui.CaptainCard
 import com.us.android.feature.mopedu.captain.ui.CaptainPill
 import com.us.android.feature.mopedu.captain.ui.CaptainScreen
@@ -46,7 +45,15 @@ import com.us.android.feature.mopedu.captain.ui.PillTone
 import com.us.android.feature.mopedu.captain.ui.SectionHeader
 import com.us.android.feature.mopedu.captain.ui.StatusBadge
 
-/** Onboarding: profile → vehicle → documents → plan → status, on Momentum tokens only. */
+/**
+ * Onboarding: profile → vehicle → documents → verification, on Momentum tokens
+ * only. The plan is its own screen, reached once the review approves.
+ *
+ * Verification is automatic for DigiLocker-verified documents: the status
+ * step shows "Verifying…" while the server is polled, then Home (through the
+ * plans) or "Under review" with exactly what is pending. Nothing here tells a
+ * captain to wait for a person unless the server put them in that queue.
+ */
 @Composable
 @Suppress("LongParameterList")
 fun MopeduCaptainOnboardingScreen(
@@ -55,8 +62,10 @@ fun MopeduCaptainOnboardingScreen(
     onSubmitProfile: (fullName: String, phone: String, email: String?) -> Unit,
     onSubmitVehicle: (type: VehicleType, regNumber: String, brand: String, model: String) -> Unit,
     onSubmitDocument: (type: String, number: String, fileUrl: String) -> Unit,
+    onSubmitSelfie: (fileUrl: String) -> Unit,
     onStartDigiLocker: () -> Unit,
-    onSelectPlan: (planId: String) -> Unit,
+    onSubmitForVerification: () -> Unit,
+    onBackToDocuments: () -> Unit,
     onRefreshStatus: () -> Unit,
     onProceedToConsole: () -> Unit,
     onDismissError: () -> Unit,
@@ -78,9 +87,17 @@ fun MopeduCaptainOnboardingScreen(
                     when (state.step) {
                         OnboardingStep.PROFILE -> ProfileStep(state.profile, onSubmitProfile)
                         OnboardingStep.VEHICLE -> VehicleStep(state.vehicle, onSubmitVehicle)
-                        OnboardingStep.DOCUMENTS -> DocumentsStep(state.documents, onSubmitDocument, onStartDigiLocker)
-                        OnboardingStep.SUBSCRIPTION -> SubscriptionStep(state.plans, onSelectPlan)
-                        OnboardingStep.STATUS -> StatusStep(state.profile, state.vehicle, state.documents, state.subscription, onRefreshStatus, onProceedToConsole)
+                        OnboardingStep.DOCUMENTS -> DocumentsStep(state.documents, onSubmitDocument, onSubmitSelfie, onStartDigiLocker, onSubmitForVerification)
+                        OnboardingStep.STATUS -> StatusStep(
+                            profile = state.profile,
+                            vehicle = state.vehicle,
+                            documents = state.documents,
+                            review = state.review,
+                            isVerifying = state.isVerifying,
+                            onRefresh = onRefreshStatus,
+                            onBackToDocuments = onBackToDocuments,
+                            onProceed = onProceedToConsole,
+                        )
                     }
                 }
             }
@@ -178,15 +195,29 @@ private fun VehicleStep(vehicle: Vehicle?, onSubmit: (VehicleType, String, Strin
     }
 }
 
+/**
+ * Aadhaar through DigiLocker, the selfie, the licence and the RC, then
+ * "Submit for verification". The selfie is a document of type `selfie`; its
+ * capture goes through the platform uploader once `:core:media` joins this
+ * app, so today the tap submits the record and the server's mock matches it.
+ */
 @Composable
-private fun DocumentsStep(documents: List<PartnerDocument>, onSubmitDocument: (String, String, String) -> Unit, onStartDigiLocker: () -> Unit) {
+private fun DocumentsStep(
+    documents: List<PartnerDocument>,
+    onSubmitDocument: (String, String, String) -> Unit,
+    onSubmitSelfie: (String) -> Unit,
+    onStartDigiLocker: () -> Unit,
+    onSubmitForVerification: () -> Unit,
+) {
     var dlNumber by remember { mutableStateOf("") }
     var rcNumber by remember { mutableStateOf("") }
-    val dl = documents.firstOrNull { it.documentType == "driving_license" }
-    val rc = documents.firstOrNull { it.documentType == "vehicle_rc" }
-    val aadhaar = documents.firstOrNull { it.documentType == "aadhaar" }
+    val dl = documents.firstOrNull { it.documentType == DOC_DRIVING_LICENCE }
+    val rc = documents.firstOrNull { it.documentType == DOC_VEHICLE_RC }
+    val aadhaar = documents.firstOrNull { it.documentType == DOC_AADHAAR }
+    val selfie = documents.firstOrNull { it.documentType == DOC_SELFIE }
+    val aadhaarDone = aadhaar != null && aadhaar.status !in setOf("rejected", "pending")
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-        item { CardHeading("Documents", "Verify your Aadhaar through DigiLocker and add your licence and RC.") }
+        item { CardHeading("Documents", "Verify your Aadhaar through DigiLocker, take a selfie, and add your licence and RC.") }
         item {
             CaptainCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -202,16 +233,42 @@ private fun DocumentsStep(documents: List<PartnerDocument>, onSubmitDocument: (S
             }
         }
         item {
+            CaptainCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CardHeading("Selfie", "Matched to your Aadhaar photo. Look straight at the camera in good light.", modifier = Modifier.weight(1f))
+                    StatusBadge(selfie?.status ?: "pending")
+                }
+                UsButton(
+                    text = if (selfie != null) "Retake selfie" else "Take a selfie",
+                    onClick = { onSubmitSelfie("") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        item {
             DocumentCard("Driving licence", dl, dlNumber, { dlNumber = it.uppercase() }, "DL-1420110012345") {
-                onSubmitDocument("driving_license", dlNumber.trim(), "")
+                onSubmitDocument(DOC_DRIVING_LICENCE, dlNumber.trim(), "")
             }
         }
         item {
             DocumentCard("Vehicle RC", rc, rcNumber, { rcNumber = it.uppercase() }, "TS09AB1234") {
-                onSubmitDocument("vehicle_rc", rcNumber.trim(), "")
+                onSubmitDocument(DOC_VEHICLE_RC, rcNumber.trim(), "")
             }
         }
-        item { InfoNote("Document photos are added by Mopedu support during review; enter the numbers here.") }
+        item {
+            InfoNote(
+                "Documents verified through DigiLocker are approved automatically, usually within seconds. " +
+                    "Only a document you upload yourself is checked by a person.",
+            )
+        }
+        item {
+            UsButton(
+                text = "Submit for verification",
+                onClick = onSubmitForVerification,
+                enabled = aadhaarDone && selfie != null,
+                modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.m, bottom = UsTheme.spacing.xxxxl),
+            )
+        }
     }
 }
 
@@ -234,76 +291,75 @@ private fun DocumentCard(
     }
 }
 
+/**
+ * The verdict. "Verifying…" while the server is polled; then approved (on to
+ * the plans), under review (what is pending, and that a notification follows),
+ * or incomplete (what is still needed, and the way back to Documents).
+ */
 @Composable
-private fun SubscriptionStep(plans: List<SubscriptionPlan>, onSelectPlan: (String) -> Unit) {
-    LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-        item { CardHeading("Choose a plan", "Zero commission: you keep the whole fare. A plan sets your daily lead allowance.") }
-        if (plans.isEmpty()) item { InfoNote("No plans are available right now. Pull to refresh in a moment.") }
-        items(plans, key = { it.id }) { plan ->
-            CaptainCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CardHeading(plan.name, plan.description.ifBlank { null }, modifier = Modifier.weight(1f))
-                    Text(
-                        text = plan.price.formattedINR,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = UsTheme.extended.accentSolid,
-                    )
-                }
-                Text(
-                    text = "Billing: ${plan.billingCycle.replace('_', ' ')} · Daily leads: ${plan.dailyLeadCap ?: "unlimited"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = UsTheme.extended.textMuted,
-                )
-                UsButton(
-                    text = if (plan.price.isZero) "Start free trial" else "Choose for ${plan.price.formattedINR}",
-                    onClick = { onSelectPlan(plan.id) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-    }
-}
-
-@Composable
+@Suppress("LongParameterList", "LongMethod")
 private fun StatusStep(
     profile: PartnerProfile?,
     vehicle: Vehicle?,
     documents: List<PartnerDocument>,
-    subscription: PartnerSubscription?,
+    review: PartnerReview,
+    isVerifying: Boolean,
     onRefresh: () -> Unit,
+    onBackToDocuments: () -> Unit,
     onProceed: () -> Unit,
 ) {
-    val kycApproved = profile?.kycStatus == "approved"
     val vehicleApproved = vehicle?.status == "approved"
-    val subActive = subscription?.isUsable == true
-    val canGoOnline = kycApproved && vehicleApproved && subActive
+    val pending = review.pending.map(::pendingLabel)
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
         item {
-            CaptainCard(highlighted = canGoOnline) {
-                CardHeading(
-                    title = if (canGoOnline) "You're ready to drive" else "Verification in progress",
-                    body = if (canGoOnline) {
-                        "Every check has passed. Go online to start receiving rides."
-                    } else {
-                        "Mopedu is reviewing your profile and documents. Approvals usually take under two hours."
-                    },
-                    tone = if (canGoOnline) PillTone.Positive else PillTone.Warning,
-                )
+            when {
+                isVerifying -> CaptainCard(highlighted = true) {
+                    CardHeading("Verifying…", "Checking your documents with DigiLocker. This usually takes a few seconds.", tone = PillTone.Accent)
+                    UsButton(text = "Verifying", onClick = {}, loading = true, modifier = Modifier.fillMaxWidth())
+                }
+                review.state == ReviewState.APPROVED -> CaptainCard(highlighted = true) {
+                    CardHeading("You're verified", "Every check has passed. Pick a plan to start receiving rides.", tone = PillTone.Positive)
+                    UsButton(text = "Continue", onClick = onProceed, modifier = Modifier.fillMaxWidth())
+                }
+                review.state == ReviewState.UNDER_REVIEW -> CaptainCard(highlighted = true) {
+                    CardHeading(
+                        title = "Under review",
+                        body = if (pending.isEmpty()) {
+                            "A document you uploaded yourself is being checked by a person."
+                        } else {
+                            "Being checked by a person: ${pending.joinToString(", ")}."
+                        },
+                        tone = PillTone.Warning,
+                    )
+                    InfoNote("What to do: nothing for now. Uploaded documents are checked within a day, and you'll get a notification the moment it's done.")
+                    UsSecondaryButton(text = "Check again", onClick = onRefresh, modifier = Modifier.fillMaxWidth())
+                }
+                else -> CaptainCard(highlighted = true) {
+                    CardHeading(
+                        title = "Not verified yet",
+                        body = if (pending.isEmpty()) {
+                            "We couldn't complete verification just now."
+                        } else {
+                            "Still needed: ${pending.joinToString(", ")}."
+                        },
+                        tone = PillTone.Warning,
+                    )
+                    InfoNote(
+                        if (pending.isEmpty()) {
+                            "What to do: check again in a moment, or go back to Documents and submit again."
+                        } else {
+                            "What to do: add what's missing in Documents, then submit for verification again."
+                        },
+                    )
+                    UsButton(text = "Go to documents", onClick = onBackToDocuments, modifier = Modifier.fillMaxWidth())
+                    UsSecondaryButton(text = "Check again", onClick = onRefresh, modifier = Modifier.fillMaxWidth())
+                }
             }
         }
         item { SectionHeader("Checklist") }
         item { ChecklistItem("Profile", listOfNotNull(profile?.fullName, profile?.phone).joinToString(" · "), profile?.status in setOf("submitted", "under_review", "approved")) }
         item { ChecklistItem("Vehicle", "${vehicle?.registrationNumber ?: "Pending"} · ${vehicle?.vehicleType?.displayName ?: ""}", vehicleApproved) }
-        item { ChecklistItem("Documents", "${documents.size} submitted · KYC ${profile?.kycStatus ?: "pending"}", kycApproved) }
-        item { ChecklistItem("Plan", "${subscription?.planName ?: "None"} · ${subscription?.status ?: "inactive"}", subActive) }
-        item {
-            if (canGoOnline) {
-                UsButton(text = "Open the captain console", onClick = onProceed, modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.m))
-            } else {
-                UsSecondaryButton(text = "Refresh status", onClick = onRefresh, modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.m))
-            }
-        }
+        item { ChecklistItem("Documents", "${documents.size} submitted · ${review.state.code.replace('_', ' ')}", review.isApproved) }
     }
 }
 
@@ -316,3 +372,19 @@ private fun ChecklistItem(title: String, subtitle: String, complete: Boolean) {
         }
     }
 }
+
+/** A pending item as the server names it, in the captain's words. */
+internal fun pendingLabel(code: String): String = when (code) {
+    DOC_SELFIE -> "your selfie"
+    DOC_AADHAAR -> "Aadhaar via DigiLocker"
+    DOC_DRIVING_LICENCE -> "your driving licence"
+    DOC_VEHICLE_RC -> "the vehicle RC"
+    "vehicle" -> "your vehicle"
+    "profile" -> "your profile"
+    else -> code.replace('_', ' ')
+}
+
+private const val DOC_AADHAAR = "aadhaar"
+private const val DOC_SELFIE = "selfie"
+private const val DOC_DRIVING_LICENCE = "driving_license"
+private const val DOC_VEHICLE_RC = "vehicle_rc"

@@ -452,7 +452,16 @@ data class SubscriptionPlan(
     val dailyLeadCap: Int?,
     val priorityScore: Int,
     val description: String = "",
-)
+    /** How long one payment covers (`billing_period_days`, 2026-09-18); 0 when the server did not say. */
+    val billingPeriodDays: Int = 0,
+) {
+    /** The free trial: price zero, granted once ever, activated without a payment sheet. */
+    val isTrial: Boolean get() = code == TRIAL_CODE || price.isZero
+
+    companion object {
+        const val TRIAL_CODE = "trial_7d"
+    }
+}
 
 data class PartnerSubscription(
     val id: String,

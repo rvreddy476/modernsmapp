@@ -25,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -49,6 +51,7 @@ import com.us.android.core.mobility.model.CaptainOffer
 import com.us.android.core.mobility.model.RideBooking
 import com.us.android.feature.mopedu.captain.home.DutyState
 import com.us.android.feature.mopedu.captain.location.CaptainLocationService
+import com.us.android.feature.mopedu.captain.payment.CaptainPaymentRequest
 import com.us.android.feature.mopedu.captain.ui.CaptainCard
 import com.us.android.feature.mopedu.captain.ui.CaptainDivider
 import com.us.android.feature.mopedu.captain.ui.CaptainPill
@@ -63,10 +66,16 @@ import com.us.android.feature.mopedu.captain.ui.SectionHeader
 import com.us.android.feature.mopedu.captain.ui.StopRow
 import java.util.Locale
 
-/** The captain's console. [onSignOut] is `:app-captain`'s edge. */
+/**
+ * The captain's console. [onSignOut] is `:app-captain`'s edge; [onOpenPayment]
+ * and [onAbandonPayment] are its Activity edges — the plan's payment sheet
+ * opens from CaptainActivity, stamped "mopedu".
+ */
 @Composable
 fun MopeduCaptainRoute(
     onSignOut: () -> Unit,
+    onOpenPayment: (CaptainPaymentRequest) -> Unit,
+    onAbandonPayment: (CaptainPaymentRequest) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: MopeduCaptainViewModel = hiltViewModel(),
 ) {
@@ -87,7 +96,19 @@ fun MopeduCaptainRoute(
                     arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
                 )
                 CaptainEvent.StartLocationService -> CaptainLocationService.start(context)
+                is CaptainEvent.OpenDigiLocker -> context.openUrl(event.url)
             }
+        }
+    }
+
+    // The sheet opens from the Activity; the request is handed over exactly once per phase.
+    val opening = (uiState as? CaptainUiState.Plans)?.phase as? PlanPhase.OpeningSheet
+    LaunchedEffect(opening) { opening?.let { onOpenPayment(it.request) } }
+    DisposableEffect(Unit) {
+        onDispose {
+            val attempt = viewModel.activeAttempt()
+            val current = (viewModel.uiState.value as? CaptainUiState.Plans)?.phase as? PlanPhase.OpeningSheet
+            if (attempt != null && current != null && current.request.attempt == attempt) onAbandonPayment(current.request)
         }
     }
 
@@ -99,10 +120,21 @@ fun MopeduCaptainRoute(
             onSubmitProfile = viewModel::submitProfile,
             onSubmitVehicle = viewModel::submitVehicle,
             onSubmitDocument = viewModel::submitDocument,
+            onSubmitSelfie = viewModel::submitSelfie,
             onStartDigiLocker = viewModel::startDigiLocker,
-            onSelectPlan = viewModel::selectPlan,
+            onSubmitForVerification = viewModel::submitForVerification,
+            onBackToDocuments = { viewModel.openOnboarding(OnboardingStep.DOCUMENTS) },
             onRefreshStatus = viewModel::refreshOnboardingStatus,
             onProceedToConsole = viewModel::proceedToConsole,
+            onDismissError = viewModel::dismissError,
+            modifier = modifier,
+        )
+        is CaptainUiState.Plans -> MopeduCaptainPlansScreen(
+            state = state,
+            onBack = viewModel::dismissPlans,
+            onStartTrial = viewModel::startTrial,
+            onChoosePlan = viewModel::choosePlan,
+            onCheckAgain = viewModel::checkPaymentAgain,
             onDismissError = viewModel::dismissError,
             modifier = modifier,
         )
@@ -116,6 +148,7 @@ fun MopeduCaptainRoute(
             onAcceptOffer = viewModel::acceptOffer,
             onRejectOffer = viewModel::rejectOffer,
             onOpenOnboarding = { viewModel.openOnboarding(OnboardingStep.STATUS) },
+            onRenew = viewModel::renewPlan,
             onSignOut = onSignOut,
             onDismissError = viewModel::dismissError,
             modifier = modifier,
@@ -146,6 +179,40 @@ fun MopeduCaptainRoute(
 
 // ── Home ────────────────────────────────────────────────────────────────
 
+/** Within three days of the plan running out: a banner above the duty card. */
+@Composable
+private fun ExpiringPlanBanner(daysLeft: Long, onRenew: () -> Unit, modifier: Modifier = Modifier) {
+    CaptainCard(modifier = modifier, onClick = onRenew) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CardHeading(
+                title = if (daysLeft <= 1L) "Your plan runs out today" else "Your plan runs out in $daysLeft days",
+                body = "Renew now to keep receiving rides without a break.",
+                modifier = Modifier.weight(1f),
+                tone = PillTone.Warning,
+            )
+            CaptainPill("Renew", PillTone.Warning)
+        }
+    }
+}
+
+/** The plan has run out: Home is blocked, and this card is the only way forward. */
+@Composable
+private fun ExpiredPlanCard(planName: String?, onRenew: () -> Unit, modifier: Modifier = Modifier) {
+    CaptainCard(modifier = modifier, highlighted = true) {
+        CardHeading(
+            title = "Your plan has run out",
+            body = "${planName?.ifBlank { null } ?: "Your plan"} has ended, so you can't go online. Renew it to receive rides again.",
+            tone = PillTone.Danger,
+        )
+        UsButton(text = "Renew plan", onClick = onRenew, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** DigiLocker's page, in the browser. A device without one gets the error banner instead of a crash. */
+private fun Context.openUrl(url: String) {
+    runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+}
+
 @Composable
 @Suppress("LongParameterList", "LongMethod")
 private fun HomeScreen(
@@ -158,6 +225,7 @@ private fun HomeScreen(
     onAcceptOffer: () -> Unit,
     onRejectOffer: () -> Unit,
     onOpenOnboarding: () -> Unit,
+    onRenew: () -> Unit,
     onSignOut: () -> Unit,
     onDismissError: () -> Unit,
     modifier: Modifier = Modifier,
@@ -182,7 +250,23 @@ private fun HomeScreen(
             contentPadding = padding,
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
-            item { DutyCard(state, onGoOnline, onGoOffline, onOpenSettings, modifier = Modifier.padding(top = UsTheme.spacing.m)) }
+            // The plan's life: a banner within three days of running out; a blocking card once it has.
+            when (val renewal = state.renewal) {
+                RenewalNotice.Expired -> item { ExpiredPlanCard(state.subscription?.planName, onRenew, modifier = Modifier.padding(top = UsTheme.spacing.m)) }
+                is RenewalNotice.ExpiringSoon -> item { ExpiringPlanBanner(renewal.daysLeft, onRenew, modifier = Modifier.padding(top = UsTheme.spacing.m)) }
+                RenewalNotice.None -> Unit
+            }
+            if (!state.isBlocked) {
+                item {
+                    DutyCard(
+                        state,
+                        onGoOnline,
+                        onGoOffline,
+                        onOpenSettings,
+                        modifier = Modifier.padding(top = if (state.renewal == RenewalNotice.None) UsTheme.spacing.m else 0.dp),
+                    )
+                }
+            }
             state.incomingOffer?.let { offer ->
                 item { OfferCard(offer, state.offerSecondsLeft, state.isAccepting, onAcceptOffer, onRejectOffer) }
             }

@@ -56,6 +56,7 @@ interface MopeduCaptainApi {
 
     // --- Onboarding & Profile ---
 
+    /** Carries `review {state, pending}`: the onboarding verdict the app polls after DigiLocker and the selfie. */
     @GET("v1/rider/partners/me")
     suspend fun profile(): Response<ApiEnvelope<PartnerProfileDto>>
 
@@ -93,16 +94,23 @@ interface MopeduCaptainApi {
         @Body request: SubmitDocumentRequestDto,
     ): Response<ApiEnvelope<PartnerDocumentDto>>
 
-    // --- Subscriptions ---
+    // --- Subscriptions (2026-09-18: checkout through payments-service) ---
 
     @GET("v1/rider/subscriptions/plans")
     suspend fun subscriptionPlans(): Response<ApiEnvelope<List<SubscriptionPlanDto>>>
 
-    @POST("v1/rider/subscriptions/subscribe")
-    suspend fun subscribe(@Body request: SubscribeRequestDto): Response<ApiEnvelope<SubscribeResponseDto>>
+    /**
+     * Starts a plan. The trial answers `active` with no session; a paid plan
+     * answers the sheet's session, and the subscription id is the reference
+     * the payment is confirmed under. `POST /subscriptions/payment-proof`
+     * answers 410 now and has no client here.
+     */
+    @POST("v1/rider/subscriptions/checkout")
+    suspend fun checkout(@Body request: SubscriptionCheckoutRequestDto): Response<ApiEnvelope<SubscriptionCheckoutResponseDto>>
 
-    @POST("v1/rider/subscriptions/payment-proof")
-    suspend fun submitPaymentProof(@Body request: PaymentProofRequestDto): Response<ApiEnvelope<Unit>>
+    /** Polled until the SERVER says paid. Nothing on the device marks a plan paid. */
+    @GET("v1/rider/subscriptions/me/payment")
+    suspend fun subscriptionPayment(): Response<ApiEnvelope<SubscriptionPaymentDto>>
 
     @GET("v1/rider/subscriptions/me")
     suspend fun mySubscription(): Response<ApiEnvelope<PartnerSubscriptionDto>>

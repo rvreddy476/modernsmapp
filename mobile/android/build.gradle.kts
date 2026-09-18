@@ -62,8 +62,11 @@ tasks.register<Delete>("clean") {
  *      `:core:creator-engine`, `:feature:post` or `:core:commerce` — no Banuba,
  *      creator engine, posting or shop code in a partner APK.
  *   d. `:feature:kitchen` / `:feature:rider` never reach `:core:facear`.
- *   e. `:app-kitchen` / `:app-rider` never reach `:core:payments` — partner
- *      apps take no payments, so they carry no PSP SDK (2026-09-14).
+ *   e. `:app-kitchen` / `:app-rider` never reach `:core:payments` — the Feast
+ *      partner apps take no payments, so they carry no PSP SDK (2026-09-14).
+ *      `:app-captain` is the one partner app EXEMPT from this rule
+ *      (2026-09-18): a captain pays their subscription on the device through
+ *      payments-service, so it carries the sheet. The Feast apps stay banned.
  *   f. `:core:payments` never reaches a `:feature:*`, an application or
  *      `:core:commerce` — the payment sheet is product-neutral; products
  *      depend on it, never the reverse (2026-09-14).
@@ -76,8 +79,9 @@ tasks.register<Delete>("clean") {
  *      `:app` (never a partner app, never another feature), and
  *      `:feature:mopedu-captain` only from `:app-captain` (never `:app`, never
  *      another partner app, never another feature). `:app-captain` is a partner
- *      app for every rule above, so it carries no payments, Banuba, creator,
- *      post, commerce, Feast or Dating code.
+ *      app for every rule above EXCEPT (e), so it carries no Banuba, creator,
+ *      post, commerce, Feast or Dating code — but it does carry `:core:payments`,
+ *      because the captain's plan is paid on the device.
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -132,10 +136,11 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
                 add("$app must not depend on $dep (directly or transitively) — partner apps carry no Banuba, creator, post or commerce code.")
             }
         }
-        // (e)
-        listOf(":app-kitchen", ":app-rider", ":app-captain").filter { it in direct }.forEach { app ->
+        // (e) — the Feast partner apps only. :app-captain is exempt (2026-09-18):
+        // the captain pays their plan on the device, so it carries the sheet.
+        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
             if (":core:payments" in reach(app)) {
-                add("$app must not depend on :core:payments (directly or transitively) — partner apps take no payments.")
+                add("$app must not depend on :core:payments (directly or transitively) — the Feast partner apps take no payments.")
             }
         }
         // (f)
@@ -405,27 +410,52 @@ fun applicationBoundarySelfCheck(): List<String> {
             ":feature:dating must not depend on :feature:feast",
         ),
         // Mopedu coverage (2026-09-18): rule (k), :app-captain as a partner app
-        // under (c)/(e)/(g)/(i), :feature:mopedu-captain under (b)/(d), and the
-        // graph that must stay legal — the rider flow in Momentum paying
-        // through :core:payments, the captain in its own app without it.
+        // under (c)/(g)/(i) — but NOT (e): the captain pays their subscription
+        // on the device — :feature:mopedu-captain under (b)/(d), and the graph
+        // that must stay legal: the rider flow in Momentum and the captain in
+        // its own app BOTH paying through :core:payments, the Feast apps still
+        // without it.
         Triple(
             "legal mopedu graph",
             mapOf(
                 ":app" to setOf(":feature:mopedu-rider", ":feature:feast", ":core:payments"),
                 ":feature:mopedu-rider" to setOf(":core:mobility-model", ":core:payments", ":core:network"),
-                ":app-captain" to setOf(":feature:mopedu-captain", ":core:notifications", ":feature:auth"),
-                ":feature:mopedu-captain" to setOf(":core:mobility-model", ":core:network", ":core:notifications"),
+                ":app-captain" to setOf(":feature:mopedu-captain", ":core:notifications", ":feature:auth", ":core:payments"),
+                ":feature:mopedu-captain" to setOf(":core:mobility-model", ":core:network", ":core:notifications", ":core:payments"),
+                ":core:payments" to setOf(":core:common"),
                 ":app-kitchen" to setOf(":feature:kitchen", ":core:food"),
                 ":app-rider" to setOf(":feature:rider", ":core:food"),
             ),
             null,
         ),
         Triple("captain app -> :app", mapOf(":app-captain" to setOf(":app")), ":app-captain must not depend on :app"),
-        Triple("captain app -> payments", mapOf(":app-captain" to setOf(":core:payments")), ":app-captain must not depend on :core:payments"),
+        Triple("captain app -> payments, alone, is legal", mapOf(":app-captain" to setOf(":core:payments")), null),
+        // The (e) exemption is for :app-captain ALONE: the Feast apps stay banned
+        // even when the captain's payments edge sits in the same graph.
+        Triple(
+            "captain app -> payments is legal, kitchen and rider apps stay banned",
+            mapOf(
+                ":app-captain" to setOf(":core:payments"),
+                ":app-kitchen" to setOf(":core:payments"),
+            ),
+            ":app-kitchen must not depend on :core:payments",
+        ),
+        Triple(
+            "captain app -> payments beside a rider app reaching it transitively",
+            mapOf(
+                ":app-captain" to setOf(":feature:mopedu-captain"),
+                ":feature:mopedu-captain" to setOf(":core:payments"),
+                ":app-rider" to setOf(":core:food"),
+                ":core:food" to setOf(":core:payments"),
+            ),
+            ":app-rider must not depend on :core:payments",
+        ),
+        // The captain reaching payments THROUGH the rider feature is still a
+        // violation — of (k), not (e).
         Triple(
             "captain app -> payments, transitively through the rider feature",
             mapOf(":app-captain" to setOf(":feature:mopedu-rider"), ":feature:mopedu-rider" to setOf(":core:payments")),
-            ":app-captain must not depend on :core:payments",
+            ":app-captain must not depend on :feature:mopedu-rider",
         ),
         Triple("captain app -> facear", mapOf(":app-captain" to setOf(":core:facear")), ":app-captain must not depend on :core:facear"),
         Triple(

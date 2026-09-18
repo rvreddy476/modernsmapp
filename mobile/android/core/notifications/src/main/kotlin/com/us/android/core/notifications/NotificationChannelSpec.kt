@@ -205,6 +205,20 @@ enum class NotificationChannelSpec(
         description = "Customer payments received for your rides",
         importance = NotificationManager.IMPORTANCE_DEFAULT,
     ),
+
+    /**
+     * Mopedu Captain (2026-09-18): the captain's own account — their plan
+     * expiring, expired, renewed or its payment failing, and their onboarding
+     * approved or sent to review. DEFAULT: worth seeing the same day, never
+     * an interruption, and separate from offers so a captain who silences
+     * account nags keeps hearing rides.
+     */
+    CAPTAIN_ACCOUNT(
+        id = "captain_account",
+        title = "Account",
+        description = "Your plan, payments and onboarding status",
+        importance = NotificationManager.IMPORTANCE_DEFAULT,
+    ),
     ;
 
     companion object {
@@ -260,6 +274,7 @@ enum class NotificationChannelSpec(
             CAPTAIN_OFFER,
             CAPTAIN_ON_DUTY,
             CAPTAIN_EARNINGS,
+            CAPTAIN_ACCOUNT,
         )
 
         /**
@@ -328,6 +343,11 @@ enum class NotificationChannelSpec(
             -> RIDE_UPDATES
             "captain.offer" -> CAPTAIN_OFFER
             "captain.payment.received" -> CAPTAIN_EARNINGS
+            // The captain's own account (2026-09-18): the plan's life cycle and
+            // the onboarding verdict. Pinned by MopeduChannelTest.
+            "captain.subscription.expiring", "captain.subscription.expired", "captain.subscription.renewed",
+            "captain.subscription.payment_failed", "captain.approved", "captain.under_review",
+            -> CAPTAIN_ACCOUNT
             else -> SOCIAL
         }
     }

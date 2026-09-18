@@ -57,6 +57,12 @@ dependencies {
     // Hilt graph must be able to inject even while FCM is disabled.
     implementation(projects.core.notifications)
     implementation(projects.core.mobilityModel)
+    // The payment sheet (2026-09-18): the captain pays their subscription on
+    // the device through payments-service, so CaptainActivity is the
+    // ActivityPaymentHost exactly as Momentum's MainActivity is. The root
+    // moduleGraphCheck exempts :app-captain alone from rule (e); the Feast
+    // partner apps still carry no PSP SDK.
+    implementation(projects.core.payments)
 
     // Sign-in, registration and email verification: Momentum's own screens.
     implementation(projects.feature.auth)

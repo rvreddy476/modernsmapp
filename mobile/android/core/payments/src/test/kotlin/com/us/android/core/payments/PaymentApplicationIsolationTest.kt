@@ -3,6 +3,8 @@ package com.us.android.core.payments
 import android.app.Activity
 import com.us.android.core.payments.PaymentCoordinatorTest.ScriptedLauncher
 import com.us.android.core.payments.PaymentCoordinatorTest.ScriptedSource
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -179,5 +181,69 @@ class PaymentApplicationIsolationTest {
         }
         assertThrows(IllegalArgumentException::class.java) { InFlightPayment(MapStore(), "Feast") }
         assertThrows(IllegalArgumentException::class.java) { PaymentHistoryQuery(applicationId = " ") }
+    }
+
+    /**
+     * Mopedu Captain pays its subscription (2026-09-18) under the SAME
+     * application id as the rider's fare in Momentum — "mopedu", one payments
+     * application — with a different reference (a subscription id, not a ride
+     * id) from a different process. Same application, so the coordinator's
+     * application check does not separate them; what does is the attempt
+     * identity (reference + attempt id) at every seam, and a handoff slot that
+     * is process-local. Both are proved here, including the worst case of the
+     * two sharing one store and one bus.
+     */
+    @Test
+    fun `the captain's plan payment never crosses the rider's ride payment - same application, different references`() = runTest {
+        val ride = PaymentAttempt(applicationId = "mopedu", referenceId = "ride-1", id = "attempt-1")
+        val plan = PaymentAttempt(applicationId = "mopedu", referenceId = "sub-1", id = "attempt-1")
+        assertNotEquals("the same attempt id on two references is two attempts", ride, plan)
+
+        // Two processes: Momentum's store holds the ride, the captain's holds the plan; neither sees the other's.
+        val momentumStore = MapStore()
+        val captainStore = MapStore()
+        InFlightPayment(momentumStore, "mopedu").attempt = ride
+        InFlightPayment(captainStore, "mopedu").attempt = plan
+        assertEquals(ride, InFlightPayment(momentumStore, "mopedu").attempt)
+        assertEquals(plan, InFlightPayment(captainStore, "mopedu").attempt)
+        assertNotEquals(InFlightPayment(momentumStore, "mopedu").attempt, InFlightPayment(captainStore, "mopedu").attempt)
+
+        // Two processes: a plan ending on the captain's bus is never replayed on Momentum's.
+        val momentumBus = PaymentHandoff()
+        val captainBus = PaymentHandoff()
+        captainBus.publish(PaymentHandoffEvent.SheetClosed(plan))
+        assertEquals(1, captainBus.events("mopedu").replayCache.size)
+        assertTrue("Momentum must not hear the captain's ending", momentumBus.events("mopedu").replayCache.isEmpty())
+
+        // Even on ONE bus (not the case in production), the collector's attempt check keeps them apart.
+        val shared = PaymentHandoff()
+        shared.publish(PaymentHandoffEvent.SheetClosed(plan))
+        val replayed = shared.events("mopedu").replayCache.single()
+        assertNotEquals("a ride collector must not match the plan's ending", ride, replayed.attempt)
+        assertEquals(plan, replayed.attempt)
+        assertEquals("sub-1", replayed.referenceId)
+        shared.consume(plan)
+        assertFalse("consuming the plan's attempt does not consume the ride's", shared.isConsumed(ride))
+
+        // The launcher: abandoning the plan's attempt never frees a ride sheet, nor the reverse.
+        val launcher = RazorpayPaymentLauncher()
+        launcher.claim(ride) { }
+        launcher.abandon(plan)
+        assertEquals(ride, launcher.inFlightAttempt())
+        launcher.abandon(ride)
+        launcher.claim(plan) { }
+        launcher.abandon(ride)
+        assertEquals(plan, launcher.inFlightAttempt())
+
+        // The coordinator: confirming the plan asks the source for the SUBSCRIPTION id, never the ride id.
+        val source = ScriptedSource({ PaymentStatusReading.Paid }, applicationId = "mopedu")
+        val confirmation = PaymentCoordinator(ScriptedLauncher()).confirm("mopedu", plan.referenceId, source).first()
+        assertEquals(PaymentConfirmation.Paid, confirmation)
+        assertEquals(listOf("sub-1"), source.asked)
+        assertFalse("ride-1" in source.asked)
+
+        // And a sheet result for the plan can never match the ride's attempt.
+        assertNotEquals(PaymentSheetResult.Closed(plan).attempt, ride)
+        assertNotEquals(PaymentSheetResult.Closed(ride).attempt, plan)
     }
 }

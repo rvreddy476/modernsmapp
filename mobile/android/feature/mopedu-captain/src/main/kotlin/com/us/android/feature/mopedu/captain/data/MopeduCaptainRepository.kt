@@ -20,9 +20,74 @@ import java.time.format.DateTimeParseException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.roundToLong
 
-/** The captain's profile as the gate reads it: whether the server thinks they are online rides along. */
-data class CaptainProfile(val profile: PartnerProfile, val isOnline: Boolean)
+/**
+ * The onboarding verdict (2026-09-18). DigiLocker-verified documents
+ * auto-approve; only manually uploaded documents wait for a reviewer.
+ */
+enum class ReviewState(val code: String) {
+    APPROVED("approved"),
+    UNDER_REVIEW("under_review"),
+    INCOMPLETE("incomplete"),
+    ;
+
+    companion object {
+        /** An unknown state is INCOMPLETE: the app never assumes approval. */
+        fun fromCode(code: String?): ReviewState = entries.firstOrNull { it.code == code } ?: INCOMPLETE
+    }
+}
+
+/** `review {state, pending}` as the gate reads it. [pending] names what is missing or waiting. */
+data class PartnerReview(val state: ReviewState, val pending: List<String> = emptyList()) {
+    val isApproved: Boolean get() = state == ReviewState.APPROVED
+
+    companion object {
+        val INCOMPLETE = PartnerReview(ReviewState.INCOMPLETE)
+    }
+}
+
+/** The captain's profile as the gate reads it: whether the server thinks they are online, and the review verdict, ride along. */
+data class CaptainProfile(
+    val profile: PartnerProfile,
+    val isOnline: Boolean,
+    val review: PartnerReview = PartnerReview.INCOMPLETE,
+)
+
+/** The checkout answer: instantly active (the trial), or a sheet session for the paid plan. */
+data class SubscriptionCheckout(
+    val subscriptionId: String,
+    val intentId: String?,
+    val amount: MoneyPaise,
+    val currency: String,
+    val clientSession: Map<String, String>,
+    val status: String,
+) {
+    /** The trial: granted on the spot, no sheet. */
+    val isActive: Boolean get() = status == ACTIVE
+
+    private companion object {
+        const val ACTIVE = "active"
+    }
+}
+
+/** What `GET /subscriptions/me/payment` says. Only [PAID] ever activates a paid plan on this device. */
+enum class SubscriptionPaymentStatus(val code: String) {
+    PENDING("pending"),
+    CONFIRMING("confirming"),
+    PAID("paid"),
+    FAILED("failed"),
+
+    /** A status this build does not know. Treated as still confirming, never as paid. */
+    UNKNOWN(""),
+    ;
+
+    companion object {
+        fun fromCode(code: String?): SubscriptionPaymentStatus = entries.firstOrNull { it.code == code && it != UNKNOWN } ?: UNKNOWN
+    }
+}
+
+data class SubscriptionPayment(val status: SubscriptionPaymentStatus, val intentId: String?, val expiresAt: String?)
 
 /** The captain's data seam. Every call answers a typed [CaptainResult]; nothing throws. */
 @Suppress("TooManyFunctions")
@@ -49,7 +114,12 @@ interface MopeduCaptainRepository {
     suspend fun vehicles(): CaptainResult<List<Vehicle>>
     suspend fun addVehicle(vehicleType: VehicleType, registrationNumber: String, brand: String?, model: String?): CaptainResult<Vehicle>
     suspend fun subscriptionPlans(): CaptainResult<List<SubscriptionPlan>>
-    suspend fun subscribe(planId: String, idempotencyKey: String): CaptainResult<SubscribeResponseDto>
+
+    /** Starts [planCode]: the trial instantly, a paid plan through the sheet. */
+    suspend fun checkout(planCode: String, method: PaymentMethod): CaptainResult<SubscriptionCheckout>
+
+    /** The plan payment's server state — the only source of "paid". */
+    suspend fun subscriptionPayment(): CaptainResult<SubscriptionPayment>
     suspend fun mySubscription(): CaptainResult<PartnerSubscription?>
 
     fun newIdempotencyKey(): String = UUID.randomUUID().toString()
@@ -111,7 +181,7 @@ class RealMopeduCaptainRepository @Inject constructor(
     }
 
     override suspend fun profile(): CaptainResult<CaptainProfile> =
-        captainCall(json) { api.profile() }.map { CaptainProfile(it.toDomain(), it.isOnline) }
+        captainCall(json) { api.profile() }.map { CaptainProfile(it.toDomain(), it.isOnline, it.toReview()) }
 
     override suspend fun createProfile(fullName: String, phone: String, email: String?, cityId: String?): CaptainResult<PartnerProfile> =
         captainCall(json) { api.createProfile(CreatePartnerRequestDto(fullName = fullName, phone = phone, email = email, cityId = cityId)) }
@@ -137,14 +207,24 @@ class RealMopeduCaptainRepository @Inject constructor(
         }.map { it.toDomain() }
 
     override suspend fun subscriptionPlans(): CaptainResult<List<SubscriptionPlan>> =
-        captainCall(json, empty = emptyList()) { api.subscriptionPlans() }.map { list ->
-            list.map {
-                SubscriptionPlan(it.id, it.code, it.name, it.vehicleType, it.billingCycle, MoneyPaise(it.pricePaise), it.dailyLeadCap, it.priorityScore, it.description)
-            }
+        captainCall(json, empty = emptyList()) { api.subscriptionPlans() }.map { list -> list.map { it.toDomain() } }
+
+    override suspend fun checkout(planCode: String, method: PaymentMethod): CaptainResult<SubscriptionCheckout> =
+        captainCall(json) { api.checkout(SubscriptionCheckoutRequestDto(planCode = planCode, method = method.code)) }.map {
+            SubscriptionCheckout(
+                subscriptionId = it.subscriptionId,
+                intentId = it.intentId,
+                amount = MoneyPaise(it.amountPaise),
+                currency = it.currency,
+                clientSession = it.clientSession.orEmpty(),
+                status = it.status,
+            )
         }
 
-    override suspend fun subscribe(planId: String, idempotencyKey: String): CaptainResult<SubscribeResponseDto> =
-        captainCall(json) { api.subscribe(SubscribeRequestDto(planId = planId, idempotencyKey = idempotencyKey)) }
+    override suspend fun subscriptionPayment(): CaptainResult<SubscriptionPayment> =
+        captainCall(json) { api.subscriptionPayment() }.map {
+            SubscriptionPayment(SubscriptionPaymentStatus.fromCode(it.status), it.intentId, it.expiresAt)
+        }
 
     override suspend fun mySubscription(): CaptainResult<PartnerSubscription?> =
         when (val result = captainCall(json) { api.mySubscription() }) {
@@ -182,6 +262,18 @@ internal fun PartnerProfileDto.toDomain(): PartnerProfile = PartnerProfile(
     ridesCompleted = ridesCompleted,
 )
 
+/**
+ * The review verdict. When the server sends `review`, it is authoritative.
+ * A server that predates it (no `review` at all) is read through the legacy
+ * fields: an approved KYC is approved, anything else is INCOMPLETE — never
+ * "under review", because nothing on that server puts a captain in a queue.
+ */
+internal fun PartnerProfileDto.toReview(): PartnerReview {
+    val sent = review
+    if (sent != null) return PartnerReview(ReviewState.fromCode(sent.state), sent.pending)
+    return if (kycStatus == KYC_APPROVED) PartnerReview(ReviewState.APPROVED) else PartnerReview.INCOMPLETE
+}
+
 internal fun PartnerDocumentDto.toDomain(): PartnerDocument = PartnerDocument(
     id = id,
     partnerId = partnerId,
@@ -203,6 +295,20 @@ internal fun VehicleDto.toDomain(): Vehicle = Vehicle(
     color = color,
     manufactureYear = manufactureYear ?: year,
     status = status,
+)
+
+/** The price is `price_paise` when a newer server sends it, else `price_amount` rupees (legacy). */
+internal fun SubscriptionPlanDto.toDomain(): SubscriptionPlan = SubscriptionPlan(
+    id = id.ifBlank { code },
+    code = code,
+    name = name,
+    vehicleType = vehicleType,
+    billingCycle = billingCycle.ifBlank { if (billingPeriodDays > 0) "$billingPeriodDays days" else "" },
+    price = MoneyPaise(if (pricePaise > 0) pricePaise else (priceAmount * PAISE_PER_RUPEE).roundToLong()),
+    dailyLeadCap = dailyLeadCap,
+    priorityScore = priorityScore,
+    description = description,
+    billingPeriodDays = billingPeriodDays,
 )
 
 internal fun PartnerSubscriptionDto.toDomain(): PartnerSubscription = PartnerSubscription(
@@ -233,3 +339,5 @@ internal fun String?.toEpochMs(): Long? {
 }
 
 private const val DEFAULT_OFFER_WINDOW_MILLIS = 15_000L
+private const val PAISE_PER_RUPEE = 100.0
+private const val KYC_APPROVED = "approved"

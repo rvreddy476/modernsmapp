@@ -33,6 +33,7 @@ import com.us.android.feature.mopedu.captain.location.CaptainDuty
 import com.us.android.feature.mopedu.captain.location.OfflineReason
 import com.us.android.feature.mopedu.captain.navigation.MopeduCaptainRoute
 import com.us.android.feature.mopedu.captain.navigation.mopeduCaptainScreen
+import com.us.android.feature.mopedu.captain.payment.CaptainPaymentRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -54,7 +55,11 @@ data class CaptainVerifyEmailRoute(val verificationToken: String, val email: Str
  * never shows the previous captain for a frame.
  */
 @Composable
-fun CaptainApp(sessionStateProvider: SessionStateProvider) {
+fun CaptainApp(
+    sessionStateProvider: SessionStateProvider,
+    onOpenPayment: (CaptainPaymentRequest) -> Unit,
+    onAbandonPayment: (CaptainPaymentRequest) -> Unit,
+) {
     val session by sessionStateProvider.sessionState.collectAsStateWithLifecycle()
     when (val current = session) {
         SessionState.Unknown -> CaptainSplash()
@@ -62,7 +67,7 @@ fun CaptainApp(sessionStateProvider: SessionStateProvider) {
             val shell = hiltViewModel<CaptainShellViewModel>(key = "captain-${current.userId}")
             val navController = rememberNavController()
             NavHost(navController = navController, startDestination = MopeduCaptainRoute) {
-                mopeduCaptainScreen(onSignOut = shell::signOut)
+                mopeduCaptainScreen(onSignOut = shell::signOut, onOpenPayment = onOpenPayment, onAbandonPayment = onAbandonPayment)
             }
         }
         else -> CaptainSignIn()

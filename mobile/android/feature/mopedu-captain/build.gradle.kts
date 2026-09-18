@@ -20,9 +20,13 @@ android {
 // requested.
 //
 // Shipped ONLY by :app-captain. The root moduleGraphCheck (rules b, d, k)
-// forbids :app and the Feast apps from reaching this module, forbids it from
-// reaching :core:facear, and — through rule (e) on :app-captain — keeps
-// :core:payments out: the captain takes no online payment on the device.
+// forbids :app and the Feast apps from reaching this module and forbids it
+// from reaching :core:facear. The captain takes no RIDE money on the device
+// (cash is confirmed, UPI/card waited on), but they DO pay their own
+// subscription here (2026-09-18): plans check out through payments-service
+// and the sheet opens through :core:payments, stamped "mopedu", with "paid"
+// read only from `GET /subscriptions/me/payment`. :app-captain is exempt from
+// rule (e) for exactly this.
 dependencies {
     api(projects.core.mobilityModel)
     implementation(projects.core.model)
@@ -33,6 +37,8 @@ dependencies {
     implementation(projects.core.auth)
     // The captain_on_duty channel id for the location service's notification.
     implementation(projects.core.notifications)
+    // The subscription payment: PaymentCoordinator, PaymentHandoff, InFlightPayment.
+    implementation(projects.core.payments)
 
     // Fused location for the on-duty pings. No map library ships.
     implementation(libs.play.services.location)

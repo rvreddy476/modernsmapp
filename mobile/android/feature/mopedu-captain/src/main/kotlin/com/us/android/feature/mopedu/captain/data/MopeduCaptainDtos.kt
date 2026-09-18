@@ -98,6 +98,21 @@ data class PartnerProfileDto(
     @SerialName("rating") val rating: Double = 5.0,
     @SerialName("rides_completed") val ridesCompleted: Int = 0,
     @SerialName("is_online") val isOnline: Boolean = false,
+    /**
+     * The onboarding verdict (2026-09-18): DigiLocker-verified documents
+     * auto-approve; only manually uploaded ones wait for review. Absent on a
+     * server that predates it — see [PartnerProfileDto.toReview].
+     */
+    @SerialName("review") val review: PartnerReviewDto? = null,
+)
+
+/** `review: {state, pending}` on `GET /v1/rider/partners/me`. */
+@Serializable
+data class PartnerReviewDto(
+    /** approved | under_review | incomplete */
+    @SerialName("state") val state: String = "incomplete",
+    /** What is still missing or waiting, e.g. `["selfie"]`. */
+    @SerialName("pending") val pending: List<String> = emptyList(),
 )
 
 @Serializable
@@ -184,41 +199,63 @@ data class CreateVehicleRequestDto(
 
 // --- Subscription DTOs ---
 
+/**
+ * `GET /v1/rider/subscriptions/plans`. The price is `price_amount` in RUPEES
+ * (legacy); `price_paise` is read too when a newer server sends it. The trial
+ * (`trial_7d`) has price 0.
+ */
 @Serializable
 data class SubscriptionPlanDto(
-    @SerialName("id") val id: String,
+    @SerialName("id") val id: String = "",
     @SerialName("code") val code: String = "",
     @SerialName("name") val name: String = "",
     @SerialName("vehicle_type") val vehicleType: String = "",
     @SerialName("billing_cycle") val billingCycle: String = "",
+    /** Rupees, legacy. */
+    @SerialName("price_amount") val priceAmount: Double = 0.0,
     @SerialName("price_paise") val pricePaise: Long = 0,
+    @SerialName("billing_period_days") val billingPeriodDays: Int = 0,
     @SerialName("daily_lead_cap") val dailyLeadCap: Int? = null,
     @SerialName("priority_score") val priorityScore: Int = 10,
     @SerialName("description") val description: String = "",
 )
 
+/**
+ * `POST /v1/rider/subscriptions/checkout` (2026-09-18): the plan is paid on
+ * the device through payments-service. The old payment-proof route answers
+ * 410 and is gone from this app.
+ */
 @Serializable
-data class SubscribeRequestDto(
-    @SerialName("plan_id") val planId: String,
-    /** "upi" — the plan is paid outside the device (payment proof); the captain app carries no PSP. */
-    @SerialName("payment_method") val paymentMethod: String = "upi",
-    @SerialName("idempotency_key") val idempotencyKey: String,
+data class SubscriptionCheckoutRequestDto(
+    @SerialName("plan_code") val planCode: String,
+    /** "upi" | "card". Sent for the trial too; the server ignores it there. */
+    @SerialName("method") val method: String,
 )
 
+/**
+ * The checkout answer. For the trial `status` is `active` and there is no
+ * `client_session`: it is granted instantly, once ever. For a paid plan the
+ * session opens the sheet and `subscription_id` is the payment's reference.
+ */
 @Serializable
-data class SubscribeResponseDto(
+data class SubscriptionCheckoutResponseDto(
     @SerialName("subscription_id") val subscriptionId: String,
-    @SerialName("payment_id") val paymentId: String? = null,
+    @SerialName("intent_id") val intentId: String? = null,
+    @SerialName("amount_paise") val amountPaise: Long = 0,
+    @SerialName("currency") val currency: String = "INR",
+    /** `{provider, order_id, key_id}`, relayed to the sheet as sent. Absent for the trial. */
+    @SerialName("client_session") val clientSession: Map<String, String>? = null,
+    /** active | pending */
     @SerialName("status") val status: String = "",
-    @SerialName("upi_intent") val upiIntent: String? = null,
-    @SerialName("starts_at") val startsAt: String? = null,
-    @SerialName("expires_at") val expiresAt: String? = null,
 )
 
+/** `GET /v1/rider/subscriptions/me/payment`: the ONLY source of "paid" for a plan. */
 @Serializable
-data class PaymentProofRequestDto(
-    @SerialName("payment_id") val paymentId: String,
-    @SerialName("file_url") val fileUrl: String,
+data class SubscriptionPaymentDto(
+    /** pending | confirming | paid | failed */
+    @SerialName("status") val status: String = "",
+    @SerialName("intent_id") val intentId: String? = null,
+    @SerialName("expires_at") val expiresAt: String? = null,
 )
 
 @Serializable

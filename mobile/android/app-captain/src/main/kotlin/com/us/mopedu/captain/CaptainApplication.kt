@@ -11,8 +11,8 @@ import dagger.hilt.android.HiltAndroidApp
  * Mopedu Captain's application and Hilt root.
  *
  * Registers ONLY the captain's notification channels (captain_offer,
- * captain_on_duty) — never Momentum's or Feast's — and reports once whether
- * this build has Firebase at all.
+ * captain_on_duty, captain_earnings, captain_account) — never Momentum's or
+ * Feast's — and reports once whether this build has Firebase at all.
  */
 @HiltAndroidApp
 class CaptainApplication : Application() {
