@@ -192,13 +192,39 @@ func ToPublicProfile(p *store.Profile) *PublicProfile {
 // the asset actually owns (media-service: service.AvatarVariant). A hard-coded
 // `thumb_150` here would 404 for any avatar the image pipeline skipped a
 // rendition for.
-const profileMediaPathFormat = "/v1/media/%s/serve/avatar"
+const profileMediaPathFormat = "/v1/media/%s/serve/%s"
 
-func profileMediaURL(mediaID *uuid.UUID) *string {
+// avatarVariant is media-service's server-resolved alias for "an image the
+// size of a face on a row" (service.AvatarVariant).
+const avatarVariant = "avatar"
+
+// coverVariant is what a cover/banner asks for.
+//
+// # WHY `original` AND NOT A COVER ALIAS
+//
+// media-service has exactly one rendition alias, `avatar`. `cover` exists
+// there as an upload SUBTYPE (service.MaxCoverSize, the profile-authority
+// subtype check) — it is NOT a variant the serve route understands, and
+// naming it here would 404 on every cover. The remaining variant names are
+// the literal image ladder, `thumb_150` / `small_480` / `medium_1080`, each of
+// which the image pipeline SKIPS when the upload is already smaller than the
+// target (media-service internal/processing/image.go). A banner uploaded at
+// 800px wide has no `medium_1080`, so naming one of those reintroduces the
+// same 404 in a different place.
+//
+// `original` is the only variant guaranteed to resolve for every asset: the
+// serve route maps it straight to the asset's storage key, before any
+// rendition lookup. A cover is drawn once at the top of a page rather than
+// fifty times down a feed row, so paying full size for it is the cheap side of
+// this trade. If media-service later grows a cover alias with its own ladder,
+// this constant is the single line that has to change.
+const coverVariant = "original"
+
+func profileMediaURLFor(mediaID *uuid.UUID, variant string) *string {
 	if mediaID == nil || *mediaID == uuid.Nil {
 		return nil
 	}
-	u := fmt.Sprintf(profileMediaPathFormat, *mediaID)
+	u := fmt.Sprintf(profileMediaPathFormat, *mediaID, variant)
 	return &u
 }
 
@@ -222,8 +248,8 @@ func (p PublicProfile) MarshalJSON() ([]byte, error) {
 		CoverURL  *string `json:"cover_url,omitempty"`
 	}{
 		alias:     alias(p),
-		AvatarURL: profileMediaURL(p.AvatarMedia),
-		CoverURL:  profileMediaURL(p.CoverMedia),
+		AvatarURL: profileMediaURLFor(p.AvatarMedia, avatarVariant),
+		CoverURL:  profileMediaURLFor(p.CoverMedia, coverVariant),
 	})
 }
 

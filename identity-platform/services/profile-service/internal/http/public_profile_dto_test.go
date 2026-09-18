@@ -346,7 +346,7 @@ func TestPublicProfilePublishesALoadableAvatarURL(t *testing.T) {
 	if got := out["avatar_url"]; got != "/v1/media/"+avatar.String()+"/serve/avatar" {
 		t.Errorf("avatar_url = %v", got)
 	}
-	if got := out["cover_url"]; got != "/v1/media/"+cover.String()+"/serve/avatar" {
+	if got := out["cover_url"]; got != "/v1/media/"+cover.String()+"/serve/original" {
 		t.Errorf("cover_url = %v", got)
 	}
 	// The ids stay, additively: the shipped Android client reads them.
@@ -360,6 +360,78 @@ func TestPublicProfilePublishesALoadableAvatarURL(t *testing.T) {
 		if strings.Contains(raw2s(raw), forbidden) {
 			t.Errorf("avatar URL looks presigned (%s); it must be a stable path", forbidden)
 		}
+	}
+}
+
+// A cover is not an avatar. Both URLs were built from the same format string,
+// so a cover resolved to `…/serve/avatar` — the avatar rendition ladder, which
+// a banner asset has no business being served through, and which is simply the
+// wrong media route for it. The MTube channel page therefore never got a
+// banner and fell back to a generated gradient.
+//
+// `original` is deliberate rather than a `cover` alias: media-service has no
+// cover alias (`cover` is an upload subtype there, not a serve variant), and
+// the literal ladder names 404 for any banner the image pipeline skipped a
+// rendition for. See coverVariant.
+func TestCoverURLUsesItsOwnVariantNotTheAvatarOne(t *testing.T) {
+	avatar := uuid.MustParse("e13c1582-7950-46e9-8519-f0709e982cd9")
+	cover := uuid.MustParse("cccccccc-3333-4333-8333-cccccccccccc")
+	profile := &PublicProfile{UserID: testTargetID, AvatarMedia: &avatar, CoverMedia: &cover}
+
+	var out map[string]any
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	coverURL, _ := out["cover_url"].(string)
+	avatarURL, _ := out["avatar_url"].(string)
+	if coverURL == "" {
+		t.Fatalf("a profile with a cover media id published no cover_url")
+	}
+	if coverURL == avatarURL {
+		t.Fatalf("cover_url and avatar_url are the same URL (%q); a cover is a "+
+			"different asset served through a different variant", coverURL)
+	}
+	if strings.HasSuffix(coverURL, "/serve/avatar") {
+		t.Errorf("cover_url is built from the avatar path format: %q", coverURL)
+	}
+	// It must still be the media route, pointed at the COVER's id.
+	if want := "/v1/media/" + cover.String() + "/serve/" + coverVariant; coverURL != want {
+		t.Errorf("cover_url = %q, want %q", coverURL, want)
+	}
+	// A variant media-service cannot resolve is worse than the bug: `cover`
+	// is a subtype there, and the ladder names are skippable.
+	for _, bad := range []string{"cover", "thumb_150", "small_480", "medium_1080"} {
+		if coverVariant == bad {
+			t.Errorf("coverVariant = %q, which media-service's serve route does "+
+				"not guarantee it can resolve", bad)
+		}
+	}
+}
+
+// A profile with a cover but no avatar must still publish a cover URL — the
+// two fields are derived independently.
+func TestCoverURLIsIndependentOfTheAvatar(t *testing.T) {
+	cover := uuid.MustParse("cccccccc-3333-4333-8333-cccccccccccc")
+	profile := &PublicProfile{UserID: testTargetID, CoverMedia: &cover}
+
+	var out map[string]any
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := out["avatar_url"]; ok {
+		t.Errorf("avatar_url present for a profile with no avatar: %v", out["avatar_url"])
+	}
+	if want := "/v1/media/" + cover.String() + "/serve/" + coverVariant; out["cover_url"] != want {
+		t.Errorf("cover_url = %v, want %q", out["cover_url"], want)
 	}
 }
 

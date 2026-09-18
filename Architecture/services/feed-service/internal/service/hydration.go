@@ -156,6 +156,25 @@ type Author struct {
 	DisplayName   string     `json:"display_name"`
 	Username      *string    `json:"username,omitempty"`
 	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
+
+	// AvatarURL is profile-service's own rendered path for the same avatar,
+	// passed through rather than rebuilt.
+	//
+	// The id STAYS. The shipped Android client reads `avatar_media_id` and
+	// resolves it itself; removing it would break every installed copy, so
+	// this is strictly additive — two views of one avatar, never a
+	// replacement. `omitempty` means an author with no avatar costs nothing,
+	// and a hydration-cache row written before this field existed decodes
+	// with it absent, which is exactly today's behaviour for the five
+	// minutes that row lives.
+	//
+	// Passing the string through instead of formatting it here is the whole
+	// point: feed-service does not learn media-service's route layout, so a
+	// route change (or the avatar/cover variant distinction) stays one
+	// service's problem. ChannelRef already carries a pass-through
+	// `avatar_url` on the same row, so this is the row's existing shape, not
+	// a new idea.
+	AvatarURL *string `json:"avatar_url,omitempty"`
 }
 
 // HydratedMedia preserves the existing media_id/kind contract and adds the
@@ -395,6 +414,11 @@ type publicProfile struct {
 	Username      *string    `json:"username,omitempty"`
 	DisplayName   string     `json:"display_name"`
 	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
+	// profile-service has published avatar_url alongside the id since it
+	// started rendering media paths; this struct decoded the id and dropped
+	// the URL on the floor, so every feed row made its client resolve an id
+	// that had already been resolved upstream.
+	AvatarURL *string `json:"avatar_url,omitempty"`
 }
 
 type mediaDelivery struct {
@@ -487,6 +511,7 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 			posts[i].Author.DisplayName = profile.DisplayName
 			posts[i].Author.Username = profile.Username
 			posts[i].Author.AvatarMediaID = profile.AvatarMediaID
+			posts[i].Author.AvatarURL = profile.AvatarURL
 		}
 		// Reset before attaching: a row that arrived from the hydration
 		// cache must never keep a stale card, and a nil map lookup (channel

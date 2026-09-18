@@ -114,6 +114,38 @@ type InvitePreview struct {
 	ExpiresAt   *time.Time `json:"expires_at"`
 }
 
+// channelAvatarURL turns an avatar media id into something a browser can put
+// in an `<img src>`, or returns "" so the field is omitted entirely.
+//
+// # WHAT WAS HERE BEFORE
+//
+// `preview.AvatarURL = ch.AvatarMediaID.String()` — a bare UUID in a field
+// named `_url`. A client that trusted the name got `<img src="e13c1582-…">`,
+// which resolves against the page's own origin and renders a broken image. The
+// field promised a URL and delivered an identifier, so the only clients that
+// worked were the ones that knew to distrust it.
+//
+// Absent is the honest alternative when there is no avatar: `omitempty` drops
+// the key, and a preview card draws its placeholder. A UUID is not.
+//
+// The path matches what profile-service publishes for a profile avatar:
+// gateway-relative, so this service needs no origin configured, and unsigned,
+// so it does not go stale in an open tab — media-service re-authorizes and
+// signs on each load. `avatar` is media-service's server-resolved rendition
+// ALIAS (service.AvatarVariant); a literal ladder name like `thumb_150` would
+// 404 for any avatar the image pipeline skipped that rendition for.
+//
+// The preview is reachable unauthenticated, which is fine: this is a path, not
+// a grant. media-service still makes its own decision when the URL is loaded.
+const channelMediaPathFormat = "/v1/media/%s/serve/avatar"
+
+func channelAvatarURL(mediaID *uuid.UUID) string {
+	if mediaID == nil || *mediaID == uuid.Nil {
+		return ""
+	}
+	return fmt.Sprintf(channelMediaPathFormat, *mediaID)
+}
+
 func (s *Service) inviteResponse(inv *store.ChannelInvite) *InviteResponse {
 	resp := &InviteResponse{
 		Code:      inv.Code,
@@ -215,9 +247,7 @@ func (s *Service) PreviewInvite(ctx context.Context, code string, viewerID *uuid
 	} else {
 		preview.MemberCount = ch.SubscriberCount
 	}
-	if ch.AvatarMediaID != nil {
-		preview.AvatarURL = ch.AvatarMediaID.String()
-	}
+	preview.AvatarURL = channelAvatarURL(ch.AvatarMediaID)
 	if viewerID != nil {
 		role := s.store.GetMemberRole(ctx, ch.ID, *viewerID)
 		preview.IsMember = role != "" && role != "banned"
