@@ -26,6 +26,8 @@ import com.us.android.core.payments.PaymentPollPolicy
 import com.us.android.core.payments.PaymentStateStore
 import com.us.android.feature.mopedu.captain.data.CaptainResult
 import com.us.android.feature.mopedu.captain.data.MopeduCaptainRepository
+import com.us.android.feature.mopedu.captain.upload.CaptainDocumentUploader
+import com.us.android.feature.mopedu.captain.upload.UploadOutcome
 import com.us.android.feature.mopedu.captain.data.PartnerReview
 import com.us.android.feature.mopedu.captain.data.ReviewState
 import com.us.android.feature.mopedu.captain.data.toEpochMs
@@ -153,6 +155,15 @@ sealed interface CollectPhase {
     data object Refunding : CollectPhase
 }
 
+/** A DL / RC photo on its way to a media id. A record is submitted only from [Uploaded]. */
+sealed interface DocumentUpload {
+    data class Uploading(val progress: Float) : DocumentUpload
+
+    data class Uploaded(val mediaId: String) : DocumentUpload
+
+    data class Failed(val message: String) : DocumentUpload
+}
+
 sealed interface CaptainUiState {
     data object Loading : CaptainUiState
 
@@ -167,6 +178,8 @@ sealed interface CaptainUiState {
         /** Polling `GET /partners/me` after the documents went in: "Verifying…". */
         val isVerifying: Boolean = false,
         val errorMessage: String? = null,
+        /** The manual DL / RC photos by document type, through :core:media. */
+        val uploads: Map<String, DocumentUpload> = emptyMap(),
     ) : CaptainUiState
 
     /** The plans: the trial one tap, the paid ones through the sheet. */
@@ -251,6 +264,7 @@ class MopeduCaptainViewModel @Inject constructor(
     private val handoff: PaymentHandoff,
     private val payments: PaymentCoordinator,
     private val deepLinks: CaptainDeepLinkBus,
+    private val uploader: CaptainDocumentUploader,
     savedState: SavedStateHandle,
 ) : ViewModel() {
 
@@ -332,9 +346,10 @@ class MopeduCaptainViewModel @Inject constructor(
         viewModelScope.launch { loadOnboardingNow(step) }
     }
 
-    private suspend fun loadOnboardingNow(step: OnboardingStep) {
+    /** [uploads] survives the reload: a DL photo half-way up is not lost to a DigiLocker round trip. */
+    private suspend fun loadOnboardingNow(step: OnboardingStep, uploads: Map<String, DocumentUpload> = currentUploads()) {
         verifyJob?.cancel()
-        _uiState.value = CaptainUiState.Onboarding(step = step, profile = profile, review = review, isLoading = true)
+        _uiState.value = CaptainUiState.Onboarding(step = step, profile = profile, review = review, isLoading = true, uploads = uploads)
         repository.profile().valueOrNull()?.let {
             profile = it.profile
             review = it.review
@@ -348,8 +363,11 @@ class MopeduCaptainViewModel @Inject constructor(
             documents = docs,
             review = review,
             isLoading = false,
+            uploads = currentUploads(),
         )
     }
+
+    private fun currentUploads(): Map<String, DocumentUpload> = (_uiState.value as? CaptainUiState.Onboarding)?.uploads.orEmpty()
 
     private fun onboardingAction(failure: String, action: suspend () -> CaptainResult<*>, next: OnboardingStep) {
         val current = _uiState.value as? CaptainUiState.Onboarding ?: return
@@ -368,12 +386,48 @@ class MopeduCaptainViewModel @Inject constructor(
     fun submitVehicle(type: VehicleType, regNumber: String, brand: String, model: String) =
         onboardingAction("Vehicle not saved", { repository.addVehicle(type, regNumber, brand.ifBlank { null }, model.ifBlank { null }) }, OnboardingStep.DOCUMENTS)
 
-    fun submitDocument(type: String, number: String, fileUrl: String) =
-        onboardingAction("Document not submitted", { repository.submitDocument(type, number.ifBlank { null }, fileUrl) }, OnboardingStep.DOCUMENTS)
+    /**
+     * A DL / RC card's photo, the manual fallback when DigiLocker is skipped:
+     * up through :core:media now; the record only on [submitDocument].
+     */
+    fun onDocumentPhotoPicked(type: String, uri: String) {
+        setUpload(type, DocumentUpload.Uploading(0f))
+        viewModelScope.launch {
+            val outcome = uploader.uploadImage(uri) { progress -> setUpload(type, DocumentUpload.Uploading(progress)) }
+            setUpload(
+                type,
+                when (outcome) {
+                    is UploadOutcome.Ready -> DocumentUpload.Uploaded(outcome.mediaId)
+                    is UploadOutcome.Failed -> DocumentUpload.Failed(outcome.message)
+                },
+            )
+        }
+    }
 
-    /** The selfie is a document of type `selfie`; the review needs it beside the DigiLocker Aadhaar. */
-    fun submitSelfie(fileUrl: String) =
-        onboardingAction("Selfie not submitted", { repository.submitDocument(DOCUMENT_SELFIE, null, fileUrl) }, OnboardingStep.DOCUMENTS)
+    /**
+     * DL / RC by hand: the number and a photo media-service has CONFIRMED.
+     * Without one nothing is posted — the card says so. (The selfie has its
+     * own screen, CaptainSelfieViewModel, on the same rule.)
+     */
+    fun submitDocument(type: String, number: String) {
+        val current = _uiState.value as? CaptainUiState.Onboarding ?: return
+        val mediaId = (current.uploads[type] as? DocumentUpload.Uploaded)?.mediaId
+        if (mediaId == null) {
+            setUpload(type, DocumentUpload.Failed(PHOTO_FIRST))
+            return
+        }
+        _uiState.value = current.copy(isLoading = true, errorMessage = null)
+        viewModelScope.launch {
+            when (val result = repository.submitDocument(type, number.ifBlank { null }, mediaId)) {
+                is CaptainResult.Success -> loadOnboardingNow(OnboardingStep.DOCUMENTS, uploads = current.uploads - type)
+                is CaptainResult.Failure -> _uiState.value = current.copy(isLoading = false, errorMessage = "Document not submitted: ${result.error.userMessage()}")
+            }
+        }
+    }
+
+    private fun setUpload(type: String, upload: DocumentUpload) = _uiState.update { state ->
+        if (state is CaptainUiState.Onboarding) state.copy(uploads = state.uploads + (type to upload)) else state
+    }
 
     /** Starts DigiLocker: the screen opens its page; the documents step then shows the Aadhaar's status. */
     fun startDigiLocker() {
@@ -941,7 +995,7 @@ class MopeduCaptainViewModel @Inject constructor(
     private companion object {
         const val DRAFT = "draft"
         const val KYC_PENDING = "pending"
-        const val DOCUMENT_SELFIE = "selfie"
+        const val PHOTO_FIRST = "Add a clear photo of the document first."
         const val OTP_LENGTH = 4
         const val OFFER_POLL_MILLIS = 3_000L
         const val COUNTDOWN_MILLIS = 1_000L

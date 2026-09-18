@@ -421,7 +421,8 @@ fun applicationBoundarySelfCheck(): List<String> {
                 ":app" to setOf(":feature:mopedu-rider", ":feature:feast", ":core:payments"),
                 ":feature:mopedu-rider" to setOf(":core:mobility-model", ":core:payments", ":core:network"),
                 ":app-captain" to setOf(":feature:mopedu-captain", ":core:notifications", ":feature:auth", ":core:payments"),
-                ":feature:mopedu-captain" to setOf(":core:mobility-model", ":core:network", ":core:notifications", ":core:payments"),
+                ":feature:mopedu-captain" to setOf(":core:mobility-model", ":core:network", ":core:notifications", ":core:payments", ":core:media"),
+                ":core:media" to setOf(":core:network"),
                 ":core:payments" to setOf(":core:common"),
                 ":app-kitchen" to setOf(":feature:kitchen", ":core:food"),
                 ":app-rider" to setOf(":feature:rider", ":core:food"),
@@ -464,6 +465,17 @@ fun applicationBoundarySelfCheck(): List<String> {
             ":app-captain must not depend on :core:creator-engine",
         ),
         Triple("captain app -> post", mapOf(":app-captain" to setOf(":feature:post")), ":app-captain must not depend on :feature:post"),
+        // :core:media joined the captain feature for the selfie upload
+        // (2026-09-18): the edge is legal, and it must not become a road to post.
+        Triple(
+            "captain app -> post, transitively through media",
+            mapOf(
+                ":app-captain" to setOf(":feature:mopedu-captain"),
+                ":feature:mopedu-captain" to setOf(":core:media"),
+                ":core:media" to setOf(":feature:post"),
+            ),
+            ":app-captain must not depend on :feature:post",
+        ),
         Triple(
             "captain app -> commerce, transitively",
             mapOf(":app-captain" to setOf(":feature:mopedu-captain"), ":feature:mopedu-captain" to setOf(":core:commerce")),

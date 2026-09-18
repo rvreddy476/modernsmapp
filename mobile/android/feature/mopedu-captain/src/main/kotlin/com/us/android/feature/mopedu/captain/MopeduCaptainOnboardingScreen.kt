@@ -1,5 +1,8 @@
 package com.us.android.feature.mopedu.captain
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,6 +37,7 @@ import com.us.android.core.mobility.model.PartnerDocument
 import com.us.android.core.mobility.model.PartnerProfile
 import com.us.android.core.mobility.model.Vehicle
 import com.us.android.core.mobility.model.VehicleType
+import com.us.android.feature.mopedu.captain.data.CaptainDocumentTypes
 import com.us.android.feature.mopedu.captain.data.PartnerReview
 import com.us.android.feature.mopedu.captain.data.ReviewState
 import com.us.android.feature.mopedu.captain.ui.CaptainCard
@@ -61,8 +66,9 @@ fun MopeduCaptainOnboardingScreen(
     onBack: (() -> Unit)?,
     onSubmitProfile: (fullName: String, phone: String, email: String?) -> Unit,
     onSubmitVehicle: (type: VehicleType, regNumber: String, brand: String, model: String) -> Unit,
-    onSubmitDocument: (type: String, number: String, fileUrl: String) -> Unit,
-    onSubmitSelfie: (fileUrl: String) -> Unit,
+    onPickDocumentPhoto: (type: String, uri: String) -> Unit,
+    onSubmitDocument: (type: String, number: String) -> Unit,
+    onTakeSelfie: () -> Unit,
     onStartDigiLocker: () -> Unit,
     onSubmitForVerification: () -> Unit,
     onBackToDocuments: () -> Unit,
@@ -87,7 +93,15 @@ fun MopeduCaptainOnboardingScreen(
                     when (state.step) {
                         OnboardingStep.PROFILE -> ProfileStep(state.profile, onSubmitProfile)
                         OnboardingStep.VEHICLE -> VehicleStep(state.vehicle, onSubmitVehicle)
-                        OnboardingStep.DOCUMENTS -> DocumentsStep(state.documents, onSubmitDocument, onSubmitSelfie, onStartDigiLocker, onSubmitForVerification)
+                        OnboardingStep.DOCUMENTS -> DocumentsStep(
+                            documents = state.documents,
+                            uploads = state.uploads,
+                            onPickDocumentPhoto = onPickDocumentPhoto,
+                            onSubmitDocument = onSubmitDocument,
+                            onTakeSelfie = onTakeSelfie,
+                            onStartDigiLocker = onStartDigiLocker,
+                            onSubmitForVerification = onSubmitForVerification,
+                        )
                         OnboardingStep.STATUS -> StatusStep(
                             profile = state.profile,
                             vehicle = state.vehicle,
@@ -197,20 +211,31 @@ private fun VehicleStep(vehicle: Vehicle?, onSubmit: (VehicleType, String, Strin
 
 /**
  * Aadhaar through DigiLocker, the selfie, the licence and the RC, then
- * "Submit for verification". The selfie is a document of type `selfie`; its
- * capture goes through the platform uploader once `:core:media` joins this
- * app, so today the tap submits the record and the server's mock matches it.
+ * "Submit for verification". The selfie is a `profile_photo` document taken on
+ * its own screen (front camera, one retake) and uploaded through :core:media
+ * before the record goes in, so the server's face check has a media id. The
+ * DL and RC cards — the manual fallback when DigiLocker is skipped — take a
+ * photo through the same uploader and submit only once it is confirmed.
  */
 @Composable
+@Suppress("LongParameterList")
 private fun DocumentsStep(
     documents: List<PartnerDocument>,
-    onSubmitDocument: (String, String, String) -> Unit,
-    onSubmitSelfie: (String) -> Unit,
+    uploads: Map<String, DocumentUpload>,
+    onPickDocumentPhoto: (String, String) -> Unit,
+    onSubmitDocument: (String, String) -> Unit,
+    onTakeSelfie: () -> Unit,
     onStartDigiLocker: () -> Unit,
     onSubmitForVerification: () -> Unit,
 ) {
     var dlNumber by remember { mutableStateOf("") }
     var rcNumber by remember { mutableStateOf("") }
+    var picking by remember { mutableStateOf<String?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val type = picking
+        picking = null
+        if (uri != null && type != null) onPickDocumentPhoto(type, uri.toString())
+    }
     val dl = documents.firstOrNull { it.documentType == DOC_DRIVING_LICENCE }
     val rc = documents.firstOrNull { it.documentType == DOC_VEHICLE_RC }
     val aadhaar = documents.firstOrNull { it.documentType == DOC_AADHAAR }
@@ -240,20 +265,40 @@ private fun DocumentsStep(
                 }
                 UsButton(
                     text = if (selfie != null) "Retake selfie" else "Take a selfie",
-                    onClick = { onSubmitSelfie("") },
+                    onClick = onTakeSelfie,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
         item {
-            DocumentCard("Driving licence", dl, dlNumber, { dlNumber = it.uppercase() }, "DL-1420110012345") {
-                onSubmitDocument(DOC_DRIVING_LICENCE, dlNumber.trim(), "")
-            }
+            DocumentCard(
+                title = "Driving licence",
+                document = dl,
+                upload = uploads[DOC_DRIVING_LICENCE],
+                number = dlNumber,
+                onNumberChanged = { dlNumber = it.uppercase() },
+                placeholder = "DL-1420110012345",
+                onPickPhoto = {
+                    picking = DOC_DRIVING_LICENCE
+                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onSubmit = { onSubmitDocument(DOC_DRIVING_LICENCE, dlNumber.trim()) },
+            )
         }
         item {
-            DocumentCard("Vehicle RC", rc, rcNumber, { rcNumber = it.uppercase() }, "TS09AB1234") {
-                onSubmitDocument(DOC_VEHICLE_RC, rcNumber.trim(), "")
-            }
+            DocumentCard(
+                title = "Vehicle RC",
+                document = rc,
+                upload = uploads[DOC_VEHICLE_RC],
+                number = rcNumber,
+                onNumberChanged = { rcNumber = it.uppercase() },
+                placeholder = "TS09AB1234",
+                onPickPhoto = {
+                    picking = DOC_VEHICLE_RC
+                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onSubmit = { onSubmitDocument(DOC_VEHICLE_RC, rcNumber.trim()) },
+            )
         }
         item {
             InfoNote(
@@ -272,13 +317,17 @@ private fun DocumentsStep(
     }
 }
 
+/** A number, a photo through :core:media, and Submit — enabled only once the photo is CONFIRMED. */
 @Composable
+@Suppress("LongParameterList")
 private fun DocumentCard(
     title: String,
     document: PartnerDocument?,
+    upload: DocumentUpload?,
     number: String,
     onNumberChanged: (String) -> Unit,
     placeholder: String,
+    onPickPhoto: () -> Unit,
     onSubmit: () -> Unit,
 ) {
     CaptainCard {
@@ -287,7 +336,29 @@ private fun DocumentCard(
             StatusBadge(document?.status ?: "pending")
         }
         UsTextField(value = number, onValueChange = onNumberChanged, label = "Number", placeholder = placeholder, modifier = Modifier.fillMaxWidth())
-        UsSecondaryButton(text = "Submit", onClick = onSubmit, enabled = number.isNotBlank(), modifier = Modifier.fillMaxWidth())
+        when (upload) {
+            null -> UsSecondaryButton(text = "Add a photo", onClick = onPickPhoto, modifier = Modifier.fillMaxWidth())
+            is DocumentUpload.Uploading -> LinearProgressIndicator(
+                progress = { upload.progress },
+                modifier = Modifier.fillMaxWidth(),
+                color = UsTheme.extended.accentSolid,
+                trackColor = UsTheme.extended.borderSubtle,
+            )
+            is DocumentUpload.Uploaded -> {
+                InfoNote("Photo uploaded.", tone = PillTone.Positive)
+                UsSecondaryButton(text = "Change photo", onClick = onPickPhoto, modifier = Modifier.fillMaxWidth())
+            }
+            is DocumentUpload.Failed -> {
+                InfoNote(upload.message, tone = PillTone.Danger)
+                UsSecondaryButton(text = "Add a photo", onClick = onPickPhoto, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        UsButton(
+            text = "Submit",
+            onClick = onSubmit,
+            enabled = number.isNotBlank() && upload is DocumentUpload.Uploaded,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -375,7 +446,7 @@ private fun ChecklistItem(title: String, subtitle: String, complete: Boolean) {
 
 /** A pending item as the server names it, in the captain's words. */
 internal fun pendingLabel(code: String): String = when (code) {
-    DOC_SELFIE -> "your selfie"
+    DOC_SELFIE, "selfie" -> "your selfie"
     DOC_AADHAAR -> "Aadhaar via DigiLocker"
     DOC_DRIVING_LICENCE -> "your driving licence"
     DOC_VEHICLE_RC -> "the vehicle RC"
@@ -384,7 +455,7 @@ internal fun pendingLabel(code: String): String = when (code) {
     else -> code.replace('_', ' ')
 }
 
-private const val DOC_AADHAAR = "aadhaar"
-private const val DOC_SELFIE = "selfie"
-private const val DOC_DRIVING_LICENCE = "driving_license"
-private const val DOC_VEHICLE_RC = "vehicle_rc"
+private const val DOC_AADHAAR = CaptainDocumentTypes.AADHAAR
+private const val DOC_SELFIE = CaptainDocumentTypes.SELFIE
+private const val DOC_DRIVING_LICENCE = CaptainDocumentTypes.DRIVING_LICENCE
+private const val DOC_VEHICLE_RC = CaptainDocumentTypes.VEHICLE_RC

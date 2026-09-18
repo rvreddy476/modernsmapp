@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +53,7 @@ import com.us.android.core.mobility.model.RideBooking
 import com.us.android.feature.mopedu.captain.home.DutyState
 import com.us.android.feature.mopedu.captain.location.CaptainLocationService
 import com.us.android.feature.mopedu.captain.payment.CaptainPaymentRequest
+import com.us.android.feature.mopedu.captain.selfie.CaptainSelfieScreen
 import com.us.android.feature.mopedu.captain.ui.CaptainCard
 import com.us.android.feature.mopedu.captain.ui.CaptainDivider
 import com.us.android.feature.mopedu.captain.ui.CaptainPill
@@ -112,15 +114,27 @@ fun MopeduCaptainRoute(
         }
     }
 
+    // The selfie has its own screen and ViewModel; back here, the documents are read again.
+    var takingSelfie by rememberSaveable { mutableStateOf(false) }
+
     when (val state = uiState) {
         CaptainUiState.Loading -> CaptainScreen(title = "Mopedu Captain", onBack = null) { padding -> LoadingPane(Modifier.padding(padding)) }
-        is CaptainUiState.Onboarding -> MopeduCaptainOnboardingScreen(
+        is CaptainUiState.Onboarding -> if (takingSelfie) {
+            CaptainSelfieScreen(
+                onDone = {
+                    takingSelfie = false
+                    viewModel.openOnboarding(OnboardingStep.DOCUMENTS)
+                },
+                onBack = { takingSelfie = false },
+            )
+        } else MopeduCaptainOnboardingScreen(
             state = state,
             onBack = null,
             onSubmitProfile = viewModel::submitProfile,
             onSubmitVehicle = viewModel::submitVehicle,
+            onPickDocumentPhoto = viewModel::onDocumentPhotoPicked,
             onSubmitDocument = viewModel::submitDocument,
-            onSubmitSelfie = viewModel::submitSelfie,
+            onTakeSelfie = { takingSelfie = true },
             onStartDigiLocker = viewModel::startDigiLocker,
             onSubmitForVerification = viewModel::submitForVerification,
             onBackToDocuments = { viewModel.openOnboarding(OnboardingStep.DOCUMENTS) },

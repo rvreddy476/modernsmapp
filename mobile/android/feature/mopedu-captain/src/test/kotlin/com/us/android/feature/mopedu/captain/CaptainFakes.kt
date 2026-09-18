@@ -152,6 +152,8 @@ class FakeCaptainRepository : MopeduCaptainRepository {
     val cashConfirmed = mutableListOf<String>()
     val checkouts = mutableListOf<Pair<String, PaymentMethod>>()
     val submittedDocuments = mutableListOf<String>()
+    val submittedMediaIds = mutableListOf<String>()
+    var submitDocumentAnswer: CaptainResult<PartnerDocument>? = null
     var profileReads = 0
     var paymentReads = 0
     var subscriptionPaymentReads = 0
@@ -215,9 +217,10 @@ class FakeCaptainRepository : MopeduCaptainRepository {
         CaptainResult.Success(PartnerProfile("p-1", "individual_driver", fullName, phone, email, "draft", "pending", cityId))
 
     override suspend fun documents(): CaptainResult<List<PartnerDocument>> = CaptainResult.Success(emptyList())
-    override suspend fun submitDocument(documentType: String, documentNumber: String?, fileUrl: String): CaptainResult<PartnerDocument> {
+    override suspend fun submitDocument(documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument> {
         submittedDocuments += documentType
-        return CaptainResult.Success(PartnerDocument("doc-1", "p-1", documentType, documentNumber, fileUrl, "submitted"))
+        submittedMediaIds += mediaId
+        return submitDocumentAnswer ?: CaptainResult.Success(PartnerDocument("doc-1", "p-1", documentType, documentNumber, "media://$mediaId", "pending"))
     }
 
     override suspend fun startAadhaar(): CaptainResult<AadhaarStartResponseDto> =

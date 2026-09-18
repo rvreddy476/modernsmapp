@@ -6,6 +6,8 @@ import com.us.android.feature.mopedu.captain.data.MopeduCaptainRepository
 import com.us.android.feature.mopedu.captain.data.RealMopeduCaptainRepository
 import com.us.android.feature.mopedu.captain.home.LocationDisclosureStore
 import com.us.android.feature.mopedu.captain.home.SharedPrefsLocationDisclosureStore
+import com.us.android.feature.mopedu.captain.upload.CaptainDocumentUploader
+import com.us.android.feature.mopedu.captain.upload.MediaCaptainDocumentUploader
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -24,6 +26,10 @@ abstract class MopeduCaptainModule {
 
     @Binds
     abstract fun bindDisclosureStore(impl: SharedPrefsLocationDisclosureStore): LocationDisclosureStore
+
+    /** The selfie and the DL / RC photos: :core:media's uploader behind a port the tests fake. */
+    @Binds
+    abstract fun bindDocumentUploader(impl: MediaCaptainDocumentUploader): CaptainDocumentUploader
 
     companion object {
         @Provides

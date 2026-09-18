@@ -111,7 +111,7 @@ data class PartnerProfileDto(
 data class PartnerReviewDto(
     /** approved | under_review | incomplete */
     @SerialName("state") val state: String = "incomplete",
-    /** What is still missing or waiting, e.g. `["selfie"]`. */
+    /** What is still missing or waiting, by document type, e.g. `["profile_photo"]` (the selfie). */
     @SerialName("pending") val pending: List<String> = emptyList(),
 )
 
@@ -146,13 +146,28 @@ data class PartnerDocumentDto(
     @SerialName("expires_at") val expiresAt: String? = null,
 )
 
+/**
+ * `POST /v1/rider/partners/me/documents`. The photo goes up through
+ * :core:media first; `media_id` is the confirmed asset, which is what the
+ * server's automatic selfie check compares with the DigiLocker licence photo
+ * (service.SubmitKYCDocumentRequest.MediaID). `file_url` is required non-empty
+ * by the server and carries the same asset as `media://{id}` — the app holds
+ * no other locator for it; media-service serves the bytes by id.
+ */
 @Serializable
 data class SubmitDocumentRequestDto(
     @SerialName("document_type") val documentType: String,
     @SerialName("document_number") val documentNumber: String? = null,
     @SerialName("file_url") val fileUrl: String,
+    @SerialName("media_id") val mediaId: String? = null,
     @SerialName("expires_at") val expiresAt: String? = null,
-)
+) {
+    companion object {
+        /** The request for an uploaded photo: the media id in both fields, as the server reads each. */
+        fun forMedia(documentType: String, documentNumber: String?, mediaId: String): SubmitDocumentRequestDto =
+            SubmitDocumentRequestDto(documentType, documentNumber, fileUrl = "media://$mediaId", mediaId = mediaId)
+    }
+}
 
 // --- DigiLocker Aadhaar DTOs ---
 

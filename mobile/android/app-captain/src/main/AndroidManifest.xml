@@ -10,6 +10,8 @@
         ACCESS_FINE / COARSE_LOCATION       - on-duty pings, asked only after the
                                               prominent in-app disclosure
         FOREGROUND_SERVICE(_LOCATION)       - CaptainLocationService while online
+        CAMERA                              - the onboarding selfie, front
+                                              camera only, on that screen alone
       NO background location: the foreground service keeps while-in-use access
       for as long as the captain is on duty. Removed explicitly below so no
       library can merge it in.
@@ -21,6 +23,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission
         android:name="android.permission.ACCESS_BACKGROUND_LOCATION"
         tools:node="remove" />

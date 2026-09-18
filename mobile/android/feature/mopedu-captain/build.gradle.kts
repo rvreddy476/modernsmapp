@@ -39,9 +39,22 @@ dependencies {
     implementation(projects.core.notifications)
     // The subscription payment: PaymentCoordinator, PaymentHandoff, InFlightPayment.
     implementation(projects.core.payments)
+    // MediaUploader (reserve → presigned PUT → confirm) for the selfie and the
+    // DL / RC photos, so the server's automatic selfie check has a media id
+    // to compare. The same edge :feature:rider has; :core:media reaches none
+    // of what rule (c) bans.
+    implementation(projects.core.media)
 
     // Fused location for the on-duty pings. No map library ships.
     implementation(libs.play.services.location)
+
+    // The selfie camera: CameraX core only, 1.4.1 — the version Banuba Face AR
+    // pins in :app, so nothing here shifts try-on's camera stack. camera-view
+    // (PreviewView) is NOT in the cache; the preview is a TextureView fed by a
+    // Preview.SurfaceProvider (selfie/SelfieCamera.kt), copied from :feature:rider.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

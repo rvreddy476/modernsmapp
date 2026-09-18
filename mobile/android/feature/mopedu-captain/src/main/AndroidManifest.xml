@@ -9,6 +9,8 @@
                                               prominent in-app disclosure
         FOREGROUND_SERVICE(_LOCATION)       - CaptainLocationService while online
         POST_NOTIFICATIONS                  - the on-duty notification and offers
+        CAMERA                              - the onboarding selfie, front
+                                              camera only, on that screen alone
       NO background location: the foreground service keeps while-in-use access
       for as long as the captain is on duty. Removed explicitly so no library
       can merge it in.
@@ -18,11 +20,29 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission
         android:name="android.permission.ACCESS_BACKGROUND_LOCATION"
         tools:node="remove" />
 
+    <!-- The selfie needs a front camera; a phone without one still installs and is told so on that screen. -->
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        android:required="false" />
+
     <application>
+        <!--
+          The selfie is captured into cacheDir/selfies and handed to the upload
+          pipeline as a content:// URI, because :core:media resolves type and
+          size through the ContentResolver, which knows nothing about file://.
+          A FileProvider SUBCLASS so its manifest key can never collide with
+          another library's androidx FileProvider entry.
+        -->
+        <provider
+            android:name="com.us.android.feature.mopedu.captain.selfie.CaptainSelfieFileProvider"
+            android:authorities="${applicationId}.captain.selfie"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <!--
           On duty: a location foreground service, started only after the
           disclosure, the permission grant and the server accepting the captain online.

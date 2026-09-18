@@ -23,6 +23,7 @@ import com.us.android.feature.mopedu.captain.location.OfflineReason
 import com.us.android.feature.mopedu.captain.navigation.CaptainDeepLink
 import com.us.android.feature.mopedu.captain.navigation.CaptainDeepLinkBus
 import com.us.android.feature.mopedu.captain.payment.MOPEDU_PAYMENT_APPLICATION_ID
+import com.us.android.feature.mopedu.captain.upload.UploadOutcome
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -52,9 +53,10 @@ class MopeduCaptainViewModelTest {
     private val clock = FixedClock(now = 10_000L)
     private val handoff = PaymentHandoff()
     private val deepLinks = CaptainDeepLinkBus()
+    private val uploader = FakeCaptainDocumentUploader()
 
     private fun vm(handle: SavedStateHandle = SavedStateHandle()) =
-        MopeduCaptainViewModel(repo, duty, disclosure, clock, handoff, confirmingOnlyCoordinator(), deepLinks, handle)
+        MopeduCaptainViewModel(repo, duty, disclosure, clock, handoff, confirmingOnlyCoordinator(), deepLinks, uploader, handle)
 
     private fun ready() {
         repo.profileAnswer = CaptainResult.Success(approvedProfile())
@@ -679,13 +681,45 @@ class MopeduCaptainViewModelTest {
     }
 
     @Test
-    fun `submitting for verification polls the server - verifying, then the plans once approved`() = runTest(dispatcher) {
-        repo.profileAnswer = CaptainResult.Success(incompleteProfile("selfie"))
+    fun `a DL photo goes up through the uploader and the record carries its confirmed media id`() = runTest(dispatcher) {
+        repo.profileAnswer = CaptainResult.Success(incompleteProfile("driving_license"))
+        uploader.outcome = UploadOutcome.Ready("media-dl-1")
         val model = vm()
         runCurrent()
-        model.submitSelfie("")
+        model.onDocumentPhotoPicked("driving_license", "content://photos/dl.jpg")
         runCurrent()
-        assertThat(repo.submittedDocuments).containsExactly("selfie")
+        assertThat((model.uiState.value as CaptainUiState.Onboarding).uploads["driving_license"]).isEqualTo(DocumentUpload.Uploaded("media-dl-1"))
+        model.submitDocument("driving_license", "DL-1420110012345")
+        runCurrent()
+        assertThat(repo.submittedDocuments).containsExactly("driving_license")
+        assertThat(repo.submittedMediaIds).containsExactly("media-dl-1")
+        assertThat((model.uiState.value as CaptainUiState.Onboarding).uploads).doesNotContainKey("driving_license")
+    }
+
+    @Test
+    fun `a document is never submitted without a photo, or after a failed upload`() = runTest(dispatcher) {
+        repo.profileAnswer = CaptainResult.Success(incompleteProfile("driving_license"))
+        val model = vm()
+        runCurrent()
+        model.submitDocument("driving_license", "DL-1420110012345")
+        runCurrent()
+        assertThat(repo.submittedDocuments).isEmpty()
+        assertThat((model.uiState.value as CaptainUiState.Onboarding).uploads["driving_license"]).isInstanceOf(DocumentUpload.Failed::class.java)
+
+        uploader.outcome = UploadOutcome.Failed("The photo didn't upload.")
+        model.onDocumentPhotoPicked("driving_license", "content://photos/dl.jpg")
+        runCurrent()
+        model.submitDocument("driving_license", "DL-1420110012345")
+        runCurrent()
+        assertThat(repo.submittedDocuments).isEmpty()
+        assertThat(uploader.uploads).containsExactly("content://photos/dl.jpg")
+    }
+
+    @Test
+    fun `submitting for verification polls the server - verifying, then the plans once approved`() = runTest(dispatcher) {
+        repo.profileAnswer = CaptainResult.Success(incompleteProfile("profile_photo"))
+        val model = vm()
+        runCurrent()
 
         // The first two polls still say incomplete (DigiLocker is finishing); the third approves.
         repo.profileAnswers += CaptainResult.Success(incompleteProfile())

@@ -108,7 +108,8 @@ interface MopeduCaptainRepository {
     suspend fun profile(): CaptainResult<CaptainProfile>
     suspend fun createProfile(fullName: String, phone: String, email: String?, cityId: String? = null): CaptainResult<PartnerProfile>
     suspend fun documents(): CaptainResult<List<PartnerDocument>>
-    suspend fun submitDocument(documentType: String, documentNumber: String?, fileUrl: String): CaptainResult<PartnerDocument>
+    /** A document record for a photo ALREADY confirmed by media-service: [mediaId] is never a placeholder. */
+    suspend fun submitDocument(documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument>
     suspend fun startAadhaar(): CaptainResult<AadhaarStartResponseDto>
     suspend fun callbackAadhaar(requestId: String, assertionToken: String): CaptainResult<PartnerProfile>
     suspend fun vehicles(): CaptainResult<List<Vehicle>>
@@ -190,8 +191,8 @@ class RealMopeduCaptainRepository @Inject constructor(
     override suspend fun documents(): CaptainResult<List<PartnerDocument>> =
         captainCall(json, empty = emptyList()) { api.documents() }.map { list -> list.map { it.toDomain() } }
 
-    override suspend fun submitDocument(documentType: String, documentNumber: String?, fileUrl: String): CaptainResult<PartnerDocument> =
-        captainCall(json) { api.submitDocument(SubmitDocumentRequestDto(documentType, documentNumber, fileUrl)) }.map { it.toDomain() }
+    override suspend fun submitDocument(documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument> =
+        captainCall(json) { api.submitDocument(SubmitDocumentRequestDto.forMedia(documentType, documentNumber, mediaId)) }.map { it.toDomain() }
 
     override suspend fun startAadhaar(): CaptainResult<AadhaarStartResponseDto> = captainCall(json) { api.startAadhaar() }
 
