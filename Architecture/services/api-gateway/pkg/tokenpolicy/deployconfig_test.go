@@ -160,6 +160,13 @@ func TestDeploymentQueryTokenPathsAreNarrow(t *testing.T) {
 			for _, path := range []string{
 				"/v1/profiles/me", "/v1/graph/follow", "/v1/posts", "/v1/users/me",
 				"/v1/ws-evil", "/v1/wsx",
+				// Captions are JSON over the Authorization header. A
+				// <track src> cannot set that header, so the standing
+				// temptation is to allowlist this prefix and pass the JWT in
+				// the query string — which leaks it into access logs, history
+				// and Referer headers. The caption BYTES are fetched from the
+				// track's own delivery URL, not from here.
+				"/v1/subtitles", "/v1/subtitles/44444444-4444-4444-8444-444444444444",
 			} {
 				if policy.QueryTokenAllowed(path) {
 					t.Errorf("%s: %s accepts a token in the query string", env.gateway, path)

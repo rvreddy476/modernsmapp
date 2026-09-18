@@ -281,8 +281,11 @@ var StampPolicy = map[string]bool{
 	// /internal/v1/media/* face and dating-photo routes, which have no edge
 	// route. Uploads and delivery do not read it. Not stamping also closes
 	// anonymous edge access to anything on media that trusts the key alone.
-	"/v1/audio": false,
-	"/v1/media": false,
+	// The captions group is registered at the root of media-service beside
+	// /v1/media and reads the key nowhere, so it is classified the same way.
+	"/v1/audio":     false,
+	"/v1/media":     false,
+	"/v1/subtitles": false,
 
 	// notification-service: engine-wide RequireInternalKey (SSE included).
 	"/v1/notifications": true,

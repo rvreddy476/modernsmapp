@@ -403,6 +403,45 @@ func (g *Gate) URLFor(ctx context.Context, viewerID, mediaID, objectKey string) 
 	return g.signer.SignProtected(objectKey, MaxProtectedTTL, time.Now())
 }
 
+// AuthorizeAsset runs the asset-level half of the gate and stops there: may
+// this viewer have this asset at all?
+//
+// It exists because not every gated read hands back bytes. A caption track is
+// a DERIVATIVE of the asset — the transcript of what the asset says — so it
+// has to answer to the same audience decision as the asset's pixels, but it is
+// rendered from database rows and never signed. Before this, the subtitle
+// endpoints simply asked the store, which made the transcript of a private
+// video readable by anyone holding the media UUID.
+//
+// Splitting the decision out rather than copying it keeps ONE implementation
+// of "may this viewer have this asset": URLsForAsset calls this too, so a
+// change to the class rule or to the fail-closed behaviour cannot apply to the
+// byte path and miss the caption path.
+//
+// An asset is protected if ANY of its keys is. Mixed classes would mean a
+// protected original with a public thumbnail, which leaks the content it is a
+// thumbnail of. An asset with NO keys is treated as protected: an unknown
+// class must not be the permissive one.
+func (g *Gate) AuthorizeAsset(ctx context.Context, viewerID, mediaID string, keys map[string]string) error {
+	if g == nil {
+		return fmt.Errorf("%w: delivery gate not configured", ErrDeliveryUnresolved)
+	}
+	protected := len(keys) == 0
+	for _, key := range keys {
+		if ClassForKey(key) == ClassProtected {
+			protected = true
+			break
+		}
+	}
+	if !protected {
+		return nil
+	}
+	if g.authz == nil {
+		return fmt.Errorf("%w: no content authorizer for protected media", ErrDeliveryUnresolved)
+	}
+	return g.authz.Authorize(ctx, viewerID, mediaID)
+}
+
 // URLsForAsset authorizes ONCE for the asset, then signs every key belonging to
 // it (original, variants, HLS master).
 //
@@ -422,23 +461,8 @@ func (g *Gate) URLsForAsset(ctx context.Context, viewerID, mediaID string, keys 
 		return map[string]string{}, nil
 	}
 
-	// An asset is protected if ANY of its keys is. Mixed classes would mean a
-	// protected original with a public thumbnail, which leaks the content it is
-	// a thumbnail of.
-	protected := false
-	for _, key := range keys {
-		if ClassForKey(key) == ClassProtected {
-			protected = true
-			break
-		}
-	}
-	if protected {
-		if g.authz == nil {
-			return nil, fmt.Errorf("%w: no content authorizer for protected media", ErrDeliveryUnresolved)
-		}
-		if err := g.authz.Authorize(ctx, viewerID, mediaID); err != nil {
-			return nil, err
-		}
+	if err := g.AuthorizeAsset(ctx, viewerID, mediaID, keys); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()

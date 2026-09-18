@@ -417,6 +417,34 @@ func routeDefinitions() []routeDef {
 		{"/v1/feed", env("FEED_SERVICE_URL", "http://feed-service:8086")},
 		{"/v1/audio", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/media", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
+		// Captions / subtitles, media-service RegisterClipsRoutes:
+		//   GET   /v1/subtitles/:mediaId          the tracks for an asset
+		//   POST  /v1/subtitles/:mediaId          owner uploads a track
+		//   PATCH /v1/subtitles/:mediaId          owner corrects the transcript
+		//   POST  /v1/subtitles/:mediaId/auto     owner runs speech-to-text
+		//   GET   /v1/subtitles/:mediaId/status   caption job state
+		//   POST  /v1/subtitles/:mediaId/request  owner enqueues a caption job
+		//
+		// That group is registered at the ROOT of media-service, not under
+		// /v1/media, so no prefix in this table ever matched it and captions
+		// were unreachable from every client — the web player's captions UI
+		// had nothing to fetch. Same service, same env var and default as
+		// /v1/media: this is a missing prefix, not a new upstream.
+		//
+		// Two things this route depends on, both deliberate:
+		//   - Not stamped with the internal key (internalroutes.StampPolicy
+		//     "/v1/subtitles": false, matching "/v1/media"). media-service
+		//     reads that key only on /v1/media/internal/* and the internal
+		//     face/dating routes; stamping it here would hand the credential
+		//     to anyone who can reach media. `/v1/subtitles/internal/...` is
+		//     refused at the edge like every other internal path, so the new
+		//     prefix opens no service-only surface.
+		//   - `/v1/subtitles` must NEVER be added to
+		//     GATEWAY_QUERY_TOKEN_PATHS. These are ordinary JSON routes
+		//     authenticated by the Authorization header; a query token would
+		//     leak the caller's JWT into access logs and Referer headers for
+		//     the sake of a <track src> that does not fetch this path anyway.
+		{"/v1/subtitles", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/notifications", env("NOTIFY_SERVICE_URL", "http://notification-service:8088")},
 		// Realtime server-sent events (notification-service
 		// GET /v1/realtime/sse): live order tracking, the kitchen order

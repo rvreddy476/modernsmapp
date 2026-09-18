@@ -23,10 +23,14 @@ type Handler struct {
 	// datingPhotos backs the internal dating photo routes (lane D6,
 	// dating_photo_handler.go). Nil leaves them unregistered.
 	datingPhotos *service.DatingPhotoService
+	// subtitles is the read slice the caption endpoints use. It is always
+	// the service; it is an interface so the authorization wiring of those
+	// endpoints can be pinned without a database (clips_handler.go).
+	subtitles clipsService
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, subtitles: svc}
 }
 
 func (h *Handler) WithInternalKey(key string) *Handler {

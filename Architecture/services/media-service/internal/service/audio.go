@@ -167,9 +167,63 @@ func (s *Service) GetAudioLibraryTrackByID(ctx context.Context, id uuid.UUID) (*
 
 // ─── Multi-clip ─────────────────────────────────────────────────────
 
-// SaveMediaClips replaces the clip sequence for a Flick post.
-func (s *Service) SaveMediaClips(ctx context.Context, postID uuid.UUID, clips []postgres.MediaClip) error {
+// SaveMediaClips replaces the clip sequence for a Flick post, owner-only.
+//
+// It previously took no actor at all: POST /v1/clips/:postId authenticated
+// the caller and then replaced ANY post's clip sequence, because the only
+// identifier in the request was the post id. The route is not routed at
+// the gateway today, which is why nobody noticed — an unreachable loaded
+// gun is still loaded.
+//
+// media-service does not know who owns a post, so it authorizes what it
+// does own: every media asset involved. The actor must own each asset
+// being written (AssertMediaOwner, the same check the caption writes use)
+// AND every asset already in the sequence being replaced — otherwise
+// owning one clip would be enough to delete somebody else's whole edit.
+func (s *Service) SaveMediaClips(ctx context.Context, actorID, postID uuid.UUID, clips []postgres.MediaClip) error {
+	if actorID == uuid.Nil {
+		return ErrNotMediaOwner
+	}
+	existing, err := s.pgStore.GetMediaClips(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if err := assertClipsOwned(ctx, s.AssertMediaOwner, actorID, existing, clips); err != nil {
+		return err
+	}
 	return s.pgStore.SaveMediaClips(ctx, postID, clips)
+}
+
+// assertClipsOwned requires actorID to own every distinct media asset in
+// every given clip set. assertOwner is AssertMediaOwner in production.
+func assertClipsOwned(
+	ctx context.Context,
+	assertOwner func(ctx context.Context, mediaID, actorID uuid.UUID) error,
+	actorID uuid.UUID,
+	clipSets ...[]postgres.MediaClip,
+) error {
+	if actorID == uuid.Nil {
+		return ErrNotMediaOwner
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, set := range clipSets {
+		for _, clip := range set {
+			if seen[clip.MediaAssetID] {
+				continue
+			}
+			seen[clip.MediaAssetID] = true
+			if err := assertOwner(ctx, clip.MediaAssetID, actorID); err != nil {
+				if errors.Is(err, ErrNotMediaOwner) {
+					return err
+				}
+				// A missing or unreadable asset is not an ownership
+				// answer, but it is not a clip this actor may write
+				// either. Fail closed.
+				return fmt.Errorf("%w: clip media %s is not readable", ErrNotMediaOwner, clip.MediaAssetID)
+			}
+		}
+	}
+	return nil
 }
 
 // GetMediaClips returns the ordered clip sequence for a Flick post.
@@ -210,14 +264,31 @@ func (s *Service) AssertMediaOwner(ctx context.Context, mediaID, actorID uuid.UU
 }
 
 // CreateSubtitle upserts a subtitle track for a media asset. Owner-only.
+//
+// content_url is DERIVED here and whatever the caller put in it is
+// discarded. It used to be stored verbatim from the request body, which
+// made the column an arbitrary-URL sink: the value's whole purpose is to
+// become a `<track src>`, so a stored `javascript:…` or a URL on a host
+// this service does not serve would have been fetched, or executed, by
+// every viewer's browser on the uploader's say-so. There is exactly one
+// legitimate value — this service's own rendering of the stored cues —
+// so the service writes it and no allowlist is needed.
 func (s *Service) CreateSubtitle(ctx context.Context, actorID uuid.UUID, sub *postgres.MediaSubtitle) (*postgres.MediaSubtitle, error) {
 	if err := s.AssertMediaOwner(ctx, sub.MediaAssetID, actorID); err != nil {
 		return nil, err
+	}
+	if !validLanguageTag(sub.Language) {
+		return nil, fmt.Errorf("%w: language must be a BCP-47-like tag (e.g. en, hi, en-IN)", ErrInvalidCaption)
+	}
+	if len(sub.Content) > maxCaptionContentBytes {
+		return nil, fmt.Errorf("%w: transcript exceeds %d characters",
+			ErrInvalidCaption, maxCaptionContentBytes)
 	}
 	// Normalize to the schema's enum. 'auto' is not an accepted value —
 	// writing it violated the CHECK constraint and every configured
 	// transcription failed at the database (Codex P0-2 evidence).
 	sub.Source = normalizeSubtitleSource(sub.Source)
+	sub.ContentURL = SubtitleTrackPath(sub.MediaAssetID, sub.Language)
 	return s.pgStore.CreateSubtitle(ctx, sub)
 }
 
@@ -340,9 +411,11 @@ func (s *Service) generateAutoCaptions(ctx context.Context, mediaID uuid.UUID, l
 		MediaAssetID: mediaID,
 		Language:     res.Language,
 		// Schema enum, not 'auto' — see normalizeSubtitleSource.
-		Source:        "auto_generated",
-		Format:        res.Format,
-		ContentURL:    "", // inline transcript only — no .vtt file rendered yet
+		Source: "auto_generated",
+		Format: res.Format,
+		// The service's own track route, rendered from these rows on
+		// demand. Never a caller-supplied URL — see CreateSubtitle.
+		ContentURL:    SubtitleTrackPath(mediaID, res.Language),
 		Content:       res.Text,
 		WordLevelJSON: wordsJSON,
 		Confidence:    &conf,

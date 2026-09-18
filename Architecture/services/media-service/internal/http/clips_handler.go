@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -11,6 +12,31 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+// clipsService is the slice of the service these endpoints use.
+//
+// The authorization these endpoints were missing is the thing most worth
+// testing, so it is reachable through an interface: the handler tests drive
+// every allow/deny path without a PostgreSQL instance, and the decisions
+// themselves are unit-tested in the service (captionReadLocalVerdict,
+// assertClipsOwned) and in the delivery package (Gate.AuthorizeAsset).
+type clipsService interface {
+	AuthorizeMediaRead(ctx context.Context, viewerID, mediaID uuid.UUID) error
+	GetSubtitles(ctx context.Context, mediaAssetID uuid.UUID) ([]postgres.MediaSubtitle, error)
+	GetCaptionStatus(ctx context.Context, mediaID uuid.UUID) (*service.CaptionStatus, error)
+	CaptionTrackVTT(ctx context.Context, mediaID uuid.UUID, language string) (string, error)
+	SaveMediaClips(ctx context.Context, actorID, postID uuid.UUID, clips []postgres.MediaClip) error
+}
+
+// SubtitleTrackRoute is the caption track a <track src> points at.
+//
+// The language sits in its own path segment because gin's router will not
+// mix a parameter with a literal suffix in one segment; the handler accepts
+// the segment with or without the ".vtt" extension, so
+// `/v1/subtitles/<id>/track/en.vtt` is a stable, cacheable, extension-
+// bearing URL — which is what players and CDNs want — and `…/track/en`
+// resolves to the same track.
+const SubtitleTrackRoute = "/:mediaId/track/:language"
 
 // RegisterClipsRoutes registers multi-clip editor and subtitle endpoints.
 func (h *Handler) RegisterClipsRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
@@ -23,6 +49,10 @@ func (h *Handler) RegisterClipsRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 	subtitles := r.Group("/v1/subtitles")
 	{
 		subtitles.GET("/:mediaId", h.GetSubtitles)
+		// The browser caption track. Same group, same gate; no authMW,
+		// for the same reason the media reads carry none — a public
+		// asset's captions are public, and the gate is what decides.
+		subtitles.GET(SubtitleTrackRoute, h.ServeSubtitleTrack)
 		subtitles.POST("/:mediaId", authMW, h.CreateSubtitle)
 		subtitles.POST("/:mediaId/auto", authMW, h.GenerateAutoCaptions)
 		// Module 1 P0-9: explicit caption/transcript status + request.
@@ -76,13 +106,20 @@ func (h *Handler) CorrectCaption(c *gin.Context) {
 
 // GetCaptionStatus — GET /v1/subtitles/:mediaId/status
 // Returns {status: unavailable|pending|completed|failed, ...}.
+//
+// This response carries the transcript in `text`, so it is a content read,
+// not a progress ping: it goes through the same gate as the asset itself.
 func (h *Handler) GetCaptionStatus(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
-	status, err := h.svc.GetCaptionStatus(c.Request.Context(), mediaID)
+	if err := h.clipsSvc().AuthorizeMediaRead(c.Request.Context(), deliveryViewer(c), mediaID); err != nil {
+		writeDeliveryError(c, err)
+		return
+	}
+	status, err := h.clipsSvc().GetCaptionStatus(c.Request.Context(), mediaID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -170,8 +207,14 @@ func (h *Handler) GenerateAutoCaptions(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusCreated, sub, nil)
 }
 
+// SaveClips — POST /v1/clips/:postId
+//
+// Authenticated AND authorized: the actor must own every media asset in
+// the sequence it writes and every asset in the sequence it replaces. It
+// used to discard the caller's identity entirely (`_, err := uuid.Parse`)
+// and hand the post id straight to the store.
 func (h *Handler) SaveClips(c *gin.Context) {
-	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	actorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
@@ -209,7 +252,11 @@ func (h *Handler) SaveClips(c *gin.Context) {
 		}
 	}
 
-	if err := h.svc.SaveMediaClips(c.Request.Context(), postID, clips); err != nil {
+	if err := h.clipsSvc().SaveMediaClips(c.Request.Context(), actorID, postID, clips); err != nil {
+		if errors.Is(err, service.ErrNotMediaOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -236,14 +283,33 @@ func (h *Handler) GetClips(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"clips": clips}, nil)
 }
 
+// subtitleReads returns the caption read slice. Always the service in
+// production; overridden in tests.
+func (h *Handler) clipsSvc() clipsService {
+	if h.subtitles != nil {
+		return h.subtitles
+	}
+	return h.svc
+}
+
+// GetSubtitles — GET /v1/subtitles/:mediaId
+//
+// The rows carry the transcript inline, so this is a content read and is
+// gated exactly like GET /v1/media/:mediaId/url. It was anonymous and
+// ungated: the transcript of any private, unlisted or not-yet-moderated
+// asset was readable by anyone holding its UUID.
 func (h *Handler) GetSubtitles(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
+	if err := h.clipsSvc().AuthorizeMediaRead(c.Request.Context(), deliveryViewer(c), mediaID); err != nil {
+		writeDeliveryError(c, err)
+		return
+	}
 
-	subs, err := h.svc.GetSubtitles(c.Request.Context(), mediaID)
+	subs, err := h.clipsSvc().GetSubtitles(c.Request.Context(), mediaID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -253,6 +319,45 @@ func (h *Handler) GetSubtitles(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, gin.H{"subtitles": subs}, nil)
+}
+
+// ServeSubtitleTrack — GET /v1/subtitles/:mediaId/track/:language(.vtt)
+//
+// Renders the stored cues as a WebVTT file so a `<track src>` has
+// something to point at. Nothing served text/vtt before: the transcript
+// lived inline in JSON and content_url was usually empty, so captions
+// could not be turned on in a browser at all.
+//
+// Same gate as every other caption read. The body is the media's spoken
+// content, so it is cached as private: a shared cache must not hand one
+// viewer's authorized track to the next viewer, who may be a stranger.
+func (h *Handler) ServeSubtitleTrack(c *gin.Context) {
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	language := strings.TrimSuffix(c.Param("language"), ".vtt")
+
+	if err := h.clipsSvc().AuthorizeMediaRead(c.Request.Context(), deliveryViewer(c), mediaID); err != nil {
+		writeDeliveryError(c, err)
+		return
+	}
+
+	body, err := h.clipsSvc().CaptionTrackVTT(c.Request.Context(), mediaID, language)
+	if err != nil {
+		if errors.Is(err, service.ErrCaptionTrackNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
+				"NOT_FOUND", "No caption track for that language", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+
+	c.Header("Cache-Control", "private, max-age=300")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(body))
 }
 
 func (h *Handler) CreateSubtitle(c *gin.Context) {
@@ -271,14 +376,30 @@ func (h *Handler) CreateSubtitle(c *gin.Context) {
 	}
 
 	var req struct {
-		Language   string   `json:"language" binding:"required"`
-		Source     string   `json:"source" binding:"required"`
-		Format     string   `json:"format"`
-		ContentURL string   `json:"content_url" binding:"required"`
+		Language string `json:"language" binding:"required"`
+		Source   string `json:"source" binding:"required"`
+		Format   string `json:"format"`
+		// Content is the transcript itself. media_subtitles is the one
+		// canonical caption store and the track is rendered from these
+		// rows, so the text is what a caller supplies.
+		Content string `json:"content"`
+		// ContentURL is accepted only so it can be REFUSED with a clear
+		// message. It used to be required and was stored verbatim, which
+		// made this endpoint an arbitrary-URL sink for a value whose only
+		// use is a `<track src>`: `javascript:…` or a URL on a host this
+		// service does not serve would have been handed to every viewer's
+		// browser. The one legitimate value is derived by the service.
+		ContentURL string   `json:"content_url"`
 		Confidence *float32 `json:"confidence"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
+	if strings.TrimSpace(req.ContentURL) != "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"CONTENT_URL_NOT_ACCEPTED",
+			"content_url is derived by media-service and must not be sent; send the transcript in content", nil)
 		return
 	}
 	if req.Format == "" {
@@ -290,15 +411,18 @@ func (h *Handler) CreateSubtitle(c *gin.Context) {
 		Language:     req.Language,
 		Source:       req.Source,
 		Format:       req.Format,
-		ContentURL:   req.ContentURL,
+		Content:      req.Content,
 		Confidence:   req.Confidence,
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrNotMediaOwner) {
+		switch {
+		case errors.Is(err, service.ErrNotMediaOwner):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
-			return
+		case errors.Is(err, service.ErrInvalidCaption):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CAPTION", err.Error(), nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
