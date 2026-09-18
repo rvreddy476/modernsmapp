@@ -51,9 +51,21 @@ CREATE TABLE IF NOT EXISTS usr.module_preferences (
     -- "is contained by": vacuously true for the empty array, which is a
     -- legitimate privacy-first choice (feed only).
     CONSTRAINT module_preferences_modules_known CHECK (
-        modules <@ ARRAY['reels','commerce','chat','dating','food','qa','posttube']::TEXT[]
+        modules <@ ARRAY['reels','commerce','chat','dating','food','qa','posttube','mobility']::TEXT[]
     ),
     CONSTRAINT module_preferences_home_module_known CHECK (
-        home_module IN ('feed','reels','commerce','chat','dating','food','qa','posttube')
+        home_module IN ('feed','reels','commerce','chat','dating','food','qa','posttube','mobility')
     )
+);
+
+-- Re-runnable: the two CHECKs above only apply to a freshly created table.
+-- When a module is added (mobility, 2026-09-18), the constraints on an
+-- existing table are replaced here so the same list applies everywhere.
+ALTER TABLE usr.module_preferences DROP CONSTRAINT IF EXISTS module_preferences_modules_known;
+ALTER TABLE usr.module_preferences ADD CONSTRAINT module_preferences_modules_known CHECK (
+    modules <@ ARRAY['reels','commerce','chat','dating','food','qa','posttube','mobility']::TEXT[]
+);
+ALTER TABLE usr.module_preferences DROP CONSTRAINT IF EXISTS module_preferences_home_module_known;
+ALTER TABLE usr.module_preferences ADD CONSTRAINT module_preferences_home_module_known CHECK (
+    home_module IN ('feed','reels','commerce','chat','dating','food','qa','posttube','mobility')
 );

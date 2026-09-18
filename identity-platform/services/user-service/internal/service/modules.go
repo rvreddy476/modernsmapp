@@ -38,7 +38,7 @@ const HomeModuleFeed = "feed"
 // knownModules is the closed set of optional modules, in the order the
 // defaults are served. Must match the CHECK constraint on
 // usr.module_preferences in database/setup.sql.
-var knownModules = []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube"}
+var knownModules = []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube", "mobility"}
 
 var knownModuleSet = func() map[string]bool {
 	m := make(map[string]bool, len(knownModules))

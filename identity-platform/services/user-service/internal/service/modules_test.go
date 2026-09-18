@@ -66,9 +66,9 @@ func TestNormalizeModulePreferences(t *testing.T) {
 		},
 		{
 			name:        "all seven modules are accepted",
-			modules:     []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube"},
+			modules:     []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube", "mobility"},
 			home:        "posttube",
-			wantModules: []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube"},
+			wantModules: []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube", "mobility"},
 			wantHome:    "posttube",
 		},
 	}
@@ -97,7 +97,7 @@ func TestNormalizeModulePreferences(t *testing.T) {
 
 func TestDefaultModulePreferences(t *testing.T) {
 	p := defaultModulePreferences(uuid.New())
-	if !reflect.DeepEqual(p.Modules, []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube"}) {
+	if !reflect.DeepEqual(p.Modules, []string{"reels", "commerce", "chat", "dating", "food", "qa", "posttube", "mobility"}) {
 		t.Errorf("default modules = %v", p.Modules)
 	}
 	if p.HomeModule != "feed" {
