@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/atpost/rider-service/internal/digilocker"
 	riderevents "github.com/atpost/rider-service/internal/events"
 	riderhttp "github.com/atpost/rider-service/internal/http"
+	"github.com/atpost/rider-service/internal/payments"
 	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/atpost/rider-service/internal/riderpii"
 	"github.com/atpost/rider-service/internal/routing"
@@ -176,6 +178,22 @@ func main() {
 	riderSvc.SetRedis(rdb)
 	riderSvc.SetOTPCrypto(otpCrypto)
 
+	// Online ride payments (upi / card) go through payments-service
+	// (application mopedu, reference type mopedu_ride) with rider's service
+	// token. Without RIDER_SERVICE_TOKEN_KEY / KID the intent routes answer
+	// 503 PAYMENTS_UNAVAILABLE; boot is NOT refused. Cash never touches it.
+	// Outside local/dev an intent without a checkout session is refused.
+	paymentsClient, err := payments.ClientFromEnv(os.Getenv)
+	switch {
+	case errors.Is(err, payments.ErrNotConfigured):
+		slog.Warn("rider-service: RIDER_SERVICE_TOKEN_KEY / RIDER_SERVICE_TOKEN_KID unset — online ride payments answer 503 PAYMENTS_UNAVAILABLE")
+	case err != nil:
+		slog.Error("rider-service: payments client is misconfigured — online ride payments answer 503 PAYMENTS_UNAVAILABLE", "error", err)
+	default:
+		riderSvc.SetPayments(paymentsClient, os.Getenv("ENV"))
+		slog.Info("rider-service: payments client initialized", "application", payments.ApplicationID)
+	}
+
 	// Routing: Cache(Fallback(GoogleRoutes, Haversine)). No key: haversine
 	// only. Google answers are cached in Redis for five minutes.
 	var googleRoutes routing.Router
@@ -255,6 +273,16 @@ func main() {
 	)
 	go dispatchConsumer.Start(dispatchCtx)
 	slog.Info("rider dispatch consumer started", "topic", kafkaTopic)
+
+	// Payments lane: a ride payment is marked paid, failed or refunded, and
+	// an outstanding fee settled, only by payments-service events
+	// (payment.succeeded / failed / refunded for application mopedu,
+	// reference type mopedu_ride), applied once through rider_payment_inbox
+	// in the payment row's transaction.
+	paymentConsumer := payments.NewConsumer(riderStore, kafkaBrokers, kafkaConsumerMetrics, riderSvc.OnRidePaymentApplied)
+	defer paymentConsumer.Close()
+	go paymentConsumer.Start(dispatchCtx)
+	slog.Info("rider payment consumer started", "group", payments.ConsumerGroup, "topic", payments.Topic)
 
 	// C3: stale-GPS auto-offline worker. Pings every 30s and force-
 	// offlines partners whose last GPS update is older than 90s.

@@ -29,7 +29,7 @@ func (s *Store) CreateRidePayment(ctx context.Context, in CreateRidePaymentInput
 	const q = `
         INSERT INTO rider_ride_payments (ride_id, partner_id, amount_paise, payment_method, status)
         VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, created_at, settled_at`
+        RETURNING id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, intent_id, provider_reference, refunded_paise, failure_reason, created_at, updated_at, settled_at`
 	row := s.db.QueryRow(ctx, q, in.RideID, in.PartnerID, in.AmountPaise, in.PaymentMethod, in.Status)
 	return scanRidePayment(row)
 }
@@ -45,7 +45,7 @@ func (s *Store) MarkRidePaymentSucceeded(ctx context.Context, paymentID uuid.UUI
             upi_txn_ref   = COALESCE($3, upi_txn_ref),
             settled_at    = NOW()
         WHERE id = $1
-        RETURNING id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, created_at, settled_at`
+        RETURNING id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, intent_id, provider_reference, refunded_paise, failure_reason, created_at, updated_at, settled_at`
 	row := s.db.QueryRow(ctx, q, paymentID, walletTxnID, upiRef)
 	p, err := scanRidePayment(row)
 	if err != nil {
@@ -73,7 +73,7 @@ func (s *Store) MarkRidePaymentFailed(ctx context.Context, paymentID uuid.UUID) 
 // GetRidePayment returns one payment row by id.
 func (s *Store) GetRidePayment(ctx context.Context, id uuid.UUID) (*RidePayment, error) {
 	const q = `
-        SELECT id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, created_at, settled_at
+        SELECT id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, intent_id, provider_reference, refunded_paise, failure_reason, created_at, updated_at, settled_at
         FROM rider_ride_payments
         WHERE id = $1`
 	row := s.db.QueryRow(ctx, q, id)
@@ -92,7 +92,7 @@ func (s *Store) GetRidePayment(ctx context.Context, id uuid.UUID) (*RidePayment,
 // take the most recent.
 func (s *Store) GetRidePaymentByRide(ctx context.Context, rideID uuid.UUID) (*RidePayment, error) {
 	const q = `
-        SELECT id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, created_at, settled_at
+        SELECT id, ride_id, partner_id, amount_paise, payment_method, status, wallet_txn_id, upi_txn_ref, intent_id, provider_reference, refunded_paise, failure_reason, created_at, updated_at, settled_at
         FROM rider_ride_payments
         WHERE ride_id = $1
         ORDER BY created_at DESC
@@ -184,7 +184,7 @@ func (s *Store) UpdatePartnerRating(ctx context.Context, partnerID uuid.UUID) er
 
 func scanRidePayment(row pgx.Row) (*RidePayment, error) {
 	var p RidePayment
-	if err := row.Scan(&p.ID, &p.RideID, &p.PartnerID, &p.AmountPaise, &p.PaymentMethod, &p.Status, &p.WalletTxnID, &p.UPITxnRef, &p.CreatedAt, &p.SettledAt); err != nil {
+	if err := row.Scan(&p.ID, &p.RideID, &p.PartnerID, &p.AmountPaise, &p.PaymentMethod, &p.Status, &p.WalletTxnID, &p.UPITxnRef, &p.IntentID, &p.ProviderReference, &p.RefundedPaise, &p.FailureReason, &p.CreatedAt, &p.UpdatedAt, &p.SettledAt); err != nil {
 		return nil, err
 	}
 	return &p, nil

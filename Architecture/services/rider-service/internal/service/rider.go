@@ -46,6 +46,11 @@ type Service struct {
 	tax pricing.TaxComputer
 	// otpCrypto seals ride OTPs at rest (riderpii). nil fails closed.
 	otpCrypto *riderpii.Crypto
+	// payments is the payments-service client for online ride payments
+	// (payments.go); nil answers 503 PAYMENTS_UNAVAILABLE. paymentsLocalEnv
+	// allows an intent without a checkout session (the stub gateway).
+	payments         PaymentsClient
+	paymentsLocalEnv bool
 	// now is the clock fare windows are evaluated against (tests pin it).
 	now func() time.Time
 }
@@ -97,7 +102,10 @@ type EventPublisher interface {
 	PublishRideRequested(ctx context.Context, rideID, customerID uuid.UUID, vehicleType, cityID string) error
 
 	// S2: ride lifecycle + offer + partner online/offline.
-	PublishRideOffered(ctx context.Context, rideID, offerID, partnerID uuid.UUID, score float64, expiresAt time.Time) error
+	PublishRideOffered(ctx context.Context, rideID, offerID, partnerID, partnerUserID uuid.UUID, score float64, expiresAt time.Time) error
+	// Payments lane: after the signed capture marked a ride payment or an
+	// outstanding fee paid.
+	PublishRidePaymentPaid(ctx context.Context, payload events.RidePaymentPaidPayload) error
 	PublishRideOfferRejected(ctx context.Context, rideID, offerID, partnerID uuid.UUID, reason string) error
 	PublishRideOfferExpired(ctx context.Context, rideID, offerID, partnerID uuid.UUID) error
 	PublishRideAssigned(ctx context.Context, rideID, customerID, partnerID, vehicleID, offerID uuid.UUID) error
@@ -157,7 +165,10 @@ func (noopPublisher) PublishSubscriptionActivated(_ context.Context, _, _, _ uui
 func (noopPublisher) PublishRideRequested(_ context.Context, _, _ uuid.UUID, _, _ string) error {
 	return nil
 }
-func (noopPublisher) PublishRideOffered(_ context.Context, _, _, _ uuid.UUID, _ float64, _ time.Time) error {
+func (noopPublisher) PublishRidePaymentPaid(_ context.Context, _ events.RidePaymentPaidPayload) error {
+	return nil
+}
+func (noopPublisher) PublishRideOffered(_ context.Context, _, _, _, _ uuid.UUID, _ float64, _ time.Time) error {
 	return nil
 }
 func (noopPublisher) PublishRideOfferRejected(_ context.Context, _, _, _ uuid.UUID, _ string) error {

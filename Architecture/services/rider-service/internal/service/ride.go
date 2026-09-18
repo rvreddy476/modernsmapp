@@ -225,7 +225,8 @@ func (s *Service) MatchRide(ctx context.Context, rideID uuid.UUID, opts MatchRid
 			continue
 		}
 		created++
-		if perr := s.producer.PublishRideOffered(ctx, rideID, offer.ID, pid, sc.Score, batch.ExpiresAt); perr != nil {
+		partnerUserID, _ := uuid.Parse(sc.Candidate.UserID) // uuid.Nil when the candidate carries none
+		if perr := s.producer.PublishRideOffered(ctx, rideID, offer.ID, pid, partnerUserID, sc.Score, batch.ExpiresAt); perr != nil {
 			slog.Warn("rider: publish ride.offered failed", "ride_id", rideID, "offer_id", offer.ID, "error", perr)
 		}
 		s.emit(ctx, "rider.partner."+pid.String()+".offers", "rider.ride.offered", offer)
@@ -876,6 +877,7 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 	if perr := s.producer.PublishRideCompleted(ctx, events.RideCompletedPayload{
 		RideID:           rideID.String(),
 		PartnerID:        partner.ID.String(),
+		CustomerUserID:   ride.CustomerUserID.String(),
 		FinalDistanceKM:  req.FinalDistanceKM,
 		FinalDurationMin: req.FinalDurationMin,
 		FinalFarePaise:   finalPaise,
@@ -967,6 +969,7 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 	}
 	if perr := s.producer.PublishRideCancelled(ctx, events.RideCancelledPayload{
 		RideID:               rideID.String(),
+		CustomerUserID:       ride.CustomerUserID.String(),
 		CancelledByKind:      by,
 		CancelledByUserID:    cancelledBy,
 		Reason:               req.Reason,

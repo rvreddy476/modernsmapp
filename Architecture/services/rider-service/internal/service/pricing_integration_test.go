@@ -19,11 +19,23 @@ import (
 
 var (
 	ist = time.FixedZone("IST", 19800)
-	// Friday 18 Sep 2026.
-	fridayNoonIST  = time.Date(2026, 9, 18, 12, 0, 0, 0, ist)
-	fridayPeakIST  = time.Date(2026, 9, 18, 9, 0, 0, 0, ist)
-	fridayNightIST = time.Date(2026, 9, 18, 23, 30, 0, 0, ist)
+	// The next Friday after today (IST). A fixed date does not work: a quote
+	// expires against the wall clock (CreateRide), not the pinned clock, so
+	// once the fixed Friday is in the past every booking is "quote expired".
+	// The seeded windows are day-of-week rules, so any Friday prices alike.
+	fridayIST      = nextFridayIST()
+	fridayNoonIST  = time.Date(fridayIST.Year(), fridayIST.Month(), fridayIST.Day(), 12, 0, 0, 0, ist)
+	fridayPeakIST  = time.Date(fridayIST.Year(), fridayIST.Month(), fridayIST.Day(), 9, 0, 0, 0, ist)
+	fridayNightIST = time.Date(fridayIST.Year(), fridayIST.Month(), fridayIST.Day(), 23, 30, 0, 0, ist)
 )
+
+func nextFridayIST() time.Time {
+	d := time.Now().In(ist).AddDate(0, 0, 1)
+	for d.Weekday() != time.Friday {
+		d = d.AddDate(0, 0, 1)
+	}
+	return d
+}
 
 var quoteRoute = FareEstimateRequest{
 	PickupLabel: "P", PickupLat: 12.9716, PickupLng: 77.5946,

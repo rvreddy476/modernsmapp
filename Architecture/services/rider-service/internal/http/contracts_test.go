@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/rider-service/internal/payments"
 	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/rider-service/internal/store"
@@ -100,6 +101,8 @@ func TestContract_ReceiptWithWaitingCharge(t *testing.T) {
 		DistanceMeters: 6481, DurationSeconds: 1060, TotalPaise: 12451, SurgeBPS: 2500, SurgeReason: pricing.SurgePeakHours,
 		DiscountPaise: 2000, CouponCode: "MOPEDU20", WaitingChargePaise: 450, OutstandingPaise: 0, CancellationFeePaise: 0,
 		TaxPaise: 655, TaxNote: pricing.TaxNote, PaymentMethod: "cash", PaymentStatus: "pending_cash_confirmation",
+		Payment: &store.ReceiptPayment{Method: "cash", Status: "cash_pending", AmountPaise: 12451, RefundedPaise: 0},
+		Refunds: []store.ReceiptRefund{},
 		ReportedDistanceKM: &reported, ReportedDurationMin: &reportedMin, TrackedDistanceM: &tracked,
 		CompletedAt: &completed, CreatedAt: time.Date(2026, 9, 18, 3, 31, 0, 0, time.UTC),
 	}
@@ -111,6 +114,82 @@ func TestContract_ReceiptWithWaitingCharge(t *testing.T) {
 	w := httptest.NewRecorder()
 	api.JSONWithContext(fixtureCtx(), w, http.StatusOK, rc)
 	assertFixture(t, "receipt_waiting_charge.json", w.Body.Bytes())
+}
+
+// --- Payments lane ------------------------------------------------------------
+
+var (
+	fixtureIntentID = uuid.MustParse("6f0e2c9a-1b3d-4e5f-8a7b-9c0d1e2f3a4b")
+	fixtureRideID   = uuid.MustParse("9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d")
+	fixturePaidAt   = time.Date(2026, 9, 18, 4, 5, 30, 0, time.UTC)
+)
+
+// The intent response: what the app opens Razorpay Checkout with. The
+// client_session carries the PUBLISHABLE key id only.
+func TestContract_PaymentIntent(t *testing.T) {
+	out := service.RidePaymentIntent{
+		IntentID: fixtureIntentID, AmountPaise: 12451, Currency: "INR",
+		ClientSession: &payments.ClientSession{Provider: "razorpay", OrderID: "order_R1x2y3z4", KeyID: "rzp_test_publishable", MerchantDisplayName: "Mopedu"},
+		Status:        "pending",
+	}
+	w := httptest.NewRecorder()
+	api.JSONWithContext(fixtureCtx(), w, http.StatusOK, out)
+	assertFixture(t, "payment_intent.json", w.Body.Bytes())
+}
+
+// GET /rides/:id/payment after the signed capture was applied.
+func TestContract_PaymentStatusPaid(t *testing.T) {
+	intent := fixtureIntentID
+	out := service.RidePaymentStatus{Method: "upi", Status: "paid", AmountPaise: 12451, RefundedPaise: 0, IntentID: &intent, UpdatedAt: fixturePaidAt}
+	w := httptest.NewRecorder()
+	api.JSONWithContext(fixtureCtx(), w, http.StatusOK, out)
+	assertFixture(t, "payment_status_paid.json", w.Body.Bytes())
+}
+
+// The receipt of an online payment after one partial refund.
+func TestContract_ReceiptWithPartialRefund(t *testing.T) {
+	partner := uuid.MustParse("3c9f1a2b-4d5e-4f60-8a71-92b3c4d5e6f7")
+	completed := time.Date(2026, 9, 18, 4, 2, 11, 0, time.UTC)
+	rc := store.RideReceipt{
+		RideID: fixtureRideID, CustomerUserID: uuid.MustParse("2d598287-eee7-40b4-a7f5-b46b9412e4e7"),
+		PartnerID: &partner, VehicleType: "auto", Status: "completed", PickupAddress: "MG Road, Bengaluru", DropAddress: "Koramangala 5th Block",
+		DistanceMeters: 6481, DurationSeconds: 1060, TotalPaise: 12451, SurgeBPS: 2500, SurgeReason: pricing.SurgePeakHours,
+		DiscountPaise: 2000, CouponCode: "MOPEDU20", WaitingChargePaise: 450, OutstandingPaise: 0, CancellationFeePaise: 0,
+		TaxPaise: 655, TaxNote: pricing.TaxNote, PaymentMethod: "upi", PaymentStatus: "partially_refunded",
+		Payment: &store.ReceiptPayment{Method: "upi", Status: "partially_refunded", AmountPaise: 12451, RefundedPaise: 5000},
+		Refunds: []store.ReceiptRefund{{
+			ID: uuid.MustParse("8d1c2b3a-4f5e-4a6b-9c8d-7e6f5a4b3c2d"), AmountPaise: 5000, Status: "refunded",
+			Reason: "captain ended the ride early", CreatedAt: time.Date(2026, 9, 18, 6, 10, 0, 0, time.UTC),
+		}},
+		CompletedAt: &completed, CreatedAt: time.Date(2026, 9, 18, 3, 31, 0, 0, time.UTC),
+	}
+	final := fixtureQuoteBreakdown
+	final.WaitingMinutes, final.WaitingChargePaise = 3, 450
+	final.TaxLines = append(final.TaxLines, pricing.TaxLineResult{Ref: "waiting_charge", Category: "PASSENGER_TRANSPORT_VIA_ECO", SAC: "996412", RateBPS: 500, TaxablePaise: 450, TaxPaise: 23, GrossPaise: 473})
+	final.TaxPaise, final.TotalPaise = 655, 12451
+	raw, err := json.Marshal(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc.FareBreakdown = raw
+	w := httptest.NewRecorder()
+	api.JSONWithContext(fixtureCtx(), w, http.StatusOK, rc)
+	assertFixture(t, "receipt_partial_refund.json", w.Body.Bytes())
+}
+
+// One row of GET /v1/rider/internal/admin/refunds, in the list shape.
+func TestContract_RefundListRow(t *testing.T) {
+	providerRef := "cmd_7b2e4d6f"
+	rows := []store.RideRefund{{
+		ID: uuid.MustParse("8d1c2b3a-4f5e-4a6b-9c8d-7e6f5a4b3c2d"), RideID: fixtureRideID,
+		PaymentID: uuid.MustParse("5e4d3c2b-1a0f-4e9d-8c7b-6a5f4e3d2c1b"), IntentID: fixtureIntentID,
+		AmountPaise: 5000, Reason: "captain ended the ride early", Status: "refunded",
+		RequestedBy: uuid.MustParse("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"), ProviderReference: &providerRef,
+		CreatedAt: time.Date(2026, 9, 18, 6, 10, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 18, 6, 12, 45, 0, time.UTC),
+	}}
+	w := httptest.NewRecorder()
+	api.JSONWithContext(fixtureCtx(), w, http.StatusOK, gin.H{"items": rows})
+	assertFixture(t, "refund_list_row.json", w.Body.Bytes())
 }
 
 // The coupon validation error is a real handler round trip: with coupons

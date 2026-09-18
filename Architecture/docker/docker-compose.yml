@@ -1909,6 +1909,19 @@ services:
       # plaintext OTP. Production refuses to start without it. Never reuse a
       # dev key in staging or production.
       RIDER_PII_KEYS: ${RIDER_PII_KEYS:-}
+      # Payments lane: upi / card ride fares and outstanding fees are paid
+      # through payments-service (application mopedu, reference type
+      # mopedu_ride) with rider's service token; a payment is marked paid only
+      # from the signed payment.succeeded event (rider_payment_inbox). The
+      # dev-only Ed25519 seed and kid live in the gitignored .env, and the
+      # matching SERVICE_CALLER_RIDER_SERVICE_PUBKEY / KID feed payments-service
+      # above, with rider-service listed in its SERVICE_CALLERS (.env). Without
+      # the key the intent routes answer 503 PAYMENTS_UNAVAILABLE; boot is not
+      # refused. ENV is unset here, so an intent with no checkout session (the
+      # stub gateway) is refused.
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      RIDER_SERVICE_TOKEN_KEY: ${RIDER_SERVICE_TOKEN_KEY:-}
+      RIDER_SERVICE_TOKEN_KID: ${RIDER_SERVICE_TOKEN_KID:-}
       DIGILOCKER_MODE: ${DIGILOCKER_MODE:-mock}
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}
       DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:-}

@@ -277,6 +277,20 @@ func (h *Handler) adminRoutes() []adminRoute {
 		{get, "/outstanding", PermPaymentsRead, h.AdminListOutstanding},
 		{post, "/outstanding/:id/waive", PermPaymentsSettle, h.AdminWaiveOutstanding},
 
+		// Online ride payments (payments lane): a refund moves money, so the
+		// settle permission; the lists are payments reads.
+		{post, "/rides/:id/refund", PermPaymentsSettle, h.AdminRefundRidePayment},
+		{get, "/refunds", PermPaymentsRead, h.AdminListRefunds},
+		{get, "/ride-payments", PermPaymentsRead, h.AdminListRidePayments},
+
+		// Fare windows (peak / night multipliers) and the live demand state:
+		// pricing configuration, so the fare-rules permission.
+		{get, "/fare-windows", PermFaresManage, h.AdminListFareWindows},
+		{post, "/fare-windows", PermFaresManage, h.AdminCreateFareWindow},
+		{patch, "/fare-windows/:id", PermFaresManage, h.AdminUpdateFareWindow},
+		{post, "/fare-windows/:id/deactivate", PermFaresManage, h.AdminDeactivateFareWindow},
+		{get, "/surge", PermFaresManage, h.AdminSurgeState},
+
 		{get, "/audit-logs", PermAuditRead, h.AdminListAuditLogs},
 
 		// S4 reports.

@@ -31,6 +31,13 @@ type AdminStats struct {
 
 	RevenueTodayPaise int64 `json:"revenue_today_paise"`
 
+	// Online ride payments (payments lane): intents open and awaiting the
+	// signed capture, refunds filed but not yet settled by the PSP, and the
+	// customers' pending outstanding fees in paise.
+	PaymentsConfirming      int   `json:"payments_confirming"`
+	RefundsRequested        int   `json:"refunds_requested"`
+	OutstandingPendingPaise int64 `json:"outstanding_pending_paise"`
+
 	DayStartsAt time.Time `json:"day_starts_at"`
 	GeneratedAt time.Time `json:"generated_at"`
 }
@@ -56,12 +63,16 @@ func (s *Store) AdminStats(ctx context.Context) (*AdminStats, error) {
 			(SELECT COUNT(*) FROM rider_safety_incidents WHERE status IN ('open','acknowledged'))::int,
 			(SELECT COALESCE(SUM(ROUND(amount * 100)), 0) FROM rider_subscription_payments, bounds
 				WHERE status = 'verified' AND verified_at >= bounds.day_start)::bigint,
+			(SELECT COUNT(*) FROM rider_ride_payments WHERE status = 'confirming')::int,
+			(SELECT COUNT(*) FROM rider_ride_refunds WHERE status IN ('requested','accepted'))::int,
+			(SELECT COALESCE(SUM(amount_paise), 0) FROM rider_customer_outstanding WHERE status = 'pending')::bigint,
 			bounds.day_start, bounds.generated_at
 		FROM bounds`).Scan(
 		&out.PartnersPendingReview, &out.DocumentsPending, &out.VehiclesPending, &out.PaymentsAwaitingVerification,
 		&out.RidesToday, &out.RidesLast7Days, &out.LiveRidesNow, &out.CancellationsToday,
 		&out.OpenComplaints, &out.OpenSafetyIncidents,
 		&out.RevenueTodayPaise,
+		&out.PaymentsConfirming, &out.RefundsRequested, &out.OutstandingPendingPaise,
 		&out.DayStartsAt, &out.GeneratedAt)
 	if err != nil {
 		return nil, fmt.Errorf("admin stats: %w", err)

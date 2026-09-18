@@ -266,6 +266,12 @@ type CustomerOutstanding struct {
 	SettledByRideID *uuid.UUID `json:"settled_by_ride_id,omitempty"`
 	WaivedBy        *uuid.UUID `json:"waived_by,omitempty"`
 	WaiveReason     *string    `json:"waive_reason,omitempty"`
+	// IntentID / IntentMethod is the open payments intent for paying the
+	// fee directly; SettledIntentID the intent whose signed capture settled
+	// it (settled_by_ride_id stays NULL then).
+	IntentID        *uuid.UUID `json:"intent_id,omitempty"`
+	IntentMethod    *string    `json:"intent_method,omitempty"`
+	SettledIntentID *uuid.UUID `json:"settled_intent_id,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	SettledAt       *time.Time `json:"settled_at,omitempty"`
 }
@@ -402,8 +408,34 @@ type RidePayment struct {
 	Status        string     `json:"status"`
 	WalletTxnID   *uuid.UUID `json:"wallet_txn_id,omitempty"`
 	UPITxnRef     *string    `json:"upi_txn_ref,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	SettledAt     *time.Time `json:"settled_at,omitempty"`
+	// IntentID is the payments-service intent bound to an online payment;
+	// ProviderReference its provider order id. RefundedPaise accumulates the
+	// signed refund events; FailureReason is payment.failed's reason.
+	IntentID          *uuid.UUID `json:"intent_id,omitempty"`
+	ProviderReference *string    `json:"provider_reference,omitempty"`
+	RefundedPaise     int64      `json:"refunded_paise"`
+	FailureReason     *string    `json:"failure_reason,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	SettledAt         *time.Time `json:"settled_at,omitempty"`
+}
+
+// RideRefund is one row in rider_ride_refunds: an admin-requested refund of
+// an online ride payment. status moves requested -> accepted (payments
+// took the command) -> refunded (payment.refunded applied) | failed.
+type RideRefund struct {
+	ID                uuid.UUID  `json:"id"`
+	RideID            uuid.UUID  `json:"ride_id"`
+	PaymentID         uuid.UUID  `json:"payment_id"`
+	IntentID          uuid.UUID  `json:"intent_id"`
+	AmountPaise       int64      `json:"amount_paise"`
+	Reason            string     `json:"reason"`
+	Status            string     `json:"status"`
+	RequestedBy       uuid.UUID  `json:"requested_by"`
+	ProviderReference *string    `json:"provider_reference,omitempty"`
+	FailureReason     *string    `json:"failure_reason,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // IdempotencyRecord deduplicates a payment-touching API call. Mirrors

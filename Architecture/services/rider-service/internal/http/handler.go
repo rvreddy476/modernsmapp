@@ -88,6 +88,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			protected.POST("/rides/:id/start", h.PostStartRide)
 			protected.POST("/rides/:id/complete", h.PostCompleteRide)
 			protected.POST("/rides/:id/payment/cash-confirm", h.PostConfirmCashPayment)
+
+			// --- Online ride payments (payments lane) -------------------------
+			// The intent binds a payments-service intent; only the consumer's
+			// signed events mark a payment paid. The callback is advisory.
+			protected.POST("/rides/:id/payment/intent", h.PostRidePaymentIntent)
+			protected.GET("/rides/:id/payment", h.GetRidePayment)
+			protected.POST("/rides/:id/payment/switch-to-cash", h.PostRidePaymentSwitchToCash)
+			protected.POST("/rides/:id/payment/callback", h.PostRidePaymentCallback)
+			protected.GET("/me/outstanding", h.GetMyOutstanding)
+			protected.POST("/me/outstanding/:id/payment/intent", h.PostOutstandingPaymentIntent)
 			protected.POST("/rides/:id/no-show", h.PostMarkNoShow)
 			protected.POST("/safety/masked-call", h.PostInitiateMaskedCall)
 			protected.POST("/rides/:id/rating/response", h.PostPartnerRespondRating)

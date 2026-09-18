@@ -28,12 +28,12 @@ var ErrOutstandingChanged = errors.New("outstanding: changed since the quote")
 
 const outstandingColumns = `
         id, customer_user_id, ride_id, amount_paise, reason, status, settled_by_ride_id,
-        waived_by, waive_reason, created_at, settled_at`
+        waived_by, waive_reason, intent_id, intent_method, settled_intent_id, created_at, settled_at`
 
 func scanOutstanding(row pgx.Row) (*CustomerOutstanding, error) {
 	var o CustomerOutstanding
 	if err := row.Scan(&o.ID, &o.CustomerUserID, &o.RideID, &o.AmountPaise, &o.Reason, &o.Status, &o.SettledByRideID,
-		&o.WaivedBy, &o.WaiveReason, &o.CreatedAt, &o.SettledAt); err != nil {
+		&o.WaivedBy, &o.WaiveReason, &o.IntentID, &o.IntentMethod, &o.SettledIntentID, &o.CreatedAt, &o.SettledAt); err != nil {
 		return nil, err
 	}
 	return &o, nil

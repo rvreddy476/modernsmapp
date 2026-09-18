@@ -60,6 +60,15 @@ externalSecret:
     # - { secretKey: RIDER_PII_KEYS, remoteRef: rider_pii_keys }
     # - { secretKey: MOPEDU_PLATFORM_GSTIN, remoteRef: mopedu_platform_gstin }
     # - { secretKey: GOOGLE_MAPS_SERVER_KEY, remoteRef: google_maps_server_key }
+    # Payments lane: rider-service's payments-service token (upi / card ride
+    # fares, application mopedu, reference type mopedu_ride) is NOT enabled
+    # yet. Without it the intent routes answer 503 PAYMENTS_UNAVAILABLE and
+    # cash rides are unaffected; boot is not refused. Enable payments-service
+    # first (caller_rider_pubkey / caller_rider_kid, rider-service in its
+    # SERVICE_CALLERS), then uncomment the two lines below. Never reuse a
+    # staging key here.
+    # - { secretKey: RIDER_SERVICE_TOKEN_KEY, remoteRef: rider_service_token_key }
+    # - { secretKey: RIDER_SERVICE_TOKEN_KID, remoteRef: rider_service_token_kid }
 
 env:
   ENV: prod
@@ -73,6 +82,9 @@ env:
   # Demand surge ceiling in basis points (5000 = x1.5); peak / night fare
   # windows are database rows and are not capped by this.
   MOPEDU_SURGE_CAP_BPS: "5000"
+  # Payments lane (see externalSecret above): unused until
+  # RIDER_SERVICE_TOKEN_KEY / _KID are set.
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
   # Admin console (see externalSecret above for the order): uncomment
   # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID. OPS is rider's
   # AdminPermissions (rider-service/internal/http/admin_token.go).

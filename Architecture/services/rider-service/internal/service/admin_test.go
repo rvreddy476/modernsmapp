@@ -51,7 +51,10 @@ func (r *recordingPublisher) PublishSubscriptionActivated(ctx context.Context, s
 func (r *recordingPublisher) PublishRideRequested(ctx context.Context, rideID, customerID uuid.UUID, vehicleType, cityID string) error {
 	return nil
 }
-func (r *recordingPublisher) PublishRideOffered(ctx context.Context, rideID, offerID, partnerID uuid.UUID, score float64, expiresAt time.Time) error {
+func (r *recordingPublisher) PublishRidePaymentPaid(ctx context.Context, p events.RidePaymentPaidPayload) error {
+	return nil
+}
+func (r *recordingPublisher) PublishRideOffered(ctx context.Context, rideID, offerID, partnerID, partnerUserID uuid.UUID, score float64, expiresAt time.Time) error {
 	return nil
 }
 func (r *recordingPublisher) PublishRideOfferRejected(ctx context.Context, rideID, offerID, partnerID uuid.UUID, reason string) error {

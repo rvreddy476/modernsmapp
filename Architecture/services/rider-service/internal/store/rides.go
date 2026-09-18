@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/rider-service/internal/payments"
 	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -824,6 +825,10 @@ type RideReceipt struct {
 	TaxNote              string          `json:"tax_note"`
 	PaymentMethod        string          `json:"payment_method"`
 	PaymentStatus        string          `json:"payment_status"`
+	// Payment is the public view of the ride's latest payment row (nil
+	// before completion); Refunds the admin refunds filed against it.
+	Payment              *ReceiptPayment `json:"payment"`
+	Refunds              []ReceiptRefund `json:"refunds"`
 	FareBreakdown        json.RawMessage `json:"fare_breakdown"`
 	// Telemetry: what the captain reported at completion. Never prices the ride.
 	ReportedDistanceKM  *float64   `json:"reported_distance_km,omitempty"`
@@ -831,6 +836,25 @@ type RideReceipt struct {
 	TrackedDistanceM    *int       `json:"tracked_distance_m,omitempty"`
 	CompletedAt         *time.Time `json:"completed_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
+}
+
+// ReceiptPayment is the receipt's payment block: the public status
+// (cash_pending | cash_confirmed | pending | confirming | paid | failed |
+// refunded | partially_refunded), money in paise.
+type ReceiptPayment struct {
+	Method        string `json:"method"`
+	Status        string `json:"status"`
+	AmountPaise   int64  `json:"amount_paise"`
+	RefundedPaise int64  `json:"refunded_paise"`
+}
+
+// ReceiptRefund is one refund on the receipt.
+type ReceiptRefund struct {
+	ID          uuid.UUID `json:"id"`
+	AmountPaise int64     `json:"amount_paise"`
+	Status      string    `json:"status"`
+	Reason      string    `json:"reason"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // GetRideReceipt fetches receipt details.
@@ -851,12 +875,18 @@ func (s *Store) GetRideReceipt(ctx context.Context, rideID uuid.UUID) (*RideRece
                END,
                COALESCE(r.fare_breakdown, '{}'::jsonb),
                r.final_distance_km, r.final_duration_min, r.tracked_distance_m,
-               r.completed_at, r.created_at
+               r.completed_at, r.created_at,
+               p.payment_method, p.status, p.amount_paise, p.refunded_paise
         FROM rider_rides r
-        LEFT JOIN rider_ride_payments p ON p.ride_id = r.id
+        LEFT JOIN LATERAL (
+            SELECT payment_method, status, amount_paise, refunded_paise
+            FROM rider_ride_payments WHERE ride_id = r.id ORDER BY created_at DESC LIMIT 1
+        ) p ON TRUE
         WHERE r.id = $1`
 
 	var rc RideReceipt
+	var payMethod, payStatus *string
+	var payAmount, payRefunded *int64
 	err := s.db.QueryRow(ctx, q, rideID).Scan(
 		&rc.RideID, &rc.CustomerUserID, &rc.PartnerID, &rc.VehicleType, &rc.Status,
 		&rc.PickupAddress, &rc.DropAddress,
@@ -864,6 +894,7 @@ func (s *Store) GetRideReceipt(ctx context.Context, rideID uuid.UUID) (*RideRece
 		&rc.TotalPaise, &rc.CancellationFeePaise, &rc.PaymentMethod, &rc.PaymentStatus,
 		&rc.FareBreakdown, &rc.ReportedDistanceKM, &rc.ReportedDurationMin, &rc.TrackedDistanceM,
 		&rc.CompletedAt, &rc.CreatedAt,
+		&payMethod, &payStatus, &payAmount, &payRefunded,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -872,7 +903,28 @@ func (s *Store) GetRideReceipt(ctx context.Context, rideID uuid.UUID) (*RideRece
 		return nil, fmt.Errorf("get ride receipt: %w", err)
 	}
 	rc.applyBreakdown()
+	rc.Refunds = []ReceiptRefund{}
+	if payMethod != nil && payStatus != nil {
+		rc.Payment = &ReceiptPayment{
+			Method: *payMethod, Status: payments.PublicStatus(*payMethod, *payStatus),
+			AmountPaise: derefInt64(payAmount), RefundedPaise: derefInt64(payRefunded),
+		}
+		refunds, err := s.ListRefundsByRide(ctx, rideID)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range refunds {
+			rc.Refunds = append(rc.Refunds, ReceiptRefund{ID: r.ID, AmountPaise: r.AmountPaise, Status: r.Status, Reason: r.Reason, CreatedAt: r.CreatedAt})
+		}
+	}
 	return &rc, nil
+}
+
+func derefInt64(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // applyBreakdown lifts the itemised figures out of the stored breakdown so

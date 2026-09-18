@@ -205,23 +205,32 @@ func (p *Producer) PublishRideRequested(ctx context.Context, rideID, customerID 
 // RideOfferedPayload mirrors EventRiderRideOffered. One event per partner
 // the matcher offered to in this batch.
 type RideOfferedPayload struct {
-	RideID    string    `json:"ride_id"`
-	OfferID   string    `json:"offer_id"`
-	PartnerID string    `json:"partner_id"`
-	Score     float64   `json:"score"`
-	ExpiresAt time.Time `json:"expires_at"`
-	OfferedAt time.Time `json:"offered_at"`
+	RideID    string `json:"ride_id"`
+	OfferID   string `json:"offer_id"`
+	PartnerID string `json:"partner_id"`
+	// PartnerUserID is the captain's USER id (rider_partners.user_id), the
+	// push recipient notification-service resolves; PartnerID reaches no
+	// device.
+	PartnerUserID string    `json:"partner_user_id,omitempty"`
+	Score         float64   `json:"score"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	OfferedAt     time.Time `json:"offered_at"`
 }
 
-func (p *Producer) PublishRideOffered(ctx context.Context, rideID, offerID, partnerID uuid.UUID, score float64, expiresAt time.Time) error {
+func (p *Producer) PublishRideOffered(ctx context.Context, rideID, offerID, partnerID, partnerUserID uuid.UUID, score float64, expiresAt time.Time) error {
 	id := partnerID
+	partnerUser := ""
+	if partnerUserID != uuid.Nil {
+		partnerUser = partnerUserID.String()
+	}
 	return p.publish(ctx, events.EventRiderRideOffered, &id, RideOfferedPayload{
-		RideID:    rideID.String(),
-		OfferID:   offerID.String(),
-		PartnerID: partnerID.String(),
-		Score:     score,
-		ExpiresAt: expiresAt,
-		OfferedAt: time.Now(),
+		RideID:        rideID.String(),
+		OfferID:       offerID.String(),
+		PartnerID:     partnerID.String(),
+		PartnerUserID: partnerUser,
+		Score:         score,
+		ExpiresAt:     expiresAt,
+		OfferedAt:     time.Now(),
 	})
 }
 
@@ -315,8 +324,11 @@ func (p *Producer) PublishRideStarted(ctx context.Context, rideID, customerID, p
 
 // RideCompletedPayload mirrors EventRiderRideCompleted.
 type RideCompletedPayload struct {
-	RideID           string    `json:"ride_id"`
-	PartnerID        string    `json:"partner_id"`
+	RideID    string `json:"ride_id"`
+	PartnerID string `json:"partner_id"`
+	// CustomerUserID is the customer's push recipient (notification-service
+	// skips the completed push as missing_recipient without it).
+	CustomerUserID   string    `json:"customer_user_id,omitempty"`
 	FinalDistanceKM  float64   `json:"final_distance_km"`
 	FinalDurationMin int       `json:"final_duration_min"`
 	FinalFarePaise   int64     `json:"final_fare_paise"`
@@ -333,7 +345,9 @@ func (p *Producer) PublishRideCompleted(ctx context.Context, payload RideComplet
 
 // RideCancelledPayload mirrors EventRiderRideCancelled.
 type RideCancelledPayload struct {
-	RideID               string    `json:"ride_id"`
+	RideID string `json:"ride_id"`
+	// CustomerUserID is the customer's push recipient.
+	CustomerUserID       string    `json:"customer_user_id,omitempty"`
 	CancelledByKind      string    `json:"cancelled_by_kind"`
 	CancelledByUserID    string    `json:"cancelled_by_user_id,omitempty"`
 	Reason               string    `json:"reason,omitempty"`
@@ -652,6 +666,25 @@ func (p *Producer) PublishAdminQueueSummary(ctx context.Context, payload AdminQu
 }
 
 // --- internal -------------------------------------------------------------
+
+// RidePaymentPaidPayload is the shared wire struct of
+// events.EventRiderRidePaymentPaid: notification-service pushes the
+// "payment received" notice to the customer (CustomerUserID) and the captain
+// (PartnerUserID, the USER id).
+type RidePaymentPaidPayload = events.RiderRidePaymentPaidPayload
+
+// PublishRidePaymentPaid publishes rider.ride.payment_paid after the signed
+// payment.succeeded event marked a ride payment (or an outstanding fee) paid.
+func (p *Producer) PublishRidePaymentPaid(ctx context.Context, payload RidePaymentPaidPayload) error {
+	var actor *uuid.UUID
+	if u, err := uuid.Parse(payload.CustomerUserID); err == nil {
+		actor = &u
+	}
+	if payload.PaidAt.IsZero() {
+		payload.PaidAt = time.Now().UTC()
+	}
+	return p.publish(ctx, events.EventRiderRidePaymentPaid, actor, payload)
+}
 
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
 	if p == nil || p.writer == nil {

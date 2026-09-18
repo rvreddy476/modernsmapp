@@ -684,6 +684,258 @@ paths:
         '200':
           description: CustomerOutstanding with status waived
 
+  # --- Online ride payments (payments lane) -----------------------------------
+  # A completed ride booked with upi / card is paid through payments-service
+  # (application mopedu, reference type mopedu_ride). The intent binds a
+  # payments intent and the app opens checkout with client_session; the
+  # payment is marked paid ONLY when rider-service applies the signed
+  # payment.succeeded event, so the app polls GET /payment until `paid`
+  # (or `failed`, then retries or switches to cash). The callback route is
+  # advisory and never changes the status.
+  /v1/rider/rides/{id}/payment/intent:
+    post:
+      summary: Open (or re-open) the payment intent for a completed ride
+      operationId: createRidePaymentIntent
+      tags: [Rider]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentIntentRequest'
+      responses:
+        '200':
+          description: >-
+            The intent for the ride's final total (fare_breakdown.total_paise).
+            Idempotent per ride and method. Golden bytes: rider-service
+            internal/http/testdata/contracts/payment_intent.json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentIntent'
+        '400':
+          description: PAYMENT_METHOD_INVALID (method must be upi or card)
+        '409':
+          description: RIDE_NOT_COMPLETED | PAYMENT_NOT_ONLINE (cash ride) | PAYMENT_NOT_PENDING (already paid / refunded)
+        '503':
+          description: PAYMENTS_UNAVAILABLE | PAYMENTS_CHECKOUT_UNAVAILABLE
+  /v1/rider/rides/{id}/payment:
+    get:
+      summary: Payment status of a ride (customer or assigned captain)
+      operationId: getRidePayment
+      tags: [Rider, Captain]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: >-
+            Never asks payments-service; `paid` comes only from an applied
+            signed event. Golden bytes: payment_status_paid.json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RidePaymentStatus'
+  /v1/rider/rides/{id}/payment/switch-to-cash:
+    post:
+      summary: Turn an unpaid online payment into a cash payment
+      operationId: switchRidePaymentToCash
+      tags: [Rider]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: RidePaymentStatus with method cash and status cash_pending; the captain then confirms with /payment/cash-confirm
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RidePaymentStatus'
+        '409':
+          description: PAYMENT_ALREADY_PAID (never after paid) | PAYMENT_NOT_ONLINE | PAYMENT_NOT_PENDING
+  /v1/rider/rides/{id}/payment/callback:
+    post:
+      summary: Relay the checkout callback for an ADVISORY signature check
+      operationId: verifyRidePaymentCallback
+      tags: [Rider]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_order_id, provider_payment_id, signature]
+              properties:
+                provider_order_id: { type: string }
+                provider_payment_id: { type: string }
+                signature: { type: string }
+      responses:
+        '200':
+          description: '{verified, advisory: true, status} — status is the row''s, unchanged by this call'
+        '409':
+          description: PAYMENT_NO_INTENT
+        '422':
+          description: PAYMENT_CALLBACK_MISMATCH (a genuine signature for another ride or payer)
+  /v1/rider/me/outstanding:
+    get:
+      summary: The customer's pending outstanding fees (payable directly)
+      operationId: listMyOutstanding
+      tags: [Rider]
+      responses:
+        '200':
+          description: >-
+            A plain array under data: [{id, ride_id, amount_paise, reason, status, created_at, ...}] —
+            the pending rows no active ride has reserved.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CustomerOutstanding'
+  /v1/rider/me/outstanding/{id}/payment/intent:
+    post:
+      summary: Open the payment intent for one outstanding fee
+      operationId: createOutstandingPaymentIntent
+      tags: [Rider]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentIntentRequest'
+      responses:
+        '200':
+          description: PaymentIntent; the row becomes settled on the signed payment.succeeded event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentIntent'
+        '409':
+          description: OUTSTANDING_NOT_PAYABLE
+
+  # --- Admin: refunds, ride payments, fare windows, surge -----------------------
+  /v1/rider/internal/admin/rides/{id}/refund:
+    post:
+      summary: Refund an online ride payment (rider:payments.settle)
+      operationId: adminRefundRidePayment
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                amount_paise:
+                  type: integer
+                  format: int64
+                  description: Omitted or 0 refunds the full remaining amount.
+                reason:
+                  type: string
+      responses:
+        '202':
+          description: RideRefund with status accepted; it becomes refunded only from the payment.refunded event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideRefund'
+        '409':
+          description: REFUND_NOT_REFUNDABLE
+        '422':
+          description: REFUND_CASH_PAYMENT (cash disputes are an outstanding waiver or manual) | REFUND_EXCEEDS_REMAINING
+  /v1/rider/internal/admin/refunds:
+    get:
+      summary: List refunds (rider:payments.read)
+      operationId: adminListRefunds
+      tags: [Admin]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [requested, accepted, refunded, failed] } }
+        - { name: ride_id, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: '{"items": [RideRefund]} — golden bytes: refund_list_row.json'
+  /v1/rider/internal/admin/ride-payments:
+    get:
+      summary: List ride payments (rider:payments.read), keyset-paged
+      operationId: adminListRidePayments
+      tags: [Admin]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending_cash_confirmation, pending, confirming, succeeded, failed, refunded, partially_refunded] } }
+        - { name: method, in: query, schema: { type: string, enum: [cash, upi, card] } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: '{"items": [RidePayment], "next_cursor": string (empty on the last page)}'
+  /v1/rider/internal/admin/fare-windows:
+    get:
+      summary: List fare windows (rider:fares.manage)
+      operationId: adminListFareWindows
+      tags: [Admin]
+      parameters:
+        - { name: city_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: '{"items": [FareWindow]}'
+    post:
+      summary: Create a fare window
+      operationId: adminCreateFareWindow
+      tags: [Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FareWindowCreate'
+      responses:
+        '201':
+          description: FareWindow
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FareWindow'
+  /v1/rider/internal/admin/fare-windows/{id}:
+    patch:
+      summary: Update a fare window (partial; vehicle_type "" clears it, clear_effective_to removes the end)
+      operationId: adminUpdateFareWindow
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: FareWindow
+  /v1/rider/internal/admin/fare-windows/{id}/deactivate:
+    post:
+      summary: Deactivate a fare window
+      operationId: adminDeactivateFareWindow
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: FareWindow with is_active false
+  /v1/rider/internal/admin/surge:
+    get:
+      summary: Current demand state per vehicle type (rider:fares.manage)
+      operationId: adminSurgeState
+      tags: [Admin]
+      parameters:
+        - { name: city_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: '{"city_id", "items": [{vehicle_type, requested, online, demand_bps, cap_bps}]}'
+
 components:
   schemas:
     City:
@@ -1253,6 +1505,15 @@ components:
           type: string
         payment_status:
           type: string
+          description: Legacy row status; prefer payment.status.
+        payment:
+          allOf: [{ $ref: '#/components/schemas/ReceiptPayment' }]
+          nullable: true
+          description: The latest payment row (null before completion). Golden bytes with a partial refund receipt_partial_refund.json.
+        refunds:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReceiptRefund'
         fare_breakdown:
           $ref: '#/components/schemas/QuoteBreakdownPaise'
         reported_distance_km:
@@ -1316,8 +1577,17 @@ components:
           format: int64
         payment_method:
           type: string
+          enum: [cash, upi, card]
         status:
           type: string
+          enum: [pending_cash_confirmation, pending, confirming, succeeded, failed, refunded, partially_refunded]
+        intent_id: { type: string, format: uuid, nullable: true }
+        provider_reference: { type: string, nullable: true }
+        refunded_paise: { type: integer, format: int64 }
+        failure_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        settled_at: { type: string, format: date-time, nullable: true }
 
     SharedRideView:
       type: object
@@ -1336,3 +1606,108 @@ components:
           type: string
         eta_minutes:
           type: integer
+
+    # --- Payments lane ---------------------------------------------------------
+    PaymentIntentRequest:
+      type: object
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [upi, card]
+    ClientSession:
+      type: object
+      description: What the app opens Razorpay Checkout with. key_id is the PUBLISHABLE key; nothing else is ever relayed.
+      required: [provider, order_id, key_id]
+      properties:
+        provider: { type: string }
+        order_id: { type: string }
+        key_id: { type: string }
+        merchant_display_name: { type: string }
+    PaymentIntent:
+      type: object
+      required: [intent_id, amount_paise, currency, client_session, status]
+      properties:
+        intent_id: { type: string, format: uuid }
+        amount_paise: { type: integer, format: int64 }
+        currency: { type: string, enum: [INR] }
+        client_session:
+          allOf: [{ $ref: '#/components/schemas/ClientSession' }]
+          nullable: true
+          description: null only on local/dev with the stub gateway.
+        status:
+          type: string
+          description: The intent's status, pending until paid.
+    RidePaymentStatus:
+      type: object
+      required: [method, status, amount_paise, refunded_paise, intent_id, updated_at]
+      properties:
+        method: { type: string, enum: [cash, upi, card] }
+        status:
+          type: string
+          enum: [cash_pending, cash_confirmed, pending, confirming, paid, failed, refunded, partially_refunded]
+          description: >-
+            cash_pending = pending_cash_confirmation; cash_confirmed = the captain confirmed; paid = a signed
+            payment.succeeded event was applied (nothing else produces it); failed = retry or switch to cash.
+        amount_paise: { type: integer, format: int64 }
+        refunded_paise: { type: integer, format: int64 }
+        intent_id: { type: string, format: uuid, nullable: true }
+        updated_at: { type: string, format: date-time }
+    ReceiptPayment:
+      type: object
+      required: [method, status, amount_paise, refunded_paise]
+      properties:
+        method: { type: string, enum: [cash, upi, card] }
+        status: { type: string, enum: [cash_pending, cash_confirmed, pending, confirming, paid, failed, refunded, partially_refunded] }
+        amount_paise: { type: integer, format: int64 }
+        refunded_paise: { type: integer, format: int64 }
+    ReceiptRefund:
+      type: object
+      required: [id, amount_paise, status, reason, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        amount_paise: { type: integer, format: int64 }
+        status: { type: string, enum: [requested, accepted, refunded, failed] }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+    RideRefund:
+      type: object
+      description: An admin-requested refund of an online ride payment. refunded only from the payment.refunded event.
+      required: [id, ride_id, payment_id, intent_id, amount_paise, reason, status, requested_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        ride_id: { type: string, format: uuid }
+        payment_id: { type: string, format: uuid }
+        intent_id: { type: string, format: uuid }
+        amount_paise: { type: integer, format: int64 }
+        reason: { type: string }
+        status: { type: string, enum: [requested, accepted, refunded, failed] }
+        requested_by: { type: string, format: uuid, description: The signed admin actor. }
+        provider_reference: { type: string }
+        failure_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    FareWindowCreate:
+      type: object
+      required: [city_id, name, days_of_week, start_minute, end_minute, multiplier_bps]
+      properties:
+        city_id: { type: string, format: uuid }
+        vehicle_type: { type: string, nullable: true, description: null applies to every vehicle type. }
+        name: { type: string }
+        days_of_week: { type: integer, minimum: 1, maximum: 127, description: Bitmask Mon=1 ... Sun=64. }
+        start_minute: { type: integer, minimum: 0, maximum: 1439 }
+        end_minute: { type: integer, minimum: 0, maximum: 1440, description: Less than start_minute wraps past midnight. }
+        multiplier_bps: { type: integer, format: int64, minimum: 10000, maximum: 30000 }
+        priority: { type: integer }
+        is_active: { type: boolean }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: string, format: date-time, nullable: true }
+    FareWindow:
+      allOf:
+        - $ref: '#/components/schemas/FareWindowCreate'
+        - type: object
+          required: [id, priority, is_active, effective_from, created_at, updated_at]
+          properties:
+            id: { type: string, format: uuid }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
