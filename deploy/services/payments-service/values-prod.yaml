@@ -135,11 +135,12 @@ env:
   SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: 'mstore'
   SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS: 'feast'
   SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: 'dating'
-  # rider-service (Mopedu, migration 012; see externalSecret above for the
-  # order). Uncomment with its secrets, then add rider-service to
-  # SERVICE_CALLERS. `mopedu` is seeded by 012.
+  # rider-service (Mopedu, migrations 012 + 013; see externalSecret above for
+  # the order). Uncomment with its secrets, then add rider-service to
+  # SERVICE_CALLERS. `mopedu` is seeded by 012; mopedu_subscription (captain
+  # plan periods) is mapped by 013.
   # SERVICE_CALLER_RIDER_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
-  # SERVICE_CALLER_RIDER_SERVICE_REFTYPES: 'mopedu_ride'
+  # SERVICE_CALLER_RIDER_SERVICE_REFTYPES: 'mopedu_ride,mopedu_subscription'
   # SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS: 'mopedu'
   # admin-service (see externalSecret above for the order). SERVICE_CALLERS
   # above stays unchanged until step 3: then it becomes

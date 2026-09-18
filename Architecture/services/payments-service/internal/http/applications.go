@@ -72,12 +72,14 @@ var refundStatuses = map[string]bool{
 // legacyApplications is the reference-type fallback for the user-facing family,
 // whose callers present no identity to hold an allowlist. It is the same mapping
 // migration 010's backfill uses (payments.legacy_application_for, extended
-// with dating by migration 011 and mopedu by migration 012).
+// with dating by migration 011, mopedu by migration 012 and mopedu_subscription
+// by migration 013).
 var legacyApplications = map[string]string{
-	servicetoken.RefOrder:         "mstore",
-	servicetoken.RefFoodOrder:     "feast",
-	servicetoken.RefDatingPremium: "dating",
-	servicetoken.RefMopeduRide:    "mopedu",
+	servicetoken.RefOrder:              "mstore",
+	servicetoken.RefFoodOrder:          "feast",
+	servicetoken.RefDatingPremium:      "dating",
+	servicetoken.RefMopeduRide:         "mopedu",
+	servicetoken.RefMopeduSubscription: "mopedu",
 }
 
 // WithCallerApplications installs the caller → application allowlist that

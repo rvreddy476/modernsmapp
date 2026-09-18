@@ -4,7 +4,8 @@ package http
 // present no verified identity. A mopedu_ride intent from the user-facing
 // family or a legacy internal-key caller must be owned by rider-service and
 // attributed to the application mopedu, or rider-service's own token could
-// neither read nor refund it.
+// neither read nor refund it. Migration 013 adds mopedu_subscription (a
+// captain's plan period paid to Mopedu) under the same owner and application.
 
 import (
 	"testing"
@@ -13,11 +14,13 @@ import (
 )
 
 func TestMopeduRideOwnerDomainAndApplication(t *testing.T) {
-	if got := ownerDomainForReference(servicetoken.RefMopeduRide); got != "rider-service" {
-		t.Fatalf("owner domain for mopedu_ride = %q, want rider-service", got)
-	}
-	if got := legacyApplications[servicetoken.RefMopeduRide]; got != "mopedu" {
-		t.Fatalf("legacy application for mopedu_ride = %q, want mopedu", got)
+	for _, ref := range []string{servicetoken.RefMopeduRide, servicetoken.RefMopeduSubscription} {
+		if got := ownerDomainForReference(ref); got != "rider-service" {
+			t.Fatalf("owner domain for %s = %q, want rider-service", ref, got)
+		}
+		if got := legacyApplications[ref]; got != "mopedu" {
+			t.Fatalf("legacy application for %s = %q, want mopedu", ref, got)
+		}
 	}
 	// The existing mappings are unchanged.
 	for ref, want := range map[string][2]string{

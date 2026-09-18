@@ -105,3 +105,68 @@ func TestMopeduApplicationMigrationSeedsOnceAndMapsLegacyRows(t *testing.T) {
 		}
 	})
 }
+
+const mopeduSubscriptionMigration = "migrations/013_mopedu_subscription_reftype.sql"
+
+// Migration 013 (mopedu_subscription, a captain's plan period): applied after
+// 012, re-runnable, maps the new reference type to mopedu and keeps every
+// branch 010–012 established. It seeds nothing: the registry row is 012's.
+func TestMopeduSubscriptionMigrationExtendsLegacyMapping(t *testing.T) {
+	ctx := context.Background()
+	base, err := fs.ReadFile(database.Migrations, mopeduMigration)
+	if err != nil {
+		t.Fatalf("read embedded %s: %v", mopeduMigration, err)
+	}
+	sql, err := fs.ReadFile(database.Migrations, mopeduSubscriptionMigration)
+	if err != nil {
+		t.Fatalf("read embedded %s: %v", mopeduSubscriptionMigration, err)
+	}
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	scalar := func(query string, args ...any) string {
+		t.Helper()
+		var v string
+		if err := tx.QueryRow(ctx, query, args...).Scan(&v); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		return v
+	}
+
+	if _, err := tx.Exec(ctx, string(base)); err != nil {
+		t.Fatalf("%s: %v", mopeduMigration, err)
+	}
+	apps := scalar(`SELECT count(*)::text FROM payments.applications`)
+	for run := 1; run <= 3; run++ {
+		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("run %d of %s: %v", run, mopeduSubscriptionMigration, err)
+		}
+	}
+	if got := scalar(`SELECT count(*)::text FROM payments.applications`); got != apps {
+		t.Fatalf("013 changed the registry: %s rows before, %s after", apps, got)
+	}
+
+	for _, tc := range []struct{ owner, ref, want string }{
+		{"rider-service", "mopedu_subscription", "mopedu"},
+		{"rider-service", "mopedu_ride", "mopedu"},
+		{"rider-service", "food_order", "mopedu"}, // owner wins
+		{"", "mopedu_subscription", "mopedu"},
+		{"", "mopedu_ride", "mopedu"},
+		{"legacy:mopedu_subscription", "mopedu_subscription", "mopedu"},
+		{"commerce-service", "mopedu_subscription", "mstore"},
+		{"food-service", "mopedu_subscription", "feast"},
+		{"dating-service", "mopedu_subscription", "dating"},
+		{"", "dating_premium", "dating"},
+		{"", "order", "mstore"},
+		{"", "food_order", "feast"},
+		{"unknown", "demo_ref", ""},
+	} {
+		got := scalar(`SELECT COALESCE(payments.legacy_application_for(NULLIF($1,''), $2), '')`, tc.owner, tc.ref)
+		if got != tc.want {
+			t.Errorf("legacy_application_for(%q, %q) = %q, want %q", tc.owner, tc.ref, got, tc.want)
+		}
+	}
+}

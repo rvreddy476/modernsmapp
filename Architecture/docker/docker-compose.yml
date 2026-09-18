@@ -1552,12 +1552,13 @@ services:
       SERVICE_CALLER_DATING_SERVICE_OPS: ${SERVICE_CALLER_DATING_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
       SERVICE_CALLER_DATING_SERVICE_REFTYPES: ${SERVICE_CALLER_DATING_SERVICE_REFTYPES:-dating_premium}
       SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: ${SERVICE_CALLER_DATING_SERVICE_APPLICATIONS:-dating}
-      # rider-service: Mopedu ride fares (migration 012). Takes effect only
-      # once SERVICE_CALLERS names rider-service and its PUBKEY is set.
+      # rider-service: Mopedu ride fares (migration 012) and captain plan
+      # periods (migration 013). Takes effect only once SERVICE_CALLERS names
+      # rider-service and its PUBKEY is set.
       SERVICE_CALLER_RIDER_SERVICE_KID: ${SERVICE_CALLER_RIDER_SERVICE_KID:-r1}
       SERVICE_CALLER_RIDER_SERVICE_PUBKEY: ${SERVICE_CALLER_RIDER_SERVICE_PUBKEY:-}
       SERVICE_CALLER_RIDER_SERVICE_OPS: ${SERVICE_CALLER_RIDER_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
-      SERVICE_CALLER_RIDER_SERVICE_REFTYPES: ${SERVICE_CALLER_RIDER_SERVICE_REFTYPES:-mopedu_ride}
+      SERVICE_CALLER_RIDER_SERVICE_REFTYPES: ${SERVICE_CALLER_RIDER_SERVICE_REFTYPES:-mopedu_ride,mopedu_subscription}
       SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS: ${SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS:-mopedu}
       # admin-service: the admin console's /v1/payments/internal/admin/* only.
       # OPS is payments' AdminPermissions; no REFTYPES and no APPLICATIONS (boot

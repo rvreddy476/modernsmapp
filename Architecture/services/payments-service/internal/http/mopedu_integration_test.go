@@ -6,7 +6,9 @@ package http
 // real handler, real service with the stub gateway, live PostgreSQL
 // (payments_it_test). rider-service is registered the way the deploy values
 // declare it: ops intent.create, intent.read, refund.create; reference type
-// mopedu_ride; application mopedu.
+// mopedu_ride; application mopedu. Migration 013 adds mopedu_subscription (a
+// captain's plan period): the same caller, allowed only once its REFTYPES
+// name it.
 //
 // The registry row `mopedu` is NOT upserted here: it must come from 012.
 //
@@ -26,8 +28,12 @@ import (
 )
 
 func mopeduItBody(app, key string) []byte {
+	return mopeduItBodyRef(app, servicetoken.RefMopeduRide, key)
+}
+
+func mopeduItBodyRef(app, ref, key string) []byte {
 	b, _ := json.Marshal(map[string]any{
-		"payer_id": uuid.New(), "payee_id": uuid.New(), "reference_type": servicetoken.RefMopeduRide, "reference_id": uuid.New(),
+		"payer_id": uuid.New(), "payee_id": uuid.New(), "reference_type": ref, "reference_id": uuid.New(),
 		"amount_minor": 12900, "currency": "INR", "method": "upi", "idempotency_key": key, "application_id": app,
 	})
 	return b
@@ -123,6 +129,63 @@ func TestMopeduRidePaymentsEndToEnd(t *testing.T) {
 			if n := rows(key); n != "0" {
 				t.Fatalf("application %s: intent rows = %s, want 0", app, n)
 			}
+		}
+	})
+
+	t.Run("rider-service with REFTYPES=mopedu_ride only is refused mopedu_subscription and writes nothing", func(t *testing.T) {
+		// Two tokens from the r1 registration (policy refs: mopedu_ride only):
+		// one honestly claiming mopedu_ride, one CLAIMING both. Handler A2
+		// re-verifies body.reference_type against claim AND policy, so both
+		// are 403 — the policy (SERVICE_CALLER_RIDER_SERVICE_REFTYPES) wins.
+		claimsBoth := itCaller{issuer: rider.issuer, signer: rider.signer,
+			refs: []string{servicetoken.RefMopeduRide, servicetoken.RefMopeduSubscription}}
+		for name, caller := range map[string]itCaller{"claims mopedu_ride": rider, "claims both": claimsBoth} {
+			key := "mopedu-it-sub-" + uuid.NewString()
+			w := do(r, http.MethodPost, internalIntents, mopeduItBodyRef("mopedu", servicetoken.RefMopeduSubscription, key),
+				caller.header(t, servicetoken.OpIntentCreate))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("%s: status = %d body=%s, want 403", name, w.Code, w.Body.String())
+			}
+			if n := rows(key); n != "0" {
+				t.Fatalf("%s: intent rows = %s, want 0", name, n)
+			}
+		}
+	})
+
+	t.Run("rider-service with REFTYPES=mopedu_ride,mopedu_subscription creates both for mopedu, owned by rider-service", func(t *testing.T) {
+		// The compose default after 013: the same caller, a second key
+		// (kid r2) registered with both reference types.
+		riderBoth := itRegister(t, v, "rider-service", "r2", moneyOps,
+			[]string{servicetoken.RefMopeduRide, servicetoken.RefMopeduSubscription})
+		for _, ref := range []string{servicetoken.RefMopeduSubscription, servicetoken.RefMopeduRide} {
+			key := "mopedu-it-sub-" + uuid.NewString()
+			w := do(r, http.MethodPost, internalIntents, mopeduItBodyRef("mopedu", ref, key), riderBoth.header(t, servicetoken.OpIntentCreate))
+			if w.Code != http.StatusCreated {
+				t.Fatalf("%s: status = %d body=%s", ref, w.Code, w.Body.String())
+			}
+			if got := appItScalar(t, pool, `SELECT application_id || '|' || owner_domain || '|' || reference_type
+			                                  FROM payments.payment_intents WHERE idempotency_key = $1`, key); got != "mopedu|rider-service|"+ref {
+				t.Fatalf("%s: stored = %q", ref, got)
+			}
+		}
+		// The r1 key is still limited to mopedu_ride: a wider registration
+		// for one kid does not widen another.
+		key := "mopedu-it-sub-" + uuid.NewString()
+		w := do(r, http.MethodPost, internalIntents, mopeduItBodyRef("mopedu", servicetoken.RefMopeduSubscription, key), rider.header(t, servicetoken.OpIntentCreate))
+		if w.Code != http.StatusForbidden || rows(key) != "0" {
+			t.Fatalf("r1 on mopedu_subscription after r2 registered: status = %d rows=%s, want 403 and 0", w.Code, rows(key))
+		}
+	})
+
+	t.Run("a legacy internal-key mopedu_subscription intent is owned by rider-service and belongs to mopedu", func(t *testing.T) {
+		key := "mopedu-it-legacy-sub-" + uuid.NewString()
+		w := do(r, http.MethodPost, internalIntents, mopeduItBodyRef("mopedu", servicetoken.RefMopeduSubscription, key), withKey(uuid.Nil))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+		}
+		if got := appItScalar(t, pool, `SELECT application_id || '|' || owner_domain || '|' || reference_type
+		                                  FROM payments.payment_intents WHERE idempotency_key = $1`, key); got != "mopedu|rider-service|mopedu_subscription" {
+			t.Fatalf("stored = %q, want mopedu|rider-service|mopedu_subscription", got)
 		}
 	})
 

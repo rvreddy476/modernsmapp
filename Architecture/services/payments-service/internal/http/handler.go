@@ -354,10 +354,11 @@ func isLegacyCaller(c *gin.Context) bool {
 // no owner is readable and refundable by every authorised service, so a
 // domain is always stamped — a token caller for that domain then owns it.
 var legacyOwnerDomains = map[string]string{
-	servicetoken.RefOrder:         "commerce-service",
-	servicetoken.RefFoodOrder:     "food-service",
-	servicetoken.RefDatingPremium: "dating-service",
-	servicetoken.RefMopeduRide:    "rider-service",
+	servicetoken.RefOrder:              "commerce-service",
+	servicetoken.RefFoodOrder:          "food-service",
+	servicetoken.RefDatingPremium:      "dating-service",
+	servicetoken.RefMopeduRide:         "rider-service",
+	servicetoken.RefMopeduSubscription: "rider-service", // a captain's plan period, paid to Mopedu
 }
 
 func ownerDomainForReference(refType string) string {
