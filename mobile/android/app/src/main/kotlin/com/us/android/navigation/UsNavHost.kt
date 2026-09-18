@@ -103,6 +103,9 @@ import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.feast.checkout.FeastPaymentRequest
 import com.us.android.feature.feast.navigation.feastScreens
 import com.us.android.feature.feast.navigation.navigateToFeast
+import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreens
+import com.us.android.feature.mopedu.rider.navigation.navigateToMopeduRider
+import com.us.android.feature.mopedu.rider.payment.MopeduPaymentRequest
 import com.us.android.push.DatingPushTarget
 import com.us.android.push.PushDestinations
 import com.us.android.feature.feed.navigation.FeedRoute
@@ -274,6 +277,9 @@ fun UsNavHost(
     // Dating Premium's sheet, from the same Activity, stamped "dating" by :feature:dating.
     onOpenDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
     onAbandonDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
+    // Mopedu's sheet, from the same Activity, stamped "mopedu" by :feature:mopedu-rider.
+    onOpenMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
+    onAbandonMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
     navController: NavHostController = rememberNavController(),
 ) {
     val tabs = remember(shellState) {
@@ -397,6 +403,8 @@ fun UsNavHost(
                     onAbandonFeastPayment,
                     onOpenDatingPayment,
                     onAbandonDatingPayment,
+                    onOpenMopeduPayment,
+                    onAbandonMopeduPayment,
                     onOpenReel,
                 ) {
                     createScope = it
@@ -515,6 +523,9 @@ private fun NavHostController.openPushDestination(
             is DatingPushTarget.Match -> navigateToDatingMatch(target.matchId, openChat = target.openChat)
             null -> Unit
         }
+        // Mopedu (2026-09-18): every ride push opens the ride screen, which
+        // reads the active ride (or its receipt) from the server.
+        in PushDestinations.RIDE_TYPES -> navigateToMopeduRider()
         else -> Unit // not a chat push; existing surfaces handle their own
     }
 }
@@ -591,6 +602,8 @@ private fun NavGraphBuilder.tabDestinations(
     onAbandonFeastPayment: (FeastPaymentRequest) -> Unit,
     onOpenDatingPayment: (DatingPaymentRequest) -> Unit,
     onAbandonDatingPayment: (DatingPaymentRequest) -> Unit,
+    onOpenMopeduPayment: (MopeduPaymentRequest) -> Unit,
+    onAbandonMopeduPayment: (MopeduPaymentRequest) -> Unit,
     /** A reel notification was tapped: the shell parks the id for Reels before the tab switch. */
     onOpenReel: (postId: String) -> Unit,
     /** A mini-app's "+" was pressed: the shell opens the Create sheet in that scope. */
@@ -712,6 +725,16 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenChat = { conversationId, title -> navController.navigateToChatThread(conversationId, title) },
         onOpenPayment = onOpenDatingPayment,
         onAbandonPayment = onAbandonDatingPayment,
+    )
+
+    // Mopedu (2026-09-18): the customer's ride — quote, book, track, OTP, pay,
+    // receipt, history with the outstanding-fees sheet. Entered from the
+    // Explore launcher's Ride tile. The payment sheet opens from the Activity
+    // like Feast's and Dating's, stamped "mopedu".
+    mopeduRiderScreens(
+        navController = navController,
+        onOpenPayment = onOpenMopeduPayment,
+        onAbandonPayment = onAbandonMopeduPayment,
     )
 
     // The classic composer route stays registered for any older entry point;
@@ -984,6 +1007,7 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.MSELLER -> navController.navigateToMSeller()
                     LauncherApp.FEAST -> navController.navigateToFeast()
                     LauncherApp.MATCH -> navController.navigateToDating()
+                    LauncherApp.RIDE -> navController.navigateToMopeduRider()
                     LauncherApp.ASK -> Unit
                 }
             },
@@ -1110,6 +1134,8 @@ fun UsApp(
     onAbandonFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
     onOpenDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
     onAbandonDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
+    onOpenMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
+    onAbandonMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
 ) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val shellState by viewModel.shellState.collectAsStateWithLifecycle()
@@ -1129,6 +1155,8 @@ fun UsApp(
         onAbandonFeastPayment = onAbandonFeastPayment,
         onOpenDatingPayment = onOpenDatingPayment,
         onAbandonDatingPayment = onAbandonDatingPayment,
+        onOpenMopeduPayment = onOpenMopeduPayment,
+        onAbandonMopeduPayment = onAbandonMopeduPayment,
     )
 }
 

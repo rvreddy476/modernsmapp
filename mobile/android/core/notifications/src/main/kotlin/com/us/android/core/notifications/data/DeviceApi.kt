@@ -59,6 +59,9 @@ enum class PushApp(val wire: String) {
     MOMENTUM("momentum"),
     FEAST_KITCHEN("feast_kitchen"),
     FEAST_RIDER("feast_rider"),
+
+    /** Mopedu Captain (2026-09-18). PROPOSED wire value: notification-service must accept it before offers push. */
+    MOPEDU_CAPTAIN("mopedu_captain"),
 }
 
 @Serializable

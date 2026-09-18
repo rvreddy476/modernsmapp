@@ -220,3 +220,21 @@ include(":feature:feast")
 // :app depends on it; moduleGraphCheck keeps it out of the partner apps and off
 // every other :feature:*.
 include(":feature:dating")
+
+// Mopedu — ride-hailing (2026-09-18), ported from the Gemini branch.
+//
+// :core:mobility-model is pure Kotlin/JVM: the ride, quote, payment and captain
+// domain types, all money in integer paise, no serialization annotations
+// (DTOs live in each feature's data layer). :feature:mopedu-rider is the
+// customer's ride flow inside Momentum — quote with surge and coupons, book,
+// track, OTP, pay through :core:payments (application "mopedu"), receipt,
+// outstanding cancellation fees. :feature:mopedu-captain is the driver's
+// screens: onboarding, on/offline with a location foreground service, offers,
+// the trip, collecting payment, earnings. :app-captain is its own installable
+// (applicationId com.us.mopedu.captain, proposed — founder confirms before
+// Play). moduleGraphCheck keeps the rider feature to :app, the captain feature
+// to :app-captain, and :core:payments out of the captain APK.
+include(":core:mobility-model")
+include(":feature:mopedu-rider")
+include(":feature:mopedu-captain")
+include(":app-captain")

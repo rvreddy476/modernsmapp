@@ -17,6 +17,7 @@ import com.us.android.core.payments.PaymentResultSink
 import com.us.android.feature.commerce.checkout.CheckoutPaymentOpener
 import com.us.android.feature.dating.premium.DatingPaymentOpener
 import com.us.android.feature.feast.checkout.FeastPaymentOpener
+import com.us.android.feature.mopedu.rider.payment.MopeduPaymentOpener
 import com.us.android.navigation.MainViewModel
 import com.us.android.navigation.UsApp
 import com.us.android.push.PushDestinations
@@ -72,6 +73,10 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
     @Inject
     lateinit var datingPaymentOpener: DatingPaymentOpener
 
+    /** Mopedu's opener: the ride's intent already exists; it opens the same sheet, stamped "mopedu". */
+    @Inject
+    lateinit var mopeduPaymentOpener: MopeduPaymentOpener
+
     private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +120,8 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
                     onAbandonFeastPayment = { request -> feastPaymentOpener.abandon(request) },
                     onOpenDatingPayment = { request -> datingPaymentOpener.start(activity = this, request = request) },
                     onAbandonDatingPayment = { request -> datingPaymentOpener.abandon(request) },
+                    onOpenMopeduPayment = { request -> mopeduPaymentOpener.start(activity = this, request = request) },
+                    onAbandonMopeduPayment = { request -> mopeduPaymentOpener.abandon(request) },
                 )
             }
         }

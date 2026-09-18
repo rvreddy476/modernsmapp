@@ -27,10 +27,13 @@ enum class AppModule(
     FOOD("food", "Food", hasScreen = true),
     QA("qa", "QA", hasScreen = false),
     POSTTUBE("posttube", "PostTube", hasScreen = true),
+
+    /** Mopedu rides (2026-09-18). The id is PROPOSED until user-service accepts it in `modules`. */
+    MOBILITY("mobility", "Mobility", hasScreen = true),
     ;
 
     companion object {
-        /** The seven optional modules the onboarding screen offers. */
+        /** The optional modules the onboarding screen offers (eight since Mobility joined). */
         val selectable: List<AppModule> = entries.filter { it != FEED }
 
         fun fromId(id: String): AppModule? = entries.firstOrNull { it.id == id }

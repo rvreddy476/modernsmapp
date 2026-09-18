@@ -72,6 +72,12 @@ tasks.register<Delete>("clean") {
  *   h. `:feature:feast` never reaches `:feature:commerce`, `:feature:kitchen`
  *      or `:feature:rider`, even through a core module — Feast shares code
  *      through `:core`, never through another product's feature (A5).
+ *   k. Mopedu (2026-09-18): `:feature:mopedu-rider` is reachable only from
+ *      `:app` (never a partner app, never another feature), and
+ *      `:feature:mopedu-captain` only from `:app-captain` (never `:app`, never
+ *      another partner app, never another feature). `:app-captain` is a partner
+ *      app for every rule above, so it carries no payments, Banuba, creator,
+ *      post, commerce, Feast or Dating code.
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -113,12 +119,12 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
         }
         // (b)
         if (":app" in direct) {
-            reach(":app").filter { it == ":feature:kitchen" || it == ":feature:rider" }.forEach { dep ->
+            reach(":app").filter { it == ":feature:kitchen" || it == ":feature:rider" || it == ":feature:mopedu-captain" }.forEach { dep ->
                 add(":app must not depend on $dep (directly or transitively) — partner-app features ship only in their own app.")
             }
         }
         // (c)
-        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+        listOf(":app-kitchen", ":app-rider", ":app-captain").filter { it in direct }.forEach { app ->
             reach(app).filter {
                 it == ":core:facear" || it == ":core:creator-engine" ||
                     it == ":feature:post" || it == ":core:commerce"
@@ -127,7 +133,7 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
             }
         }
         // (e)
-        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+        listOf(":app-kitchen", ":app-rider", ":app-captain").filter { it in direct }.forEach { app ->
             if (":core:payments" in reach(app)) {
                 add("$app must not depend on :core:payments (directly or transitively) — partner apps take no payments.")
             }
@@ -141,7 +147,7 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
             }
         }
         // (g)
-        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+        listOf(":app-kitchen", ":app-rider", ":app-captain").filter { it in direct }.forEach { app ->
             if (":feature:feast" in reach(app)) {
                 add("$app must not depend on :feature:feast (directly or transitively) — customer ordering ships only in Momentum.")
             }
@@ -155,7 +161,7 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
             }
         }
         // (i)
-        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+        listOf(":app-kitchen", ":app-rider", ":app-captain").filter { it in direct }.forEach { app ->
             if (":feature:dating" in reach(app)) {
                 add("$app must not depend on :feature:dating (directly or transitively) — Dating ships only in Momentum.")
             }
@@ -166,8 +172,25 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
                 add(":feature:dating must not depend on $dep (directly or transitively) — Dating shares code through :core only.")
             }
         }
+        // (k) Mopedu: the rider feature is Momentum's alone, the captain feature
+        // is :app-captain's alone, and neither reaches another feature.
+        listOf(":app-kitchen", ":app-rider", ":app-captain").filter { it in direct }.forEach { app ->
+            if (":feature:mopedu-rider" in reach(app)) {
+                add("$app must not depend on :feature:mopedu-rider (directly or transitively) — the Mopedu rider flow ships only in Momentum.")
+            }
+        }
+        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+            if (":feature:mopedu-captain" in reach(app)) {
+                add("$app must not depend on :feature:mopedu-captain (directly or transitively) — the captain feature ships only in :app-captain.")
+            }
+        }
+        listOf(":feature:mopedu-rider", ":feature:mopedu-captain").filter { it in direct }.forEach { feature ->
+            reach(feature).filter { it.startsWith(":feature:") && it != feature }.forEach { dep ->
+                add("$feature must not depend on $dep (directly or transitively) — Mopedu shares code through :core only.")
+            }
+        }
         // (d)
-        listOf(":feature:kitchen", ":feature:rider").filter { it in direct }.forEach { feature ->
+        listOf(":feature:kitchen", ":feature:rider", ":feature:mopedu-captain").filter { it in direct }.forEach { feature ->
             if (":core:facear" in reach(feature)) {
                 add("$feature must not depend on :core:facear (directly or transitively) — Face AR is Momentum-only.")
             }
@@ -381,6 +404,77 @@ fun applicationBoundarySelfCheck(): List<String> {
             mapOf(":feature:dating" to setOf(":core:x"), ":core:x" to setOf(":feature:feast")),
             ":feature:dating must not depend on :feature:feast",
         ),
+        // Mopedu coverage (2026-09-18): rule (k), :app-captain as a partner app
+        // under (c)/(e)/(g)/(i), :feature:mopedu-captain under (b)/(d), and the
+        // graph that must stay legal — the rider flow in Momentum paying
+        // through :core:payments, the captain in its own app without it.
+        Triple(
+            "legal mopedu graph",
+            mapOf(
+                ":app" to setOf(":feature:mopedu-rider", ":feature:feast", ":core:payments"),
+                ":feature:mopedu-rider" to setOf(":core:mobility-model", ":core:payments", ":core:network"),
+                ":app-captain" to setOf(":feature:mopedu-captain", ":core:notifications", ":feature:auth"),
+                ":feature:mopedu-captain" to setOf(":core:mobility-model", ":core:network", ":core:notifications"),
+                ":app-kitchen" to setOf(":feature:kitchen", ":core:food"),
+                ":app-rider" to setOf(":feature:rider", ":core:food"),
+            ),
+            null,
+        ),
+        Triple("captain app -> :app", mapOf(":app-captain" to setOf(":app")), ":app-captain must not depend on :app"),
+        Triple("captain app -> payments", mapOf(":app-captain" to setOf(":core:payments")), ":app-captain must not depend on :core:payments"),
+        Triple(
+            "captain app -> payments, transitively through the rider feature",
+            mapOf(":app-captain" to setOf(":feature:mopedu-rider"), ":feature:mopedu-rider" to setOf(":core:payments")),
+            ":app-captain must not depend on :core:payments",
+        ),
+        Triple("captain app -> facear", mapOf(":app-captain" to setOf(":core:facear")), ":app-captain must not depend on :core:facear"),
+        Triple(
+            "captain app -> creator engine, transitively",
+            mapOf(":app-captain" to setOf(":core:auth"), ":core:auth" to setOf(":core:creator-engine")),
+            ":app-captain must not depend on :core:creator-engine",
+        ),
+        Triple("captain app -> post", mapOf(":app-captain" to setOf(":feature:post")), ":app-captain must not depend on :feature:post"),
+        Triple(
+            "captain app -> commerce, transitively",
+            mapOf(":app-captain" to setOf(":feature:mopedu-captain"), ":feature:mopedu-captain" to setOf(":core:commerce")),
+            ":app-captain must not depend on :core:commerce",
+        ),
+        Triple("captain app -> feast", mapOf(":app-captain" to setOf(":feature:feast")), ":app-captain must not depend on :feature:feast"),
+        Triple(
+            "captain app -> dating, transitively",
+            mapOf(":app-captain" to setOf(":core:x"), ":core:x" to setOf(":feature:dating")),
+            ":app-captain must not depend on :feature:dating",
+        ),
+        Triple("captain app -> rider feature", mapOf(":app-captain" to setOf(":feature:mopedu-rider")), ":app-captain must not depend on :feature:mopedu-rider"),
+        Triple(
+            "kitchen app -> mopedu rider feature, transitively",
+            mapOf(":app-kitchen" to setOf(":core:x"), ":core:x" to setOf(":feature:mopedu-rider")),
+            ":app-kitchen must not depend on :feature:mopedu-rider",
+        ),
+        Triple(":app -> captain feature", mapOf(":app" to setOf(":feature:mopedu-captain")), ":app must not depend on :feature:mopedu-captain"),
+        Triple(
+            ":app -> captain feature, transitively",
+            mapOf(":app" to setOf(":core:x"), ":core:x" to setOf(":feature:mopedu-captain")),
+            ":app must not depend on :feature:mopedu-captain",
+        ),
+        Triple("rider app -> captain feature", mapOf(":app-rider" to setOf(":feature:mopedu-captain")), ":app-rider must not depend on :feature:mopedu-captain"),
+        Triple("captain feature -> facear", mapOf(":feature:mopedu-captain" to setOf(":core:facear")), ":feature:mopedu-captain must not depend on :core:facear"),
+        Triple(
+            "captain feature -> facear, transitively",
+            mapOf(":feature:mopedu-captain" to setOf(":core:y"), ":core:y" to setOf(":core:facear")),
+            ":feature:mopedu-captain must not depend on :core:facear",
+        ),
+        Triple("captain feature -> captain app", mapOf(":feature:mopedu-captain" to setOf(":app-captain")), ":feature:mopedu-captain must not depend on :app-captain"),
+        Triple(
+            "mopedu rider -> feast feature, transitively",
+            mapOf(":feature:mopedu-rider" to setOf(":core:x"), ":core:x" to setOf(":feature:feast")),
+            ":feature:mopedu-rider must not depend on :feature:feast",
+        ),
+        Triple(
+            "mopedu captain -> rider feature, transitively",
+            mapOf(":feature:mopedu-captain" to setOf(":core:x"), ":core:x" to setOf(":feature:mopedu-rider")),
+            ":feature:mopedu-captain must not depend on :feature:mopedu-rider",
+        ),
     )
     return cases.mapNotNull { (name, graph, expected) ->
         val found = applicationBoundaryViolations(graph)
@@ -511,6 +605,18 @@ tasks.register("moduleGraphCheck") {
             }
         }
 
+        // Mopedu (2026-09-18): :core:mobility-model is pure Kotlin/JVM for the
+        // same reason as :core:model — the fare, surge, cancellation-fee and
+        // payment-status rules are unit-tested on the JVM, and both the rider
+        // feature (Momentum) and the captain feature (its own app) read them.
+        subprojects.find { it.path == ":core:mobility-model" }?.let { model ->
+            listOf("com.android.library", "com.android.application").forEach { id ->
+                if (model.pluginManager.hasPlugin(id)) {
+                    add(":core:mobility-model must not apply '$id' — it is pure Kotlin/JVM.")
+                }
+            }
+        }
+
         // Rule 2 + Feast A0 application boundaries, over the real graph. Edges
         // include runtimeOnly because the rules are about APK contents.
         val directEdges: Map<String, Set<String>> = subprojects.associate { sub ->
@@ -537,6 +643,12 @@ tasks.register("moduleGraphCheck") {
         directEdges[":app-rider"]?.let { riderApp ->
             if (":feature:rider" !in riderApp) {
                 add(":app-rider must depend on :feature:rider directly — it is the only app that ships it.")
+            }
+        }
+        // Mopedu (2026-09-18): the same for the Captain app.
+        directEdges[":app-captain"]?.let { captainApp ->
+            if (":feature:mopedu-captain" !in captainApp) {
+                add(":app-captain must depend on :feature:mopedu-captain directly — it is the only app that ships it.")
             }
         }
     }
@@ -603,9 +715,21 @@ tasks.register("moduleGraphCheck") {
     //      passes through :core:payments, privacy and data rights. Under the
     //      existing :feature phantom parent, so no new parent is counted. Rules
     //      (i) and (j) keep it out of the partner apps and off every other feature.
-    // Still to add, one module at a time, to reach 48: :core:location,
+    // 50 = 46 + Mopedu (2026-09-18): :core:mobility-model (pure JVM domain —
+    //      rides, quotes with surge and coupons, payment status, captain
+    //      offers), :feature:mopedu-rider (the customer flow inside Momentum,
+    //      paying through :core:payments as application "mopedu"),
+    //      :feature:mopedu-captain (the driver's screens with a location
+    //      foreground service) and :app-captain (its own installable,
+    //      applicationId com.us.mopedu.captain, proposed). The core and the
+    //      two features sit under existing phantom parents; :app-captain is
+    //      top level. Rule (k) keeps the rider feature to :app and the captain
+    //      feature to :app-captain, and :app-captain joins every partner-app
+    //      rule, so it carries no payments, Banuba, creator, post, commerce,
+    //      Feast or Dating code.
+    // Still to add, one module at a time, to reach 52: :core:location,
     // :core:kyc-ui.
-    val expectedModuleCount = 46
+    val expectedModuleCount = 50
 
     doLast {
         val allViolations = buildList {

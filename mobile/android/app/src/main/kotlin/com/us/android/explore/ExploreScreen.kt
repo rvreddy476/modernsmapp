@@ -378,6 +378,8 @@ private val LauncherApp.icon: ImageVector
         LauncherApp.ASK -> UsIcons.CircleHelp
         LauncherApp.FEAST -> UsIcons.Utensils
         LauncherApp.TUBE -> UsIcons.Tv
+        // Lucide gauge: a speedometer for the ride app (2026-09-18).
+        LauncherApp.RIDE -> UsIcons.Gauge
     }
 
 // ── Metrics ─────────────────────────────────────────────────────────────

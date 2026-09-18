@@ -114,6 +114,57 @@ class PaymentApplicationIsolationTest {
         assertEquals(mstoreOrder, launcher.inFlightAttempt())
     }
 
+    /**
+     * Four products in one process now (Mopedu, 2026-09-18): a ride id, a Feast
+     * order id, a Dating purchase id and an MStore order id can collide, and none
+     * may ever settle, resume or be read through another's seam.
+     */
+    @Test
+    fun `mopedu, feast, dating and mstore never cross - store, bus, source or sheet`() {
+        val apps = listOf("mopedu", "feast", "dating", "mstore")
+        val attempts = apps.associateWith { PaymentAttempt(applicationId = it, referenceId = "ref-1", id = "attempt-1") }
+
+        // The same store, four in-flight records: each sees only its own.
+        val store = MapStore()
+        apps.forEach { InFlightPayment(store, it).attempt = attempts.getValue(it) }
+        apps.forEach { app ->
+            assertEquals(attempts.getValue(app), InFlightPayment(store, app).attempt)
+            apps.filter { it != app }.forEach { other ->
+                assertThrows(IllegalArgumentException::class.java) { InFlightPayment(store, app).attempt = attempts.getValue(other) }
+            }
+        }
+        InFlightPayment(store, "mopedu").clear()
+        assertNull(InFlightPayment(store, "mopedu").attempt)
+        apps.filter { it != "mopedu" }.forEach { assertEquals(attempts.getValue(it), InFlightPayment(store, it).attempt) }
+
+        // The bus: a Mopedu ending is replayed to Mopedu's stream and to no other.
+        val handoff = PaymentHandoff()
+        handoff.publish(PaymentHandoffEvent.SheetClosed(attempts.getValue("mopedu")))
+        assertEquals(1, handoff.events("mopedu").replayCache.size)
+        apps.filter { it != "mopedu" }.forEach { assertTrue("$it must not hear Mopedu's ending", handoff.events(it).replayCache.isEmpty()) }
+
+        // The coordinator: a Mopedu ride is never confirmed through another product's source, nor the reverse.
+        val coordinator = PaymentCoordinator(ScriptedLauncher())
+        apps.forEach { app ->
+            apps.filter { it != app }.forEach { other ->
+                val source = ScriptedSource({ PaymentStatusReading.Paid }, applicationId = other)
+                assertThrows(IllegalArgumentException::class.java) { coordinator.confirm(app, "ref-1", source) }
+                assertTrue(source.asked.isEmpty())
+            }
+        }
+
+        // The sheet: a Mopedu session never opens for another product's attempt.
+        val launcher = ScriptedLauncher()
+        val mopeduSession = PaymentSession("mopedu", "razorpay", "order_rzp_1", "rzp_test_public", 6500, "INR", "Mopedu ride")
+        apps.filter { it != "mopedu" }.forEach { other ->
+            assertThrows(IllegalArgumentException::class.java) {
+                PaymentCoordinator(launcher).launch(Activity(), attempts.getValue(other), mopeduSession) { }
+            }
+        }
+        assertTrue(launcher.opened.isEmpty())
+        assertNotEquals(attempts.getValue("mopedu"), attempts.getValue("feast"))
+    }
+
     @Test
     fun `application ids are non-blank lowercase keys`() {
         listOf("mstore", "feast", "feast.kitchen", "app_2").forEach {

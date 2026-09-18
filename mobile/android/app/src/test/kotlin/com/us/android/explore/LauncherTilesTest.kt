@@ -13,7 +13,7 @@ import org.junit.Test
 class LauncherTilesTest {
 
     @Test
-    fun `all ten tiles, in the founder's order`() {
+    fun `all eleven tiles, in the founder's order`() {
         assertThat(launcherTiles().map { it.app }).containsExactly(
             LauncherApp.CHAT,
             LauncherApp.FRIENDS,
@@ -25,6 +25,8 @@ class LauncherTilesTest {
             LauncherApp.ASK,
             LauncherApp.FEAST,
             LauncherApp.TUBE,
+            // Ride joined on 2026-09-18 (Mopedu): after Tube, at the end of the grid.
+            LauncherApp.RIDE,
         ).inOrder()
     }
 

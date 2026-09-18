@@ -156,6 +156,44 @@ enum class NotificationChannelSpec(
         importance = NotificationManager.IMPORTANCE_DEFAULT,
         privateOnLockScreen = true,
     ),
+
+    /**
+     * Mopedu (2026-09-18): the customer's ride — captain assigned, arriving,
+     * arrived, started, completed, cancelled, payment received. HIGH: "your
+     * captain has arrived" is time-critical, and the customer is often not
+     * looking at the app while they wait.
+     */
+    RIDE_UPDATES(
+        id = "ride_updates",
+        title = "Ride updates",
+        description = "Your captain's progress and your ride's payment",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+    ),
+
+    /**
+     * Mopedu Captain: a ride offered to this captain, with a short window to
+     * accept (notification-service `captain.offer`). HIGH with the alarm
+     * tone: an unheard offer goes to the next captain.
+     */
+    CAPTAIN_OFFER(
+        id = "captain_offer",
+        title = "Ride offers",
+        description = "Rides offered to you, with time to accept",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        alertSound = true,
+    ),
+
+    /**
+     * Mopedu Captain: the ongoing "you are online and sharing your location"
+     * notification of the location foreground service. LOW: always visible
+     * while online, never buzzing.
+     */
+    CAPTAIN_ON_DUTY(
+        id = "captain_on_duty",
+        title = "On duty",
+        description = "Shown while you are online and sharing your location",
+        importance = NotificationManager.IMPORTANCE_LOW,
+    ),
     ;
 
     companion object {
@@ -179,6 +217,8 @@ enum class NotificationChannelSpec(
             ACCOUNT,
             // Dating ships only in Momentum (Wave 3, 2026-09-16).
             DATING,
+            // The Mopedu customer flow ships only in Momentum (2026-09-18).
+            RIDE_UPDATES,
         )
 
         /**
@@ -198,6 +238,16 @@ enum class NotificationChannelSpec(
             FOOD_ORDERS,
             RIDER_JOB_OFFER,
             RIDER_ON_DUTY,
+        )
+
+        /**
+         * Mopedu Captain's channels (2026-09-18) — nothing of Momentum's, the
+         * kitchen's or the Feast rider's. A captain has offers and the on-duty
+         * notification; the customer's ride updates go to Momentum.
+         */
+        val CAPTAIN: Set<NotificationChannelSpec> = setOf(
+            CAPTAIN_OFFER,
+            CAPTAIN_ON_DUTY,
         )
 
         /**
@@ -259,6 +309,12 @@ enum class NotificationChannelSpec(
             // What notification-service's dating and chat consumers emit
             // (dating_consumer.go, chat_consumer.go), Wave 3 2026-09-16.
             "dating.spark.created", "dating.match.formed", "dating.match.new_message", "dating.match.first_message" -> DATING
+            // Mopedu (2026-09-18): the customer's ride progress and payment,
+            // and the captain's offer.
+            "ride.assigned", "ride.arriving", "ride.arrived", "ride.started", "ride.completed", "ride.cancelled",
+            "ride.payment.paid",
+            -> RIDE_UPDATES
+            "captain.offer" -> CAPTAIN_OFFER
             else -> SOCIAL
         }
     }

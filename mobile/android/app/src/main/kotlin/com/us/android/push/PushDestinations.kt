@@ -104,6 +104,21 @@ class PushDestinations @Inject constructor() {
         }
 
         private const val MATCH_SEGMENTS = 3
+
+        // Mopedu pushes (2026-09-18): the customer's ride progress and payment.
+        // Every one opens the ride screen, which asks the server for the active
+        // ride (or its receipt) rather than trusting the push's payload.
+        val RIDE_TYPES: Set<String> = setOf(
+            "ride.assigned",
+            "ride.arriving",
+            "ride.arrived",
+            "ride.started",
+            "ride.completed",
+            "ride.cancelled",
+            "ride.payment.paid",
+        )
+
+        fun isRidePush(type: String?): Boolean = type in RIDE_TYPES
     }
 }
 

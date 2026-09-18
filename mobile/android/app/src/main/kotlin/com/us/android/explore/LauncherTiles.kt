@@ -44,6 +44,9 @@ enum class LauncherApp(val label: String, val module: AppModule?) {
     ASK("Ask", AppModule.QA),
     FEAST("Feast", AppModule.FOOD),
     TUBE("Tube", AppModule.POSTTUBE),
+
+    /** Mopedu: the customer's ride flow (2026-09-18). */
+    RIDE("Ride", AppModule.MOBILITY),
 }
 
 /**

@@ -83,6 +83,8 @@ dependencies {
     implementation(projects.feature.feast)
     // Dating (Wave 3). Only :app may depend on it (moduleGraphCheck (i)).
     implementation(projects.feature.dating)
+    // Mopedu — the customer's ride flow (2026-09-18). Paid through :core:payments as "mopedu".
+    implementation(projects.feature.mopeduRider)
     // The payment attempt type the commerce routes carry.
     implementation(projects.core.commerce)
     // The payment sheet (2026-09-14). MainActivity is the ActivityPaymentHost
