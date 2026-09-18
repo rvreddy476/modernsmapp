@@ -13,7 +13,7 @@ func TestRidePushesNameTheirChannelPriorityAndTTL(t *testing.T) {
 		high              bool
 	}{
 		{"captain.offer", "captain_offer", "20s", true},
-		{"captain.payment.received", "captain_on_duty", "", false},
+		{"captain.payment.received", "captain_earnings", "", false},
 		{"ride.assigned", "ride_updates", "", false},
 		{"ride.arrived", "ride_updates", "", true},
 		{"ride.payment.paid", "ride_updates", "", false},

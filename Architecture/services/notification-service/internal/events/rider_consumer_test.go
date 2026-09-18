@@ -261,7 +261,7 @@ func TestRiderConsumer_PaymentPaidTellsCustomerAndCaptain(t *testing.T) {
 	}
 	captain, ok := byApp[service.AppMopeduCaptain]
 	if !ok || captain.Type != service.CaptainTypePaymentReceived || captain.RecipientID.String() != rxPartnerUser ||
-		captain.EntityID.String() != rxRide || captain.AndroidChannel != "captain_on_duty" {
+		captain.EntityID.String() != rxRide || captain.AndroidChannel != "captain_earnings" {
 		t.Fatalf("captain push = %+v", captain)
 	}
 	if captain.Title != "Payment received ₹1,234.50" {

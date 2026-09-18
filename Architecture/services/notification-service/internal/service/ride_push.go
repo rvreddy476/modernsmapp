@@ -19,7 +19,7 @@ import (
 //	ride.assigned / arriving / arrived / started / completed / cancelled /
 //	ride.payment.paid        → customer  → momentum        (channel ride_updates)
 //	captain.offer            → captain   → mopedu_captain  (channel captain_offer)
-//	captain.payment.received → captain   → mopedu_captain  (channel captain_on_duty)
+//	captain.payment.received → captain   → mopedu_captain  (channel captain_earnings)
 //
 // The type strings are the Momentum app's PushDestinations.RIDE_TYPES and the
 // captain app's NotificationChannelSpec.forType — change one here and the
@@ -54,9 +54,10 @@ const (
 	CaptainTypeOffer           = "captain.offer"
 	CaptainTypePaymentReceived = "captain.payment.received"
 
-	RideChannelUpdates   = "ride_updates"
-	CaptainChannelOffer  = "captain_offer"
-	CaptainChannelOnDuty = "captain_on_duty"
+	RideChannelUpdates     = "ride_updates"
+	CaptainChannelOffer    = "captain_offer"
+	CaptainChannelOnDuty   = "captain_on_duty"
+	CaptainChannelEarnings = "captain_earnings"
 
 	AppMopeduCaptain = postgres.AppMopeduCaptain
 )

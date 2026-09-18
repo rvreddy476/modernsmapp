@@ -31,12 +31,13 @@ class MopeduChannelTest {
             assertThat(NotificationChannelSpec.forType(type)).isEqualTo(NotificationChannelSpec.RIDE_UPDATES)
         }
         assertThat(NotificationChannelSpec.forType("captain.offer")).isEqualTo(NotificationChannelSpec.CAPTAIN_OFFER)
+        assertThat(NotificationChannelSpec.forType("captain.payment.received")).isEqualTo(NotificationChannelSpec.CAPTAIN_EARNINGS)
         assertThat(NotificationChannelSpec.forType("ride.something_new")).isEqualTo(NotificationChannelSpec.SOCIAL)
     }
 
     @Test
     fun `the captain set is exactly its two channels and Momentum registers only ride updates`() {
-        assertThat(NotificationChannelSpec.CAPTAIN.map { it.id }).containsExactly("captain_offer", "captain_on_duty")
+        assertThat(NotificationChannelSpec.CAPTAIN.map { it.id }).containsExactly("captain_offer", "captain_on_duty", "captain_earnings")
         assertThat(NotificationChannelSpec.MOMENTUM).contains(NotificationChannelSpec.RIDE_UPDATES)
         assertThat(NotificationChannelSpec.MOMENTUM).containsNoneOf(NotificationChannelSpec.CAPTAIN_OFFER, NotificationChannelSpec.CAPTAIN_ON_DUTY)
         assertThat(NotificationChannelSpec.KITCHEN).containsNoneOf(NotificationChannelSpec.RIDE_UPDATES, NotificationChannelSpec.CAPTAIN_OFFER)
@@ -45,7 +46,7 @@ class MopeduChannelTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         NotificationChannelSpec.createAll(context, NotificationChannelSpec.CAPTAIN)
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        assertThat(manager.notificationChannels.map { it.id }).containsExactly("captain_offer", "captain_on_duty")
+        assertThat(manager.notificationChannels.map { it.id }).containsExactly("captain_offer", "captain_on_duty", "captain_earnings")
         assertThat(checkNotNull(manager.getNotificationChannel("captain_offer")).importance).isEqualTo(NotificationManager.IMPORTANCE_HIGH)
         assertThat(checkNotNull(manager.getNotificationChannel("captain_on_duty")).importance).isEqualTo(NotificationManager.IMPORTANCE_LOW)
     }

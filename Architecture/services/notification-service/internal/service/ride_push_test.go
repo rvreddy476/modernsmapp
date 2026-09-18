@@ -133,7 +133,7 @@ func captainOfferPush() RidePush {
 func captainPaidPush() RidePush {
 	return RidePush{
 		DedupKey: "event:e2:captain.payment.received", RecipientID: rideTestUser,
-		App: AppMopeduCaptain, Type: CaptainTypePaymentReceived, AndroidChannel: CaptainChannelOnDuty,
+		App: AppMopeduCaptain, Type: CaptainTypePaymentReceived, AndroidChannel: CaptainChannelEarnings,
 		Title: "Payment received", Body: "₹123.50 received for your last ride.",
 		DeepLink: "/captain/rides/" + rideTestRide.String(),
 		EntityID: rideTestRide, RideID: rideTestRide, CreatedAt: time.Now(),

@@ -194,6 +194,17 @@ enum class NotificationChannelSpec(
         description = "Shown while you are online and sharing your location",
         importance = NotificationManager.IMPORTANCE_LOW,
     ),
+
+    /**
+     * Mopedu Captain: money landed — a customer's online payment for a ride
+     * was confirmed. DEFAULT: worth a sound, never urgent.
+     */
+    CAPTAIN_EARNINGS(
+        id = "captain_earnings",
+        title = "Earnings",
+        description = "Customer payments received for your rides",
+        importance = NotificationManager.IMPORTANCE_DEFAULT,
+    ),
     ;
 
     companion object {
@@ -248,6 +259,7 @@ enum class NotificationChannelSpec(
         val CAPTAIN: Set<NotificationChannelSpec> = setOf(
             CAPTAIN_OFFER,
             CAPTAIN_ON_DUTY,
+            CAPTAIN_EARNINGS,
         )
 
         /**
@@ -315,6 +327,7 @@ enum class NotificationChannelSpec(
             "ride.payment.paid",
             -> RIDE_UPDATES
             "captain.offer" -> CAPTAIN_OFFER
+            "captain.payment.received" -> CAPTAIN_EARNINGS
             else -> SOCIAL
         }
     }

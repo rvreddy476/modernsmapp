@@ -469,7 +469,7 @@ func planPaymentPaidPushes(eventID string, raw json.RawMessage, now time.Time) (
 			RecipientID:    captain,
 			App:            service.AppMopeduCaptain,
 			Type:           service.CaptainTypePaymentReceived,
-			AndroidChannel: service.CaptainChannelOnDuty,
+			AndroidChannel: service.CaptainChannelEarnings,
 			Title:          "Payment received " + amount,
 			Body:           amount + " received for your last ride.",
 			DeepLink:       "/captain/rides/" + rideID.String(),
