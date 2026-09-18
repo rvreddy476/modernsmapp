@@ -49,11 +49,13 @@ const (
 
 // paymentsApplications maps an application-scoped admin's app to its payments
 // application key, as payments' registry seeds them
-// (payments-service/database/migrations/010_applications.sql, 011_dating_application.sql).
+// (payments-service/database/migrations/010_applications.sql,
+// 011_dating_application.sql, 012_mopedu_application.sql).
 var paymentsApplications = []struct{ app, application string }{
 	{"commerce", "mstore"},
 	{"food", "feast"},
 	{"dating", "dating"},
+	{"rider", "mopedu"},
 }
 
 // paymentsApplicationPattern is payments' application key shape

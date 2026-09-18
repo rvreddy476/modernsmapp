@@ -25,6 +25,14 @@ func riderCase(rt productRoute) string {
 		return `{"name":"Gachibowli","is_active":true}`
 	case "rider.fare_rule.create", "rider.fare_rule.update":
 		return `{"base_fare_paise":2500,"per_km_paise":900,"reason":"fuel price change"}`
+	case "rider.fare_window.create", "rider.fare_window.update":
+		return `{"city_id":"` + uuid.NewString() + `","name":"Weekday morning peak","days_of_week":31,"start_minute":480,"end_minute":600,"multiplier_bps":12500,"priority":10,"reason":"commute demand"}`
+	case "rider.coupon.create", "rider.coupon.update":
+		return `{"code":"FIRST50","discount_type":"percent","percent_bps":5000,"max_discount_paise":5000,"first_ride_only":true,"reason":"launch offer"}`
+	case opRiderRefundIssue:
+		return `{"amount_paise":12500,"reason":"partner never arrived"}`
+	case opRiderOutstandingWaive:
+		return `{"reason":"cancelled by the partner, fee charged in error"}`
 	}
 	if rt.method == http.MethodGet {
 		return ""
@@ -35,7 +43,8 @@ func riderCase(rt productRoute) string {
 // riderStepUp lists the operations that must be declared step-up: partner
 // suspend and block, the document queue and both document decisions (a KYC
 // reveal), payment verify and reject, ride cancel, contact alerts (phone
-// numbers), fare-rule changes.
+// numbers), every pricing write (fare rules, fare windows, coupons) and the
+// two money-out routes (which are two-person as well).
 var riderStepUp = map[string]bool{
 	"rider.partner.suspend": true, "rider.partner.block": true,
 	"rider.documents.list": true, "rider.document.verify": true, "rider.document.reject": true,
@@ -43,12 +52,19 @@ var riderStepUp = map[string]bool{
 	"rider.ride.cancel":            true,
 	"rider.incident.alerts.reveal": true,
 	"rider.fare_rule.create":       true, "rider.fare_rule.update": true,
+	"rider.fare_window.create": true, "rider.fare_window.update": true, "rider.fare_window.deactivate": true,
+	"rider.coupon.create": true, "rider.coupon.update": true, "rider.coupon.deactivate": true,
+	opRiderRefundIssue: true, opRiderOutstandingWaive: true,
 }
+
+// riderTwoPerson lists the operations that give money back to a customer:
+// two-person, always, whatever the amount.
+var riderTwoPerson = map[string]bool{opRiderRefundIssue: true, opRiderOutstandingWaive: true}
 
 func TestRiderRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(RiderRoutes) != 43 {
-		t.Fatalf("RiderRoutes has %d entries, want 43 (rider's 42 admin routes plus /stats)", len(RiderRoutes))
+	if len(RiderRoutes) != 58 {
+		t.Fatalf("RiderRoutes has %d entries, want 58 (rider's 57 admin routes plus /stats)", len(RiderRoutes))
 	}
 	seen := map[string]bool{}
 	for _, rt := range RiderRoutes {
@@ -59,8 +75,11 @@ func TestRiderRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 		if !strings.HasPrefix(rt.permission, "rider:") {
 			t.Fatalf("%s carries %q, not a rider permission", rt.operation, rt.permission)
 		}
-		if rt.twoPerson || rt.mayTwoPerson {
-			t.Fatalf("%s is two-person; no money leaves rider-service", rt.operation)
+		if rt.twoPerson != riderTwoPerson[rt.operation] || rt.mayTwoPerson {
+			t.Fatalf("%s declares two-person=%v may=%v, want %v (only the refund and the waiver move money)", rt.operation, rt.twoPerson, rt.mayTwoPerson, riderTwoPerson[rt.operation])
+		}
+		if rt.twoPerson && !rt.stepUp {
+			t.Fatalf("%s is two-person but not step-up", rt.operation)
 		}
 		t.Run(rt.operation+" "+rt.method+" "+rt.path, func(t *testing.T) {
 			routeTableCase(t, rg, riderPrefix, service.RiderAdminPrefix, "rider", "rider", riderAll, rt, riderCase(rt))
@@ -164,6 +183,102 @@ func TestRiderRoutes_NoKeyIs503(t *testing.T) {
 	}
 	if a := rg.takeAudit(); len(a) != 1 || a[0].Outcome != postgres.AuditOutcomeFailure {
 		t.Fatalf("audit %+v", a)
+	}
+}
+
+// A ride refund and an outstanding-fee waiver are two-person: with a second
+// holder of rider:payments.settle the first admin's step-up call is stored
+// as a pending approval (202) and never reaches rider; the approver's
+// decision replays it with a token scoped to that permission, acting as the
+// approver, at the product path the requester filled.
+func TestRiderMoney_RefundAndWaiveAreTwoPerson(t *testing.T) {
+	for _, tc := range []struct {
+		op, body, summary string
+	}{
+		{opRiderRefundIssue, `{"amount_paise":12500,"reason":"partner never arrived"}`, "Refund Mopedu ride"},
+		{opRiderRefundIssue, `{"reason":"whole fare back"}`, "amount not stated"},
+		{opRiderOutstandingWaive, `{"reason":"fee charged in error"}`, "Waive Mopedu cancellation fee"},
+	} {
+		rg := newProductsRig(t, true)
+		rg.holders.n = 1
+		requester, approver := uuid.NewString(), uuid.NewString()
+		rg.perms.grant(requester, permRiderPaymentsSettle)
+		rg.perms.grant(approver, permRiderPaymentsSettle)
+		var rt productRoute
+		for _, r := range RiderRoutes {
+			if r.operation == tc.op {
+				rt = r
+			}
+		}
+		path, ids := fill(rt.path)
+		if w := rg.do(rt.method, riderPrefix+path, tc.body, requester, false); !hasCode(w, adminauth.CodeStepUpRequired) {
+			t.Fatalf("%s without step-up: %d %s", tc.op, w.Code, w.Body.String())
+		}
+		rg.takeAudit()
+		w := rg.do(rt.method, riderPrefix+path, tc.body, requester, true)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("%s first call: %d %s", tc.op, w.Code, w.Body.String())
+		}
+		if hits := rg.takeHits(); len(hits) != 0 {
+			t.Fatalf("%s: the first admin's call reached rider: %+v", tc.op, hits)
+		}
+		if audit := rg.takeAudit(); len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending || audit[0].TargetID != ids["id"] {
+			t.Fatalf("%s pending audit %+v", tc.op, audit)
+		}
+		a := decodeApproval(t, w)
+		if a.App != riderAuditApp || a.Operation != tc.op || a.RequiredPermission != permRiderPaymentsSettle ||
+			a.RequestedBy != requester || a.TargetID != ids["id"] || !strings.Contains(a.Summary, tc.summary) {
+			t.Fatalf("%s approval %+v", tc.op, a)
+		}
+		if strings.HasPrefix(tc.body, `{"amount_paise"`) && !strings.Contains(a.Summary, "₹125.00") {
+			t.Fatalf("%s summary lacks the amount: %q", tc.op, a.Summary)
+		}
+
+		w = rg.do(http.MethodPost, "/v1/admin/approvals/"+a.ID+"/approve", `{"reason":"checked"}`, approver, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s approve: %d %s", tc.op, w.Code, w.Body.String())
+		}
+		hits := rg.takeHits()
+		if len(hits) != 1 || hits[0].aud != "rider" || hits[0].method != rt.method || hits[0].path != service.RiderAdminPrefix+path ||
+			hits[0].verified.Actor != approver || len(hits[0].verified.Scope) != 1 || hits[0].verified.Scope[0] != permRiderPaymentsSettle ||
+			hits[0].body != tc.body {
+			t.Fatalf("%s replay: %+v", tc.op, hits)
+		}
+	}
+}
+
+// A stated refund amount must be a positive whole number of paise; anything
+// else is refused before the approval is stored and before rider is called.
+func TestRiderRefund_BadAmountsAreRefusedBeforeAnything(t *testing.T) {
+	rg := newProductsRig(t, true)
+	rg.holders.n = 1
+	actor := uuid.NewString()
+	rg.perms.grant(actor, permRiderPaymentsSettle)
+	path := riderPrefix + "/rides/" + uuid.NewString() + "/refund"
+	for _, body := range []string{
+		`{"amount_paise":0,"reason":"r"}`,
+		`{"amount_paise":-5,"reason":"r"}`,
+		`{"amount_paise":12.5,"reason":"r"}`,
+		`{"amount_paise":"lots","reason":"r"}`,
+		`{"amount_paise":100000000000,"reason":"r"}`,
+	} {
+		w := rg.do(http.MethodPost, path, body, actor, true)
+		if w.Code != http.StatusBadRequest || !hasCode(w, CodeInvalidBody) {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body.String())
+		}
+		if hits := rg.takeHits(); len(hits) != 0 {
+			t.Fatalf("%s reached rider: %+v", body, hits)
+		}
+		rg.takeAudit()
+	}
+	// No reason: refused by the two-person submit, nothing stored.
+	w := rg.do(http.MethodPost, path, `{"amount_paise":100}`, actor, true)
+	if w.Code != http.StatusBadRequest || !hasCode(w, CodeReasonRequired) {
+		t.Fatalf("no reason: %d %s", w.Code, w.Body.String())
+	}
+	w = rg.do(http.MethodPost, riderPrefix+"/rides/not-a-uuid/refund", `{"reason":"r"}`, actor, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("bad ride id: %d %s", w.Code, w.Body.String())
 	}
 }
 
