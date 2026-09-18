@@ -332,6 +332,10 @@ services:
       # call_a and call_b (not secrets). See docs/adr/adr-dormant-products.md.
       DATING_PUBLIC_ENABLED: ${DATING_PUBLIC_ENABLED:-false}
       DATING_PILOT_USER_IDS: ${DATING_PILOT_USER_IDS:-2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}
+      # Mopedu answers 404 at the edge unless RIDER_PUBLIC_ENABLED=true (no
+      # pilot allowlist: the product is dormant to everyone until the flag).
+      # Set it in the gitignored .env for a dev test and recreate api-gateway.
+      RIDER_PUBLIC_ENABLED: ${RIDER_PUBLIC_ENABLED:-false}
     ports:
       - "8080:8080"
     depends_on:

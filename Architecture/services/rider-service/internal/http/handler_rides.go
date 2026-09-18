@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/atpost/rider-service/internal/service"
+	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -89,7 +90,7 @@ func (h *Handler) GetActiveRide(c *gin.Context) {
 		api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, gin.H{"active": false, "ride": nil})
 		return
 	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, gin.H{"active": true, "ride": out})
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, gin.H{"active": true, "ride": customerRide(out)})
 }
 
 // GetRideReceipt — GET /v1/rider/rides/:id/receipt.
@@ -169,7 +170,7 @@ func (h *Handler) GetRide(c *gin.Context) {
 		respondServiceError(c, err, http.StatusInternalServerError, "RIDE_FETCH_FAILED")
 		return
 	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, out)
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, customerRide(out))
 }
 
 // GetMyRides — GET /v1/rider/rides/me.
@@ -190,4 +191,17 @@ func (h *Handler) GetMyRides(c *gin.Context) {
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, out)
+}
+
+// customerRideView is a ride as its customer sees it: the ride row plus the
+// OTP, which store.Ride deliberately never serialises (json:"-") so no other
+// view can leak it. The service fills OTPCode only for the customer's own
+// views and only while a captain is assigned (revealOTPForCustomer).
+type customerRideView struct {
+	*store.Ride
+	OTP *string `json:"otp,omitempty"`
+}
+
+func customerRide(r *store.Ride) customerRideView {
+	return customerRideView{Ride: r, OTP: r.OTPCode}
 }

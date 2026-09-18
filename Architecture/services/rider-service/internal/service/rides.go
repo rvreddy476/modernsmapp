@@ -216,7 +216,8 @@ func (s *Service) CreateRide(ctx context.Context, customerID uuid.UUID, req Crea
 	return ride, nil
 }
 
-// GetActiveRideForCustomer returns the customer's active ride with decrypted OTP only when arrived.
+// GetActiveRideForCustomer returns the customer's active ride, with the OTP
+// opened while a captain is assigned (see revealOTPForCustomer).
 func (s *Service) GetActiveRideForCustomer(ctx context.Context, customerID uuid.UUID) (*store.Ride, error) {
 	if customerID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: customer id required")
@@ -228,21 +229,32 @@ func (s *Service) GetActiveRideForCustomer(ctx context.Context, customerID uuid.
 		}
 		return nil, err
 	}
-	if r != nil {
-		if r.Status == "arrived" && len(r.OTPEncrypted) > 0 {
-			decrypted, derr := s.otpCrypto.OpenOTP(ctx, r.OTPEncrypted)
-			if derr == nil {
-				r.OTPCode = &decrypted
-			} else {
-				slog.Warn("rider: open sealed otp failed", "ride_id", r.ID, "error", derr)
-				r.OTPCode = nil
-			}
-		} else {
-			// Do not expose OTP hash or material before captain arrives at pickup
-			r.OTPCode = nil
-		}
-	}
+	s.revealOTPForCustomer(ctx, r)
 	return r, nil
+}
+
+// otpVisibleStatuses are the ride states in which the customer may read the
+// ride OTP: from the moment a captain is assigned until the OTP is used.
+// Before assignment there is no OTP; from in_progress on it is spent.
+var otpVisibleStatuses = map[string]bool{"partner_assigned": true, "partner_arriving": true, "arrived": true}
+
+// revealOTPForCustomer opens the sealed OTP into r.OTPCode for the customer's
+// own ride views (the HTTP layer copies it into the "otp" field), and clears
+// it in every other state. The bcrypt hash is never exposed.
+func (s *Service) revealOTPForCustomer(ctx context.Context, r *store.Ride) {
+	if r == nil {
+		return
+	}
+	r.OTPCode = nil
+	if !otpVisibleStatuses[r.Status] || len(r.OTPEncrypted) == 0 || s.otpCrypto == nil {
+		return
+	}
+	decrypted, err := s.otpCrypto.OpenOTP(ctx, r.OTPEncrypted)
+	if err != nil {
+		slog.Warn("rider: open sealed otp failed", "ride_id", r.ID, "error", err)
+		return
+	}
+	r.OTPCode = &decrypted
 }
 
 // GetRide returns a ride by id.
@@ -257,6 +269,7 @@ func (s *Service) GetRide(ctx context.Context, customerID, rideID uuid.UUID) (*s
 	if r.CustomerUserID != customerID {
 		return nil, fmt.Errorf("forbidden: ride does not belong to user")
 	}
+	s.revealOTPForCustomer(ctx, r)
 	return r, nil
 }
 
