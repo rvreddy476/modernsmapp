@@ -10,6 +10,7 @@ import com.us.android.core.mobility.model.QuoteBreakdown
 import com.us.android.core.mobility.model.QuoteOption
 import com.us.android.core.mobility.model.QuoteSnapshot
 import com.us.android.core.mobility.model.ReceiptLine
+import com.us.android.core.mobility.model.ReceiptRefund
 import com.us.android.core.mobility.model.RideBooking
 import com.us.android.core.mobility.model.RidePayment
 import com.us.android.core.mobility.model.RidePaymentIntent
@@ -175,26 +176,41 @@ internal fun QuoteOptionDto.toOption() = QuoteOption(
     distanceMeters = distanceMeters,
     durationSeconds = durationSeconds,
     totalFare = MoneyPaise(totalPaise),
-    breakdown = breakdown?.let {
-        QuoteBreakdown(
-            basePaise = it.basePaise,
-            distancePaise = it.distancePaise,
-            timePaise = it.timePaise,
-            platformFeePaise = it.platformFeePaise,
-            taxPaise = it.taxPaise,
-            surgePaise = it.surgePaise,
-            waitingPaise = it.waitingPaise,
-            discountPaise = it.discountPaise,
-            outstandingPaise = it.outstandingPaise,
-        )
-    } ?: QuoteBreakdown(),
-    surgeBasisPoints = surgeBasisPoints,
-    surgeReason = SurgeReason.fromCode(surgeReason),
-    windowName = windowName,
-    couponCode = couponCode,
+    breakdown = breakdown?.toBreakdown() ?: QuoteBreakdown(),
+    surgeBasisPoints = if (surgeBps > 0) surgeBps else breakdown?.surgeBasisPoints ?: 0,
+    surgeReason = SurgeReason.fromCode(surgeReason ?: breakdown?.surgeReason),
+    windowName = windowName ?: breakdown?.windowName,
+    couponCode = couponCode ?: breakdown?.couponCode,
     discount = MoneyPaise(if (discountPaise > 0) discountPaise else breakdown?.discountPaise ?: 0),
-    taxNote = taxNote,
+    taxNote = breakdown?.taxNote,
 )
+
+internal fun QuoteBreakdownDto.toBreakdown() = QuoteBreakdown(
+    basePaise = basePaise,
+    distancePaise = distancePaise,
+    timePaise = timePaise,
+    platformFeePaise = platformFeePaise,
+    taxPaise = taxPaise,
+    surgePaise = surgePaise,
+    waitingChargePaise = waitingChargePaise,
+    tollPaise = tollPaise,
+    discountPaise = discountPaise,
+    outstandingPaise = outstandingPaise,
+)
+
+/** The receipt's itemised lines, from the server's breakdown. Only lines with money on them. */
+internal fun QuoteBreakdown.toReceiptLines(): List<ReceiptLine> = listOf(
+    "Base fare" to basePaise,
+    "Distance" to distancePaise,
+    "Time" to timePaise,
+    "Surge" to surgePaise,
+    "Waiting" to waitingChargePaise,
+    "Toll" to tollPaise,
+    "Platform fee" to platformFeePaise,
+    "Tax" to taxPaise,
+    "Discount" to -discountPaise,
+    "Previous cancellation fee" to outstandingPaise,
+).filter { (_, paise) -> paise != 0L }.map { (label, paise) -> ReceiptLine(label, MoneyPaise(paise)) }
 
 internal fun RideDto.toBooking() = RideBooking(
     id = id,
@@ -231,11 +247,14 @@ internal fun RideReceiptDto.toReceipt() = RideReceipt(
     distanceMeters = distanceMeters,
     durationSeconds = durationSeconds,
     totalFare = MoneyPaise(totalPaise),
-    paymentMethod = PaymentMethod.fromCode(paymentMethod),
-    paymentStatus = RidePaymentStatus.fromCode(paymentStatus),
+    paymentMethod = PaymentMethod.fromCode(payment?.method ?: paymentMethod),
+    paymentStatus = RidePaymentStatus.fromCode(payment?.status ?: paymentStatus),
     completedAtEpochMs = completedAt.toEpochMs(),
-    lines = lines.map { ReceiptLine(it.label, MoneyPaise(it.amountPaise)) },
-    taxNote = taxNote,
+    lines = (fareBreakdown?.toBreakdown() ?: QuoteBreakdown()).toReceiptLines(),
+    taxNote = taxNote ?: fareBreakdown?.taxNote,
+    payment = payment?.toPayment(),
+    refunds = refunds.map { ReceiptRefund(it.id, MoneyPaise(it.amountPaise), it.status, it.reason, it.createdAt.toEpochMs()) },
+    breakdown = fareBreakdown?.toBreakdown() ?: QuoteBreakdown(),
 )
 
 internal fun PaymentIntentDto.toIntent() = RidePaymentIntent(

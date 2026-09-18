@@ -450,7 +450,8 @@ private fun FareBreakdown(option: QuoteOption) {
         breakdownLine("Base fare", b.basePaise)
         breakdownLine("Distance", b.distancePaise)
         breakdownLine("Time", b.timePaise)
-        breakdownLine("Waiting", b.waitingPaise)
+        breakdownLine("Waiting", b.waitingChargePaise)
+        breakdownLine("Toll", b.tollPaise)
         if (b.surgePaise > 0) {
             LabeledValue(
                 label = "Surge" + option.surgeReason.chipLabel?.let { " · $it" }.orEmpty() +

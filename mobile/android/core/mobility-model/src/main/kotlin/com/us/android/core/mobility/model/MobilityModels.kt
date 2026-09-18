@@ -137,7 +137,8 @@ data class QuoteBreakdown(
     val platformFeePaise: Long = 0,
     val taxPaise: Long = 0,
     val surgePaise: Long = 0,
-    val waitingPaise: Long = 0,
+    val waitingChargePaise: Long = 0,
+    val tollPaise: Long = 0,
     val discountPaise: Long = 0,
     val outstandingPaise: Long = 0,
 )
@@ -294,8 +295,18 @@ data class RidePaymentIntent(
     val status: String,
 )
 
-/** One line of the itemised receipt. */
+/** One line of the itemised receipt, derived from the server's fare breakdown. */
 data class ReceiptLine(val label: String, val amount: MoneyPaise)
+
+/** One refund filed against the ride's payment, as the receipt lists it. */
+data class ReceiptRefund(
+    val id: String,
+    val amount: MoneyPaise,
+    /** pending | refunded | failed */
+    val status: String,
+    val reason: String,
+    val createdAtEpochMs: Long?,
+)
 
 data class RideReceipt(
     val rideId: String,
@@ -309,11 +320,18 @@ data class RideReceipt(
     val durationSeconds: Int,
     val totalFare: MoneyPaise,
     val paymentMethod: PaymentMethod,
+    /** From the receipt's payment block when present; the legacy flat column otherwise. */
     val paymentStatus: RidePaymentStatus,
     val completedAtEpochMs: Long?,
     val lines: List<ReceiptLine> = emptyList(),
     val taxNote: String? = null,
-)
+    /** The ride's latest payment row; null before completion. */
+    val payment: RidePayment? = null,
+    val refunds: List<ReceiptRefund> = emptyList(),
+    val breakdown: QuoteBreakdown = QuoteBreakdown(),
+) {
+    val totalRefunded: MoneyPaise get() = payment?.refunded ?: MoneyPaise.ZERO
+}
 
 /** `GET /v1/rider/me/outstanding`: a cancellation fee still to be paid. */
 data class OutstandingCharge(

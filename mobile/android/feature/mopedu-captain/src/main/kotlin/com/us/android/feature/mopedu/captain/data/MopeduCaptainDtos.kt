@@ -64,13 +64,21 @@ data class CaptainEarningsDto(
     @SerialName("total_rides_count") val totalRidesCount: Int = 0,
 )
 
-/** `GET /v1/rider/rides/{id}/payment`, read by the captain while waiting for an online payment. */
+/**
+ * `GET /v1/rider/rides/{id}/payment` (`service.RidePaymentStatus`), read by
+ * the captain while waiting for an online payment. Pinned by
+ * payment_status_paid.json (CaptainContractFixtureTest).
+ */
 @Serializable
 data class RidePaymentDto(
     @SerialName("method") val method: String = "cash",
+    /** cash_pending | cash_confirmed | pending | confirming | paid | failed | refunded | partially_refunded */
     @SerialName("status") val status: String = "",
     @SerialName("amount_paise") val amountPaise: Long = 0,
     @SerialName("refunded_paise") val refundedPaise: Long = 0,
+    /** The open payments intent; null for cash and before an intent exists. */
+    @SerialName("intent_id") val intentId: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 // --- Onboarding & Partner Profile DTOs ---
