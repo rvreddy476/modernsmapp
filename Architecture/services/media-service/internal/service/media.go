@@ -78,6 +78,20 @@ func (s *Service) deliveryURL(ctx context.Context, viewerID, mediaID uuid.UUID, 
 	return s.gate.URLFor(ctx, viewerID.String(), mediaID.String(), objectKey)
 }
 
+// deliveryURLForVariant is deliveryURL for a read that NAMED a variant.
+//
+// The name is passed on because the open-graph poster rule (2026-09-18) is
+// scoped to stills: an anonymous caller may be admitted to a public post's
+// thumbnail, never to its video renditions, its HLS graph or its original.
+// Only `…/serve/{variant}` can say which was asked for, so only it uses this;
+// every other read path keeps deliveryURL and its unchanged decision.
+func (s *Service) deliveryURLForVariant(ctx context.Context, viewerID, mediaID uuid.UUID, variant, objectKey string) (string, error) {
+	if s.gate == nil {
+		return "", fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
+	}
+	return s.gate.URLForVariant(ctx, viewerID.String(), mediaID.String(), variant, objectKey)
+}
+
 func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
 	cfg := config.Load()
 	s := &Service{
@@ -890,7 +904,12 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid
 	}
 	for _, v := range variants {
 		if v.Name == variant {
-			return s.deliveryURL(ctx, viewerID, mediaID, v.ObjectKey)
+			// The only read that names a derived variant, and therefore the
+			// only one the anonymous open-graph poster rule can apply to.
+			// `original` above and the avatar branch keep the unchanged
+			// decision: a poster is a still the pipeline derived, never the
+			// file the author uploaded.
+			return s.deliveryURLForVariant(ctx, viewerID, mediaID, v.Name, v.ObjectKey)
 		}
 	}
 	return "", fmt.Errorf("variant %q not found", variant)

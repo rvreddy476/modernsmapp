@@ -374,6 +374,11 @@ func (authorizers AnyContentAuthorizer) AuthorizeBatch(ctx context.Context, view
 type Gate struct {
 	signer URLSigner
 	authz  ContentAuthorizer
+	// publicPoster is the ONLY authority consulted for an anonymous caller
+	// that the authorizers above have already refused, and only for a still
+	// image. Nil disables the open-graph poster path entirely — see
+	// public_poster.go for what it may and may not admit.
+	publicPoster PublicPostLookup
 }
 
 func NewGate(signer URLSigner, authz ContentAuthorizer) *Gate {

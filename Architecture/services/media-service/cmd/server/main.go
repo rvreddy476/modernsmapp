@@ -154,6 +154,12 @@ func main() {
 			"Set MEDIA_CDN_BASE_URL, MEDIA_CLOUDFRONT_KEY_PAIR_ID, MEDIA_CLOUDFRONT_PRIVATE_KEY "+
 			"and POST_SERVICE_URL to enable protected delivery.", "err", gerr)
 	} else {
+		// The open-graph poster authority (2026-09-18). It can only ADD an
+		// allow, and only for an anonymous caller asking for a still image of
+		// an asset on a post that is public to the whole internet — see
+		// delivery/public_poster.go and postgres.MediaIsOnPublicPost. Without
+		// it a shared video link and every search result has no picture.
+		gate.WithPublicPoster(pgStore)
 		mediaSvc.WithDeliveryGate(gate)
 		deliverySigner = signer
 		slog.Info("delivery gate configured", "cdn", env("MEDIA_CDN_BASE_URL", ""))
