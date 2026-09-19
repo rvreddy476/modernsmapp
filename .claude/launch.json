@@ -2,10 +2,22 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "postbook-ui",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--cwd=C:/workspace/postbook-ui", "run", "start"],
+      "port": 3000
+    },
+    {
+      "name": "postbook-ui-dev",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--cwd=C:/workspace/postbook-ui", "run", "dev"],
+      "port": 3100
+    },
+    {
       "name": "momentum-web",
       "runtimeExecutable": "bun",
       "runtimeArgs": ["--cwd=C:/workspace/atpost-web", "run", "dev"],
-      "port": 3000
+      "port": 3200
     }
   ]
 }
