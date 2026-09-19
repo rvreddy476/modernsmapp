@@ -254,6 +254,7 @@ var StampPolicy = map[string]bool{
 	"/v1/reports":                  true,
 	"/v1/appeals":                  true,
 	"/v1/grievances":               true,
+	"/v1/verification-requests":    true,
 
 	// graph-service: engine-wide RequireInternalKey.
 	"/v1/graph": true,
@@ -273,6 +274,7 @@ var StampPolicy = map[string]bool{
 	"/v1/creators":     true,
 	"/v1/feedback":     true,
 	"/v1/posts":        true,
+	"/v1/crossposts":   true,
 
 	// feed-service: engine-wide RequireInternalKey.
 	"/v1/feed": true,
@@ -289,6 +291,7 @@ var StampPolicy = map[string]bool{
 
 	// notification-service: engine-wide RequireInternalKey (SSE included).
 	"/v1/notifications": true,
+	"/v1/unread":        true,
 	"/v1/realtime":      true,
 
 	// search-service: engine-wide RequireInternalKey.

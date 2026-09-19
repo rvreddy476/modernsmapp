@@ -414,6 +414,9 @@ func routeDefinitions() []routeDef {
 		{"/v1/creators", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feedback", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/posts", env("POST_SERVICE_URL", "http://post-service:8084")},
+		// post-service GET /v1/crossposts/mine. The per-post crosspost routes
+		// live under /v1/posts and were reachable; this standalone one was not.
+		{"/v1/crossposts", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feed", env("FEED_SERVICE_URL", "http://feed-service:8086")},
 		{"/v1/audio", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/media", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
@@ -446,6 +449,10 @@ func routeDefinitions() []routeDef {
 		//     the sake of a <track src> that does not fetch this path anyway.
 		{"/v1/subtitles", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/notifications", env("NOTIFY_SERVICE_URL", "http://notification-service:8088")},
+		// notification-service POST /v1/unread/bulk: one call for the unread
+		// badge counts across chat, notifications and requests. The web client
+		// documented it as its offline-sync source and could never reach it.
+		{"/v1/unread", env("NOTIFY_SERVICE_URL", "http://notification-service:8088")},
 		// Realtime server-sent events (notification-service
 		// GET /v1/realtime/sse): live order tracking, the kitchen order
 		// queue and rider job offers. There was no prefix for it, so no phone
@@ -468,6 +475,11 @@ func routeDefinitions() []routeDef {
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/appeals", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
+		// A user submits a verification request here (POST); the GET on the
+		// same path is the reviewer queue and gates itself on the admin scope,
+		// which the gateway strips from the client and re-derives from the
+		// verified token. Without this prefix the submit route was unreachable.
+		{"/v1/verification-requests", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/reviewer", env("REVIEWER_SERVICE_URL", "http://reviewer-service:8120")},
 		{"/v1/grievances", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/ws", env("WS_GATEWAY_URL", "http://ws-gateway:8093")},
