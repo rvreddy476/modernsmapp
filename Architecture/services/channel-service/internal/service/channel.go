@@ -994,6 +994,10 @@ func (s *Service) DiscoverChannels(ctx context.Context, viewerID *uuid.UUID, q s
 // engaging on public channels. authorizeEngagement is the single gate
 // every engagement entry-point goes through.
 
+// SparkUpdate is DEPRECATED on channels: an update carries an emoji reaction
+// and a share, nothing else. The route stays only until we know no shipped
+// client calls it, and a spark no longer contributes to reaction_count —
+// see the note on store.SparkUpdate.
 func (s *Service) SparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID, isSupernova bool) error {
 	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
 		return err
@@ -1008,6 +1012,8 @@ func (s *Service) SparkUpdate(ctx context.Context, channelID, updateID, userID u
 	return s.store.SparkUpdate(ctx, updateID, userID, isSupernova)
 }
 
+// UnsparkUpdate is DEPRECATED with SparkUpdate, and likewise leaves
+// reaction_count alone.
 func (s *Service) UnsparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
 	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
 		return err

@@ -550,6 +550,32 @@ func (s *Store) CountChannelsByOwner(ctx context.Context, ownerID uuid.UUID, sin
 
 // --- Engagement operations ---
 
+// ─── SPARKS ARE DEPRECATED ON CHANNELS ──────────────────────────────────
+//
+// A channel update carries an emoji REACTION and a SHARE, and nothing else.
+// Sparks (the heart) are not a channel feature. The table, the service
+// methods and the routes stay for now because a shipped client — an Android
+// build in particular — may still call them; retiring the endpoints is a
+// separate, deliberate step once we know nobody does.
+//
+// What they must NOT do any more is move channel_updates.reaction_count.
+// That column had two writers that disagreed:
+//
+//	syncReactionCount (store/community.go)  recomputes it as
+//	                                        COUNT(*) FROM update_reactions
+//	SparkUpdate / UnsparkUpdate             added and subtracted a spark
+//	                                        weight (1, or 5 for a supernova)
+//
+// so every spark inflated the number by up to five, and the very next emoji
+// reaction on that update silently clobbered the inflation back to the
+// reaction count — the displayed figure jumped about depending on which
+// write happened last. reaction_count means "how many emoji reactions",
+// so update_reactions is its only source. It is now single-writer:
+// syncReactionCount recomputes it inside the same transaction as every
+// reaction write, which makes it self-healing by construction.
+//
+// Rows corrupted before this change are repaired by the one-off in
+// database/migrations/001_backfill_reaction_count.sql.
 func (s *Store) SparkUpdate(ctx context.Context, updateID, userID uuid.UUID, isSupernova bool) error {
 	weight := 1
 	if isSupernova {
@@ -564,26 +590,22 @@ func (s *Store) SparkUpdate(ctx context.Context, updateID, userID uuid.UUID, isS
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("already sparked this update")
 	}
-	_, err = s.db.Exec(ctx,
-		`UPDATE channel_updates SET reaction_count = reaction_count + $2, updated_at = NOW() WHERE id = $1`,
-		updateID, weight)
-	return err
+	// Deliberately no reaction_count write: see the note above.
+	return nil
 }
 
+// UnsparkUpdate removes the viewer's spark. Deprecated with SparkUpdate, and
+// likewise leaves reaction_count alone.
 func (s *Store) UnsparkUpdate(ctx context.Context, updateID, userID uuid.UUID) error {
-	var weight int
+	// The weight is read only to tell "deleted a row" from "there was no
+	// row"; nothing is counted with it any more.
+	var sparkWeight int
 	err := s.db.QueryRow(ctx,
 		`DELETE FROM update_sparks WHERE update_id = $1 AND user_id = $2 RETURNING weight`,
-		updateID, userID).Scan(&weight)
+		updateID, userID).Scan(&sparkWeight)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("not found: spark not found")
 	}
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(ctx,
-		`UPDATE channel_updates SET reaction_count = GREATEST(reaction_count - $2, 0), updated_at = NOW() WHERE id = $1`,
-		updateID, weight)
 	return err
 }
 

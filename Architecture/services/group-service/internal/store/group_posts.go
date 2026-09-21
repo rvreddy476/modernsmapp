@@ -187,15 +187,20 @@ func (s *Store) ListMyGroupsFeed(ctx context.Context, userID uuid.UUID, limit, o
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
+	// The viewer is bound twice, under two types: group_members.user_id is UUID
+	// while the engagement tables' user_id is TEXT, so a single placeholder
+	// would give Postgres conflicting types for the same parameter. $4 carries
+	// the TEXT form; an unset viewer sends "" there, which matches no
+	// engagement row (and no membership row either, so the feed is empty)
+	// rather than erroring.
 	rows, err := s.db.Query(ctx, `
-		SELECT p.id, p.group_id, p.channel_id, p.author_id, p.content_type, p.title, p.body, p.body_html,
-		       p.type_payload, p.attachments, p.needs_approval, p.is_pinned, p.is_announcement, p.status,
-		       p.spark_count, p.comment_count, p.echo_count, p.view_count, p.created_at, p.updated_at
+		SELECT `+groupPostV2ColumnsP+`, `+viewerEngagementColumns+`
 		FROM group_posts p
 		JOIN group_members m ON m.group_id = p.group_id AND m.user_id = $1
+		`+viewerEngagementJoins("$4")+`
 		WHERE p.status = 'published'
 		ORDER BY p.created_at DESC
-		LIMIT $2 OFFSET $3`, userID, limit, offset)
+		LIMIT $2 OFFSET $3`, userID, limit, offset, viewerTextKey(userID))
 	if err != nil {
 		return nil, err
 	}
@@ -203,21 +208,11 @@ func (s *Store) ListMyGroupsFeed(ctx context.Context, userID uuid.UUID, limit, o
 
 	var posts []GroupPostV2
 	for rows.Next() {
-		var p GroupPostV2
-		if err := rows.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
-			&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
-			&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
-			&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
-			&p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanGroupPostV2WithViewer(rows)
+		if err != nil {
 			return nil, err
 		}
-		if p.TypePayload == nil {
-			p.TypePayload = json.RawMessage(`{}`)
-		}
-		if p.Attachments == nil {
-			p.Attachments = json.RawMessage(`[]`)
-		}
-		posts = append(posts, p)
+		posts = append(posts, *p)
 	}
 	return posts, rows.Err()
 }

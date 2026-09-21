@@ -103,6 +103,12 @@ type GroupPostV2 struct {
 	ViewCount      int             `json:"view_count"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
+	// Viewer-relative engagement: whether the signed-in viewer has already
+	// sparked / echoed / stashed this post. Readers that have a viewer in
+	// scope populate these; an anonymous or non-reacting viewer gets false.
+	ViewerSparked bool `json:"viewer_sparked"`
+	ViewerEchoed  bool `json:"viewer_echoed"`
+	ViewerStashed bool `json:"viewer_stashed"`
 }
 
 type GroupPostComment struct {
@@ -1562,6 +1568,40 @@ const groupPostV2Columns = `id, group_id, channel_id, author_id, content_type, t
 	type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
 	spark_count, comment_count, echo_count, view_count, created_at, updated_at`
 
+// groupPostV2ColumnsP is groupPostV2Columns qualified with the `p` alias, for
+// the readers that join the per-viewer engagement tables.
+const groupPostV2ColumnsP = `p.id, p.group_id, p.channel_id, p.author_id, p.content_type, p.title, p.body, p.body_html,
+	p.type_payload, p.attachments, p.needs_approval, p.is_pinned, p.is_announcement, p.status,
+	p.spark_count, p.comment_count, p.echo_count, p.view_count, p.created_at, p.updated_at`
+
+// viewerEngagementColumns are the three viewer_* flags, in the order
+// scanGroupPostV2WithViewer expects them. Always select these together with
+// viewerEngagementJoins.
+const viewerEngagementColumns = `(vs.user_id IS NOT NULL) AS viewer_sparked,
+	(ve.user_id IS NOT NULL) AS viewer_echoed,
+	(vt.user_id IS NOT NULL) AS viewer_stashed`
+
+// viewerTextKey renders a viewer uuid as the TEXT user id the engagement
+// tables store. An unset viewer becomes "", which matches no row.
+func viewerTextKey(id uuid.UUID) string {
+	if id == uuid.Nil {
+		return ""
+	}
+	return id.String()
+}
+
+// viewerEngagementJoins left-joins the spark/echo/stash rows belonging to one
+// viewer onto the `p` alias. param is the placeholder holding the viewer id
+// (TEXT in this service, so callers pass actorID.String()). Each table is
+// unique on (post_id, user_id), so these joins never duplicate a post row, and
+// an empty viewer id simply matches nothing — an anonymous viewer gets false on
+// every flag rather than an error.
+func viewerEngagementJoins(param string) string {
+	return `LEFT JOIN group_post_sparks vs ON vs.post_id = p.id AND vs.user_id = ` + param + `
+		LEFT JOIN group_post_echoes ve ON ve.post_id = p.id AND ve.user_id = ` + param + `
+		LEFT JOIN group_post_stashes vt ON vt.post_id = p.id AND vt.user_id = ` + param
+}
+
 func scanGroupPostV2(row pgx.Row) (*GroupPostV2, error) {
 	var p GroupPostV2
 	err := row.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
@@ -1569,6 +1609,28 @@ func scanGroupPostV2(row pgx.Row) (*GroupPostV2, error) {
 		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
 		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
 		&p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if p.TypePayload == nil {
+		p.TypePayload = json.RawMessage(`{}`)
+	}
+	if p.Attachments == nil {
+		p.Attachments = json.RawMessage(`[]`)
+	}
+	return &p, nil
+}
+
+// scanGroupPostV2WithViewer scans the groupPostV2ColumnsP +
+// viewerEngagementColumns projection, in that order.
+func scanGroupPostV2WithViewer(row pgx.Row) (*GroupPostV2, error) {
+	var p GroupPostV2
+	err := row.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
+		&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
+		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
+		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
+		&p.CreatedAt, &p.UpdatedAt,
+		&p.ViewerSparked, &p.ViewerEchoed, &p.ViewerStashed)
 	if err != nil {
 		return nil, err
 	}
@@ -1615,13 +1677,30 @@ func (s *Store) CreateGroupPostV2(ctx context.Context, p *GroupPostV2) error {
 	return err
 }
 
+// GetGroupPostV2 reads one post without viewer context. The viewer_* flags are
+// left false; ownership and membership checks use this. Read paths that render
+// the post to a viewer should call GetGroupPostV2ForViewer instead.
 func (s *Store) GetGroupPostV2(ctx context.Context, postID uuid.UUID) (*GroupPostV2, error) {
 	row := s.db.QueryRow(ctx,
 		`SELECT `+groupPostV2Columns+` FROM group_posts WHERE id = $1 AND status != 'deleted'`, postID)
 	return scanGroupPostV2(row)
 }
 
-func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channelID *uuid.UUID, limit, offset int) ([]GroupPostV2, error) {
+// GetGroupPostV2ForViewer is GetGroupPostV2 plus the viewer_* engagement flags.
+// viewerID is the viewer's user id as TEXT ("" for anonymous, which yields
+// false on every flag).
+func (s *Store) GetGroupPostV2ForViewer(ctx context.Context, postID uuid.UUID, viewerID string) (*GroupPostV2, error) {
+	row := s.db.QueryRow(ctx,
+		`SELECT `+groupPostV2ColumnsP+`, `+viewerEngagementColumns+`
+		FROM group_posts p
+		`+viewerEngagementJoins("$2")+`
+		WHERE p.id = $1 AND p.status != 'deleted'`, postID, viewerID)
+	return scanGroupPostV2WithViewer(row)
+}
+
+// ListGroupPostsV2 lists a group's published posts. viewerID is the viewer's
+// user id as TEXT ("" for anonymous) and drives the viewer_* flags.
+func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channelID *uuid.UUID, viewerID string, limit, offset int) ([]GroupPostV2, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
@@ -1629,16 +1708,20 @@ func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channel
 	var err error
 	if channelID != nil {
 		rows, err = s.db.Query(ctx,
-			`SELECT `+groupPostV2Columns+` FROM group_posts
-			WHERE group_id = $1 AND channel_id = $2 AND status = 'published'
-			ORDER BY is_pinned DESC, created_at DESC LIMIT $3 OFFSET $4`,
-			groupID, *channelID, limit, offset)
+			`SELECT `+groupPostV2ColumnsP+`, `+viewerEngagementColumns+`
+			FROM group_posts p
+			`+viewerEngagementJoins("$5")+`
+			WHERE p.group_id = $1 AND p.channel_id = $2 AND p.status = 'published'
+			ORDER BY p.is_pinned DESC, p.created_at DESC LIMIT $3 OFFSET $4`,
+			groupID, *channelID, limit, offset, viewerID)
 	} else {
 		rows, err = s.db.Query(ctx,
-			`SELECT `+groupPostV2Columns+` FROM group_posts
-			WHERE group_id = $1 AND status = 'published'
-			ORDER BY is_pinned DESC, created_at DESC LIMIT $2 OFFSET $3`,
-			groupID, limit, offset)
+			`SELECT `+groupPostV2ColumnsP+`, `+viewerEngagementColumns+`
+			FROM group_posts p
+			`+viewerEngagementJoins("$4")+`
+			WHERE p.group_id = $1 AND p.status = 'published'
+			ORDER BY p.is_pinned DESC, p.created_at DESC LIMIT $2 OFFSET $3`,
+			groupID, limit, offset, viewerID)
 	}
 	if err != nil {
 		return nil, err
@@ -1647,21 +1730,11 @@ func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channel
 
 	var posts []GroupPostV2
 	for rows.Next() {
-		var p GroupPostV2
-		if err := rows.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
-			&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
-			&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
-			&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
-			&p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanGroupPostV2WithViewer(rows)
+		if err != nil {
 			return nil, err
 		}
-		if p.TypePayload == nil {
-			p.TypePayload = json.RawMessage(`{}`)
-		}
-		if p.Attachments == nil {
-			p.Attachments = json.RawMessage(`[]`)
-		}
-		posts = append(posts, p)
+		posts = append(posts, *p)
 	}
 	return posts, rows.Err()
 }

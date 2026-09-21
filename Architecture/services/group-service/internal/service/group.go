@@ -1908,6 +1908,17 @@ func nilIfEmpty(s string) *string {
 	return &s
 }
 
+// viewerKey renders the acting user as the TEXT user id the engagement tables
+// store (the same form the spark/echo/stash writers use). An unset actor
+// becomes "", which matches no engagement row, so the viewer_* flags come back
+// false instead of erroring.
+func viewerKey(actorID uuid.UUID) string {
+	if actorID == uuid.Nil {
+		return ""
+	}
+	return actorID.String()
+}
+
 func (s *Service) GetGroupFeedV2(ctx context.Context, actorID, groupID uuid.UUID, channelID *uuid.UUID, limit, offset int) ([]store.GroupPostV2, error) {
 	g, err := s.store.GetGroupByID(ctx, groupID)
 	if err != nil {
@@ -1921,7 +1932,7 @@ func (s *Service) GetGroupFeedV2(ctx context.Context, actorID, groupID uuid.UUID
 		return nil, err
 	}
 
-	return s.store.ListGroupPostsV2(ctx, groupID, channelID, limit, offset)
+	return s.store.ListGroupPostsV2(ctx, groupID, channelID, viewerKey(actorID), limit, offset)
 }
 
 func (s *Service) GetGroupPostV2(ctx context.Context, actorID, groupID, postID uuid.UUID) (*store.GroupPostV2, error) {
@@ -1935,7 +1946,7 @@ func (s *Service) GetGroupPostV2(ctx context.Context, actorID, groupID, postID u
 	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
 		return nil, err
 	}
-	p, err := s.store.GetGroupPostV2(ctx, postID)
+	p, err := s.store.GetGroupPostV2ForViewer(ctx, postID, viewerKey(actorID))
 	if err != nil {
 		return nil, err
 	}
