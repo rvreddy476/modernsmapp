@@ -266,76 +266,6 @@ func (s *Store) AcceptConnectionRequestAtomic(ctx context.Context, senderID, rec
 	})
 }
 
-// AddCloseFriendAtomic adds a Trusted Circle member under the pair lock.
-// Close friends is an AUDIENCE: a surviving row after a block keeps the
-// blocked person able to see `close_friends`-visibility content.
-func (s *Store) AddCloseFriendAtomic(ctx context.Context, userID, friendID uuid.UUID, source string) error {
-	return s.withPairLock(ctx, userID, friendID, func(tx pgx.Tx) error {
-		if err := guardPairTx(ctx, tx, userID, friendID); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx,
-			`INSERT INTO close_friends (user_id, friend_id, source) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-			userID, friendID, source)
-		return err
-	})
-}
-
-// AddFavoriteAtomic pins an account to the top of the owner's feed.
-func (s *Store) AddFavoriteAtomic(ctx context.Context, userID, targetID uuid.UUID) error {
-	return s.withPairLock(ctx, userID, targetID, func(tx pgx.Tx) error {
-		if err := guardPairTx(ctx, tx, userID, targetID); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx,
-			`INSERT INTO favorites (user_id, target_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-			userID, targetID)
-		return err
-	})
-}
-
-// UpsertRelationshipLabelAtomic records a label ("family", "colleague", ...).
-func (s *Store) UpsertRelationshipLabelAtomic(ctx context.Context, userID, targetID uuid.UUID, label string) error {
-	return s.withPairLock(ctx, userID, targetID, func(tx pgx.Tx) error {
-		if err := guardPairTx(ctx, tx, userID, targetID); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx,
-			`INSERT INTO relationship_labels (user_id, target_id, label) VALUES ($1, $2, $3)
-			 ON CONFLICT (user_id, target_id) DO UPDATE SET label = EXCLUDED.label`,
-			userID, targetID, label)
-		return err
-	})
-}
-
-// AddCircleMemberAtomic adds a user to one of ownerID's circles. The pair
-// under contention is (owner, member) — the circle is just the container, and
-// a circle is an audience the same way close friends is.
-func (s *Store) AddCircleMemberAtomic(ctx context.Context, circleID, ownerID, userID uuid.UUID) error {
-	return s.withPairLock(ctx, ownerID, userID, func(tx pgx.Tx) error {
-		if err := guardPairTx(ctx, tx, ownerID, userID); err != nil {
-			return err
-		}
-		// Ownership is re-verified inside the lock so a circle deleted or
-		// transferred concurrently cannot receive a member.
-		var owns bool
-		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM circles WHERE id = $1 AND owner_id = $2)`,
-			circleID, ownerID).Scan(&owns); err != nil {
-			return fmt.Errorf("circle member: ownership check: %w", err)
-		}
-		if !owns {
-			return fmt.Errorf("circle not found")
-		}
-		_, err := tx.Exec(ctx,
-			`INSERT INTO circle_members (circle_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-			circleID, userID)
-		return err
-	})
-}
-
-// ── Block ───────────────────────────────────────────────────────────────────
-
 // BlockResult reports what the atomic block actually removed, so the caller
 // can adjust counters and the test can assert on real effects.
 type BlockResult struct {
@@ -345,31 +275,9 @@ type BlockResult struct {
 	RemovedConnection    bool
 	RemovedRequest       int
 	RemovedFollowRequest int
-	RemovedCloseFriend   int
-	RemovedCircleMember  int
-	RemovedFavorite      int
-	RemovedLabel         int
 	PairSeq              int64
 }
 
-// blockSweepTables are the relationship tables a block must sweep, with the
-// real column names from database/migrations/004_social_graph_extensions.sql.
-//
-// SR-2: the previous version guessed `owner_id`/`member_id` for four of these
-// tables. Every one of those statements would have failed with 42703
-// (undefined column) at runtime, aborting the block transaction — meaning
-// Block would have failed outright in any deployment where migration 004 had
-// been applied. It appeared to pass only because the test database lacked
-// those tables entirely, so the to_regclass probe skipped all four. That is
-// why the live suite below now builds the COMPLETE schema and seeds every
-// table: a sweep test that runs against absent tables asserts nothing.
-//
-//	close_friends       (user_id, friend_id)
-//	circle_members      (circle_id, user_id) + circles(owner_id)
-//	favorites           (user_id, target_id)
-//	relationship_labels (user_id, target_id)
-//	connections         (user_a, user_b)
-//	connection_requests (sender_id, receiver_id)
 
 // BlockAtomic creates the block and severs every relationship that could
 // expose either user to the other, in ONE transaction, and records the
@@ -416,9 +324,7 @@ func (s *Store) BlockAtomic(ctx context.Context, blockerID, blockedID uuid.UUID)
 		// to fail silently.
 		present := map[string]bool{}
 		for _, name := range []string{
-			"close_friends", "circle_members", "circles", "favorites",
-			"relationship_labels", "connections", "connection_requests",
-			"follow_requests",
+			"connections", "connection_requests", "follow_requests",
 		} {
 			var reg *string
 			if err := tx.QueryRow(ctx, `SELECT to_regclass($1)::text`, "public."+name).Scan(&reg); err != nil {
@@ -469,42 +375,6 @@ func (s *Store) BlockAtomic(ctx context.Context, blockerID, blockedID uuid.UUID)
 			res.RemovedFollowRequest = n
 		}
 
-		if n, err := sweep("close_friends", `
-			DELETE FROM close_friends
-			WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`,
-			blockerID, blockedID); err != nil {
-			return fmt.Errorf("block: remove close friends: %w", err)
-		} else {
-			res.RemovedCloseFriend = n
-		}
-
-		if n, err := sweep("circle_members", `
-			DELETE FROM circle_members
-			WHERE (user_id = $2 AND circle_id IN (SELECT id FROM circles WHERE owner_id = $1))
-			   OR (user_id = $1 AND circle_id IN (SELECT id FROM circles WHERE owner_id = $2))`,
-			blockerID, blockedID); err != nil {
-			return fmt.Errorf("block: remove circle members: %w", err)
-		} else {
-			res.RemovedCircleMember = n
-		}
-
-		if n, err := sweep("favorites", `
-			DELETE FROM favorites
-			WHERE (user_id = $1 AND target_id = $2) OR (user_id = $2 AND target_id = $1)`,
-			blockerID, blockedID); err != nil {
-			return fmt.Errorf("block: remove favorites: %w", err)
-		} else {
-			res.RemovedFavorite = n
-		}
-
-		if n, err := sweep("relationship_labels", `
-			DELETE FROM relationship_labels
-			WHERE (user_id = $1 AND target_id = $2) OR (user_id = $2 AND target_id = $1)`,
-			blockerID, blockedID); err != nil {
-			return fmt.Errorf("block: remove labels: %w", err)
-		} else {
-			res.RemovedLabel = n
-		}
 
 		// The safety event goes in the SAME transaction. If the commit fails
 		// there is no block and no event; if it succeeds both exist. There is
@@ -531,8 +401,7 @@ func (s *Store) BlockAtomic(ctx context.Context, blockerID, blockedID uuid.UUID)
 		//    IS a transition downstream consumers need to hear about.
 		changed := res.Created ||
 			res.RemovedFollowForward || res.RemovedFollowReverse || res.RemovedConnection ||
-			res.RemovedRequest > 0 || res.RemovedFollowRequest > 0 || res.RemovedCloseFriend > 0 ||
-			res.RemovedCircleMember > 0 || res.RemovedFavorite > 0 || res.RemovedLabel > 0
+			res.RemovedRequest > 0 || res.RemovedFollowRequest > 0
 		if !changed {
 			return nil
 		}

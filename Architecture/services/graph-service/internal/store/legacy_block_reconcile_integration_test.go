@@ -66,7 +66,6 @@ func TestLegacyBlockReconcile_ImportsUnprotectedBlocksAndSeversRelationships(t *
 	}{
 		{`INSERT INTO follows (follower_id, followee_id) VALUES ($1,$2)`, []any{alice, bob}},
 		{`INSERT INTO follows (follower_id, followee_id) VALUES ($1,$2)`, []any{bob, alice}},
-		{`INSERT INTO close_friends (user_id, friend_id) VALUES ($1,$2)`, []any{alice, bob}},
 	} {
 		if _, err := pool.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatalf("seed: %v", err)

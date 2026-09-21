@@ -15,8 +15,7 @@ import (
 // Why this file exists.
 //
 // The previous live run applied database/setup.sql plus whichever migrations
-// happened to succeed. Migration 004 (close_friends, circles, circle_members,
-// relationship_labels, favorites) fails against a bare graph database because
+// happened to succeed. The complete schema must be installed, not a bare graph database because
 // its foreign keys reference a `users` table that graph-service does not own —
 // identity does. So those five tables were simply ABSENT.
 //
@@ -99,46 +98,6 @@ CREATE TABLE IF NOT EXISTS follow_requests (
     PRIMARY KEY (requester_id, target_id)
 );
 
--- ── migration 004 + 007: the tables that were MISSING from the last run ──
-CREATE TABLE IF NOT EXISTS close_friends (
-    user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    friend_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    added_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    source    TEXT NOT NULL DEFAULT 'manual',
-    PRIMARY KEY (user_id, friend_id)
-);
-
-CREATE TABLE IF NOT EXISTS circles (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name       VARCHAR(100) NOT NULL,
-    emoji      VARCHAR(10),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS circle_members (
-    circle_id UUID NOT NULL REFERENCES circles(id) ON DELETE CASCADE,
-    user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    added_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (circle_id, user_id)
-);
-
-CREATE TABLE IF NOT EXISTS relationship_labels (
-    user_id    UUID NOT NULL,
-    target_id  UUID NOT NULL,
-    label      TEXT NOT NULL CHECK (label IN ('best_friend','family','colleague','classmate','acquaintance')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, target_id)
-);
-
-CREATE TABLE IF NOT EXISTS favorites (
-    user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    target_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    added_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, target_id)
-);
-
 -- migration 003: mutes (soft-block, no notification). Mutes are ONE-WAY and
 -- must never become symmetric — that is a Module 1/2 contract enforced by
 -- block_symmetry_integration_test.go, which shares this schema.
@@ -196,15 +155,6 @@ var allRelationshipTables = []struct {
 		WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)`},
 	{"follow_requests", `SELECT COUNT(*) FROM follow_requests
 		WHERE (requester_id = $1 AND target_id = $2) OR (requester_id = $2 AND target_id = $1)`},
-	{"close_friends", `SELECT COUNT(*) FROM close_friends
-		WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`},
-	{"favorites", `SELECT COUNT(*) FROM favorites
-		WHERE (user_id = $1 AND target_id = $2) OR (user_id = $2 AND target_id = $1)`},
-	{"relationship_labels", `SELECT COUNT(*) FROM relationship_labels
-		WHERE (user_id = $1 AND target_id = $2) OR (user_id = $2 AND target_id = $1)`},
-	{"circle_members", `SELECT COUNT(*) FROM circle_members cm
-		WHERE (cm.user_id = $2 AND cm.circle_id IN (SELECT id FROM circles WHERE owner_id = $1))
-		   OR (cm.user_id = $1 AND cm.circle_id IN (SELECT id FROM circles WHERE owner_id = $2))`},
 }
 
 // graphPool connects and installs the complete schema.

@@ -39,8 +39,7 @@ func (s *Store) AnyHidden(ctx context.Context, a, b uuid.UUID) (bool, error) {
 // PurgeUser erases every graph row keyed by the user in ONE transaction:
 // follows (both directions, with the counterparties' counts corrected),
 // blocks, mutes, connections, connection_requests, follow_requests,
-// close_friends, favorites, relationship_labels, circles, counts and the
-// hidden_users marker. Idempotent — a second call deletes nothing.
+// counts and the hidden_users marker. Idempotent — a second call deletes nothing.
 //
 // graph_outbox_events rows about this user are NOT touched: they are the
 // durable delivery ledger for events already committed, and the relay marks
@@ -73,11 +72,6 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		`DELETE FROM connections WHERE user_a = $1 OR user_b = $1`,
 		`DELETE FROM connection_requests WHERE sender_id = $1 OR receiver_id = $1`,
 		`DELETE FROM follow_requests WHERE requester_id = $1 OR target_id = $1`,
-		`DELETE FROM close_friends WHERE user_id = $1 OR friend_id = $1`,
-		`DELETE FROM favorites WHERE user_id = $1 OR target_id = $1`,
-		`DELETE FROM relationship_labels WHERE user_id = $1 OR target_id = $1`,
-		`DELETE FROM circle_members WHERE user_id = $1 OR circle_id IN (SELECT id FROM circles WHERE owner_id = $1)`,
-		`DELETE FROM circles WHERE owner_id = $1`,
 		`DELETE FROM counts WHERE user_id = $1`,
 		`DELETE FROM hidden_users WHERE user_id = $1`,
 	}

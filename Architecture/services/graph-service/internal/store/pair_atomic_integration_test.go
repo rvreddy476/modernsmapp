@@ -50,11 +50,6 @@ func pairFixture(t *testing.T, pool *pgxpool.Pool) (uuid.UUID, uuid.UUID) {
 	t.Cleanup(func() {
 		ctx := context.Background()
 		for _, q := range []string{
-			`DELETE FROM circle_members WHERE user_id IN ($1,$2) OR circle_id IN (SELECT id FROM circles WHERE owner_id IN ($1,$2))`,
-			`DELETE FROM circles WHERE owner_id IN ($1,$2)`,
-			`DELETE FROM close_friends WHERE user_id IN ($1,$2) OR friend_id IN ($1,$2)`,
-			`DELETE FROM favorites WHERE user_id IN ($1,$2) OR target_id IN ($1,$2)`,
-			`DELETE FROM relationship_labels WHERE user_id IN ($1,$2) OR target_id IN ($1,$2)`,
 			`DELETE FROM connection_requests WHERE sender_id IN ($1,$2) OR receiver_id IN ($1,$2)`,
 			`DELETE FROM follow_requests WHERE requester_id IN ($1,$2) OR target_id IN ($1,$2)`,
 			`DELETE FROM connections WHERE user_a IN ($1,$2) OR user_b IN ($1,$2)`,
@@ -131,19 +126,13 @@ func TestPairAtomic_ConcurrentRelationshipCreationVersusBlockLeavesNothing(t *te
 				<-start
 
 				var err error
-				switch n % 6 {
+				switch n % 3 {
 				case 0:
 					_, err = s.FollowAtomic(ctx, alice, bob)
 				case 1:
 					_, err = s.FollowAtomic(ctx, bob, alice)
 				case 2:
 					err = s.SendConnectionRequestAtomic(ctx, alice, bob, "profile", "")
-				case 3:
-					err = s.AddCloseFriendAtomic(ctx, alice, bob, "manual")
-				case 4:
-					err = s.AddFavoriteAtomic(ctx, bob, alice)
-				case 5:
-					err = s.AddCircleMemberAtomic(ctx, circleID, alice, bob)
 				}
 				switch {
 				case err == nil:
@@ -216,36 +205,21 @@ func TestPairAtomic_EveryCreatePathRefusesABlockedPairBothWays(t *testing.T) {
 	for _, direction := range []string{"blocker acts", "blocked acts"} {
 		t.Run(direction, func(t *testing.T) {
 			alice, bob := pairFixture(t, pool)
-			var circleA, circleB uuid.UUID
-			for _, p := range []struct {
-				owner uuid.UUID
-				dst   *uuid.UUID
-			}{{alice, &circleA}, {bob, &circleB}} {
-				if err := pool.QueryRow(ctx,
-					`INSERT INTO circles (owner_id, name) VALUES ($1, 'c') RETURNING id`,
-					p.owner).Scan(p.dst); err != nil {
-					t.Fatalf("create circle: %v", err)
-				}
-			}
 
 			if _, err := s.BlockAtomic(ctx, alice, bob); err != nil {
 				t.Fatalf("block: %v", err)
 			}
 
 			// actor is the one attempting to create the relationship.
-			actor, other, circle := alice, bob, circleA
+			actor, other := alice, bob
 			if direction == "blocked acts" {
-				actor, other, circle = bob, alice, circleB
+				actor, other = bob, alice
 			}
 
 			paths := map[string]func() error{
 				"follow":             func() error { _, err := s.FollowAtomic(ctx, actor, other); return err },
 				"connection request": func() error { return s.SendConnectionRequestAtomic(ctx, actor, other, "profile", "") },
 				"accept connection":  func() error { return s.AcceptConnectionRequestAtomic(ctx, actor, other) },
-				"close friend":       func() error { return s.AddCloseFriendAtomic(ctx, actor, other, "manual") },
-				"favorite":           func() error { return s.AddFavoriteAtomic(ctx, actor, other) },
-				"relationship label": func() error { return s.UpsertRelationshipLabelAtomic(ctx, actor, other, "family") },
-				"circle member":      func() error { return s.AddCircleMemberAtomic(ctx, circle, actor, other) },
 			}
 			for name, fn := range paths {
 				if err := fn(); !errors.Is(err, ErrBlockedPair) {
@@ -291,14 +265,6 @@ func TestPairAtomic_BlockSweepsEverySeededRelationshipTable(t *testing.T) {
 		{"request b→a", `INSERT INTO connection_requests (sender_id, receiver_id, status) VALUES ($1,$2,'pending')`, []any{bob, alice}},
 		{"follow request a→b", `INSERT INTO follow_requests (requester_id, target_id, status) VALUES ($1,$2,'pending')`, []any{alice, bob}},
 		{"follow request b→a", `INSERT INTO follow_requests (requester_id, target_id, status) VALUES ($1,$2,'pending')`, []any{bob, alice}},
-		{"close friend a→b", `INSERT INTO close_friends (user_id, friend_id) VALUES ($1,$2)`, []any{alice, bob}},
-		{"close friend b→a", `INSERT INTO close_friends (user_id, friend_id) VALUES ($1,$2)`, []any{bob, alice}},
-		{"favorite a→b", `INSERT INTO favorites (user_id, target_id) VALUES ($1,$2)`, []any{alice, bob}},
-		{"favorite b→a", `INSERT INTO favorites (user_id, target_id) VALUES ($1,$2)`, []any{bob, alice}},
-		{"label a→b", `INSERT INTO relationship_labels (user_id, target_id, label) VALUES ($1,$2,'family')`, []any{alice, bob}},
-		{"label b→a", `INSERT INTO relationship_labels (user_id, target_id, label) VALUES ($1,$2,'colleague')`, []any{bob, alice}},
-		{"circle member b in a's circle", `INSERT INTO circle_members (circle_id, user_id) VALUES ($1,$2)`, []any{aliceCircle, bob}},
-		{"circle member a in b's circle", `INSERT INTO circle_members (circle_id, user_id) VALUES ($1,$2)`, []any{bobCircle, alice}},
 	}
 	for _, sd := range seed {
 		if _, err := pool.Exec(ctx, sd.sql, sd.args...); err != nil {
@@ -332,8 +298,7 @@ func TestPairAtomic_BlockSweepsEverySeededRelationshipTable(t *testing.T) {
 	if !res.RemovedFollowForward || !res.RemovedFollowReverse {
 		t.Errorf("block did not report removing both follows: %+v", res)
 	}
-	if !res.RemovedConnection || res.RemovedRequest == 0 || res.RemovedCloseFriend == 0 ||
-		res.RemovedFavorite == 0 || res.RemovedLabel == 0 || res.RemovedCircleMember == 0 {
+	if !res.RemovedConnection || res.RemovedRequest == 0 || res.RemovedFollowRequest == 0 {
 		t.Errorf("block under-reported its sweep: %+v", res)
 	}
 }
