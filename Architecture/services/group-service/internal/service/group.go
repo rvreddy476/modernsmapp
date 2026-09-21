@@ -24,12 +24,14 @@ type Service struct {
 	messageServiceURL  string
 	postServiceURL     string
 	userServiceURL     string
+	graphServiceURL    string
 	jwtSecret          string
 	internalServiceKey string
 	chatClient         *http.Client
 	postClient         *http.Client
 	notifyClient       *http.Client
 	userClient         *http.Client
+	graphClient        *http.Client
 	producer           *groupevents.Producer
 	rateLimiter        *RateLimiter
 }
@@ -48,7 +50,14 @@ func New(s *store.Store, rdb *redis.Client, msgURL, postURL, userURL, jwtSecret 
 	svc.postClient = httpclient.NewWithBreaker(5*time.Second, "group->post")
 	svc.notifyClient = httpclient.NewWithBreaker(5*time.Second, "group->notification")
 	svc.userClient = httpclient.NewWithBreaker(5*time.Second, "group->user")
+	svc.graphClient = httpclient.NewWithBreaker(5*time.Second, "group->graph")
 	return svc
+}
+
+// SetGraphServiceURL wires the permission authority used by invites. Left
+// empty, every invite is refused — see canAddToGroup.
+func (s *Service) SetGraphServiceURL(url string) {
+	s.graphServiceURL = strings.TrimSpace(url)
 }
 
 // SetProducer sets the Kafka producer (called after init in main.go).
@@ -861,6 +870,13 @@ func (s *Service) InviteUser(ctx context.Context, actorID, groupID, inviteeID uu
 		return fmt.Errorf("user is already a member of this group")
 	}
 
+	// The invitee's own say, not just the group's. This is also where a
+	// block is honoured: without it, someone you blocked could still pull
+	// you into a group. Fails closed.
+	if directAdd, invite := s.canAddToGroup(ctx, actorID, inviteeID); !directAdd && !invite {
+		return ErrInviteNotPermitted
+	}
+
 	inv := &store.GroupInvite{
 		GroupID:   groupID,
 		InviterID: actorID,
@@ -911,7 +927,10 @@ func (s *Service) InviteUsersBatch(ctx context.Context, actorID, groupID uuid.UU
 		return fmt.Errorf("forbidden: %w", err)
 	}
 
-	// Filter out already-members and banned
+	// Filter out already-members, banned, and anyone whose own privacy
+	// settings or block relationship refuses the invite. Skipping rather
+	// than failing the whole batch is deliberate: one blocked target must
+	// not tell the inviter which of fifty people blocked them.
 	var validIDs []uuid.UUID
 	for _, id := range inviteeIDs {
 		isMember, _ := s.store.CheckMembership(ctx, groupID, id)
@@ -920,6 +939,9 @@ func (s *Service) InviteUsersBatch(ctx context.Context, actorID, groupID uuid.UU
 		}
 		isBanned, _ := s.store.CheckBanned(ctx, groupID, id)
 		if isBanned {
+			continue
+		}
+		if directAdd, invite := s.canAddToGroup(ctx, actorID, id); !directAdd && !invite {
 			continue
 		}
 		validIDs = append(validIDs, id)

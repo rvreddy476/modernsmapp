@@ -662,6 +662,11 @@ services:
       KAFKA_BROKERS: redpanda:9092
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       POST_SERVICE_URL: http://post-service:8084
+      # Permission authority for group invites. Group invites previously
+      # made no permission call at all, so a blocked user could be invited
+      # by the person they had blocked. Unset, every invite is refused —
+      # a missing dependency must never bypass a block.
+      GRAPH_SERVICE_URL: http://graph-service:8083
       # Audit CG4: group-service now refuses boot when JWT_SECRET is
       # unset (previously defaulted to the literal "dev_secret_change_me").
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}

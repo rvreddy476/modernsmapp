@@ -96,6 +96,9 @@ func main() {
 	groupStore := store.New(dbPool)
 	groupSvc := service.New(groupStore, rdb, msgURL, postURL, userURL, jwtSecret)
 	groupSvc.SetInternalServiceKey(os.Getenv("INTERNAL_SERVICE_KEY"))
+	// Permission authority for invites: without it every invite is refused,
+	// because a block must never be bypassed by a missing dependency.
+	groupSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
 
 	// 8. Kafka producer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()
