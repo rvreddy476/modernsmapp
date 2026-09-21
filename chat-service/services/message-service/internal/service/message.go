@@ -1015,23 +1015,45 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 				return nil, ErrAwaitingRequestAcceptance
 			}
 			if userID != mr.SenderID {
-				// The recipient must accept the request before replying.
-				return nil, ErrAwaitingRequestAcceptance
+				// REPLYING IS ACCEPTING.
+				//
+				// The recipient used to be refused here and told to tap
+				// Accept first — a second step for a decision they have
+				// already made, because nobody types a reply to someone
+				// they are declining. Answering is the clearest consent
+				// there is, so it is honoured as consent.
+				//
+				// This runs the SAME path as the Accept button, so the
+				// graph connection, the request status and the
+				// MessageRequestAccepted event all still happen exactly
+				// once. Decline and Block are untouched and remain the
+				// only other ways out.
+				//
+				// A failed accept is fatal to the send: delivering a reply
+				// into a conversation still marked pending would leave the
+				// recipient having spoken on an unresolved request.
+				if err := s.AcceptRequest(ctx, userID, conversationID); err != nil {
+					return nil, err
+				}
+				// No longer a request, so none of the first-message limits
+				// apply to this reply.
+				conv.IsRequest = false
+			} else {
+				if mr.Preview != "" {
+					// The one allowed first message was already sent.
+					return nil, ErrAwaitingRequestAcceptance
+				}
+				if msgType != "text" || strings.TrimSpace(text) == "" {
+					return nil, fmt.Errorf("%w: first message must be non-empty text", ErrRequestFirstMessageInvalid)
+				}
+				if containsLink(text) {
+					return nil, fmt.Errorf("%w: links are not allowed", ErrRequestFirstMessageInvalid)
+				}
+				if utf8.RuneCountInString(text) > 500 {
+					return nil, fmt.Errorf("%w: exceeds 500 characters", ErrRequestFirstMessageInvalid)
+				}
+				firstRequestMessage = true
 			}
-			if mr.Preview != "" {
-				// The one allowed first message was already sent.
-				return nil, ErrAwaitingRequestAcceptance
-			}
-			if msgType != "text" || strings.TrimSpace(text) == "" {
-				return nil, fmt.Errorf("%w: first message must be non-empty text", ErrRequestFirstMessageInvalid)
-			}
-			if containsLink(text) {
-				return nil, fmt.Errorf("%w: links are not allowed", ErrRequestFirstMessageInvalid)
-			}
-			if utf8.RuneCountInString(text) > 500 {
-				return nil, fmt.Errorf("%w: exceeds 500 characters", ErrRequestFirstMessageInvalid)
-			}
-			firstRequestMessage = true
 		}
 
 		now := time.Now()

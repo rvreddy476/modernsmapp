@@ -238,9 +238,14 @@ func (c *ChatConsumer) handleMessageRequestCreated(ctx context.Context, e messag
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
-	// Deep link to the message-requests folder rather than the
-	// conversation itself — requests are reviewed in a dedicated inbox.
-	deepLink := "/messages/requests"
+	// Deep link to the message-requests lane rather than the conversation
+	// itself — requests are reviewed in a dedicated inbox.
+	//
+	// This was "/messages/requests", which is not a route: the messenger
+	// lives at /messenger. Every message-request notification led to a
+	// 404, so the one tap that was supposed to bring the recipient to the
+	// request went nowhere.
+	deepLink := "/messenger?lane=requests"
 
 	return c.service.CreateNotification(
 		ctx, receiverID, senderID, "message_request", "conversation", conversationID, deepLink, occurredAt,
