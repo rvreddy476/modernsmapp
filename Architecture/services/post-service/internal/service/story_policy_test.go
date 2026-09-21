@@ -76,22 +76,26 @@ func TestFollowersOnlyRequiresAFollow(t *testing.T) {
 	}
 }
 
-// THE DIRECTION TEST. A close-friends story belongs to its author, so the only
-// fact that grants access is the AUTHOR having listed the VIEWER. Using the
-// viewer's own list would let anyone into someone else's close-friends
-// audience by adding that person to their list.
-func TestCloseFriendsUsesTargetOwnedMembershipOnly(t *testing.T) {
+// The close-friends audience was retired on 21 Sep with the "Trusted Circle"
+// tier (graph-service migration 012). A story still carrying the value has no
+// audience to satisfy, so it is visible to its author and nobody else. This
+// replaces the old direction test, which asserted that only author-owned
+// membership granted access — there is no membership to own now.
+func TestCloseFriendsStoryIsAuthorOnlyAfterRetirement(t *testing.T) {
 	f := approved(StoryVisibilityCloseFriends)
 
-	if d := EvaluateStoryVisibility(viewer, author, f, ViewerRelationship{Follows: true}); d != DenyNotInAudience {
-		t.Fatalf("a mere follower entered a close-friends audience: %s", d)
+	for name, rel := range map[string]ViewerRelationship{
+		"stranger":   {},
+		"follower":   {Follows: true},
+	} {
+		if d := EvaluateStoryVisibility(viewer, author, f, rel); d != DenyNotInAudience {
+			t.Fatalf("%s saw a retired close-friends story: %s", name, d)
+		}
 	}
-	// The viewer having the AUTHOR on the viewer's own list must not help.
-	if d := EvaluateStoryVisibility(viewer, author, f, ViewerRelationship{Follows: true, ViewerIsCloseFriendOfTarget: false}); d != DenyNotInAudience {
-		t.Fatalf("self-asserted close friendship granted access: %s", d)
-	}
-	if d := EvaluateStoryVisibility(viewer, author, f, ViewerRelationship{ViewerIsCloseFriendOfTarget: true}); d != DenyNone {
-		t.Fatalf("author-listed close friend was denied: %s", d)
+
+	// The author still sees their own, in every state.
+	if d := EvaluateStoryVisibility(author, author, f, ViewerRelationship{}); d != DenyNone {
+		t.Fatalf("author was denied their own close-friends story: %s", d)
 	}
 }
 

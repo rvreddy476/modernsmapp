@@ -35,7 +35,6 @@ func (g *HTTPGraphRelationships) RelationshipBatch(ctx context.Context, viewerID
 			Blocked:                     r.Blocked,
 			BlockedBy:                   r.BlockedBy,
 			Muted:                       r.IsMuted,
-			ViewerIsCloseFriendOfTarget: r.ViewerIsCloseFriendOfTarget,
 		}
 	}
 	return out, nil

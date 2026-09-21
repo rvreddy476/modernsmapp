@@ -37,27 +37,20 @@ func threadSvc(t *testing.T, rel map[string]bool) *Service {
 	return s
 }
 
-func TestCanViewThread_CloseFriendsRequiresExactMembership(t *testing.T) {
+// The close-friends audience was retired on 21 Sep with the "Trusted Circle"
+// tier (graph-service migration 012). Both spellings now resolve to
+// author-only. This replaces the old exact-membership test — there is no
+// membership to be exact about.
+func TestCanViewThread_CloseFriendsAudienceIsRetired(t *testing.T) {
 	author, viewer := uuid.New(), uuid.New()
-	post := &postgres.Post{AuthorID: author, Visibility: "close_friends"}
 
-	// Connected but NOT a close friend: this is the leak v1 allowed.
-	svc := threadSvc(t, map[string]bool{"is_connection": true, "is_close_friend": false})
-	if svc.canViewThread(t.Context(), post, &viewer) {
-		t.Fatal("a connection who is not a close friend must NOT read a close-friends thread")
-	}
-
-	// Actual close friend: allowed.
-	svc = threadSvc(t, map[string]bool{"is_connection": true, "is_close_friend": true})
-	if !svc.canViewThread(t.Context(), post, &viewer) {
-		t.Fatal("an actual close friend must be able to read the thread")
-	}
-
-	// 'trusted' resolves to the same close-friends audience.
-	trusted := &postgres.Post{AuthorID: author, Visibility: "trusted"}
-	svc = threadSvc(t, map[string]bool{"is_connection": true, "is_close_friend": false})
-	if svc.canViewThread(t.Context(), trusted, &viewer) {
-		t.Fatal("'trusted' must use exact close-friends membership, not connection")
+	for _, vis := range []string{"close_friends", "trusted"} {
+		post := &postgres.Post{AuthorID: author, Visibility: vis}
+		// Even a connection, the broadest thing this ever accepted.
+		svc := threadSvc(t, map[string]bool{"is_connection": true, "follows": true})
+		if svc.canViewThread(t.Context(), post, &viewer) {
+			t.Fatalf("%q must resolve to author-only now", vis)
+		}
 	}
 }
 

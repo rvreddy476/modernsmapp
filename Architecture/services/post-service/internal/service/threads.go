@@ -305,12 +305,13 @@ func (s *Service) canViewThread(ctx context.Context, root *postgres.Post, viewer
 	switch root.Visibility {
 	case "followers":
 		return rel.Follows
-	case "trusted", "close_friends":
-		// EXACT audience membership. v1 accepted any connection, which is
-		// strictly broader than the author's close-friends list and
-		// leaked restricted threads to connected-but-not-trusted users.
-		return rel.IsCloseFriend
-	default: // private and anything unrecognized
+	// "trusted" and "close_friends" are deliberately absent. That audience
+	// was retired on 21 Sep (graph-service migration 012) along with the
+	// "Trusted Circle" tier, so there is no membership left to check. Both
+	// now fall to the default and resolve author-only — the safe
+	// direction. The values stay valid on the wire and in the column so an
+	// old row still parses; it simply has no audience but its author.
+	default: // private, trusted, close_friends, and anything unrecognized
 		return false
 	}
 }
@@ -320,7 +321,6 @@ type threadRelationship struct {
 	Blocked       bool `json:"blocked"`
 	BlockedBy     bool `json:"blocked_by"`
 	IsConnection  bool `json:"is_connection"`
-	IsCloseFriend bool `json:"is_close_friend"`
 }
 
 func (s *Service) fetchRelationship(ctx context.Context, viewerID, authorID uuid.UUID) (*threadRelationship, error) {

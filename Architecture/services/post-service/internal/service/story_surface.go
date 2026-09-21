@@ -625,9 +625,11 @@ func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, rel Viewe
 		return true
 	case "followers":
 		return rel.Follows
-	case "circle", "trusted", "close_friends":
-		return rel.ViewerIsCloseFriendOfTarget
-	default: // private, staged, and future/unknown values fail closed
+	// "circle", "trusted" and "close_friends" are deliberately absent: the
+	// audience was retired on 21 Sep (graph-service migration 012), so they
+	// fall through to author-only below.
+	default: // private, the retired close-friends values, staged, and
+		// future/unknown values all fail closed
 		return false
 	}
 }

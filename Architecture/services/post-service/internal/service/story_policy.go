@@ -76,9 +76,6 @@ type ViewerRelationship struct {
 	Blocked   bool
 	BlockedBy bool
 	Muted     bool
-	// ViewerIsCloseFriendOfTarget: the AUTHOR has the viewer on the author's
-	// close friends list. The other direction is not an audience fact.
-	ViewerIsCloseFriendOfTarget bool
 }
 
 // StoryFacts is what the evaluator needs about the story itself.
@@ -144,10 +141,12 @@ func EvaluateStoryVisibility(viewerID, authorID string, f StoryFacts, rel Viewer
 		}
 		return DenyNone
 	case StoryVisibilityCloseFriends:
-		if !rel.ViewerIsCloseFriendOfTarget {
-			return DenyNotInAudience
-		}
-		return DenyNone
+		// The close-friends audience was retired on 21 Sep with the
+		// "Trusted Circle" tier (graph-service migration 012). There is no
+		// membership left to satisfy, so an old story carrying this value
+		// is visible to its author and nobody else. The constant is kept
+		// so such a row still parses rather than erroring on read.
+		return DenyNotInAudience
 	default:
 		// An unrecognised visibility is not a reason to show something. New
 		// audience types must be added here deliberately.

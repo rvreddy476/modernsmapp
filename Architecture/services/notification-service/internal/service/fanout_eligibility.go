@@ -102,11 +102,13 @@ func (f *SubscriberFanout) eligible(ctx context.Context, job *postgres.FanoutJob
 			return false, nil
 		}
 	case "trusted", "close_friends":
-		// EXACT membership — v1 treated `trusted` as ordinary following
-		// and did not handle `close_friends` at all.
-		if !rel.IsCloseFriend {
-			return false, nil
-		}
+		// The close-friends audience was retired on 21 Sep (graph-service
+		// migration 012) along with the "Trusted Circle" tier. No such
+		// audience can be created any more, and any row that still carries
+		// the value has no audience to resolve against — so nothing is
+		// ever delivered for it. Never send a notification for content the
+		// recipient has no membership in.
+		return false, nil
 	}
 
 	return true, nil
@@ -123,8 +125,6 @@ type graphRelationship struct {
 	BlockedBy    bool `json:"blocked_by"`
 	IsMuted      bool `json:"is_muted"`
 	IsConnection bool `json:"is_connection"`
-	// IsCloseFriend is the exact trusted/close-friends audience.
-	IsCloseFriend bool `json:"is_close_friend"`
 }
 
 // relationship fetches viewer→author relationship state. Returns

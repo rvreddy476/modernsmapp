@@ -37,9 +37,6 @@ type Relationship struct {
 	Blocked   bool `json:"blocked"`
 	BlockedBy bool `json:"blocked_by"`
 	IsMuted   bool `json:"is_muted"`
-	// ViewerIsCloseFriendOfTarget: the TARGET has the viewer on the TARGET's
-	// close-friends list. Not the same fact as the viewer's own list.
-	ViewerIsCloseFriendOfTarget bool `json:"viewer_is_close_friend_of_target"`
 }
 
 // Client talks to graph-service over the internal network.

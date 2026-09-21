@@ -89,8 +89,10 @@ func fanoutClaimSurvivesUnfollow(rel viewerRelationship) (bool, string) {
 		return true, "follows the author again"
 	case rel.IsConnection:
 		return true, "is still a connection of the author"
-	case rel.ViewerIsCloseFriendOfTarget:
-		return true, "is on the author's close-friends list"
+	// A close-friends claim used to survive here, because "trusted" posts
+	// were fanned out to exactly that set. The audience was retired on
+	// 21 Sep (graph-service migration 012), so there is no such set to
+	// belong to and no claim to keep.
 	default:
 		return false, ""
 	}

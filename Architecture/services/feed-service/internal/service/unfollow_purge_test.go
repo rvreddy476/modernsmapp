@@ -40,22 +40,6 @@ func TestPurge_SkippedForAConnection(t *testing.T) {
 	}
 }
 
-func TestPurge_SkippedForTheAuthorsCloseFriend(t *testing.T) {
-	// The AUTHOR's list, not the viewer's — trusted posts are fanned out to
-	// exactly this set, so these rows are not the follow's to retract.
-	retained, _ := fanoutClaimSurvivesUnfollow(viewerRelationship{ViewerIsCloseFriendOfTarget: true})
-	if !retained {
-		t.Fatal("a close-friends post is fanned out to the author's close friends; " +
-			"unfollowing does not remove the viewer from that audience")
-	}
-	// The other direction must NOT protect anything: anyone could otherwise
-	// keep an ex-followee's rows by adding them to their own list.
-	retained, _ = fanoutClaimSurvivesUnfollow(viewerRelationship{})
-	if retained {
-		t.Fatal("the viewer's own close-friends list is not an audience claim")
-	}
-}
-
 // A stale or redelivered unfollow for a pair who follow each other again
 // must not delete a live follow's timeline.
 func TestPurge_SkippedWhenTheGraphSaysTheyFollowAgain(t *testing.T) {
@@ -105,7 +89,6 @@ func TestFanoutClaimAfterUnfollow_ReadsTheGraph(t *testing.T) {
 	}{
 		{"a plain ex-follower is purged", viewerRelationship{}, false},
 		{"a connection is not", viewerRelationship{IsConnection: true}, true},
-		{"the author's close friend is not", viewerRelationship{ViewerIsCloseFriendOfTarget: true}, true},
 		{"a re-follow is not", viewerRelationship{Follows: true}, true},
 	}
 	for _, tc := range cases {

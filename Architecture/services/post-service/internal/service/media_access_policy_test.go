@@ -25,7 +25,9 @@ func TestPostMediaVisibilityMatrix(t *testing.T) {
 		{"muted", base, ViewerRelationship{Muted: true}, false},
 		{"followers eligible", withVisibility(base, "followers"), ViewerRelationship{Follows: true}, true},
 		{"followers stranger", withVisibility(base, "followers"), ViewerRelationship{}, false},
-		{"close friends eligible", withVisibility(base, "close_friends"), ViewerRelationship{ViewerIsCloseFriendOfTarget: true}, true},
+		// The close-friends audience was retired on 21 Sep: no relationship
+		// satisfies it any more, so such a row is author-only.
+		{"close friends retired, even a follower is denied", withVisibility(base, "close_friends"), ViewerRelationship{Follows: true}, false},
 		{"private", withVisibility(base, "private"), ViewerRelationship{Follows: true}, false},
 		{"unknown", withVisibility(base, "future_scope"), ViewerRelationship{Follows: true}, false},
 	}
