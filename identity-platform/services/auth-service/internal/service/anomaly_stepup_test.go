@@ -514,6 +514,12 @@ func (f *fakeAnomalyStore) CreateUserRecordTx(_ context.Context, _ pgx.Tx, _ uui
 func (f *fakeAnomalyStore) CreateProfileTx(_ context.Context, _ pgx.Tx, _ uuid.UUID, _, _, _, _, _ string) error {
 	return nil
 }
+func (f *fakeAnomalyStore) AssignUsernameTx(_ context.Context, _ pgx.Tx, _ uuid.UUID, candidates []string) (string, error) {
+	if len(candidates) == 0 {
+		return "", store.ErrNoUsernameAvailable
+	}
+	return candidates[0], nil
+}
 func (f *fakeAnomalyStore) EnqueueEmailJobTx(_ context.Context, _ pgx.Tx, _ uuid.UUID, _ string) error {
 	return nil
 }

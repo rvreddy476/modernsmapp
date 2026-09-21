@@ -176,13 +176,33 @@ func (s *Service) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
 // CreateUser handles user creation from event.
 // After creating the user record it auto-provisions a handle and default
 // channel so the user is ready to publish content immediately.
-func (s *Service) CreateUser(ctx context.Context, id uuid.UUID, phone, email, firstName, lastName, dob, gender string) error {
+func (s *Service) CreateUser(ctx context.Context, id uuid.UUID, username, phone, email, firstName, lastName, dob, gender string) error {
 	displayName := firstName + " " + lastName
 	if displayName == " " {
 		displayName = "User " + id.String()[:8]
 	}
 	if err := s.store.CreateUser(ctx, id, displayName, firstName, lastName, dob, gender); err != nil {
 		return err
+	}
+
+	// Store the handle auth-service assigned, so /u/<handle> resolves here
+	// too. An empty username means the event came from an auth-service older
+	// than 22 Sep 2026, which left it NULL; nothing is invented in its place.
+	if username != "" {
+		assigned, err := s.store.SetUsernameIfAbsent(ctx, id, []string{
+			username,
+			username + "1",
+			fmt.Sprintf("%s_%s", username, id.String()[:6]),
+		})
+		if err != nil {
+			// Not fatal: the account exists and is usable, it just has no
+			// profile address here yet. GetUser's read-through repair and a
+			// rename both still work.
+			fmt.Printf("warn: set username %q for %s failed: %v\n", username, id, err)
+		} else if assigned != "" && assigned != username {
+			fmt.Printf("warn: username %q was taken in app.users; %s got %q instead — identity and app now disagree\n",
+				username, id, assigned)
+		}
 	}
 
 	// Auto-create handle + default channel for the new user.

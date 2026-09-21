@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -344,4 +345,44 @@ func (s *Store) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
 		id,
 	)
 	return err
+}
+
+// SetUsernameIfAbsent stores the handle auth-service assigned at
+// registration, leaving an existing one alone.
+//
+// app.users is the table /v1/users/by-username answers from, so this row is
+// what makes a profile reachable at /u/<handle>. The handle is NOT derived
+// here: auth-service already minted it and put it on the event, and two
+// services deriving independently is exactly how the two databases end up
+// disagreeing about a person's address.
+//
+// The candidate list exists only for the drift case — a username already
+// taken in this database by something other than this account. That should
+// not happen, so it is logged by the caller when it does.
+func (s *Store) SetUsernameIfAbsent(ctx context.Context, id uuid.UUID, candidates []string) (string, error) {
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		tag, err := s.db.Exec(ctx, `
+			UPDATE users SET username = $2, updated_at = NOW()
+			WHERE id = $1 AND username IS NULL
+		`, id, candidate)
+		if err == nil {
+			if tag.RowsAffected() == 0 {
+				// Already has a username — nothing to do, and not an error.
+				return "", nil
+			}
+			return candidate, nil
+		}
+		if !isUniqueViolation(err) {
+			return "", err
+		}
+	}
+	return "", errors.New("no username candidate was available")
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

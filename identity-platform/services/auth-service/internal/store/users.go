@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/identity-shared/crypto"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -1007,4 +1008,50 @@ func (s *Store) MarkPhoneVerified(ctx context.Context, userID uuid.UUID) error {
 		UPDATE auth.users SET phone_verified = TRUE, updated_at = NOW() WHERE user_id = $1
 	`, userID)
 	return err
+}
+
+// ErrNoUsernameAvailable means every candidate handle was taken. The caller
+// is expected to have supplied a random fallback, so reaching this is a
+// signal that something other than contention is wrong.
+var ErrNoUsernameAvailable = errors.New("no username candidate was available")
+
+// AssignUsernameTx claims the first free handle from `candidates`, inside the
+// caller's transaction.
+//
+// It does NOT check-then-write. Two registrations racing on the same email
+// shape would both see a handle free and both try to take it; the partial
+// unique index on profile.profiles(username) is the only thing that can
+// actually arbitrate. So each attempt runs inside a SAVEPOINT and a unique
+// violation just moves on to the next candidate, leaving the outer
+// transaction — which is creating the whole account — untouched.
+func (s *Store) AssignUsernameTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, candidates []string) (string, error) {
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		sp, err := tx.Begin(ctx) // SAVEPOINT
+		if err != nil {
+			return "", err
+		}
+		_, err = sp.Exec(ctx, `
+			UPDATE profile.profiles SET username = $2, updated_at = NOW()
+			WHERE user_id = $1
+		`, userID, candidate)
+		if err == nil {
+			if err = sp.Commit(ctx); err == nil {
+				return candidate, nil
+			}
+		}
+		_ = sp.Rollback(ctx)
+		if !isUniqueViolation(err) {
+			return "", err
+		}
+	}
+	return "", ErrNoUsernameAvailable
+}
+
+// isUniqueViolation reports whether err is Postgres 23505.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

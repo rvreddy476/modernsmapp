@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/handle"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/events"
 	"github.com/golang-jwt/jwt/v5"
@@ -168,6 +169,7 @@ type Store interface {
 	LookupVerificationTransaction(ctx context.Context, token, purpose string) (uuid.UUID, error)
 	ConsumeVerificationTransaction(ctx context.Context, token, purpose string) (uuid.UUID, error)
 	CreateProfileTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, displayName, firstName, lastName, dob, gender string) error
+	AssignUsernameTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, candidates []string) (string, error)
 
 	// Durable verification-email delivery (migration 016). Enqueued inside the
 	// registration transaction so the account and the obligation to contact
@@ -349,8 +351,17 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, purpose, deviceID,
 			return nil, fmt.Errorf("failed to create profile: %w", err)
 		}
 
+		// No email and no name on this path, so the handle comes from the
+		// "member" base plus a suffix. It is still a handle: an account with
+		// a NULL username has no profile address at all.
+		username, err := s.assignHandleTx(ctx, tx, user.ID, "", "", "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to assign username: %w", err)
+		}
+
 		outboxPayload := events.UserRegisteredPayload{
 			UserID:    user.ID.String(),
+			Username:  username,
 			Phone:     phone,
 			CreatedAt: time.Now(),
 		}
@@ -468,12 +479,18 @@ func (s *Service) RegisterWithConsent(ctx context.Context, phone, email, passwor
 		return nil, fmt.Errorf("failed to create profile: %w", err)
 	}
 
+	username, err := s.assignHandleTx(ctx, tx, user.ID, email, firstName, lastName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to assign username: %w", err)
+	}
+
 	var emailPtr *string
 	if email != "" {
 		emailPtr = &email
 	}
 	outboxPayload := events.UserRegisteredPayload{
 		UserID:    user.ID.String(),
+		Username:  username,
 		Phone:     phone,
 		Email:     emailPtr,
 		FirstName: firstName,
@@ -1730,4 +1747,23 @@ func (s *Service) ListMyAnomalies(ctx context.Context, userID uuid.UUID, limit i
 func (s *Service) AcknowledgeMyAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) error {
 	_, err := s.store.AcknowledgeAnomaly(ctx, userID, anomalyID)
 	return err
+}
+
+// assignHandleTx gives a brand-new account its public handle, inside the
+// transaction that is creating it.
+//
+// Every account-creation path calls this — email registration, phone
+// registration and OAuth sign-up — because a NULL username is what left
+// accounts with no /u/<handle> address at all. The handle is derived from
+// the email address the way LinkedIn and YouTube do it; a phone-only signup
+// has no email and no name, so it lands on the "member" base and gets its
+// uniqueness from the suffix.
+//
+// Uniqueness is settled by the partial unique index on
+// profile.profiles(username), not by a check-then-write — see
+// store.AssignUsernameTx.
+func (s *Service) assignHandleTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, email, firstName, lastName string) (string, error) {
+	base := handle.Base(email, firstName, lastName)
+	candidates := append(handle.Candidates(base), handle.Fallback(), handle.Fallback())
+	return s.store.AssignUsernameTx(ctx, tx, userID, candidates)
 }

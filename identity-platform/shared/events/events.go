@@ -39,7 +39,12 @@ type EventEnvelope struct {
 
 // UserRegisteredPayload is emitted by auth-service on new registration.
 type UserRegisteredPayload struct {
-	UserID    string    `json:"user_id"`
+	UserID string `json:"user_id"`
+	// Username is the handle auth-service assigned at registration. It is
+	// carried on the event so the app-side projection stores the SAME handle
+	// rather than deriving a second one — app.users is what /v1/users/by-username
+	// answers from, so the two drifting apart breaks every profile link.
+	Username  string    `json:"username,omitempty"`
 	Phone     string    `json:"phone,omitempty"`
 	Email     *string   `json:"email,omitempty"`
 	FirstName string    `json:"first_name,omitempty"`

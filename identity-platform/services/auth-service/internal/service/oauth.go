@@ -310,12 +310,21 @@ func (s *Service) createOAuthUserTx(ctx context.Context, provider, email, name, 
 		return nil, fmt.Errorf("failed to create profile: %w", err)
 	}
 
+	// Same handle assignment as email registration: the provider gives us an
+	// email, so @johndoe comes out of it rather than the account starting
+	// with no profile address.
+	username, err := s.assignHandleTx(ctx, tx, user.ID, email, firstName, lastName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to assign username: %w", err)
+	}
+
 	var emailPtr *string
 	if email != "" {
 		emailPtr = &email
 	}
 	outboxPayload := events.UserRegisteredPayload{
 		UserID:    user.ID.String(),
+		Username:  username,
 		Phone:     phone,
 		Email:     emailPtr,
 		FirstName: firstName,

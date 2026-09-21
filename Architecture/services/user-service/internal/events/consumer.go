@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/events"
@@ -34,8 +36,14 @@ func NewConsumerWithDialer(brokers []string, topic string, svc *service.Service,
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: brokers,
 		Topic:   topic,
-		GroupID: "user-service-group",
+		GroupID: groupID(),
 		Dialer:  dialer,
+		// A rename of the group must not replay history. This is a
+		// projection with a reconciler behind it (internal/reconcile), so
+		// missing the past costs at most one reconcile interval, whereas
+		// replaying user.deletion_requested would re-delete a restored
+		// account.
+		StartOffset: kafka.LastOffset,
 	})
 	return &Consumer{reader: r, svc: svc, store: st, topic: topic}
 }
@@ -150,7 +158,7 @@ func (c *Consumer) handleUserRegistered(ctx context.Context, payload json.RawMes
 	if p.Email != nil {
 		emailStr = *p.Email
 	}
-	if err := c.svc.CreateUser(ctx, userID, p.Phone, emailStr, p.FirstName, p.LastName, p.DOB, p.Gender); err != nil {
+	if err := c.svc.CreateUser(ctx, userID, p.Username, p.Phone, emailStr, p.FirstName, p.LastName, p.DOB, p.Gender); err != nil {
 		return fmt.Errorf("create user profile for %s: %w", userID, err)
 	}
 	log.Printf("Created user profile for %s\n", userID)
@@ -231,4 +239,25 @@ func (c *Consumer) handleSellerApproved(ctx context.Context, payload json.RawMes
 
 func (c *Consumer) Close() error {
 	return c.reader.Close()
+}
+
+// groupID is this service's Kafka consumer group.
+//
+// It used to be the literal "user-service-group", which is ALSO the default
+// group of identity-platform's own user-service (its config.go
+// KAFKA_GROUP_ID). Two different services in one consumer group are rivals,
+// not colleagues: Kafka hands each partition to exactly one member, so
+// whichever of them happened to join first took identity.events.v1 and the
+// other silently received nothing.
+//
+// Found on 22 Sep 2026 — a fresh registration wrote profile.profiles but no
+// app.users row appeared, because identity-user held the partition. The
+// reconcile job repaired it within five minutes, which is why this had never
+// been noticed: the symptom was a new account whose /u/<handle> 404'd for a
+// few minutes and then started working.
+func groupID() string {
+	if v := strings.TrimSpace(os.Getenv("KAFKA_GROUP_ID")); v != "" {
+		return v
+	}
+	return "app-user-service-group"
 }
