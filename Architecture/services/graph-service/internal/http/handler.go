@@ -82,6 +82,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/blocked-and-muted", h.GetBlockedAndMuted)
 		// Batch relationship lookup
 		v1.POST("/relationships/batch", h.GetRelationshipBatch)
+		// How many connections the viewer shares with each target, for a
+		// whole list in one query. POST because the input is a list of ids;
+		// it reads, so it is registered in readOnlyPostRoutes.
+		v1.POST("/connections/mutual-counts", h.GetMutualConnectionCounts)
 
 		// Connections (formerly "friends" — spec §3.2/§19)
 		v1.POST("/connection-request", h.SendConnectionRequest)
@@ -1103,6 +1107,52 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// GetMutualConnectionCounts answers "N mutual connections" for a list of
+// people at once. The pre-existing /v1/graph/mutuals is per-pair and counts
+// mutual FOLLOWERS, which is neither the right question nor the right shape
+// for a grid of cards.
+func (h *Handler) GetMutualConnectionCounts(c *gin.Context) {
+	var req struct {
+		ViewerID  string   `json:"viewer_id"`
+		TargetIDs []string `json:"target_ids"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	viewerID, err := uuid.Parse(req.ViewerID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
+		return
+	}
+	if len(req.TargetIDs) > store.MaxRelationshipBatch {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BATCH_TOO_LARGE",
+			fmt.Sprintf("at most %d target_ids per call", store.MaxRelationshipBatch), nil)
+		return
+	}
+	targetIDs := make([]uuid.UUID, 0, len(req.TargetIDs))
+	for _, id := range req.TargetIDs {
+		uid, err := uuid.Parse(id)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target_id", nil)
+			return
+		}
+		targetIDs = append(targetIDs, uid)
+	}
+	counts, err := h.svc.MutualConnectionCounts(c.Request.Context(), viewerID, targetIDs)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	// Every requested id is present, zero included: an absent key reads as
+	// "unknown" on the client and would render as a blank line.
+	out := make(map[string]int, len(targetIDs))
+	for _, id := range targetIDs {
+		out[id.String()] = counts[id]
+	}
+	c.JSON(http.StatusOK, gin.H{"counts": out})
 }
 
 // EnsureConnectionInternal makes two users connections idempotently.

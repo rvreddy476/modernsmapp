@@ -803,3 +803,9 @@ func (s *Service) EnsureConnection(ctx context.Context, a, b uuid.UUID) (bool, e
 	}
 	return created, nil
 }
+
+// MutualConnectionCounts returns how many connections the viewer shares
+// with each target. One query for the whole batch — see the store method.
+func (s *Service) MutualConnectionCounts(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	return s.store.MutualConnectionCounts(ctx, viewerID, targetIDs)
+}

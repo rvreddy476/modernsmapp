@@ -1228,7 +1228,6 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 	return result, nil
 }
 
-
 // EnsureConnection makes a and b connections if they are not already —
 // idempotently. Returns true when a NEW edge was written, in which case the
 // friend counts moved; a repeat call is a no-op that returns false. Any
@@ -1282,4 +1281,55 @@ func (s *Store) EnsureConnection(ctx context.Context, a, b uuid.UUID) (bool, err
 	}
 
 	return created, tx.Commit(ctx)
+}
+
+// MutualConnectionCounts returns, for each target, how many connections the
+// viewer and that target have in common.
+//
+// ONE query for the whole batch. The obvious implementation — ask
+// /v1/graph/mutuals per row — is N+1 against a list, and that endpoint
+// answers a different question anyway: it counts mutual FOLLOWERS, while a
+// "mutual connections" count is over the connections table.
+//
+// The viewer and the target are excluded from their own count: being
+// connected to each other is not a mutual connection.
+//
+// A target with no shared connections is absent from the map; callers read
+// a missing key as zero.
+func (s *Store) MutualConnectionCounts(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	out := make(map[uuid.UUID]int, len(targetIDs))
+	if len(targetIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		WITH mine AS (
+			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS id
+			FROM connections
+			WHERE user_a = $1 OR user_b = $1
+		),
+		theirs AS (
+			SELECT t.id AS target,
+			       CASE WHEN c.user_a = t.id THEN c.user_b ELSE c.user_a END AS id
+			FROM unnest($2::uuid[]) AS t(id)
+			JOIN connections c ON c.user_a = t.id OR c.user_b = t.id
+		)
+		SELECT theirs.target, COUNT(*)
+		FROM theirs
+		JOIN mine ON mine.id = theirs.id
+		WHERE theirs.id <> $1 AND theirs.id <> theirs.target
+		GROUP BY theirs.target
+	`, viewerID, targetIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var target uuid.UUID
+		var n int
+		if err := rows.Scan(&target, &n); err != nil {
+			return nil, err
+		}
+		out[target] = n
+	}
+	return out, rows.Err()
 }

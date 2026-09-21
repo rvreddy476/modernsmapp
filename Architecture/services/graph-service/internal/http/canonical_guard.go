@@ -104,7 +104,8 @@ func isGraphMutation(method string) bool { return writesource.IsMutation(method)
 // write edges; granting it write attribution to fix a read would weaken the
 // boundary SR-3 exists to hold.
 var readOnlyPostRoutes = map[string]bool{
-	"/v1/graph/relationships/batch": true,
+	"/v1/graph/relationships/batch":       true,
+	"/v1/graph/connections/mutual-counts": true,
 }
 
 // isReadOnlyPost matches on the registered route template, not the raw path,
