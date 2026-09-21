@@ -208,19 +208,19 @@ type ConversationCursor struct {
 // --- Service ---
 
 type Service struct {
-	convStore          ConversationStore
-	msgStore           MessageStore
-	rdb                *redis.Client
-	pres               presence.Store
-	rateLimiter        *ratelimit.Limiter
-	producer           EventProducer
-	log                *slog.Logger
+	convStore   ConversationStore
+	msgStore    MessageStore
+	rdb         *redis.Client
+	pres        presence.Store
+	rateLimiter *ratelimit.Limiter
+	producer    EventProducer
+	log         *slog.Logger
 	// purgeAckProducer writes user.purge_acked outbox rows to the
 	// platform purge-acks topic (account control). Optional.
 	purgeAckProducer EventProducer
 	// hiddenUsers answers "is this user deactivated / deletion-scheduled":
 	// hidden users are reported offline and never publish typing. Optional.
-	hiddenUsers HiddenUserStore
+	hiddenUsers        HiddenUserStore
 	pollInterval       time.Duration
 	userServiceURL     string
 	identityUserURL    string
@@ -1188,9 +1188,20 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			pipe := s.rdb.Pipeline()
 			recipients := 0
 			for _, m := range members {
-				if m.UserID == userID {
-					continue // Don't notify sender
-				}
+				// The sender gets this too, and that is deliberate.
+				//
+				// This channel is message DELIVERY, not notification.
+				// Skipping the sender meant the tab that sent the message
+				// was the only place it ever appeared: a second tab, a
+				// second browser or the phone, all signed in as the same
+				// person, never learned the message existed until a full
+				// reload. Found on 22 Sep 2026 from two browsers showing
+				// different message lists for the same conversation.
+				//
+				// The sending tab already holds an optimistic copy, so it
+				// receives its own frame back. Clients de-duplicate by
+				// message_id — the same rule that already makes the
+				// convroom publish below safe alongside this one.
 				pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
 				recipients++
 			}
@@ -1201,10 +1212,12 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			// de-duplicate by message_id. One extra PUBLISH, harmless when
 			// nothing is subscribed.
 			pipe.Publish(pubCtx, fmt.Sprintf("convroom:%s", conversationID), payload)
-			if recipients > 0 {
-				if _, err := pipe.Exec(pubCtx); err != nil {
-					l.Warn("failed to pipeline-publish to redis pubsub", "err", err, "recipients", recipients)
-				}
+			// Always flush. The convroom frame is queued on this same
+			// pipeline, so gating Exec on the per-member count silently
+			// dropped it whenever there were no other members — the
+			// pipeline was built and then never sent.
+			if _, err := pipe.Exec(pubCtx); err != nil {
+				l.Warn("failed to pipeline-publish to redis pubsub", "err", err, "recipients", recipients)
 			}
 		}()
 
@@ -1461,9 +1474,11 @@ func (s *Service) ToggleReaction(ctx context.Context, userID, conversationID, me
 		pipe := s.rdb.Pipeline()
 		recipients := 0
 		for _, m := range members {
-			if m.UserID == userID {
-				continue
-			}
+			// Sender included, same reason as the send path above: a
+			// reaction added on one device has to appear on that person's
+			// other devices. The client applies reaction updates
+			// idempotently (add-if-absent, remove-if-present), so the
+			// originating tab replaying its own frame changes nothing.
 			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
 			recipients++
 		}
