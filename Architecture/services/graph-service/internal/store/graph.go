@@ -47,6 +47,12 @@ type Relationship struct {
 	// IsConnection: viewer and target are friends (a connections row in
 	// either direction). Drives friend-aware CTAs on the client.
 	IsConnection bool `json:"is_connection"`
+	// ConnectionStatus: none | pending_sent | pending_received | accepted.
+	// Parity with the single-relationship contract, which has always had
+	// it. Without it a batched list cannot distinguish "you already asked"
+	// from "no relationship", so every such list offered to send a request
+	// that was already pending.
+	ConnectionStatus string `json:"connection_status"`
 	// IsCloseFriend: the VIEWER has the target on the viewer's own close
 	// friends list. Parity with the single-relationship contract.
 	IsCloseFriend bool `json:"is_close_friend"`
@@ -1093,7 +1099,7 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 	}
 	result := make(map[uuid.UUID]Relationship, len(targetIDs))
 	for _, id := range targetIDs {
-		result[id] = Relationship{FollowRequestStatus: "none"}
+		result[id] = Relationship{FollowRequestStatus: "none", ConnectionStatus: "none"}
 	}
 	if len(targetIDs) == 0 {
 		return result, nil
@@ -1139,7 +1145,43 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 			`SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END
 			 FROM connections
 			 WHERE (user_a = $1 AND user_b = ANY($2)) OR (user_b = $1 AND user_a = ANY($2))`,
-			func(r *Relationship) { r.IsConnection = true },
+			func(r *Relationship) {
+				r.IsConnection = true
+				// An existing connection outranks any stale pending row.
+				r.ConnectionStatus = "accepted"
+			},
+		},
+		{
+			// The viewer's pending CONNECTION request toward the target.
+			//
+			// The batch contract omitted this entirely while the single
+			// relationship endpoint carried it, so any list rendered from a
+			// batch — suggestions, "People you may know", search results —
+			// could not tell a pending request from no relationship at all.
+			// The client showed "Request sent" optimistically and then
+			// reverted to "Add" on the next load, because the server never
+			// said otherwise. Sent wins over received, matching the single
+			// contract's precedence.
+			"connection_request_sent",
+			`SELECT receiver_id FROM connection_requests
+			 WHERE sender_id = $1 AND receiver_id = ANY($2) AND status = 'pending'`,
+			func(r *Relationship) {
+				// These loaders run after "connection", and a live
+				// connection outranks a stale pending row.
+				if r.ConnectionStatus != "accepted" {
+					r.ConnectionStatus = "pending_sent"
+				}
+			},
+		},
+		{
+			"connection_request_received",
+			`SELECT sender_id FROM connection_requests
+			 WHERE receiver_id = $1 AND sender_id = ANY($2) AND status = 'pending'`,
+			func(r *Relationship) {
+				if r.ConnectionStatus == "none" {
+					r.ConnectionStatus = "pending_received"
+				}
+			},
 		},
 		{
 			// Private accounts: the viewer's pending follow request toward the
