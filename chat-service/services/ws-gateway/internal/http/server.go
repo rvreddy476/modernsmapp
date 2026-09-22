@@ -467,7 +467,7 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		}
 
-		if !s.opts.EnableScopedRooms && isScopedRoomFrame(msgType) {
+		if s.betaRoomGateRejects(msgType) {
 			s.log.Warn("realtime client-selected room frame rejected",
 				"user_id", userID, "type", msgType)
 			continue
@@ -704,6 +704,32 @@ func isScopedRoomFrame(msgType string) bool {
 		return true
 	}
 	return directSignalingTypes[msgType] || roomSignalingTypes[msgType]
+}
+
+// betaRoomGateRejects is the public-beta rule for frames a client uses to
+// select its own channel: with scoped rooms disabled they are refused,
+// because nothing has checked the client is entitled to that room.
+//
+// Direct call signalling is exempt, and deliberately so. It is not room
+// selection: the frame is relayed on chat:<target> — the one channel public
+// beta already exposes — and the read loop then checks it against the pair
+// state call-service wrote (audits C1/C3): no session, no relay; no accept,
+// no ICE. That is the owner-issued check this flag was waiting for, and it
+// is stricter than the flag, not looser. Lumping these types in with room
+// selection meant the beta gate swallowed every call_ring / call_offer /
+// call_answer from every client, web and Android alike, before the real
+// check ever ran: a caller rang forever and the callee heard nothing.
+//
+// Room signalling (call_join and friends on call:<id>) stays gated: those
+// ride a client-selected room that nothing has authorised.
+func (s *Server) betaRoomGateRejects(msgType string) bool {
+	if s.opts.EnableScopedRooms {
+		return false
+	}
+	if directSignalingTypes[msgType] {
+		return false
+	}
+	return isScopedRoomFrame(msgType)
 }
 
 func (s *Server) redisLoop(
