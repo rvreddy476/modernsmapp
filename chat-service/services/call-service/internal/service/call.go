@@ -61,6 +61,13 @@ type Service struct {
 	// network, which is exactly the case managed TURN exists to fix.
 	turnCreds TURNCredentialSource
 
+	// staticICE is ICE_SERVERS_JSON, kept here because the LiveKit provider
+	// answers GetICEServers with nil: it assumes media rides the SFU. 1:1
+	// calls on both clients are direct WebRTC, so with that provider active
+	// a join handed out NO relay at all — not even the in-stack coturn — and
+	// every call fell back to the client's hardcoded Google STUN.
+	staticICE []sfu.ICEServer
+
 	// groupCallsEnabled stays FALSE in P0 (CALL-LB-5): the advisory
 	// user-set lock plus busy check covers only direct creation, so every
 	// other participant-add path is refused until group calls implement
@@ -79,21 +86,32 @@ func (s *Service) WithTURNCredentials(src TURNCredentialSource) *Service {
 	return s
 }
 
-// iceServersForJoin prefers minted credentials and falls back to the
-// provider's static list when minting fails. The fallback is logged loudly:
-// a caller who silently got the LAN-only relay would look like a
+// WithStaticICEServers supplies ICE_SERVERS_JSON as the last-resort list.
+func (s *Service) WithStaticICEServers(servers []sfu.ICEServer) *Service {
+	s.staticICE = servers
+	return s
+}
+
+// iceServersForJoin resolves, in order: minted managed-TURN credentials,
+// the provider's own list, then ICE_SERVERS_JSON. Each step is taken only
+// when the one before it produced nothing. A mint failure is logged loudly:
+// a caller silently handed the LAN-only relay would look like a
 // connectivity mystery on their side, not a config problem on ours.
 func (s *Service) iceServersForJoin(ctx context.Context, callID uuid.UUID) []sfu.ICEServer {
-	if s.turnCreds == nil {
-		return s.sfuProvider.GetICEServers()
+	if s.turnCreds != nil {
+		servers, err := s.turnCreds.ICEServers(ctx)
+		if err == nil && len(servers) > 0 {
+			return servers
+		}
+		if err != nil {
+			s.log.Error("managed TURN credential mint failed; falling back",
+				"call_id", callID, "err", err)
+		}
 	}
-	servers, err := s.turnCreds.ICEServers(ctx)
-	if err != nil {
-		s.log.Error("managed TURN credential mint failed; falling back to static ICE servers",
-			"call_id", callID, "err", err)
-		return s.sfuProvider.GetICEServers()
+	if servers := s.sfuProvider.GetICEServers(); len(servers) > 0 {
+		return servers
 	}
-	return servers
+	return s.staticICE
 }
 
 func New(

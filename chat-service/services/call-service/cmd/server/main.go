@@ -167,7 +167,12 @@ func main() {
 	// must be set in production for this to do anything; empty means
 	// the policy is a no-op (used for tests + isolated dev rigs).
 	callPolicy := service.NewCallPolicy(cfg.GraphServiceURL, cfg.InternalServiceKey)
-	svc := service.New(store, sfuProvider, rateLimiter, callPolicy, rdb, logger, cfg.ReconnectGraceSeconds)
+	svc := service.New(store, sfuProvider, rateLimiter, callPolicy, rdb, logger, cfg.ReconnectGraceSeconds).
+		// ICE_SERVERS_JSON as the last resort. The LiveKit provider returns
+		// no ICE servers of its own (it assumes SFU media), but 1:1 calls are
+		// direct WebRTC on both clients, so without this the in-stack relay
+		// was never handed out while that provider was active.
+		WithStaticICEServers(configuredICEServers)
 
 	// Managed TURN. The static ICE_SERVERS_JSON relay lives inside the stack
 	// and, behind a tunnel, is reachable only from this machine's network;
