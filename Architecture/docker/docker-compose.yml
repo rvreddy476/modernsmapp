@@ -2346,6 +2346,55 @@ services:
           cpus: '0.05'
           memory: 32M
 
+
+  # ------------------------------------------------------------------ web --
+  # The VChat web app (C:\workspace\postbook-ui), served at cleestudio.com
+  # through the cloudflared tunnel.
+  #
+  # It ran as `next start` from a terminal until 22 Sep 2026, which meant the
+  # site went down whenever that shell ended — repeatedly, mid-test. As a
+  # compose service it comes back with the rest of the stack.
+  #
+  # The build context reaches outside this repo on purpose: the web app is a
+  # sibling checkout, and duplicating it here would be worse than the reach.
+  web:
+    build:
+      context: ../../../postbook-ui
+      dockerfile: Dockerfile
+      args:
+        # Empty on purpose — the browser derives both from window.location,
+        # so this one image is correct on cleestudio.com and on localhost.
+        NEXT_PUBLIC_API_BASE_URL: ""
+        NEXT_PUBLIC_WS_BASE_URL: ""
+        NEXT_PUBLIC_SITE_URL: "https://cleestudio.com"
+        NEXT_PUBLIC_ENABLE_STUB_PAYMENTS: "true"
+    ports:
+      - "3000:3000"
+    environment:
+      # Server-side only: these are read by the Next route handlers running
+      # INSIDE this container, so they must be compose service names.
+      # localhost here would mean the container itself.
+      API_GATEWAY_URL: http://api-gateway:8080
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      CHAT_BACKEND_URL: http://chat-message-service:8092/v1/chat
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      POST_SERVICE_URL: http://post-service:8084
+      # Signs the short-lived chat WS token. Lives in the gitignored .env.
+      CHAT_PROXY_SIGNING_SECRET: ${CHAT_PROXY_SIGNING_SECRET:?CHAT_PROXY_SIGNING_SECRET must be set in Architecture/docker/.env}
+      NODE_ENV: production
+    depends_on:
+      api-gateway: { condition: service_started }
+      identity-auth: { condition: service_started }
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 volumes:
   pgdata:
   miniodata:
