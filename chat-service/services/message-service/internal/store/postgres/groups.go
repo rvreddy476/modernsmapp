@@ -636,6 +636,34 @@ func (s *ConversationStore) UpsertReadCursor(ctx context.Context, conversationID
 
 // GetReadCursors returns the user's cursors for a batch of conversations —
 // one query for a whole inbox page.
+// GetConversationReadCursors returns every member's read watermark for ONE
+// conversation, keyed by user id.
+//
+// This is what makes a read receipt survive a reload. The live
+// `read_receipt` frame only reaches a client that is already looking at the
+// conversation, so without the durable cursor a refresh lost every "Seen"
+// mark and the sender's own history showed as unread-by-them forever.
+func (s *ConversationStore) GetConversationReadCursors(ctx context.Context, conversationID uuid.UUID) (map[uuid.UUID]ReadCursor, error) {
+	out := make(map[uuid.UUID]ReadCursor)
+	rows, err := s.db.Query(ctx, `
+		SELECT conversation_id, user_id, COALESCE(last_read_message_id, '00000000-0000-0000-0000-000000000000'::uuid), last_read_at
+		FROM chat.read_cursors
+		WHERE conversation_id = $1
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rc ReadCursor
+		if err := rows.Scan(&rc.ConversationID, &rc.UserID, &rc.LastReadMessageID, &rc.LastReadAt); err != nil {
+			return nil, err
+		}
+		out[rc.UserID] = rc
+	}
+	return out, rows.Err()
+}
+
 func (s *ConversationStore) GetReadCursors(ctx context.Context, userID uuid.UUID, conversationIDs []uuid.UUID) (map[uuid.UUID]ReadCursor, error) {
 	out := make(map[uuid.UUID]ReadCursor, len(conversationIDs))
 	if len(conversationIDs) == 0 {

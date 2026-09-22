@@ -71,6 +71,7 @@ type groupStore interface {
 	GetLatestRequestBetween(ctx context.Context, senderID, receiverID uuid.UUID) (*postgres.MessageRequest, error)
 	UpsertReadCursor(ctx context.Context, conversationID, userID, messageID uuid.UUID, readAt time.Time) error
 	GetReadCursors(ctx context.Context, userID uuid.UUID, conversationIDs []uuid.UUID) (map[uuid.UUID]postgres.ReadCursor, error)
+	GetConversationReadCursors(ctx context.Context, conversationID uuid.UUID) (map[uuid.UUID]postgres.ReadCursor, error)
 }
 
 func (s *Service) groupStore() groupStore {

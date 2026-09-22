@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS chatservice.messages (
     reply_to_preview TEXT,
     reply_to_sender_id UUID,
     is_deleted BOOLEAN,
+    -- Edit metadata. Existing clusters:
+    -- ALTER TABLE chatservice.messages ADD (is_edited BOOLEAN, edited_at TIMESTAMP);
+    is_edited BOOLEAN,
+    edited_at TIMESTAMP,
     created_at TIMESTAMP,
     PRIMARY KEY ((conversation_id, bucket), ts, msg_id)
 ) WITH CLUSTERING ORDER BY (ts DESC, msg_id DESC);

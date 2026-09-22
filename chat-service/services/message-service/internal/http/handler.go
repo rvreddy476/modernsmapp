@@ -30,6 +30,7 @@ type ChatService interface {
 	SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, replyTo *service.ReplyRef, idempotencyKey string) (*service.MessageResponse, error)
 	GetMessages(ctx context.Context, userID, conversationID uuid.UUID, cursor *scylla.MessageCursor, limit int) ([]service.MessageResponse, *scylla.MessageCursor, error)
 	DeleteMessage(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time) error
+	EditMessage(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time, newText string) (*scylla.Message, error)
 	ToggleReaction(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time, emoji string) (*service.ToggleReactionResponse, error)
 	SetTyping(ctx context.Context, userID, conversationID uuid.UUID) error
 	MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error
@@ -160,6 +161,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Messages
 		v1.POST("/conversations/:id/messages", h.SendMessage)
 		v1.GET("/conversations/:id/messages", h.GetMessages)
+		v1.PATCH("/conversations/:id/messages/:messageId", h.EditMessage)
 		v1.DELETE("/conversations/:id/messages/:messageId", h.DeleteMessage)
 		v1.PUT("/conversations/:id/messages/:messageId/reactions", h.ToggleReaction)
 		// Typing & Read receipts
@@ -751,9 +753,73 @@ func (h *Handler) GetMessages(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, msgs, meta)
 }
 
+// DeleteMessageRequest identifies the row to act on.
+//
+// `bucket` is derivable from `ts` (it is the YYYYMM the message was written
+// in), so it is optional: the web sends only a timestamp, and requiring the
+// bucket made every delete from the web a 400.
 type DeleteMessageRequest struct {
-	Bucket string    `json:"bucket" binding:"required"`
+	Bucket string    `json:"bucket"`
 	Ts     time.Time `json:"ts" binding:"required"`
+}
+
+// EditMessageRequest is DeleteMessageRequest plus the replacement text.
+// `timestamp` is accepted as an alias for `ts` because that is the field
+// name the web client has always sent.
+type EditMessageRequest struct {
+	Text      string     `json:"text" binding:"required"`
+	Bucket    string     `json:"bucket"`
+	Ts        *time.Time `json:"ts"`
+	Timestamp *time.Time `json:"timestamp"`
+}
+
+// bucketFor returns the explicit bucket, or derives it from the timestamp.
+// Messages are partitioned by the UTC month they were written in.
+func bucketFor(bucket string, ts time.Time) string {
+	if bucket != "" {
+		return bucket
+	}
+	return ts.UTC().Format("200601")
+}
+
+// EditMessage handles PATCH /conversations/:id/messages/:messageId.
+func (h *Handler) EditMessage(c *gin.Context) {
+	userID, ok := getUserID(c, h.log)
+	if !ok {
+		return
+	}
+	convID, ok := parseConvID(c)
+	if !ok {
+		return
+	}
+	msgID, err := uuid.Parse(c.Param("messageId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid message ID format", nil, nil)
+		return
+	}
+
+	var req EditMessageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		return
+	}
+	ts := req.Ts
+	if ts == nil {
+		ts = req.Timestamp
+	}
+	if ts == nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "ts (or timestamp) is required", nil, nil)
+		return
+	}
+
+	msg, err := h.svc.EditMessage(c.Request.Context(), userID, convID, msgID, bucketFor(req.Bucket, *ts), *ts, req.Text)
+	if err != nil {
+		h.log.Warn("edit message failed", "err", err, "message_id", msgID, "user_id", userID)
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, msg, nil)
 }
 
 func (h *Handler) DeleteMessage(c *gin.Context) {
@@ -778,7 +844,7 @@ func (h *Handler) DeleteMessage(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.DeleteMessage(c.Request.Context(), userID, convID, msgID, req.Bucket, req.Ts); err != nil {
+	if err := h.svc.DeleteMessage(c.Request.Context(), userID, convID, msgID, bucketFor(req.Bucket, req.Ts), req.Ts); err != nil {
 		h.log.Error("failed to delete message", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return

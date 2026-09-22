@@ -31,8 +31,12 @@ type Message struct {
 	ReplyToID       *uuid.UUID `json:"reply_to_id,omitempty"`
 	ReplyToPreview  string     `json:"reply_to_preview,omitempty"`
 	ReplyToSenderID *uuid.UUID `json:"reply_to_sender_id,omitempty"`
-	IsDeleted      bool       `json:"is_deleted"`
-	CreatedAt      time.Time  `json:"created_at"`
+	IsDeleted       bool       `json:"is_deleted"`
+	// Edit metadata. Rows written before edits existed carry NULL, which
+	// gocql scans as the zero value — i.e. "never edited", which is right.
+	IsEdited  bool       `json:"is_edited,omitempty"`
+	EditedAt  *time.Time `json:"edited_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 type MessageCursor struct {
@@ -43,18 +47,20 @@ type MessageCursor struct {
 
 // scanTarget holds gocql-compatible types for scanning Scylla rows.
 type scanTarget struct {
-	ConversationID gocql.UUID
-	Bucket         string
-	Ts             time.Time
-	MsgID          gocql.UUID
-	SenderID       gocql.UUID
-	Type           string
-	Text           string
+	ConversationID  gocql.UUID
+	Bucket          string
+	Ts              time.Time
+	MsgID           gocql.UUID
+	SenderID        gocql.UUID
+	Type            string
+	Text            string
 	MediaID         *gocql.UUID
 	ReplyToID       *gocql.UUID
 	ReplyToPreview  string
 	ReplyToSenderID *gocql.UUID
 	IsDeleted       bool
+	IsEdited        bool
+	EditedAt        *time.Time
 	CreatedAt       time.Time
 }
 
@@ -68,6 +74,8 @@ func (t *scanTarget) toMessage() Message {
 		Type:           t.Type,
 		Text:           t.Text,
 		IsDeleted:      t.IsDeleted,
+		IsEdited:       t.IsEdited,
+		EditedAt:       t.EditedAt,
 		CreatedAt:      t.CreatedAt,
 	}
 	if t.MediaID != nil {
@@ -132,12 +140,12 @@ func (s *MessageStore) CreateMessage(ctx context.Context, msg *Message) error {
 func (s *MessageStore) GetMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) (*Message, error) {
 	var t scanTarget
 	err := s.session.Query(`
-		SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, created_at
+		SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, is_edited, edited_at, created_at
 		FROM messages
 		WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?
 		LIMIT 1
 	`, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).WithContext(ctx).
-		Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.IsDeleted, &t.CreatedAt)
+		Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil, nil
@@ -170,14 +178,14 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 		var q *gocql.Query
 		if cursor != nil && i == 0 {
 			q = s.session.Query(`
-				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, created_at
+				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, is_edited, edited_at, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ? AND (ts, msg_id) < (?, ?)
 				LIMIT ?
 			`, convGocql, bucket, cursor.Ts, uuidToGocql(cursor.MsgID), remaining)
 		} else {
 			q = s.session.Query(`
-				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, created_at
+				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, is_edited, edited_at, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ?
 				LIMIT ?
@@ -186,7 +194,7 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 
 		iter := q.WithContext(ctx).Iter()
 		var t scanTarget
-		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.IsDeleted, &t.CreatedAt) {
+		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt) {
 			if !t.IsDeleted {
 				messages = append(messages, t.toMessage())
 				remaining--
@@ -213,6 +221,27 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 	}
 
 	return messages, nextCursor, nil
+}
+
+// UpdateMessageText rewrites a message's text and stamps it as edited.
+//
+// A new message leaves is_edited/edited_at NULL, which scans as "never
+// edited" — so only this path can ever set them, and the flag means exactly
+// what it says.
+func (s *MessageStore) UpdateMessageText(
+	ctx context.Context,
+	conversationID uuid.UUID,
+	bucket string,
+	ts time.Time,
+	msgID uuid.UUID,
+	text string,
+	editedAt time.Time,
+) error {
+	return s.session.Query(`
+		UPDATE messages SET text = ?, is_edited = true, edited_at = ?
+		WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?
+	`, text, editedAt, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).
+		WithContext(ctx).Exec()
 }
 
 // SoftDeleteMessage marks a message as deleted (avoids Scylla tombstones).

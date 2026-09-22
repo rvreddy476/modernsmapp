@@ -128,6 +128,9 @@ type previewMsgStore struct {
 }
 
 func (m *previewMsgStore) CreateMessage(context.Context, *scylla.Message) error { return nil }
+func (m *previewMsgStore) UpdateMessageText(context.Context, uuid.UUID, string, time.Time, uuid.UUID, string, time.Time) error {
+	return nil
+}
 func (m *previewMsgStore) UpsertInbox(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, time.Time) error {
 	return nil
 }

@@ -90,6 +90,7 @@ type MessageStore interface {
 	GetMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) (*scylla.Message, error)
 	GetMessages(ctx context.Context, conversationID uuid.UUID, cursor *scylla.MessageCursor, limit int) ([]scylla.Message, *scylla.MessageCursor, error)
 	SoftDeleteMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) error
+	UpdateMessageText(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID, text string, editedAt time.Time) error
 	UpsertInbox(ctx context.Context, userID, conversationID, senderID uuid.UUID, text string, ts time.Time) error
 	AddReaction(ctx context.Context, convID uuid.UUID, bucket string, msgTs time.Time, msgID uuid.UUID, emoji string, userID uuid.UUID) error
 	RemoveReaction(ctx context.Context, convID uuid.UUID, bucket string, msgTs time.Time, msgID uuid.UUID, emoji string, userID uuid.UUID) error
@@ -138,6 +139,14 @@ type MemberWithProfile struct {
 	JoinedAt      time.Time  `json:"joined_at"`
 	DisplayName   string     `json:"display_name,omitempty"`
 	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
+	// LastReadAt is this member's durable read watermark. A sender uses the
+	// OTHER member's value to mark its own messages seen, which is what
+	// makes a read receipt survive a reload — the live frame only reaches a
+	// client already watching the conversation.
+	//
+	// Subject to the reader's own privacy setting: suppressed when they have
+	// read receipts off, so this never discloses more than the live frame.
+	LastReadAt *time.Time `json:"last_read_at,omitempty"`
 }
 
 type ConversationResponse struct {
@@ -191,7 +200,12 @@ type MessageResponse struct {
 	ReplyToPreview    string            `json:"reply_to_preview,omitempty"`
 	ReplyToSenderID   *uuid.UUID        `json:"reply_to_sender_id,omitempty"`
 	Reactions         []ReactionSummary `json:"reactions,omitempty"`
-	CreatedAt         time.Time         `json:"created_at"`
+	// Without these two on the wire the "(edited)" marker survived only in
+	// the live event: a reload showed the new text with no sign it had been
+	// changed.
+	IsEdited  bool       `json:"is_edited,omitempty"`
+	EditedAt  *time.Time `json:"edited_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 type ToggleReactionResponse struct {
@@ -1313,6 +1327,8 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 			ReplyToID:       m.ReplyToID,
 			ReplyToPreview:  m.ReplyToPreview,
 			ReplyToSenderID: m.ReplyToSenderID,
+			IsEdited:        m.IsEdited,
+			EditedAt:        m.EditedAt,
 			CreatedAt:       m.CreatedAt,
 		}
 		if p, ok := senderProfiles[m.SenderID]; ok {
@@ -1325,6 +1341,103 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	}
 
 	return out, nextCursor, nil
+}
+
+// EditMessage rewrites the author's own message and tells every member.
+//
+// There was no edit path on the server at all: the web called
+// PATCH /conversations/:id/messages/:messageId, which was not a registered
+// route. The client updated its own copy optimistically, so the author saw
+// the new text and nobody else ever did — not even after a reload, because
+// nothing was stored.
+func (s *Service) EditMessage(
+	ctx context.Context,
+	userID, conversationID, messageID uuid.UUID,
+	bucket string,
+	ts time.Time,
+	newText string,
+) (*scylla.Message, error) {
+	newText = strings.TrimSpace(newText)
+	if newText == "" {
+		return nil, errors.New("message text is required")
+	}
+	// Deliberately no length cap here: the send path has none either (the
+	// 500-rune rule applies only to a first message in a request), and a
+	// limit on edit that send does not enforce would strand long messages.
+
+	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("not a conversation member")
+	}
+
+	msg, err := s.msgStore.GetMessage(ctx, conversationID, bucket, ts, messageID)
+	if err != nil {
+		return nil, err
+	}
+	if msg == nil || msg.IsDeleted {
+		return nil, errors.New("message not found")
+	}
+
+	// Author only. A group admin may DELETE someone else's message; rewriting
+	// it would be putting words in their mouth, which is a different power.
+	if msg.SenderID != userID {
+		return nil, errors.New("not allowed to edit this message")
+	}
+	// A media message carries its meaning in the attachment, not in a text
+	// column that happens to be empty.
+	if msg.Type != "" && msg.Type != "text" {
+		return nil, errors.New("only text messages can be edited")
+	}
+
+	editedAt := time.Now().UTC()
+	if err := s.msgStore.UpdateMessageText(ctx, conversationID, bucket, ts, messageID, newText, editedAt); err != nil {
+		return nil, err
+	}
+	msg.Text = newText
+	msg.IsEdited = true
+	msg.EditedAt = &editedAt
+
+	// The inbox preview is denormalised from the newest message. Its guard is
+	// `last_message_at <= ts`, so passing this message's own timestamp updates
+	// the preview when this IS the newest message and is a no-op when a newer
+	// one has already replaced it — no stale text, no resurrected preview.
+	if err := s.lastMessageStore().SetLastMessage(ctx, conversationID, msg.SenderID, newText, msg.Ts); err != nil {
+		s.log.Warn("edit: inbox preview refresh failed", "err", err, "message_id", messageID)
+	}
+
+	s.rdb.Del(ctx, fmt.Sprintf("chat_messages:%s", conversationID))
+
+	members, _ := s.convStore.GetMembers(ctx, conversationID)
+	go func() {
+		pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		payload, _ := json.Marshal(map[string]interface{}{
+			"type": "message_edited",
+			"payload": map[string]interface{}{
+				"conversation_id": conversationID,
+				"msg_id":          messageID,
+				"new_text":        newText,
+				"edited_at":       editedAt,
+			},
+		})
+		pipe := s.rdb.Pipeline()
+		recipients := 0
+		for _, m := range members {
+			// The author's other sessions included: an edit made on the
+			// phone has to land on the same person's open laptop tab.
+			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+			recipients++
+		}
+		pipe.Publish(pubCtx, fmt.Sprintf("convroom:%s", conversationID), payload)
+		if _, err := pipe.Exec(pubCtx); err != nil {
+			s.log.Warn("failed to publish message edit", "err", err, "recipients", recipients)
+		}
+	}()
+
+	return msg, nil
 }
 
 func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time) error {
@@ -1613,7 +1726,47 @@ func (s *Service) getConversationResponseFor(ctx context.Context, viewerID, conv
 	}
 	page := []ConversationResponse{*resp}
 	s.resolveGroupAvatarURLs(ctx, viewerID, page)
+	s.attachReadCursors(ctx, viewerID, &page[0])
 	return &page[0], nil
+}
+
+// attachReadCursors fills each member's LastReadAt for this viewer.
+//
+// Disclosure follows exactly the rule the live `read_receipt` frame follows
+// (MarkRead below): the READER's own policy decides. Unknown policy, chat
+// paused or "no_one" discloses nothing; "connections_only" requires the
+// graph to say yes. Anything else would make a reload leak a receipt the
+// live path had deliberately withheld.
+func (s *Service) attachReadCursors(ctx context.Context, viewerID uuid.UUID, resp *ConversationResponse) {
+	if resp == nil || len(resp.Members) == 0 {
+		return
+	}
+	cursors, err := s.groupStore().GetConversationReadCursors(ctx, resp.ID)
+	if err != nil {
+		s.log.Warn("read cursor fetch failed", "err", err, "conversation_id", resp.ID)
+		return
+	}
+	for i := range resp.Members {
+		reader := resp.Members[i].UserID
+		// The viewer's own cursor is not a receipt and is never withheld.
+		if reader == viewerID {
+			continue
+		}
+		rc, ok := cursors[reader]
+		if !ok || rc.LastReadAt.IsZero() {
+			continue
+		}
+		policy := s.GetChatPolicy(ctx, reader)
+		if !policy.Known || policy.ChatPaused || policy.ReadReceiptsVisibility == "no_one" {
+			continue
+		}
+		if policy.ReadReceiptsVisibility == "connections_only" &&
+			!s.discloseReceiptTo(ctx, viewerID, reader) {
+			continue
+		}
+		readAt := rc.LastReadAt
+		resp.Members[i].LastReadAt = &readAt
+	}
 }
 
 // enrichMembers batch-fetches user profiles and merges them with member data.

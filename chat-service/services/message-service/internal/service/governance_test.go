@@ -358,6 +358,10 @@ func (f *governanceFake) GetReadCursors(context.Context, uuid.UUID, []uuid.UUID)
 	return map[uuid.UUID]postgres.ReadCursor{}, nil
 }
 
+func (f *governanceFake) GetConversationReadCursors(context.Context, uuid.UUID) (map[uuid.UUID]postgres.ReadCursor, error) {
+	return map[uuid.UUID]postgres.ReadCursor{}, nil
+}
+
 // --- policyStore ---
 
 func (f *governanceFake) GetUserPolicy(ctx context.Context, userID uuid.UUID) (*postgres.UserPolicy, error) {
