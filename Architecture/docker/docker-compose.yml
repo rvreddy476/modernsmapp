@@ -2377,9 +2377,16 @@ services:
       API_GATEWAY_URL: http://api-gateway:8080
       AUTH_SERVICE_URL: http://identity-auth:8081
       CHAT_BACKEND_URL: http://chat-message-service:8092/v1/chat
-      PROFILE_SERVICE_URL: http://identity-profile:8098
-      GRAPH_SERVICE_URL: http://graph-service:8083
-      POST_SERVICE_URL: http://post-service:8084
+      # Through the GATEWAY, not the services directly. identity-profile,
+      # graph-service and post-service all refuse a direct call with 401
+      # "internal service key required" — the gateway is what holds that
+      # key. Pointing at them directly made every profile lookup 401, which
+      # /api/profile turns into 404, which the UI renders as "this profile
+      # isn.t available". Verified from inside this container: direct 401,
+      # via gateway 200.
+      PROFILE_SERVICE_URL: http://api-gateway:8080
+      GRAPH_SERVICE_URL: http://api-gateway:8080
+      POST_SERVICE_URL: http://api-gateway:8080
       # Signs the short-lived chat WS token. Lives in the gitignored .env.
       CHAT_PROXY_SIGNING_SECRET: ${CHAT_PROXY_SIGNING_SECRET:?CHAT_PROXY_SIGNING_SECRET must be set in Architecture/docker/.env}
       NODE_ENV: production

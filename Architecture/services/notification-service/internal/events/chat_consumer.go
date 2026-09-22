@@ -179,7 +179,15 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	deepLink := fmt.Sprintf("/messages/%s", e.ConversationID)
+	// "/messages/<id>" is not a route — the web app has only /messenger, so
+	// every message notification ever written led nowhere when tapped. Same
+	// defect as the "/messages/requests" link fixed below on 21 Sep; this is
+	// the other half of it.
+	//
+	// The messenger opens a direct conversation from ?user=<peer>, which it
+	// resolves to the conversation itself, so the sender is what the link
+	// needs to carry.
+	deepLink := fmt.Sprintf("/messenger?user=%s", senderID)
 
 	// Muted recipients still get the durable inbox row — mute silences the
 	// device, it does not hide the conversation — but no push is sent.
