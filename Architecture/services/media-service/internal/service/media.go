@@ -389,15 +389,20 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 
 	// 3. Process based on file_type + media_subtype
 	switch {
-	case media.FileType == "image" && (media.MediaSubtype == "general" || media.MediaSubtype == "avatar" || media.MediaSubtype == "cover"):
-		if err := s.processImage(ctx, media); err != nil {
-			_ = s.pgStore.UpdateStatus(ctx, mediaID, "failed")
-			media.ProcessingStatus = "failed"
-			return media, nil
-		}
-		media.ProcessingStatus = "ready"
-
-	case media.MediaSubtype == "gif":
+	// EVERY image takes the same synchronous pipeline: scan, then variants.
+	//
+	// This case used to name the subtypes it would process — general, avatar
+	// and cover, with gif repeating the identical body in a case of its own —
+	// and an image with any other subtype fell through the whole switch.
+	// Nothing failed and nothing was logged: confirm answered 200 with the
+	// asset left at 'uploaded'/'pending'.
+	//
+	// That is why chat attachments were refused on send. The reservation
+	// requires ready+passed and correctly denied an asset that had never been
+	// processed; the user saw only that the send failed. `post_image` uploads
+	// were stuck the same way. The subtype says where an asset is USED; it has
+	// never been a reason to skip scanning it.
+	case media.FileType == "image":
 		if err := s.processImage(ctx, media); err != nil {
 			_ = s.pgStore.UpdateStatus(ctx, mediaID, "failed")
 			media.ProcessingStatus = "failed"
@@ -448,6 +453,14 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 			return nil, err
 		}
 		media.ProcessingStatus = "processing"
+
+	default:
+		// Unreachable while file_type is validated to image/video/audio and
+		// each has a case above. If a fourth type is ever added without one,
+		// say so instead of returning 200 over an asset left at 'uploaded'
+		// that every downstream gate will then refuse.
+		return nil, fmt.Errorf("%w: no processing path for file_type=%q media_subtype=%q",
+			ErrUploadState, media.FileType, media.MediaSubtype)
 	}
 
 	return media, nil
