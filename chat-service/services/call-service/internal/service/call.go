@@ -55,11 +55,45 @@ type Service struct {
 	signalingEndpoint     string
 	reconnectGraceSeconds int
 
+	// turnCreds, when set, mints the ICE servers a join hands out. The
+	// provider's static list is the fallback, not the primary: behind a
+	// tunnel the static relay is reachable only from this machine's own
+	// network, which is exactly the case managed TURN exists to fix.
+	turnCreds TURNCredentialSource
+
 	// groupCallsEnabled stays FALSE in P0 (CALL-LB-5): the advisory
 	// user-set lock plus busy check covers only direct creation, so every
 	// other participant-add path is refused until group calls implement
 	// the same locked invariant. There is deliberately no config knob yet.
 	groupCallsEnabled bool
+}
+
+// TURNCredentialSource mints the ICE servers handed out on join.
+type TURNCredentialSource interface {
+	ICEServers(ctx context.Context) ([]sfu.ICEServer, error)
+}
+
+// WithTURNCredentials makes joins hand out minted credentials.
+func (s *Service) WithTURNCredentials(src TURNCredentialSource) *Service {
+	s.turnCreds = src
+	return s
+}
+
+// iceServersForJoin prefers minted credentials and falls back to the
+// provider's static list when minting fails. The fallback is logged loudly:
+// a caller who silently got the LAN-only relay would look like a
+// connectivity mystery on their side, not a config problem on ours.
+func (s *Service) iceServersForJoin(ctx context.Context, callID uuid.UUID) []sfu.ICEServer {
+	if s.turnCreds == nil {
+		return s.sfuProvider.GetICEServers()
+	}
+	servers, err := s.turnCreds.ICEServers(ctx)
+	if err != nil {
+		s.log.Error("managed TURN credential mint failed; falling back to static ICE servers",
+			"call_id", callID, "err", err)
+		return s.sfuProvider.GetICEServers()
+	}
+	return servers
 }
 
 func New(
@@ -534,7 +568,7 @@ func (s *Service) JoinCall(ctx context.Context, userID, callID uuid.UUID) (*Join
 		SFUProvider:           room.Provider,
 		SFUURL:                s.sfuProvider.ClientURL(),
 		ParticipantIdentity:   userID.String(),
-		ICEServers:            s.sfuProvider.GetICEServers(),
+		ICEServers:            s.iceServersForJoin(ctx, callID),
 		SignalingEndpoint:     s.signalingEndpoint,
 		ReconnectGraceSeconds: s.reconnectGraceSeconds,
 	}, nil

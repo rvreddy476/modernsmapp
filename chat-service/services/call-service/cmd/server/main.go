@@ -16,6 +16,7 @@ import (
 	"github.com/atpost/chat-call-service/internal/relationship"
 	"github.com/atpost/chat-call-service/internal/service"
 	"github.com/atpost/chat-call-service/internal/sfu"
+	"github.com/atpost/chat-call-service/internal/turn"
 	"github.com/atpost/chat-call-service/internal/store/postgres"
 	"github.com/atpost/chat-shared/accessauth"
 	"github.com/atpost/chat-shared/logging"
@@ -167,6 +168,24 @@ func main() {
 	// the policy is a no-op (used for tests + isolated dev rigs).
 	callPolicy := service.NewCallPolicy(cfg.GraphServiceURL, cfg.InternalServiceKey)
 	svc := service.New(store, sfuProvider, rateLimiter, callPolicy, rdb, logger, cfg.ReconnectGraceSeconds)
+
+	// Managed TURN. The static ICE_SERVERS_JSON relay lives inside the stack
+	// and, behind a tunnel, is reachable only from this machine's network;
+	// a caller anywhere else got signalling and no media. When Cloudflare
+	// TURN is configured, joins hand out credentials minted from it instead.
+	// Half a configuration is refused rather than ignored: a missing token
+	// would otherwise look like a working setup that never relays.
+	if cfg.CloudflareTURNKeyID != "" || cfg.CloudflareTURNAPIToken != "" {
+		minter, err := turn.NewCloudflare(cfg.CloudflareTURNKeyID, cfg.CloudflareTURNAPIToken, cfg.CloudflareTURNTTL)
+		if err != nil {
+			logger.Error("managed TURN misconfigured", "err", err,
+				"key_id_set", cfg.CloudflareTURNKeyID != "", "api_token_set", cfg.CloudflareTURNAPIToken != "")
+			os.Exit(1)
+		}
+		svc = svc.WithTURNCredentials(minter)
+		logger.Info("managed TURN enabled", "provider", "cloudflare", "ttl", cfg.CloudflareTURNTTL.String())
+	}
+
 	handler := callhttp.New(svc, logger).WithCallsEnabled(cfg.CallsEnabled)
 
 	// 6. Outbox Relay (background)

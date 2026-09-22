@@ -1274,6 +1274,16 @@ services:
       # devices on other networks — the Cloudflare tunnel cannot carry TURN.
       ICE_SERVERS_JSON: >-
         ${ICE_SERVERS_JSON:-[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:${TURN_HOST:-10.0.2.2}:3478?transport=udp","turn:${TURN_HOST:-10.0.2.2}:3478?transport=tcp"],"username":"atpost","credential":"${TURN_SECRET:-atpost_dev_turn_secret}"}]}
+      # Managed TURN (Cloudflare Realtime TURN). When both are set, joins
+      # hand out credentials minted per call from Cloudflare's anycast relay
+      # instead of the in-stack coturn above — which, behind the tunnel, only
+      # this machine's own network can reach. This is what makes calls work
+      # for testers on other networks without opening a port anywhere. Key
+      # and token come from the Cloudflare dashboard (Realtime → TURN) and
+      # live in the gitignored .env.
+      CLOUDFLARE_TURN_KEY_ID: ${CLOUDFLARE_TURN_KEY_ID:-}
+      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-}
+      CLOUDFLARE_TURN_TTL: ${CLOUDFLARE_TURN_TTL:-24h}
     ports:
       - "8097:8097"
     depends_on:

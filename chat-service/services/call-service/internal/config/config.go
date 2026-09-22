@@ -46,6 +46,13 @@ type Config struct {
 	LiveKitAPISecret string
 	ICEServersJSON   string
 
+	// Managed TURN (Cloudflare). When set, join responses carry credentials
+	// minted per call instead of the static ICE_SERVERS_JSON relay, which
+	// behind a tunnel is reachable only from this machine's own network.
+	CloudflareTURNKeyID    string
+	CloudflareTURNAPIToken string
+	CloudflareTURNTTL      time.Duration
+
 	// Call timeouts
 	RingTimeoutSeconds     int
 	InviteExpirySeconds    int
@@ -83,6 +90,11 @@ func Load() *Config {
 		LiveKitAPIKey:          getEnv("LIVEKIT_API_KEY", ""),
 		LiveKitAPISecret:       getEnv("LIVEKIT_API_SECRET", ""),
 		ICEServersJSON:         getEnv("ICE_SERVERS_JSON", ""),
+		CloudflareTURNKeyID:    strings.TrimSpace(os.Getenv("CLOUDFLARE_TURN_KEY_ID")),
+		CloudflareTURNAPIToken: strings.TrimSpace(os.Getenv("CLOUDFLARE_TURN_API_TOKEN")),
+		// A credential must outlive the longest call it relays; 24h is the
+		// documented example and MAX_CALL_DURATION_MINUTES defaults to 4h.
+		CloudflareTURNTTL: getEnvDuration("CLOUDFLARE_TURN_TTL", 24*time.Hour),
 		RingTimeoutSeconds:     getEnvInt("RING_TIMEOUT_SECONDS", 30),
 		InviteExpirySeconds:    getEnvInt("INVITE_EXPIRY_SECONDS", 60),
 		MaxCallDurationMinutes: getEnvInt("MAX_CALL_DURATION_MINUTES", 240),
@@ -119,10 +131,20 @@ func (c *Config) ValidateCallEnablement() error {
 		return errors.New("LIVEKIT_API_KEY is required when calls are enabled")
 	case strings.TrimSpace(c.LiveKitAPISecret) == "":
 		return errors.New("LIVEKIT_API_SECRET is required when calls are enabled")
-	case !containsTURNRelay(c.ICEServersJSON):
-		return errors.New("ICE_SERVERS_JSON must contain a TURN or TURNS relay when calls are enabled")
+	// A managed relay satisfies the TURN requirement: its credentials are
+	// minted per join, so there is nothing static to validate here beyond
+	// the key pair being present.
+	case !containsTURNRelay(c.ICEServersJSON) && !c.HasManagedTURN():
+		return errors.New("ICE_SERVERS_JSON must contain a TURN or TURNS relay, or CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN must be set, when calls are enabled")
 	}
 	return nil
+}
+
+// HasManagedTURN reports whether Cloudflare TURN credential minting is
+// configured. Both halves are required; one without the other is a
+// misconfiguration main reports rather than silently ignores.
+func (c *Config) HasManagedTURN() bool {
+	return c.CloudflareTURNKeyID != "" && c.CloudflareTURNAPIToken != ""
 }
 
 func containsTURNRelay(raw string) bool {
