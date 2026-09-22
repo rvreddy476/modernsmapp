@@ -572,9 +572,16 @@ func (s *Service) MarkRead(ctx context.Context, userID uuid.UUID, bucket int, ts
 	if err := s.scyllaStore.MarkRead(ctx, userID, bucket, tsUUID); err != nil {
 		return err
 	}
-	// Decrement unread counter in Redis
+	// Drop the cached counter so the next read recomputes it from Scylla,
+	// which is where is_read actually lives.
+	//
+	// This used to be a bare DECR, which is wrong twice over. Marking an
+	// already-read notification decremented anyway, and — worse — DECR on a
+	// key that had expired RECREATED it, at -1, with no TTL. GetUnreadCount
+	// only recomputes when the key is missing, so once that happened the
+	// counter was permanently authoritative and permanently wrong.
 	key := fmt.Sprintf("unread:%s", userID.String())
-	s.rdb.Decr(ctx, key)
+	s.rdb.Del(ctx, key)
 	return nil
 }
 
