@@ -188,6 +188,32 @@ func main() {
 	go consumer.Start(consumerCtx)
 	defer consumer.Close()
 
+	/*
+		A second consumer, on chat's topic.
+
+		Suggestions must exclude somebody the viewer has already sent a message
+		request to, and that fact is only ever announced on chat.events.v1 —
+		suggestion-service reads the app database, and chat has its own. Rather
+		than reach across a database boundary, it listens, exactly as
+		notification-service does for the same events.
+
+		Same Consumer type and the same dispatch: an event it has no case for
+		is ignored, so this costs one reader and one case statement. A distinct
+		group id, or the two would divide the partitions of different topics
+		between them.
+	*/
+	chatConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"suggestion-service-chat",
+		env("CHAT_KAFKA_TOPIC", "chat.events.v1"),
+		rdb,
+		suggSvc,
+		suggStore,
+		kafkaDialer,
+	)
+	go chatConsumer.Start(consumerCtx)
+	defer chatConsumer.Close()
+
 	// 12. Tiered background batch jobs
 	go runTieredBatchJobs(ctx, suggSvc)
 

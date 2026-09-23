@@ -60,11 +60,20 @@ func NewConsumer(brokers []string, groupID, topic string, rdb *redis.Client, svc
 // NewConsumerWithDialer creates a new event consumer with an explicit Kafka dialer.
 func NewConsumerWithDialer(brokers []string, groupID, topic string, rdb *redis.Client, svc *service.Service, st *store.Store, dialer *kafka.Dialer) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  brokers,
-		GroupID:  groupID,
-		Topic:    topic,
-		MinBytes: 10e3,
+		Brokers: brokers,
+		GroupID: groupID,
+		Topic:   topic,
+		/*
+			MinBytes 1 and an explicit MaxWait, for the reason feed-service
+			needed them: kafka-go defaults MaxWait to TEN SECONDS, and these
+			envelopes are a few hundred bytes, so asking for a 10 KB batch on
+			a quiet topic means the broker holds the fetch open waiting for
+			one that never fills. Here that delay is how long somebody stays
+			in a suggestion list after you have already messaged them.
+		*/
+		MinBytes: 1,
 		MaxBytes: 10e6,
+		MaxWait:  500 * time.Millisecond,
 		Dialer:   dialer,
 	})
 	return &Consumer{
@@ -213,8 +222,60 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	return nil
 }
 
+/*
+	messageRequestCreated is chat-service's event name, spelled out rather
+	than imported: it is declared in chat-service/shared/events, a separate Go
+	module, and the two do not share a dependency. What crosses between them
+	is the string on the wire, so the string is what this matches. If chat
+	renames it, this stops excluding people and nothing breaks loudly — which
+	is why the name appears once, here.
+*/
+const messageRequestCreated = "MessageRequestCreated"
+
+/*
+	Somebody you have messaged is not a suggestion.
+
+	The exclusion set already covered friends, blocked accounts, pending
+	CONNECTION requests and cooldowns. It never covered message requests,
+	because until recently the suggestion rail sent connection requests. It
+	sends message requests now, so without this the person you just messaged
+	comes back in the next batch asking to be messaged again — which is
+	exactly what was reported, and the client-side filter is only a patch over
+	it.
+
+	Recorded as a cooldown with no expiry: the pair either start talking, in
+	which case they are excluded as a conversation anyway, or they do not, and
+	re-suggesting somebody who ignored a request is not useful.
+*/
+func (c *Consumer) handleMessageRequestSent(ctx context.Context, envelope events.EventEnvelope) error {
+	var payload struct {
+		SenderID   string `json:"sender_id"`
+		ReceiverID string `json:"receiver_id"`
+	}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		// A payload we cannot read is not worth retrying forever.
+		log.Printf("[suggestion-consumer] message request payload unreadable: %v", err)
+		return nil
+	}
+	sender, err := uuid.Parse(payload.SenderID)
+	if err != nil {
+		return nil
+	}
+	receiver, err := uuid.Parse(payload.ReceiverID)
+	if err != nil || receiver == sender {
+		return nil
+	}
+	return c.store.CreateCooldown(ctx, store.CooldownEntry{
+		ViewerID:     sender,
+		CandidateID:  receiver,
+		CooldownType: "message_request_sent",
+	})
+}
+
 func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) error {
 	switch envelope.EventType {
+	case messageRequestCreated:
+		return c.handleMessageRequestSent(ctx, envelope)
 	case events.ConnectionAccepted:
 		return c.handleFriendAccepted(ctx, envelope)
 	case events.ConnectionRequested:
