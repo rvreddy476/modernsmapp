@@ -483,6 +483,34 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 			if err := s.convStore.CreateMessageRequest(ctx, convID, userID, otherID); err != nil {
 				return nil, err
 			}
+			/*
+				Tell the recipient a request exists.
+
+				MessageRequestCreated used to be emitted ONLY from the message
+				delivery path (delivery.go), keyed on a message id and carrying
+				that message as the preview. So a request opened without a
+				message — which is what the product now does when someone taps
+				Message — created the row, put it in the recipient's Requests
+				lane, and notified nobody. Observed on dev: request 19, created
+				15:17, recipient's most recent notification two days older.
+
+				Emitted here as well, deduped on the CONVERSATION so the two
+				paths cannot double-notify: whichever happens first wins, and
+				delivery.go's later insert for the same conversation is a
+				no-op. The preview is empty because there is nothing to preview
+				yet; notification-service already renders the no-preview case,
+				and SetMessageRequestPreview fills it in if a message follows.
+			*/
+			payload := sharedEvents.MessageRequestPayload{
+				ConversationID: convID.String(),
+				SenderID:       userID.String(),
+				ReceiverID:     otherID.String(),
+				OccurredAt:     time.Now().UTC(),
+			}
+			if err := s.deliveryStore().InsertOutboxEventOnce(ctx,
+				"message-request:"+convID.String(), sharedEvents.MessageRequestCreated, payload); err != nil {
+				return nil, fmt.Errorf("queue message request event: %w", err)
+			}
 		}
 		return s.getConversationResponse(ctx, convID)
 	})

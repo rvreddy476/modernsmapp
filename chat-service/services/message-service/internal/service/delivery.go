@@ -178,7 +178,20 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 			Preview:        intent.MessageText,
 			OccurredAt:     intent.MessageTS,
 		}
-		if err := s.deliveryStore().InsertOutboxEventOnce(ctx, "message-request:"+intent.MessageID.String(), sharedEvents.MessageRequestCreated, payload); err != nil {
+		/*
+			Deduped on the CONVERSATION, not the message.
+
+			The request event is now also emitted when the request is created,
+			before any message exists (see CreateDirectConversation) — because
+			a request opened by tapping Message has no message to key on and
+			was notifying nobody. Keying both paths the same way is what makes
+			them one event: whichever runs first wins and the other is a no-op.
+			A message id key would have let both fire and notified twice.
+
+			A request carries at most one message before it is accepted, so
+			per-conversation is not coarser than per-message here.
+		*/
+		if err := s.deliveryStore().InsertOutboxEventOnce(ctx, "message-request:"+intent.ConversationID.String(), sharedEvents.MessageRequestCreated, payload); err != nil {
 			return fmt.Errorf("queue message request event: %w", err)
 		}
 	}
