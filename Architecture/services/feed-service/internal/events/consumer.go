@@ -28,11 +28,27 @@ func NewConsumer(brokers []string, groupID string, topic string, svc *service.Se
 
 func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore, dialer *kafka.Dialer) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  brokers,
-		GroupID:  groupID,
-		Topic:    topic,
-		MinBytes: 10e3, // 10KB
+		Brokers: brokers,
+		GroupID: groupID,
+		Topic:   topic,
+		/*
+			MinBytes asks the broker to hold a fetch open until it has this much
+			to return; MaxWait is how long it may hold it. kafka-go defaults
+			MaxWait to TEN SECONDS, and a PostCreated envelope is a few hundred
+			bytes — so on a quiet topic the broker sat waiting for a 10 KB batch
+			that would never fill, and every post reached its author's own feed
+			about ten seconds after it was written. Measured on dev: posts
+			created at 10:17:48.6 and 10:19:25.5 were fanned out at 10:17:57.5
+			and 10:19:36.5.
+
+			MinBytes 1 asks for whatever is there. MaxWait is still set
+			explicitly rather than left to the default, because the default is
+			exactly what caused this and a future reader should not have to know
+			it. MaxBytes keeps the per-fetch ceiling.
+		*/
+		MinBytes: 1,
 		MaxBytes: 10e6, // 10MB
+		MaxWait:  500 * time.Millisecond,
 		Dialer:   dialer,
 	})
 	return &Consumer{reader: reader, service: svc, rdb: rdb, timelineStore: ts}

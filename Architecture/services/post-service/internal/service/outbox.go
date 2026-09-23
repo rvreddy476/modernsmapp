@@ -43,6 +43,29 @@ func (s *Service) InsertOutboxEvent(ctx context.Context, eventType, aggregateTyp
 	return s.pgStore.InsertOutboxEvent(ctx, eventType, aggregateType, aggregateID, payload)
 }
 
+/*
+	NudgeOutbox asks the outbox worker to drain now rather than at its next tick.
+
+	The worker polls every 5 seconds, so a post committed just after a tick waited
+	up to 5 seconds before its PostCreated event even reached Kafka — before any
+	of the fan-out work that puts it in a feed had started. The tick remains the
+	floor and the safety net; this only removes the waiting when we already know
+	there is something to publish.
+
+	Non-blocking on a buffered channel of one: if a drain is already pending, the
+	signal is redundant and is dropped. It is therefore safe to call from a
+	request path, and safe to call when the worker is not running.
+*/
+func (s *Service) NudgeOutbox() {
+	if s.outboxNudge == nil {
+		return
+	}
+	select {
+	case s.outboxNudge <- struct{}{}:
+	default:
+	}
+}
+
 // StartOutboxWorker starts a background goroutine that publishes outbox events.
 func (s *Service) StartOutboxWorker(ctx context.Context) {
 	go func() {
@@ -57,6 +80,10 @@ func (s *Service) StartOutboxWorker(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if err := s.PublishOutboxEvents(ctx); err != nil {
+					slog.Error("outbox worker: publish error", "error", err)
+				}
+			case <-s.outboxNudge:
 				if err := s.PublishOutboxEvents(ctx); err != nil {
 					slog.Error("outbox worker: publish error", "error", err)
 				}

@@ -68,6 +68,10 @@ var (
 )
 
 type Service struct {
+	// outboxNudge asks the outbox worker to drain immediately instead of
+	// waiting out its 5s tick. Buffered at one: a pending drain makes a second
+	// signal redundant. See NudgeOutbox in outbox.go.
+	outboxNudge            chan struct{}
 	pgStore                *postgres.Store
 	scyllaStore            *scylla.InteractionStore
 	scyllaSession          *gocql.Session
@@ -157,6 +161,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		rateLimiter: engagement.NewRateLimiter(rdb),
 		spam:        spam.New(rdb),
 		httpClient:  &http.Client{Timeout: 5 * time.Second},
+		outboxNudge: make(chan struct{}, 1),
 	}
 	if pg != nil {
 		svc.hiddenAuthors = pg
@@ -1303,10 +1308,15 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 
 	// PostCreated rides the same transaction as the post row (see
 	// CreatePostWithEventIdempotent above) — the outbox worker publishes it
-	// to Kafka on its next 5s tick with retry until success. Everything
-	// else a public post does at birth — user.mentioned, trending and
-	// hashtag counters, the live pub/sub — is announcePublishedPost, and a
-	// scheduled post does none of it until the worker publishes it.
+	// to Kafka with retry until success. Everything else a public post does
+	// at birth — user.mentioned, trending and hashtag counters, the live
+	// pub/sub — is announcePublishedPost, and a scheduled post does none of
+	// it until the worker publishes it.
+	//
+	// The worker's 5s tick stays the floor and the safety net, but waiting
+	// it out delayed every post before fan-out had even begun, so we tell it
+	// there is work now. Non-blocking, and a no-op if a drain is pending.
+	s.NudgeOutbox()
 	if !scheduled {
 		s.announcePublishedPost(p, mentions)
 	}
