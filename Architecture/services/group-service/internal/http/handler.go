@@ -732,11 +732,16 @@ func (h *Handler) InviteUser(c *gin.Context) {
 			}
 			ids = append(ids, id)
 		}
-		if err := h.svc.InviteUsersBatch(c.Request.Context(), actorID, groupID, ids); err != nil {
+		result, err := h.svc.InviteUsersBatch(c.Request.Context(), actorID, groupID, ids)
+		if err != nil {
 			handleServiceError(c, err)
 			return
 		}
-		api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "invited"}, nil)
+		// Counts, not names — see AddPeopleResult. The reply used to be a flat
+		// "invited" whatever happened, including when every single person had
+		// been skipped, so a client could truthfully report inviting people it
+		// had not invited.
+		api.JSON(c.Writer, http.StatusOK, result, nil)
 		return
 	}
 
@@ -752,11 +757,14 @@ func (h *Handler) InviteUser(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.InviteUser(c.Request.Context(), actorID, groupID, inviteeID); err != nil {
+	// "added" or "invited" — the caller should say which one happened, not
+	// always report an invitation the person never had to accept.
+	status, err := h.svc.InviteUser(c.Request.Context(), actorID, groupID, inviteeID)
+	if err != nil {
 		handleServiceError(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "invited"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": status}, nil)
 }
 
 func (h *Handler) AcceptInvite(c *gin.Context) {

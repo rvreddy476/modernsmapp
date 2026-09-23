@@ -864,119 +864,209 @@ func (s *Service) BanMember(ctx context.Context, actorID, groupID, targetID uuid
 
 // --- Invites ---
 
-// InviteUser invites a user to the group.
-func (s *Service) InviteUser(ctx context.Context, actorID, groupID, inviteeID uuid.UUID) error {
+// InviteUser adds or invites one person, returning "added" or "invited" so the
+// caller can say which actually happened rather than always claiming an invite.
+func (s *Service) InviteUser(ctx context.Context, actorID, groupID, inviteeID uuid.UUID) (string, error) {
 	g, err := s.store.GetGroupByID(ctx, groupID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if g == nil {
-		return fmt.Errorf("group not found")
+		return "", fmt.Errorf("group not found")
 	}
 
 	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if actor == nil {
-		return fmt.Errorf("forbidden: only members can invite users")
+		return "", fmt.Errorf("forbidden: only members can invite users")
 	}
 
 	// Enforce who_can_invite
 	if err := s.checkPermission(g.WhoCanInvite, actor.Role); err != nil {
-		return fmt.Errorf("forbidden: %w", err)
+		return "", fmt.Errorf("forbidden: %w", err)
 	}
 
 	alreadyMember, err := s.store.CheckMembership(ctx, groupID, inviteeID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if alreadyMember {
-		return fmt.Errorf("user is already a member of this group")
+		return "", fmt.Errorf("user is already a member of this group")
 	}
 
-	// The invitee's own say, not just the group's. This is also where a
-	// block is honoured: without it, someone you blocked could still pull
-	// you into a group. Fails closed.
-	if directAdd, invite := s.canAddToGroup(ctx, actorID, inviteeID); !directAdd && !invite {
-		return ErrInviteNotPermitted
-	}
+	/*
+		The invitee's own say, not just the group's — this is where a block is
+		honoured, and it fails closed.
 
-	inv := &store.GroupInvite{
-		GroupID:   groupID,
-		InviterID: actorID,
-		InviteeID: inviteeID,
+		Unlike the batch, one person named by one request may be told the
+		request was refused: there is nobody else it could have been, so
+		ErrInviteNotPermitted leaks nothing the caller did not already choose.
+	*/
+	outcome, err := s.addOrInvite(ctx, actorID, g, inviteeID)
+	if err != nil {
+		return "", err
 	}
-	if err := s.store.CreateInvite(ctx, inv); err != nil {
-		return err
+	switch outcome {
+	case outcomeAdded:
+		return "added", nil
+	case outcomeInvited:
+		return "invited", nil
+	default:
+		return "", ErrInviteNotPermitted
 	}
-
-	s.publishEvent(func() error {
-		return s.producer.PublishGroupInviteSent(ctx, groupID, actorID, inviteeID, inv.ID)
-	})
-
-	return nil
 }
 
-// InviteUsersBatch invites multiple users to a group (max 50).
-func (s *Service) InviteUsersBatch(ctx context.Context, actorID, groupID uuid.UUID, inviteeIDs []uuid.UUID) error {
+/*
+	AddPeopleResult is what actually happened, in COUNTS rather than names.
+
+	Names are withheld on purpose, and it is the same reason the batch skips a
+	refused target instead of failing: telling the inviter which of the people
+	they picked was refused tells them who blocked them. Returning added and
+	invited as id lists would leak that by subtraction — pick three, get two
+	back, and you know exactly who the third is — so the wire carries totals
+	and the client re-reads the member list, where an invited person and a
+	refused one look the same until one accepts.
+*/
+type AddPeopleResult struct {
+	// Added straight in, because their own privacy allows it.
+	Added int `json:"added"`
+	// Sent an invitation to accept.
+	Invited int `json:"invited"`
+	// Already a member, banned, blocked, or refused by their own settings.
+	Skipped int `json:"skipped"`
+}
+
+type addOutcome int
+
+const (
+	outcomeSkipped addOutcome = iota
+	outcomeAdded
+	outcomeInvited
+)
+
+/*
+	addOrInvite applies ONE person's own answer to being put in a group.
+
+	graph-service answers with two different permissions and this used to throw
+	one of them away: directAdd was computed and then everybody got an
+	invitation regardless. So someone whose privacy says "people I am connected
+	to can add me to groups" still had to accept an invite — the setting did
+	nothing, and a creator who picked three people watched their new group sit
+	at one member.
+
+	Both paths go through here so the single invite and the batch cannot give
+	the same pair different answers, which is the drift canAddToGroup's comment
+	warns about.
+*/
+func (s *Service) addOrInvite(ctx context.Context, actorID uuid.UUID, g *store.Group, targetID uuid.UUID) (addOutcome, error) {
+	if targetID == actorID {
+		return outcomeSkipped, nil
+	}
+	isMember, err := s.store.CheckMembership(ctx, g.ID, targetID)
+	if err != nil {
+		return outcomeSkipped, err
+	}
+	if isMember {
+		return outcomeSkipped, nil
+	}
+	isBanned, err := s.store.CheckBanned(ctx, g.ID, targetID)
+	if err != nil {
+		return outcomeSkipped, err
+	}
+	if isBanned {
+		return outcomeSkipped, nil
+	}
+
+	directAdd, invite := s.canAddToGroup(ctx, actorID, targetID)
+	switch {
+	case directAdd:
+		if err := s.store.AddMemberWithInviter(ctx, g.ID, targetID, "member", actorID); err != nil {
+			return outcomeSkipped, err
+		}
+		return outcomeAdded, nil
+	case invite:
+		inv := &store.GroupInvite{GroupID: g.ID, InviterID: actorID, InviteeID: targetID}
+		if err := s.store.CreateInvite(ctx, inv); err != nil {
+			return outcomeSkipped, err
+		}
+		s.publishEvent(func() error {
+			return s.producer.PublishGroupInviteSent(ctx, g.ID, actorID, targetID, inv.ID)
+		})
+		return outcomeInvited, nil
+	default:
+		// Blocked, or their settings refuse. Skipped without a reason, so the
+		// inviter cannot read a block off the response.
+		return outcomeSkipped, nil
+	}
+}
+
+// InviteUsersBatch adds or invites multiple users to a group (max 50).
+func (s *Service) InviteUsersBatch(ctx context.Context, actorID, groupID uuid.UUID, inviteeIDs []uuid.UUID) (*AddPeopleResult, error) {
 	if len(inviteeIDs) > 50 {
-		return fmt.Errorf("maximum 50 invites per batch")
+		return nil, fmt.Errorf("maximum 50 invites per batch")
 	}
 	if len(inviteeIDs) == 0 {
-		return fmt.Errorf("no users to invite")
+		return nil, fmt.Errorf("no users to invite")
 	}
 
 	// Rate limit: 100 invites/day
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:invite:%s", actorID), 100, 24*time.Hour) {
-		return fmt.Errorf("rate_limited: too many invites")
+		return nil, fmt.Errorf("rate_limited: too many invites")
 	}
 
 	g, err := s.store.GetGroupByID(ctx, groupID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if g == nil {
-		return fmt.Errorf("group not found")
+		return nil, fmt.Errorf("group not found")
 	}
 
 	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if actor == nil {
-		return fmt.Errorf("forbidden: only members can invite users")
+		return nil, fmt.Errorf("forbidden: only members can invite users")
 	}
 
 	if err := s.checkPermission(g.WhoCanInvite, actor.Role); err != nil {
-		return fmt.Errorf("forbidden: %w", err)
+		return nil, fmt.Errorf("forbidden: %w", err)
 	}
 
-	// Filter out already-members, banned, and anyone whose own privacy
-	// settings or block relationship refuses the invite. Skipping rather
-	// than failing the whole batch is deliberate: one blocked target must
-	// not tell the inviter which of fifty people blocked them.
-	var validIDs []uuid.UUID
+	/*
+		Each person gets their own answer, and one refusal does not fail the
+		batch — that is deliberate, because a failure naming the refused target
+		would tell the inviter which of fifty people blocked them.
+
+		A real error (the database, not a policy) still fails the whole call:
+		reporting "3 invited" when the write failed is worse than an error.
+	*/
+	result := &AddPeopleResult{}
+	seen := make(map[uuid.UUID]bool, len(inviteeIDs))
 	for _, id := range inviteeIDs {
-		isMember, _ := s.store.CheckMembership(ctx, groupID, id)
-		if isMember {
+		// The same id twice is one person, not two.
+		if seen[id] {
 			continue
 		}
-		isBanned, _ := s.store.CheckBanned(ctx, groupID, id)
-		if isBanned {
-			continue
-		}
-		if directAdd, invite := s.canAddToGroup(ctx, actorID, id); !directAdd && !invite {
-			continue
-		}
-		validIDs = append(validIDs, id)
-	}
+		seen[id] = true
 
-	if len(validIDs) == 0 {
-		return nil
+		outcome, err := s.addOrInvite(ctx, actorID, g, id)
+		if err != nil {
+			return nil, err
+		}
+		switch outcome {
+		case outcomeAdded:
+			result.Added++
+		case outcomeInvited:
+			result.Invited++
+		default:
+			result.Skipped++
+		}
 	}
-
-	return s.store.CreateInviteBatch(ctx, groupID, actorID, validIDs, nil)
+	return result, nil
 }
 
 // AcceptInvite accepts a pending invite and adds the user to the group.
