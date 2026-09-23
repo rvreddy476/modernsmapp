@@ -108,7 +108,30 @@ func New(db *pgxpool.Pool) *Store {
 
 // --- Channel CRUD ---
 
+/*
+	CreateChannel inserts the channel AND its owner's membership row in one
+	transaction.
+
+	It used to insert only the channel, and the service then called AddMember
+	separately and logged a failure instead of returning it. That left channels
+	with no owner row: the record says subscriber_count 1 because "owner
+	counts", and channel_members has nobody. One channel on dev is in exactly
+	that state.
+
+	The owner still resolves from broadcast_channels.owner_id, so such a channel
+	is not unusable — but everything that reads membership disagrees with it:
+	the admins list has no owner, member counts are short by one, and any future
+	check that asks "is this person a member" answers no for the person who owns
+	it. A channel and who owns it are one fact and are now written as one.
+*/
 func (s *Store) CreateChannel(ctx context.Context, ch *BroadcastChannel) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful commit is a no-op, so this needs no flag.
+	defer tx.Rollback(ctx)
+
 	query := `
 		INSERT INTO broadcast_channels (
 			id, owner_id, handle, name, description, avatar_media_id, banner_media_id,
@@ -123,13 +146,26 @@ func (s *Store) CreateChannel(ctx context.Context, ch *BroadcastChannel) error {
 			$16, $17, $18,
 			$19, $20, $21, $22
 		) RETURNING created_at, updated_at`
-	return s.db.QueryRow(ctx, query,
+	if err := tx.QueryRow(ctx, query,
 		ch.ID, ch.OwnerID, ch.Handle, ch.Name, ch.Description, ch.AvatarMediaID, ch.BannerMediaID,
 		ch.ChannelType, ch.Category, ch.Language, ch.CommentMode, ch.ReactionMode,
 		ch.ForwardAllowed, ch.PaidAccess, ch.SubscriptionPriceCents,
 		ch.PostScheduleEnabled, ch.SubscriberCountVisible, ch.AllowPreviewPosts,
 		ch.IsVerified, ch.SubscriberCount, ch.UpdateCount, ch.Status,
-	).Scan(&ch.CreatedAt, &ch.UpdatedAt)
+	).Scan(&ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO channel_members (channel_id, user_id, role, notify_on, paid)
+		 VALUES ($1, $2, 'owner', 'all', false)
+		 ON CONFLICT (channel_id, user_id) DO UPDATE SET role = 'owner'`,
+		ch.ID, ch.OwnerID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (s *Store) GetChannelByID(ctx context.Context, id uuid.UUID) (*BroadcastChannel, error) {

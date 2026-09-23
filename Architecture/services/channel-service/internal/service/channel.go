@@ -310,16 +310,9 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 		return nil, fmt.Errorf("failed to create channel: %w", err)
 	}
 
-	// Add owner as member
-	member := &store.ChannelMember{
-		ChannelID: ch.ID,
-		UserID:    ownerID,
-		Role:      "owner",
-		NotifyOn:  "all",
-	}
-	if _, err := s.store.AddMember(ctx, member); err != nil {
-		slog.Warn("failed to add owner as member", "channel_id", ch.ID, "error", err)
-	}
+	// The owner's membership row is written inside CreateChannel's transaction,
+	// so there is nothing to do here. It used to be a second call whose error
+	// was only logged, which is how a channel could end up owned by nobody.
 
 	// Publish event
 	if s.producer != nil {
