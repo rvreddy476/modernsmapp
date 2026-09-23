@@ -1058,7 +1058,13 @@ func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dorm
 		return nil, err
 	}
 	return []dormantProduct{
-		{prefixes: []string{"/v1/groups", "/v1/communities"}, enabled: flag("DORMANT_PRODUCTS_ENABLED")},
+		// Groups and Communities shared DORMANT_PRODUCTS_ENABLED, which is the
+		// coupling the comment above warns against: opening Groups would have
+		// opened Communities with it, and Communities is waiting on a named
+		// moderation owner. One flag each, both defaulting closed, so neither
+		// launch can drag the other along.
+		{prefixes: []string{"/v1/groups"}, enabled: flag("GROUPS_PUBLIC_ENABLED")},
+		{prefixes: []string{"/v1/communities"}, enabled: flag("COMMUNITIES_PUBLIC_ENABLED")},
 		// Mopedu (rider-service): the only caller is an iOS screen whose
 		// request body the server rejects and whose result it discards.
 		{prefixes: []string{"/v1/rider"}, enabled: flag("RIDER_PUBLIC_ENABLED")},

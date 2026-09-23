@@ -265,6 +265,16 @@ services:
       context: ..
       dockerfile: services/api-gateway/Dockerfile
     environment:
+      # Groups, open on the dev stack only.
+      #
+      # /v1/groups sat behind a dormant-product gate that was set nowhere, so
+      # every group route answered 404 and creating a group could not work at
+      # all. Groups and Communities shared one flag; they have one each now,
+      # and only Groups is opened here — Communities is still waiting on a
+      # named moderation owner, and opening it by accident is exactly what the
+      # shared flag made easy. Both default CLOSED, so staging and production
+      # are unaffected until someone sets them there deliberately.
+      GROUPS_PUBLIC_ENABLED: "${GROUPS_PUBLIC_ENABLED:-true}"
       # Per-environment capacity tuning. Unset means the production values.
       #
       # Added during C-CLB-PROOF-1 on the assumption that the gateway limiter
@@ -2148,6 +2158,21 @@ services:
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      # Communities/channels invite-only pilot, opened for the DEV TEST
+      # ACCOUNTS ONLY.
+      #
+      # The pilot fails closed by design (founder's decision, 2026-09-12): an
+      # EMPTY allowlist permits nobody, which is why creating a channel
+      # answered 403 with "Could not create that channel". These are the
+      # accounts already used for testing on this stack, and nothing else.
+      #
+      # COMMUNITIES_PILOT stays ON: channels remain private and invite-only,
+      # which is the part of the decision that is about safety rather than
+      # about who is testing. Both variables default to EMPTY, so staging and
+      # production stay closed to everyone until a named moderation owner
+      # exists and someone sets them there deliberately.
+      COMMUNITIES_ALLOWED_CREATORS: "${COMMUNITIES_ALLOWED_CREATORS:-82acf454-4d94-49b6-a89b-4ec0705e28a5,c839e100-7821-4775-b025-7e493c59b836,bbf4e9e1-b4e1-4a2b-ad4d-f98d93e952b2,2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}"
+      COMMUNITIES_ALLOWED_PARTICIPANTS: "${COMMUNITIES_ALLOWED_PARTICIPANTS:-82acf454-4d94-49b6-a89b-4ec0705e28a5,c839e100-7821-4775-b025-7e493c59b836,bbf4e9e1-b4e1-4a2b-ad4d-f98d93e952b2,2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       # Admin console (Chat: channel reports and suspension):
       # /v1/broadcast-channels/internal/admin/* admits only admin-service

@@ -78,10 +78,47 @@ func TestDormantProductsGateDoesNotTouchNeighbours(t *testing.T) {
 }
 
 func TestDormantProductsOpenWhenEnabled(t *testing.T) {
-	products := productsFrom(t, map[string]string{"DORMANT_PRODUCTS_ENABLED": "true"})
+	products := productsFrom(t, map[string]string{
+		"GROUPS_PUBLIC_ENABLED":      "true",
+		"COMMUNITIES_PUBLIC_ENABLED": "true",
+	})
 	for _, path := range groupsAndCommunitiesPaths {
 		if gated(t, products, path) {
 			t.Errorf("enabled dormant product %s was intercepted", path)
+		}
+	}
+}
+
+// Groups and Communities used to share DORMANT_PRODUCTS_ENABLED, so opening
+// one opened the other — and Communities is waiting on a named moderation
+// owner. They have a flag each now, and this is the test that keeps them
+// apart: Groups is open on dev, Communities is not.
+func TestGroupsAndCommunitiesOpenIndependently(t *testing.T) {
+	groupsOnly := productsFrom(t, map[string]string{"GROUPS_PUBLIC_ENABLED": "true"})
+	for _, path := range []string{"/v1/groups", "/v1/groups/abc/posts"} {
+		if gated(t, groupsOnly, path) {
+			t.Errorf("GROUPS_PUBLIC_ENABLED=true still gates %s", path)
+		}
+	}
+	for _, path := range []string{"/v1/communities", "/v1/communities/x/join"} {
+		if !gated(t, groupsOnly, path) {
+			t.Errorf("GROUPS_PUBLIC_ENABLED=true opened %s", path)
+		}
+	}
+
+	communitiesOnly := productsFrom(t, map[string]string{"COMMUNITIES_PUBLIC_ENABLED": "true"})
+	for _, path := range []string{"/v1/groups", "/v1/groups/abc/posts"} {
+		if !gated(t, communitiesOnly, path) {
+			t.Errorf("COMMUNITIES_PUBLIC_ENABLED=true opened %s", path)
+		}
+	}
+
+	// And the retired flag opens nothing at all, so a stale environment
+	// carrying it cannot silently open either product.
+	stale := productsFrom(t, map[string]string{"DORMANT_PRODUCTS_ENABLED": "true"})
+	for _, path := range groupsAndCommunitiesPaths {
+		if !gated(t, stale, path) {
+			t.Errorf("the retired DORMANT_PRODUCTS_ENABLED opened %s", path)
 		}
 	}
 }
@@ -90,10 +127,10 @@ func TestDormantProductsOpenWhenEnabled(t *testing.T) {
 // docs/runbooks/communities-invite-only-pilot.md), so launching Mopedu must not
 // open groups and communities, and opening those must not open Mopedu.
 func TestRiderGateIsIndependentOfDormantProductsFlag(t *testing.T) {
-	groupsOpen := productsFrom(t, map[string]string{"DORMANT_PRODUCTS_ENABLED": "true"})
+	groupsOpen := productsFrom(t, map[string]string{"GROUPS_PUBLIC_ENABLED": "true", "COMMUNITIES_PUBLIC_ENABLED": "true"})
 	for _, path := range riderPaths {
 		if !gated(t, groupsOpen, path) {
-			t.Errorf("DORMANT_PRODUCTS_ENABLED=true opened %s", path)
+			t.Errorf("the groups/communities flags opened %s", path)
 		}
 	}
 
@@ -112,7 +149,7 @@ func TestRiderGateIsIndependentOfDormantProductsFlag(t *testing.T) {
 
 // Dating opens on DATING_PUBLIC_ENABLED alone, and that flag opens nothing else.
 func TestDatingGateIsIndependentOfOtherFlags(t *testing.T) {
-	othersOpen := productsFrom(t, map[string]string{"DORMANT_PRODUCTS_ENABLED": "true", "RIDER_PUBLIC_ENABLED": "true"})
+	othersOpen := productsFrom(t, map[string]string{"GROUPS_PUBLIC_ENABLED": "true", "COMMUNITIES_PUBLIC_ENABLED": "true", "RIDER_PUBLIC_ENABLED": "true"})
 	for _, path := range datingPaths {
 		if !gated(t, othersOpen, path) {
 			t.Errorf("another product's flag opened %s", path)
