@@ -244,6 +244,29 @@ func coldStartAllowed(before *time.Time, feedMode string, candidateCount int, ci
 	return before == nil && candidateCount == 0 && feedMode == "ranked"
 }
 
+// countFromOthers reports how many of these candidates somebody OTHER than the
+// viewer wrote.
+//
+// It exists because "is this timeline empty" and "does this reader have
+// anything to read" are not the same question, and the difference was silently
+// breaking accounts. A viewer who follows nobody got the cold-start backfill
+// and a full feed — until they posted once. Their own post made the timeline
+// non-empty, the backfill stopped for good, and their For You collapsed to
+// nothing but their own posts, with no way to tell why. Observed on dev: one
+// account went from a 39-post backfilled feed to 5 posts, all its own, from
+// the moment it first posted.
+//
+// Your own posts are not content you came to read. They do not count.
+func countFromOthers(items []FeedItem, viewer uuid.UUID) int {
+	n := 0
+	for _, it := range items {
+		if it.AuthorID != viewer {
+			n++
+		}
+	}
+	return n
+}
+
 func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) (HomeFeedResult, error) {
 	// Why this page might come back empty, filled in by the narrowing
 	// filters below and reported only if it actually is.
@@ -369,8 +392,10 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// (following_only / circle_only) forbids it, because backfilling
 	// strangers under a heading that promises follows is a lie the client
 	// has no way to detect.
-	if coldStartAllowed(before, feedMode, len(candidates), circleOnly, followingOnly) {
-		log.Printf("Cold-start fallback triggered for user %s (empty timeline), fetching from %s", userID, s.postServiceURL)
+	// len(candidates) would count the viewer's own posts as a populated feed;
+	// see countFromOthers for what that did to accounts that posted early.
+	if coldStartAllowed(before, feedMode, countFromOthers(candidates, userID), circleOnly, followingOnly) {
+		log.Printf("Cold-start fallback triggered for user %s (nothing from others in timeline), fetching from %s", userID, s.postServiceURL)
 		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
 		if err != nil {
 			log.Printf("Cold-start fallback failed: %v", err)

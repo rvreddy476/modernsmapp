@@ -83,15 +83,48 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 		return 0, "", err
 	}
 
-	fresh := make([]FeedItem, 0, len(items))
+	/*
+		The count has to be measured against the SAME feed the reader will get.
+
+		GetHomeFeed backfills recommended public posts when the timeline holds
+		nothing from anybody else (see coldStartAllowed and countFromOthers).
+		This counted the raw timeline only, so for exactly those readers — the
+		ones whose feed is entirely backfilled — the answer was always zero and
+		the "N new posts" banner could never appear, however much was published.
+		Two surfaces disagreeing about what a feed contains is worse than either
+		of them being wrong on its own.
+	*/
+	// The timeline is []scylla.FeedItem and the cold-start source is
+	// []FeedItem; normalise to the service type before either is counted.
+	candidates := make([]FeedItem, 0, len(items))
 	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+		})
+	}
+
+	if countFromOthers(candidates, userID) == 0 {
+		cold, coldErr := s.getRecentPublicPosts(ctx, deltaMaxCount+1)
+		if coldErr != nil {
+			// Non-fatal: a delta is an invitation to refresh, not the feed.
+			slog.WarnContext(ctx, "feed delta: cold-start count unavailable", "user_id", userID, "err", coldErr)
+		} else {
+			candidates = cold
+		}
+	}
+
+	fresh := make([]FeedItem, 0, len(candidates))
+	for _, item := range candidates {
+		// Your own post is never news to you: you just wrote it, and the
+		// composer has already put it at the top of the feed.
+		if item.AuthorID == userID {
+			continue
+		}
 		if item.CreatedAt.After(since) {
-			fresh = append(fresh, FeedItem{
-				PostID:      item.PostID,
-				AuthorID:    item.AuthorID,
-				CreatedAt:   item.CreatedAt,
-				ContentType: item.ContentType,
-			})
+			fresh = append(fresh, item)
 		}
 	}
 	fresh = s.filterMainFeedExcluded(ctx, fresh)
