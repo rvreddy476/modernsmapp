@@ -240,6 +240,18 @@ func parsePagination(c *gin.Context) (int, int) {
 	return limit, offset
 }
 
+// resolveIdempotencyKey picks the caller's idempotency key: the snake_case
+// idempotency_key body field wins, and the Idempotency-Key HTTP header is the
+// fallback. Both are trimmed; an all-whitespace value counts as absent so a
+// client cannot satisfy the guard with " ". Returns "" when neither is usable,
+// which the caller turns into IDEMPOTENCY_KEY_REQUIRED.
+func resolveIdempotencyKey(c *gin.Context, bodyKey string) string {
+	if k := strings.TrimSpace(bodyKey); k != "" {
+		return k
+	}
+	return strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+}
+
 func handleServiceError(c *gin.Context, err error) {
 	msg := err.Error()
 	switch {
@@ -289,8 +301,15 @@ func (h *Handler) CreateGroup(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-	if strings.TrimSpace(req.IdempotencyKey) == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "idempotency_key is required", nil)
+	// The Idempotency-Key request header is the canonical fallback used by the
+	// rest of the platform (wallet-service top-up/send, dating-service premium
+	// purchase, post-service, food-service, commerce-service all read it), and
+	// every web client write already carries one. Requiring the snake_case body
+	// field and ignoring the header made this the one create endpoint that a
+	// correctly-behaving client could not satisfy.
+	req.IdempotencyKey = resolveIdempotencyKey(c, req.IdempotencyKey)
+	if req.IdempotencyKey == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "idempotency_key is required (send the idempotency_key body field or an Idempotency-Key header)", nil)
 		return
 	}
 

@@ -217,6 +217,39 @@ func scanGroups(rows pgx.Rows) ([]Group, error) {
 
 // --- Groups ---
 
+/*
+	FindGroupByIdempotencyKey returns the group a previous request with this key
+	created, or nil if there is none.
+
+	CreateGroup already refuses to create twice for one key, but it is the LAST
+	thing the service does — name, handle and privacy are all validated first.
+	A retry of a request that actually succeeded therefore died on "handle is
+	already taken" by its own group, which is the one answer a retry must never
+	get. This lets the service answer a replay before it validates anything.
+
+	No advisory lock here: this is a plain read, and two concurrent first-time
+	requests still serialise inside CreateGroup, which takes the lock. The worst
+	case is that both miss here and one waits there, which is the behaviour that
+	already existed.
+*/
+func (s *Store) FindGroupByIdempotencyKey(ctx context.Context, creatorID uuid.UUID, key string) (*Group, error) {
+	if key == "" {
+		return nil, nil
+	}
+	var groupID uuid.UUID
+	err := s.db.QueryRow(ctx, `
+		SELECT group_id FROM group_creation_requests
+		WHERE creator_id=$1 AND idempotency_key=$2
+	`, creatorID, key).Scan(&groupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.GetGroupByID(ctx, groupID)
+}
+
 // CreateGroup inserts a new group and adds the creator as an admin member.
 func (s *Store) CreateGroup(ctx context.Context, g *Group, idempotencyKey string) (*uuid.UUID, error) {
 	tx, err := s.db.Begin(ctx)

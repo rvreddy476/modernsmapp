@@ -82,6 +82,31 @@ func (s *Service) publishEvent(fn func() error) {
 
 // CreateGroup creates a new group with the actor as admin.
 func (s *Service) CreateGroup(ctx context.Context, actorID uuid.UUID, req CreateGroupParams) (*store.Group, error) {
+	/*
+		A replay is answered before anything else.
+
+		Every check below — the rate limit, the name, the handle — treats this
+		as a new group. On a retry of a request that already succeeded they are
+		all wrong: the handle check finds the group the FIRST attempt created
+		and reports "handle is already taken", and the rate limit counts one
+		intent twice. Someone whose connection dropped during "Create group"
+		therefore saw a conflict about a group they had just made, and pressing
+		the button again could never clear it.
+
+		Idempotency exists precisely so a repeated request returns the original
+		result, so that lookup comes first.
+	*/
+	if existing, err := s.store.FindGroupByIdempotencyKey(ctx, actorID, req.IdempotencyKey); err != nil {
+		return nil, err
+	} else if existing != nil {
+		// ensureGroupChat is idempotent and runs on the original path too, so
+		// a replay also repairs a group whose chat conversation never landed.
+		if err := s.ensureGroupChat(ctx, existing); err != nil {
+			return nil, err
+		}
+		return existing, nil
+	}
+
 	// Rate limit: 5 groups/day
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:group_create:%s", actorID), 5, 24*time.Hour) {
 		return nil, fmt.Errorf("rate_limited: maximum 5 groups per day")
