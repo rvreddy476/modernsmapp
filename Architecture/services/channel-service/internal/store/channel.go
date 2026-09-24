@@ -211,11 +211,16 @@ func (s *Store) GetChannelByHandle(ctx context.Context, handle string) (*Broadca
 }
 
 func (s *Store) UpdateChannel(ctx context.Context, ch *BroadcastChannel) error {
+	// handle is written here too. It was absent from this statement, so even a
+	// service that had set it would not have persisted it — the update was
+	// silently partial, and the settings screen's @username field could never
+	// take effect however many times Save was pressed.
 	query := `UPDATE broadcast_channels SET
 		name = $2, description = $3, avatar_media_id = $4, banner_media_id = $5,
 		channel_type = $6, category = $7, language = $8, comment_mode = $9, reaction_mode = $10,
 		forward_allowed = $11, paid_access = $12, subscription_price_cents = $13,
 		post_schedule_enabled = $14, subscriber_count_visible = $15, allow_preview_posts = $16,
+		handle = $17,
 		updated_at = NOW()
 		WHERE id = $1 AND status != 'deleted'
 		RETURNING updated_at`
@@ -224,6 +229,7 @@ func (s *Store) UpdateChannel(ctx context.Context, ch *BroadcastChannel) error {
 		ch.ChannelType, ch.Category, ch.Language, ch.CommentMode, ch.ReactionMode,
 		ch.ForwardAllowed, ch.PaidAccess, ch.SubscriptionPriceCents,
 		ch.PostScheduleEnabled, ch.SubscriberCountVisible, ch.AllowPreviewPosts,
+		ch.Handle,
 	).Scan(&ch.UpdatedAt)
 }
 

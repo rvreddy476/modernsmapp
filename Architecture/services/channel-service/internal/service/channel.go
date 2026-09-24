@@ -427,6 +427,11 @@ func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID 
 
 type UpdateChannelParams struct {
 	Name          *string    `json:"name"`
+	// The @handle. Settable after creation: the settings screen has always
+	// shown it as an editable field, and it was the only one there that the
+	// update endpoint did not accept — so it was silently discarded on every
+	// save, which reads as "saving does not work".
+	Handle        *string    `json:"handle"`
 	Description   *string    `json:"description"`
 	AvatarMediaID *uuid.UUID `json:"avatar_media_id"`
 	BannerMediaID *uuid.UUID `json:"banner_media_id"`
@@ -467,6 +472,31 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 			return nil, err
 		}
 		ch.Name = name
+	}
+	if params.Handle != nil {
+		handle, err := normalizeHandle(*params.Handle)
+		if err != nil {
+			return nil, err
+		}
+		// Only when it actually changes: re-saving the settings form sends the
+		// current handle back, and that must not collide with itself.
+		if handle != ch.Handle {
+			/*
+				A FREE handle comes back as an ERROR here, not as (nil, nil):
+				GetChannelByHandle reports "channel not found" when nothing
+				matches. Treating that error as a failure made every available
+				handle a 404 — the check refused exactly the handles it should
+				have allowed. The create path has always ignored the error for
+				this reason; this matches it.
+
+				So only a successful lookup that actually returns a channel
+				means taken.
+			*/
+			if existing, err := s.store.GetChannelByHandle(ctx, handle); err == nil && existing != nil {
+				return nil, fmt.Errorf("already taken: handle @%s is in use", handle)
+			}
+			ch.Handle = handle
+		}
 	}
 	if params.Description != nil {
 		about, err := validateCommunityAbout(*params.Description)

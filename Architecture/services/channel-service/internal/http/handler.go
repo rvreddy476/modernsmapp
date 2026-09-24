@@ -221,6 +221,11 @@ type CreateChannelRequest struct {
 
 type UpdateChannelRequest struct {
 	Name                   *string    `json:"name"`
+	// The @handle, editable after creation. It was absent from this struct,
+	// from UpdateChannelParams and from the store's UPDATE — three separate
+	// places — so the settings screen's username field was discarded before
+	// it reached any of them.
+	Handle                 *string    `json:"handle"`
 	Description            *string    `json:"description"`
 	AvatarMediaID          *uuid.UUID `json:"avatar_media_id"`
 	BannerMediaID          *uuid.UUID `json:"banner_media_id"`
@@ -445,6 +450,7 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 
 	params := service.UpdateChannelParams{
 		Name:                   req.Name,
+		Handle:                 req.Handle,
 		Description:            req.Description,
 		AvatarMediaID:          req.AvatarMediaID,
 		BannerMediaID:          req.BannerMediaID,
