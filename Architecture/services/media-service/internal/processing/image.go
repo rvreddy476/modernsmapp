@@ -5,14 +5,31 @@ import (
 	"context"
 	"fmt"
 	"image"
+	_ "image/gif" // register GIF decoder
 	"image/jpeg"
 	_ "image/png" // register PNG decoder
 	"strings"
+
+	_ "golang.org/x/image/webp" // register WebP decoder
 
 	"github.com/buckket/go-blurhash"
 	"github.com/disintegration/imaging"
 	"github.com/atpost/media-service/internal/store/blob"
 )
+
+/*
+	EVERY format validation.go accepts must be decodable here.
+
+	It accepts image/jpeg, image/png, image/gif and image/webp; this file
+	registered only PNG and JPEG. So a WebP or a GIF passed validation, was
+	stored, and then failed to decode — processing_status went to "failed",
+	/serve answered 404, and the channel showed a broken image with nothing
+	anywhere saying why. The founder's channel cover was a WebP and did
+	exactly this.
+
+	The two lists are pinned together by a test: accepting a format nobody can
+	decode is an upload that is guaranteed to fail after it appears to succeed.
+*/
 
 // VariantSpec defines a target image variant.
 type VariantSpec struct {

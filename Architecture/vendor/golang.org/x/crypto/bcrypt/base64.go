@@ -21,17 +21,13 @@ func base64Encode(src []byte) []byte {
 }
 
 func base64Decode(src []byte) ([]byte, error) {
-	numOfEquals := 0
-	if n := len(src) % 4; n != 0 {
-		numOfEquals = 4 - n
-	}
-	newSrc := make([]byte, len(src)+numOfEquals)
-	copy(newSrc, src)
+	numOfEquals := 4 - (len(src) % 4)
 	for i := 0; i < numOfEquals; i++ {
-		newSrc[len(src)+i] = '='
+		src = append(src, '=')
 	}
-	dst := make([]byte, bcEncoding.DecodedLen(len(newSrc)))
-	n, err := bcEncoding.Decode(dst, newSrc)
+
+	dst := make([]byte, bcEncoding.DecodedLen(len(src)))
+	n, err := bcEncoding.Decode(dst, src)
 	if err != nil {
 		return nil, err
 	}
