@@ -193,9 +193,25 @@ func New(db *pgxpool.Pool) *Store {
 }
 
 // v2 group columns for SELECT queries — use g. prefix for JOIN safety
+/*
+	groupColumns is the one projection every group read scans through
+	(scanGroup / scanGroups), so it has to be safe for every row the table
+	can hold — not only the rows the service itself writes.
+
+	handle is COALESCEd. The column is nullable and carries a UNIQUE index,
+	so it cannot default to '' at the schema level the way category,
+	location and language do (migration 001). Group.Handle is a plain
+	string, and pgx refuses to scan NULL into *string. One NULL-handle row
+	— written directly to the table, not through CreateGroup — made
+	ListGroupsByUser fail for EVERY member of that group: GET /v1/groups/my
+	answered 500 for an account whose other groups were fine, while
+	GET /v1/groups/:id on those other groups kept working. A list that dies
+	on one bad row is worse than a row with an empty handle; the JSON tag is
+	omitempty, so '' and NULL are the same thing on the wire.
+*/
 const groupColumns = `g.id, g.name, g.description, g.avatar_media_id, g.cover_media_id, g.creator_id,
        g.visibility, g.is_archived, g.chat_conversation_id, g.member_count, g.post_count,
-       g.created_at, g.updated_at, g.handle, g.category, g.privacy_level, g.join_mode,
+       g.created_at, g.updated_at, COALESCE(g.handle, '') AS handle, g.category, g.privacy_level, g.join_mode,
        g.who_can_post, g.who_can_invite, g.location, g.language, g.status, g.deleted_at, g.pending_request_count,
        g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing, g.is_mature, g.allow_anonymous_posts`
 
