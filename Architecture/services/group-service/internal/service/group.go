@@ -1102,6 +1102,11 @@ func (s *Service) InviteUsersBatch(ctx context.Context, actorID, groupID uuid.UU
 	return result, nil
 }
 
+// ErrInviteNoLongerAcceptable is returned at accept time when the group is
+// gone or the invitee has since been banned from it. Generic by design — see
+// AcceptInvite.
+var ErrInviteNoLongerAcceptable = fmt.Errorf("forbidden: this invite can no longer be accepted")
+
 // AcceptInvite accepts a pending invite and adds the user to the group.
 func (s *Service) AcceptInvite(ctx context.Context, actorID uuid.UUID, inviteID uuid.UUID) error {
 	inv, err := s.store.GetInviteByID(ctx, inviteID)
@@ -1122,8 +1127,43 @@ func (s *Service) AcceptInvite(ctx context.Context, actorID uuid.UUID, inviteID 
 	// invite link replayed years later still worked. Reject expired
 	// invites and bump the status so the row is closed out.
 	if inv.ExpiresAt != nil && time.Now().After(*inv.ExpiresAt) {
-		_ = s.store.UpdateInviteStatus(ctx, inviteID, "expired")
+		// 'rejected', not 'expired': group_invites.status is CHECK-constrained
+		// to pending | accepted | rejected, so the previous "expired" write
+		// failed every time and its error was discarded — the row stayed
+		// pending for ever and the CG3 close-out never actually happened.
+		_ = s.store.UpdateInviteStatus(ctx, inviteID, "rejected")
 		return fmt.Errorf("invite expired")
+	}
+
+	/*
+		Re-check at admission what was true at invitation.
+
+		An invite is a promise made earlier, and two things can change
+		between then and the accept: the group can be deleted or archived,
+		and the invitee can be banned from it. Before these checks an invite
+		issued before a ban admitted the banned user the moment they
+		accepted, and an invite to a since-deleted group still wrote a
+		membership row. Both are checked here, before the invite is marked
+		accepted and before any membership is written.
+
+		The refusal is one generic error for both cases, on purpose: which
+		of the two applied is not the invitee's to learn from this endpoint.
+	*/
+	g, err := s.store.GetGroupByID(ctx, inv.GroupID)
+	if err != nil {
+		return err
+	}
+	if g == nil || g.Status == "deleted" || g.Status == "archived" {
+		_ = s.store.UpdateInviteStatus(ctx, inviteID, "rejected")
+		return ErrInviteNoLongerAcceptable
+	}
+	banned, err := s.store.CheckBanned(ctx, inv.GroupID, actorID)
+	if err != nil {
+		return err
+	}
+	if banned {
+		_ = s.store.UpdateInviteStatus(ctx, inviteID, "rejected")
+		return ErrInviteNoLongerAcceptable
 	}
 
 	if err := s.store.UpdateInviteStatus(ctx, inviteID, "accepted"); err != nil {
@@ -1134,11 +1174,7 @@ func (s *Service) AcceptInvite(ctx context.Context, actorID uuid.UUID, inviteID 
 		return err
 	}
 
-	g, err := s.store.GetGroupByID(ctx, inv.GroupID)
-	if err != nil {
-		return err
-	}
-	if g != nil && g.ChatConversationID != nil {
+	if g.ChatConversationID != nil {
 		if err := s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, true); err != nil {
 			return err
 		}
