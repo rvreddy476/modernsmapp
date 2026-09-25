@@ -417,6 +417,11 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		}
 	}
 
+	// Reels belong to the Reels page, not the main feed (see dropShortForm
+	// in longvideo.go). Runs after the cold-start fallback so backfilled
+	// items are covered too.
+	candidates = dropShortForm(candidates)
+
 	// P0-1: drop posts whose distribution policy opted out of social home.
 	// Runs after the cold-start fallback so fallback items are covered too;
 	// server-enforced on every page and mode — the client cannot opt back in.

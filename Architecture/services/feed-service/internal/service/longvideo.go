@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/atpost/shared/postclassify"
 	"github.com/google/uuid"
 )
 
@@ -253,6 +254,47 @@ func (s *Service) invalidateMainFeedPolicy(ctx context.Context, postID uuid.UUID
 	if err := s.rdb.Del(ctx, mainFeedPolicyCacheKey(postID)).Err(); err != nil {
 		log.Printf("main-feed policy cache invalidate failed for %s: %v", postID, err)
 	}
+}
+
+// dropShortForm removes reels from a main-feed candidate list.
+//
+// Founder instruction, 2026-09-25: "When a user posts reels, don't show that
+// in the Main Feed page — only on the Reels page."
+//
+// This is a READ-side rule for the social home surface only. Fan-out keeps
+// writing reels to the home timeline on purpose: the reels surface
+// (GetFlickFeedPage) reads that SAME timeline, narrowed to short-form types
+// by GetHomeTimelineByContentTypesBefore. Dropping reels at fan-out would
+// empty the Reels page; dropping them here, immediately before
+// filterMainFeedExcluded in GetHomeFeed and deltaHome, covers timeline
+// candidates and cold-start candidates in one place and leaves every other
+// surface (reels, watch, category, debug) untouched.
+//
+// "Short-form" is decided by shared/postclassify.IsShortForm — the one
+// definition every other caller uses ("flick", plus the legacy "reel" and
+// "short" rows). Do not replace it with a local list of strings: a second
+// list is how "reel"-labelled rows silently diverge from "flick".
+//
+// Pure. Order is preserved, and when nothing is short-form the input slice
+// is returned unchanged.
+func dropShortForm(candidates []FeedItem) []FeedItem {
+	short := 0
+	for _, c := range candidates {
+		if postclassify.IsShortForm(c.ContentType) {
+			short++
+		}
+	}
+	if short == 0 {
+		return candidates
+	}
+	out := make([]FeedItem, 0, len(candidates)-short)
+	for _, c := range candidates {
+		if postclassify.IsShortForm(c.ContentType) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // filterMainFeedExcluded removes posts whose distribution policy opted out

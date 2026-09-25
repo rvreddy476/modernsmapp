@@ -127,6 +127,10 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 			fresh = append(fresh, item)
 		}
 	}
+	// The main feed does not show reels (dropShortForm), so the pill must
+	// not count them either — same position relative to
+	// filterMainFeedExcluded as in GetHomeFeed.
+	fresh = dropShortForm(fresh)
 	fresh = s.filterMainFeedExcluded(ctx, fresh)
 	if s.GetLongVideoFrequency(ctx, userID) == "hidden" {
 		fresh = s.applyLongVideoFrequency(fresh, "hidden", false)
