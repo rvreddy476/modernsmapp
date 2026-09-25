@@ -310,6 +310,30 @@ func ValidateCommentPermission(cp string) error {
 	return nil
 }
 
+/*
+	displayRole is the role to SHOW for a member of a group.
+
+	group_members.role has a CHECK constraint allowing only 'admin',
+	'moderator' and 'member' — there is no owner row to store. Ownership lives
+	in groups.creator_id, so "owner" is derived, never read.
+
+	It lives here because it was previously derived in GetGroup and
+	GetGroupByHandle and NOT in ListMembers, so the creator was "Owner" on the
+	cover and "Admin" in the Members tab: one person holding two roles on one
+	screen. Deriving it in three places was the bug; deriving it in one is the
+	fix.
+
+	Display only. Every permission check still reads the stored role, and the
+	creator is an admin there — promoting the label must not quietly grant
+	anything.
+*/
+func displayRole(memberRole string, isCreator bool) string {
+	if isCreator && memberRole == "admin" {
+		return "owner"
+	}
+	return memberRole
+}
+
 // GroupWithViewerRole wraps a Group with the viewer's role.
 type GroupWithViewerRole struct {
 	store.Group
@@ -353,10 +377,7 @@ func (s *Service) GetGroup(ctx context.Context, actorID, groupID uuid.UUID) (*Gr
 	member, err := s.store.GetMember(ctx, g.ID, actorID)
 	if err == nil && member != nil {
 		if member.Status == "active" {
-			viewerRole = member.Role
-			if member.Role == "admin" && g.CreatorID == actorID {
-				viewerRole = "owner"
-			}
+			viewerRole = displayRole(member.Role, g.CreatorID == actorID)
 		} else if member.Status == "banned" {
 			viewerRole = "banned"
 		}
@@ -383,10 +404,7 @@ func (s *Service) GetGroupByHandle(ctx context.Context, actorID uuid.UUID, handl
 	member, err := s.store.GetMember(ctx, g.ID, actorID)
 	if err == nil && member != nil {
 		if member.Status == "active" {
-			viewerRole = member.Role
-			if member.Role == "admin" && g.CreatorID == actorID {
-				viewerRole = "owner"
-			}
+			viewerRole = displayRole(member.Role, g.CreatorID == actorID)
 		} else if member.Status == "banned" {
 			viewerRole = "banned"
 		}
@@ -717,7 +735,18 @@ func (s *Service) ListMembers(ctx context.Context, actorID, groupID uuid.UUID, l
 		return nil, err
 	}
 
-	return s.store.ListMembers(ctx, groupID, limit, offset)
+	members, err := s.store.ListMembers(ctx, groupID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	// The creator is stored as an admin; the Members tab should still call
+	// them the owner, exactly as the cover does.
+	for i := range members {
+		if members[i].Status == "active" {
+			members[i].Role = displayRole(members[i].Role, members[i].UserID == g.CreatorID)
+		}
+	}
+	return members, nil
 }
 
 // UpdateMemberRole changes a member's role. Only admins or the owner may do this.
