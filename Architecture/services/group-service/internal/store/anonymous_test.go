@@ -99,7 +99,7 @@ func TestOrdinaryPostMarshalIsUnchanged(t *testing.T) {
 		"attachments", "needs_approval", "is_pinned", "is_announcement",
 		"status", "spark_count", "comment_count", "echo_count", "view_count",
 		"created_at", "updated_at", "viewer_sparked", "viewer_echoed",
-		"viewer_stashed",
+		"viewer_stashed", "viewer_reaction", "reaction_counts",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("key %q disappeared from an ordinary post — mobile reads this shape", key)

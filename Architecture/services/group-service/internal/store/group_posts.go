@@ -248,7 +248,13 @@ func (s *Store) ListMyGroupsFeed(ctx context.Context, userID uuid.UUID, limit, o
 		}
 		posts = append(posts, *p)
 	}
-	return posts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachReactionCounts(ctx, posts); err != nil {
+		return nil, err
+	}
+	return posts, nil
 }
 
 // DiscoverScoredGroup is a Group plus the personalization signals used to

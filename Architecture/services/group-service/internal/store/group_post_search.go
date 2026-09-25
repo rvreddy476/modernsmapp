@@ -113,5 +113,11 @@ func (s *Store) SearchGroupPostsV2(ctx context.Context, groupID uuid.UUID, q str
 		}
 		posts = append(posts, *p)
 	}
-	return posts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachReactionCounts(ctx, posts); err != nil {
+		return nil, err
+	}
+	return posts, nil
 }

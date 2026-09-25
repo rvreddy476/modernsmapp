@@ -82,8 +82,17 @@ CREATE INDEX IF NOT EXISTS idx_group_posts_search ON group_posts USING gin(to_ts
 
 CREATE TABLE IF NOT EXISTS group_post_sparks (
     post_id UUID NOT NULL, user_id TEXT NOT NULL, is_supernova BOOLEAN DEFAULT FALSE,
+    -- One current reaction per viewer per post (migration 016). The allowlist
+    -- here must match service.ReactionAllowlist; a test asserts it.
+    reaction TEXT NOT NULL DEFAULT 'like'
+        CONSTRAINT group_post_sparks_reaction_check CHECK (reaction IN ('like', 'love', 'smile', 'wow', 'sad', 'angry')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (post_id, user_id)
 );
+-- idx_group_post_sparks_post_reaction is created by migration 016, not here:
+-- BootstrapSchema runs this file BEFORE the migrations, and on a database
+-- whose sparks table predates the reaction column the CREATE TABLE above is
+-- a no-op, so an index on (post_id, reaction) here would fail the boot.
 CREATE TABLE IF NOT EXISTS group_post_comments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     post_id UUID NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL,

@@ -125,6 +125,13 @@ type GroupPostV2 struct {
 	ViewerSparked bool `json:"viewer_sparked"`
 	ViewerEchoed  bool `json:"viewer_echoed"`
 	ViewerStashed bool `json:"viewer_stashed"`
+	// The viewer's one current reaction ("like", "love", …) or null. A legacy
+	// heart reads as "like". ViewerSparked stays true whenever this is set.
+	ViewerReaction *string `json:"viewer_reaction"`
+	// People per reaction, e.g. {"like":3,"love":1}; {} when nobody has
+	// reacted. Filled by attachReactionCounts on every client read surface;
+	// never null on the wire (MarshalJSON normalises nil to {}).
+	ReactionCounts map[string]int `json:"reaction_counts"`
 }
 
 type GroupPostComment struct {
@@ -1686,7 +1693,8 @@ const groupPostV2ColumnsP = `p.id, p.group_id, p.channel_id, p.author_id, p.cont
 // viewerEngagementJoins.
 const viewerEngagementColumns = `(vs.user_id IS NOT NULL) AS viewer_sparked,
 	(ve.user_id IS NOT NULL) AS viewer_echoed,
-	(vt.user_id IS NOT NULL) AS viewer_stashed`
+	(vt.user_id IS NOT NULL) AS viewer_stashed,
+	vs.reaction AS viewer_reaction`
 
 // viewerTextKey renders a viewer uuid as the TEXT user id the engagement
 // tables store. An unset viewer becomes "", which matches no row.
@@ -1737,7 +1745,7 @@ func scanGroupPostV2WithViewer(row pgx.Row) (*GroupPostV2, error) {
 		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
 		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
 		&p.CreatedAt, &p.UpdatedAt, &p.IsAnonymous, &p.AnonAlias, &p.CrossPostGroupID,
-		&p.ViewerSparked, &p.ViewerEchoed, &p.ViewerStashed)
+		&p.ViewerSparked, &p.ViewerEchoed, &p.ViewerStashed, &p.ViewerReaction)
 	if err != nil {
 		return nil, err
 	}
@@ -1829,7 +1837,15 @@ func (s *Store) GetGroupPostV2ForViewer(ctx context.Context, postID uuid.UUID, v
 		FROM group_posts p
 		`+viewerEngagementJoins("$2")+`
 		WHERE p.id = $1 AND p.status != 'deleted'`, postID, viewerID)
-	return scanGroupPostV2WithViewer(row)
+	p, err := scanGroupPostV2WithViewer(row)
+	if err != nil {
+		return nil, err
+	}
+	one := []GroupPostV2{*p}
+	if err := s.attachReactionCounts(ctx, one); err != nil {
+		return nil, err
+	}
+	return &one[0], nil
 }
 
 // ListGroupPostsV2 lists a group's published posts. viewerID is the viewer's
@@ -1873,7 +1889,13 @@ func (s *Store) ListPendingGroupPostsV2(ctx context.Context, groupID uuid.UUID, 
 		}
 		posts = append(posts, *p)
 	}
-	return posts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachReactionCounts(ctx, posts); err != nil {
+		return nil, err
+	}
+	return posts, nil
 }
 
 func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channelID *uuid.UUID, viewerID string, limit, offset int) ([]GroupPostV2, error) {
@@ -1912,7 +1934,13 @@ func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channel
 		}
 		posts = append(posts, *p)
 	}
-	return posts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachReactionCounts(ctx, posts); err != nil {
+		return nil, err
+	}
+	return posts, nil
 }
 
 func (s *Store) DeleteGroupPostV2(ctx context.Context, groupID, postID uuid.UUID) error {
@@ -1945,10 +1973,23 @@ func (s *Store) UnpinGroupPostV2(ctx context.Context, postID uuid.UUID) error {
 
 // ==================== V2 Engagement ====================
 
+// SparkGroupPost is the legacy heart. Since migration 016 the row it inserts
+// is a 'like' reaction (the column default), so a heart from an old client
+// and a Like from a new one are the same row and the same count. It keeps
+// its 409 "already sparked" for ANY existing reaction — a legacy client that
+// wants to change its mind unsparks first, as it always had to. Insert and
+// count now commit together; they were two autocommit statements before.
 func (s *Store) SparkGroupPost(ctx context.Context, postID uuid.UUID, userID string, isSupernova bool) error {
-	query := `INSERT INTO group_post_sparks (post_id, user_id, is_supernova, created_at)
-		VALUES ($1, $2, $3, NOW()) ON CONFLICT DO NOTHING`
-	tag, err := s.db.Exec(ctx, query, postID, userID, isSupernova)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO group_post_sparks (post_id, user_id, is_supernova, reaction, created_at, updated_at)
+		 VALUES ($1, $2, $3, 'like', NOW(), NOW()) ON CONFLICT DO NOTHING`,
+		postID, userID, isSupernova)
 	if err != nil {
 		return err
 	}
@@ -1959,10 +2000,12 @@ func (s *Store) SparkGroupPost(ctx context.Context, postID uuid.UUID, userID str
 	if isSupernova {
 		weight = 5
 	}
-	_, err = s.db.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`UPDATE group_posts SET spark_count = spark_count + $2, updated_at = NOW() WHERE id = $1`,
-		postID, weight)
-	return err
+		postID, weight); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) UnsparkGroupPost(ctx context.Context, postID uuid.UUID, userID string) error {

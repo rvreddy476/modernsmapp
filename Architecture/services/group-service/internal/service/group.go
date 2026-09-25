@@ -2325,13 +2325,12 @@ func (s *Service) DeleteGroupPostV2(ctx context.Context, actorID, groupID, postI
 
 // ── V2 Engagement ────────────────────────────────────────────
 
+// SparkGroupPost is the legacy heart; since reactions landed it is a 'like'.
+// It now passes engagementGate (group access, ban, post∈group) like every
+// other engagement write — see service/reactions.go.
 func (s *Service) SparkGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID, isSupernova bool) error {
-	p, err := s.store.GetGroupPostV2(ctx, postID)
-	if err != nil {
+	if _, err := s.engagementGate(ctx, actorID, groupID, postID); err != nil {
 		return err
-	}
-	if p.GroupID != groupID {
-		return fmt.Errorf("not found: post not found in this group")
 	}
 	if err := s.store.SparkGroupPost(ctx, postID, actorID.String(), isSupernova); err != nil {
 		return err
@@ -2340,13 +2339,11 @@ func (s *Service) SparkGroupPost(ctx context.Context, actorID, groupID, postID u
 	return nil
 }
 
+// UnsparkGroupPost removes the viewer's reaction whatever it is; a legacy
+// client that hearted and then reacted Love from the web still unhearts.
 func (s *Service) UnsparkGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
-	p, err := s.store.GetGroupPostV2(ctx, postID)
-	if err != nil {
+	if _, err := s.engagementGate(ctx, actorID, groupID, postID); err != nil {
 		return err
-	}
-	if p.GroupID != groupID {
-		return fmt.Errorf("not found: post not found in this group")
 	}
 	return s.store.UnsparkGroupPost(ctx, postID, actorID.String())
 }

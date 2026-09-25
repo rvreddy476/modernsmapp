@@ -148,6 +148,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// V2 Post Engagement
 		v1.POST("/:groupId/posts/v2/:postId/spark", h.SparkGroupPost)
 		v1.DELETE("/:groupId/posts/v2/:postId/spark", h.UnsparkGroupPost)
+		// One current emoji reaction per viewer per post; spark stays as the
+		// legacy 'like'. See service/reactions.go for the contract.
+		v1.PUT("/:groupId/posts/v2/:postId/reaction", h.SetGroupPostReaction)
+		v1.DELETE("/:groupId/posts/v2/:postId/reaction", h.RemoveGroupPostReaction)
 		v1.POST("/:groupId/posts/v2/:postId/stash", h.StashGroupPost)
 		v1.DELETE("/:groupId/posts/v2/:postId/stash", h.UnstashGroupPost)
 		v1.POST("/:groupId/posts/v2/:postId/view", h.RecordGroupPostView)

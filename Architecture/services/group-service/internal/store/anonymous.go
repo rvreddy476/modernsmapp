@@ -35,6 +35,11 @@ app reads this shape and is not being changed.
 type groupPostV2Wire GroupPostV2
 
 func (p GroupPostV2) MarshalJSON() ([]byte, error) {
+	// reaction_counts is documented as an object. A post read through a path
+	// that never attached counts must still say {} rather than null.
+	if p.ReactionCounts == nil {
+		p.ReactionCounts = map[string]int{}
+	}
 	if !p.IsAnonymous {
 		return json.Marshal(groupPostV2Wire(p))
 	}
