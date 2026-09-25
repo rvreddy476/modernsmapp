@@ -115,6 +115,10 @@ type GroupPostV2 struct {
 	// the masked author_id: carrying both would let a client correlate two
 	// posts by the same author, which is the whole thing the alias prevents.
 	AnonAlias *uuid.UUID `json:"-"`
+	// Set when this post was one target of a cross-post. The copies are
+	// independent rows sharing this id; nothing reads it on the feed path,
+	// deliberately — see the migration.
+	CrossPostGroupID *uuid.UUID `json:"cross_post_group_id,omitempty"`
 	// Viewer-relative engagement: whether the signed-in viewer has already
 	// sparked / echoed / stashed this post. Readers that have a viewer in
 	// scope populate these; an anonymous or non-reacting viewer gets false.
@@ -1632,14 +1636,14 @@ func (s *Store) ListBannedMembers(ctx context.Context, groupID uuid.UUID, limit,
 const groupPostV2Columns = `id, group_id, channel_id, author_id, content_type, title, body, body_html,
 	type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
 	spark_count, comment_count, echo_count, view_count, created_at, updated_at,
-	is_anonymous, anon_alias`
+	is_anonymous, anon_alias, cross_post_group_id`
 
 // groupPostV2ColumnsP is groupPostV2Columns qualified with the `p` alias, for
 // the readers that join the per-viewer engagement tables.
 const groupPostV2ColumnsP = `p.id, p.group_id, p.channel_id, p.author_id, p.content_type, p.title, p.body, p.body_html,
 	p.type_payload, p.attachments, p.needs_approval, p.is_pinned, p.is_announcement, p.status,
 	p.spark_count, p.comment_count, p.echo_count, p.view_count, p.created_at, p.updated_at,
-	p.is_anonymous, p.anon_alias`
+	p.is_anonymous, p.anon_alias, p.cross_post_group_id`
 
 // viewerEngagementColumns are the three viewer_* flags, in the order
 // scanGroupPostV2WithViewer expects them. Always select these together with
@@ -1675,7 +1679,7 @@ func scanGroupPostV2(row pgx.Row) (*GroupPostV2, error) {
 		&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
 		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
 		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
-		&p.CreatedAt, &p.UpdatedAt, &p.IsAnonymous, &p.AnonAlias)
+		&p.CreatedAt, &p.UpdatedAt, &p.IsAnonymous, &p.AnonAlias, &p.CrossPostGroupID)
 	if err != nil {
 		return nil, err
 	}
@@ -1696,7 +1700,7 @@ func scanGroupPostV2WithViewer(row pgx.Row) (*GroupPostV2, error) {
 		&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
 		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
 		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
-		&p.CreatedAt, &p.UpdatedAt, &p.IsAnonymous, &p.AnonAlias,
+		&p.CreatedAt, &p.UpdatedAt, &p.IsAnonymous, &p.AnonAlias, &p.CrossPostGroupID,
 		&p.ViewerSparked, &p.ViewerEchoed, &p.ViewerStashed)
 	if err != nil {
 		return nil, err
@@ -1746,13 +1750,13 @@ func (s *Store) CreateGroupPostV2(ctx context.Context, p *GroupPostV2) error {
 	query := `INSERT INTO group_posts (id, group_id, channel_id, author_id, content_type, title, body, body_html,
 		type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
 		spark_count, comment_count, echo_count, view_count, created_at, updated_at,
-		is_anonymous, anon_alias)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,0,0,0,$15,$16,$17,$18)`
+		is_anonymous, anon_alias, cross_post_group_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,0,0,0,$15,$16,$17,$18,$19)`
 	if _, err := tx.Exec(ctx, query,
 		p.ID, p.GroupID, p.ChannelID, p.AuthorID, p.ContentType,
 		p.Title, p.Body, p.BodyHTML, p.TypePayload, p.Attachments,
 		p.NeedsApproval, p.IsPinned, p.IsAnnouncement, p.Status,
-		p.CreatedAt, p.UpdatedAt, p.IsAnonymous, p.AnonAlias); err != nil {
+		p.CreatedAt, p.UpdatedAt, p.IsAnonymous, p.AnonAlias, p.CrossPostGroupID); err != nil {
 		return err
 	}
 

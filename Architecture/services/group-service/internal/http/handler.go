@@ -1647,6 +1647,40 @@ func (h *Handler) CreateGroupPostV2(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid request body", nil)
 		return
 	}
+	/*
+		THE COMPATIBILITY HINGE.
+
+		With no also_post_to, this answers exactly as it always has: the bare
+		post. Every existing caller reads that shape, including the mobile app,
+		which is explicitly not being changed. Returning the batch result
+		unconditionally would break all of them.
+
+		Only a request that actually names extra groups gets the batch answer.
+	*/
+	if len(req.AlsoPostTo) > 0 {
+		/*
+			A stable key is required, not optional, and the reason is the axios
+			interceptor on the web: it stamps a FRESH uuid header per attempt,
+			so a retry carrying only a header key looks like a new intent and
+			posts again to every group that already succeeded. The body field
+			is the client's promise that this is the same press of the button.
+		*/
+		key := resolveIdempotencyKey(c, req.IdempotencyKey)
+		if key == "" {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+				"IDEMPOTENCY_KEY_REQUIRED",
+				"posting to several groups needs an idempotency_key, so a retry completes the batch instead of duplicating it", nil)
+			return
+		}
+		result, err := h.svc.CrossPost(c.Request.Context(), actorID, groupID, req, key)
+		if err != nil {
+			handleServiceError(c, err)
+			return
+		}
+		api.JSON(c.Writer, http.StatusCreated, result, nil)
+		return
+	}
+
 	post, err := h.svc.CreateGroupPostV2(c.Request.Context(), actorID, groupID, req)
 	if err != nil {
 		handleServiceError(c, err)

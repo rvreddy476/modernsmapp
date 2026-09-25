@@ -2072,6 +2072,13 @@ type CreateGroupPostV2Params struct {
 	// Post without the author's name shown to other members. Refused unless
 	// the group has opted in.
 	IsAnonymous bool `json:"is_anonymous"`
+	// Additional groups to post the same body to. Empty for an ordinary
+	// single post, which keeps the existing response shape — that is the
+	// compatibility hinge for every caller that already exists.
+	AlsoPostTo []uuid.UUID `json:"also_post_to,omitempty"`
+	// Stable across retries of the SAME composer action. Required only when
+	// also_post_to is used, so a single post is unchanged.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 /*
@@ -2110,146 +2117,58 @@ func (s *Service) containsBlockedWord(ctx context.Context, groupID uuid.UUID, ti
 	return false, ""
 }
 
-func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.UUID, params CreateGroupPostV2Params) (*store.GroupPostV2, error) {
-	g, err := s.store.GetGroupByID(ctx, groupID)
-	if err != nil {
-		return nil, err
-	}
-	if g == nil {
-		return nil, fmt.Errorf("group not found")
-	}
+/*
+	CreateGroupPostV2 posts to one group.
 
-	/*
-		Rate limit before anything is written. Posting had NO limit at all: a
-		script could fill a group as fast as the network allowed. Keyed on the
-		real actor, which is what makes it hold once anonymous posting exists.
-	*/
+	The evaluation lives in createOnePost (cross_post.go), shared with every
+	target of a cross-post so the two cannot drift into different answers for
+	the same person and group. Here a policy refusal becomes an ERROR, because
+	a caller who named exactly one group should be told why it failed; in a
+	batch the same refusal is an outcome for that target and does not fail the
+	request.
+*/
+func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.UUID, params CreateGroupPostV2Params) (*store.GroupPostV2, error) {
+	// Before any read: a flood should not cost a database round trip each.
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:group_post:%s", actorID), 30, time.Hour) {
 		return nil, fmt.Errorf("rate_limited: you are posting too quickly")
 	}
 
-	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	outcome, post, err := s.createOnePost(ctx, actorID, groupID, params, nil)
 	if err != nil {
 		return nil, err
 	}
-	if actor == nil {
-		return nil, fmt.Errorf("forbidden: only members can post in the group")
+	if post == nil {
+		return nil, outcomeAsError(outcome)
 	}
-
-	/*
-		Explicitly refuse a banned member.
-
-		GetActiveMember already filters status='active', so this is belt and
-		braces — but that is an implicit CONSEQUENCE of how the query is
-		written, and this is a stated INTENT. A future refactor of
-		GetActiveMember can silently remove the first; it cannot silently
-		remove the second.
-	*/
-	banned, err := s.store.CheckBanned(ctx, groupID, actorID)
-	if err != nil {
-		return nil, err
-	}
-	if banned {
-		return nil, fmt.Errorf("forbidden: you are banned from this group")
-	}
-
-	if err := s.checkPermission(g.WhoCanPost, actor.Role); err != nil {
-		return nil, fmt.Errorf("forbidden: %w", err)
-	}
-
-	/*
-		The group's word blocklist, which was collected, stored, listed and
-		never once applied to a post. Admins could curate it and it did
-		nothing.
-	*/
-	if blocked, word := s.containsBlockedWord(ctx, groupID, params.Title, params.Body); blocked {
-		return nil, fmt.Errorf("blocked_content: %q is not allowed in this group", word)
-	}
-
-	status := "published"
-	needsApproval := false
-	// NOTE: groups.post_approval_required is a column that nothing reads —
-	// it is not on store.Group, so only group_type=moderated gates approval.
-	// Threading it through needs every groupColumns scanner updated.
-	if g.GroupType == "moderated" && actor.Role == "member" {
-		status = "pending_approval"
-		needsApproval = true
-	}
-
-	contentType := params.ContentType
-	if contentType == "" {
-		contentType = "text"
-	}
-
-	/*
-		Anonymity is refused, never downgraded.
-
-		A group that has not opted in gets an error. The tempting alternative
-		— post it under their name instead — is a catastrophic and
-		irreversible leak: the member pressed a button marked anonymous and
-		their name appeared. There must be no path that clears this flag and
-		continues.
-	*/
-	if params.IsAnonymous && !g.AllowAnonymousPosts {
-		return nil, fmt.Errorf("forbidden: this group does not allow anonymous posts")
-	}
-
-	var anonAlias *uuid.UUID
-	if params.IsAnonymous {
-		anonAlias = store.NewAnonAlias()
-	}
-
-	post := &store.GroupPostV2{
-		GroupID:        groupID,
-		AuthorID:       actorID.String(),
-		IsAnonymous:    params.IsAnonymous,
-		AnonAlias:      anonAlias,
-		ContentType:    contentType,
-		Body:           &params.Body,
-		Title:          nilIfEmpty(params.Title),
-		TypePayload:    params.TypePayload,
-		Attachments:    params.Attachments,
-		IsAnnouncement: params.IsAnnouncement,
-		ChannelID:      params.ChannelID,
-		NeedsApproval:  needsApproval,
-		Status:         status,
-	}
-
-	if err := s.store.CreateGroupPostV2(ctx, post); err != nil {
-		return nil, err
-	}
-
-	/*
-		An anonymous post does not count toward its author's contribution.
-
-		GET /:groupId/stats/contributors is readable by any member, so a post
-		count that ticks at the same moment an anonymous post appears names
-		the author in any group small enough to watch. The cost is that
-		anonymous posts earn no credit, which is the right way round.
-	*/
-	if !params.IsAnonymous {
-		s.store.IncrementMemberPostCount(ctx, groupID, actorID)
-	}
-
-	/*
-		And the author stays off the event bus.
-
-		PublishGroupPostCreated carries the actor to every consumer, and
-		notification-service renders "X posted in Y" from it — a push
-		notification that de-anonymises the author to the whole group. The
-		event is suppressed rather than sent with a masked id, because the
-		shared payload has no anonymity field yet and inventing one here
-		would be a cross-service change made from the wrong side. The cost is
-		no notification for anonymous posts; the alternative is a leak.
-	*/
-	if !params.IsAnonymous {
-		s.publishEvent(func() error {
-			return s.producer.PublishGroupPostCreated(ctx, groupID, post.ID, actorID)
-		})
-	}
-
-	s.invalidateGroupCache(ctx, groupID)
 	return post, nil
+}
+
+/*
+	outcomeAsError turns a per-target outcome into the error a single-group
+	caller gets.
+
+	The single path can be specific where a batch cannot: naming the reason
+	here tells the author something about a group they explicitly chose, with
+	nobody else's privacy involved. The one exception is kept lossy anyway —
+	"unavailable" still refuses to distinguish a missing group from a private
+	one, because that answer is a probe whether it arrives one at a time or
+	five at a time.
+*/
+func outcomeAsError(outcome string) error {
+	switch outcome {
+	case OutcomeNotAMember:
+		return fmt.Errorf("forbidden: only members can post in the group")
+	case OutcomeBanned:
+		return fmt.Errorf("forbidden: you are banned from this group")
+	case OutcomeNotPermitted:
+		return fmt.Errorf("forbidden: your role cannot post in this group")
+	case OutcomeAnonNotAllowed:
+		return fmt.Errorf("forbidden: this group does not allow anonymous posts")
+	case OutcomeBlockedContent:
+		return fmt.Errorf("blocked_content: that post contains a word this group does not allow")
+	default:
+		return fmt.Errorf("group not found")
+	}
 }
 
 func nilIfEmpty(s string) *string {

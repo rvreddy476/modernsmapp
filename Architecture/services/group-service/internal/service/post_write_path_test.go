@@ -23,7 +23,10 @@ the ones whose ORDER matters keep it.
 */
 
 func TestPostWritePathRefusesABannedMember(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroupPostV2")
+	// createOnePost is the single evaluator every posting path runs through —
+	// the one-group case and each target of a cross-post — so a check removed
+	// here is removed everywhere.
+	body := funcSource(t, "cross_post.go", "createOnePost")
 
 	if !strings.Contains(body, "CheckBanned") {
 		t.Fatal("CreateGroupPostV2 does not call CheckBanned — GetActiveMember filtering on status='active' is an implicit consequence of how that query is written, not a stated intent, and a refactor of it would silently reopen posting to banned members")
@@ -39,7 +42,7 @@ func TestPostWritePathRefusesABannedMember(t *testing.T) {
 }
 
 func TestPostWritePathAppliesTheWordBlocklist(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroupPostV2")
+	body := funcSource(t, "cross_post.go", "createOnePost")
 	if !strings.Contains(body, "containsBlockedWord") {
 		t.Fatal("CreateGroupPostV2 never consults the word blocklist — admins could add, list and remove words and none of it ever affected a post")
 	}
@@ -52,10 +55,11 @@ func TestPostWritePathIsRateLimited(t *testing.T) {
 	}
 	// Before any work: a limiter that only refuses after the permission reads
 	// still lets a flood cost a database round trip per attempt.
-	limit := strings.Index(body, "rl:group_post:")
-	member := strings.Index(body, "GetActiveMember")
-	if member >= 0 && limit > member {
-		t.Fatal("the rate limit runs after the membership read; it should be the first thing that can refuse")
+	// The limiter belongs at the ENTRY POINT, not in the shared evaluator:
+	// inside createOnePost a cross-post to five groups would burn five of the
+	// author's allowance for one press.
+	if strings.Contains(funcSource(t, "cross_post.go", "createOnePost"), "rl:group_post:") {
+		t.Fatal("the per-post rate limit sits inside createOnePost, so one cross-post consumes the allowance once per target")
 	}
 }
 

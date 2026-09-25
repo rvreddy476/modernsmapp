@@ -23,7 +23,7 @@ irreversible: they pressed a button marked anonymous and their name
 appeared. There must be no path that clears the flag and carries on.
 */
 func TestAnonymousPostIsRefusedNotDowngraded(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroupPostV2")
+	body := funcSource(t, "cross_post.go", "createOnePost")
 
 	if !strings.Contains(body, "!g.AllowAnonymousPosts") {
 		t.Fatal("CreateGroupPostV2 does not check the group allows anonymous posts — any group would silently acquire the feature")
@@ -32,7 +32,10 @@ func TestAnonymousPostIsRefusedNotDowngraded(t *testing.T) {
 	gate := strings.Index(body, "!g.AllowAnonymousPosts")
 	tail := body[gate:]
 	// The branch must end the request, not fix up the flag and continue.
-	if !strings.Contains(tail[:min(len(tail), 400)], "return nil, fmt.Errorf") {
+	// In the evaluator a refusal is an OUTCOME, not an error: the single-group
+	// caller turns it into one, a batch reports it per target. Either way the
+	// branch must END the attempt for this group and never fall through.
+	if !strings.Contains(tail[:min(len(tail), 400)], "return OutcomeAnonNotAllowed") {
 		t.Fatal("the anonymity gate does not return an error — if it downgrades to a named post instead, the member's name is published against their explicit choice, and that cannot be undone")
 	}
 
@@ -50,7 +53,7 @@ func TestAnonymousPostIsRefusedNotDowngraded(t *testing.T) {
 
 // Per post, not per author, and not hoisted above any loop.
 func TestAliasIsMintedForThePostBeingCreated(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroupPostV2")
+	body := funcSource(t, "cross_post.go", "createOnePost")
 	if !strings.Contains(body, "store.NewAnonAlias()") {
 		t.Fatal("CreateGroupPostV2 does not mint an alias — with is_anonymous set and anon_alias nil, migration 013's CHECK constraint refuses the row, so anonymous posting fails outright")
 	}
@@ -67,7 +70,7 @@ that increments at the same moment an anonymous post appears names the
 author in any group small enough to watch.
 */
 func TestAnonymousPostDoesNotTouchContributorStats(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroupPostV2")
+	body := funcSource(t, "cross_post.go", "createOnePost")
 	idx := strings.Index(body, "IncrementMemberPostCount")
 	if idx < 0 {
 		t.Fatal("IncrementMemberPostCount is gone — this guard no longer protects anything")
@@ -86,7 +89,7 @@ notification-service renders "X posted in Y" from it, which would push the
 author's name to the whole group.
 */
 func TestAnonymousPostDoesNotPublishTheAuthor(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroupPostV2")
+	body := funcSource(t, "cross_post.go", "createOnePost")
 	// The CALL, not the mention of it in the comment above the call — the
 	// comment explains why the guard exists, so searching for the bare name
 	// finds the prose and measures the wrong place.
