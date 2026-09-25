@@ -48,6 +48,10 @@ type Group struct {
 	MemberListVisible bool            `json:"member_list_visible"`
 	LinkSharing       bool            `json:"link_sharing"`
 	IsMature          bool            `json:"is_mature"`
+	// Whether this group lets members post without their name shown.
+	// Opt-in, default false: a group that never asked for anonymity must not
+	// acquire it because the feature shipped.
+	AllowAnonymousPosts bool `json:"allow_anonymous_posts"`
 }
 
 type GroupMember struct {
@@ -103,6 +107,14 @@ type GroupPostV2 struct {
 	ViewCount      int             `json:"view_count"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
+	// Posted without the author's name shown to other members. The row still
+	// carries the real AuthorID — bans, rate limits and ownership need it —
+	// and MarshalJSON (anonymous.go) substitutes AnonAlias on the wire.
+	IsAnonymous bool `json:"is_anonymous"`
+	// The per-post pseudonym. json:"-" because it must never appear beside
+	// the masked author_id: carrying both would let a client correlate two
+	// posts by the same author, which is the whole thing the alias prevents.
+	AnonAlias *uuid.UUID `json:"-"`
 	// Viewer-relative engagement: whether the signed-in viewer has already
 	// sparked / echoed / stashed this post. Readers that have a viewer in
 	// scope populate these; an anonymous or non-reacting viewer gets false.
@@ -120,6 +132,10 @@ type GroupPostComment struct {
 	IsPinned   bool       `json:"is_pinned"`
 	SparkCount int        `json:"spark_count"`
 	CreatedAt  time.Time  `json:"created_at"`
+	// Set by the server when the commenter is the author of an anonymous
+	// post. Never a client's choice — see anonymous.go.
+	IsAnonymous bool       `json:"is_anonymous"`
+	AnonAlias   *uuid.UUID `json:"-"`
 }
 
 type GroupEvent struct {
@@ -177,7 +193,7 @@ const groupColumns = `g.id, g.name, g.description, g.avatar_media_id, g.cover_me
        g.visibility, g.is_archived, g.chat_conversation_id, g.member_count, g.post_count,
        g.created_at, g.updated_at, g.handle, g.category, g.privacy_level, g.join_mode,
        g.who_can_post, g.who_can_invite, g.location, g.language, g.status, g.deleted_at, g.pending_request_count,
-       g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing, g.is_mature`
+       g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing, g.is_mature, g.allow_anonymous_posts`
 
 func scanGroup(row pgx.Row) (*Group, error) {
 	var g Group
@@ -186,7 +202,7 @@ func scanGroup(row pgx.Row) (*Group, error) {
 		&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 		&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 		&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
-		&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature,
+		&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature, &g.AllowAnonymousPosts,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -206,7 +222,7 @@ func scanGroups(rows pgx.Rows) ([]Group, error) {
 			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 			&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 			&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
-			&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature,
+			&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature, &g.AllowAnonymousPosts,
 		); err != nil {
 			return nil, err
 		}
@@ -1238,6 +1254,7 @@ type GroupMediaItem struct {
 	ContentType string          `json:"content_type"`
 	Attachments json.RawMessage `json:"attachments"`
 	CreatedAt   time.Time       `json:"created_at"`
+	IsAnonymous bool            `json:"is_anonymous"`
 }
 
 // ListGroupMedia returns posts that carry attachments. Space posts live
@@ -1248,8 +1265,23 @@ func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, of
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
+	/*
+		The media grid masks anonymous authors too.
+
+		This is the leak a reviewer misses: GroupMediaItem is its own struct,
+		so it does NOT go through GroupPostV2.MarshalJSON. An anonymous post
+		with a photo would have its author named here while the same post is
+		masked in the feed — one endpoint quietly undoing the other.
+
+		Masked in SQL rather than in Go because this projection has no
+		GroupPostV2 to marshal: COALESCE hands back the alias for an anonymous
+		row and the real author otherwise, so nothing downstream has to
+		remember.
+	*/
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, content_type, attachments, created_at
+		SELECT id,
+		       CASE WHEN is_anonymous THEN COALESCE(anon_alias::text, '') ELSE author_id END,
+		       content_type, attachments, created_at, is_anonymous
 		FROM group_posts
 		WHERE group_id = $1 AND status = 'published'
 		  AND attachments IS NOT NULL AND jsonb_array_length(attachments) > 0
@@ -1264,7 +1296,7 @@ func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, of
 	var items []GroupMediaItem
 	for rows.Next() {
 		var it GroupMediaItem
-		if err := rows.Scan(&it.PostID, &it.AuthorID, &it.ContentType, &it.Attachments, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.PostID, &it.AuthorID, &it.ContentType, &it.Attachments, &it.CreatedAt, &it.IsAnonymous); err != nil {
 			return nil, err
 		}
 		if it.Attachments == nil {
@@ -1599,13 +1631,15 @@ func (s *Store) ListBannedMembers(ctx context.Context, groupID uuid.UUID, limit,
 
 const groupPostV2Columns = `id, group_id, channel_id, author_id, content_type, title, body, body_html,
 	type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
-	spark_count, comment_count, echo_count, view_count, created_at, updated_at`
+	spark_count, comment_count, echo_count, view_count, created_at, updated_at,
+	is_anonymous, anon_alias`
 
 // groupPostV2ColumnsP is groupPostV2Columns qualified with the `p` alias, for
 // the readers that join the per-viewer engagement tables.
 const groupPostV2ColumnsP = `p.id, p.group_id, p.channel_id, p.author_id, p.content_type, p.title, p.body, p.body_html,
 	p.type_payload, p.attachments, p.needs_approval, p.is_pinned, p.is_announcement, p.status,
-	p.spark_count, p.comment_count, p.echo_count, p.view_count, p.created_at, p.updated_at`
+	p.spark_count, p.comment_count, p.echo_count, p.view_count, p.created_at, p.updated_at,
+	p.is_anonymous, p.anon_alias`
 
 // viewerEngagementColumns are the three viewer_* flags, in the order
 // scanGroupPostV2WithViewer expects them. Always select these together with
@@ -1641,7 +1675,7 @@ func scanGroupPostV2(row pgx.Row) (*GroupPostV2, error) {
 		&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
 		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
 		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
-		&p.CreatedAt, &p.UpdatedAt)
+		&p.CreatedAt, &p.UpdatedAt, &p.IsAnonymous, &p.AnonAlias)
 	if err != nil {
 		return nil, err
 	}
@@ -1662,7 +1696,7 @@ func scanGroupPostV2WithViewer(row pgx.Row) (*GroupPostV2, error) {
 		&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
 		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
 		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
-		&p.CreatedAt, &p.UpdatedAt,
+		&p.CreatedAt, &p.UpdatedAt, &p.IsAnonymous, &p.AnonAlias,
 		&p.ViewerSparked, &p.ViewerEchoed, &p.ViewerStashed)
 	if err != nil {
 		return nil, err
@@ -1711,13 +1745,14 @@ func (s *Store) CreateGroupPostV2(ctx context.Context, p *GroupPostV2) error {
 
 	query := `INSERT INTO group_posts (id, group_id, channel_id, author_id, content_type, title, body, body_html,
 		type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
-		spark_count, comment_count, echo_count, view_count, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,0,0,0,$15,$16)`
+		spark_count, comment_count, echo_count, view_count, created_at, updated_at,
+		is_anonymous, anon_alias)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,0,0,0,$15,$16,$17,$18)`
 	if _, err := tx.Exec(ctx, query,
 		p.ID, p.GroupID, p.ChannelID, p.AuthorID, p.ContentType,
 		p.Title, p.Body, p.BodyHTML, p.TypePayload, p.Attachments,
 		p.NeedsApproval, p.IsPinned, p.IsAnnouncement, p.Status,
-		p.CreatedAt, p.UpdatedAt); err != nil {
+		p.CreatedAt, p.UpdatedAt, p.IsAnonymous, p.AnonAlias); err != nil {
 		return err
 	}
 

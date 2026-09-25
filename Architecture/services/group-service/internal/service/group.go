@@ -2069,6 +2069,9 @@ type CreateGroupPostV2Params struct {
 	TypePayload    json.RawMessage `json:"type_payload,omitempty"`
 	Attachments    json.RawMessage `json:"attachments,omitempty"`
 	IsAnnouncement bool            `json:"is_announcement"`
+	// Post without the author's name shown to other members. Refused unless
+	// the group has opted in.
+	IsAnonymous bool `json:"is_anonymous"`
 }
 
 /*
@@ -2178,9 +2181,29 @@ func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.U
 		contentType = "text"
 	}
 
+	/*
+		Anonymity is refused, never downgraded.
+
+		A group that has not opted in gets an error. The tempting alternative
+		— post it under their name instead — is a catastrophic and
+		irreversible leak: the member pressed a button marked anonymous and
+		their name appeared. There must be no path that clears this flag and
+		continues.
+	*/
+	if params.IsAnonymous && !g.AllowAnonymousPosts {
+		return nil, fmt.Errorf("forbidden: this group does not allow anonymous posts")
+	}
+
+	var anonAlias *uuid.UUID
+	if params.IsAnonymous {
+		anonAlias = store.NewAnonAlias()
+	}
+
 	post := &store.GroupPostV2{
 		GroupID:        groupID,
 		AuthorID:       actorID.String(),
+		IsAnonymous:    params.IsAnonymous,
+		AnonAlias:      anonAlias,
 		ContentType:    contentType,
 		Body:           &params.Body,
 		Title:          nilIfEmpty(params.Title),
@@ -2196,11 +2219,34 @@ func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.U
 		return nil, err
 	}
 
-	s.store.IncrementMemberPostCount(ctx, groupID, actorID)
+	/*
+		An anonymous post does not count toward its author's contribution.
 
-	s.publishEvent(func() error {
-		return s.producer.PublishGroupPostCreated(ctx, groupID, post.ID, actorID)
-	})
+		GET /:groupId/stats/contributors is readable by any member, so a post
+		count that ticks at the same moment an anonymous post appears names
+		the author in any group small enough to watch. The cost is that
+		anonymous posts earn no credit, which is the right way round.
+	*/
+	if !params.IsAnonymous {
+		s.store.IncrementMemberPostCount(ctx, groupID, actorID)
+	}
+
+	/*
+		And the author stays off the event bus.
+
+		PublishGroupPostCreated carries the actor to every consumer, and
+		notification-service renders "X posted in Y" from it — a push
+		notification that de-anonymises the author to the whole group. The
+		event is suppressed rather than sent with a masked id, because the
+		shared payload has no anonymity field yet and inventing one here
+		would be a cross-service change made from the wrong side. The cost is
+		no notification for anonymous posts; the alternative is a leak.
+	*/
+	if !params.IsAnonymous {
+		s.publishEvent(func() error {
+			return s.producer.PublishGroupPostCreated(ctx, groupID, post.ID, actorID)
+		})
+	}
 
 	s.invalidateGroupCache(ctx, groupID)
 	return post, nil
