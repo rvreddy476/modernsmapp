@@ -1693,21 +1693,47 @@ func (s *Store) CreateGroupPostV2(ctx context.Context, p *GroupPostV2) error {
 		p.Attachments = json.RawMessage(`[]`)
 	}
 
+	/*
+		The insert and the counter are ONE transaction.
+
+		They used to be two bare Exec calls, so a failure between them left
+		groups.post_count one ahead of reality for ever, with nothing to
+		reconcile it. A single post drifting one is survivable; cross-posting
+		makes the same path run five times per action, which is what turned a
+		latent flaw into a reason to fix it.
+	*/
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// A rollback after a successful commit is a no-op, so this needs no flag.
+	defer tx.Rollback(ctx)
+
 	query := `INSERT INTO group_posts (id, group_id, channel_id, author_id, content_type, title, body, body_html,
 		type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
 		spark_count, comment_count, echo_count, view_count, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,0,0,0,$15,$16)`
-	_, err := s.db.Exec(ctx, query,
+	if _, err := tx.Exec(ctx, query,
 		p.ID, p.GroupID, p.ChannelID, p.AuthorID, p.ContentType,
 		p.Title, p.Body, p.BodyHTML, p.TypePayload, p.Attachments,
 		p.NeedsApproval, p.IsPinned, p.IsAnnouncement, p.Status,
-		p.CreatedAt, p.UpdatedAt)
-	if err != nil {
+		p.CreatedAt, p.UpdatedAt); err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx,
-		`UPDATE groups SET post_count = post_count + 1, updated_at = NOW() WHERE id = $1`, p.GroupID)
-	return err
+
+	/*
+		A post awaiting approval is not IN the group yet, so it must not be
+		counted as one. Before, every pending post inflated post_count and the
+		number never came back down when the post was rejected.
+	*/
+	if p.Status == "published" {
+		if _, err := tx.Exec(ctx,
+			`UPDATE groups SET post_count = post_count + 1, updated_at = NOW() WHERE id = $1`, p.GroupID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // GetGroupPostV2 reads one post without viewer context. The viewer_* flags are
@@ -1733,6 +1759,48 @@ func (s *Store) GetGroupPostV2ForViewer(ctx context.Context, postID uuid.UUID, v
 
 // ListGroupPostsV2 lists a group's published posts. viewerID is the viewer's
 // user id as TEXT ("" for anonymous) and drives the viewer_* flags.
+/*
+	ListPendingGroupPostsV2 returns the posts waiting for a moderator, read
+	from group_posts itself.
+
+	It does NOT read post_approval_queue. That table is written by nobody —
+	store.AddToApprovalQueue has zero callers — so the queue endpoint has
+	always returned an empty list while pending posts piled up invisibly, with
+	no way for anyone to approve them. Its author_id column is also declared
+	UUID in migration 003 and TEXT in setup.sql, so environments disagree
+	about its shape.
+
+	group_posts.status is the only place the truth has ever been, so that is
+	what this reads.
+*/
+func (s *Store) ListPendingGroupPostsV2(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupPostV2, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT `+groupPostV2Columns+`
+		FROM group_posts
+		WHERE group_id = $1 AND status = 'pending_approval'
+		ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
+		groupID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Oldest first: a moderation queue is worked from the front, and the
+	// person who has waited longest should not be buried by newer arrivals.
+	posts := []GroupPostV2{}
+	for rows.Next() {
+		p, err := scanGroupPostV2(rows)
+		if err != nil {
+			return nil, err
+		}
+		posts = append(posts, *p)
+	}
+	return posts, rows.Err()
+}
+
 func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channelID *uuid.UUID, viewerID string, limit, offset int) ([]GroupPostV2, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20

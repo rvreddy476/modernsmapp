@@ -105,6 +105,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/:groupId/word-blocklist/:word", h.RemoveWordFromBlocklist)
 
 		// Post Approval Queue
+		/*
+			Moderation by POST id. The approval-queue routes below read
+			post_approval_queue, which nothing writes, so they have always
+			returned an empty list while pending posts were unreachable. These
+			three read group_posts.status, where the truth is. The old routes
+			stay so nothing calling them breaks.
+		*/
+		v1.GET("/:groupId/posts/v2/pending", h.ListPendingPosts)
+		v1.POST("/:groupId/posts/v2/:postId/approve", h.ApprovePendingPost)
+		v1.POST("/:groupId/posts/v2/:postId/reject", h.RejectPendingPost)
+
 		v1.GET("/:groupId/approval-queue", h.GetApprovalQueue)
 		v1.POST("/:groupId/approval-queue/:itemId/approve", h.ApproveQueuedPost)
 		v1.POST("/:groupId/approval-queue/:itemId/reject", h.RejectQueuedPost)
@@ -1326,6 +1337,66 @@ func (h *Handler) RemoveWordFromBlocklist(c *gin.Context) {
 }
 
 // ── Post Approval Queue ──────────────────────────────────────
+
+func (h *Handler) ListPendingPosts(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil)
+		return
+	}
+	limit, offset := parsePagination(c)
+	posts, err := h.svc.ListPendingPosts(c.Request.Context(), actorID, groupID, limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	// An empty queue is [], never null: a client that maps over the result
+	// must not have to guard for nil, and ListGroupEvents already shows what
+	// happens when one forgets.
+	if posts == nil {
+		posts = []store.GroupPostV2{}
+	}
+	api.JSON(c.Writer, http.StatusOK, posts, nil)
+}
+
+func (h *Handler) ApprovePendingPost(c *gin.Context) {
+	h.reviewPendingPost(c, true)
+}
+
+func (h *Handler) RejectPendingPost(c *gin.Context) {
+	h.reviewPendingPost(c, false)
+}
+
+func (h *Handler) reviewPendingPost(c *gin.Context, approve bool) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
+		return
+	}
+	if approve {
+		err = h.svc.ApprovePendingPost(c.Request.Context(), actorID, groupID, postID)
+	} else {
+		err = h.svc.RejectPendingPost(c.Request.Context(), actorID, groupID, postID)
+	}
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
 
 func (h *Handler) GetApprovalQueue(c *gin.Context) {
 	actorID, ok := getUserID(c)

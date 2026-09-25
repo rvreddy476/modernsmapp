@@ -21,10 +21,44 @@ type GroupBan struct {
 
 // Engagement methods moved to group.go (V2 section) with full idempotency + unspark/unstash
 
+/*
+	ApproveGroupPost publishes a post that was waiting, and counts it.
+
+	CreateGroupPostV2 deliberately does not count a pending post — it is not in
+	the group yet — so the counter has to be bumped at the moment it becomes
+	one. Both statements are in a single transaction for the same reason the
+	insert is: a half-applied approval leaves a published post the group's
+	count does not know about.
+
+	Guarded on status so a double-approve cannot count the same post twice.
+*/
 func (s *Store) ApproveGroupPost(ctx context.Context, id uuid.UUID, approvedBy string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	now := time.Now()
-	_, err := s.db.Exec(ctx, `UPDATE group_posts SET status='published', approved_by=$2, approved_at=$3, updated_at=$3 WHERE id=$1`, id, approvedBy, now)
-	return err
+	tag, err := tx.Exec(ctx,
+		`UPDATE group_posts SET status='published', approved_by=$2, approved_at=$3, updated_at=$3
+		 WHERE id=$1 AND status='pending_approval'`, id, approvedBy, now)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Already approved, already rejected, or gone. Not an error to the
+		// caller — the queue simply no longer holds it — but nothing is
+		// counted.
+		return tx.Commit(ctx)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE groups SET post_count = post_count + 1, updated_at = NOW()
+		 WHERE id = (SELECT group_id FROM group_posts WHERE id = $1)`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) RejectGroupPost(ctx context.Context, id uuid.UUID) error {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	groupevents "github.com/atpost/group-service/internal/events"
 	"github.com/atpost/group-service/internal/store"
@@ -698,6 +699,7 @@ func (s *Service) LeaveGroup(ctx context.Context, actorID, groupID uuid.UUID) er
 	})
 
 	s.invalidateGroupCache(ctx, groupID)
+	s.invalidateMembershipCache(ctx, groupID, actorID)
 	return nil
 }
 
@@ -804,6 +806,7 @@ func (s *Service) RemoveMember(ctx context.Context, actorID, groupID, targetID u
 	})
 
 	s.invalidateGroupCache(ctx, groupID)
+	s.invalidateMembershipCache(ctx, groupID, targetID)
 	return nil
 }
 
@@ -859,6 +862,7 @@ func (s *Service) BanMember(ctx context.Context, actorID, groupID, targetID uuid
 	})
 
 	s.invalidateGroupCache(ctx, groupID)
+	s.invalidateMembershipCache(ctx, groupID, targetID)
 	return nil
 }
 
@@ -1696,6 +1700,22 @@ func (s *Service) invalidateGroupCache(ctx context.Context, groupID uuid.UUID) {
 	s.rdb.Del(ctx, fmt.Sprintf("group:%s", groupID))
 }
 
+/*
+	invalidateMembershipCache drops one person's cached membership in one group.
+
+	CheckMembershipCached caches "gm:<group>:<user>" for five minutes, and
+	nothing ever deleted it — invalidateGroupCache only clears "group:<id>".
+	AddGroupPostComment is the reader, so banning or removing someone left them
+	able to keep commenting for up to five minutes after the ban landed. A ban
+	that does not take effect until you notice it has stopped working is worse
+	than no ban, because the moderator believes it worked.
+
+	Called on every path that ends a membership.
+*/
+func (s *Service) invalidateMembershipCache(ctx context.Context, groupID, userID uuid.UUID) {
+	s.rdb.Del(ctx, fmt.Sprintf("gm:%s:%s", groupID, userID))
+}
+
 func (s *Service) checkPermission(setting, role string) error {
 	switch setting {
 	case "all_members":
@@ -1858,6 +1878,80 @@ func (s *Service) GetWordBlocklist(ctx context.Context, actorID, groupID uuid.UU
 
 // ── Post Approval Queue ──────────────────────────────────────
 
+/*
+	The moderation queue, by post id.
+
+	The three methods below replace a queue that never worked. GetApprovalQueue
+	reads post_approval_queue, which store.AddToApprovalQueue would populate
+	except that nothing calls it — so it has always answered with an empty
+	list while posts sat in status='pending_approval' with no route that could
+	reach them. A member of a moderated group could post, see a success, and
+	have it never appear to anyone, permanently.
+
+	These read group_posts.status instead, which is where the truth has always
+	been, and act by POST id rather than by a queue-row id that does not exist.
+	The old queue methods are left alone: they return an empty list today and
+	will keep returning one, so nothing that calls them breaks.
+*/
+func (s *Service) requirePostModerator(ctx context.Context, actorID, groupID uuid.UUID) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return fmt.Errorf("forbidden: only admins or moderators can review posts")
+	}
+	return nil
+}
+
+func (s *Service) ListPendingPosts(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.GroupPostV2, error) {
+	if err := s.requirePostModerator(ctx, actorID, groupID); err != nil {
+		return nil, err
+	}
+	return s.store.ListPendingGroupPostsV2(ctx, groupID, limit, offset)
+}
+
+func (s *Service) ApprovePendingPost(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	if err := s.requirePostModerator(ctx, actorID, groupID); err != nil {
+		return err
+	}
+	// The post must belong to THIS group: without the check, a moderator of
+	// any group could approve a pending post in a group they cannot see, by
+	// guessing or replaying an id.
+	post, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if post == nil || post.GroupID != groupID {
+		return fmt.Errorf("post not found")
+	}
+	if err := s.store.ApproveGroupPost(ctx, postID, actorID.String()); err != nil {
+		return err
+	}
+	s.invalidateGroupCache(ctx, groupID)
+	return nil
+}
+
+func (s *Service) RejectPendingPost(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	if err := s.requirePostModerator(ctx, actorID, groupID); err != nil {
+		return err
+	}
+	post, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if post == nil || post.GroupID != groupID {
+		return fmt.Errorf("post not found")
+	}
+	// No counter change: a pending post was never counted, so rejecting it
+	// has nothing to undo.
+	if err := s.store.RejectGroupPost(ctx, postID); err != nil {
+		return err
+	}
+	s.invalidateGroupCache(ctx, groupID)
+	return nil
+}
+
 func (s *Service) GetApprovalQueue(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.ApprovalQueueItem, error) {
 	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
 	if err != nil {
@@ -1977,6 +2071,42 @@ type CreateGroupPostV2Params struct {
 	IsAnnouncement bool            `json:"is_announcement"`
 }
 
+/*
+	containsBlockedWord reports whether any of the group's blocked words appears
+	in the text being posted, and which one.
+
+	Whole-word matching on a lowercased haystack, not substring: a blocklist
+	containing "ass" must not refuse "assignment" or "class". That is the
+	difference between a moderation tool and a joke about the Scunthorpe
+	problem.
+
+	A failure to READ the blocklist does not block the post. This is the one
+	place in this file that deliberately fails open, and the reason is that the
+	alternative is worse: a Redis or Postgres blip would stop a whole group
+	posting, which is a far bigger outage than a few words slipping past a
+	filter that is advisory to begin with.
+*/
+func (s *Service) containsBlockedWord(ctx context.Context, groupID uuid.UUID, title, body string) (bool, string) {
+	words, err := s.store.GetWordBlocklist(ctx, groupID)
+	if err != nil || len(words) == 0 {
+		return false, ""
+	}
+	haystack := strings.ToLower(title + " " + body)
+	fields := strings.FieldsFunc(haystack, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	present := make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		present[f] = struct{}{}
+	}
+	for _, w := range words {
+		if _, hit := present[strings.ToLower(strings.TrimSpace(w))]; hit {
+			return true, w
+		}
+	}
+	return false, ""
+}
+
 func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.UUID, params CreateGroupPostV2Params) (*store.GroupPostV2, error) {
 	g, err := s.store.GetGroupByID(ctx, groupID)
 	if err != nil {
@@ -1984,6 +2114,15 @@ func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.U
 	}
 	if g == nil {
 		return nil, fmt.Errorf("group not found")
+	}
+
+	/*
+		Rate limit before anything is written. Posting had NO limit at all: a
+		script could fill a group as fast as the network allowed. Keyed on the
+		real actor, which is what makes it hold once anonymous posting exists.
+	*/
+	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:group_post:%s", actorID), 30, time.Hour) {
+		return nil, fmt.Errorf("rate_limited: you are posting too quickly")
 	}
 
 	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
@@ -1994,12 +2133,41 @@ func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.U
 		return nil, fmt.Errorf("forbidden: only members can post in the group")
 	}
 
+	/*
+		Explicitly refuse a banned member.
+
+		GetActiveMember already filters status='active', so this is belt and
+		braces — but that is an implicit CONSEQUENCE of how the query is
+		written, and this is a stated INTENT. A future refactor of
+		GetActiveMember can silently remove the first; it cannot silently
+		remove the second.
+	*/
+	banned, err := s.store.CheckBanned(ctx, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if banned {
+		return nil, fmt.Errorf("forbidden: you are banned from this group")
+	}
+
 	if err := s.checkPermission(g.WhoCanPost, actor.Role); err != nil {
 		return nil, fmt.Errorf("forbidden: %w", err)
 	}
 
+	/*
+		The group's word blocklist, which was collected, stored, listed and
+		never once applied to a post. Admins could curate it and it did
+		nothing.
+	*/
+	if blocked, word := s.containsBlockedWord(ctx, groupID, params.Title, params.Body); blocked {
+		return nil, fmt.Errorf("blocked_content: %q is not allowed in this group", word)
+	}
+
 	status := "published"
 	needsApproval := false
+	// NOTE: groups.post_approval_required is a column that nothing reads —
+	// it is not on store.Group, so only group_type=moderated gates approval.
+	// Threading it through needs every groupColumns scanner updated.
 	if g.GroupType == "moderated" && actor.Role == "member" {
 		status = "pending_approval"
 		needsApproval = true
