@@ -266,7 +266,11 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 		commonGroups := commonGroupCounts[candidateID]
 
 		// Check school/company overlap from candidate's life entries
-		candidateEntries, _ := s.store.GetUserLifeEntries(ctx, candidateID)
+		// PUBLIC entries only: this is what the viewer gets TOLD about the
+		// candidate (SAME_SCHOOL / SAME_COMPANY and "Studied at X"). The
+		// viewer's own entries above may include private ones; a candidate's
+		// may not. See store.GetPublicLifeEntries.
+		candidateEntries, _ := s.store.GetPublicLifeEntries(ctx, candidateID)
 		var sameSchool, sameCompany bool
 		var matchedSchool, matchedCompany string
 		for _, entry := range candidateEntries {

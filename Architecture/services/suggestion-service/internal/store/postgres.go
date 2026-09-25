@@ -690,12 +690,50 @@ type LifeEntry struct {
 	Name string
 }
 
-// GetUserLifeEntries returns schools and companies from user_about life_entry.
+/*
+	Two readers of life entries, on purpose, because the two sides of a
+	suggestion are not symmetric.
+
+	The VIEWER's own entries feed the search for people like them. A viewer
+	who marked their school private is still allowed to be shown people from
+	that school — nothing about the viewer is disclosed to anyone by doing so.
+
+	A CANDIDATE's entries decide what the viewer is TOLD about the candidate:
+	the SAME_SCHOOL / SAME_COMPANY code and the "Studied at X" explain text.
+	Those must come only from entries the candidate made public. Before this
+	split, both sides read every row regardless of visibility, so a school a
+	user had marked private surfaced as a recommendation reason to strangers,
+	institution name included. Proven on dev with a consented fixture: the
+	candidate whose entry was 'private' came back with SAME_SCHOOL and
+	"Studied at Osmania University".
+
+	'public' is the column default and the only value safe to show a
+	stranger; a suggestion is by definition to someone who is not yet a
+	connection, so a connections-only entry does not qualify either.
+*/
+
+// GetUserLifeEntries returns the VIEWER's own schools and companies, every
+// visibility — see the note above for why the viewer's private entries
+// still count on their own side.
 func (s *Store) GetUserLifeEntries(ctx context.Context, userID uuid.UUID) ([]LifeEntry, error) {
-	rows, err := s.identityDB.Query(ctx, `
+	return s.lifeEntries(ctx, userID, false)
+}
+
+// GetPublicLifeEntries returns a CANDIDATE's schools and companies limited
+// to entries they made public. This is the only reader that may feed a
+// reason code or explain text about someone else.
+func (s *Store) GetPublicLifeEntries(ctx context.Context, userID uuid.UUID) ([]LifeEntry, error) {
+	return s.lifeEntries(ctx, userID, true)
+}
+
+func (s *Store) lifeEntries(ctx context.Context, userID uuid.UUID, publicOnly bool) ([]LifeEntry, error) {
+	query := `
 		SELECT data FROM profile.user_about
-		WHERE user_id = $1 AND section = 'life_entry'
-	`, userID)
+		WHERE user_id = $1 AND section = 'life_entry'`
+	if publicOnly {
+		query += ` AND visibility = 'public'`
+	}
+	rows, err := s.identityDB.Query(ctx, query, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -719,7 +757,9 @@ func (s *Store) GetUserLifeEntries(ctx context.Context, userID uuid.UUID) ([]Lif
 	return entries, rows.Err()
 }
 
-// GetUsersByLifeEntry returns user IDs with a matching life_entry name.
+// GetUsersByLifeEntry returns user IDs whose PUBLIC life_entry matches the
+// name. Candidate discovery is the other place a private entry leaked:
+// being found through a school is itself a disclosure of that school.
 func (s *Store) GetUsersByLifeEntry(ctx context.Context, entryName string, limit int) ([]uuid.UUID, error) {
 	if entryName == "" {
 		return nil, nil
@@ -727,6 +767,7 @@ func (s *Store) GetUsersByLifeEntry(ctx context.Context, entryName string, limit
 	rows, err := s.identityDB.Query(ctx, `
 		SELECT DISTINCT user_id FROM profile.user_about
 		WHERE section = 'life_entry' AND data->>'name' ILIKE $1
+		  AND visibility = 'public'
 		LIMIT $2
 	`, entryName, limit)
 	if err != nil {
