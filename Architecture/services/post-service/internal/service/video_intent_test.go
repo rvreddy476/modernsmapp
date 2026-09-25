@@ -7,8 +7,10 @@ import (
 )
 
 // A reel is what the author posted as a reel; a video is what the author
-// posted as a video (founder, 2026-09-04/05). Only a plain "post" that
-// happens to carry a video is classified from the measurement.
+// posted as a video (founder, 2026-09-04/05) — and a post is a post
+// (founder, 2026-09-25): a plain "post" that carries a video stays a post,
+// whatever the clip measures, and is reported explicit so the transcode
+// consumer leaves it alone.
 func TestResolveVideoContentTypeHonoursExplicitIntent(t *testing.T) {
 	const short, long = 60, flickMaxDurationSeconds + 1
 	cases := []struct {
@@ -29,12 +31,13 @@ func TestResolveVideoContentTypeHonoursExplicitIntent(t *testing.T) {
 		// Pending transcode: intent still wins, and is still explicit.
 		{"flick pending transcode", "flick", 0, 0, 0, "flick", true},
 		{"long_video pending transcode", "long_video", 0, 0, 0, "long_video", true},
-		// No kind chosen: the measurement decides.
-		{"post + portrait short → flick", "post", short, 1080, 1920, "flick", false},
-		{"post + square short → flick", "post", short, 1080, 1080, "flick", false},
-		{"post + landscape → long_video", "post", short, 1920, 1080, "long_video", false},
-		{"post + portrait long → long_video", "post", long, 1080, 1920, "long_video", false},
-		{"post pending transcode → long_video for now", "post", 0, 0, 0, "long_video", false},
+		// A post is a post: the measurement that used to make these a flick
+		// or a long_video no longer applies, and the answer is explicit.
+		{"post + portrait short stays post (was flick)", "post", short, 1080, 1920, "post", true},
+		{"post + square short stays post (was flick)", "post", short, 1080, 1080, "post", true},
+		{"post + landscape stays post (was long_video)", "post", short, 1920, 1080, "post", true},
+		{"post + portrait long stays post (was long_video)", "post", long, 1080, 1920, "post", true},
+		{"post pending transcode stays post (was long_video)", "post", 0, 0, 0, "post", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

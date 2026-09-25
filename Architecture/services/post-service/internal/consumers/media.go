@@ -164,10 +164,11 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 	// rewritten from the measurement, a landscape reel stays a reel and a
 	// short vertical clip posted from Tube stays a long video.
 	//
-	// The row that does get rewritten is a plain "post" that carried a
-	// video and defaulted to long_video while transcode was pending
-	// (content_type_explicit = FALSE): a vertical ≤300s clip flips to
-	// "flick" here, otherwise it would never appear in /v1/feed/reels.
+	// A plain "post" that carried a video is NOT rewritten (founder,
+	// 2026-09-25, superseding the branch that flipped a vertical ≤300s clip
+	// to "flick" so it would appear in /v1/feed/reels): a feed video is a
+	// feed post. The row that can still be rewritten is a non-explicit
+	// long_video from some other intent whose measurement disagrees.
 	//
 	// On a successful flip, fan a PostContentTypeChanged event out so
 	// feed-service can rewrite the matching content_type column on its
@@ -220,10 +221,12 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 //     flick stays flick, long_video stays long_video;
 //   - a flick is never downgraded even when the row predates the explicit
 //     flag: every flick was posted from the Reel composer;
-//   - anything else — a plain post that defaulted to long_video while
-//     transcode was pending — takes the measured type.
+//   - a post is a post (founder, 2026-09-25): it is never turned into a
+//     flick or long_video by a measurement, explicit flag or not — belt
+//     and braces over resolveVideoContentType reporting it explicit;
+//   - anything else — a non-explicit long_video — takes the measured type.
 func reclassifyDecision(current string, explicit bool, measured string) (newType string, keep bool) {
-	if explicit || current == postclassify.Flick {
+	if explicit || current == postclassify.Flick || current == "post" {
 		return current, true
 	}
 	return measured, false

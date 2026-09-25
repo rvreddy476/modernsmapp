@@ -21,6 +21,11 @@ func TestReclassifyDecisionNeverDowngradesAnExplicitKind(t *testing.T) {
 		{"explicit long_video measured long_video", "long_video", true, "long_video", "long_video", true},
 		// A flick is never downgraded even on rows that predate the flag.
 		{"legacy flick measured long_video", "flick", false, "long_video", "flick", true},
+		// A post is a post (founder, 2026-09-25): never rewritten by a
+		// measurement, whether or not the explicit flag is set.
+		{"post measured flick stays post", "post", false, "flick", "post", true},
+		{"post measured long_video stays post", "post", false, "long_video", "post", true},
+		{"explicit post measured flick stays post", "post", true, "flick", "post", true},
 		// A plain post that defaulted to long_video follows the measurement.
 		{"defaulted long_video measured flick → flick", "long_video", false, "flick", "flick", false},
 		{"defaulted long_video measured long_video → unchanged", "long_video", false, "long_video", "long_video", false},

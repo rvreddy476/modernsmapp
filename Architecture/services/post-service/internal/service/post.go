@@ -709,17 +709,29 @@ func deriveOrientation(width, height int) string {
 // and short — a vertical clip posted from Tube belongs in Tube, not Reels.
 // Legacy "reel"/"video" spellings were folded into these before this runs.
 //
-// Only the generic "post" intent — a plain post that happens to attach a
-// video, no kind chosen — is classified from the measurement, and defaults
-// to long_video while the measurement is pending; the MediaTranscodeConsumer
-// then reclassifies it once the numbers land. `explicit` reports whether the
-// answer was the author's choice, so that consumer knows to leave it alone.
+// And a post is a post (founder, 2026-09-25, superseding the earlier rule's
+// last branch). A plain "post" that attaches a video used to be classified
+// from the measurement — a short portrait clip became a flick and landed on
+// the Reels page, anything else became a long_video and landed on Tube and
+// in the creator fund — although the author chose neither; the web composer
+// had inferred "video" from a MIME type. Now it stays a post: it shows in
+// the feed, not in Reels or Tube, and CanonicalMonetizationType("post") is
+// not ok, so it is never priced. Android's feed composer already sent
+// "post"; the web one now does too, so both clients mean the same thing.
+//
+// The measurement branch below is kept for any other intent that reaches
+// here with a video attached (a poll, for instance) — unchanged, and out of
+// scope of this rule. `explicit` reports whether the answer was the author's
+// choice, so the MediaTranscodeConsumer knows to leave it alone; a post is
+// reported explicit for exactly that reason.
 func resolveVideoContentType(intent string, durationSeconds int, width, height int) (contentType string, explicit bool) {
 	switch intent {
 	case "flick", "reel":
 		return "flick", true
 	case "long_video", "video":
 		return "long_video", true
+	case "post":
+		return "post", true
 	}
 	if durationSeconds <= 0 {
 		return "long_video", false
@@ -1071,10 +1083,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 
 	// Decide the content_type of a post that carries a video. A reel is what
 	// the author posted as a reel; a video is what the author posted as a
-	// video (founder, 2026-09-04/05). Only a plain "post" with a video is
-	// classified from the measurement (spec v2.1: flick = ≤300s AND
-	// portrait/square; long_video = everything else), and defaults to
-	// long_video while transcode is still pending. See
+	// video (founder, 2026-09-04/05) — and a post is a post (founder,
+	// 2026-09-25): a plain "post" with a video stays in the feed rather than
+	// being classified into Reels or Tube from the measurement. See
 	// resolveVideoContentType.
 	var videoMediaID uuid.UUID
 	hasVideo := false
@@ -1108,10 +1119,10 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		} else {
 			videoW, videoH, _ = s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
 		}
-		// Persisting `explicit` is what lets the MediaTranscodeConsumer
-		// tell an author's long_video from a "post" that defaulted to
-		// long_video while transcode was pending: it reclassifies only the
-		// latter once the measurement lands.
+		// Persisting `explicit` is what tells the MediaTranscodeConsumer
+		// to leave the kind alone once the measurement lands. A post is
+		// reported explicit for that reason: it must not be rewritten into
+		// a flick or long_video by a duration and a frame size.
 		p.ContentType, p.ContentTypeExplicit = resolveVideoContentType(contentType, maxDuration, videoW, videoH)
 	}
 
