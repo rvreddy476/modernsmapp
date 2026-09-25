@@ -64,6 +64,35 @@ ingress:
     path: ^/v1/payments/webhook$
     service: http://localhost:8102
 
+  # THE UI, and the WebSockets that must sit above it.
+  #
+  # These were missing from this file while ~/.cloudflared/config.yml had
+  # them, so running THIS config took cleestudio.com down: the apex fell
+  # through to the catch-all and every page answered 404. The header above
+  # claims pre-existing mappings are kept so running this does not silently
+  # drop hostnames already routed here — that promise was broken for the one
+  # hostname a person actually visits.
+  #
+  # The ws rules go FIRST: rules match top to bottom, first hit wins, and a
+  # host-wide UI rule above them swallows the socket upgrade. Next cannot
+  # proxy a WebSocket through its /v1 rewrite, so without these chat,
+  # presence and notifications work only for a browser on this machine.
+  - hostname: cleestudio.com
+    path: ^/v1/ws/
+    service: http://localhost:8093
+  - hostname: www.cleestudio.com
+    path: ^/v1/ws/
+    service: http://localhost:8093
+
+  - hostname: cleestudio.com
+    service: http://localhost:3000
+    originRequest:
+      connectTimeout: 30s
+  - hostname: www.cleestudio.com
+    service: http://localhost:3000
+    originRequest:
+      connectTimeout: 30s
+
   - hostname: api-dev.cleestudio.com
     service: http://localhost:8080
 
