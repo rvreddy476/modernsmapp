@@ -1119,6 +1119,26 @@ func (s *Store) DiscoverPublicGroups(ctx context.Context, limit, offset int) ([]
 }
 
 // SearchGroups performs full-text search on group names.
+/*
+websearch_to_tsquery, not to_tsquery.
+
+This used to pass the raw query string to to_tsquery, which parses an OPERATOR
+expression rather than free text. `book & club` is valid there; `book club` —
+two words, which is what a search box produces — raises
+
+	syntax error in tsquery: "book club"
+
+from Postgres. The error reaches the handler as a plain error and becomes a
+500, so searching for any multi-word group name has always failed. A user could
+also crash it with a lone `&` or `!`.
+
+websearch_to_tsquery (Postgres 11+; this service targets 16) accepts exactly
+what a search box produces — bare words, "quoted phrases", or, -negation — and
+is documented never to raise a syntax error on any input.
+
+The INDEX is unaffected: idx_groups_name_search is on to_tsvector('english',
+name), the left-hand side, which is unchanged.
+*/
 func (s *Store) SearchGroups(ctx context.Context, query string, limit, offset int) ([]Group, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -1126,7 +1146,7 @@ func (s *Store) SearchGroups(ctx context.Context, query string, limit, offset in
 	rows, err := s.db.Query(ctx, `
 		SELECT `+groupColumns+`
 		FROM groups g
-		WHERE to_tsvector('english', g.name) @@ to_tsquery('english', $1)
+		WHERE to_tsvector('english', g.name) @@ websearch_to_tsquery('english', $1)
 		  AND g.status = 'active'
 		ORDER BY g.member_count DESC
 		LIMIT $2 OFFSET $3

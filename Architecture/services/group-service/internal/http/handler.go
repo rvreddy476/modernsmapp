@@ -134,6 +134,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// V2 Group Posts (rich, native group posts with engagement)
 		v1.POST("/:groupId/posts/v2", h.CreateGroupPostV2)
 		v1.GET("/:groupId/feed/v2", h.GetGroupFeedV2)
+		/*
+			Search sits BEFORE the :postId route, alongside the same
+			static-versus-parameter pairing that posts/v2/pending already
+			relies on. gin's tree prefers the static segment, so "search" is
+			never parsed as a post id — and a post id is a uuid, so there is
+			no id this shadows.
+		*/
+		v1.GET("/:groupId/posts/v2/search", h.SearchGroupPostsV2)
 		v1.GET("/:groupId/posts/v2/:postId", h.GetGroupPostV2)
 		v1.DELETE("/:groupId/posts/v2/:postId", h.DeleteGroupPostV2)
 
@@ -1713,6 +1721,45 @@ func (h *Handler) GetGroupFeedV2(c *gin.Context) {
 	if err != nil {
 		handleServiceError(c, err)
 		return
+	}
+	api.JSON(c.Writer, http.StatusOK, posts, nil)
+}
+
+/*
+SearchGroupPostsV2 backs the group page's search box.
+
+GET /v1/groups/:groupId/posts/v2/search?q=<text>&limit=&offset=
+
+The response is the service's []store.GroupPostV2 passed straight through —
+the SAME shape and the same type as GetGroupFeedV2 returns. Not merely for
+consistency: that type's MarshalJSON masks an anonymous post's author
+(internal/store/anonymous.go), so a bespoke response struct here would publish
+the real author_id of every anonymous post that matched.
+*/
+func (h *Handler) SearchGroupPostsV2(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil)
+		return
+	}
+	// Same wording as SearchGroups so the two search endpoints refuse an empty
+	// query identically.
+	if strings.TrimSpace(c.Query("q")) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Missing search query parameter 'q'", nil)
+		return
+	}
+	limit, offset := parsePagination(c)
+	posts, err := h.svc.SearchGroupPostsV2(c.Request.Context(), actorID, groupID, c.Query("q"), limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	if posts == nil {
+		posts = []store.GroupPostV2{}
 	}
 	api.JSON(c.Writer, http.StatusOK, posts, nil)
 }

@@ -75,6 +75,10 @@ CREATE INDEX IF NOT EXISTS idx_group_posts_feed ON group_posts(group_id, status,
 CREATE INDEX IF NOT EXISTS idx_group_posts_pinned ON group_posts(group_id, is_pinned) WHERE is_pinned = TRUE;
 CREATE INDEX IF NOT EXISTS idx_group_posts_pending ON group_posts(group_id, status) WHERE status = 'pending_approval';
 CREATE INDEX IF NOT EXISTS idx_group_posts_group_time ON group_posts(group_id, created_at DESC);
+-- In-group post search. The expression must stay identical to the query's, or
+-- the planner silently ignores the index — see migration 015 for the full note
+-- and the test that pins the two together.
+CREATE INDEX IF NOT EXISTS idx_group_posts_search ON group_posts USING gin(to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, ''))) WHERE status = 'published';
 
 CREATE TABLE IF NOT EXISTS group_post_sparks (
     post_id UUID NOT NULL, user_id TEXT NOT NULL, is_supernova BOOLEAN DEFAULT FALSE,
