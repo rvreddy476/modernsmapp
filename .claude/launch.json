@@ -32,6 +32,12 @@
       "port": 3200
     },
     {
+      "name": "web-dev",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--cwd=C:/workspace/postbook-ui", "run", "dev", "--", "-p", "3160"],
+      "port": 3160
+    },
+    {
       "name": "reels-dev",
       "runtimeExecutable": "bun",
       "runtimeArgs": [
