@@ -32,6 +32,10 @@ type Config struct {
 	// (production chat pass §5.3). Shared with message-service; empty
 	// disables entitled room subscriptions entirely.
 	EntitlementSecret string
+	// Post rooms (live comment threads): owner-checked against post-service.
+	PostRoomsEnabled   bool
+	PostServiceURL     string
+	InternalServiceKey string
 }
 
 func (c *Config) ValidateProduction(production bool) error {
@@ -74,6 +78,9 @@ func Load() *Config {
 		WSPingPeriod:      pingPeriod,
 		WSMaxMessageSize:  getEnvInt64("WS_MAX_MESSAGE_SIZE", 64*1024),
 		EntitlementSecret: getEnv("CHAT_ENTITLEMENT_SECRET", ""),
+		PostRoomsEnabled:   getEnvBool("WS_POST_ROOMS_ENABLED", false),
+		PostServiceURL:     getEnv("POST_SERVICE_URL", "http://post-service:8084"),
+		InternalServiceKey: getEnv("INTERNAL_SERVICE_KEY", ""),
 	}
 }
 

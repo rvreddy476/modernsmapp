@@ -56,7 +56,7 @@ func (s *Service) GetMyPosts(ctx context.Context, authorID uuid.UUID, limit int,
 	details := make([]PostDetail, len(posts))
 	for i, p := range posts {
 		post := p
-		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		counts, _ := s.countsForPost(ctx, p.ID)
 		details[i] = PostDetail{Post: &post, Counts: counts}
 	}
 	return details, nextCursor, nil
@@ -233,7 +233,7 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 	details := make([]UploadDetail, len(posts))
 	for i, p := range posts {
 		post := p
-		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		counts, _ := s.countsForPost(ctx, p.ID)
 		details[i] = UploadDetail{
 			PostDetail:    PostDetail{Post: &post, Counts: counts},
 			VideoMetadata: videoMeta[p.ID],

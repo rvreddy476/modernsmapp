@@ -46,6 +46,14 @@ type ServerOptions struct {
 	// (chat-shared/roomauth). Empty disables `conversation.subscribe`.
 	EntitlementSecret string
 
+	// EnablePostRooms admits `subscribe_post` — the live thread under a
+	// post — independently of EnableScopedRooms, because it IS owner-
+	// checked: PostViewer asks post-service whether the viewer may see the
+	// post before the socket joins post:<id> (postrooms.go). Both must be
+	// set; a nil PostViewer refuses every subscribe.
+	EnablePostRooms bool
+	PostViewer      PostViewAuthorizer
+
 	// SubscriptionReconcileInterval is how often each connection re-checks
 	// its live conversation-room subscriptions against token expiry and the
 	// revocation markers (re-verification P0-4: a lost subscription_revoked
@@ -284,8 +292,9 @@ func (s *Server) serveConnection(
 ) {
 	outbound := make(chan []byte, 256)
 	subs := newRoomSubscriptions()
+	postGrants := newPostRoomGrants(postRoomGrantTTL)
 
-	go s.readLoop(ctx, cancel, conn, pubsub, userID, subs)
+	go s.readLoop(ctx, cancel, conn, pubsub, userID, subs, postGrants)
 	go s.redisLoop(ctx, cancel, pubsub, outbound, userID, subs)
 	go s.reconcileRoomSubscriptions(ctx, pubsub, userID, subs)
 	s.writeLoop(ctx, cancel, conn, outbound, userID)
@@ -376,7 +385,7 @@ var roomSignalingTypes = map[string]bool{
 	"call_recording_stopped":   true,
 }
 
-func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, userID uuid.UUID, subs *roomSubscriptions) {
+func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, userID uuid.UUID, subs *roomSubscriptions, postGrants *postRoomGrants) {
 	defer cancel()
 
 	conn.SetReadLimit(s.opts.MaxMessageSize)
@@ -532,17 +541,21 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			}
 			continue
 		case "subscribe_post":
-			postID, _ := envelope["post_id"].(string)
-			if postID != "" {
-				channel := fmt.Sprintf("post:%s", postID)
-				if err := pubsub.Subscribe(ctx, channel); err != nil {
-					s.log.Warn("post room subscribe failed", "err", err, "user_id", userID, "post_id", postID)
-				}
+			rawPostID, _ := envelope["post_id"].(string)
+			postID, ok := s.mayJoinPostRoom(ctx, postGrants, userID, rawPostID, time.Now())
+			if !ok {
+				s.log.Info("post room subscribe refused", "user_id", userID, "post_id", rawPostID)
+				continue
+			}
+			channel := fmt.Sprintf("post:%s", postID)
+			if err := pubsub.Subscribe(ctx, channel); err != nil {
+				s.log.Warn("post room subscribe failed", "err", err, "user_id", userID, "post_id", postID)
 			}
 			continue
 		case "unsubscribe_post":
-			postID, _ := envelope["post_id"].(string)
-			if postID != "" {
+			rawPostID, _ := envelope["post_id"].(string)
+			if postID, err := uuid.Parse(rawPostID); err == nil {
+				postGrants.revoke(postID.String())
 				channel := fmt.Sprintf("post:%s", postID)
 				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
 					s.log.Warn("post room unsubscribe failed", "err", err, "user_id", userID, "post_id", postID)
@@ -624,9 +637,13 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 		case "group_post_typing":
 			postID, _ := envelope["post_id"].(string)
 			if postID != "" {
-				// Broadcast typing indicator to all subscribers of this group post room
-				envelope["user_id"] = userID.String()
-				relay, _ := json.Marshal(envelope)
+				// Broadcast "someone is typing" to the group post room. NO identity:
+				// the author of an anonymous group post is masked on every other
+				// surface, and this gateway cannot know which posts are anonymous,
+				// so a typing frame that named the sender would be the one place
+				// their id leaked. Client-supplied fields are dropped too, so a
+				// sender cannot smuggle an id in.
+				relay := groupPostTypingFrame(postID)
 				channel := fmt.Sprintf("group_post:%s", postID)
 				if pubErr := s.rdb.Publish(ctx, channel, string(relay)).Err(); pubErr != nil {
 					s.log.Warn("group post typing relay failed", "err", pubErr, "user_id", userID, "post_id", postID)
@@ -724,6 +741,11 @@ func isScopedRoomFrame(msgType string) bool {
 // ride a client-selected room that nothing has authorised.
 func (s *Server) betaRoomGateRejects(msgType string) bool {
 	if s.opts.EnableScopedRooms {
+		return false
+	}
+	// Post rooms are owner-checked on subscribe (mayJoinPostRoom), which is
+	// exactly the condition the beta gate was waiting for.
+	if s.opts.EnablePostRooms && (msgType == "subscribe_post" || msgType == "unsubscribe_post") {
 		return false
 	}
 	if directSignalingTypes[msgType] {

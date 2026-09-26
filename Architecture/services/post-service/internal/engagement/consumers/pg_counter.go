@@ -72,8 +72,12 @@ func (c *PGCounterConsumer) handleEvent(ctx context.Context, event *engagement.E
 	switch event.EventType {
 	case engagement.EventPostLiked, engagement.EventPostUnliked:
 		col, counter = "like_count", c.likeCounter
+	// comment_count has ONE writer — the request path in service
+	// (CreateCommentPG / CreateReply / SoftDeleteComment / moderation).
+	// This consumer used to add a second increment for every create and
+	// delete, which is why counts were doubled; replies were never counted.
 	case engagement.EventCommentCreated, engagement.EventCommentDeleted:
-		col, counter = "comment_count", c.commentCounter
+		return nil
 	case engagement.EventPostShared:
 		col, counter = "share_count", c.shareCounter
 	case engagement.EventPostBookmarked, engagement.EventPostUnbookmarked:

@@ -171,7 +171,8 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 	}
 	if rdb != nil {
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
-		svc.commentCounter = counters.New(rdb, counters.Config{EntityKind: "post_comment_count", Shards: 32})
+		// comment_count is not sharded: PostgreSQL post_engagement_counts is
+		// written directly, once per transition (store/postgres/comment_counts.go).
 		svc.shareCounter = counters.New(rdb, counters.Config{EntityKind: "post_share_count", Shards: 32})
 		svc.bookmarkCounter = counters.New(rdb, counters.Config{EntityKind: "post_bookmark_count", Shards: 32})
 		svc.repostCounter = counters.New(rdb, counters.Config{EntityKind: "post_repost_count", Shards: 32})
@@ -419,6 +420,9 @@ type PostDetail struct {
 	// Channel is the author's Tube channel, attached to long_video posts
 	// whose author has one (channels.go); omitted otherwise.
 	Channel *ChannelRef `json:"channel,omitempty"`
+	// Author is the same block the feed carries, from the same source
+	// (identity-profile). Absent when the profile lookup is unavailable.
+	Author *PostAuthor `json:"author,omitempty"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
@@ -1450,7 +1454,7 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 		return nil, nil
 	}
 
-	counts, err := s.scyllaStore.GetCounts(ctx, id)
+	counts, err := s.countsForPost(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1470,6 +1474,7 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 
 	detail := &PostDetail{Post: p, Counts: counts}
 	detail.ViewCount = s.getViewCount(ctx, id)
+	detail.Author = s.fetchPostAuthor(ctx, viewerID, p.AuthorID)
 
 	// Repost count from PG
 	repostCount, _ := s.pgStore.GetRepostCount(ctx, id)
@@ -1568,7 +1573,7 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 				continue
 			}
 		}
-		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		counts, _ := s.countsForPost(ctx, p.ID)
 		if post.ContentType == "poll" {
 			poll, err := s.pgStore.GetPoll(ctx, post.ID)
 			if err == nil && poll != nil {
@@ -1624,7 +1629,7 @@ func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, exclu
 			}
 		}
 		post := p
-		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		counts, _ := s.countsForPost(ctx, p.ID)
 		if post.ContentType == "poll" {
 			poll, err := s.pgStore.GetPoll(ctx, post.ID)
 			if err == nil && poll != nil {
@@ -1688,6 +1693,9 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 	countsByPost, err := s.scyllaStore.BatchGetCounts(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("load post counts: %w", err)
+	}
+	if err := s.overlayCommentCounts(ctx, ids, countsByPost); err != nil {
+		return nil, err
 	}
 	reactions := map[uuid.UUID]string{}
 	if viewerID != nil {
@@ -1858,7 +1866,7 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 	// Ephemeral Redis pub/sub for live feed viewers — best-effort.
 	go func() {
 		bgCtx := context.Background()
-		counts, _ := s.scyllaStore.GetCounts(bgCtx, postID)
+		counts, _ := s.countsForPost(bgCtx, postID)
 		if counts != nil {
 			signal, _ := json.Marshal(map[string]any{
 				"type": "post_update",
@@ -1889,7 +1897,7 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 	// Fire-and-forget: Redis publish in background
 	go func() {
 		bgCtx := context.Background()
-		counts, _ := s.scyllaStore.GetCounts(bgCtx, postID)
+		counts, _ := s.countsForPost(bgCtx, postID)
 		if counts != nil {
 			signal, _ := json.Marshal(map[string]any{
 				"type": "post_update",
@@ -1946,7 +1954,7 @@ func (s *Service) AddComment(ctx context.Context, postID, userID uuid.UUID, text
 		}
 
 		// Publish real-time update for live feed viewers
-		counts, _ := s.scyllaStore.GetCounts(bgCtx, postID)
+		counts, _ := s.countsForPost(bgCtx, postID)
 		if counts != nil {
 			signal, _ := json.Marshal(map[string]any{
 				"type": "post_update",
@@ -2007,7 +2015,7 @@ func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTyp
 	details := make([]PostDetail, len(posts))
 	for i, p := range posts {
 		post := p
-		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		counts, _ := s.countsForPost(ctx, p.ID)
 		details[i] = PostDetail{Post: &post, Counts: counts, IsBookmarked: true}
 	}
 
@@ -2260,6 +2268,9 @@ func (s *Service) ToggleCommentLike(ctx context.Context, commentID, userID uuid.
 		}()
 	}
 
+	if c, err := s.pgStore.GetCommentByID(ctx, commentID); err == nil && c != nil {
+		s.publishCommentChange(c.PostID, commentID, c.ParentID, CommentChangeReaction, userID)
+	}
 	return &CommentLikeToggleResult{Liked: result.IsSet, Count: result.LikeCount, DislikeCount: result.DislikeCount}, nil
 }
 
@@ -2322,6 +2333,9 @@ func (s *Service) ToggleCommentDislike(ctx context.Context, commentID, userID uu
 
 	// No notifications for dislikes
 
+	if c, err := s.pgStore.GetCommentByID(ctx, commentID); err == nil && c != nil {
+		s.publishCommentChange(c.PostID, commentID, c.ParentID, CommentChangeReaction, userID)
+	}
 	return &CommentDislikeToggleResult{Disliked: result.IsSet, DislikeCount: result.DislikeCount, LikeCount: result.LikeCount}, nil
 }
 
@@ -2483,17 +2497,11 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		}()
 	}
 
-	// Bump the sharded post_engagement_counts.comment_count via Redis
-	// (with PG fallback inside adjustEngagementCount). The matching
-	// flush worker in cmd/server/main.go materialises the shard sum
-	// back to PG every ~10s; the hourly reconciler is the safety net.
-	if err := s.adjustEngagementCount(ctx, s.commentCounter, postID, "comment_count", 1); err != nil {
+	// The one writer of comment_count: a visible comment came into being.
+	if err := s.pgStore.AdjustCommentCount(ctx, postID, 1); err != nil {
 		slog.Warn("failed to increment comment_count", "post_id", postID, "error", err)
 	}
-
-	// Update Redis counter
-	engKey := fmt.Sprintf("post:eng:%s", postID)
-	s.rdb.HIncrBy(ctx, engKey, "comments", 1)
+	s.publishCommentChange(postID, comment.ID, nil, CommentChangeCreated, authorID)
 
 	// Author already loaded above.
 	postAuthorID := post.AuthorID
@@ -2545,6 +2553,12 @@ func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
+	// A reply is a comment: it counts, and the thread's viewers hear about it.
+	if err := s.pgStore.AdjustCommentCount(ctx, reply.PostID, 1); err != nil {
+		slog.Warn("failed to increment comment_count for reply", "post_id", reply.PostID, "error", err)
+	}
+	parent := commentID
+	s.publishCommentChange(reply.PostID, reply.ID, &parent, CommentChangeReplied, userID)
 
 	// Publish engagement event
 	if s.engProducer != nil {
@@ -2575,19 +2589,19 @@ func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, 
 
 // SoftDeleteComment marks a comment as deleted and decrements counter.
 func (s *Service) SoftDeleteComment(ctx context.Context, commentID, userID uuid.UUID) error {
-	postID, err := s.pgStore.SoftDeleteComment(ctx, commentID, userID)
+	postID, counted, err := s.pgStore.SoftDeleteComment(ctx, commentID, userID)
 	if err != nil {
 		return err
 	}
-
-	// Decrement the sharded post_engagement_counts.comment_count.
-	if err := s.adjustEngagementCount(ctx, s.commentCounter, postID, "comment_count", -1); err != nil {
-		slog.Warn("failed to decrement comment_count", "post_id", postID, "error", err)
+	// Only a comment that was in the visible set leaves the count; a hidden
+	// or held one was never in it. A retried delete is COMMENT_NOT_FOUND
+	// above and never reaches here.
+	if counted {
+		if err := s.pgStore.AdjustCommentCount(ctx, postID, -1); err != nil {
+			slog.Warn("failed to decrement comment_count", "post_id", postID, "error", err)
+		}
 	}
-
-	// Update Redis counter
-	engKey := fmt.Sprintf("post:eng:%s", postID)
-	s.rdb.HIncrBy(ctx, engKey, "comments", -1)
+	s.publishCommentChange(postID, commentID, nil, CommentChangeDeleted, userID)
 
 	if s.engProducer != nil {
 		seqKey := fmt.Sprintf("eng:seq:%s", userID)
@@ -2607,7 +2621,12 @@ func (s *Service) SoftDeleteComment(ctx context.Context, commentID, userID uuid.
 
 // EditComment edits a comment within 15 minutes of creation.
 func (s *Service) EditComment(ctx context.Context, commentID, userID uuid.UUID, body string) error {
-	return s.pgStore.EditComment(ctx, commentID, userID, body)
+	postID, err := s.pgStore.EditComment(ctx, commentID, userID, body)
+	if err != nil {
+		return err
+	}
+	s.publishCommentChange(postID, commentID, nil, CommentChangeEdited, userID)
+	return nil
 }
 
 // ListCommentsPG returns paginated threaded comments from PostgreSQL.
@@ -3181,7 +3200,7 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 	details := make([]PostDetail, len(posts))
 	for i, p := range posts {
 		post := p
-		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		counts, _ := s.countsForPost(ctx, p.ID)
 		details[i] = PostDetail{Post: &post, Counts: counts}
 	}
 
@@ -3209,7 +3228,7 @@ func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, l
 	details := make([]PostDetail, len(posts))
 	for i, p := range posts {
 		post := p
-		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		counts, _ := s.countsForPost(ctx, p.ID)
 		details[i] = PostDetail{Post: &post, Counts: counts}
 	}
 	// Instant publish (processing.go): public discovery surface with no

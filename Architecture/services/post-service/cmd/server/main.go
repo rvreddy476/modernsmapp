@@ -358,7 +358,7 @@ func main() {
 		slog.Info("post-service story view-count sharded flush worker started")
 	}
 
-	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
+	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb, pgStore)
 	go wsBroadcaster.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 
 	reelAnalytics := consumers.NewReelAnalyticsConsumer(dbPool, rdb)

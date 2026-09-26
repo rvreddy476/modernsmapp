@@ -1,6 +1,7 @@
 package service
 
 import (
+	"log/slog"
 	"context"
 	"time"
 
@@ -18,9 +19,14 @@ func (s *Service) SubmitReport(ctx context.Context, report *postgres.ContentRepo
 		return err
 	}
 	if report.TargetType == "comment" {
-		// Best-effort: report is already recorded, missing the count
-		// bump is recoverable from a moderator dashboard.
-		_ = s.pgStore.IncrementCommentFlaggedCount(ctx, report.TargetID)
+		// At the auto-review threshold the comment leaves the visible set —
+		// and the count — exactly once.
+		if postID, flipped, err := s.pgStore.IncrementCommentFlaggedCount(ctx, report.TargetID); err == nil && flipped {
+			if err := s.pgStore.AdjustCommentCount(ctx, postID, -1); err != nil {
+				slog.Warn("failed to decrement comment_count on auto-review", "post_id", postID, "error", err)
+			}
+			s.publishCommentChange(postID, report.TargetID, nil, CommentChangeModerated, report.ReporterID)
+		}
 	}
 	return nil
 }
@@ -37,7 +43,24 @@ func (s *Service) ListFlaggedComments(ctx context.Context, status string, cursor
 // status ∈ {visible, hidden, removed, review}.
 // actor is the acting human; the change is audited in post_admin_audit.
 func (s *Service) SetCommentModerationStatus(ctx context.Context, actor, commentID uuid.UUID, status string) error {
-	return s.pgStore.SetCommentModerationStatus(ctx, actor, commentID, status)
+	postID, previous, err := s.pgStore.SetCommentModerationStatus(ctx, actor, commentID, status)
+	if err != nil {
+		return err
+	}
+	// comment_count counts visible comments only; a transition across that
+	// boundary moves it by one, in either direction, and nothing else does.
+	wasVisible, isVisible := previous == "visible", status == "visible"
+	if wasVisible != isVisible {
+		delta := int64(-1)
+		if isVisible {
+			delta = 1
+		}
+		if err := s.pgStore.AdjustCommentCount(ctx, postID, delta); err != nil {
+			slog.Warn("failed to adjust comment_count on moderation", "post_id", postID, "error", err)
+		}
+	}
+	s.publishCommentChange(postID, commentID, nil, CommentChangeModerated, actor)
+	return nil
 }
 
 // ListReports returns content reports, optionally filtered by status. Used by admin dashboard.

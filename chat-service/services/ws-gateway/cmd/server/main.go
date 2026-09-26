@@ -68,6 +68,8 @@ func main() {
 		PingPeriod:        cfg.WSPingPeriod,
 		MaxMessageSize:    cfg.WSMaxMessageSize,
 		EntitlementSecret: cfg.EntitlementSecret,
+		EnablePostRooms:   cfg.PostRoomsEnabled,
+		PostViewer:        httpapi.NewHTTPPostViewAuthorizer(cfg.PostServiceURL, cfg.InternalServiceKey, nil),
 	})
 
 	httpServer := &http.Server{

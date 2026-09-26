@@ -4,20 +4,45 @@
     {
       "name": "postbook-ui",
       "runtimeExecutable": "bun",
-      "runtimeArgs": ["--cwd=C:/workspace/postbook-ui", "run", "start"],
+      "runtimeArgs": [
+        "--cwd=C:/workspace/postbook-ui",
+        "run",
+        "start"
+      ],
       "port": 3000
     },
     {
       "name": "postbook-ui-dev",
       "runtimeExecutable": "bun",
-      "runtimeArgs": ["--cwd=C:/workspace/postbook-ui", "run", "dev"],
+      "runtimeArgs": [
+        "--cwd=C:/workspace/postbook-ui",
+        "run",
+        "dev"
+      ],
       "port": 3100
     },
     {
       "name": "momentum-web",
       "runtimeExecutable": "bun",
-      "runtimeArgs": ["--cwd=C:/workspace/atpost-web", "run", "dev"],
+      "runtimeArgs": [
+        "--cwd=C:/workspace/atpost-web",
+        "run",
+        "dev"
+      ],
       "port": 3200
+    },
+    {
+      "name": "reels-dev",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "--cwd=C:/workspace/postbook-ui-reels",
+        "run",
+        "dev",
+        "--",
+        "-p",
+        "3150"
+      ],
+      "port": 3150
     }
   ]
 }

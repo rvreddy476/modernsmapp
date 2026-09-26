@@ -169,6 +169,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// internal-key middleware applied to all /v1 routes above is what gates it.
 	r.POST("/v1/internal/media-access", h.MediaAccess)
 	r.POST("/v1/internal/media-access/batch", h.MediaAccessBatch)
+	// ws-gateway asks this before admitting a socket to the post:<id> room.
+	r.GET("/v1/internal/posts/:id/visibility", h.PostVisibility)
 
 	// Tube channels (channels_handler.go): one per account, gate for long videos.
 	h.registerChannelRoutes(r)

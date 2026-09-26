@@ -1241,6 +1241,11 @@ services:
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
       WS_ALLOW_QUERY_TOKEN: ${WS_ALLOW_QUERY_TOKEN:-true}
       CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}
+      # Live comment threads: post:<id> rooms are admitted only after
+      # post-service confirms the viewer may see the post (postrooms.go).
+      WS_POST_ROOMS_ENABLED: "true"
+      POST_SERVICE_URL: http://post-service:8084
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8093:8093"
     depends_on:

@@ -434,19 +434,57 @@ func (s *Store) loadInlineReplies(ctx context.Context, comments []Comment, comme
 
 // SoftDeleteComment marks a comment as deleted and decrements the post's comment count.
 // Returns the post_id for event publishing.
-func (s *Store) SoftDeleteComment(ctx context.Context, commentID, userID uuid.UUID) (uuid.UUID, error) {
+// SoftDeleteComment marks a comment deleted. counted reports whether the
+// comment was in the visible set (and so must leave comment_count); a
+// second delete of the same comment answers COMMENT_NOT_FOUND, so a retry
+// never decrements twice.
+func (s *Store) SoftDeleteComment(ctx context.Context, commentID, userID uuid.UUID) (postID uuid.UUID, counted bool, err error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 	defer tx.Rollback(ctx)
 
-	var postID uuid.UUID
 	var authorID uuid.UUID
+	var status string
 	err = tx.QueryRow(ctx, `
-		SELECT post_id, author_id FROM comments WHERE id = $1 AND is_deleted = FALSE`,
+		SELECT post_id, author_id, moderation_status FROM comments WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`,
 		commentID,
-	).Scan(&postID, &authorID)
+	).Scan(&postID, &authorID, &status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, fmt.Errorf("COMMENT_NOT_FOUND")
+		}
+		return uuid.Nil, false, err
+	}
+
+	if authorID != userID {
+		return uuid.Nil, false, fmt.Errorf("NOT_COMMENT_AUTHOR")
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE comments SET is_deleted = TRUE, updated_at = now() WHERE id = $1`,
+		commentID,
+	)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, false, err
+	}
+
+	return postID, status == "visible", nil
+}
+
+// EditComment edits a comment's body. Must be within 15 minutes of creation and by the author.
+func (s *Store) EditComment(ctx context.Context, commentID, userID uuid.UUID, body string) (uuid.UUID, error) {
+	var authorID, postID uuid.UUID
+	var createdAt time.Time
+	err := s.db.QueryRow(ctx, `
+		SELECT author_id, created_at, post_id FROM comments WHERE id = $1 AND is_deleted = FALSE`,
+		commentID,
+	).Scan(&authorID, &createdAt, &postID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return uuid.Nil, fmt.Errorf("COMMENT_NOT_FOUND")
@@ -458,51 +496,15 @@ func (s *Store) SoftDeleteComment(ctx context.Context, commentID, userID uuid.UU
 		return uuid.Nil, fmt.Errorf("NOT_COMMENT_AUTHOR")
 	}
 
-	_, err = tx.Exec(ctx, `
-		UPDATE comments SET is_deleted = TRUE, updated_at = now() WHERE id = $1`,
-		commentID,
-	)
-	if err != nil {
-		return uuid.Nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, err
-	}
-
-	// post_engagement_counts.comment_count decrement is handled at the
-	// service layer via the sharded counter, same as CreateComment.
-	return postID, nil
-}
-
-// EditComment edits a comment's body. Must be within 15 minutes of creation and by the author.
-func (s *Store) EditComment(ctx context.Context, commentID, userID uuid.UUID, body string) error {
-	var authorID uuid.UUID
-	var createdAt time.Time
-	err := s.db.QueryRow(ctx, `
-		SELECT author_id, created_at FROM comments WHERE id = $1 AND is_deleted = FALSE`,
-		commentID,
-	).Scan(&authorID, &createdAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("COMMENT_NOT_FOUND")
-		}
-		return err
-	}
-
-	if authorID != userID {
-		return fmt.Errorf("NOT_COMMENT_AUTHOR")
-	}
-
 	if time.Since(createdAt) > 15*time.Minute {
-		return fmt.Errorf("EDIT_WINDOW_EXPIRED")
+		return uuid.Nil, fmt.Errorf("EDIT_WINDOW_EXPIRED")
 	}
 
 	_, err = s.db.Exec(ctx, `
 		UPDATE comments SET body = $2, updated_at = now() WHERE id = $1`,
 		commentID, body,
 	)
-	return err
+	return postID, err
 }
 
 // ---------------------------------------------------------------------------
@@ -529,18 +531,32 @@ type FlaggedComment struct {
 // status flip is one-shot via the WHERE clause.
 const commentAutoReviewThreshold = 3
 
-func (s *Store) IncrementCommentFlaggedCount(ctx context.Context, commentID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE comments
-		SET flagged_count = flagged_count + 1,
+// IncrementCommentFlaggedCount bumps the report counter and, at the
+// auto-review threshold, moves a visible comment to 'review'. It returns
+// the post and whether that flip happened, so the caller can take the
+// comment out of comment_count exactly once.
+func (s *Store) IncrementCommentFlaggedCount(ctx context.Context, commentID uuid.UUID) (uuid.UUID, bool, error) {
+	var postID uuid.UUID
+	var before, after string
+	err := s.db.QueryRow(ctx, `
+		UPDATE comments c
+		SET flagged_count = c.flagged_count + 1,
 		    moderation_status = CASE
-		        WHEN moderation_status = 'visible' AND flagged_count + 1 >= $2
+		        WHEN c.moderation_status = 'visible' AND c.flagged_count + 1 >= $2
 		        THEN 'review'
-		        ELSE moderation_status
+		        ELSE c.moderation_status
 		    END
-		WHERE id = $1
-	`, commentID, commentAutoReviewThreshold)
-	return err
+		FROM (SELECT id, moderation_status AS before FROM comments WHERE id = $1 FOR UPDATE) prev
+		WHERE c.id = prev.id
+		RETURNING c.post_id, prev.before, c.moderation_status
+	`, commentID, commentAutoReviewThreshold).Scan(&postID, &before, &after)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, nil
+		}
+		return uuid.Nil, false, err
+	}
+	return postID, before == "visible" && after == "review", nil
 }
 
 // SetCommentModerationStatus is the admin's override. Status must be
@@ -549,37 +565,39 @@ func (s *Store) IncrementCommentFlaggedCount(ctx context.Context, commentID uuid
 //
 // actor is the acting human (required). The change and one post_admin_audit
 // row (comment.moderate, previous → new status) commit together.
-func (s *Store) SetCommentModerationStatus(ctx context.Context, actor, commentID uuid.UUID, status string) error {
+func (s *Store) SetCommentModerationStatus(ctx context.Context, actor, commentID uuid.UUID, status string) (postID uuid.UUID, previous string, err error) {
 	switch status {
 	case "visible", "hidden", "removed", "review":
 	default:
-		return fmt.Errorf("INVALID_MODERATION_STATUS: %q", status)
+		return uuid.Nil, "", fmt.Errorf("INVALID_MODERATION_STATUS: %q", status)
 	}
 	if actor == uuid.Nil {
-		return ErrAdminAuditActor
+		return uuid.Nil, "", ErrAdminAuditActor
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return uuid.Nil, "", err
 	}
 	defer tx.Rollback(ctx)
-	var previous string
-	if err := tx.QueryRow(ctx, `SELECT moderation_status FROM comments WHERE id = $1 FOR UPDATE`, commentID).Scan(&previous); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT moderation_status, post_id FROM comments WHERE id = $1 FOR UPDATE`, commentID).Scan(&previous, &postID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("COMMENT_NOT_FOUND")
+			return uuid.Nil, "", fmt.Errorf("COMMENT_NOT_FOUND")
 		}
-		return err
+		return uuid.Nil, "", err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE comments SET moderation_status = $2, updated_at = NOW()
 		WHERE id = $1
 	`, commentID, status); err != nil {
-		return err
+		return uuid.Nil, "", err
 	}
 	if err := insertAdminAudit(ctx, tx, actor, "comment.moderate", "comment", commentID, previous, status, ""); err != nil {
-		return err
+		return uuid.Nil, "", err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, "", err
+	}
+	return postID, previous, nil
 }
 
 // ListFlaggedComments returns the moderation queue: comments with

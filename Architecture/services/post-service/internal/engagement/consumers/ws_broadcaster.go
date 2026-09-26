@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/atpost/post-service/internal/engagement"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
@@ -14,16 +15,36 @@ import (
 // WSBroadcasterConsumer publishes engagement updates to Redis pub/sub
 // for the ws-gateway to relay to connected WebSocket clients.
 type WSBroadcasterConsumer struct {
-	rdb  *redis.Client
-	base *engagement.BaseConsumer
+	rdb      *redis.Client
+	comments CommentCountReader
+	base     *engagement.BaseConsumer
+}
+
+// CommentCountReader is the authoritative comment count (PostgreSQL
+// post_engagement_counts); the Redis post:eng hash this consumer used to
+// read was never seeded and disagreed with every other surface.
+type CommentCountReader interface {
+	GetCommentCount(ctx context.Context, postID uuid.UUID) (int64, error)
 }
 
 // NewWSBroadcasterConsumer creates a new WebSocket broadcaster consumer.
-func NewWSBroadcasterConsumer(rdb *redis.Client) *WSBroadcasterConsumer {
+func NewWSBroadcasterConsumer(rdb *redis.Client, comments CommentCountReader) *WSBroadcasterConsumer {
 	return &WSBroadcasterConsumer{
-		rdb:  rdb,
-		base: engagement.NewBaseConsumer(rdb, "ws-broadcast"),
+		rdb:      rdb,
+		comments: comments,
+		base:     engagement.NewBaseConsumer(rdb, "ws-broadcast"),
 	}
+}
+
+func (c *WSBroadcasterConsumer) commentCount(ctx context.Context, postID uuid.UUID) int64 {
+	if c.comments == nil {
+		return 0
+	}
+	n, err := c.comments.GetCommentCount(ctx, postID)
+	if err != nil {
+		log.Printf("[ws-broadcast] comment count read failed for %s: %v", postID, err)
+	}
+	return n
 }
 
 // Start begins the consumer loop. Blocks until ctx is canceled.
@@ -67,7 +88,7 @@ func (c *WSBroadcasterConsumer) broadcastCountUpdate(ctx context.Context, event 
 			"update_type": updateType,
 			"actor_id":    event.UserID.String(),
 			"likes":       parseCount(counters, "likes"),
-			"comments":    parseCount(counters, "comments"),
+			"comments":    c.commentCount(ctx, event.PostID),
 			"shares":      parseCount(counters, "shares"),
 		},
 	})
@@ -95,7 +116,7 @@ func (c *WSBroadcasterConsumer) broadcastCommentUpdate(ctx context.Context, even
 			"actor_id":    event.UserID.String(),
 			"comment_id":  event.TargetID.String(),
 			"likes":       parseCount(counters, "likes"),
-			"comments":    parseCount(counters, "comments"),
+			"comments":    c.commentCount(ctx, event.PostID),
 			"shares":      parseCount(counters, "shares"),
 		},
 	})
