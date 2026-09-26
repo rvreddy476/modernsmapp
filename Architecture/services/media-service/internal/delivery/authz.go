@@ -154,6 +154,18 @@ func NewHTTPChatAuthorizer(baseURL, internalKey string, client *http.Client) *HT
 	return authorizer
 }
 
+// NewHTTPGroupAuthorizer asks group-service, which owns group posts and their
+// attachments. Before it existed no authority claimed group media, so every
+// member who had not uploaded a photo themselves got "Media not found" for
+// every attachment in every group. The route it calls is registered in
+// group-service's handler.go and answers with the same wire shape as
+// post-service, batch included.
+func NewHTTPGroupAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
+	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
+	authorizer.path = "/v1/internal/groups/media-access"
+	return authorizer
+}
+
 func NewHTTPProfileAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
 	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
 	authorizer.path = "/v1/profiles/internal/media-access"

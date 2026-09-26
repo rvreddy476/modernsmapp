@@ -416,12 +416,14 @@ func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, delivery.URLSigne
 		return nil, nil, fmt.Errorf("PROFILE_SERVICE_URL is required: profile media privacy cannot be authorized")
 	}
 	commerceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
+	groupURL := env("GROUP_SERVICE_URL", "http://group-service:8090")
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 	authz := delivery.AnyContentAuthorizer{
 		delivery.NewHTTPContentAuthorizer(postURL, internalKey, nil),
 		delivery.NewHTTPChatAuthorizer(chatURL, internalKey, nil),
 		delivery.NewHTTPProfileAuthorizer(profileURL, internalKey, nil),
 		delivery.NewHTTPCommerceAuthorizer(commerceURL, internalKey, nil),
+		delivery.NewHTTPGroupAuthorizer(groupURL, internalKey, nil),
 	}
 
 	var signer delivery.URLSigner

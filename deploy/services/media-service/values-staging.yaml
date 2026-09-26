@@ -67,6 +67,7 @@ env:
   # redirects viewers to (30-300 seconds; the redirect is cached 60s).
   MEDIA_DATING_PHOTO_URL_TTL_SECONDS: "120"
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
   CHAT_MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
   # Add per-service inter-service URLs here. Common ones:

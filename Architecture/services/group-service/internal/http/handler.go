@@ -43,6 +43,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	if h.internalKey != "" {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
+	// media-service's group content authority — see handler_media_access.go.
+	internal := r.Group("/v1/internal/groups")
+	{
+		internal.POST("/media-access", h.MediaAccess)
+		internal.POST("/media-access/batch", h.MediaAccessBatch)
+	}
 	v1 := r.Group("/v1/groups")
 	{
 		v1.POST("", h.CreateGroup)
