@@ -338,7 +338,11 @@ func (s *Store) DiscoverGroupsForUser(ctx context.Context, userID uuid.UUID, gro
 			&d.Visibility, &d.IsArchived, &d.ChatConversationID, &d.MemberCount, &d.PostCount,
 			&d.CreatedAt, &d.UpdatedAt, &d.Handle, &d.Category, &d.PrivacyLevel, &d.JoinMode,
 			&d.WhoCanPost, &d.WhoCanInvite, &d.Location, &d.Language, &d.Status, &d.DeletedAt, &d.PendingRequestCount,
-			&d.GroupType, &d.MaxMembers, &d.JoinQuestions, &d.TopicTags, &d.CommentPermission, &d.MemberListVisible, &d.LinkSharing, &d.IsMature,
+			&d.GroupType, &d.MaxMembers, &d.JoinQuestions, &d.TopicTags, &d.CommentPermission, &d.MemberListVisible, &d.LinkSharing, &d.IsMature, &d.AllowAnonymousPosts,
+			// The four discovery fields follow groupColumns exactly; a column
+			// added to groupColumns must be scanned above them or every row
+			// fails with "field descriptions must equal destinations". A test
+			// pins this scan to groupColumns + 4.
 			&d.FriendsInGroup, &d.CategoryMatch, &d.LocationMatch, &d.Score,
 		); err != nil {
 			return nil, err
