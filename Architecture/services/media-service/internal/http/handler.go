@@ -78,6 +78,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.GET("/:mediaId/serve", h.ServeMedia)
 		v1.GET("/:mediaId/serve/:variant", h.ServeMediaVariant)
 		v1.GET("/:mediaId/hls/:playlist", h.ServeHLSPlaylist)
+		// Segments of an anonymous asset come back through this service
+		// rather than a signed object URL (handler_anonymous.go).
+		v1.GET("/:mediaId/hls-seg/:name", h.ServeHLSSegment)
 	}
 
 	// Module 1 fixes-v3 / LB-1 — service-to-service only.
@@ -98,6 +101,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// post that was its last referrer. Body names the referrer;
 			// the store re-checks every other reference before deleting.
 			internal.DELETE("/:mediaId", h.DeleteMediaInternal)
+			// group-service, before it writes an anonymous post: the
+			// attachment's record and bytes stop naming the uploader.
+			internal.POST("/:mediaId/anonymize", h.AnonymizeMedia)
 			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
 			internal.GET("/:mediaId/profile-authority", h.GetProfileMediaAuthority)
 			// Re-run the transcode pipeline for a video (Tube thumbnail
@@ -252,9 +258,11 @@ func (h *Handler) GetMedia(c *gin.Context) {
 	}
 
 	res, err := h.svc.GetMedia(c.Request.Context(), mediaID)
-	if err != nil || service.DatingScopeDenies(res, deliveryViewer(c)) {
+	if err != nil || service.DatingScopeDenies(res, deliveryViewer(c)) || service.AnonymousScopeDenies(res, deliveryViewer(c)) {
 		// Lane D6: a dating photo's record (keys, renditions) is its
 		// owner's alone; everyone else gets the not-found every read gives.
+		// An anonymous group attachment's record (uploader_id, user-keyed
+		// storage keys) is likewise its uploader's alone.
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
@@ -364,6 +372,12 @@ func (h *Handler) GetMediaStatus(c *gin.Context) {
 		return
 	}
 
+	// transcoding_jobs[].output_url is an object key, which names the
+	// uploader: an anonymous asset's status is its uploader's alone.
+	if m, err := h.svc.GetMedia(c.Request.Context(), mediaID); err != nil || service.AnonymousScopeDenies(m, deliveryViewer(c)) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		return
+	}
 	res, err := h.svc.GetMediaStatus(c.Request.Context(), mediaID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
@@ -409,6 +423,9 @@ func (h *Handler) ServeMedia(c *gin.Context) {
 		return
 	}
 
+	if h.tryStreamAnonymous(c, mediaID, "original") {
+		return
+	}
 	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, "original")
 	if err != nil {
 		writeDeliveryError(c, err)
@@ -458,6 +475,9 @@ func (h *Handler) ServeMediaVariant(c *gin.Context) {
 	variant := c.Param("variant")
 	if variant == "hls" {
 		h.serveHLSPlaylist(c, mediaID, "master.m3u8")
+		return
+	}
+	if h.tryStreamAnonymous(c, mediaID, variant) {
 		return
 	}
 	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, variant)

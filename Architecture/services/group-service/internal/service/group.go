@@ -33,8 +33,11 @@ type Service struct {
 	notifyClient       *http.Client
 	userClient         *http.Client
 	graphClient        *http.Client
-	producer           *groupevents.Producer
-	rateLimiter        *RateLimiter
+	// media-service, for scoping an anonymous post's attachments (media_anonymize.go).
+	mediaServiceURL string
+	mediaClient     *http.Client
+	producer        *groupevents.Producer
+	rateLimiter     *RateLimiter
 }
 
 func New(s *store.Store, rdb *redis.Client, msgURL, postURL, userURL, jwtSecret string) *Service {
@@ -2316,8 +2319,11 @@ func (s *Service) DeleteGroupPostV2(ctx context.Context, actorID, groupID, postI
 	if err := s.store.DeleteGroupPostV2(ctx, groupID, postID); err != nil {
 		return err
 	}
+	// Named as the post knows the actor: the alias when the anonymous
+	// author deletes their own post.
+	publicID := s.publicActorID(p, actorID)
 	s.publishEvent(func() error {
-		return s.producer.PublishGroupPostDeleted(ctx, groupID, postID, actorID)
+		return s.producer.PublishGroupPostDeleted(ctx, groupID, postID, publicID)
 	})
 	s.invalidateGroupCache(ctx, groupID)
 	return nil
@@ -2400,6 +2406,18 @@ func (s *Service) UnechoGroupPost(ctx context.Context, actorID, groupID, postID 
 }
 
 func (s *Service) ListGroupPostComments(ctx context.Context, actorID, groupID, postID uuid.UUID, limit, offset int) ([]store.GroupPostComment, error) {
+	// The same readability rule as the post itself: a private group's
+	// comments are for its members.
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("not found: group not found")
+	}
+	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
+		return nil, err
+	}
 	// Use cached post-in-group check (Redis → DB fallback)
 	exists, err := s.store.PostExistsInGroup(ctx, s.rdb, postID, groupID)
 	if err != nil {
@@ -2409,6 +2427,20 @@ func (s *Service) ListGroupPostComments(ctx context.Context, actorID, groupID, p
 		return nil, fmt.Errorf("not found: post not found in this group")
 	}
 	return s.store.ListGroupPostComments(ctx, postID, limit, offset)
+}
+
+/*
+	publicActorID is the id an actor is known by on a post's wire: their own,
+	unless they are the anonymous author of that post, in which case it is
+	the post's alias. Every event and realtime payload about a post that
+	names an actor goes through this, so an author cannot be unmasked by
+	commenting on, or deleting, their own anonymous post.
+*/
+func (s *Service) publicActorID(post *store.GroupPostV2, actorID uuid.UUID) uuid.UUID {
+	if post != nil && post.IsAnonymous && post.AuthorID == actorID.String() && post.AnonAlias != nil {
+		return *post.AnonAlias
+	}
+	return actorID
 }
 
 func (s *Service) AddGroupPostComment(ctx context.Context, actorID, groupID, postID uuid.UUID, body string, parentID *uuid.UUID) (*store.GroupPostComment, error) {
@@ -2435,7 +2467,19 @@ func (s *Service) AddGroupPostComment(ctx context.Context, actorID, groupID, pos
 	}
 
 	// Insert comment (single DB write — count increment is async inside store)
-	comment, err := s.store.AddGroupPostComment(ctx, postID, actorID.String(), body, parentID)
+	// The anonymous author commenting on their own post stays the post's
+	// pseudonym — decided here, never by the client (store/anonymous.go).
+	post, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return nil, err
+	}
+	anon := post != nil && post.IsAnonymous && post.AuthorID == actorID.String()
+	var alias *uuid.UUID
+	if anon {
+		alias = post.AnonAlias
+	}
+	publicID := s.publicActorID(post, actorID)
+	comment, err := s.store.AddGroupPostComment(ctx, postID, actorID.String(), body, parentID, anon, alias)
 	if err != nil {
 		return nil, err
 	}
@@ -2447,7 +2491,7 @@ func (s *Service) AddGroupPostComment(ctx context.Context, actorID, groupID, pos
 			parentStr = parentID.String()
 		}
 		s.publishEvent(func() error {
-			return s.producer.PublishGroupPostCommented(context.Background(), groupID, postID, comment.ID, actorID, body, parentStr)
+			return s.producer.PublishGroupPostCommented(context.Background(), groupID, postID, comment.ID, publicID, body, parentStr)
 		})
 	}()
 
@@ -2465,10 +2509,13 @@ func (s *Service) DeleteGroupPostComment(ctx context.Context, actorID, groupID, 
 		return err
 	}
 
-	// Fire-and-forget: publish realtime delete event
+	// Fire-and-forget: publish realtime delete event, naming the actor as
+	// the post knows them (the alias for the anonymous author).
+	post, _ := s.store.GetGroupPostV2(ctx, postID)
+	publicID := s.publicActorID(post, actorID)
 	go func() {
 		s.publishEvent(func() error {
-			return s.producer.PublishGroupPostCommentDeleted(context.Background(), groupID, postID, commentID, actorID)
+			return s.producer.PublishGroupPostCommentDeleted(context.Background(), groupID, postID, commentID, publicID)
 		})
 	}()
 	return nil

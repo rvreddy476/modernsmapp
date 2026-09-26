@@ -158,6 +158,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// legacy 'like'. See service/reactions.go for the contract.
 		v1.PUT("/:groupId/posts/v2/:postId/reaction", h.SetGroupPostReaction)
 		v1.DELETE("/:groupId/posts/v2/:postId/reaction", h.RemoveGroupPostReaction)
+		// Who wrote an anonymous post — owner/admins/moderators only, audited.
+		v1.GET("/:groupId/posts/v2/:postId/author", h.RevealPostAuthor)
 		v1.POST("/:groupId/posts/v2/:postId/stash", h.StashGroupPost)
 		v1.DELETE("/:groupId/posts/v2/:postId/stash", h.UnstashGroupPost)
 		v1.POST("/:groupId/posts/v2/:postId/view", h.RecordGroupPostView)

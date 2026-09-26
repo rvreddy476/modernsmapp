@@ -193,6 +193,13 @@ func (s *Service) createOnePost(
 		Status:           status,
 	}
 
+	// An anonymous post's pictures are scoped BEFORE the row exists, and the
+	// post is refused if that fails: see media_anonymize.go.
+	if params.IsAnonymous {
+		if err := s.anonymizeAttachments(ctx, params.Attachments); err != nil {
+			return "", nil, err
+		}
+	}
 	if err := s.store.CreateGroupPostV2(ctx, post); err != nil {
 		return "", nil, err
 	}

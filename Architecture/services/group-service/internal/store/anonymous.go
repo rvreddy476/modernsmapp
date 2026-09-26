@@ -64,6 +64,10 @@ func (p GroupPostV2) MarshalJSON() ([]byte, error) {
 	} else {
 		masked.AuthorID = ""
 	}
+	// Every copy of an anonymous cross-post gets its own alias, but they
+	// share one cross_post_group_id: a member of two target groups could
+	// match it and know the posts share an author. Not on the wire.
+	masked.CrossPostGroupID = nil
 	// Never on the wire in either case.
 	masked.AnonAlias = nil
 	return json.Marshal(masked)

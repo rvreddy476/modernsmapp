@@ -99,6 +99,7 @@ func main() {
 	// Permission authority for invites: without it every invite is refused,
 	// because a block must never be bypassed by a missing dependency.
 	groupSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
+	groupSvc.SetMediaServiceURL(env("MEDIA_SERVICE_URL", "http://media-service:8087"))
 
 	// 8. Kafka producer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()

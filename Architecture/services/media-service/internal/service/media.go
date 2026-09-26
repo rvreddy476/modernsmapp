@@ -681,6 +681,15 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 		return nil, fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
 	}
 
+	// An anonymous asset is never a signed object URL (the key names the
+	// uploader): every URL is this service's own serve route, which streams.
+	if media.AccessScope == postgres.AccessScopeAnonymous {
+		if err := authorizeCaptionRead(ctx, s.gate, media, viewerID); err != nil {
+			return nil, err
+		}
+		return anonymousURLResponse(media), nil
+	}
+
 	keys := map[string]string{"original": media.StorageKey}
 	for _, v := range media.Variants {
 		keys[v.Name] = v.ObjectKey
@@ -801,6 +810,17 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 		}
 	}
 
+	// An anonymous asset's segments must not become signed object URLs — the
+	// object key names the uploader. Authorize over the same key set (the
+	// same choke point, the same decision) and send segments back through
+	// this service instead. See anonymous_scope.go.
+	if media.AccessScope == postgres.AccessScopeAnonymous {
+		if err := s.gate.AuthorizeAsset(ctx, viewerID.String(), mediaID.String(), keys); err != nil {
+			return nil, err
+		}
+		return rewriteHLS(lines, playlist, mediaID, nil, true)
+	}
+
 	// URLsForAsset is the authorization choke point. Including the playlist
 	// key makes even an empty playlist require a resolved permission decision;
 	// child segment URLs are then signed after that same single decision.
@@ -808,25 +828,7 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	for i, line := range lines {
-		name := strings.TrimSpace(line)
-		if name == "" || strings.HasPrefix(name, "#") {
-			continue
-		}
-		if playlist == "master.m3u8" {
-			if !strings.HasSuffix(name, ".m3u8") || strings.ContainsAny(name, `/\\`) {
-				return nil, fmt.Errorf("invalid HLS child playlist reference %q", name)
-			}
-			lines[i] = hlsPlaylistURL(mediaID, name)
-			continue
-		}
-		signed, ok := urls[name]
-		if !ok || signed == "" {
-			return nil, fmt.Errorf("missing signed URL for HLS segment %q", name)
-		}
-		lines[i] = signed
-	}
-	return []byte(strings.Join(lines, "\n")), nil
+	return rewriteHLS(lines, playlist, mediaID, urls, false)
 }
 
 // GetMediaVariantURL returns an authorized delivery URL for one variant.
@@ -900,6 +902,14 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid
 	if DatingScopeDenies(asset, viewerID) {
 		return "", delivery.ErrDeliveryDenied
 	}
+	// An anonymous asset is never a signed object URL (the key names the
+	// uploader): the URL is this service's own serve route, which streams.
+	if asset.AccessScope == postgres.AccessScopeAnonymous {
+		if err := authorizeCaptionRead(ctx, s.gate, asset, viewerID); err != nil {
+			return "", err
+		}
+		return anonymousServePath(mediaID, variant), nil
+	}
 	if variant == AvatarVariant {
 		key, err := s.resolveAvatarRendition(ctx, mediaID)
 		if err != nil {
@@ -969,8 +979,19 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 		}
 	}
 
+	// Anonymous assets never get signed URLs; they are answered separately
+	// below with this service's own serve paths.
+	anonymous := map[uuid.UUID]*postgres.MediaAsset{}
 	assetKeys := make(map[string]map[string]string, len(medias))
+	for i := range medias {
+		if medias[i].AccessScope == postgres.AccessScopeAnonymous {
+			anonymous[medias[i].ID] = &medias[i]
+		}
+	}
 	for _, m := range medias {
+		if anonymous[m.ID] != nil {
+			continue
+		}
 		if DatingScopeDenies(&m, viewerID) {
 			// Lane D6: omitted exactly like a denial below.
 			continue
@@ -991,7 +1012,19 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 	}
 
 	result := make(map[uuid.UUID]*MediaURLResponse, len(medias))
+	for id, m := range anonymous {
+		if err := authorizeCaptionRead(ctx, s.gate, m, viewerID); err != nil {
+			if errors.Is(err, delivery.ErrDeliveryDenied) {
+				continue // resolved denial — omit without revealing existence
+			}
+			return nil, err
+		}
+		result[id] = anonymousURLResponse(m)
+	}
 	for _, m := range medias {
+		if anonymous[m.ID] != nil {
+			continue
+		}
 		urls, ok := urlsByMedia[m.ID.String()]
 		if !ok {
 			slog.InfoContext(ctx, "media batch: asset denied for viewer",

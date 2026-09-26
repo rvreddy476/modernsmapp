@@ -1076,7 +1076,7 @@ func (s *Store) ListGroupPosts(ctx context.Context, groupID uuid.UUID, limit, of
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT group_id, post_id, author_id, created_at
+		SELECT group_id, post_id, CASE WHEN is_anonymous THEN COALESCE(anon_alias::text, '') ELSE author_id END AS author_id, created_at
 		FROM group_posts
 		WHERE group_id = $1
 		ORDER BY created_at DESC
@@ -2106,10 +2106,15 @@ func (s *Store) ListGroupPostComments(ctx context.Context, postID uuid.UUID, lim
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx,
-		`SELECT id, post_id, user_id, body, parent_id, is_pinned, spark_count, created_at
-		FROM group_post_comments
-		WHERE post_id = $1
-		ORDER BY is_pinned DESC, created_at ASC
+		// An anonymous author's own comments carry the POST's alias on the
+		// wire (GroupPostComment.MarshalJSON); the alias is read from the post
+		// so a comment never stores a second pseudonym that could drift.
+		`SELECT c.id, c.post_id, c.user_id, c.body, c.parent_id, c.is_pinned, c.spark_count, c.created_at,
+		        c.is_anonymous, CASE WHEN c.is_anonymous THEN p.anon_alias END
+		FROM group_post_comments c
+		JOIN group_posts p ON p.id = c.post_id
+		WHERE c.post_id = $1
+		ORDER BY c.is_pinned DESC, c.created_at ASC
 		LIMIT $2 OFFSET $3`,
 		postID, limit, offset)
 	if err != nil {
@@ -2121,7 +2126,7 @@ func (s *Store) ListGroupPostComments(ctx context.Context, postID uuid.UUID, lim
 	for rows.Next() {
 		var c GroupPostComment
 		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.Body, &c.ParentID,
-			&c.IsPinned, &c.SparkCount, &c.CreatedAt); err != nil {
+			&c.IsPinned, &c.SparkCount, &c.CreatedAt, &c.IsAnonymous, &c.AnonAlias); err != nil {
 			return nil, err
 		}
 		comments = append(comments, c)
@@ -2129,17 +2134,22 @@ func (s *Store) ListGroupPostComments(ctx context.Context, postID uuid.UUID, lim
 	return comments, rows.Err()
 }
 
-func (s *Store) AddGroupPostComment(ctx context.Context, postID uuid.UUID, userID, body string, parentID *uuid.UUID) (*GroupPostComment, error) {
+// AddGroupPostComment writes a comment. isAnonymous is set by the service
+// when the commenter is the anonymous author of the post (never by a
+// client); alias is then the post's alias, carried on the returned wire.
+func (s *Store) AddGroupPostComment(ctx context.Context, postID uuid.UUID, userID, body string, parentID *uuid.UUID, isAnonymous bool, alias *uuid.UUID) (*GroupPostComment, error) {
 	c := &GroupPostComment{
-		ID:       uuid.New(),
-		PostID:   postID,
-		UserID:   userID,
-		Body:     body,
-		ParentID: parentID,
+		ID:          uuid.New(),
+		PostID:      postID,
+		UserID:      userID,
+		Body:        body,
+		ParentID:    parentID,
+		IsAnonymous: isAnonymous,
+		AnonAlias:   alias,
 	}
-	query := `INSERT INTO group_post_comments (id, post_id, user_id, body, parent_id, is_pinned, spark_count, created_at)
-		VALUES ($1, $2, $3, $4, $5, false, 0, NOW()) RETURNING created_at`
-	if err := s.db.QueryRow(ctx, query, c.ID, postID, userID, body, parentID).Scan(&c.CreatedAt); err != nil {
+	query := `INSERT INTO group_post_comments (id, post_id, user_id, body, parent_id, is_pinned, spark_count, is_anonymous, created_at)
+		VALUES ($1, $2, $3, $4, $5, false, 0, $6, NOW()) RETURNING created_at`
+	if err := s.db.QueryRow(ctx, query, c.ID, postID, userID, body, parentID, isAnonymous).Scan(&c.CreatedAt); err != nil {
 		return nil, err
 	}
 	// Increment comment_count asynchronously — caller doesn't need to wait for this
@@ -2153,6 +2163,10 @@ func (s *Store) AddGroupPostComment(ctx context.Context, postID uuid.UUID, userI
 // CheckMembershipCached checks membership using Redis cache first, falling back to DB.
 // Cache TTL of 5 minutes avoids repeated DB hits for active commenters.
 func (s *Store) CheckMembershipCached(ctx context.Context, rdb *redis.Client, groupID, userID uuid.UUID) (bool, error) {
+	// No cache configured (tests, a degraded boot): the database is the truth.
+	if rdb == nil {
+		return s.CheckMembership(ctx, groupID, userID)
+	}
 	cacheKey := fmt.Sprintf("gm:%s:%s", groupID, userID)
 	val, err := rdb.Get(ctx, cacheKey).Result()
 	if err == nil {
@@ -2175,19 +2189,21 @@ func (s *Store) CheckMembershipCached(ctx context.Context, rdb *redis.Client, gr
 // PostExistsInGroup validates a post belongs to a group using Redis cache.
 func (s *Store) PostExistsInGroup(ctx context.Context, rdb *redis.Client, postID, groupID uuid.UUID) (bool, error) {
 	cacheKey := fmt.Sprintf("gp:%s:%s", postID, groupID)
-	val, err := rdb.Get(ctx, cacheKey).Result()
-	if err == nil {
-		return val == "1", nil
+	if rdb != nil {
+		val, err := rdb.Get(ctx, cacheKey).Result()
+		if err == nil {
+			return val == "1", nil
+		}
 	}
 	// Cache miss → query DB (lightweight EXISTS check instead of full row scan)
 	var exists bool
-	err = s.db.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM group_posts WHERE id = $1 AND group_id = $2 AND status != 'deleted')`,
 		postID, groupID).Scan(&exists)
 	if err != nil {
 		return false, err
 	}
-	if exists {
+	if exists && rdb != nil {
 		rdb.Set(ctx, cacheKey, "1", 2*time.Minute)
 	}
 	return exists, nil
