@@ -429,6 +429,12 @@ func (s *Service) filterMainFeedExcludedDegraded(ctx context.Context, candidates
 // the rest are marked sourceColdStart so the "why am I seeing this" reason
 // says "recommended" instead of "following". Pure, for the unit test.
 func mergeDiscoveryFill(candidates, fill []FeedItem, limit int) []FeedItem {
+	return mergeDiscoveryFillWith(candidates, fill, limit, isLongVideoType)
+}
+
+// mergeDiscoveryFillWith is mergeDiscoveryFill with the surface's own
+// content-type guard: long video for Tube, flick/reel for Reels.
+func mergeDiscoveryFillWith(candidates, fill []FeedItem, limit int, keep func(contentType string) bool) []FeedItem {
 	if limit <= 0 || len(candidates) >= limit || len(fill) == 0 {
 		return candidates
 	}
@@ -444,7 +450,7 @@ func mergeDiscoveryFill(candidates, fill []FeedItem, limit int) []FeedItem {
 		if _, dup := seen[f.PostID]; dup {
 			continue
 		}
-		if !isLongVideoType(f.ContentType) {
+		if !keep(f.ContentType) {
 			continue // post-service filtered by type; belt and braces
 		}
 		seen[f.PostID] = struct{}{}

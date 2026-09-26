@@ -520,8 +520,46 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 		}
 	}
 
+	// Discovery fill (2026-09-27), the same rule Tube has had since
+	// 2026-09-05: the timeline only holds reels from people the viewer
+	// follows, so a viewer who follows nobody opened Reels to "No reels
+	// yet" while eighteen public reels sat on the platform. When the FIRST
+	// page comes up short, top it up from recent public short-form through
+	// post-service, evaluated as the viewer, passed through the SAME
+	// block/mute and hidden-author filters, failing closed to the timeline
+	// page on error. Never under following_only — a short Following page is
+	// the honest answer — and never on later pages, which stay keyed to the
+	// timeline cursor.
+	if discoveryFillAllowed(followingOnly, before, len(candidates), limit) {
+		fill, err := s.shortFormDiscoveryFill(ctx, userID, blocked, limit*2)
+		if err != nil {
+			log.Printf("reels discovery fill failed for %s: %v", userID, err)
+		} else {
+			candidates = mergeDiscoveryFillWith(candidates, fill, limit, isShortFormFillType)
+		}
+	}
+
 	window, next := keysetWindow(candidates, limit)
 	return scoreReels(window), next, nil
+}
+
+// shortFormDiscoveryFill is the recent-public short-form source behind the
+// reels first-page fill: post-service's recent list narrowed to flick/reel,
+// evaluated as the viewer, then the same block/mute and hidden-author
+// filters the timeline rows pass.
+func (s *Service) shortFormDiscoveryFill(ctx context.Context, userID uuid.UUID, blocked map[uuid.UUID]struct{}, limit int) ([]FeedItem, error) {
+	viewer := userID
+	fill, err := s.getRecentPublicPostsFor(ctx, &viewer, []string{"flick", "reel"}, "", limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked)), nil
+}
+
+// isShortFormFillType is the belt-and-braces type check on reels fill rows,
+// as isLongVideoType is on Tube's.
+func isShortFormFillType(contentType string) bool {
+	return contentType == "flick" || contentType == "reel"
 }
 
 // applyFollowingFilter narrows candidates to authors the viewer FOLLOWS
