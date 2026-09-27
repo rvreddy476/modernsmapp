@@ -240,18 +240,33 @@ func (s *Service) GetCaptionStatus(ctx context.Context, mediaID uuid.UUID) (*Cap
 	if err != nil {
 		return nil, err
 	}
-	for _, sub := range subs {
-		// Any persisted track (auto_generated / manual / translated) is a
-		// completed caption. 'auto' is accepted only as a legacy spelling.
-		switch sub.Source {
+	return s.captionStatusFromTracks(ctx, mediaID, subs)
+}
+
+// firstCompletedTrack is the track GetCaptionStatus reports: any persisted
+// track (auto_generated / manual / translated) is a completed caption, and
+// the first one wins. 'auto' is accepted only as a legacy spelling. nil when
+// there is none.
+func firstCompletedTrack(subs []postgres.MediaSubtitle) *postgres.MediaSubtitle {
+	for i := range subs {
+		switch subs[i].Source {
 		case "auto_generated", "manual", "translated", "auto":
-			return &CaptionStatus{
-				MediaID: mediaID, Status: "completed",
-				Language: sub.Language, Source: sub.Source,
-				Text:    sub.Content,
-				Backend: backendName(s), UpdatedAt: sub.CreatedAt,
-			}, nil
+			return &subs[i]
 		}
+	}
+	return nil
+}
+
+// captionStatusFromTracks is GetCaptionStatus over rows already read, so
+// the viewer-facing /status (ViewerCaptionStatus) reads the table once.
+func (s *Service) captionStatusFromTracks(ctx context.Context, mediaID uuid.UUID, subs []postgres.MediaSubtitle) (*CaptionStatus, error) {
+	if sub := firstCompletedTrack(subs); sub != nil {
+		return &CaptionStatus{
+			MediaID: mediaID, Status: "completed",
+			Language: sub.Language, Source: sub.Source,
+			Text:    sub.Content,
+			Backend: backendName(s), UpdatedAt: sub.CreatedAt,
+		}, nil
 	}
 
 	if !s.CaptionsBackendConfigured() {

@@ -27,7 +27,9 @@ const viewCountBatch = 100
 // on this database.
 //
 //	height        post-service video_metadata.height (migration 008)
-//	has_subtitles media-service media_caption_jobs.status = 'completed' for
+//	has_subtitles media-service media_subtitles.published for any of the post's
+//	              media (migration 020); falls back to media_caption_jobs
+//	              .status = 'completed' for
 //	              any of the post's media (migration 012)
 func videoFilterExprs(ctx context.Context, pool *pgxpool.Pool) (heightExpr, subtitlesExpr string) {
 	heightExpr = "0::int"
@@ -37,13 +39,36 @@ func videoFilterExprs(ctx context.Context, pool *pgxpool.Pool) (heightExpr, subt
 	} else {
 		slog.Warn("backfill posts: video_metadata not on this database; height indexed as 0 (hd/4k facets empty)")
 	}
-	if tableExists(ctx, pool, "media_caption_jobs") {
+	// 2026-09-27: PUBLISHED tracks, the same fact media-service's
+	// MediaSubtitlesChanged carries live. A completed caption job is not it:
+	// its track is a draft until the creator publishes it (migration 020),
+	// and a manual upload has no job at all — so the job-based rule both
+	// lit the cc filter for drafts and missed manual captions, and a reindex
+	// would have undone what the live events set. The job rule stays only
+	// as the fallback for a database without the published column.
+	if columnExists(ctx, pool, "media_subtitles", "published") {
+		subtitlesExpr = `EXISTS (SELECT 1 FROM post_media pm JOIN media_subtitles ms ON ms.media_asset_id = pm.media_id
+		                   WHERE pm.post_id = p.id AND ms.published)`
+	} else if tableExists(ctx, pool, "media_caption_jobs") {
 		subtitlesExpr = `EXISTS (SELECT 1 FROM post_media pm JOIN media_caption_jobs cj ON cj.media_id = pm.media_id
 		                   WHERE pm.post_id = p.id AND cj.status = 'completed')`
 	} else {
 		slog.Warn("backfill posts: media_caption_jobs not on this database; has_subtitles indexed as false (cc facet empty)")
 	}
 	return heightExpr, subtitlesExpr
+}
+
+// columnExists reports whether public.<table>.<column> exists; any lookup
+// failure is "no" (the caller then degrades, as for tableExists).
+func columnExists(ctx context.Context, pool *pgxpool.Pool, table, column string) bool {
+	var present bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		                WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)`,
+		table, column).Scan(&present); err != nil {
+		return false
+	}
+	return present
 }
 
 func tableExists(ctx context.Context, pool *pgxpool.Pool, name string) bool {

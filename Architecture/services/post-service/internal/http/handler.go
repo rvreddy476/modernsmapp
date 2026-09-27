@@ -181,6 +181,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/v1/internal/media-download-allowed", h.MediaDownloadAllowed) // media-service download gate (media_download_internal.go)
 	// ws-gateway asks this before admitting a socket to the post:<id> room.
 	r.GET("/v1/internal/posts/:id/visibility", h.PostVisibility)
+	r.GET("/v1/internal/posts/by-media/:mediaId", h.PostsByMediaInternal) // search-service has_subtitles fan-out (posts_by_media_internal.go)
 
 	// Tube channels (channels_handler.go): one per account, gate for long videos.
 	h.registerChannelRoutes(r)

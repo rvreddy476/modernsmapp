@@ -175,6 +175,126 @@ var LiveMediaReferences = []MediaReference{
 		Table: "business_pages", Column: "cover_media_id",
 		Why: "a business page cover",
 	},
+
+	// ── 2026-09-27: the eighteen the boot sweep refused on ───────────────
+	//
+	// Each was named by the live catalog ("media reclamation refused:
+	// unclassified media reference(s) ..."), so orphaned media was never
+	// reclaimed at all. Every one is a claim: the owning row shows (or, for
+	// the purge queue and the dating evidence, deliberately holds) the asset
+	// for as long as the row exists. None is a by-product of the asset —
+	// each row belongs to another service and outlives nothing of ours — so
+	// none is derived. No Predicate narrows them: a soft-deleted channel
+	// update or group keeps pinning its media, which costs storage; guessing
+	// which soft-delete states are final would risk deleting media a restore
+	// or a moderation review still needs.
+
+	// channel-service (broadcast channels)
+	{
+		Table: "broadcast_channels", Column: "avatar_media_id",
+		Why: "a broadcast channel's avatar",
+	},
+	{
+		Table: "broadcast_channels", Column: "banner_media_id",
+		Why: "a broadcast channel's banner",
+	},
+	{
+		// UUID[] — the one array reference in the schema. Matched with
+		// `= ANY(...)`; equality against an array is a type error.
+		Table: "channel_updates", Column: "media_ids", Array: true,
+		Why: "the images/video/audio of a channel update; reclaiming one blanks a published update",
+	},
+
+	// community-service
+	{
+		Table: "communities", Column: "avatar_media_id",
+		Why: "a community's avatar",
+	},
+	{
+		Table: "communities", Column: "banner_media_id",
+		Why: "a community's banner",
+	},
+
+	// group-service
+	{
+		Table: "groups", Column: "avatar_media_id",
+		Why: "a group's avatar",
+	},
+	{
+		Table: "groups", Column: "cover_media_id",
+		Why: "a group's cover",
+	},
+	{
+		Table: "group_events", Column: "cover_media_id",
+		Why: "a group event's cover image",
+	},
+	{
+		Table: "group_resources", Column: "media_id",
+		Why: "a file/document shared as a group resource; reclaiming it breaks the download",
+	},
+
+	// qa-service
+	{
+		Table: "question_media", Column: "media_id",
+		Why: "an image attached to a question",
+	},
+	{
+		Table: "answer_media", Column: "media_id",
+		Why: "an image attached to an answer",
+	},
+
+	// live-service
+	{
+		Table: "live_streams", Column: "cover_media_id",
+		Why: "a live stream's cover, shown on the stream and its recording",
+	},
+
+	// monetization-service
+	{
+		Table: "fundraisers", Column: "cover_media_id",
+		Why: "a fundraiser's cover image",
+	},
+	{
+		Table: "invoices", Column: "pdf_media_id",
+		Why: "the issued invoice PDF — a tax record that must stay retrievable; " +
+			"it is not re-renderable byte-for-byte once issued",
+	},
+
+	// dating-service — SENSITIVE. These are claims so that a sweep can never
+	// silently remove verification evidence while its row exists. They go
+	// only by an explicit, owner-scoped deletion: a dating photo through the
+	// `dating_photo` referrer purge (DatingPhotoService.Delete); the selfie
+	// and verification videos have no deletion path yet, which is a
+	// retention decision for dating-service, never the sweep's to make.
+	{
+		Table: "dating_photos", Column: "media_id",
+		Why: "a dating profile photo; its lifecycle belongs to dating-service's own purge",
+	},
+	{
+		Table: "dating_selfie_attempts", Column: "video_media_id",
+		Why: "the liveness video of a selfie attempt — review/appeal evidence; " +
+			"never reclaimed while the attempt row exists",
+	},
+	{
+		Table: "dating_verifications", Column: "selfie_media_id",
+		Why: "the blink video a verification verdict rests on — never reclaimed " +
+			"while the verification row exists",
+	},
+
+	// post-service purge work queue (migration 039). A row means "this asset
+	// is being deleted by the post purge": post_media is already gone, so this
+	// row is the only thing that still names it. Classified LIVE so the sweep
+	// never deletes an asset out from under the purge — one deleter per asset,
+	// and the purge's own deletion (DeleteAssetForReferrer) is the one that
+	// runs, logs the owner and records the object keys. It pins nothing
+	// forever: the worker deletes the row once media-service answers.
+	// DeleteAssetForReferrer uses its own explicit check list, not this one,
+	// so this entry does not make the purge refuse itself.
+	{
+		Table: "post_purge_media", Column: "media_id",
+		Why: "an asset queued for the post purge; reclaiming it races the purge " +
+			"that owns its deletion",
+	},
 }
 
 // DerivedMediaTables reference media_assets but are NOT independent claims:
@@ -260,7 +380,13 @@ func ResolveLiveReferences(ctx context.Context, q Querier) ([]resolvedReference,
 	if err != nil {
 		return nil, err
 	}
+	return resolveAgainstCatalog(present)
+}
 
+// resolveAgainstCatalog is ResolveLiveReferences over a catalog already
+// read, so the classification can be tested against a known column set
+// without a database.
+func resolveAgainstCatalog(present map[string]catalogColumn) ([]resolvedReference, error) {
 	classified := map[string]bool{}
 	for _, ref := range LiveMediaReferences {
 		classified[ref.Table+"."+ref.Column] = true
@@ -289,6 +415,13 @@ func ResolveLiveReferences(ctx context.Context, q Querier) ([]resolvedReference,
 			// Not deployed here. Skipping is safe: a table that does not exist
 			// holds no claims.
 			continue
+		}
+		// An array column declared scalar (or the reverse) would compose a
+		// predicate that is a type error at best. Refuse rather than let
+		// the sweep run with a reference that does not really protect.
+		if isArray := strings.HasPrefix(col.udt, "_"); isArray != ref.Array {
+			return nil, fmt.Errorf("media reclamation refused: %s.%s is %s but declared Array=%v in reclaim_policy.go",
+				ref.Table, ref.Column, col.udt, ref.Array)
 		}
 		out = append(out, resolvedReference{ref: ref, isUUID: col.udt == "uuid" || col.udt == "_uuid"})
 	}

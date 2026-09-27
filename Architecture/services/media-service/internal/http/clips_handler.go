@@ -25,7 +25,9 @@ type clipsService interface {
 	// ViewerSubtitles / ViewerCaptionTrackVTT apply the draft rule (owner sees
 	// unpublished tracks, nobody else does) after the asset gate.
 	ViewerSubtitles(ctx context.Context, viewerID, mediaID uuid.UUID) ([]postgres.MediaSubtitle, error)
-	GetCaptionStatus(ctx context.Context, mediaID uuid.UUID) (*service.CaptionStatus, error)
+	// ViewerCaptionStatus applies the same draft rule to /status, whose `text`
+	// is a transcript: a non-owner only ever sees a published track's text.
+	ViewerCaptionStatus(ctx context.Context, viewerID, mediaID uuid.UUID) (*service.CaptionStatus, error)
 	ViewerCaptionTrackVTT(ctx context.Context, viewerID, mediaID uuid.UUID, language string) (string, error)
 	SaveMediaClips(ctx context.Context, actorID, postID uuid.UUID, clips []postgres.MediaClip) error
 }
@@ -124,7 +126,8 @@ func (h *Handler) GetCaptionStatus(c *gin.Context) {
 		writeDeliveryError(c, err)
 		return
 	}
-	status, err := h.clipsSvc().GetCaptionStatus(c.Request.Context(), mediaID)
+	// Drafts: a non-owner gets text from a published track only (or none).
+	status, err := h.clipsSvc().ViewerCaptionStatus(c.Request.Context(), deliveryViewer(c), mediaID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

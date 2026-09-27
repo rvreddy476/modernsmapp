@@ -100,6 +100,10 @@ type Consumer struct {
 	// / deletion_cancelled / purge_requested (see internal/purge). Wired
 	// onto the identity-topic consumer only. Optional.
 	lifecycle *purge.Handler
+	// postsByMedia resolves a media id to the posts that attach it, for
+	// MediaSubtitlesChanged (subtitles.go). Nil: those events error (retry,
+	// then DLQ) rather than being dropped.
+	postsByMedia PostsByMedia
 }
 
 // WithPrivacyLookup wires the identity settings lookup used to stamp
@@ -595,6 +599,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 		return c.store.IncrementPostViewCount(ctx, p.ReelID, 1)
+
+	case events.MediaSubtitlesChanged:
+		// has_subtitles (cc filter) from media-service's caption state —
+		// subtitles.go. Arrives on the media.events consumer.
+		return c.handleSubtitlesChanged(ctx, envelope)
 
 	case events.PostSearchEligibilityChanged:
 		// M2-P0-2: the single contract for approval, rejection, flagging,

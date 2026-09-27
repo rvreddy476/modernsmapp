@@ -205,6 +205,49 @@ func (s *Service) ViewerSubtitles(ctx context.Context, viewerID, mediaID uuid.UU
 	return SubtitlesVisibleTo(subs, owner), nil
 }
 
+// CaptionStatusVisibleTo is the draft rule applied to GET
+// /v1/subtitles/:mediaId/status, whose `text` is a transcript.
+//
+// The owner's status is returned as is. For anyone else the track-identity
+// fields (text, language, source) come from the first PUBLISHED track only,
+// and are omitted when no track is published — so a draft's words never
+// reach a stranger through /status the way they could before (it reported
+// the first track whatever its state). Status/progress fields (status,
+// backend, updated_at, media_id) are unchanged. A status that did not come
+// from a track (pending/failed/unavailable, which carry no text) is
+// returned as is. Exported so the handler tests apply the real rule.
+func CaptionStatusVisibleTo(st *CaptionStatus, subs []postgres.MediaSubtitle, owner bool) *CaptionStatus {
+	if st == nil || owner || st.Status != "completed" {
+		return st
+	}
+	out := *st
+	out.Text, out.Language, out.Source = "", "", ""
+	if track := firstCompletedTrack(SubtitlesVisibleTo(subs, false)); track != nil {
+		out.Text, out.Language, out.Source = track.Content, track.Language, track.Source
+		out.UpdatedAt = track.CreatedAt
+	}
+	return &out
+}
+
+// ViewerCaptionStatus is GET /v1/subtitles/:mediaId/status for viewerID:
+// GetCaptionStatus with the draft rule (CaptionStatusVisibleTo) applied.
+// Callers MUST have passed AuthorizeMediaRead first.
+func (s *Service) ViewerCaptionStatus(ctx context.Context, viewerID, mediaID uuid.UUID) (*CaptionStatus, error) {
+	subs, err := s.pgStore.GetSubtitles(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := s.viewerOwnsMedia(ctx, viewerID, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	st, err := s.captionStatusFromTracks(ctx, mediaID, subs)
+	if err != nil {
+		return nil, err
+	}
+	return CaptionStatusVisibleTo(st, subs, owner), nil
+}
+
 // ViewerCaptionTrackVTT is GET /v1/subtitles/:mediaId/track/:language: the
 // WebVTT for one language when viewerID may see that track. A draft asked
 // for by anyone but the owner is ErrCaptionTrackNotFound (404).

@@ -111,14 +111,16 @@ func (s *Store) initTubeIndices(ctx context.Context) {
 	}`)
 }
 
-// putVideoFilterMapping adds the four video-filter fields to an existing
+// putVideoFilterMapping adds the four video-filter fields (and
+// subtitles_version, the ordering stamp of has_subtitles — subtitles.go) to an existing
 // posts index. Additive and idempotent, like putResultRowMapping.
 func (s *Store) putVideoFilterMapping(ctx context.Context, index string) {
 	body := `{"properties":{
 		"height":        {"type":"integer"},
 		"has_subtitles": {"type":"boolean"},
 		"view_count":    {"type":"long"},
-		"published_at":  {"type":"date"}
+		"published_at":  {"type":"date"},
+		"subtitles_version": {"type":"long"}
 	}}`
 	req := opensearchapi.IndicesPutMappingRequest{
 		Index: []string{index},

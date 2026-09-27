@@ -55,8 +55,11 @@ func (f *fakeClipsService) ViewerSubtitles(_ context.Context, viewerID, _ uuid.U
 	return service.SubtitlesVisibleTo(f.subtitles, f.isOwner(viewerID)), nil
 }
 
-func (f *fakeClipsService) GetCaptionStatus(context.Context, uuid.UUID) (*service.CaptionStatus, error) {
-	return f.status, nil
+// ViewerCaptionStatus applies the real /status draft rule
+// (service.CaptionStatusVisibleTo) to the configured status and rows.
+func (f *fakeClipsService) ViewerCaptionStatus(_ context.Context, viewerID, _ uuid.UUID) (*service.CaptionStatus, error) {
+	f.readAs = append(f.readAs, viewerID)
+	return service.CaptionStatusVisibleTo(f.status, f.subtitles, f.isOwner(viewerID)), nil
 }
 
 // ViewerCaptionTrackVTT: with no rows configured the fake serves vtt as

@@ -148,16 +148,22 @@ func (s *MediaAssetStore) ReleaseCaptionJob(ctx context.Context, mediaID uuid.UU
 
 // UpdateSubtitleContent stores the inline transcript text (and marks an
 // owner edit). Content lives here — the canonical caption store.
+//
+// It may create a manual track, which is published on write (migration
+// 020), so the write and its MediaSubtitlesChanged snapshot are one commit
+// (subtitle_events.go).
 func (s *MediaAssetStore) UpdateSubtitleContent(ctx context.Context, mediaID uuid.UUID, language, content string, ownerEdited bool) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO media_subtitles (media_asset_id, language, source, format, content_url, content, edited_by_owner, updated_at)
-		VALUES ($1, $2, 'manual', 'vtt', '', $3, $4, NOW())
-		ON CONFLICT (media_asset_id, language) DO UPDATE
-		SET content = EXCLUDED.content,
-		    edited_by_owner = EXCLUDED.edited_by_owner,
-		    updated_at = NOW()`,
-		mediaID, language, content, ownerEdited)
-	return err
+	return s.withSubtitleStateEvent(ctx, mediaID, func(tx pgx.Tx) (bool, error) {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO media_subtitles (media_asset_id, language, source, format, content_url, content, edited_by_owner, updated_at)
+			VALUES ($1, $2, 'manual', 'vtt', '', $3, $4, NOW())
+			ON CONFLICT (media_asset_id, language) DO UPDATE
+			SET content = EXCLUDED.content,
+			    edited_by_owner = EXCLUDED.edited_by_owner,
+			    updated_at = NOW()`,
+			mediaID, language, content, ownerEdited)
+		return err == nil, err
+	})
 }
 
 // SetAltDecorative marks (or unmarks) a media asset as decorative.

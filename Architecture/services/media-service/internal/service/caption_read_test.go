@@ -212,3 +212,56 @@ func TestAnonymousViewerNeverOwnsMedia(t *testing.T) {
 		t.Fatalf("anonymous owner=%v err=%v", owner, err)
 	}
 }
+
+// /status carried the first track's transcript whatever its state, so a
+// stranger could read a draft through it. The draft rule now applies there
+// too: owner unchanged, everyone else sees a published track's text or none.
+func TestCaptionStatusVisibleToHidesDraftText(t *testing.T) {
+	s := &Service{}
+	mediaID := uuid.New()
+	draftFirst := []postgres.MediaSubtitle{
+		{Language: "hi", Source: "auto_generated", Content: "draft words", Published: false},
+		{Language: "en", Source: "manual", Content: "published words", Published: true},
+	}
+	onlyDraft := draftFirst[:1]
+
+	full, err := s.captionStatusFromTracks(context.Background(), mediaID, draftFirst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Text != "draft words" {
+		t.Fatalf("precondition: the unfiltered status reports the first track, got %q", full.Text)
+	}
+
+	if got := CaptionStatusVisibleTo(full, draftFirst, true); got.Text != "draft words" || got.Language != "hi" {
+		t.Fatalf("the owner's status changed: %+v", got)
+	}
+
+	got := CaptionStatusVisibleTo(full, draftFirst, false)
+	if got.Text != "published words" || got.Language != "en" || got.Source != "manual" {
+		t.Fatalf("a stranger must get the first PUBLISHED track, got %+v", got)
+	}
+	if got.Status != "completed" || got.MediaID != mediaID {
+		t.Fatalf("status fields must stay, got %+v", got)
+	}
+	if full.Text != "draft words" {
+		t.Fatal("the rule mutated the caller's status")
+	}
+
+	onlyDraftStatus, _ := s.captionStatusFromTracks(context.Background(), mediaID, onlyDraft)
+	none := CaptionStatusVisibleTo(onlyDraftStatus, onlyDraft, false)
+	if none.Text != "" || none.Language != "" || none.Source != "" {
+		t.Fatalf("with no published track a stranger must get no text, got %+v", none)
+	}
+	if none.Status != "completed" {
+		t.Fatalf("progress fields stay, got status %q", none.Status)
+	}
+
+	pending := &CaptionStatus{MediaID: mediaID, Status: "pending", Language: "hi"}
+	if CaptionStatusVisibleTo(pending, nil, false) != pending {
+		t.Fatal("a status that did not come from a track carries no text and is returned as is")
+	}
+	if CaptionStatusVisibleTo(nil, draftFirst, false) != nil {
+		t.Fatal("nil in, nil out")
+	}
+}

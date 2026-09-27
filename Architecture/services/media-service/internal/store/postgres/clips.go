@@ -94,7 +94,33 @@ func (s *MediaAssetStore) GetMediaClips(ctx context.Context, postID uuid.UUID) (
 func (s *MediaAssetStore) CreateSubtitle(ctx context.Context, sub *MediaSubtitle) (*MediaSubtitle, error) {
 	// An owner-corrected transcript is never clobbered by a later
 	// auto-generated run (Codex P0-2: owner correction must stick).
-	err := s.db.QueryRow(ctx, `
+	//
+	// The write and its MediaSubtitlesChanged snapshot are one commit
+	// (subtitle_events.go); a suppressed write records no event.
+	suppressed := false
+	err := s.withSubtitleStateEvent(ctx, sub.MediaAssetID, func(tx pgx.Tx) (bool, error) {
+		err := createSubtitleTx(ctx, tx, sub)
+		if errors.Is(err, pgx.ErrNoRows) {
+			suppressed = true
+			return false, nil
+		}
+		return err == nil, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if suppressed {
+		// The WHERE guard suppressed the update because the owner has
+		// edited this track. Return the existing row unchanged.
+		return s.getSubtitle(ctx, sub.MediaAssetID, sub.Language)
+	}
+	return sub, nil
+}
+
+// createSubtitleTx is CreateSubtitle's upsert. pgx.ErrNoRows when the
+// owner-edit guard suppressed it.
+func createSubtitleTx(ctx context.Context, tx pgx.Tx, sub *MediaSubtitle) error {
+	return tx.QueryRow(ctx, `
 		INSERT INTO media_subtitles (media_asset_id, language, source, format, content_url, content, word_level_json, confidence, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
 		ON CONFLICT (media_asset_id, language) DO UPDATE
@@ -112,15 +138,6 @@ func (s *MediaAssetStore) CreateSubtitle(ctx context.Context, sub *MediaSubtitle
 	).Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
 		&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
 		&sub.EditedByOwner, &sub.CreatedAt, &sub.Published, &sub.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// The WHERE guard suppressed the update because the owner has
-		// edited this track. Return the existing row unchanged.
-		return s.getSubtitle(ctx, sub.MediaAssetID, sub.Language)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return sub, nil
 }
 
 // GetSubtitles returns all subtitle tracks for a media asset, ordered by language.

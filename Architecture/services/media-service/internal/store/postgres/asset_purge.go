@@ -22,8 +22,9 @@ import (
 //
 // This is deliberately NOT DeleteOrphanMediaAtomic: that path is the
 // sweeper's, refuses confirmed assets by policy, and resolves its reference
-// list through ResolveLiveReferences, which currently refuses to run on this
-// database ("unclassified media reference(s)"). A purge names its referrer
+// list through ResolveLiveReferences, which refused to run on this
+// database ("unclassified media reference(s)") until 2026-09-27, and would
+// refuse again on any new unclassified column. A purge names its referrer
 // and the asset is confirmed by definition, so the checks here are explicit.
 
 // AssetPurgeRecord is what the purge needs after the rows are gone.

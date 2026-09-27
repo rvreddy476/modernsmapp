@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // MTube captions list for creators (2026-09-27, migration 020).
@@ -122,20 +123,24 @@ func (s *MediaAssetStore) ListSubtitlesByUploader(ctx context.Context, uploaderI
 
 // SetSubtitlePublished flips one track's review state and returns the row.
 // pgx.ErrNoRows when there is no such track. Ownership is the service's
-// check (it has the asset row); this only writes.
+// check (it has the asset row); this only writes. The flip and its
+// MediaSubtitlesChanged snapshot are one commit (subtitle_events.go).
 func (s *MediaAssetStore) SetSubtitlePublished(ctx context.Context, mediaID uuid.UUID, language string, published bool) (*MediaSubtitle, error) {
 	var sub MediaSubtitle
-	err := s.db.QueryRow(ctx, `
-		UPDATE media_subtitles
-		   SET published = $3, updated_at = NOW()
-		 WHERE media_asset_id = $1 AND language = $2
-		RETURNING id, media_asset_id, language, source, format, content_url,
-		          COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at,
-		          published, updated_at`,
-		mediaID, language, published).
-		Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
-			&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
-			&sub.EditedByOwner, &sub.CreatedAt, &sub.Published, &sub.UpdatedAt)
+	err := s.withSubtitleStateEvent(ctx, mediaID, func(tx pgx.Tx) (bool, error) {
+		err := tx.QueryRow(ctx, `
+			UPDATE media_subtitles
+			   SET published = $3, updated_at = NOW()
+			 WHERE media_asset_id = $1 AND language = $2
+			RETURNING id, media_asset_id, language, source, format, content_url,
+			          COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at,
+			          published, updated_at`,
+			mediaID, language, published).
+			Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
+				&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
+				&sub.EditedByOwner, &sub.CreatedAt, &sub.Published, &sub.UpdatedAt)
+		return err == nil, err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -145,13 +150,16 @@ func (s *MediaAssetStore) SetSubtitlePublished(ctx context.Context, mediaID uuid
 // MarkGeneratedSubtitleDraft is the caption job's completion write: the
 // track it just generated becomes a draft for the creator to review. An
 // owner-edited track is left alone — the job's upsert was suppressed for it
-// (CreateSubtitle), so its text is the owner's and so is its state.
+// (CreateSubtitle), so its text is the owner's and so is its state. The
+// write and its MediaSubtitlesChanged snapshot are one commit.
 func (s *MediaAssetStore) MarkGeneratedSubtitleDraft(ctx context.Context, mediaID uuid.UUID, language string) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE media_subtitles
-		   SET published = FALSE
-		 WHERE media_asset_id = $1 AND language = $2
-		   AND source = 'auto_generated' AND edited_by_owner = FALSE`,
-		mediaID, language)
-	return err
+	return s.withSubtitleStateEvent(ctx, mediaID, func(tx pgx.Tx) (bool, error) {
+		_, err := tx.Exec(ctx, `
+			UPDATE media_subtitles
+			   SET published = FALSE
+			 WHERE media_asset_id = $1 AND language = $2
+			   AND source = 'auto_generated' AND edited_by_owner = FALSE`,
+			mediaID, language)
+		return err == nil, err
+	})
 }

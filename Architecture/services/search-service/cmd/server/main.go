@@ -150,11 +150,30 @@ func main() {
 		slog.Info("search-service: commerce client wired", "url", commerceServiceURL)
 	}
 
+	// post-service client — the MTube tube reindex walks its catalogue, and
+	// MediaSubtitlesChanged resolves a media id to its posts through it.
+	// Built before the consumers so both can use it.
+	postClient := postclient.New(env("POST_SERVICE_URL", "http://post-service:8084"), os.Getenv("INTERNAL_SERVICE_KEY"))
+
 	socialConsumer := events.NewConsumerWithDialer(
 		brokerList, "search-service-group", socialTopic, searchStore, kafkaDialer,
-	).WithPrivacyLookup(privacyLookup).WithCommerceClient(commerceClient)
+	).WithPrivacyLookup(privacyLookup).WithCommerceClient(commerceClient).
+		// The DLQ replayer re-applies dead letters through this consumer,
+		// and a dead-lettered MediaSubtitlesChanged needs the lookup too.
+		WithPostsByMedia(postClient)
 	go socialConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", socialTopic, "group", "search-service-group")
+
+	// has_subtitles (2026-09-27): media-service's `media.events` topic, for
+	// MediaSubtitlesChanged only — every other event on it (transcode,
+	// voice safety) falls through the dispatcher's default and is ignored.
+	// Its own group, so a stalled caption update never holds up posts.
+	mediaTopic := env("MEDIA_KAFKA_TOPIC", "media.events")
+	mediaConsumer := events.NewConsumerWithDialer(
+		brokerList, "search-service-media-group", mediaTopic, searchStore, kafkaDialer,
+	).WithPostsByMedia(postClient)
+	go mediaConsumer.Start(consumerCtx)
+	slog.Info("started kafka consumer", "topic", mediaTopic, "group", "search-service-media-group")
 
 	// Account control (auth-service 30-day deletion): on user.deactivated /
 	// user.deletion_scheduled the author's presence is hidden (unconditional
@@ -231,8 +250,7 @@ func main() {
 	slog.Info("search-service: media client wired", "url", mediaServiceURL)
 	// The tube reindex (channels, public playlists) walks post-service's
 	// internal catalogue listing — MTube, 2026-09-27.
-	postServiceURL := env("POST_SERVICE_URL", "http://post-service:8084")
-	handler.WithPostClient(postclient.New(postServiceURL, internalKey))
+	handler.WithPostClient(postClient)
 
 	// Postgres analytics + extras stores built in step 4b above; wire them
 	// into the HTTP handler here if present.
