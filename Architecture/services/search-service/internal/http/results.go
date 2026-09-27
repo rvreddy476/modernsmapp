@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/gin-gonic/gin"
@@ -41,6 +42,16 @@ type PostResult struct {
 	Author       *AuthorRef `json:"author"`
 	ThumbnailURL *string    `json:"thumbnail_url"`
 	PlaybackURL  *string    `json:"playback_url"`
+
+	// MTube (2026-09-27): always present on a row, zero when the document
+	// does not carry them yet, so a client never has to test for a missing
+	// key. They shadow the document's omitempty fields of the same name
+	// (encoding/json takes the shallower field). published_at falls back
+	// to created_at, since for an unscheduled post they are one instant.
+	DurationMs  int    `json:"duration_ms"`
+	ViewCount   int64  `json:"view_count"`
+	Height      int    `json:"height"`
+	PublishedAt string `json:"published_at"`
 }
 
 // UserResult is one user row: the indexed document plus avatar_url.
@@ -106,7 +117,12 @@ func (h *Handler) postResults(ctx context.Context, viewerID uuid.UUID, docs []se
 	assets := h.mediaClient.Resolve(ctx, viewerString(viewerID), mediaIDs)
 
 	for _, d := range docs {
-		row := PostResult{PostDoc: d, ID: d.PostID}
+		row := PostResult{PostDoc: d, ID: d.PostID, DurationMs: d.DurationMs, ViewCount: d.ViewCount, Height: d.Height}
+		if d.PublishedAt != nil && !d.PublishedAt.IsZero() {
+			row.PublishedAt = d.PublishedAt.UTC().Format(time.RFC3339)
+		} else if !d.CreatedAt.IsZero() {
+			row.PublishedAt = d.CreatedAt.UTC().Format(time.RFC3339)
+		}
 		author := &AuthorRef{ID: d.AuthorID, Username: d.AuthorUsername}
 		if a, ok := authors[d.AuthorID]; ok {
 			author.Username = a.Username

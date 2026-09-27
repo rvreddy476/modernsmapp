@@ -103,8 +103,17 @@ func (h *Handler) GetRelatedVideos(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
 		return
 	}
+	// MTube (2026-09-27): `chip=topic:<slug>|fresh|seen`, optional — see
+	// service/tube_chips.go. Refused with a 400 before the service is
+	// touched.
+	chip, ok := service.NormalizeRelatedChip(c.Query("chip"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CHIP",
+			"chip must be one of: fresh, seen, topic:<slug> (slug: [a-z0-9-]{2,40})", nil)
+		return
+	}
 
-	posts, next, err := h.svc.GetRelatedVideos(c.Request.Context(), userID, postID, limit, offset)
+	posts, next, err := h.svc.GetRelatedVideosWithChip(c.Request.Context(), userID, postID, limit, offset, chip)
 	switch {
 	case errors.Is(err, service.ErrFeedbackPostNotFound):
 		// The seed does not exist, or this viewer cannot see it. One

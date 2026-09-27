@@ -27,6 +27,16 @@ var hashtagRegex = regexp.MustCompile(`#(\w+)`)
 // lowercase deduplicated hashtag strings (without the leading #).
 // postDurationMs prefers the millisecond field and falls back to the
 // legacy whole-second one (older producers send only duration_seconds).
+// publishedAtOf turns an event's created_at into the document's
+// published_at pointer; a zero time stays absent rather than becoming
+// year 1.
+func publishedAtOf(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
 func postDurationMs(durationMs, durationSeconds int) int {
 	if durationMs > 0 {
 		return durationMs
@@ -564,8 +574,27 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 				DurationMs:      postDurationMs(p.DurationMs, p.DurationSeconds),
 				MediaID:         firstMediaID(p.Media),
 				MediaKind:       firstMediaKind(p.Media),
+				// MTube filters: as the producer reports them (0 / false
+				// from a producer that does not yet). PostCreated is
+				// emitted at publish time, so its created_at is the best
+				// published_at the event can offer.
+				Height:       p.Height,
+				HasSubtitles: p.HasSubtitles,
+				PublishedAt:  publishedAtOf(p.CreatedAt),
 			},
 		})
+
+	case events.ReelViewed:
+		// MTube sort=views: one view per reel.viewed on the post document.
+		// Analytics-service owns the display number the feeds show; this
+		// is the index's own approximation, refreshed from analytics on
+		// each posts reindex. Long videos have no view event on this
+		// topic, so their count moves only on reindex.
+		var p events.ReelViewedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.IncrementPostViewCount(ctx, p.ReelID, 1)
 
 	case events.PostSearchEligibilityChanged:
 		// M2-P0-2: the single contract for approval, rejection, flagging,

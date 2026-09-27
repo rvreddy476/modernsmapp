@@ -594,6 +594,14 @@ type PostCreatedPayload struct {
 	Title      string         `json:"title,omitempty"`
 	DurationMs int            `json:"duration_ms,omitempty"`
 	Media      []PostMediaRef `json:"media,omitempty"`
+
+	// MTube search filters (2026-09-27). Additive and optional: Height is
+	// the tallest attached video's pixel height (0 = unknown), HasSubtitles
+	// whether a caption track is published for it. A producer that omits
+	// them leaves the search document without the hd/4k/cc facets until
+	// the next reindex fills them from the database.
+	Height       int  `json:"height,omitempty"`
+	HasSubtitles bool `json:"has_subtitles,omitempty"`
 }
 
 // PostMediaRef is one attached asset as carried on the post events: enough
@@ -654,6 +662,10 @@ type PostSearchEligibilityChangedPayload struct {
 	Title      string         `json:"title,omitempty"`
 	DurationMs int            `json:"duration_ms,omitempty"`
 	Media      []PostMediaRef `json:"media,omitempty"`
+	// Same MTube search fields as PostCreatedPayload, for the same reason
+	// the title rides along: the document is replaced whole.
+	Height       int  `json:"height,omitempty"`
+	HasSubtitles bool `json:"has_subtitles,omitempty"`
 
 	ChangedAt time.Time `json:"changed_at"`
 }

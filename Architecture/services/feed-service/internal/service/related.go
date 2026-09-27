@@ -115,8 +115,24 @@ func relatedFamily(contentType string) string {
 // Returns the page and the offset to continue from (0 when the pool is
 // exhausted, so the caller emits no cursor).
 func (s *Service) GetRelatedVideos(ctx context.Context, viewerID, postID uuid.UUID, limit, offset int) ([]HydratedPost, int, error) {
+	return s.GetRelatedVideosWithChip(ctx, viewerID, postID, limit, offset, RelatedChip{})
+}
+
+// GetRelatedVideosWithChip is GetRelatedVideos narrowed by a chip (MTube,
+// 2026-09-27; tube_chips.go): `fresh` and `seen` are applied to the pool
+// BEFORE ranking, so a dropped row never occupies an offset; `topic:<slug>`
+// is applied after hydration, where the category is known, exactly as the
+// category surface does it. Under `seen` the ranker is bypassed and the
+// collection order kept: the ranker's ExcludeSeen exists to drop what the
+// viewer has already finished, which is the opposite of what the chip
+// asks for.
+func (s *Service) GetRelatedVideosWithChip(ctx context.Context, viewerID, postID uuid.UUID, limit, offset int, chip RelatedChip) ([]HydratedPost, int, error) {
 	if limit <= 0 {
 		return []HydratedPost{}, 0, nil
+	}
+	scope, err := s.resolveChipScope(ctx, viewerID, chip.Kind)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// The seed is fetched through post-service's viewer-scoped batch —
@@ -160,9 +176,13 @@ func (s *Service) GetRelatedVideos(ctx context.Context, viewerID, postID uuid.UU
 	}
 	pool = applyBlockFilter(pool, blocked)
 	pool = s.applyHiddenAuthorFilter(ctx, pool)
+	// fresh / seen are decided from the candidate row alone; see above.
+	pool = filterItemsByChip(pool, chip.Kind, scope)
 
 	ranked := pool
-	if s.ranker != nil {
+	if chip.Kind == TubeChipSeen {
+		ranked = excludeByID(pool, postID)
+	} else if s.ranker != nil {
 		out, err := s.ranker.RankRelated(ctx, viewerID, seed, feedItemsToCandidates(pool), len(pool))
 		if err != nil {
 			// Same policy as every other surface: a ranking failure
@@ -204,6 +224,9 @@ func (s *Service) GetRelatedVideos(ctx context.Context, viewerID, postID uuid.UU
 		// HydratePosts may reorder and may drop; re-impose the ranked
 		// order over what survived so the page reflects the ranking.
 		hydrated = orderByCandidates(hydrated, chunk)
+		if chip.Kind == RelatedChipTopic {
+			hydrated = filterHydratedByCategory(hydrated, chip.Topic)
+		}
 		for _, h := range hydrated {
 			if len(page) >= limit {
 				break

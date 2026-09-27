@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -156,58 +155,11 @@ func filterHydratedByCategory(posts []HydratedPost, category string) []HydratedP
 // way, suppresses the fill the same way, and additionally leaves the page
 // in timeline order: that tab promises newest first, never a ranking.
 func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, followingOnly, subscribedOnly bool) ([]HydratedPost, string, error) {
-	var blocked map[uuid.UUID]struct{}
-	fetch := func(ctx context.Context, before string, limit int) ([]FeedItem, string, error) {
-		items, next, b, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly, subscribedOnly)
-		blocked = b
-		return items, next, err
-	}
-	page, err := s.collectHydratedCategoryPage(ctx, userID, limit, before, category, fetch)
-	if err != nil {
-		return nil, "", err
-	}
-
-	// Discovery fill, as on the unfiltered surface (GetLongVideoFeedPage),
-	// with one extra condition: the timeline must be EXHAUSTED, not merely
-	// out of window budget. A fill on a page whose cursor still points into
-	// the timeline could resurface the same post on a later page.
-	if page.Exhausted && discoveryFillAllowed(followingOnly || subscribedOnly, before, len(page.Posts), limit) {
-		fill, err := s.longVideoDiscoveryFill(ctx, userID, blocked, category, limit*2)
-		if err != nil {
-			log.Printf("long video discovery fill (category %q) failed for %s: %v", category, userID, err)
-		} else {
-			kept := make([]FeedItem, 0, len(page.Posts))
-			for _, p := range page.Posts {
-				kept = append(kept, page.Items[p.ID])
-			}
-			merged := mergeDiscoveryFill(kept, fill, limit)
-			if extra := merged[len(kept):]; len(extra) > 0 {
-				hydrated, err := s.HydratePosts(ctx, extra, userID)
-				if err != nil {
-					return nil, "", fmt.Errorf("hydrate discovery fill: %w", err)
-				}
-				// post-service already filtered by category; re-check so a
-				// stale cached row cannot slip a different category in.
-				for _, p := range filterHydratedByCategory(hydrated, category) {
-					if len(page.Posts) >= limit {
-						break
-					}
-					page.Posts = append(page.Posts, p)
-					for _, it := range extra {
-						if it.PostID == p.ID {
-							page.Items[p.ID] = it
-							break
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if subscribedOnly {
-		return chronologicalHydratedPage(page), page.Next, nil
-	}
-	return s.rankHydratedPage(ctx, userID, page, limit, "Long video feed (category)"), page.Next, nil
+	// The category surface is the filtered surface with only a category
+	// set (tube_page.go, MTube 2026-09-27): one collection loop, one fill
+	// rule and one ranking step for every Tube narrowing, so a chip or a
+	// sort cannot drift from what the category filter does.
+	return s.GetLongVideoFilteredPage(ctx, userID, limit, before, TubeFilter{Category: category}, followingOnly, subscribedOnly)
 }
 
 // GetVideoFeedCategoryPage is /v1/feed/watch narrowed to one category.

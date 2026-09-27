@@ -150,6 +150,10 @@ func (s *Store) initIndices() {
 	// indices + engagement_score mappings layered onto users/posts/
 	// products. See mappings.go.
 	s.initEntityIndices()
+
+	// MTube (2026-09-27): the video-filter fields on posts_v1 and the two
+	// Tube indices (channels, public playlists). See tube.go.
+	s.initTubeIndices(ctx)
 }
 
 // putEngagementMapping idempotently adds `engagement_score` (double)
@@ -360,6 +364,20 @@ type PostDoc struct {
 	DurationMs  int    `json:"duration_ms,omitempty"`
 	MediaID     string `json:"media_id,omitempty"`
 	MediaKind   string `json:"media_kind,omitempty"`
+
+	// MTube video filters (2026-09-27, tube.go). Height is the tallest
+	// attached video's pixel height (hd = ≥720, 4k = ≥2160; 0 = unknown);
+	// HasSubtitles whether a caption track is published; ViewCount the
+	// display view count (sort=views); PublishedAt when the post became
+	// public. New documents carry them from the event payloads where the
+	// producer sets them; existing documents get them from the next posts
+	// reindex (cmd/backfill -entity posts). A projection write replaces
+	// the document whole, so a live view_count increment is reset by the
+	// next re-projection — the same trade engagement_score already makes.
+	Height       int        `json:"height,omitempty"`
+	HasSubtitles bool       `json:"has_subtitles,omitempty"`
+	ViewCount    int64      `json:"view_count,omitempty"`
+	PublishedAt  *time.Time `json:"published_at,omitempty"`
 }
 
 // PostSearchKind is the page-scoped ?type= filter for post searches.

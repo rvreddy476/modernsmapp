@@ -298,10 +298,18 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 			"category must be a lowercase slug (letters, digits, '-', '_')", nil)
 		return
 	}
-	if category != "" {
-		hydrated, next, err := h.svc.GetLongVideoCategoryPage(c.Request.Context(), userID, limit, before, category, followingOnly, subscribedOnly)
+	// MTube (2026-09-27): `sort=recent|popular` and
+	// `chip=fresh|seen|new_to_you`, both optional, both combinable with
+	// category — see service/tube_chips.go. Refused with a 400 before the
+	// service is touched, like category.
+	filter, ok := tubeFilterParams(c, category)
+	if !ok {
+		return
+	}
+	if !filter.IsZero() {
+		hydrated, next, err := h.svc.GetLongVideoFilteredPage(c.Request.Context(), userID, limit, before, filter, followingOnly, subscribedOnly)
 		if err != nil {
-			log.Printf("long video feed (category %q) failed: %v", category, err)
+			log.Printf("long video feed (category %q, chip %q, sort %q) failed: %v", filter.Category, filter.Chip, filter.Sort, err)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
 				"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
 			return
@@ -392,6 +400,27 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 
 	c.Writer.Header().Set("X-Feed-Surface", "watch")
 	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+}
+
+// tubeFilterParams reads `sort` and `chip` on /v1/feed/videos and folds
+// them with the already-validated category into one TubeFilter. An
+// unknown value is refused as 400 (INVALID_SORT / INVALID_CHIP) with ok
+// false, before the service is touched; the handler tests build the
+// handler with a nil service to pin exactly that.
+func tubeFilterParams(c *gin.Context, category string) (service.TubeFilter, bool) {
+	sortBy, ok := service.NormalizeTubeSort(c.Query("sort"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SORT",
+			"sort must be one of: recent, popular", nil)
+		return service.TubeFilter{}, false
+	}
+	chip, ok := service.NormalizeTubeChip(c.Query("chip"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CHIP",
+			"chip must be one of: fresh, seen, new_to_you", nil)
+		return service.TubeFilter{}, false
+	}
+	return service.TubeFilter{Category: category, Chip: chip, Sort: sortBy}, true
 }
 
 // tubeNarrowing reads the two Tube narrowings, `following_only` (authors the

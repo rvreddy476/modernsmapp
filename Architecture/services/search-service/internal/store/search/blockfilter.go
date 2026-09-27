@@ -168,7 +168,7 @@ func ownerFieldForIndex(index string) string {
 		return "author_id"
 	case IndexUsers:
 		return "user_id"
-	case IndexCommunities, IndexChannels:
+	case IndexCommunities, IndexChannels, IndexTubeChannels, IndexTubeCollections:
 		return "owner_id"
 	case IndexProducts:
 		return "seller_id"

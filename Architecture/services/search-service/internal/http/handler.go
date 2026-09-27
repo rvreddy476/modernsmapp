@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/search-service/internal/commerceclient"
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/mediaclient"
+	"github.com/atpost/search-service/internal/postclient"
 	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
@@ -37,6 +38,9 @@ type Handler struct {
 	// built from, and walks the catalogue for the product reindex.
 	// Nil-safe: the facet and reindex routes answer 503 without it.
 	commerceClient *commerceclient.Client
+	// postClient walks post-service's Tube catalogue listing for the tube
+	// reindex (handler_tube.go). Nil-safe: that route answers 503.
+	postClient *postclient.Client
 }
 
 // WithPrivacyLookup wires the identity settings lookup the reindex uses.
@@ -136,6 +140,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/events", h.SearchEvents)
 		v1.GET("/messages", h.SearchMessages)
 
+		// MTube (2026-09-27, handler_tube.go): Tube channels (post-service
+		// `channels`, not the broadcast channels_v1 entity) and public
+		// playlists, plus the reindex that feeds both from post-service.
+		v1.GET("/channels", h.SearchTubeChannels)
+		v1.GET("/collections", h.SearchTubeCollections)
+		v1.POST("/internal/reindex/tube", h.ReindexTube)
+
 		// Admin reconciliation — rebuild users_v1 from profile-service.
 		// Internal-key gated (the whole engine is when internalKey is
 		// set). Use this after an OpenSearch wipe or any time search
@@ -226,7 +237,22 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 		}
 	}
 
-	results, err := h.store.SearchPostsFiltered(c.Request.Context(), query, contentTypes, limit)
+	// MTube (2026-09-27): ?sort=relevance|views|date, ?duration=short|
+	// medium|long, ?date=hour|today|week|month|year, ?features=cc,hd,4k —
+	// on type=videos only. Validated before the store is touched; with
+	// none of them set the query sent is exactly the one it always was.
+	videoOpts, ok := videoSearchOptions(c, contentTypes)
+	if !ok {
+		return
+	}
+
+	var results []search.PostDoc
+	var err error
+	if videoOpts.IsZero() {
+		results, err = h.store.SearchPostsFiltered(c.Request.Context(), query, contentTypes, limit)
+	} else {
+		results, err = h.store.SearchVideosFiltered(c.Request.Context(), query, contentTypes, videoOpts, limit)
+	}
 	if err != nil {
 		slog.Error("SearchPosts error", "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)

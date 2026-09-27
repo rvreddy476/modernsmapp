@@ -240,6 +240,15 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	defer pool.Close()
 
 	args := []any{}
+	// MTube filters (2026-09-27): height from post-service's video_metadata,
+	// has_subtitles from media-service's completed caption jobs. Both tables
+	// live beside `posts` on the shared app database, but each is owned by
+	// a different migration set, so their presence is checked rather than
+	// assumed — a database without one simply yields 0 / false for every
+	// row, which is the same answer a producer that does not report them
+	// gives, and the run says so.
+	heightExpr, subtitlesExpr := videoFilterExprs(ctx, pool)
+
 	// Result-row projection (title, first attached asset, longest video
 	// duration) is read here exactly as post-service puts it on the
 	// PostCreated / eligibility events, so a rebuilt document matches a
@@ -257,7 +266,10 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	                       WHERE pm.post_id = p.id ORDER BY pm.position LIMIT 1), ''),
 	             COALESCE((SELECT MAX(COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0))
 	                       FROM post_media pm JOIN media_assets ma ON ma.id = pm.media_id
-	                       WHERE pm.post_id = p.id AND pm.kind = 'video'), 0)::int
+	                       WHERE pm.post_id = p.id AND pm.kind = 'video'), 0)::int,
+	             ` + heightExpr + `,
+	             ` + subtitlesExpr + `,
+	             COALESCE(p.publish_at, p.created_at) AS published_at
 	      FROM posts p
 	      ORDER BY p.created_at DESC`
 	if limit > 0 {
@@ -282,17 +294,69 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	// hashtags field and the consumer can only regex the text. A backfill
 	// repairs them; the next edit through the live path loses them again.
 	var withTags, columnOnly int
+
+	// Eligible rows are written in batches so the display view count
+	// (analytics-service, sort=views) can be read in one call per batch
+	// rather than one per post. See views.go; without ANALYTICS_SERVICE_URL
+	// every count is 0 and the run says so once.
+	views := newViewCountSource(envOr("ANALYTICS_SERVICE_URL", ""), envOr("INTERNAL_SERVICE_KEY", ""))
+	pending := make([]search.PostProjection, 0, viewCountBatch)
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		ids := make([]string, 0, len(pending))
+		for _, p := range pending {
+			ids = append(ids, p.PostID)
+		}
+		counts := views.fetch(ctx, ids)
+		for _, p := range pending {
+			p.Doc.ViewCount = counts[p.PostID]
+			// Re-review v2 P0-1: this must go through the author-fence
+			// handshake, not the bare projection.
+			//
+			// The reconciler reads a PostgreSQL statement snapshot and writes
+			// long afterwards, which is the exact shape the fence exists to
+			// catch:
+			//
+			//	1. a public+approved row is not yet in posts_v1
+			//	2. backfill reads it as eligible
+			//	3. the account is deleted; the fence lands and the sweep runs,
+			//	   but the absent post is not in the sweep snapshot
+			//	4. backfill writes its stale row and creates a public document
+			//
+			// There is no per-post erasure marker to stop it — the post did
+			// not exist when the sweep ran — so only the author-level check
+			// plus recheck can. A bare ApplyPostProjection here resurrected a
+			// deleted account's content.
+			//
+			// Reproject: the row's revision has not moved, but the projection
+			// shape may have (result-row fields, 2026-09-05; MTube filters,
+			// 2026-09-27), so an eligible document is rewritten at its current
+			// revision. Removal ties and erased authors still win — see
+			// PostProjection.Reproject.
+			if err := store.IndexPostUnlessAuthorErased(ctx, p); err != nil {
+				slog.Warn("backfill posts: index failed", "id", p.PostID, "err", err)
+				continue
+			}
+			indexed++
+		}
+		pending = pending[:0]
+	}
+
 	for rows.Next() {
 		var id, authorID, text, visibility, reviewStatus, contentType string
 		var title, mediaID, mediaKind string
 		var storedHashtags []string
-		var durationMs int
+		var durationMs, height int
+		var hasSubtitles bool
 		var searchRev int64
-		var createdAt time.Time
+		var createdAt, publishedAt time.Time
 		var isDeleted, isScheduled bool
 		if err := rows.Scan(&id, &authorID, &text, &visibility,
 			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted, &isScheduled,
-			&title, &storedHashtags, &mediaID, &mediaKind, &durationMs); err != nil {
+			&title, &storedHashtags, &mediaID, &mediaKind, &durationMs,
+			&height, &hasSubtitles, &publishedAt); err != nil {
 			return indexed, err
 		}
 
@@ -356,29 +420,8 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 			continue
 		}
 
-		// Re-review v2 P0-1: this must go through the author-fence
-		// handshake, not the bare projection.
-		//
-		// The reconciler reads a PostgreSQL statement snapshot and writes
-		// long afterwards, which is the exact shape the fence exists to
-		// catch:
-		//
-		//	1. a public+approved row is not yet in posts_v1
-		//	2. backfill reads it as eligible
-		//	3. the account is deleted; the fence lands and the sweep runs,
-		//	   but the absent post is not in the sweep snapshot
-		//	4. backfill writes its stale row and creates a public document
-		//
-		// There is no per-post erasure marker to stop it — the post did
-		// not exist when the sweep ran — so only the author-level check
-		// plus recheck can. A bare ApplyPostProjection here resurrected a
-		// deleted account's content.
-		//
-		// Reproject: the row's revision has not moved, but the projection
-		// shape may have (result-row fields, 2026-09-05), so an eligible
-		// document is rewritten at its current revision. Removal ties and
-		// erased authors still win — see PostProjection.Reproject.
-		if err := store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
+		published := publishedAt
+		pending = append(pending, search.PostProjection{
 			PostID:    id,
 			Rev:       searchRev,
 			Reproject: true,
@@ -397,13 +440,16 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 				DurationMs:   durationMs,
 				MediaID:      mediaID,
 				MediaKind:    mediaKind,
+				Height:       height,
+				HasSubtitles: hasSubtitles,
+				PublishedAt:  &published,
 			},
-		}); err != nil {
-			slog.Warn("backfill posts: index failed", "id", id, "err", err)
-			continue
+		})
+		if len(pending) >= viewCountBatch {
+			flush()
 		}
-		indexed++
 	}
+	flush()
 	slog.Info("backfill posts: reconciled",
 		"indexed", indexed, "removed_ineligible", removed, "skipped_dry", skipped,
 		"documents_with_hashtags", withTags,

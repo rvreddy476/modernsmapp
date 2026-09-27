@@ -103,6 +103,10 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 			DurationMs:      p.DurationMs,
 			MediaID:         firstMediaID(p.Media),
 			MediaKind:       firstMediaKind(p.Media),
+			// MTube filters, as on PostCreated (consumer.go).
+			Height:       p.Height,
+			HasSubtitles: p.HasSubtitles,
+			PublishedAt:  publishedAtOf(p.CreatedAt),
 		},
 	}); err != nil {
 		return fmt.Errorf("eligibility: index %s: %w", p.PostID, err)

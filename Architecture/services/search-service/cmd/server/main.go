@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
 	"github.com/atpost/search-service/internal/mediaclient"
+	"github.com/atpost/search-service/internal/postclient"
 	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/purge"
 	"github.com/atpost/search-service/internal/reindex"
@@ -228,6 +229,10 @@ func main() {
 	// The facet rail and the product reindex both read from commerce.
 	handler.WithCommerceClient(commerceClient)
 	slog.Info("search-service: media client wired", "url", mediaServiceURL)
+	// The tube reindex (channels, public playlists) walks post-service's
+	// internal catalogue listing — MTube, 2026-09-27.
+	postServiceURL := env("POST_SERVICE_URL", "http://post-service:8084")
+	handler.WithPostClient(postclient.New(postServiceURL, internalKey))
 
 	// Postgres analytics + extras stores built in step 4b above; wire them
 	// into the HTTP handler here if present.
