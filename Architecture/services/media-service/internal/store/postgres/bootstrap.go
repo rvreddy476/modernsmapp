@@ -2,14 +2,51 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io/fs"
 	"strings"
+	"time"
 
 	"github.com/atpost/shared/store/migrationrunner"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// bootstrapAttempts bounds the retries on a transient DDL conflict. Other
+// services share this database and some declare overlapping tables, so a
+// simultaneous restart can deadlock one bootstrap (SQLSTATE 40P01); the
+// advisory lock below only serialises media-service's own two processes.
+const bootstrapAttempts = 5
+
+// isTransientDDLConflict: a deadlock or serialization failure, which a
+// retry resolves once the other service's DDL has committed.
+func isTransientDDLConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "40P01" || pgErr.Code == "40001"
+	}
+	return false
+}
+
+// BootstrapSchema applies the schema, retrying a transient DDL conflict
+// with a short backoff instead of letting the process exit on boot.
+func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string, migrations fs.FS) error {
+	var err error
+	for attempt := 1; attempt <= bootstrapAttempts; attempt++ {
+		err = bootstrapSchemaOnce(ctx, db, schemaSQL, migrations)
+		if err == nil || !isTransientDDLConflict(err) || attempt == bootstrapAttempts {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+		}
+	}
+	return err
+}
 
 // BootstrapSchema applies the base media-service schema, then runs any migration
 // files in `migrations` not yet recorded in `schema_migrations`.
@@ -19,7 +56,7 @@ import (
 // serialise via a session advisory lock keyed to the service name. Whichever
 // process gets the lock first applies the schema; the other waits, then runs
 // the same statements as harmless no-ops via IF NOT EXISTS.
-func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string, migrations fs.FS) error {
+func bootstrapSchemaOnce(ctx context.Context, db *pgxpool.Pool, schemaSQL string, migrations fs.FS) error {
 	if db == nil {
 		return fmt.Errorf("db pool is nil")
 	}
