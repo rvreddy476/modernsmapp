@@ -21,6 +21,18 @@ type Playlist struct {
 	ItemCount   int        `json:"item_count"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	// Kind is 'user' for a creator-made playlist, or a system kind
+	// (system_playlists.go). Additive on the wire (2026-09-27).
+	Kind string `json:"kind"`
+}
+
+// playlistColumns / playlistScanDestinations are the one projection every
+// playlist read uses, so a new column (kind) cannot be missed by one of
+// them.
+const playlistColumns = `id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at, kind`
+
+func playlistScanDestinations(p *Playlist) []any {
+	return []any{&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt, &p.Kind}
 }
 
 // PlaylistItem links a post to a playlist at a given position.
@@ -33,21 +45,33 @@ type PlaylistItem struct {
 
 // CreatePlaylist inserts a new playlist and populates id, created_at, updated_at.
 func (s *Store) CreatePlaylist(ctx context.Context, p *Playlist) error {
+	// Always a user playlist: the system kinds are created by
+	// GetOrCreateSystemPlaylist alone.
+	p.Kind = PlaylistKindUser
 	return s.db.QueryRow(ctx, `
-		INSERT INTO playlists (creator_id, channel_id, title, description, cover_url, visibility)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO playlists (creator_id, channel_id, title, description, cover_url, visibility, kind)
+		VALUES ($1, $2, $3, $4, $5, $6, 'user')
 		RETURNING id, created_at, updated_at`,
 		p.CreatorID, p.ChannelID, p.Title, p.Description, p.CoverURL, p.Visibility,
 	).Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt)
+}
+
+// CountUserPlaylists is the creator summary's `collections`: the owner's
+// own (kind 'user') playlists, whatever their visibility.
+func (s *Store) CountUserPlaylists(ctx context.Context, ownerID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM playlists WHERE creator_id = $1 AND kind = 'user'`, ownerID).Scan(&n)
+	return n, err
 }
 
 // GetPlaylist retrieves a playlist by ID. Returns nil, nil if not found.
 func (s *Store) GetPlaylist(ctx context.Context, id uuid.UUID) (*Playlist, error) {
 	p := &Playlist{}
 	err := s.db.QueryRow(ctx, `
-		SELECT id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at
+		SELECT id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at, kind
 		FROM playlists WHERE id = $1`, id,
-	).Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt, &p.Kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -64,7 +88,7 @@ func (s *Store) GetPlaylist(ctx context.Context, id uuid.UUID) (*Playlist, error
 // would hand back short pages and make limit/offset lie about what is left.
 func (s *Store) ListPlaylistsByCreator(ctx context.Context, creatorID uuid.UUID, ownerView bool, limit, offset int) ([]Playlist, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at
+		SELECT id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at, kind
 		FROM playlists WHERE creator_id = $1 AND ($4 OR visibility = 'public')
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
 		creatorID, limit, offset, ownerView)
@@ -75,7 +99,7 @@ func (s *Store) ListPlaylistsByCreator(ctx context.Context, creatorID uuid.UUID,
 	var result []Playlist
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt, &p.Kind); err != nil {
 			return nil, err
 		}
 		result = append(result, p)
@@ -106,9 +130,9 @@ func (s *Store) UpdatePlaylist(ctx context.Context, id uuid.UUID, patch Playlist
 			cover_url   = COALESCE($5, cover_url),
 			updated_at  = NOW()
 		WHERE id = $1
-		RETURNING id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at`,
+		RETURNING id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at, kind`,
 		id, patch.Title, patch.Description, patch.Visibility, patch.CoverURL,
-	).Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt, &p.Kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

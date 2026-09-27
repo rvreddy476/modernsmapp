@@ -1,0 +1,164 @@
+[
+  {
+    "id": "comedy",
+    "slug": "comedy",
+    "label": "Comedy",
+    "kind": "all"
+  },
+  {
+    "id": "music",
+    "slug": "music",
+    "label": "Music",
+    "kind": "all"
+  },
+  {
+    "id": "dance",
+    "slug": "dance",
+    "label": "Dance",
+    "kind": "all"
+  },
+  {
+    "id": "food",
+    "slug": "food",
+    "label": "Food",
+    "kind": "all"
+  },
+  {
+    "id": "travel",
+    "slug": "travel",
+    "label": "Travel",
+    "kind": "all"
+  },
+  {
+    "id": "sports",
+    "slug": "sports",
+    "label": "Sports",
+    "kind": "all"
+  },
+  {
+    "id": "education",
+    "slug": "education",
+    "label": "Education",
+    "kind": "all"
+  },
+  {
+    "id": "tech",
+    "slug": "tech",
+    "label": "Tech",
+    "kind": "all"
+  },
+  {
+    "id": "beauty",
+    "slug": "beauty",
+    "label": "Beauty",
+    "kind": "all"
+  },
+  {
+    "id": "fashion",
+    "slug": "fashion",
+    "label": "Fashion",
+    "kind": "all"
+  },
+  {
+    "id": "gaming",
+    "slug": "gaming",
+    "label": "Gaming",
+    "kind": "all"
+  },
+  {
+    "id": "fitness",
+    "slug": "fitness",
+    "label": "Fitness",
+    "kind": "all"
+  },
+  {
+    "id": "pets",
+    "slug": "pets",
+    "label": "Pets",
+    "kind": "all"
+  },
+  {
+    "id": "art",
+    "slug": "art",
+    "label": "Art",
+    "kind": "all"
+  },
+  {
+    "id": "news",
+    "slug": "news",
+    "label": "News",
+    "kind": "all"
+  },
+  {
+    "id": "lifestyle",
+    "slug": "lifestyle",
+    "label": "Lifestyle",
+    "kind": "all"
+  },
+  {
+    "id": "business",
+    "slug": "business",
+    "label": "Business",
+    "kind": "all"
+  },
+  {
+    "id": "other",
+    "slug": "other",
+    "label": "Other",
+    "kind": "all"
+  },
+  {
+    "id": "film-animation",
+    "slug": "film-animation",
+    "label": "Film \u0026 animation",
+    "kind": "long"
+  },
+  {
+    "id": "science-tech",
+    "slug": "science-tech",
+    "label": "Science \u0026 tech",
+    "kind": "long"
+  },
+  {
+    "id": "howto-style",
+    "slug": "howto-style",
+    "label": "How-to \u0026 style",
+    "kind": "long"
+  },
+  {
+    "id": "people-blogs",
+    "slug": "people-blogs",
+    "label": "People \u0026 blogs",
+    "kind": "long"
+  },
+  {
+    "id": "entertainment",
+    "slug": "entertainment",
+    "label": "Entertainment",
+    "kind": "long"
+  },
+  {
+    "id": "autos",
+    "slug": "autos",
+    "label": "Autos \u0026 vehicles",
+    "kind": "long"
+  },
+  {
+    "id": "documentary",
+    "slug": "documentary",
+    "label": "Documentary",
+    "kind": "long"
+  },
+  {
+    "id": "podcasts",
+    "slug": "podcasts",
+    "label": "Podcasts",
+    "kind": "long"
+  },
+  {
+    "id": "kids",
+    "slug": "kids",
+    "label": "Kids",
+    "kind": "long"
+  }
+]

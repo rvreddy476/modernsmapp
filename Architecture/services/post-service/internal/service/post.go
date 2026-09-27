@@ -147,6 +147,22 @@ type Service struct {
 	// (video_authoring_authz.go).
 	videoAuthoringAuthz
 
+	// MTube contracts (2026-09-27), each a narrow store slice so its guard
+	// is testable without a database: owner edits (post_edit.go), the
+	// server-owned collections (system_playlists.go), the creator's comment
+	// tools (comment_creator.go) and live -> video (live_vod.go).
+	postEdits       postEditStore
+	systemPlaylists systemPlaylistStore
+	creatorComments creatorCommentStore
+	liveVOD         liveVODStore
+	// liveServiceURL is live-service-v2, asked for a stream's title when the
+	// vod_ready event carries none.
+	liveServiceURL string
+	// channelCounts is the 60 s in-process cache behind the channel page's
+	// public tally (channel_branding.go), the viewCountCache pattern.
+	channelCountsMu sync.Mutex
+	channelCounts   map[uuid.UUID]channelCountsEntry
+
 	// videoSeries backs the video-series visibility, ownership and removal
 	// rules (video_series.go). Nil when there is no Postgres store; every
 	// series flow then fails closed.
@@ -168,6 +184,10 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.channels = pg
 		svc.authoringOwners = pg
 		svc.videoSeries = pg
+		svc.postEdits = pg
+		svc.systemPlaylists = pg
+		svc.creatorComments = pg
+		svc.liveVOD = pg
 	}
 	if rdb != nil {
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
@@ -423,6 +443,17 @@ type PostDetail struct {
 	// Author is the same block the feed carries, from the same source
 	// (identity-profile). Absent when the profile lookup is unavailable.
 	Author *PostAuthor `json:"author,omitempty"`
+	// MTube (2026-09-27), never omitempty so a client cannot confuse
+	// "false" with "unknown": ViewerDisliked is the viewer's private tune
+	// (no count exists anywhere); ViewerQueued is "in the viewer's Queue"
+	// (watch_later system collection).
+	ViewerDisliked bool `json:"viewer_disliked"`
+	ViewerQueued   bool `json:"viewer_queued"`
+	// Chapters: saved media_chapters, or for a long video the chapters
+	// derived from description timestamps (chapters.go). Always an array
+	// on the direct read (GET /v1/posts/:id); null on list surfaces, which
+	// do not load chapters.
+	Chapters []ChapterRef `json:"chapters"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
@@ -1508,7 +1539,11 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 			detail.ViewerRepost = repostState
 			detail.HasReposted = true
 		}
+		// MTube (2026-09-27): the viewer's private dislike and Queue state.
+		detail.ViewerDisliked = s.viewerDisliked(ctx, viewerID, id)
+		detail.ViewerQueued = s.viewerQueued(ctx, *viewerID, id)
 	}
+	detail.Chapters = s.chaptersForDetail(ctx, p)
 
 	// Tube: the author's channel card on a long video (channels.go).
 	attachViewer := uuid.Nil
@@ -2097,11 +2132,19 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 		if err := s.scyllaStore.React(ctx, postID, userID, "like"); err != nil {
 			log.Printf("Warning: failed to write reaction to ScyllaDB: %v", err)
 		}
+		// Like and tune are mutually exclusive (tune.go): a like being
+		// SET clears the viewer's private dislike.
+		if err := s.pgStore.DeleteTune(ctx, userID, postID); err != nil {
+			log.Printf("Warning: failed to clear tune on like: %v", err)
+		}
 	} else {
 		if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
 			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
 		}
 	}
+	// A liked long video joins the viewer's "Loved" collection; an unliked
+	// one leaves it (system_playlists.go; reels are never written there).
+	s.syncLikedCollection(ctx, userID, post, result.IsSet)
 	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Author already loaded above — no second GetPost needed.

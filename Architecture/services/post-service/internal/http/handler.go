@@ -103,6 +103,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/me/scheduled", h.ListMyScheduledPosts)
 		v1.PATCH("/:postId/schedule", h.UpdateSchedule)
 		v1.PUT("/:postId/pin", h.TogglePin)
+		// MTube (2026-09-27, post_edit.go): edit after publish, the
+		// creator summary, and the viewer's Queue.
+		v1.PATCH("/:postId", h.UpdatePost)
+		v1.GET("/me/summary", h.GetCreatorSummary)
+		v1.POST("/:postId/watch-later", h.AddWatchLater)
+		v1.DELETE("/:postId/watch-later", h.RemoveWatchLater)
 
 		// Legacy reaction routes (kept for backward compat)
 		v1.POST("/:postId/reactions", h.React)
@@ -169,11 +175,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// internal-key middleware applied to all /v1 routes above is what gates it.
 	r.POST("/v1/internal/media-access", h.MediaAccess)
 	r.POST("/v1/internal/media-access/batch", h.MediaAccessBatch)
+	r.GET("/v1/internal/media-download-allowed", h.MediaDownloadAllowed) // media-service download gate (media_download_internal.go)
 	// ws-gateway asks this before admitting a socket to the post:<id> room.
 	r.GET("/v1/internal/posts/:id/visibility", h.PostVisibility)
 
 	// Tube channels (channels_handler.go): one per account, gate for long videos.
 	h.registerChannelRoutes(r)
+	h.registerTubeCatalogueInternalRoutes(r) // MTube search reindex source (channels_internal_list.go)
 
 	// Stories
 	stories := r.Group("/v1/stories")
@@ -248,6 +256,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		comments.POST("/:commentId/dislike", h.ToggleCommentDislike)
 		comments.DELETE("/:commentId", h.DeleteComment)
 		comments.PATCH("/:commentId", h.EditComment)
+		// Creator tools (2026-09-27, comment_creator.go). "inbox" is static
+		// and registered alongside :commentId; gin resolves the static
+		// child first, so it is never read as a comment id.
+		comments.GET("/inbox", h.ListCreatorInbox)
+		comments.POST("/:commentId/heart", h.HeartComment)
+		comments.DELETE("/:commentId/heart", h.UnheartComment)
+		comments.PUT("/:commentId/pin", h.PinComment)
+		comments.DELETE("/:commentId/pin", h.UnpinComment)
 	}
 
 	// Flick Series
@@ -290,6 +306,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	playlists := r.Group("/v1/playlists")
 	{
 		playlists.POST("", h.CreatePlaylist)
+		// The caller's server-owned collections (2026-09-27,
+		// post_edit.go): static "system" beside :playlistId.
+		playlists.GET("/system/:kind", h.GetSystemPlaylist)
 		playlists.GET("/:playlistId", h.GetPlaylist)
 		// A playlist could be created and added to but never edited: no
 		// rename, no re-description, no cover, no reorder and no way to
@@ -473,7 +492,9 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 	case errors.Is(err, service.ErrMediaTypeMismatch):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_TYPE_MISMATCH", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidCategory):
-		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", err.Error(), nil)
+		// 422, not 400 (2026-09-27): the body parses, one value is outside
+		// the taxonomy. The code is unchanged; no client keys on the status.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusUnprocessableEntity, "INVALID_CATEGORY", err.Error(), nil)
 	case errors.Is(err, service.ErrTooManyTaggedUsers):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TOO_MANY_TAGGED_USERS",
 			fmt.Sprintf("a post may tag at most %d people", service.MaxTaggedUsers), nil)
@@ -520,10 +541,25 @@ func parseTaggedUserIDs(raw []string) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
-// ListCategories serves the flick taxonomy so the composer never hardcodes it.
+// ListCategories serves the ONE video taxonomy so no composer hardcodes it.
 // GET /v1/posts/categories — static, no viewer state, safe to cache.
+//
+// Shape (2026-09-27): a plain list of {id, slug, label, kind}. The list was
+// {id, label} for flicks alone; `slug` (= id) and `kind` (all | short |
+// long) are additive, and the 18 original entries keep their ids and
+// order with kind "all", followed by the long-video entries. A reel
+// composer that predates `kind` reads the same objects it always did; the
+// Tube studio filters on kind in ("all", "long"). ?kind=short|long narrows
+// the list server-side for clients that prefer that.
 func (h *Handler) ListCategories(c *gin.Context) {
-	api.JSON(c.Writer, http.StatusOK, service.FlickCategories(), nil)
+	switch strings.ToLower(strings.TrimSpace(c.Query("kind"))) {
+	case "short":
+		api.JSON(c.Writer, http.StatusOK, service.FlickCategories(), nil)
+	case "long":
+		api.JSON(c.Writer, http.StatusOK, service.LongVideoCategories(), nil)
+	default:
+		api.JSON(c.Writer, http.StatusOK, service.VideoCategories(), nil)
+	}
 }
 
 func writeDistributionError(c *gin.Context, err error) bool {
@@ -1315,7 +1351,18 @@ func (h *Handler) ListComments(c *gin.Context) {
 		}
 	}
 
-	comments, nextCursor, err := h.svc.ListCommentsPG(c.Request.Context(), postID, viewerID, cursor, limit)
+	// ?sort=top|newest (2026-09-27): newest is the historic order and the
+	// default; top ranks by reactions, replies, recency. Anything else is
+	// a 400 rather than a silent fallback. The pinned comment leads both.
+	sort := strings.ToLower(strings.TrimSpace(c.Query("sort")))
+	switch sort {
+	case "", postgres.CommentSortNewest, postgres.CommentSortTop:
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "sort must be top or newest", nil)
+		return
+	}
+
+	comments, nextCursor, err := h.svc.ListCommentsSortedPG(c.Request.Context(), postID, viewerID, cursor, limit, sort)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -2325,6 +2372,20 @@ func (h *Handler) OverrideCategory(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+
+	// Two meanings on one route, kept apart by the value (2026-09-27):
+	// "flick" / "long_video" is the historic CONTENT-TYPE override the
+	// Android app sends; anything else is a taxonomy slug for
+	// posts.category, validated against the post's kind — 422
+	// INVALID_CATEGORY otherwise. Both answer {"status":"updated"}.
+	if kind := strings.ToLower(strings.TrimSpace(req.Category)); kind != "flick" && kind != "long_video" {
+		if err := h.svc.SetPostCategory(c.Request.Context(), userID, videoID, req.Category); err != nil {
+			writePostEditError(c, err)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
 		return
 	}
 

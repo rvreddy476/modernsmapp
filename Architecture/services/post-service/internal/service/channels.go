@@ -133,6 +133,8 @@ type channelStore interface {
 	CountChannelVideos(ctx context.Context, userID uuid.UUID) (int, error)
 	CountChannelVideosBatch(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]int, error)
 	SearchChannels(ctx context.Context, q string, limit int) ([]postgres.ChannelSearchHit, error)
+	// CountChannelContent is the channel page's public tally (2026-09-27).
+	CountChannelContent(ctx context.Context, userID uuid.UUID) (postgres.ChannelContentCounts, error)
 
 	// Subscriptions (channel_subscriptions.go).
 	Subscribe(ctx context.Context, channelID, userID uuid.UUID, notifyOn string) (bool, error)
@@ -159,6 +161,16 @@ type ChannelView struct {
 	NotifyOn        *string    `json:"notify_on,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// Branding (2026-09-27; channel_branding.go). Links is always an
+	// array; the counts are the public tally, cached 60 s.
+	BannerMediaID   *uuid.UUID             `json:"banner_media_id"`
+	BannerURL       *string                `json:"banner_url"`
+	Links           []postgres.ChannelLink `json:"links"`
+	ContactEmail    string                 `json:"contact_email"`
+	FeaturedPostID  *uuid.UUID             `json:"featured_post_id"`
+	ShortCount      int                    `json:"short_count"`
+	LiveCount       int                    `json:"live_count"`
+	CollectionCount int                    `json:"collection_count"`
 }
 
 // ChannelRef is the card-sized channel attached to a long_video post.
@@ -184,6 +196,13 @@ type UpdateChannelInput struct {
 	About         *string
 	AvatarMediaID *uuid.UUID
 	ClearAvatar   bool
+	// Branding (2026-09-27): validated in channel_branding.go.
+	BannerMediaID  *uuid.UUID
+	ClearBanner    bool
+	Links          *[]postgres.ChannelLink
+	ContactEmail   *string
+	FeaturedPostID *uuid.UUID
+	ClearFeatured  bool
 }
 
 // SetMediaServiceURL configures the media-service base URL used to resolve
@@ -265,10 +284,14 @@ func (s *Service) UpdateMyChannel(ctx context.Context, userID uuid.UUID, in Upda
 		}
 		patch.About = &about
 	}
+	if err := s.applyBrandingPatch(ctx, userID, in, &patch); err != nil {
+		return nil, err
+	}
 	ch, err := s.channels.UpdateChannel(ctx, userID, patch)
 	if err != nil {
 		return nil, err
 	}
+	s.forgetChannelCounts(userID)
 	return s.channelView(ctx, userID, ch), nil
 }
 
@@ -597,17 +620,29 @@ func (s *Service) channelView(ctx context.Context, viewerID uuid.UUID, ch *postg
 		UpdatedAt:       ch.UpdatedAt,
 	}
 	s.attachViewerSubscription(ctx, viewerID, ch, view)
+	var mediaIDs []uuid.UUID
 	if ch.AvatarMediaID != nil {
-		if u, ok := s.resolveAvatarURLs(ctx, viewerID, []uuid.UUID{*ch.AvatarMediaID})[*ch.AvatarMediaID]; ok && u != "" {
-			url := u
-			view.AvatarURL = &url
+		mediaIDs = append(mediaIDs, *ch.AvatarMediaID)
+	}
+	if ch.BannerMediaID != nil {
+		mediaIDs = append(mediaIDs, *ch.BannerMediaID)
+	}
+	if len(mediaIDs) > 0 {
+		urls := s.resolveAvatarURLs(ctx, viewerID, mediaIDs)
+		if ch.AvatarMediaID != nil {
+			if u, ok := urls[*ch.AvatarMediaID]; ok && u != "" {
+				url := u
+				view.AvatarURL = &url
+			}
+		}
+		if ch.BannerMediaID != nil {
+			if u, ok := urls[*ch.BannerMediaID]; ok && u != "" {
+				url := u
+				view.BannerURL = &url
+			}
 		}
 	}
-	if n, err := s.channels.CountChannelVideos(ctx, ch.UserID); err == nil {
-		view.VideoCount = n
-	} else {
-		slog.WarnContext(ctx, "channel video count skipped", "user_id", ch.UserID, "err", err)
-	}
+	s.attachChannelBranding(ctx, ch, view)
 	return view
 }
 

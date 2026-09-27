@@ -32,6 +32,12 @@ type Comment struct {
 	Reactions      []CommentReaction `json:"reactions"`
 	ReactionCount  int               `json:"reaction_count"`
 	ViewerReaction *string           `json:"viewer_reaction"`
+	// Creator tools (migration 051). Pinned: the post author pinned this
+	// comment (at most one per post; it leads every list). HeartedByAuthor:
+	// the post author hearted it. Never omitempty: a client must not
+	// confuse "false" with "unknown".
+	Pinned          bool `json:"pinned"`
+	HeartedByAuthor bool `json:"hearted_by_author"`
 	// First reply (oldest visible), kept for clients that predate
 	// GET /v1/comments/:id/replies. ReplyCount is the full number.
 	Reply *Comment `json:"reply,omitempty"`
@@ -273,7 +279,7 @@ func (s *Store) GetReplies(ctx context.Context, parentID uuid.UUID, viewerID *uu
 		visibilityClause = `AND (moderation_status = 'visible' OR (moderation_status = 'review' AND author_id = $3))`
 	}
 	query := `SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
-		is_reply, is_deleted, created_at, updated_at
+		is_reply, is_deleted, created_at, updated_at, pinned_at IS NOT NULL, hearted_at IS NOT NULL
 		FROM comments
 		WHERE parent_id = $1 AND is_deleted = FALSE ` + visibilityClause
 	if cursor != "" {
@@ -296,7 +302,7 @@ func (s *Store) GetReplies(ctx context.Context, parentID uuid.UUID, viewerID *uu
 		if err := rows.Scan(
 			&r.ID, &r.PostID, &r.AuthorID, &r.ParentID, &r.Body,
 			&r.LikeCount, &r.DislikeCount, &r.ReplyCount, &r.IsReply, &r.IsDeleted,
-			&r.CreatedAt, &r.UpdatedAt,
+			&r.CreatedAt, &r.UpdatedAt, &r.Pinned, &r.HeartedByAuthor,
 		); err != nil {
 			return nil, "", err
 		}
@@ -328,7 +334,48 @@ func (s *Store) GetReplies(ctx context.Context, parentID uuid.UUID, viewerID *uu
 //     for moderators).
 //
 // Pass viewerID == nil for anonymous viewers (visible-only).
+// Comment sort orders for GET /v1/posts/:postId/comments?sort= (2026-09-27).
+//
+//   - "" / "newest": created_at desc, the behaviour every client has had.
+//     The cursor is the created_at of the last row (RFC3339Nano).
+//   - "top": reaction_count desc, reply_count desc, created_at desc. A
+//     page in this order has no natural keyset, so the cursor is an offset
+//     ("o:<n>"); the page size is capped at 50 and threads are short-lived
+//     enough that offset paging is honest here.
+//
+// In BOTH orders the post author's pinned comment (comments.pinned_at) is
+// the first row of the first page and is never repeated on a later page.
+const (
+	CommentSortNewest = "newest"
+	CommentSortTop    = "top"
+)
+
+// commentTopOrder is the "top" ORDER BY. reaction_count is computed from
+// comment_reactions (migration 050) — comments.like_count is not maintained
+// for reactions any more, so it cannot be the sort key.
+const commentTopOrder = `(SELECT COUNT(*) FROM comment_reactions cr WHERE cr.comment_id = comments.id) DESC,
+		reply_count DESC, created_at DESC, id DESC`
+
+// ListComments returns paginated top-level comments with their inline
+// replies in the default (newest) order. See ListCommentsSorted.
 func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID, cursor string, limit int) ([]Comment, string, error) {
+	return s.ListCommentsSorted(ctx, postID, viewerID, cursor, limit, CommentSortNewest)
+}
+
+// ListCommentsSorted returns paginated top-level comments with their inline
+// replies, in the requested order (CommentSortNewest / CommentSortTop; an
+// unknown value is newest).
+//
+// viewerID is used to enforce moderation visibility:
+//   - 'visible' comments are shown to everyone.
+//   - 'review' comments (auto-flagged, awaiting moderator) are only
+//     shown to the comment's author.
+//   - 'hidden' / 'removed' are filtered out entirely (the moderation
+//     queue endpoint at /v1/admin/comments/moderation surfaces them
+//     for moderators).
+//
+// Pass viewerID == nil for anonymous viewers (visible-only).
+func (s *Store) ListCommentsSorted(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID, cursor string, limit int, sort string) ([]Comment, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -341,19 +388,30 @@ func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, viewerID *uu
 	}
 
 	query := `SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
-		is_reply, is_deleted, created_at, updated_at
+		is_reply, is_deleted, created_at, updated_at, pinned_at IS NOT NULL, hearted_at IS NOT NULL
 		FROM comments
 		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE ` + visibilityClause
 
-	if cursor != "" {
-		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
-		if err == nil {
-			query += ` AND created_at < $` + strconv.Itoa(len(args)+1)
-			args = append(args, cursorTime)
+	top := sort == CommentSortTop
+	if top {
+		offset := parseOffsetCursor(cursor)
+		if offset > 0 {
+			// A continuation page never repeats the pinned row.
+			query += ` AND pinned_at IS NULL`
 		}
+		query += ` ORDER BY (pinned_at IS NOT NULL) DESC, ` + commentTopOrder +
+			` LIMIT $2 OFFSET $` + strconv.Itoa(len(args)+1)
+		args = append(args, offset)
+	} else {
+		if cursor != "" {
+			cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
+			if err == nil {
+				query += ` AND created_at < $` + strconv.Itoa(len(args)+1) + ` AND pinned_at IS NULL`
+				args = append(args, cursorTime)
+			}
+		}
+		query += ` ORDER BY (pinned_at IS NOT NULL) DESC, created_at DESC LIMIT $2`
 	}
-
-	query += ` ORDER BY created_at DESC LIMIT $2`
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -368,19 +426,22 @@ func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, viewerID *uu
 		if err := rows.Scan(
 			&c.ID, &c.PostID, &c.AuthorID, &c.ParentID, &c.Body,
 			&c.LikeCount, &c.DislikeCount, &c.ReplyCount, &c.IsReply, &c.IsDeleted,
-			&c.CreatedAt, &c.UpdatedAt,
+			&c.CreatedAt, &c.UpdatedAt, &c.Pinned, &c.HeartedByAuthor,
 		); err != nil {
 			return nil, "", err
 		}
 		comments = append(comments, c)
 		commentIDs = append(commentIDs, c.ID)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
 
 	var nextCursor string
 	if len(comments) > limit {
-		nextCursor = comments[limit-1].CreatedAt.Format(time.RFC3339Nano)
 		comments = comments[:limit]
 		commentIDs = commentIDs[:limit]
+		nextCursor = nextCommentCursor(comments, top, parseOffsetCursor(cursor)+limit)
 	}
 
 	// Load the first inline reply for these comments. Same moderation
@@ -393,6 +454,36 @@ func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, viewerID *uu
 	}
 
 	return comments, nextCursor, nil
+}
+
+// nextCommentCursor is the continuation cursor for a full page. In top
+// order it is the next offset. In newest order it is the created_at of the
+// last row that is NOT the pinned one (the pinned row leads the page
+// regardless of age, so its timestamp would skip everything newer); when the
+// page held nothing but the pinned row the cursor is "now", which the
+// continuation reads as "every unpinned row".
+func nextCommentCursor(page []Comment, top bool, nextOffset int) string {
+	if top {
+		return "o:" + strconv.Itoa(nextOffset)
+	}
+	for i := len(page) - 1; i >= 0; i-- {
+		if !page[i].Pinned {
+			return page[i].CreatedAt.Format(time.RFC3339Nano)
+		}
+	}
+	return time.Now().Format(time.RFC3339Nano)
+}
+
+// parseOffsetCursor reads an "o:<n>" cursor; anything else is offset 0.
+func parseOffsetCursor(cursor string) int {
+	if len(cursor) < 3 || cursor[:2] != "o:" {
+		return 0
+	}
+	n, err := strconv.Atoi(cursor[2:])
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // GetCommentsAround returns top-level comments surrounding a target comment.
@@ -434,14 +525,14 @@ func (s *Store) GetCommentsAround(ctx context.Context, postID, commentID uuid.UU
 	}
 	query := `
 		(SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
-			is_reply, is_deleted, created_at, updated_at
+			is_reply, is_deleted, created_at, updated_at, pinned_at IS NOT NULL, hearted_at IS NOT NULL
 		FROM comments
 		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE AND created_at >= $2 ` + visibilityClause + `
 		ORDER BY created_at ASC
 		LIMIT $3)
 		UNION ALL
 		(SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
-			is_reply, is_deleted, created_at, updated_at
+			is_reply, is_deleted, created_at, updated_at, pinned_at IS NOT NULL, hearted_at IS NOT NULL
 		FROM comments
 		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE AND created_at < $2 ` + visibilityClause + `
 		ORDER BY created_at DESC
@@ -462,7 +553,7 @@ func (s *Store) GetCommentsAround(ctx context.Context, postID, commentID uuid.UU
 		if err := rows.Scan(
 			&c.ID, &c.PostID, &c.AuthorID, &c.ParentID, &c.Body,
 			&c.LikeCount, &c.DislikeCount, &c.ReplyCount, &c.IsReply, &c.IsDeleted,
-			&c.CreatedAt, &c.UpdatedAt,
+			&c.CreatedAt, &c.UpdatedAt, &c.Pinned, &c.HeartedByAuthor,
 		); err != nil {
 			return nil, err
 		}
@@ -494,7 +585,7 @@ func (s *Store) loadInlineReplies(ctx context.Context, comments []Comment, comme
 	}
 	replyRows, err := s.db.Query(ctx, `
 		SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
-			is_reply, is_deleted, created_at, updated_at
+			is_reply, is_deleted, created_at, updated_at, pinned_at IS NOT NULL, hearted_at IS NOT NULL
 		FROM comments
 		WHERE parent_id = ANY($1) AND is_deleted = FALSE `+visibilityClause+`
 		ORDER BY created_at ASC`,
@@ -510,7 +601,7 @@ func (s *Store) loadInlineReplies(ctx context.Context, comments []Comment, comme
 		if err := replyRows.Scan(
 			&r.ID, &r.PostID, &r.AuthorID, &r.ParentID, &r.Body,
 			&r.LikeCount, &r.DislikeCount, &r.ReplyCount, &r.IsReply, &r.IsDeleted,
-			&r.CreatedAt, &r.UpdatedAt,
+			&r.CreatedAt, &r.UpdatedAt, &r.Pinned, &r.HeartedByAuthor,
 		); err == nil && r.ParentID != nil {
 			// ORDER BY created_at ASC: the first row per parent is the oldest.
 			if _, seen := replyMap[*r.ParentID]; !seen {

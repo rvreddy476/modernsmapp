@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/shared/api"
@@ -19,8 +20,20 @@ func (h *Handler) RegisterMyUploadsRoutes(r *gin.Engine) {
 		uploads.GET("/flicks", h.GetMyFlicks)
 		uploads.GET("/posts", h.GetMyTextPosts)
 		uploads.GET("/counts", h.GetUploadCounts)
+		// Creator Hub bulk edit (2026-09-27, post_edit.go). Static "bulk"
+		// beside :postId.
+		uploads.POST("/bulk", h.BulkUpdateUploads)
 		uploads.DELETE("/:postId", h.DeleteUpload)
 	}
+}
+
+// includeScheduled is the Creator Hub's ?include_scheduled=true switch on
+// the videos / flicks lists: scheduled posts appear with scheduled_at set
+// and the "scheduled" flag. Off by default, which is what every existing
+// client sees.
+func includeScheduled(c *gin.Context) bool {
+	v := strings.ToLower(strings.TrimSpace(c.Query("include_scheduled")))
+	return v == "true" || v == "1"
 }
 
 func (h *Handler) GetMyVideos(c *gin.Context) {
@@ -32,7 +45,7 @@ func (h *Handler) GetMyVideos(c *gin.Context) {
 
 	limit, cursor := parseUploadPagination(c)
 
-	uploads, nextCursor, err := h.svc.GetMyVideos(c.Request.Context(), userID, limit, cursor)
+	uploads, nextCursor, err := h.svc.GetMyVideosOpts(c.Request.Context(), userID, limit, cursor, includeScheduled(c))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch videos", nil)
 		return
@@ -53,7 +66,7 @@ func (h *Handler) GetMyFlicks(c *gin.Context) {
 
 	limit, cursor := parseUploadPagination(c)
 
-	uploads, nextCursor, err := h.svc.GetMyFlicks(c.Request.Context(), userID, limit, cursor)
+	uploads, nextCursor, err := h.svc.GetMyFlicksOpts(c.Request.Context(), userID, limit, cursor, includeScheduled(c))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch flicks", nil)
 		return

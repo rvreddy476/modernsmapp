@@ -12,6 +12,14 @@ import (
 // GetUploadsByContentTypes returns posts by an author filtered by multiple content types,
 // with cursor pagination. Uses the partial indexes from migration 009.
 func (s *Store) GetUploadsByContentTypes(ctx context.Context, authorID uuid.UUID, contentTypes []string, limit int, cursor string) ([]Post, string, error) {
+	return s.GetUploadsByContentTypesOpts(ctx, authorID, contentTypes, limit, cursor, false)
+}
+
+// GetUploadsByContentTypesOpts is GetUploadsByContentTypes with the Creator
+// Hub's switch: includeScheduled=true also returns the author's scheduled
+// (publish_at set) posts, newest-created first alongside the live ones. The
+// default excludes them, which is what every existing client sees.
+func (s *Store) GetUploadsByContentTypesOpts(ctx context.Context, authorID uuid.UUID, contentTypes []string, limit int, cursor string, includeScheduled bool) ([]Post, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -19,7 +27,10 @@ func (s *Store) GetUploadsByContentTypes(ctx context.Context, authorID uuid.UUID
 	args := []interface{}{authorID, contentTypes, limit + 1}
 	query := `SELECT ` + postCols + `
 		FROM posts
-		WHERE author_id = $1 AND content_type = ANY($2) AND deleted_at IS NULL AND publish_at IS NULL`
+		WHERE author_id = $1 AND content_type = ANY($2) AND deleted_at IS NULL`
+	if !includeScheduled {
+		query += ` AND publish_at IS NULL`
+	}
 
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)

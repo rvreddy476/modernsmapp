@@ -51,6 +51,14 @@ func writeVideoAuthoringError(c *gin.Context, err error) {
 		errors.Is(err, service.ErrPlaylistPrivate):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	// A server-owned collection (Queue / Loved) refuses rename, delete,
+	// visibility change and the generic item writes (2026-09-27).
+	case errors.Is(err, service.ErrSystemPlaylist):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusConflict, "SYSTEM_PLAYLIST", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidSystemPlaylistKind):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusBadRequest, "INVALID_KIND", err.Error(), nil)
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

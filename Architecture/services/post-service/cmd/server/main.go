@@ -386,6 +386,15 @@ func main() {
 	entitlementConsumer := mediaConsumers.NewEntitlementChangedConsumer(postSvc, brokers, rdb, consumerMetrics)
 	go entitlementConsumer.Start(consumerCtx)
 
+	// Live -> video (MTube, 2026-09-27): live-service-v2's vod_ready on the
+	// social topic becomes the streamer's unlisted long video
+	// (internal/consumers/live_vod.go). The stream title is read from
+	// live-service-v2 when the event carries none.
+	postSvc.SetLiveServiceURL(env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117"))
+	liveVODConsumer := mediaConsumers.NewLiveVODConsumer(postSvc, brokers, env("LIVE_KAFKA_TOPIC", engTopic), rdb, consumerMetrics)
+	go liveVODConsumer.Start(consumerCtx)
+	defer liveVODConsumer.Close()
+
 	storyModerationApplier := mediaConsumers.NewStoryModerationApplier(
 		brokers, engTopic, pgStore, storyVerifier, consumerMetrics,
 	)

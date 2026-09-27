@@ -146,7 +146,7 @@ func (s *Service) UpdatePlaylist(ctx context.Context, callerID, playlistID uuid.
 	if patch.Visibility != nil && !validPlaylistVisibility(*patch.Visibility) {
 		return nil, ErrInvalidPlaylistVisibility
 	}
-	if err := s.requirePlaylistOwner(ctx, callerID, playlistID); err != nil {
+	if err := s.requireUserPlaylistOwner(ctx, callerID, playlistID); err != nil {
 		return nil, err
 	}
 	p, err := s.pgStore.UpdatePlaylist(ctx, playlistID, patch)
@@ -167,7 +167,7 @@ func (s *Service) MovePlaylistItem(ctx context.Context, callerID, playlistID, po
 	if position < 0 {
 		return nil, ErrPlaylistPositionInvalid
 	}
-	if err := s.requirePlaylistOwner(ctx, callerID, playlistID); err != nil {
+	if err := s.requireUserPlaylistOwner(ctx, callerID, playlistID); err != nil {
 		return nil, err
 	}
 	items, err := s.pgStore.MovePlaylistItem(ctx, playlistID, postID, position)
@@ -182,7 +182,7 @@ func (s *Service) MovePlaylistItem(ctx context.Context, callerID, playlistID, po
 
 // DeletePlaylist removes a playlist after verifying ownership.
 func (s *Service) DeletePlaylist(ctx context.Context, callerID, playlistID uuid.UUID) error {
-	if err := s.requirePlaylistOwner(ctx, callerID, playlistID); err != nil {
+	if err := s.requireUserPlaylistOwner(ctx, callerID, playlistID); err != nil {
 		return err
 	}
 	return s.pgStore.DeletePlaylist(ctx, playlistID)
@@ -192,7 +192,7 @@ func (s *Service) DeletePlaylist(ctx context.Context, callerID, playlistID uuid.
 // the playlist — the same rule DeletePlaylist applies. Editing a playlist is
 // editing the playlist, whoever authored the post being added.
 func (s *Service) AddPlaylistItem(ctx context.Context, callerID, playlistID, postID uuid.UUID, position int) error {
-	if err := s.requirePlaylistOwner(ctx, callerID, playlistID); err != nil {
+	if err := s.requireUserPlaylistOwner(ctx, callerID, playlistID); err != nil {
 		return err
 	}
 	return s.pgStore.AddPlaylistItem(ctx, playlistID, postID, position)
@@ -201,7 +201,7 @@ func (s *Service) AddPlaylistItem(ctx context.Context, callerID, playlistID, pos
 // RemovePlaylistItem removes a post from a playlist after verifying the
 // caller owns the playlist.
 func (s *Service) RemovePlaylistItem(ctx context.Context, callerID, playlistID, postID uuid.UUID) error {
-	if err := s.requirePlaylistOwner(ctx, callerID, playlistID); err != nil {
+	if err := s.requireUserPlaylistOwner(ctx, callerID, playlistID); err != nil {
 		return err
 	}
 	return s.pgStore.RemovePlaylistItem(ctx, playlistID, postID)

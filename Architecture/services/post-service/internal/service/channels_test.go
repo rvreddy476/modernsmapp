@@ -205,6 +205,12 @@ func (f *fakeChannelStore) CountChannelVideosBatch(_ context.Context, ids []uuid
 	return out, nil
 }
 
+// CountChannelContent: the public tally; only videos are tracked by this
+// fake, the other counters stay zero.
+func (f *fakeChannelStore) CountChannelContent(_ context.Context, id uuid.UUID) (postgres.ChannelContentCounts, error) {
+	return postgres.ChannelContentCounts{Videos: f.videos[id]}, nil
+}
+
 // SearchChannels applies the matcher and returns the rows UNORDERED, so the
 // service's sort is what the tests exercise.
 func (f *fakeChannelStore) SearchChannels(_ context.Context, q string, limit int) ([]postgres.ChannelSearchHit, error) {

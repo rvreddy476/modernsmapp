@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,16 +35,43 @@ type Channel struct {
 	SubscriberCount int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	// Branding (migration 051 part C). Links is never nil after a scan.
+	BannerMediaID  *uuid.UUID
+	Links          []ChannelLink
+	ContactEmail   string
+	FeaturedPostID *uuid.UUID
+}
+
+// ChannelLink is one entry of channels.links (JSONB array, at most 10).
+type ChannelLink struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 // ChannelPatch is a partial update. A nil field is "leave as is";
-// ClearAvatar removes the avatar (JSON `"avatar_media_id": null`).
+// ClearAvatar removes the avatar (JSON `"avatar_media_id": null`), and
+// ClearBanner / ClearFeatured do the same for their fields.
 type ChannelPatch struct {
 	Name          *string
 	Handle        *string
 	About         *string
 	AvatarMediaID *uuid.UUID
 	ClearAvatar   bool
+	// Branding (2026-09-27).
+	BannerMediaID  *uuid.UUID
+	ClearBanner    bool
+	Links          *[]ChannelLink
+	ContactEmail   *string
+	FeaturedPostID *uuid.UUID
+	ClearFeatured  bool
+}
+
+// ChannelContentCounts is the public content tally on a channel page.
+type ChannelContentCounts struct {
+	Videos      int `json:"video_count"`
+	Shorts      int `json:"short_count"`
+	Live        int `json:"live_count"`
+	Collections int `json:"collection_count"`
 }
 
 var (
@@ -58,14 +86,34 @@ var (
 	ErrChannelOwnerUnknown = errors.New("channel owner is not a known user")
 )
 
-const channelColumns = `id, user_id, name, handle, description, avatar_media_id, subscriber_count, created_at, updated_at`
+const channelColumns = `id, user_id, name, handle, description, avatar_media_id, subscriber_count, created_at, updated_at,
+	banner_media_id, COALESCE(links, '[]'::jsonb), COALESCE(contact_email, ''), featured_post_id`
+
+// channelScanDestinations is the one scan order for channelColumns; links
+// lands in a raw JSON buffer that finishChannelScan decodes.
+func channelScanDestinations(ch *Channel, links *[]byte) []any {
+	return []any{&ch.ID, &ch.UserID, &ch.Name, &ch.Handle, &ch.About, &ch.AvatarMediaID, &ch.SubscriberCount, &ch.CreatedAt, &ch.UpdatedAt,
+		&ch.BannerMediaID, links, &ch.ContactEmail, &ch.FeaturedPostID}
+}
+
+func finishChannelScan(ch *Channel, links []byte) error {
+	ch.Links = []ChannelLink{}
+	if len(links) == 0 {
+		return nil
+	}
+	return json.Unmarshal(links, &ch.Links)
+}
 
 func scanChannel(row pgx.Row) (*Channel, error) {
 	var ch Channel
-	if err := row.Scan(&ch.ID, &ch.UserID, &ch.Name, &ch.Handle, &ch.About, &ch.AvatarMediaID, &ch.SubscriberCount, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+	var links []byte
+	if err := row.Scan(channelScanDestinations(&ch, &links)...); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	if err := finishChannelScan(&ch, links); err != nil {
 		return nil, err
 	}
 	return &ch, nil
@@ -145,16 +193,33 @@ func (s *Store) UpdateChannel(ctx context.Context, userID uuid.UUID, patch Chann
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	var linksArg interface{}
+	if patch.Links != nil {
+		links := *patch.Links
+		if links == nil {
+			links = []ChannelLink{}
+		}
+		b, err := json.Marshal(links)
+		if err != nil {
+			return nil, fmt.Errorf("marshal channel links: %w", err)
+		}
+		linksArg = b
+	}
 	row := tx.QueryRow(ctx, `
 		UPDATE channels SET
-			name            = COALESCE($2, name),
-			handle          = COALESCE($3, handle),
-			description     = COALESCE($4, description),
-			avatar_media_id = CASE WHEN $6 THEN NULL ELSE COALESCE($5, avatar_media_id) END,
-			updated_at      = now()
+			name             = COALESCE($2, name),
+			handle           = COALESCE($3, handle),
+			description      = COALESCE($4, description),
+			avatar_media_id  = CASE WHEN $6 THEN NULL ELSE COALESCE($5, avatar_media_id) END,
+			banner_media_id  = CASE WHEN $8 THEN NULL ELSE COALESCE($7, banner_media_id) END,
+			links            = COALESCE($9::jsonb, links),
+			contact_email    = COALESCE($10, contact_email),
+			featured_post_id = CASE WHEN $12 THEN NULL ELSE COALESCE($11, featured_post_id) END,
+			updated_at       = now()
 		WHERE user_id = $1
 		RETURNING `+channelColumns,
-		userID, patch.Name, patch.Handle, patch.About, patch.AvatarMediaID, patch.ClearAvatar)
+		userID, patch.Name, patch.Handle, patch.About, patch.AvatarMediaID, patch.ClearAvatar,
+		patch.BannerMediaID, patch.ClearBanner, linksArg, patch.ContactEmail, patch.FeaturedPostID, patch.ClearFeatured)
 	updated, err := scanChannel(row)
 	if err != nil {
 		return nil, mapChannelWriteError(err)
@@ -203,13 +268,39 @@ func (s *Store) GetChannelsByUserIDs(ctx context.Context, userIDs []uuid.UUID) (
 	defer rows.Close()
 	for rows.Next() {
 		var ch Channel
-		if err := rows.Scan(&ch.ID, &ch.UserID, &ch.Name, &ch.Handle, &ch.About, &ch.AvatarMediaID, &ch.SubscriberCount, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		var links []byte
+		if err := rows.Scan(channelScanDestinations(&ch, &links)...); err != nil {
+			return nil, err
+		}
+		if err := finishChannelScan(&ch, links); err != nil {
 			return nil, err
 		}
 		c := ch
 		out[c.UserID] = &c
 	}
 	return out, rows.Err()
+}
+
+// CountChannelContent is the channel page's public tally in ONE query:
+// live, approved, public long videos and shorts by the owner, the posts
+// that came from a live stream among them, and the owner's public user
+// playlists. The service caches it for 60 s.
+func (s *Store) CountChannelContent(ctx context.Context, userID uuid.UUID) (ChannelContentCounts, error) {
+	var c ChannelContentCounts
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN content_type IN ('long_video', 'video') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN content_type IN ('flick', 'reel') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN source = 'live' THEN 1 ELSE 0 END), 0),
+			(SELECT COUNT(*) FROM playlists WHERE creator_id = $1 AND kind = 'user' AND visibility = 'public')
+		FROM posts
+		WHERE author_id = $1
+		  AND deleted_at IS NULL
+		  AND visibility = 'public'
+		  AND review_status = 'approved'
+		  AND publish_at IS NULL`, userID,
+	).Scan(&c.Videos, &c.Shorts, &c.Live, &c.Collections)
+	return c, err
 }
 
 // channelVideoCountWhere is what "a video on the channel" means for the
@@ -294,6 +385,7 @@ func (s *Store) SearchChannels(ctx context.Context, q string, limit int) ([]Chan
 	escaped := EscapeLikePattern(q)
 	rows, err := s.db.Query(ctx, `
 		SELECT c.id, c.user_id, c.name, c.handle, c.description, c.avatar_media_id, c.subscriber_count, c.created_at, c.updated_at,
+		       c.banner_media_id, COALESCE(c.links, '[]'::jsonb), COALESCE(c.contact_email, ''), c.featured_post_id,
 		       (`+channelVideoCountCorrelated+`) AS video_count,
 		       (c.handle LIKE $1) AS handle_prefix
 		FROM channels c
@@ -308,8 +400,14 @@ func (s *Store) SearchChannels(ctx context.Context, q string, limit int) ([]Chan
 	for rows.Next() {
 		var hit ChannelSearchHit
 		var handlePrefix bool
+		var links []byte
 		if err := rows.Scan(&hit.ID, &hit.UserID, &hit.Name, &hit.Handle, &hit.About, &hit.AvatarMediaID,
-			&hit.SubscriberCount, &hit.CreatedAt, &hit.UpdatedAt, &hit.VideoCount, &handlePrefix); err != nil {
+			&hit.SubscriberCount, &hit.CreatedAt, &hit.UpdatedAt,
+			&hit.BannerMediaID, &links, &hit.ContactEmail, &hit.FeaturedPostID,
+			&hit.VideoCount, &handlePrefix); err != nil {
+			return nil, err
+		}
+		if err := finishChannelScan(&hit.Channel, links); err != nil {
 			return nil, err
 		}
 		out = append(out, hit)

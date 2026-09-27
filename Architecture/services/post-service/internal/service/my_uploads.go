@@ -17,11 +17,33 @@ import (
 	"github.com/google/uuid"
 )
 
-// UploadDetail extends PostDetail with optional video metadata.
+// UploadDetail extends PostDetail with optional video metadata and, for the
+// Creator Hub (2026-09-27), the row's publishing state at a glance. The
+// post's own visibility / publish_at / published_at / view_count keep their
+// keys; these are additive.
 type UploadDetail struct {
 	PostDetail
 	VideoMetadata *postgres.VideoMetadata `json:"video_metadata,omitempty"`
+	// ScheduledAt mirrors publish_at under the Creator Hub's name; null
+	// for a live post.
+	ScheduledAt *time.Time `json:"scheduled_at"`
+	// CommentCount is the authoritative visible-comment count.
+	CommentCount int64 `json:"comment_count"`
+	// ProcessingStatus summarises the attached media: ready | processing |
+	// failed (any asset failed or was rejected) | none (no media).
+	ProcessingStatus string `json:"processing_status"`
+	// Flags: processing_failed, review_hold, made_for_kids, scheduled.
+	// Always an array.
+	Flags []string `json:"flags"`
 }
+
+// Upload row flags.
+const (
+	UploadFlagProcessingFailed = "processing_failed"
+	UploadFlagReviewHold       = "review_hold"
+	UploadFlagMadeForKids      = "made_for_kids"
+	UploadFlagScheduled        = "scheduled"
+)
 
 var (
 	ErrPostNotFound  = errors.New("post not found")
@@ -30,7 +52,12 @@ var (
 
 // GetMyVideos returns the user's video and long_video uploads with video metadata.
 func (s *Service) GetMyVideos(ctx context.Context, authorID uuid.UUID, limit int, cursor string) ([]UploadDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetUploadsByContentTypes(ctx, authorID, []string{"video", "long_video"}, limit, cursor)
+	return s.GetMyVideosOpts(ctx, authorID, limit, cursor, false)
+}
+
+// GetMyVideosOpts is GetMyVideos with the Creator Hub's includeScheduled.
+func (s *Service) GetMyVideosOpts(ctx context.Context, authorID uuid.UUID, limit int, cursor string, includeScheduled bool) ([]UploadDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetUploadsByContentTypesOpts(ctx, authorID, []string{"video", "long_video"}, limit, cursor, includeScheduled)
 	if err != nil {
 		return nil, "", err
 	}
@@ -39,11 +66,57 @@ func (s *Service) GetMyVideos(ctx context.Context, authorID uuid.UUID, limit int
 
 // GetMyFlicks returns the user's flick and reel uploads with video metadata.
 func (s *Service) GetMyFlicks(ctx context.Context, authorID uuid.UUID, limit int, cursor string) ([]UploadDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetUploadsByContentTypes(ctx, authorID, []string{"flick", "reel"}, limit, cursor)
+	return s.GetMyFlicksOpts(ctx, authorID, limit, cursor, false)
+}
+
+// GetMyFlicksOpts is GetMyFlicks with the Creator Hub's includeScheduled.
+func (s *Service) GetMyFlicksOpts(ctx context.Context, authorID uuid.UUID, limit int, cursor string, includeScheduled bool) ([]UploadDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetUploadsByContentTypesOpts(ctx, authorID, []string{"flick", "reel"}, limit, cursor, includeScheduled)
 	if err != nil {
 		return nil, "", err
 	}
 	return s.enrichUploads(ctx, posts), nextCursor, nil
+}
+
+// UploadProcessingStatus summarises a post's attached media state for the
+// Creator Hub: "none" without media, "failed" when any asset failed or was
+// refused, "processing" while any asset is short of ready+passed, else
+// "ready". Pure.
+func UploadProcessingStatus(p *postgres.Post) string {
+	if p == nil || len(p.Media) == 0 {
+		return "none"
+	}
+	for _, m := range p.Media {
+		if m.ProcessingStatus == "failed" || m.ProcessingStatus == "rejected" || m.ModerationStatus == mediaRejected {
+			return "failed"
+		}
+	}
+	if p.IsProcessing {
+		return "processing"
+	}
+	return "ready"
+}
+
+// UploadFlags is the Creator Hub's flag list for a row. Pure; never nil.
+func UploadFlags(p *postgres.Post) []string {
+	flags := []string{}
+	if p == nil {
+		return flags
+	}
+	if UploadProcessingStatus(p) == "failed" {
+		flags = append(flags, UploadFlagProcessingFailed)
+	}
+	switch p.ReviewStatus {
+	case "pending", "flagged", "needs_changes", "rejected":
+		flags = append(flags, UploadFlagReviewHold)
+	}
+	if p.IsMadeForKids {
+		flags = append(flags, UploadFlagMadeForKids)
+	}
+	if p.PublishAt != nil {
+		flags = append(flags, UploadFlagScheduled)
+	}
+	return flags
 }
 
 // GetMyPosts returns the user's text/image posts.
@@ -234,10 +307,18 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 	for i, p := range posts {
 		post := p
 		counts, _ := s.countsForPost(ctx, p.ID)
-		details[i] = UploadDetail{
-			PostDetail:    PostDetail{Post: &post, Counts: counts},
-			VideoMetadata: videoMeta[p.ID],
+		d := UploadDetail{
+			PostDetail:       PostDetail{Post: &post, Counts: counts},
+			VideoMetadata:    videoMeta[p.ID],
+			ScheduledAt:      post.PublishAt,
+			ProcessingStatus: UploadProcessingStatus(&post),
+			Flags:            UploadFlags(&post),
 		}
+		if counts != nil {
+			d.CommentCount = counts.Comments
+		}
+		d.ViewCount = s.getViewCount(ctx, p.ID)
+		details[i] = d
 	}
 	// Tube: the channel card on the author's own long videos.
 	channelPtrs := make([]*PostDetail, len(details))

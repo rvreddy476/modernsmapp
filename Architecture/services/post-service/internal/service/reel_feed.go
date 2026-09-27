@@ -14,6 +14,9 @@ type ReelFeedItem struct {
 	*postgres.Post
 	ViewerReaction string `json:"viewer_reaction,omitempty"`
 	IsSaved        bool   `json:"is_saved"`
+	// ViewerDisliked is the viewer's private tune on the reel (2026-09-27).
+	// Never omitempty; no count is ever exposed.
+	ViewerDisliked bool `json:"viewer_disliked"`
 }
 
 // GetReelFeed returns personalized reel candidates for a user.
@@ -53,10 +56,15 @@ func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		s.rdb.Expire(ctx, seenKey, 24*time.Hour)
 	}
 
-	// Hydrate with viewer state (reaction + saved status)
+	// Hydrate with viewer state (reaction + saved status + private dislike)
+	pageIDs := make([]uuid.UUID, 0, len(filtered))
+	for _, reel := range filtered {
+		pageIDs = append(pageIDs, reel.ID)
+	}
+	disliked := s.viewerDislikedBatch(ctx, userID, pageIDs)
 	items := make([]ReelFeedItem, 0, len(filtered))
 	for _, reel := range filtered {
-		item := ReelFeedItem{Post: reel}
+		item := ReelFeedItem{Post: reel, ViewerDisliked: disliked[reel.ID]}
 		if reaction, err := s.scyllaStore.GetReelReaction(ctx, reel.ID, userID); err == nil {
 			item.ViewerReaction = reaction
 		}

@@ -1,0 +1,40 @@
+{
+  "id": "66666666-6666-4666-8666-666666666666",
+  "post_id": "11111111-1111-4111-8111-111111111111",
+  "author_id": "33333333-3333-4333-8333-333333333333",
+  "body": "Great walkthrough!",
+  "like_count": 2,
+  "dislike_count": 0,
+  "reply_count": 1,
+  "is_reply": false,
+  "created_at": "2026-09-27T11:30:00Z",
+  "updated_at": "2026-09-27T11:30:00Z",
+  "reactions": [
+    {
+      "emoji": "❤️",
+      "count": 2
+    }
+  ],
+  "reaction_count": 2,
+  "viewer_reaction": "❤️",
+  "pinned": true,
+  "hearted_by_author": true,
+  "reply": {
+    "id": "77777777-7777-4777-8777-777777777777",
+    "post_id": "11111111-1111-4111-8111-111111111111",
+    "author_id": "22222222-2222-4222-8222-222222222222",
+    "parent_id": "66666666-6666-4666-8666-666666666666",
+    "body": "Thanks!",
+    "like_count": 0,
+    "dislike_count": 0,
+    "reply_count": 0,
+    "is_reply": true,
+    "created_at": "2026-09-27T11:40:00Z",
+    "updated_at": "2026-09-27T11:40:00Z",
+    "reactions": [],
+    "reaction_count": 0,
+    "viewer_reaction": null,
+    "pinned": false,
+    "hearted_by_author": false
+  }
+}

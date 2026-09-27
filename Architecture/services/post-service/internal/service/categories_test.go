@@ -127,7 +127,9 @@ func TestNormalizeCategory(t *testing.T) {
 
 // The create path resolves the stored category through one function for
 // every content type: a "Music" request stores "music" whether it is a flick
-// or a long video, and only flicks are held to the closed taxonomy.
+// or a long video. Flicks AND long videos are held to the closed taxonomy
+// (one video taxonomy, 2026-09-27; migration 051 folded the free-text
+// values that were already stored); plain posts keep free text.
 func TestResolveCreateCategoryStoresSlug(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -139,7 +141,9 @@ func TestResolveCreateCategoryStoresSlug(t *testing.T) {
 		{"flick Music stores music", "flick", "Music", "music", nil},
 		{"long video Music stores music", "long_video", "Music", "music", nil},
 		{"post Music stores music", "post", " Music ", "music", nil},
-		{"long video keeps free text, normalised", "long_video", "Cooking", "cooking", nil},
+		{"post keeps free text, normalised", "post", "Cooking", "cooking", nil},
+		{"long video outside taxonomy is refused", "long_video", "Cooking", "", ErrInvalidCategory},
+		{"long video takes a long-only entry", "long_video", "Podcasts", "podcasts", nil},
 		{"flick outside taxonomy is refused", "flick", "Cooking", "", ErrInvalidCategory},
 		{"flick empty stays empty", "flick", "", "", nil},
 		{"long video whitespace is empty", "long_video", "   ", "", nil},

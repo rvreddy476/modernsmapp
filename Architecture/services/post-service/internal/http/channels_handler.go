@@ -106,6 +106,37 @@ type updateChannelRequest struct {
 	Handle        *string         `json:"handle"`
 	About         *string         `json:"about"`
 	AvatarMediaID json.RawMessage `json:"avatar_media_id"`
+	// Branding (2026-09-27): banner_media_id and featured_post_id are raw
+	// for the same absent / null / value distinction as the avatar.
+	BannerMediaID  json.RawMessage         `json:"banner_media_id"`
+	Links          *[]postgres.ChannelLink `json:"links"`
+	ContactEmail   *string                 `json:"contact_email"`
+	FeaturedPostID json.RawMessage         `json:"featured_post_id"`
+}
+
+// parseNullableID reads a raw JSON id field: (nil, false, nil) when absent,
+// (nil, true, nil) when null or "", (id, false, nil) for a value, and an
+// error for anything else.
+func parseNullableID(raw json.RawMessage) (id *uuid.UUID, clear bool, err error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if rawJSONNull(raw) {
+		return nil, true, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(s) == "" {
+		return nil, true, nil
+	}
+	parsed, err := uuid.Parse(strings.TrimSpace(s))
+	if err != nil {
+		return nil, false, err
+	}
+	return &parsed, false, nil
 }
 
 // writeChannelError maps the channel flows' typed errors. Returns false when
@@ -125,6 +156,24 @@ func writeChannelError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, "HANDLE_TAKEN", "That handle is taken", nil)
 	case errors.Is(err, postgres.ErrChannelOwnerUnknown):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "UNKNOWN_OWNER", "Account is not provisioned for channels yet", nil)
+	// Branding (2026-09-27, channel_branding.go).
+	case errors.Is(err, service.ErrInvalidChannelLinks):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_LINKS", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidContactEmail):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_CONTACT_EMAIL", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaNotOwned):
+		// 403 and nothing about the asset, as on create.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "MEDIA_NOT_OWNED", "You cannot use this media", nil)
+	case errors.Is(err, service.ErrMediaNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaNotReady):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_READY", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaTypeMismatch):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_TYPE_MISMATCH", "banner_media_id must be an image", nil)
+	case errors.Is(err, service.ErrFeaturedPostNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrFeaturedPostNotOwned):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 	default:
 		return false
 	}
@@ -220,6 +269,35 @@ func (h *Handler) UpdateMyChannel(c *gin.Context) {
 				}
 				in.AvatarMediaID = &id
 			}
+		}
+	}
+	// Branding (2026-09-27).
+	banner, clearBanner, err := parseNullableID(req.BannerMediaID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid banner_media_id", nil)
+		return
+	}
+	in.BannerMediaID, in.ClearBanner = banner, clearBanner
+	featured, clearFeatured, err := parseNullableID(req.FeaturedPostID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid featured_post_id", nil)
+		return
+	}
+	in.FeaturedPostID, in.ClearFeatured = featured, clearFeatured
+	in.Links = req.Links
+	in.ContactEmail = req.ContactEmail
+	if req.Links != nil {
+		// Validated here as well as in the service so a bad list is a 400
+		// before any store is consulted.
+		if _, err := service.NormalizeChannelLinks(*req.Links); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LINKS", err.Error(), nil)
+			return
+		}
+	}
+	if req.ContactEmail != nil {
+		if _, err := service.NormalizeContactEmail(*req.ContactEmail); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CONTACT_EMAIL", err.Error(), nil)
+			return
 		}
 	}
 	view, err := h.svc.UpdateMyChannel(c.Request.Context(), userID, in)
