@@ -192,6 +192,9 @@ func (f *fakeStore) SetRecording(_ context.Context, _ uuid.UUID, _ string, _ int
 func (f *fakeStore) ListLive(_ context.Context, _ postgres.ListLiveParams) ([]*postgres.LiveStream, error) {
 	panic("not implemented")
 }
+func (f *fakeStore) ListScheduled(_ context.Context, _ postgres.ListScheduledParams) ([]*postgres.LiveStream, error) {
+	panic("not implemented")
+}
 func (f *fakeStore) RecordViewerEvent(_ context.Context, _, _ uuid.UUID, _ string) error {
 	return nil
 }

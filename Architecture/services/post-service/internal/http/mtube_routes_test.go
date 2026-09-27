@@ -42,6 +42,7 @@ var mtubeRoutes = map[string]string{
 	"GET /v1/posts/:postId/chapters":       "public",
 	"GET /v1/uploads/videos":               "owner",
 	"GET /v1/uploads/flicks":               "owner",
+	"GET /v1/posts/live-recordings":        "public",
 }
 
 func registeredRoutes(t *testing.T) map[string]bool {
@@ -129,6 +130,12 @@ func TestMTubeHandlerValidationBeforeService(t *testing.T) {
 		{"channel: bad email", http.MethodPatch, "/v1/channels/me", `{"contact_email":"nope"}`, 400, "INVALID_CONTACT_EMAIL"},
 		{"channel: bad banner id", http.MethodPatch, "/v1/channels/me", `{"banner_media_id":"nope"}`, 400, "INVALID_REQUEST"},
 		{"channel: bad featured id", http.MethodPatch, "/v1/channels/me", `{"featured_post_id":"nope"}`, 400, "INVALID_REQUEST"},
+		// live-recordings is a static sibling of /:postId: a bad query is the
+		// listing's 400, never GetPost's INVALID_ID for the word "live-recordings".
+		{"live recordings: zero limit", http.MethodGet, "/v1/posts/live-recordings?limit=0", "", 400, "INVALID_REQUEST"},
+		{"live recordings: limit over 50", http.MethodGet, "/v1/posts/live-recordings?limit=51", "", 400, "INVALID_REQUEST"},
+		{"live recordings: non-numeric limit", http.MethodGet, "/v1/posts/live-recordings?limit=ten", "", 400, "INVALID_REQUEST"},
+		{"live recordings: foreign cursor", http.MethodGet, "/v1/posts/live-recordings?cursor=abc", "", 400, "INVALID_REQUEST"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

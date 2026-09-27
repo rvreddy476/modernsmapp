@@ -86,9 +86,16 @@ func hiddenFromViewer(p *postgres.Post, viewerID *uuid.UUID) bool {
 // shared by the create path (fresh post) and the publish path (scheduled
 // post going live) so a scheduled post announces itself exactly like a
 // fresh one. policy is the post's distribution policy (nil = legacy);
-// maxDuration the longest attached video in seconds; searchRev the
-// revision stamped on the row in the same transaction.
-func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post, policy *DistributionPolicy, maxDuration int, searchRev int64) events.PostCreatedPayload {
+// maxDuration the longest attached video in seconds; maxHeight the tallest
+// attached video's pixel height (0 = unknown; MTube search hd/4k facets,
+// 2026-09-27); searchRev the revision stamped on the row in the same
+// transaction.
+//
+// HasSubtitles is deliberately NOT stamped here: post-service stores no
+// caption state (media_subtitles is media-service's table and no flag is
+// mirrored onto posts or media_assets), so the field is left unset for the
+// search reindex to fill rather than guessed or fetched over HTTP.
+func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post, policy *DistributionPolicy, maxDuration, maxHeight int, searchRev int64) events.PostCreatedPayload {
 	pc := events.PostCreatedPayload{
 		PostID:          p.ID.String(),
 		AuthorID:        p.AuthorID.String(),
@@ -110,6 +117,7 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		Title:      p.Title,
 		DurationMs: maxDuration * 1000,
 		Media:      postMediaRefs(p.Media),
+		Height:     maxHeight,
 	}
 	// Additive pointer fields: stamped whenever an intent exists —
 	// either a typed policy or explicit legacy fields (P1-1). Events
@@ -260,6 +268,14 @@ func (s *Service) announcePublishedPost(p *postgres.Post, mentions []string) {
 // maxVideoDuration is the longest attached video in seconds (0 when none
 // or unknown), the DurationSeconds the PostCreated event carries.
 func (s *Service) maxVideoDuration(ctx context.Context, p *postgres.Post) int {
+	dur, _ := s.maxVideoDurationAndHeight(ctx, p)
+	return dur
+}
+
+// maxVideoDurationAndHeight reads the longest duration (seconds) and the
+// tallest frame (pixels) across the post's attached videos in one batch;
+// both 0 when nothing is attached or the metadata is unreadable.
+func (s *Service) maxVideoDurationAndHeight(ctx context.Context, p *postgres.Post) (maxDur, maxHeight int) {
 	var ids []uuid.UUID
 	for _, m := range p.Media {
 		if m.Kind == "video" {
@@ -267,19 +283,25 @@ func (s *Service) maxVideoDuration(ctx context.Context, p *postgres.Post) int {
 		}
 	}
 	if len(ids) == 0 {
-		return 0
+		return 0, 0
 	}
 	meta, err := s.pgStore.BatchGetMediaMetadata(ctx, ids)
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-	maxDur := 0
 	for _, id := range ids {
-		if m, ok := meta[id]; ok && m.DurationSeconds > maxDur {
+		m, ok := meta[id]
+		if !ok {
+			continue
+		}
+		if m.DurationSeconds > maxDur {
 			maxDur = m.DurationSeconds
 		}
+		if m.Height > maxHeight {
+			maxHeight = m.Height
+		}
 	}
-	return maxDur
+	return maxDur, maxHeight
 }
 
 // PublishScheduled makes one scheduled post live: the row flip and its
@@ -315,7 +337,7 @@ func (s *Service) PublishScheduled(ctx context.Context, postID uuid.UUID, author
 			"post_id", postID, "err", perr)
 		policy = nil
 	}
-	maxDuration := s.maxVideoDuration(ctx, p)
+	maxDuration, maxHeight := s.maxVideoDurationAndHeight(ctx, p)
 	now := time.Now().UTC()
 
 	published, err := s.pgStore.PublishScheduledPost(ctx, postID, authorID, now, dueOnly,
@@ -325,7 +347,7 @@ func (s *Service) PublishScheduled(ctx context.Context, postID uuid.UUID, author
 			}
 			live := *p
 			live.CreatedAt = now
-			return events.PostCreated, s.buildPostCreatedPayload(ctx, &live, policy, maxDuration, rev), nil
+			return events.PostCreated, s.buildPostCreatedPayload(ctx, &live, policy, maxDuration, maxHeight, rev), nil
 		})
 	if err != nil {
 		return false, err

@@ -71,6 +71,7 @@ type Store interface {
 	MarkEnded(ctx context.Context, id uuid.UUID, peakViewers int) (*postgres.LiveStream, error)
 	SetRecording(ctx context.Context, id uuid.UUID, url string, durationSec int) (*postgres.LiveStream, error)
 	ListLive(ctx context.Context, p postgres.ListLiveParams) ([]*postgres.LiveStream, error)
+	ListScheduled(ctx context.Context, p postgres.ListScheduledParams) ([]*postgres.LiveStream, error)
 	RecordViewerEvent(ctx context.Context, streamID, userID uuid.UUID, eventType string) error
 
 	InsertChatMessage(ctx context.Context, streamID, userID uuid.UUID, text string) (*postgres.ChatMessage, error)
@@ -103,6 +104,10 @@ type Service struct {
 	recordingPublicBaseURL string
 	s3Bucket               string
 	s3Endpoint             string
+
+	// now is the clock the upcoming-streams listing measures "future"
+	// against; nil means time.Now. A field so tests can pin it.
+	now func() time.Time
 }
 
 type Config struct {
@@ -314,6 +319,131 @@ func (s *Service) ListLiveNow(ctx context.Context, viewerID uuid.UUID, limit int
 	if len(out) == limit && out[len(out)-1].StartedAt != nil {
 		last := out[len(out)-1]
 		res.NextCursor = encodeCursor(*last.StartedAt, last.ID)
+	}
+	return res, nil
+}
+
+// Stream listing filters for GET /v1/livestream/streams?status= (MTube,
+// 2026-09-27). Absent means live, and the live answer is ListLiveNow's,
+// unchanged.
+const (
+	StreamStatusLive      = "live"
+	StreamStatusScheduled = "scheduled"
+	StreamStatusAll       = "all"
+
+	// allLiveCursorPrefix / allScheduledCursorPrefix tag which phase an
+	// ?status=all cursor resumes: the live list first, then the upcoming
+	// one. The part after the prefix is that list's own cursor.
+	allLiveCursorPrefix      = "live|"
+	allScheduledCursorPrefix = "scheduled|"
+)
+
+// ErrInvalidStatusFilter is a ?status= value the listing does not know.
+var ErrInvalidStatusFilter = errors.New("invalid: status must be live, scheduled or all")
+
+// ListStreams answers GET /v1/livestream/streams for every ?status=.
+func (s *Service) ListStreams(ctx context.Context, viewerID uuid.UUID, status string, limit int, cursor string) (*ListLiveResult, error) {
+	switch status {
+	case "", StreamStatusLive:
+		return s.ListLiveNow(ctx, viewerID, limit, cursor)
+	case StreamStatusScheduled:
+		return s.ListScheduled(ctx, viewerID, limit, cursor)
+	case StreamStatusAll:
+		return s.listAllStreams(ctx, viewerID, limit, cursor)
+	default:
+		return nil, ErrInvalidStatusFilter
+	}
+}
+
+// ListScheduled returns upcoming streams visible to viewerID, soonest
+// first: status 'scheduled' with scheduled_at still in the future. The
+// visibility rule is authorizeViewer, exactly as for the live list —
+// public for everyone, followers-only for followers and the creator,
+// paid never. The cursor is the same "<unix_micros>:<uuid>" keyset, over
+// (scheduled_at, id) ascending.
+func (s *Service) ListScheduled(ctx context.Context, viewerID uuid.UUID, limit int, cursor string) (*ListLiveResult, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	after, idAfter, err := parseCursor(cursor)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	batch := limit * 2 // over-fetch for the visibility filter, as ListLiveNow does
+	streams, err := s.store.ListScheduled(ctx, postgres.ListScheduledParams{
+		Limit:          batch,
+		Now:            now().UTC(),
+		ScheduledAfter: after,
+		IDAfter:        idAfter,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*postgres.LiveStream, 0, limit)
+	var last *postgres.LiveStream // the last row read, visible or not
+	for _, st := range streams {
+		if len(out) == limit {
+			break
+		}
+		last = st
+		if err := s.authorizeViewer(ctx, st, viewerID); err != nil {
+			continue
+		}
+		out = append(out, st)
+	}
+	res := &ListLiveResult{Streams: out}
+	// More may follow when the page filled, or when the store handed back a
+	// full batch the filter thinned: resume after the last row READ, so a
+	// run of hidden streams cannot end the listing early.
+	if (len(out) == limit || len(streams) == batch) && last != nil && last.ScheduledAt != nil {
+		res.NextCursor = encodeCursor(*last.ScheduledAt, last.ID)
+	}
+	return res, nil
+}
+
+// listAllStreams is ?status=all: every live stream first (ListLiveNow's
+// order), then the upcoming ones (ListScheduled's). One page can straddle
+// the two; the cursor records which list it resumes.
+func (s *Service) listAllStreams(ctx context.Context, viewerID uuid.UUID, limit int, cursor string) (*ListLiveResult, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	if strings.HasPrefix(cursor, allScheduledCursorPrefix) {
+		return s.scheduledPhase(ctx, viewerID, limit, strings.TrimPrefix(cursor, allScheduledCursorPrefix), nil)
+	}
+	live, err := s.ListLiveNow(ctx, viewerID, limit, strings.TrimPrefix(cursor, allLiveCursorPrefix))
+	if err != nil {
+		return nil, err
+	}
+	if live.NextCursor != "" {
+		return &ListLiveResult{Streams: live.Streams, NextCursor: allLiveCursorPrefix + live.NextCursor}, nil
+	}
+	remaining := limit - len(live.Streams)
+	if remaining <= 0 {
+		// The live list ended exactly on a full page: the next page is the
+		// head of the upcoming list.
+		return &ListLiveResult{Streams: live.Streams, NextCursor: allScheduledCursorPrefix}, nil
+	}
+	return s.scheduledPhase(ctx, viewerID, remaining, "", live.Streams)
+}
+
+// scheduledPhase appends a page of upcoming streams to prefix and tags the
+// cursor with the scheduled phase.
+func (s *Service) scheduledPhase(ctx context.Context, viewerID uuid.UUID, limit int, cursor string, prefix []*postgres.LiveStream) (*ListLiveResult, error) {
+	sched, err := s.ListScheduled(ctx, viewerID, limit, cursor)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*postgres.LiveStream, 0, len(prefix)+len(sched.Streams))
+	out = append(out, prefix...)
+	out = append(out, sched.Streams...)
+	res := &ListLiveResult{Streams: out}
+	if sched.NextCursor != "" {
+		res.NextCursor = allScheduledCursorPrefix + sched.NextCursor
 	}
 	return res, nil
 }

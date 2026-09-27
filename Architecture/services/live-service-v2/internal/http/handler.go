@@ -182,7 +182,16 @@ func (h *Handler) IssueViewerToken(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, res, nil)
 }
 
+// ListLiveNow — GET /v1/livestream/streams?status=live|scheduled|all
+//
+// Absent or "live" is the original live-now listing, byte for byte.
+// "scheduled" is the upcoming streams, soonest first; "all" is live then
+// upcoming (MTube, 2026-09-27). Any other value is a 400.
 func (h *Handler) ListLiveNow(c *gin.Context) {
+	if status := c.Query("status"); status != "" && status != service.StreamStatusLive {
+		h.listStreamsByStatus(c, status)
+		return
+	}
 	viewerID := optionalUserID(c)
 	limit := 20
 	if v := c.Query("limit"); v != "" {
@@ -192,6 +201,29 @@ func (h *Handler) ListLiveNow(c *gin.Context) {
 	}
 	cursor := c.Query("cursor")
 	res, err := h.svc.ListLiveNow(c.Request.Context(), viewerID, limit, cursor)
+	if err != nil {
+		writeServiceErr(c, err)
+		return
+	}
+	meta := &api.Meta{}
+	if res.NextCursor != "" {
+		meta.NextCursor = res.NextCursor
+	}
+	api.JSON(c.Writer, http.StatusOK, res.Streams, meta)
+}
+
+// listStreamsByStatus serves ?status=scheduled and ?status=all with the
+// live list's row shape (scheduled_at set on upcoming rows) and envelope.
+// An unknown status is refused by the service (ErrInvalidStatusFilter,
+// before any store call) and answered 400 by writeServiceErr.
+func (h *Handler) listStreamsByStatus(c *gin.Context, status string) {
+	limit := 20
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	res, err := h.svc.ListStreams(c.Request.Context(), optionalUserID(c), status, limit, c.Query("cursor"))
 	if err != nil {
 		writeServiceErr(c, err)
 		return
@@ -342,6 +374,8 @@ func writeServiceErr(c *gin.Context, err error) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_FOLLOWER", err.Error(), nil)
 	case errors.Is(err, service.ErrPaidNotSupported):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusPaymentRequired, "PAID_REQUIRED", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidStatusFilter):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidVisibility), errors.Is(err, service.ErrInvalidTitle):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil)
 	default:

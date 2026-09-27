@@ -1,0 +1,9 @@
+{
+  "data": {
+    "tips_enabled": true,
+    "min_tip_paise": 100,
+    "currency": "INR",
+    "membership_tiers": 2
+  }
+}
+

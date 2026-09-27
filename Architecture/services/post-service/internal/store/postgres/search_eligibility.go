@@ -60,6 +60,7 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		mediaIDs    []string
 		mediaKinds  []string
 		durationMs  int
+		height      int
 	)
 	// The search document is replaced whole on re-approval, so the
 	// result-row projection (title, attached assets in carousel order, the
@@ -75,9 +76,10 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		          COALESCE((SELECT array_agg(pm.kind ORDER BY pm.position) FROM post_media pm WHERE pm.post_id = posts.id), '{}'),
 		          COALESCE((SELECT MAX(COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0))
 		                    FROM media_assets ma JOIN post_media pm ON pm.media_id = ma.id
-		                    WHERE pm.post_id = posts.id AND pm.kind = 'video'), 0)::int`, postID).
+		                    WHERE pm.post_id = posts.id AND pm.kind = 'video'), 0)::int,
+		          COALESCE((SELECT vm.height FROM video_metadata vm WHERE vm.post_id = posts.id), 0)::int`, postID).
 		Scan(&authorID, &visibility, &review, &text, &title, &contentType,
-			&createdAt, &deletedAt, &publishAt, &rev, &mediaIDs, &mediaKinds, &durationMs)
+			&createdAt, &deletedAt, &publishAt, &rev, &mediaIDs, &mediaKinds, &durationMs, &height)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrPostRowMissing
 	}
@@ -108,6 +110,10 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		payload.Text = text
 		payload.Title = title
 		payload.DurationMs = durationMs
+		// MTube search facets (2026-09-27): the frame height post-service
+		// recorded in video_metadata (0 = unknown). has_subtitles is left
+		// unset: caption state lives only in media-service.
+		payload.Height = height
 		for i, id := range mediaIDs {
 			kind := ""
 			if i < len(mediaKinds) {

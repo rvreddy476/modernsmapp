@@ -1234,7 +1234,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if s.producer != nil && !scheduled {
 		createEventType = events.PostCreated
 		// Creation is always revision 1; later transitions increment.
-		createPayload = s.buildPostCreatedPayload(ctx, p, effectivePolicy, maxDuration, 1)
+		createPayload = s.buildPostCreatedPayload(ctx, p, effectivePolicy, maxDuration, videoH, 1)
 	}
 
 	// The post, its outbox event and the durable idempotency claim commit

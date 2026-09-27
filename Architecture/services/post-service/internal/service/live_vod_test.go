@@ -16,6 +16,7 @@ type fakeLiveVODStore struct {
 	byStream map[uuid.UUID]*postgres.Post
 	media    map[uuid.UUID]postgres.MediaOwnership
 	bySuffix map[string]uuid.UUID
+	dims     map[uuid.UUID]postgres.MediaMetadata
 	inserts  []postgres.LiveVODInsert
 }
 
@@ -31,6 +32,16 @@ func (f *fakeLiveVODStore) BatchGetMediaOwnership(_ context.Context, ids []uuid.
 	out := map[uuid.UUID]postgres.MediaOwnership{}
 	for _, id := range ids {
 		if m, ok := f.media[id]; ok {
+			out[id] = m
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLiveVODStore) BatchGetMediaMetadata(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]postgres.MediaMetadata, error) {
+	out := map[uuid.UUID]postgres.MediaMetadata{}
+	for _, id := range ids {
+		if m, ok := f.dims[id]; ok {
 			out[id] = m
 		}
 	}

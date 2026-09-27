@@ -70,6 +70,9 @@ type LiveVODOutcome struct {
 type liveVODStore interface {
 	GetPostByLiveStream(ctx context.Context, streamID uuid.UUID) (*postgres.Post, error)
 	BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]postgres.MediaOwnership, error)
+	// BatchGetMediaMetadata supplies the measured frame size (width / height)
+	// for video_metadata and the PostCreated search facets.
+	BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]postgres.MediaMetadata, error)
 	FindMediaByStorageKeySuffix(ctx context.Context, keySuffix string) (uuid.UUID, error)
 	CreateLiveVODPost(ctx context.Context, in postgres.LiveVODInsert) (*postgres.Post, bool, error)
 }
@@ -165,10 +168,23 @@ func (s *Service) CreateLiveVODPost(ctx context.Context, in LiveVODInput) (*Live
 		UploadStatus:     mediaReady,
 		MediaAssetID:     &mediaID,
 	}
+	// The measured frame size, when media-service has recorded it: stored
+	// on video_metadata (which the search-eligibility event reads when the
+	// creator later makes the recording public) and stamped on PostCreated.
+	// Best effort — an unreadable size leaves both unset, never fails the
+	// promotion.
+	height := 0
+	if meta, err := s.liveVOD.BatchGetMediaMetadata(ctx, []uuid.UUID{mediaID}); err == nil {
+		if m, ok := meta[mediaID]; ok && m.Height > 0 {
+			w, h := m.Width, m.Height
+			vm.Width, vm.Height = &w, &h
+			height = h
+		}
+	}
 	insert := postgres.LiveVODInsert{Post: post, StreamID: in.StreamID, MediaID: mediaID, VideoMetadata: vm}
 	if s.producer != nil {
 		insert.EventType = events.PostCreated
-		insert.EventPayload = s.buildPostCreatedPayload(ctx, post, nil, durationSec, 1)
+		insert.EventPayload = s.buildPostCreatedPayload(ctx, post, nil, durationSec, height, 1)
 	}
 	created, wasCreated, err := s.liveVOD.CreateLiveVODPost(ctx, insert)
 	if err != nil {

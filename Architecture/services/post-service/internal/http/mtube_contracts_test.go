@@ -84,6 +84,14 @@ func mtubeContracts() map[string]any {
 	}
 	reel := fixturePost()
 	reel.ContentType, reel.PostType, reel.Text, reel.Title = "flick", "video", "quick one #build", "Quick one"
+	// GET /v1/posts/live-recordings: a promoted live recording, public
+	// after its creator flipped it from the 'unlisted' it is created with.
+	recording := fixturePost()
+	recording.AppOrigin, recording.Source, recording.LiveStreamID = "live", "live", &fxStream
+	recording.Text, recording.Tags, recording.Hashtags, recording.Category = "", nil, nil, ""
+	recording.Title, recording.CoverMediaID, recording.ContentTypeExplicit = "Friday build (live)", nil, true
+	liveRecordings := []service.PostDetail{{Post: recording, Counts: &scylla.Counts{Likes: 4, Comments: 1}, ViewCount: 96,
+		Channel: &service.ChannelRef{UserID: fxAuthor, Name: "Raghu Builds", Handle: "raghu.builds"}}}
 	bannerURL := "/v1/media/" + fxBanner.String() + "/original"
 	subscribed := true
 	notify := "all"
@@ -106,6 +114,7 @@ func mtubeContracts() map[string]any {
 			Visibility string `json:"visibility"`
 		}{Visibility: "private"}},
 		"uploads_bulk.json":    bulkUploadsResponse{Results: []postgres.BulkVisibilityOutcome{{ID: fxPost, OK: true}, {ID: fxStream, OK: false, Error: "NOT_FOUND"}}},
+		"live_recordings.json": liveRecordings,
 		"creator_summary.json": service.CreatorSummary{Videos: 12, Shorts: 30, Live: 2, Collections: 3, Followers: 1200},
 		"channel.json": service.ChannelView{UserID: fxAuthor, Name: "Raghu Builds", Handle: "raghu.builds", About: "Weekly builds", AvatarMediaID: nil, AvatarURL: nil,
 			VideoCount: 12, SubscriberCount: 1200, IsSubscribed: &subscribed, NotifyOn: &notify, CreatedAt: fxTime.Add(-72 * time.Hour), UpdatedAt: fxTime,

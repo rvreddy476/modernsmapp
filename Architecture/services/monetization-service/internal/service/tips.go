@@ -35,6 +35,14 @@ const (
 	tipReferenceTypeBase   = "tip"
 )
 
+// MinTipPaise / TipCurrency are what validateTipInput and SendTip enforce,
+// exported so the public support read (GET /creators/:creatorId/support)
+// states the same minimum the write path applies rather than a copy.
+const (
+	MinTipPaise = tipMinPaise
+	TipCurrency = "INR"
+)
+
 // TipResult is the success shape returned to fans.
 type TipResult struct {
 	Tip *postgres.Tip `json:"tip"`
@@ -89,7 +97,7 @@ func (s *Service) SendTip(ctx context.Context, in SendTipInput) (*TipResult, err
 		SenderID:    in.SenderID,
 		RecipientID: in.RecipientID,
 		AmountPaise: in.AmountPaise,
-		Currency:    "INR",
+		Currency:    TipCurrency,
 		Message:     in.Message,
 		PostID:      in.PostID,
 		StreamID:    in.StreamID,

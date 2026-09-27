@@ -34,6 +34,11 @@ type fakeClipsService struct {
 	savedActor   uuid.UUID
 	savedPost    uuid.UUID
 	saveErr      error
+	// owner is the media's uploader; readAs the viewers the draft-aware
+	// reads were asked about. Rows are filtered by the real draft rule
+	// (service.SubtitlesVisibleTo), not a copy of it.
+	owner  uuid.UUID
+	readAs []uuid.UUID
 }
 
 func (f *fakeClipsService) AuthorizeMediaRead(_ context.Context, viewerID, _ uuid.UUID) error {
@@ -41,16 +46,33 @@ func (f *fakeClipsService) AuthorizeMediaRead(_ context.Context, viewerID, _ uui
 	return f.authorizeErr
 }
 
-func (f *fakeClipsService) GetSubtitles(context.Context, uuid.UUID) ([]postgres.MediaSubtitle, error) {
-	return f.subtitles, nil
+func (f *fakeClipsService) isOwner(viewerID uuid.UUID) bool {
+	return viewerID != uuid.Nil && viewerID == f.owner
+}
+
+func (f *fakeClipsService) ViewerSubtitles(_ context.Context, viewerID, _ uuid.UUID) ([]postgres.MediaSubtitle, error) {
+	f.readAs = append(f.readAs, viewerID)
+	return service.SubtitlesVisibleTo(f.subtitles, f.isOwner(viewerID)), nil
 }
 
 func (f *fakeClipsService) GetCaptionStatus(context.Context, uuid.UUID) (*service.CaptionStatus, error) {
 	return f.status, nil
 }
 
-func (f *fakeClipsService) CaptionTrackVTT(_ context.Context, _ uuid.UUID, _ string) (string, error) {
-	return f.vtt, f.vttErr
+// ViewerCaptionTrackVTT: with no rows configured the fake serves vtt as
+// is (the gate tests); with rows it serves vtt only when the viewer may see
+// that language's row, as the service does.
+func (f *fakeClipsService) ViewerCaptionTrackVTT(_ context.Context, viewerID, _ uuid.UUID, language string) (string, error) {
+	f.readAs = append(f.readAs, viewerID)
+	if f.vttErr != nil || len(f.subtitles) == 0 {
+		return f.vtt, f.vttErr
+	}
+	for _, sub := range service.SubtitlesVisibleTo(f.subtitles, f.isOwner(viewerID)) {
+		if strings.EqualFold(sub.Language, language) {
+			return f.vtt, nil
+		}
+	}
+	return "", service.ErrCaptionTrackNotFound
 }
 
 func (f *fakeClipsService) SaveMediaClips(_ context.Context, actorID, postID uuid.UUID, _ []postgres.MediaClip) error {
@@ -139,7 +161,7 @@ func TestSubtitleReadsGoThroughTheDeliveryGate(t *testing.T) {
 	}
 
 	t.Run("an authorized viewer gets the tracks", func(t *testing.T) {
-		fake := &fakeClipsService{subtitles: []postgres.MediaSubtitle{{Language: "en", Content: "hello"}}}
+		fake := &fakeClipsService{subtitles: []postgres.MediaSubtitle{{Language: "en", Content: "hello", Published: true}}}
 		rec := captionGet(captionRouter(fake), readPaths["tracks list"], viewer.String())
 		if rec.Code != http.StatusOK {
 			t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())

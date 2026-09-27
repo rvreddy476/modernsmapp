@@ -180,3 +180,35 @@ func TestSubtitleTrackPathIsThisServicesOwnRoute(t *testing.T) {
 		t.Fatalf("SubtitleTrackPath = %q, want %q", got, want)
 	}
 }
+
+// Draft captions (2026-09-27): the owner sees every track, anyone else only
+// the published ones — and the input slice is not mutated either way.
+func TestSubtitlesVisibleToKeepsDraftsForTheOwner(t *testing.T) {
+	subs := []postgres.MediaSubtitle{
+		{Language: "en", Published: true},
+		{Language: "hi", Published: false},
+		{Language: "ta", Published: true},
+	}
+	if got := SubtitlesVisibleTo(subs, true); len(got) != 3 {
+		t.Fatalf("owner saw %d tracks, want 3", len(got))
+	}
+	got := SubtitlesVisibleTo(subs, false)
+	if len(got) != 2 || got[0].Language != "en" || got[1].Language != "ta" {
+		t.Fatalf("viewer saw %+v, want en and ta", got)
+	}
+	if len(subs) != 3 || subs[1].Language != "hi" {
+		t.Fatalf("the rule mutated its input: %+v", subs)
+	}
+	if got := SubtitlesVisibleTo(nil, false); len(got) != 0 {
+		t.Fatalf("no rows: %+v", got)
+	}
+}
+
+// Anonymous is never the owner, and is decided without a store call (the
+// Service here has none: a lookup would panic).
+func TestAnonymousViewerNeverOwnsMedia(t *testing.T) {
+	owner, err := (&Service{}).viewerOwnsMedia(context.Background(), uuid.Nil, uuid.New())
+	if err != nil || owner {
+		t.Fatalf("anonymous owner=%v err=%v", owner, err)
+	}
+}

@@ -149,7 +149,85 @@ func SubtitleTrackPath(mediaID uuid.UUID, language string) string {
 	return fmt.Sprintf("/v1/subtitles/%s/track/%s.vtt", mediaID, language)
 }
 
-// CaptionTrackVTT renders the stored track for one language as WebVTT.
+// ── Drafts (MTube, 2026-09-27) ──────────────────────────────────────────
+//
+// A caption the job generates is a DRAFT (media_subtitles.published =
+// false, migration 020) until its creator publishes it from
+// GET /v1/subtitles/mine. The asset gate above answers "may this viewer read
+// this asset's captions at all"; it does not know about drafts, so the
+// viewer-facing reads — the track list and the .vtt file — apply the second
+// rule here: the owner sees every track, everyone else only published ones.
+// A stranger asking for a draft's language gets the same 404 as for a
+// language that does not exist, so a draft's existence is not disclosed.
+
+// SubtitlesVisibleTo is the draft rule over rows already read: every row
+// for the owner, published rows for anyone else. Exported so the handler
+// tests apply the real rule rather than a copy of it.
+func SubtitlesVisibleTo(subs []postgres.MediaSubtitle, owner bool) []postgres.MediaSubtitle {
+	if owner {
+		return subs
+	}
+	out := make([]postgres.MediaSubtitle, 0, len(subs))
+	for _, sub := range subs {
+		if sub.Published {
+			out = append(out, sub)
+		}
+	}
+	return out
+}
+
+// viewerOwnsMedia reports whether viewerID uploaded mediaID. Anonymous is
+// never the owner. A lookup failure is an error, not "not the owner", so
+// an owner is not silently shown a draft-less list on a transient fault.
+func (s *Service) viewerOwnsMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error) {
+	if viewerID == uuid.Nil {
+		return false, nil
+	}
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return false, err
+	}
+	return media != nil && media.UploaderID == viewerID, nil
+}
+
+// ViewerSubtitles is GET /v1/subtitles/:mediaId: the tracks viewerID may
+// see — all of them for the owner, the published ones for anyone else.
+// Callers MUST have passed AuthorizeMediaRead first.
+func (s *Service) ViewerSubtitles(ctx context.Context, viewerID, mediaID uuid.UUID) ([]postgres.MediaSubtitle, error) {
+	subs, err := s.pgStore.GetSubtitles(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := s.viewerOwnsMedia(ctx, viewerID, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	return SubtitlesVisibleTo(subs, owner), nil
+}
+
+// ViewerCaptionTrackVTT is GET /v1/subtitles/:mediaId/track/:language: the
+// WebVTT for one language when viewerID may see that track. A draft asked
+// for by anyone but the owner is ErrCaptionTrackNotFound (404).
+// Callers MUST have passed AuthorizeMediaRead first.
+func (s *Service) ViewerCaptionTrackVTT(ctx context.Context, viewerID, mediaID uuid.UUID, language string) (string, error) {
+	language = strings.TrimSpace(language)
+	if !validLanguageTag(language) {
+		return "", ErrCaptionTrackNotFound
+	}
+	subs, err := s.pgStore.GetSubtitles(ctx, mediaID)
+	if err != nil {
+		return "", err
+	}
+	owner, err := s.viewerOwnsMedia(ctx, viewerID, mediaID)
+	if err != nil {
+		return "", err
+	}
+	return s.renderCaptionTrack(ctx, mediaID, SubtitlesVisibleTo(subs, owner), language)
+}
+
+// CaptionTrackVTT renders the stored track for one language as WebVTT,
+// drafts included — the owner's view. Viewer-facing routes use
+// ViewerCaptionTrackVTT, which applies the draft rule.
 //
 // Callers MUST have passed AuthorizeMediaRead first; this function does no
 // authorization of its own, exactly like the store call it replaces.
@@ -162,6 +240,12 @@ func (s *Service) CaptionTrackVTT(ctx context.Context, mediaID uuid.UUID, langua
 	if err != nil {
 		return "", err
 	}
+	return s.renderCaptionTrack(ctx, mediaID, subs, language)
+}
+
+// renderCaptionTrack picks the language out of rows the caller may see and
+// renders it.
+func (s *Service) renderCaptionTrack(ctx context.Context, mediaID uuid.UUID, subs []postgres.MediaSubtitle, language string) (string, error) {
 	var track *postgres.MediaSubtitle
 	for i := range subs {
 		if strings.EqualFold(subs[i].Language, language) {

@@ -123,6 +123,8 @@ func TestLaunchBoundaryRuleListIsTheBetaLine(t *testing.T) {
 		{http.MethodGet, "/v1/monetization/creator-fund/earnings"},
 		{http.MethodGet, "/v1/monetization/creator-fund/statements"},
 		{http.MethodGet, "/v1/monetization/creator-fund/statements/:periodKey"},
+		// MTube watch page (2026-09-27): says tips are off in beta.
+		{http.MethodGet, "/v1/monetization/creators/:creatorId/support"},
 	}
 	for _, rule := range open {
 		if !betaRuleAllows(rule.method, rule.pattern) {
@@ -135,6 +137,9 @@ func TestLaunchBoundaryRuleListIsTheBetaLine(t *testing.T) {
 		{http.MethodGet, "/v1/monetization/tds-summary/:year"},
 		{http.MethodGet, "/v1/monetization/entitlements"},
 		{http.MethodGet, "/v1/monetization/admin/creator-fund/budgets"},
+		// The support read is open; the tip itself and the tier list are not.
+		{http.MethodPost, "/v1/monetization/tips"},
+		{http.MethodGet, "/v1/monetization/creators/:creatorId/tiers"},
 		{http.MethodGet, ""},
 	}
 	for _, rule := range closed {

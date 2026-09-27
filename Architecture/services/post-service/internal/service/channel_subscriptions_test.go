@@ -554,13 +554,13 @@ func TestListMySubscriptionsPagesNewestFirst(t *testing.T) {
 func TestStampChannelFillsIDNameHandle(t *testing.T) {
 	f := newSubscriptionFixture(t)
 	pc := f.svc.buildPostCreatedPayload(context.Background(),
-		&postgres.Post{ID: uuid.New(), AuthorID: f.owner, ContentType: "long_video", Visibility: "public"}, nil, 0, 1)
+		&postgres.Post{ID: uuid.New(), AuthorID: f.owner, ContentType: "long_video", Visibility: "public"}, nil, 0, 0, 1)
 	ch := f.store.byUser[f.owner]
 	if pc.ChannelID != ch.ID.String() || pc.ChannelName != "Call B Studio" || pc.ChannelHandle != "call.b" {
 		t.Fatalf("stamp = %q %q %q", pc.ChannelID, pc.ChannelName, pc.ChannelHandle)
 	}
 	none := f.svc.buildPostCreatedPayload(context.Background(),
-		&postgres.Post{ID: uuid.New(), AuthorID: uuid.New(), ContentType: "long_video", Visibility: "public"}, nil, 0, 1)
+		&postgres.Post{ID: uuid.New(), AuthorID: uuid.New(), ContentType: "long_video", Visibility: "public"}, nil, 0, 0, 1)
 	if none.ChannelID != "" || none.ChannelName != "" {
 		t.Fatalf("author without a channel stamped: %+v", none)
 	}

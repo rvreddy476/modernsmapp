@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -114,11 +115,11 @@ func (s *Store) CreateLiveVODPost(ctx context.Context, in LiveVODInsert) (post *
 	if vm := in.VideoMetadata; vm != nil {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO video_metadata (post_id, duration_seconds, orientation, trim_start_ms,
-				computed_category, final_category, upload_status, media_asset_id, created_at, updated_at)
-			VALUES ($1, $2, $3, 0, $4, $5, $6, $7, NOW(), NOW())
+				computed_category, final_category, upload_status, media_asset_id, width, height, created_at, updated_at)
+			VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, NOW(), NOW())
 			ON CONFLICT (post_id) DO NOTHING`,
 			vm.PostID, vm.DurationSeconds, vm.Orientation, vm.ComputedCategory, vm.FinalCategory,
-			vm.UploadStatus, vm.MediaAssetID); err != nil {
+			vm.UploadStatus, vm.MediaAssetID, vm.Width, vm.Height); err != nil {
 			return nil, false, fmt.Errorf("insert vod video_metadata: %w", err)
 		}
 	}
@@ -131,4 +132,49 @@ func (s *Store) CreateLiveVODPost(ctx context.Context, in LiveVODInsert) (post *
 		return nil, false, err
 	}
 	return in.Post, true, nil
+}
+
+// ListLiveRecordings is the public "recorded streams" listing (MTube,
+// 2026-09-27): the promoted live recordings — source = 'live' — that are
+// public, approved and not deleted, newest first. Same keyset cursor as
+// GetRecentPosts (created_at of the last row); scheduled rows are excluded
+// the way every public listing excludes them. A recording lands here once
+// its creator flips the VOD post from the 'unlisted' it is created with to
+// 'public'.
+func (s *Store) ListLiveRecordings(ctx context.Context, limit int, cursor string) ([]Post, string, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	args := []interface{}{limit + 1}
+	query := `SELECT ` + postCols + `
+		FROM posts
+		WHERE source = '` + PostSourceLive + `'
+			AND visibility = 'public' AND deleted_at IS NULL
+			AND review_status = 'approved' AND publish_at IS NULL`
+	if cursor != "" {
+		if cursorTime, err := time.Parse(time.RFC3339Nano, cursor); err == nil {
+			query += ` AND created_at < $2`
+			args = append(args, cursorTime)
+		}
+	}
+	query += ` ORDER BY created_at DESC LIMIT $1`
+
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	posts, err := scanPostRows(rows)
+	if err != nil {
+		return nil, "", err
+	}
+	var nextCursor string
+	if len(posts) > limit {
+		nextCursor = posts[limit-1].CreatedAt.Format(time.RFC3339Nano)
+		posts = posts[:limit]
+	}
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
+	}
+	return posts, nextCursor, nil
 }

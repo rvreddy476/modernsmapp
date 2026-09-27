@@ -88,6 +88,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/batch", h.BatchGetPosts)
 		v1.GET("/categories", h.ListCategories)
 		v1.GET("/recent", h.GetRecentPosts)
+		// MTube (2026-09-27): public listing of promoted live recordings
+		// (source = 'live'); same hydrated rows as by-author.
+		v1.GET("/live-recordings", h.GetLiveRecordings)
 		v1.GET("/bookmarks", h.GetBookmarks)
 		v1.GET("/by-author/:authorId", h.GetPostsByAuthor)
 		v1.GET("/by-author/:authorId/counts", h.GetAuthorCounts)
@@ -986,6 +989,53 @@ func (h *Handler) GetRecentPosts(c *gin.Context) {
 		meta = &api.Meta{NextCursor: nextCursor}
 	}
 
+	api.JSON(c.Writer, http.StatusOK, posts, meta)
+}
+
+// GetLiveRecordings — GET /v1/posts/live-recordings?limit=&cursor=
+//
+// The public "recorded streams" shelf (MTube, 2026-09-27): promoted live
+// recordings that are public and approved, newest first, in the same
+// hydrated row shape as /by-author. The query is validated here so a bad
+// limit or cursor is a 400 before the store is touched, rather than the
+// silent default the older listings apply.
+func (h *Handler) GetLiveRecordings(c *gin.Context) {
+	limit := 20
+	if raw := c.Query("limit"); raw != "" {
+		l, err := strconv.Atoi(raw)
+		if err != nil || l <= 0 || l > 50 {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "limit must be an integer between 1 and 50", nil)
+			return
+		}
+		limit = l
+	}
+	cursor := c.Query("cursor")
+	if cursor != "" {
+		if _, err := time.Parse(time.RFC3339Nano, cursor); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "cursor is not a value this endpoint issued", nil)
+			return
+		}
+	}
+
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+
+	posts, nextCursor, err := h.svc.GetLiveRecordings(c.Request.Context(), viewerID, limit, cursor)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if posts == nil {
+		posts = []service.PostDetail{}
+	}
+	var meta *api.Meta
+	if nextCursor != "" {
+		meta = &api.Meta{NextCursor: nextCursor}
+	}
 	api.JSON(c.Writer, http.StatusOK, posts, meta)
 }
 

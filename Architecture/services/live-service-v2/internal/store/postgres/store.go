@@ -213,6 +213,63 @@ func (s *Store) ListLive(ctx context.Context, p ListLiveParams) ([]*LiveStream, 
 	return out, rows.Err()
 }
 
+type ListScheduledParams struct {
+	Limit int
+	// Now is the "upcoming" boundary: only rows with scheduled_at > Now.
+	Now            time.Time
+	ScheduledAfter *time.Time
+	IDAfter        *uuid.UUID
+}
+
+// ListScheduled returns upcoming streams — status='scheduled' with a
+// scheduled_at still in the future — soonest first. Keyset on
+// (scheduled_at, id) ascending; a stream with no scheduled_at is not
+// "upcoming" and never listed. Visibility is the caller's filter, the same
+// authorizeViewer gate ListLive's caller applies.
+func (s *Store) ListScheduled(ctx context.Context, p ListScheduledParams) ([]*LiveStream, error) {
+	limit := p.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if p.ScheduledAfter != nil && p.IDAfter != nil {
+		const q = `
+            SELECT ` + selectColumns + `
+            FROM live_streams
+            WHERE status = 'scheduled'
+              AND scheduled_at > $1
+              AND (scheduled_at, id) > ($2, $3)
+            ORDER BY scheduled_at ASC, id ASC
+            LIMIT $4`
+		rows, err = s.db.Query(ctx, q, p.Now, *p.ScheduledAfter, *p.IDAfter, limit)
+	} else {
+		const q = `
+            SELECT ` + selectColumns + `
+            FROM live_streams
+            WHERE status = 'scheduled'
+              AND scheduled_at > $1
+            ORDER BY scheduled_at ASC, id ASC
+            LIMIT $2`
+		rows, err = s.db.Query(ctx, q, p.Now, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*LiveStream, 0, limit)
+	for rows.Next() {
+		st, err := scanStream(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
 // RecordViewerEvent inserts a join/leave row for analytics. Best-effort:
 // callers log errors but do not fail user-visible operations.
 func (s *Store) RecordViewerEvent(ctx context.Context, streamID, userID uuid.UUID, eventType string) error {

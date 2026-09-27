@@ -33,6 +33,12 @@ type Handler struct {
 	// verifier admits admin-service tokens on the token-only admin family
 	// (admin_token.go); nil accepts none.
 	verifier *servicetoken.Verifier
+	// tiers overrides where GET /creators/:creatorId/support reads a
+	// creator's tiers from (creator_support.go); nil means svc. Tests only.
+	tiers creatorTierReader
+	// tips overrides the SendTip call (tips_handler.go); nil means svc.
+	// Tests only.
+	tips tipService
 }
 
 func New(svc *service.Service) *Handler {
@@ -114,6 +120,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Public: list a specific creator's active tiers (used by fans
 		// when picking a tier on a creator's profile).
 		v1.GET("/creators/:creatorId/tiers", h.GetCreatorTiersPublic)
+		// Public: whether the watch page shows a Thanks button, and the
+		// tip minimum (MTube, 2026-09-27; creator_support.go).
+		v1.GET("/creators/:creatorId/support", h.GetCreatorSupport)
 
 		// Subscriptions
 		v1.POST("/subscribe/:creatorId", h.Subscribe)
@@ -265,6 +274,13 @@ var betaReadOnlyRules = []betaRule{
 	{http.MethodGet, "/v1/monetization/creator-fund/earnings"},
 	{http.MethodGet, "/v1/monetization/creator-fund/statements"},
 	{http.MethodGet, "/v1/monetization/creator-fund/statements/:periodKey"},
+
+	// Whether tips are open, the tip minimum and a tier COUNT for one
+	// creator (MTube watch page, 2026-09-27). Public, no amounts owed or
+	// held. It must answer in beta: its whole job there is to say
+	// tips_enabled=false so the page hides the button instead of the
+	// button meeting a 503.
+	{http.MethodGet, "/v1/monetization/creators/:creatorId/support"},
 }
 
 // betaRuleAllows reports whether a method and registered route pattern

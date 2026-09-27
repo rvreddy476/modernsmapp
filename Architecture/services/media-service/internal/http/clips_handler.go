@@ -22,9 +22,11 @@ import (
 // assertClipsOwned) and in the delivery package (Gate.AuthorizeAsset).
 type clipsService interface {
 	AuthorizeMediaRead(ctx context.Context, viewerID, mediaID uuid.UUID) error
-	GetSubtitles(ctx context.Context, mediaAssetID uuid.UUID) ([]postgres.MediaSubtitle, error)
+	// ViewerSubtitles / ViewerCaptionTrackVTT apply the draft rule (owner sees
+	// unpublished tracks, nobody else does) after the asset gate.
+	ViewerSubtitles(ctx context.Context, viewerID, mediaID uuid.UUID) ([]postgres.MediaSubtitle, error)
 	GetCaptionStatus(ctx context.Context, mediaID uuid.UUID) (*service.CaptionStatus, error)
-	CaptionTrackVTT(ctx context.Context, mediaID uuid.UUID, language string) (string, error)
+	ViewerCaptionTrackVTT(ctx context.Context, viewerID, mediaID uuid.UUID, language string) (string, error)
 	SaveMediaClips(ctx context.Context, actorID, postID uuid.UUID, clips []postgres.MediaClip) error
 }
 
@@ -312,7 +314,9 @@ func (h *Handler) GetSubtitles(c *gin.Context) {
 		return
 	}
 
-	subs, err := h.clipsSvc().GetSubtitles(c.Request.Context(), mediaID)
+	// Drafts (published=false) are the owner's alone; everyone else gets the
+	// published tracks only.
+	subs, err := h.clipsSvc().ViewerSubtitles(c.Request.Context(), deliveryViewer(c), mediaID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -347,7 +351,9 @@ func (h *Handler) ServeSubtitleTrack(c *gin.Context) {
 		return
 	}
 
-	body, err := h.clipsSvc().CaptionTrackVTT(c.Request.Context(), mediaID, language)
+	// A draft track is served to its owner only; to anyone else it is the
+	// same 404 as a language that does not exist.
+	body, err := h.clipsSvc().ViewerCaptionTrackVTT(c.Request.Context(), deliveryViewer(c), mediaID, language)
 	if err != nil {
 		if errors.Is(err, service.ErrCaptionTrackNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,

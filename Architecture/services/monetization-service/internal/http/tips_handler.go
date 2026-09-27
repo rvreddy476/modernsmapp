@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,11 +13,24 @@ import (
 	"github.com/google/uuid"
 )
 
+// tipService is the one call SendTip makes; an interface so the request
+// parsing is testable without a ledger.
+type tipService interface {
+	SendTip(ctx context.Context, in service.SendTipInput) (*service.TipResult, error)
+}
+
+func (h *Handler) tipSender() tipService {
+	if h.tips != nil {
+		return h.tips
+	}
+	return h.svc
+}
+
 // SendTip — POST /v1/monetization/tips
 // Body:
 //
 //	{
-//	  "recipient_id": "<uuid>",
+//	  "recipient_id": "<uuid>",  // or "creator_id" (alias; recipient_id wins)
 //	  "amount_paise": 500,
 //	  "message": "great video",
 //	  "post_id": "<uuid>"   // optional, mutually exclusive with stream_id
@@ -33,7 +47,11 @@ func (h *Handler) SendTip(c *gin.Context) {
 	}
 
 	var body struct {
-		RecipientID string     `json:"recipient_id" binding:"required"`
+		// RecipientID is the canonical field. CreatorID is an alias (MTube
+		// web, 2026-09-27: the watch page sends {creator_id, ...}); when
+		// both are present recipient_id wins, and one of them is required.
+		RecipientID string     `json:"recipient_id"`
+		CreatorID   string     `json:"creator_id"`
 		AmountPaise int64      `json:"amount_paise" binding:"required"`
 		Message     string     `json:"message"`
 		PostID      *uuid.UUID `json:"post_id,omitempty"`
@@ -43,9 +61,17 @@ func (h *Handler) SendTip(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-	recipientID, err := uuid.Parse(body.RecipientID)
+	field, rawRecipient := "recipient_id", body.RecipientID
+	if rawRecipient == "" {
+		field, rawRecipient = "creator_id", body.CreatorID
+	}
+	if rawRecipient == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "recipient_id (or its alias creator_id) is required", nil)
+		return
+	}
+	recipientID, err := uuid.Parse(rawRecipient)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "recipient_id must be a UUID", nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", field+" must be a UUID", nil)
 		return
 	}
 
@@ -57,7 +83,7 @@ func (h *Handler) SendTip(c *gin.Context) {
 		PostID:      body.PostID,
 		StreamID:    body.StreamID,
 	}
-	res, err := h.svc.SendTip(c.Request.Context(), in)
+	res, err := h.tipSender().SendTip(c.Request.Context(), in)
 	if err != nil {
 		// Validation errors → 400; daily cap → 429; charge failures →
 		// 402; everything else → 500.
