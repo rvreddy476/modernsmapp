@@ -67,8 +67,11 @@ type Service struct {
 	// timelines and celebs are what FanoutPost writes to and asks: the
 	// Scylla TimelineStore and the Postgres MetaStore in production,
 	// swapped by tests so the fan-out legs can be exercised without a
-	// live cluster. Every other path still reads the concrete stores.
+	// live cluster. windows is the keyset read behind the reels and Tube
+	// pages, swapped the same way. Every other path still reads the
+	// concrete stores.
 	timelines timelineWriter
+	windows   timelineReader
 	celebs    celebStore
 }
 
@@ -76,6 +79,12 @@ type Service struct {
 type timelineWriter interface {
 	AddToAuthorTimeline(ctx context.Context, authorID uuid.UUID, postID uuid.UUID, createdAt time.Time, contentType string) error
 	AddToHomeTimeline(ctx context.Context, userID uuid.UUID, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error
+}
+
+// timelineReader is the slice of the Scylla store the reels and Tube
+// keyset windows read.
+type timelineReader interface {
+	GetHomeTimelineByContentTypesBefore(ctx context.Context, userID uuid.UUID, contentTypes []string, beforeToken string, limit int) ([]scylla.FeedItem, error)
 }
 
 // celebStore answers the pull-model question FanoutPost gates on.
@@ -144,6 +153,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	}
 	if scylla != nil {
 		svc.timelines = scylla
+		svc.windows = scylla
 	}
 	return svc
 }
@@ -330,11 +340,12 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// their target is most likely to go unnoticed, because nothing in the
 	// response says the safety filter was skipped. Returning an error
 	// costs an unavailable feed; the alternative costs a safety guarantee.
-	blockedMuted, bmErr := s.getBlockedAndMuted(ctx, userID)
-	if bmErr != nil {
-		return HomeFeedResult{}, fmt.Errorf("feed unavailable: block/mute state could not be resolved: %w", bmErr)
+	// The same set carries the viewer's "Don't recommend" authors, so the
+	// window and the cold-start fill below are cut without them.
+	blockedSet, err := s.resolveBlockedSet(ctx, userID)
+	if err != nil {
+		return HomeFeedResult{}, err
 	}
-	blockedSet := blockedSetOf(blockedMuted)
 	candidates = applyBlockFilter(candidates, blockedSet)
 	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 
@@ -485,7 +496,7 @@ func (s *Service) GetFlickFeed(ctx context.Context, userID uuid.UUID, limit int)
 func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
 	s.warmViewerSignals(ctx, userID) // see mutuals.go
 	target := limit + 1
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"flick", "reel"}, before, target*3)
+	items, err := s.windows.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"flick", "reel"}, before, target*3)
 	if err != nil {
 		return nil, "", err
 	}
@@ -675,7 +686,7 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly, subscribedOnly bool) ([]FeedItem, string, map[uuid.UUID]struct{}, error) {
 	s.warmViewerSignals(ctx, userID) // see mutuals.go
 	target := limit + 1
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
+	items, err := s.windows.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -1093,12 +1104,37 @@ func isLongVideoContentType(contentType string) bool {
 // Returning an error here makes the tab unavailable during a
 // graph-service outage. That is the intended trade — the alternative is
 // an unfiltered tab that looks completely normal.
+//
+// The set also carries every author the viewer answered "Don't recommend
+// this account" about (feed_author_feedback, feedback.go). That used to be
+// applied only at the hydration tail, AFTER the keyset window and the
+// discovery fills were cut: a page came back short or empty while the
+// cursor advanced, and fill slots went to authors the viewer had excluded.
+// Same fail-closed rule as applyFeedbackFilter; a service built without a
+// feedback store (tests) has nothing to add.
 func (s *Service) resolveBlockedSet(ctx context.Context, userID uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	ids, err := s.getBlockedAndMuted(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("feed unavailable: block/mute state could not be resolved: %w", err)
 	}
-	return blockedSetOf(ids), nil
+	set := blockedSetOf(ids)
+	if s.feedback == nil {
+		return set, nil
+	}
+	muted, err := s.feedback.MutedAuthorIDs(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("feed unavailable: author feedback state could not be resolved: %w", err)
+	}
+	if len(muted) == 0 {
+		return set, nil
+	}
+	if set == nil {
+		set = make(map[uuid.UUID]struct{}, len(muted))
+	}
+	for id := range muted {
+		set[id] = struct{}{}
+	}
+	return set, nil
 }
 
 // blockedSetOf builds a lookup set from the graph-service response.
