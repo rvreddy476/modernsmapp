@@ -25,7 +25,15 @@ type Comment struct {
 	IsDeleted    bool       `json:"-"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
-	// Nested reply (loaded inline for threaded display)
+	// Emoji reactions (comment_reactions, migration 050). Reactions is the
+	// top CommentReactionTop emojis by count; ReactionCount counts every
+	// reaction; ViewerReaction is the viewer's own emoji, nil when none or
+	// anonymous. LikeCount == ReactionCount, computed at read time.
+	Reactions      []CommentReaction `json:"reactions"`
+	ReactionCount  int               `json:"reaction_count"`
+	ViewerReaction *string           `json:"viewer_reaction"`
+	// First reply (oldest visible), kept for clients that predate
+	// GET /v1/comments/:id/replies. ReplyCount is the full number.
 	Reply *Comment `json:"reply,omitempty"`
 	// Author presentation, hydrated at read time from identity-profile —
 	// never stored here. Nil when hydration was skipped or failed; clients
@@ -58,13 +66,47 @@ func (s *Store) GetCommentByID(ctx context.Context, commentID uuid.UUID) (*Comme
 	return c, nil
 }
 
-// IncrementCommentLikeCount atomically increments or decrements a comment's like_count.
+// GetVisibleCommentByID is GetCommentByID restricted to the public thread:
+// is_deleted = FALSE AND moderation_status = 'visible'. Reactions and
+// replies target comments through this, so a held or hidden comment answers
+// COMMENT_NOT_FOUND to everyone (the post-level gate is the service's).
+func (s *Store) GetVisibleCommentByID(ctx context.Context, commentID uuid.UUID) (*Comment, error) {
+	row := s.db.QueryRow(ctx,
+		`SELECT id, post_id, author_id, parent_id, is_reply FROM comments
+		 WHERE id = $1 AND `+visibleCommentPredicate,
+		commentID,
+	)
+	c := &Comment{}
+	if err := row.Scan(&c.ID, &c.PostID, &c.AuthorID, &c.ParentID, &c.IsReply); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("COMMENT_NOT_FOUND")
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+// IncrementCommentLikeCount atomically increments or decrements a comment's
+// like_count column. Reactions no longer write it (like_count on the wire
+// is reaction_count, computed at read time); only the dislike toggle's
+// legacy mutual-exclusion path still calls this.
 func (s *Store) IncrementCommentLikeCount(ctx context.Context, commentID uuid.UUID, delta int) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE comments SET like_count = GREATEST(0, like_count + $1) WHERE id = $2`,
 		delta, commentID,
 	)
 	return err
+}
+
+// GetCommentDislikeCount reads the dislike_count column (still maintained
+// by the dislike toggle) for the legacy like response.
+func (s *Store) GetCommentDislikeCount(ctx context.Context, commentID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `SELECT dislike_count FROM comments WHERE id = $1`, commentID).Scan(&n)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return n, err
 }
 
 // IncrementCommentDislikeCount atomically increments or decrements a comment's dislike_count.
@@ -90,6 +132,7 @@ func (s *Store) CreateComment(ctx context.Context, postID, authorID uuid.UUID, b
 		AuthorID:  authorID,
 		Body:      body,
 		IsReply:   false,
+		Reactions: []CommentReaction{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -118,10 +161,19 @@ func (s *Store) CreateComment(ctx context.Context, postID, authorID uuid.UUID, b
 	return comment, nil
 }
 
-// CreateReply creates a reply to a comment. Enforces:
-// 1. Only the post owner can reply
-// 2. Max 1 reply per comment
-// 3. Cannot reply to a reply (max depth = 2)
+// CreateReply creates a reply under a comment (2026-09-27: open to every
+// viewer who may comment on the post — the post-owner rule and the
+// one-reply cap are gone; the service applies the same gates AddComment
+// does before calling this).
+//
+// Threading stays one level deep: replying to a REPLY attaches the new row
+// to that reply's parent (the client prefixes @username), so parent_id is
+// always a top-level comment and reply_count on that parent increments.
+//
+// The target must be in the public thread (visible, not deleted); anything
+// else is COMMENT_NOT_FOUND. Returns the author of the comment the caller
+// actually replied to (the reply's author when replying to a reply), so the
+// service can notify them.
 func (s *Store) CreateReply(ctx context.Context, commentID, userID uuid.UUID, body string) (*Comment, uuid.UUID, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -129,15 +181,14 @@ func (s *Store) CreateReply(ctx context.Context, commentID, userID uuid.UUID, bo
 	}
 	defer tx.Rollback(ctx)
 
-	// Load parent comment
-	var parentPostID, parentAuthorID uuid.UUID
-	var parentIsReply bool
-	var parentReplyCount int
+	// Load the target: the comment the caller tapped "reply" on.
+	var targetPostID, targetAuthorID uuid.UUID
+	var targetParentID *uuid.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT post_id, author_id, is_reply, reply_count
-		FROM comments WHERE id = $1 AND is_deleted = FALSE`,
+		SELECT post_id, author_id, parent_id
+		FROM comments WHERE id = $1 AND `+visibleCommentPredicate,
 		commentID,
-	).Scan(&parentPostID, &parentAuthorID, &parentIsReply, &parentReplyCount)
+	).Scan(&targetPostID, &targetAuthorID, &targetParentID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, uuid.Nil, fmt.Errorf("COMMENT_NOT_FOUND")
@@ -145,33 +196,30 @@ func (s *Store) CreateReply(ctx context.Context, commentID, userID uuid.UUID, bo
 		return nil, uuid.Nil, err
 	}
 
-	// Cannot reply to a reply
-	if parentIsReply {
-		return nil, uuid.Nil, fmt.Errorf("CANNOT_REPLY_TO_REPLY")
-	}
-
-	// Max 1 reply per comment
-	if parentReplyCount >= 1 {
-		return nil, uuid.Nil, fmt.Errorf("REPLY_EXISTS")
-	}
-
-	// Only post owner can reply
-	var postAuthorID uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT author_id FROM posts WHERE id = $1`, parentPostID).Scan(&postAuthorID)
-	if err != nil {
-		return nil, uuid.Nil, err
-	}
-	if userID != postAuthorID {
-		return nil, uuid.Nil, fmt.Errorf("REPLY_OWNER_ONLY")
+	// One level of threading: a reply to a reply hangs off the reply's parent.
+	parentID := commentID
+	if targetParentID != nil {
+		parentID = *targetParentID
+		var parentPostID uuid.UUID
+		if err := tx.QueryRow(ctx,
+			`SELECT post_id FROM comments WHERE id = $1 AND is_deleted = FALSE`, parentID,
+		).Scan(&parentPostID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, uuid.Nil, fmt.Errorf("COMMENT_NOT_FOUND")
+			}
+			return nil, uuid.Nil, err
+		}
+		targetPostID = parentPostID
 	}
 
 	reply := &Comment{
 		ID:        uuid.New(),
-		PostID:    parentPostID,
+		PostID:    targetPostID,
 		AuthorID:  userID,
-		ParentID:  &commentID,
+		ParentID:  &parentID,
 		Body:      body,
 		IsReply:   true,
+		Reactions: []CommentReaction{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -186,10 +234,10 @@ func (s *Store) CreateReply(ctx context.Context, commentID, userID uuid.UUID, bo
 		return nil, uuid.Nil, fmt.Errorf("insert reply: %w", err)
 	}
 
-	// Update parent's reply_count
+	// Update the (top-level) parent's reply_count
 	_, err = tx.Exec(ctx, `
 		UPDATE comments SET reply_count = reply_count + 1, updated_at = now()
-		WHERE id = $1`, commentID)
+		WHERE id = $1`, parentID)
 	if err != nil {
 		return nil, uuid.Nil, err
 	}
@@ -198,8 +246,75 @@ func (s *Store) CreateReply(ctx context.Context, commentID, userID uuid.UUID, bo
 		return nil, uuid.Nil, err
 	}
 
-	// Return parentAuthorID so the service can notify the comment author about the reply
-	return reply, parentAuthorID, nil
+	// The author of the comment actually replied to, for the notification.
+	return reply, targetAuthorID, nil
+}
+
+// GetReplies pages a comment's replies oldest-first for
+// GET /v1/comments/:commentId/replies. Same moderation rule as the inline
+// reply in ListComments: 'visible' to everyone, 'review' only to its own
+// author, hidden / removed / deleted never. cursor is the created_at of
+// the last row seen (RFC3339Nano); limit defaults to 20, max 100.
+//
+// Reactions are hydrated here (two queries for the page); author
+// enrichment is the service's (HydrateCommentAuthors).
+func (s *Store) GetReplies(ctx context.Context, parentID uuid.UUID, viewerID *uuid.UUID, cursor string, limit int) ([]Comment, string, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	args := []interface{}{parentID, limit + 1}
+	visibilityClause := `AND moderation_status = 'visible'`
+	if viewerID != nil {
+		args = append(args, *viewerID)
+		visibilityClause = `AND (moderation_status = 'visible' OR (moderation_status = 'review' AND author_id = $3))`
+	}
+	query := `SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
+		is_reply, is_deleted, created_at, updated_at
+		FROM comments
+		WHERE parent_id = $1 AND is_deleted = FALSE ` + visibilityClause
+	if cursor != "" {
+		if cursorTime, err := time.Parse(time.RFC3339Nano, cursor); err == nil {
+			query += ` AND created_at > $` + strconv.Itoa(len(args)+1)
+			args = append(args, cursorTime)
+		}
+	}
+	query += ` ORDER BY created_at ASC, id ASC LIMIT $2`
+
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	replies := []Comment{}
+	for rows.Next() {
+		var r Comment
+		if err := rows.Scan(
+			&r.ID, &r.PostID, &r.AuthorID, &r.ParentID, &r.Body,
+			&r.LikeCount, &r.DislikeCount, &r.ReplyCount, &r.IsReply, &r.IsDeleted,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, "", err
+		}
+		replies = append(replies, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var nextCursor string
+	if len(replies) > limit {
+		replies = replies[:limit]
+		nextCursor = replies[limit-1].CreatedAt.Format(time.RFC3339Nano)
+	}
+	if err := s.hydrateCommentReactions(ctx, replies, viewerID); err != nil {
+		return nil, "", err
+	}
+	return replies, nextCursor, nil
 }
 
 // ListComments returns paginated top-level comments with their inline replies.
@@ -268,42 +383,13 @@ func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, viewerID *uu
 		commentIDs = commentIDs[:limit]
 	}
 
-	// Load inline replies for these comments. Same moderation rules
-	// apply — a hidden reply doesn't show under its parent.
+	// Load the first inline reply for these comments. Same moderation
+	// rules apply — a hidden reply doesn't show under its parent.
 	if len(commentIDs) > 0 {
-		replyArgs := []interface{}{commentIDs}
-		replyVisibility := `AND moderation_status = 'visible'`
-		if viewerID != nil {
-			replyArgs = append(replyArgs, *viewerID)
-			replyVisibility = `AND (moderation_status = 'visible' OR (moderation_status = 'review' AND author_id = $2))`
-		}
-		replyRows, err := s.db.Query(ctx, `
-			SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
-				is_reply, is_deleted, created_at, updated_at
-			FROM comments
-			WHERE parent_id = ANY($1) AND is_deleted = FALSE `+replyVisibility+`
-			ORDER BY created_at ASC`,
-			replyArgs...,
-		)
-		if err == nil {
-			defer replyRows.Close()
-			replyMap := make(map[uuid.UUID]*Comment)
-			for replyRows.Next() {
-				var r Comment
-				if err := replyRows.Scan(
-					&r.ID, &r.PostID, &r.AuthorID, &r.ParentID, &r.Body,
-					&r.LikeCount, &r.DislikeCount, &r.ReplyCount, &r.IsReply, &r.IsDeleted,
-					&r.CreatedAt, &r.UpdatedAt,
-				); err == nil && r.ParentID != nil {
-					replyMap[*r.ParentID] = &r
-				}
-			}
-			for i := range comments {
-				if reply, ok := replyMap[comments[i].ID]; ok {
-					comments[i].Reply = reply
-				}
-			}
-		}
+		s.loadInlineReplies(ctx, comments, commentIDs, viewerID)
+	}
+	if err := s.hydrateCommentReactions(ctx, comments, viewerID); err != nil {
+		return nil, "", err
 	}
 
 	return comments, nextCursor, nil
@@ -388,13 +474,17 @@ func (s *Store) GetCommentsAround(ctx context.Context, postID, commentID uuid.UU
 	if len(commentIDs) > 0 {
 		s.loadInlineReplies(ctx, comments, commentIDs, viewerID)
 	}
+	if err := s.hydrateCommentReactions(ctx, comments, viewerID); err != nil {
+		return nil, err
+	}
 
 	return comments, nil
 }
 
-// loadInlineReplies fetches and attaches a single reply per top-level
-// comment. Applies the same moderation filter as the parent query: a
-// hidden reply doesn't show under its parent.
+// loadInlineReplies fetches and attaches the FIRST (oldest visible) reply
+// per top-level comment, for clients that predate GET /replies. Applies the
+// same moderation filter as the parent query: a hidden reply doesn't show
+// under its parent.
 func (s *Store) loadInlineReplies(ctx context.Context, comments []Comment, commentIDs []uuid.UUID, viewerID *uuid.UUID) {
 	args := []interface{}{commentIDs}
 	visibilityClause := `AND moderation_status = 'visible'`
@@ -422,7 +512,10 @@ func (s *Store) loadInlineReplies(ctx context.Context, comments []Comment, comme
 			&r.LikeCount, &r.DislikeCount, &r.ReplyCount, &r.IsReply, &r.IsDeleted,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err == nil && r.ParentID != nil {
-			replyMap[*r.ParentID] = &r
+			// ORDER BY created_at ASC: the first row per parent is the oldest.
+			if _, seen := replyMap[*r.ParentID]; !seen {
+				replyMap[*r.ParentID] = &r
+			}
 		}
 	}
 	for i := range comments {
@@ -701,6 +794,7 @@ func (s *Store) CreateCommentIdempotent(
 		AuthorID:  authorID,
 		Body:      body,
 		IsReply:   false,
+		Reactions: []CommentReaction{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -768,5 +862,9 @@ func (s *Store) replayComment(
 		&c.DislikeCount, &c.ReplyCount, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, false, fmt.Errorf("load replayed comment: %w", err)
 	}
-	return c, true, nil
+	page := []Comment{*c}
+	if err := s.hydrateCommentReactions(ctx, page, &authorID); err != nil {
+		return nil, false, err
+	}
+	return &page[0], true, nil
 }

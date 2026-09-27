@@ -63,6 +63,8 @@ func TestEveryCommentMutationMovesTheCountOnceAndAnnounces(t *testing.T) {
 		{"post.go", "EditComment", "CommentChangeEdited", 0},
 		{"post.go", "ToggleCommentLike", "CommentChangeReaction", 0},
 		{"post.go", "ToggleCommentDislike", "CommentChangeReaction", 0},
+		{"comment_reactions.go", "SetCommentReaction", "CommentChangeReaction", 0},
+		{"comment_reactions.go", "RemoveCommentReaction", "CommentChangeReaction", 0},
 		{"reports.go", "SetCommentModerationStatus", "CommentChangeModerated", 1},
 		{"reports.go", "SubmitReport", "CommentChangeModerated", 1},
 	}

@@ -2200,78 +2200,36 @@ type CommentLikeToggleResult struct {
 	DislikeCount int64 `json:"dislike_count"`
 }
 
-// ToggleCommentLike executes the atomic Lua toggle for comment likes with mutual exclusion.
+// ToggleCommentLike is the legacy like route, now a toggle of the viewer's
+// reaction between postgres.LikeEmoji and none on comment_reactions (2026-09-27),
+// so old clients and the emoji UI count the same rows. Count is
+// reaction_count. The Redis Lua toggle and the like_count column are no
+// longer written for likes; dislikes keep their own path.
 func (s *Service) ToggleCommentLike(ctx context.Context, commentID, userID uuid.UUID) (*CommentLikeToggleResult, error) {
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:comment_like:%s", userID), engagement.CommentLikeLimitPerHour, time.Hour) {
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
-
-	result, err := engagement.ToggleCommentLike(ctx, s.rdb, userID, commentID)
+	comment, err := s.visibleCommentForViewer(ctx, commentID, userID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update PostgreSQL like_count
-	likeDelta := 1
-	if !result.IsSet {
-		likeDelta = -1
+	liked, err := s.pgStore.ToggleCommentHeart(ctx, commentID, userID)
+	if err != nil {
+		return nil, err
 	}
-	if err := s.pgStore.IncrementCommentLikeCount(ctx, commentID, likeDelta); err != nil {
-		log.Printf("Warning: failed to update comment like_count: %v", err)
+	summary, err := s.pgStore.GetCommentReactionSummary(ctx, commentID, &userID)
+	if err != nil {
+		return nil, err
 	}
-
-	// If a dislike was removed by mutual exclusion, decrement dislike_count in PG
-	if result.OppositeRemoved {
-		if err := s.pgStore.IncrementCommentDislikeCount(ctx, commentID, -1); err != nil {
-			log.Printf("Warning: failed to update comment dislike_count: %v", err)
-		}
+	dislikes, err := s.pgStore.GetCommentDislikeCount(ctx, commentID)
+	if err != nil {
+		slog.Warn("comment dislike count read failed", "comment_id", commentID, "err", err)
 	}
 
-	eventType := engagement.EventCommentLiked
-	if !result.IsSet {
-		eventType = engagement.EventCommentUnliked
-	}
-
-	if s.engProducer != nil {
-		event := engagement.BuildEvent(eventType, uuid.Nil, userID, uuid.Nil, commentID, "comment", "like", result.IsSet, result.Seq, result.ActionTS)
-		go func() {
-			if err := s.engProducer.Publish(context.Background(), event); err != nil {
-				log.Printf("Warning: failed to publish comment like event: %v", err)
-			}
-		}()
-		// If dislike was removed, also publish that event
-		if result.OppositeRemoved {
-			dislikeEvent := engagement.BuildEvent(engagement.EventCommentUndisliked, uuid.Nil, userID, uuid.Nil, commentID, "comment", "dislike", false, result.Seq, result.ActionTS)
-			go func() {
-				if err := s.engProducer.Publish(context.Background(), dislikeEvent); err != nil {
-					log.Printf("Warning: failed to publish comment undislike event: %v", err)
-				}
-			}()
-		}
-	}
-
-	// Publish social event for notifications (only on like, not unlike)
-	if s.producer != nil && result.IsSet {
-		go func() {
-			bgCtx := context.Background()
-			comment, err := s.pgStore.GetCommentByID(bgCtx, commentID)
-			if err != nil {
-				log.Printf("Warning: failed to look up comment for notification: %v", err)
-				return
-			}
-			if comment.AuthorID == userID {
-				return // Don't notify on self-like
-			}
-			if err := s.producer.PublishCommentReacted(bgCtx, commentID, comment.PostID, comment.AuthorID, userID, "like"); err != nil {
-				log.Printf("Warning: failed to publish CommentReacted event: %v", err)
-			}
-		}()
-	}
-
-	if c, err := s.pgStore.GetCommentByID(ctx, commentID); err == nil && c != nil {
-		s.publishCommentChange(c.PostID, commentID, c.ParentID, CommentChangeReaction, userID)
-	}
-	return &CommentLikeToggleResult{Liked: result.IsSet, Count: result.LikeCount, DislikeCount: result.DislikeCount}, nil
+	s.publishCommentReactionEvents(ctx, comment, userID, postgres.LikeEmoji, liked)
+	s.publishCommentChange(comment.PostID, commentID, comment.ParentID, CommentChangeReaction, userID)
+	return &CommentLikeToggleResult{Liked: liked, Count: int64(summary.ReactionCount), DislikeCount: dislikes}, nil
 }
 
 // CommentDislikeToggleResult is the response shape for the comment dislike toggle API.
@@ -2543,8 +2501,32 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 	return comment, nil
 }
 
-// CreateReply creates a reply to a comment. Post-owner-only enforcement.
+// CreateReply creates a reply under a comment (2026-09-27: for everyone).
+//
+// The gates are EXACTLY AddComment's (CreateCommentPG): the post must be
+// visible to the viewer (private accounts, blocks both ways, followers-only
+// — loadPostForEngagement, fail-closed), comments not disabled, the comments
+// audience (canComment), and the rate limit. The former post-owner rule and
+// one-reply cap are gone. Replying to a reply attaches to the reply's parent
+// (store.CreateReply), so the frame's parent_id is the top-level comment.
 func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, body string) (*postgres.Comment, error) {
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("INVALID_REQUEST: reply body cannot be blank")
+	}
+	target, err := s.pgStore.GetVisibleCommentByID(ctx, commentID)
+	if err != nil {
+		return nil, err
+	}
+	post, err := s.loadPostForEngagement(ctx, target.PostID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if post.NoComments {
+		return nil, ErrCommentsDisabled
+	}
+	if !s.canComment(ctx, userID, post.AuthorID) {
+		return nil, ErrCommentsRestricted
+	}
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:reply:%s", userID), engagement.ReplyLimitPerHour, time.Hour) {
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
@@ -2557,8 +2539,7 @@ func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, 
 	if err := s.pgStore.AdjustCommentCount(ctx, reply.PostID, 1); err != nil {
 		slog.Warn("failed to increment comment_count for reply", "post_id", reply.PostID, "error", err)
 	}
-	parent := commentID
-	s.publishCommentChange(reply.PostID, reply.ID, &parent, CommentChangeReplied, userID)
+	s.publishCommentChange(reply.PostID, reply.ID, reply.ParentID, CommentChangeReplied, userID)
 
 	// Publish engagement event
 	if s.engProducer != nil {
@@ -2575,8 +2556,9 @@ func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, 
 		}()
 	}
 
-	// Publish legacy event so notification-service sends a notification to the comment author
-	if s.producer != nil {
+	// Publish legacy event so notification-service sends a notification to
+	// the author of the comment replied to (not to yourself).
+	if s.producer != nil && parentAuthorID != userID {
 		go func() {
 			if err := s.producer.PublishCommentCreated(context.Background(), reply.ID, reply.PostID, parentAuthorID, userID, body); err != nil {
 				log.Printf("Warning: failed to publish legacy reply notification event: %v", err)

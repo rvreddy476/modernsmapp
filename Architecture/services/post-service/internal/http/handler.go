@@ -238,6 +238,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	comments := r.Group("/v1/comments")
 	{
 		comments.POST("/:commentId/reply", idempotent, h.CreateReply)
+		// Replies for everyone + emoji reactions (2026-09-27, comment_routes.go).
+		comments.GET("/:commentId/replies", h.ListReplies)
+		comments.PUT("/:commentId/reaction", h.SetCommentReaction)
+		comments.DELETE("/:commentId/reaction", h.RemoveCommentReaction)
+		// Legacy like: toggles the viewer's reaction between ❤️ and none on
+		// the same comment_reactions table. Dislike keeps its own path.
 		comments.POST("/:commentId/like", h.ToggleCommentLike)
 		comments.POST("/:commentId/dislike", h.ToggleCommentDislike)
 		comments.DELETE("/:commentId", h.DeleteComment)
@@ -1592,20 +1598,29 @@ func (h *Handler) CreateReply(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
+	if strings.TrimSpace(req.Text) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "reply text cannot be blank", nil)
+		return
+	}
 
+	// Replies are open to every viewer who may comment on the post, so the
+	// refusals are AddComment's (2026-09-27). REPLY_OWNER_ONLY, REPLY_EXISTS
+	// and CANNOT_REPLY_TO_REPLY no longer occur.
 	reply, err := h.svc.CreateReply(c.Request.Context(), commentID, userID, req.Text)
 	if err != nil {
-		switch err.Error() {
-		case "RATE_LIMITED":
+		switch {
+		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many replies, please slow down", nil)
-		case "COMMENT_NOT_FOUND":
+		case err.Error() == "COMMENT_NOT_FOUND":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
-		case "CANNOT_REPLY_TO_REPLY":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANNOT_REPLY_TO_REPLY", "Cannot reply to a reply", nil)
-		case "REPLY_EXISTS":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REPLY_EXISTS", "This comment already has a reply", nil)
-		case "REPLY_OWNER_ONLY":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "REPLY_OWNER_ONLY", "Only the post owner can reply to comments", nil)
+		case errors.Is(err, service.ErrCommentsDisabled):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
+		case errors.Is(err, service.ErrCommentsRestricted):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
+		case strings.HasPrefix(err.Error(), "INVALID_REQUEST"):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
@@ -1635,6 +1650,8 @@ func (h *Handler) ToggleCommentLike(c *gin.Context) {
 		switch err.Error() {
 		case "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comment like toggles, please slow down", nil)
+		case "COMMENT_NOT_FOUND":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}

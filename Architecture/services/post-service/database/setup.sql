@@ -71,6 +71,18 @@ CREATE INDEX IF NOT EXISTS idx_comments_post ON comments (post_id, created_at DE
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments (parent_id, created_at ASC) WHERE parent_id IS NOT NULL AND is_deleted = FALSE;
 CREATE INDEX IF NOT EXISTS idx_comments_author ON comments (author_id, created_at DESC) WHERE is_deleted = FALSE;
 
+-- Emoji reactions on comments: one row per (comment, viewer); a new emoji
+-- replaces the old one. like_count on the wire = COUNT(*) of these rows,
+-- computed at read time (migration 050).
+CREATE TABLE IF NOT EXISTS comment_reactions (
+    comment_id  UUID        NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+    user_id     UUID        NOT NULL,
+    emoji       TEXT        NOT NULL CHECK (char_length(emoji) BETWEEN 1 AND 16),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (comment_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_comment_reactions_comment_emoji ON comment_reactions (comment_id, emoji);
+
 -- Post Engagement Counts (denormalized counters for analytics + API reads)
 CREATE TABLE IF NOT EXISTS post_engagement_counts (
     post_id         UUID PRIMARY KEY REFERENCES posts(id),
