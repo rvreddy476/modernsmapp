@@ -186,6 +186,7 @@ var DerivedMediaTables = []string{
 	"media_renditions",   // ditto, older name
 	"media_subtitles",    // generated captions; asset-dependent
 	"media_caption_jobs", // caption work records
+	"media_audio_tracks", // alternate-language audio tracks of a video (migration 019); ON DELETE CASCADE
 	"transcoding_jobs",   // processing work records
 	"resumable_uploads",  // in-flight upload bookkeeping
 	"media_blob_reclaim", // the reclaim ledger itself

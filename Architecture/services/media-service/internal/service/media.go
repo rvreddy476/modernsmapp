@@ -57,6 +57,8 @@ type Service struct {
 	// so an unwired deployment denies protected media instead of falling back
 	// to the stable public URL this item exists to remove.
 	gate *delivery.Gate
+	// audioTracks is the alternate-audio-track feature (audio_tracks.go).
+	audioTracks *AudioTracks
 }
 
 // WithDeliveryGate wires byte-delivery authorization. Called from main.go.
@@ -102,6 +104,7 @@ func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
 		captions:    captions.SelectBackend(),
 		audioSafety: selectAudioSafety(cfg),
 	}
+	s.audioTracks = NewAudioTracks(pg, blobStore, s.AuthorizeMediaRead, nil)
 	s.logScannerPolicy()
 	return s
 }
@@ -147,6 +150,7 @@ func NewWithConfig(pg *postgres.MediaAssetStore, blobStore *blob.Store, cfg *con
 		captions:    captions.SelectBackend(),
 		audioSafety: selectAudioSafety(cfg),
 	}
+	s.audioTracks = NewAudioTracks(pg, blobStore, s.AuthorizeMediaRead, nil)
 	s.logScannerPolicy()
 	return s
 }

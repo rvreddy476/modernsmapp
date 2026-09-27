@@ -905,6 +905,9 @@ services:
       ENV: local
       MEDIA_FACE_COMPARE_ENABLED: ${MEDIA_FACE_COMPARE_ENABLED:-true}
       MEDIA_FACE_COMPARE_BACKEND: ${MEDIA_FACE_COMPARE_BACKEND:-mock}
+      # Alternate audio tracks: generated dubs come from OpenAI in production;
+      # dev has no key, so the stub copies the original audio to exercise the pipeline.
+      MEDIA_DUBBING_BACKEND: ${MEDIA_DUBBING_BACKEND:-stub}
       POST_SERVICE_URL: http://post-service:8084
       CHAT_MESSAGE_SERVICE_URL: http://chat-message-service:8092
       PROFILE_SERVICE_URL: http://identity-profile:8098

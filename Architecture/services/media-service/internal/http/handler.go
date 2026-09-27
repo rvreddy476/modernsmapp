@@ -27,6 +27,9 @@ type Handler struct {
 	// the service; it is an interface so the authorization wiring of those
 	// endpoints can be pinned without a database (clips_handler.go).
 	subtitles clipsService
+	// audioTracks backs the alternate-audio-track routes (audio_tracks_handler.go);
+	// nil means the service. An interface for the same reason as subtitles.
+	audioTracks audioTracksService
 }
 
 func New(svc *service.Service) *Handler {
@@ -81,6 +84,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		// Segments of an anonymous asset come back through this service
 		// rather than a signed object URL (handler_anonymous.go).
 		v1.GET("/:mediaId/hls-seg/:name", h.ServeHLSSegment)
+		// Alternate audio tracks (2026-09-27): list is gated like serve, the
+		// writes are owner-only. Playback is /serve/dub_<lang>_<rung>.
+		h.registerAudioTrackRoutes(v1, authMW)
 	}
 
 	// Module 1 fixes-v3 / LB-1 — service-to-service only.

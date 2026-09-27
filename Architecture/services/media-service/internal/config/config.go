@@ -53,6 +53,18 @@ type Config struct {
 	// availability is never treated as safety (fixes-v2 / Codex P0-2).
 	VoiceSafetyBlocklist string // env: MEDIA_VOICE_SAFETY_BLOCKLIST
 
+	// DubbingBackend selects the AI backend behind
+	// POST /v1/media/:id/audio-tracks/generate (alternate audio tracks,
+	// 2026-09-27). Read by dubbing.Select in cmd/server; recorded here so
+	// the knob is discoverable next to the other provider switches.
+	//   ""/"off"  → generate answers 503 DUBBING_UNAVAILABLE
+	//   "openai"  → OpenAI transcribe + translate + TTS; needs OPENAI_API_KEY,
+	//               optional OPENAI_BASE_URL, OPENAI_WHISPER_MODEL (whisper-1),
+	//               OPENAI_DUB_TEXT_MODEL (gpt-4o-mini), OPENAI_DUB_TTS_MODEL
+	//               (tts-1), OPENAI_DUB_VOICE (alloy)
+	//   "stub"    → copies the source audio; refused in production
+	DubbingBackend string // env: MEDIA_DUBBING_BACKEND (default "")
+
 	// Observability
 	OTLPEndpoint   string // env: OTEL_EXPORTER_OTLP_ENDPOINT (default "http://jaeger:4318")
 }
@@ -78,6 +90,7 @@ func Load() *Config {
 		// Default-on: absent env var means the safety gate applies.
 		VoiceSafetyRequired:  os.Getenv("MEDIA_VOICE_SAFETY_REQUIRED") != "false",
 		VoiceSafetyBlocklist: os.Getenv("MEDIA_VOICE_SAFETY_BLOCKLIST"),
+		DubbingBackend:       os.Getenv("MEDIA_DUBBING_BACKEND"),
 
 		OTLPEndpoint:     getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4318"),
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/media-service/database"
 	"github.com/atpost/media-service/internal/config"
 	"github.com/atpost/media-service/internal/delivery"
+	"github.com/atpost/media-service/internal/dubbing"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	mediaHttp "github.com/atpost/media-service/internal/http"
 	"github.com/atpost/media-service/internal/processing"
@@ -185,6 +186,21 @@ func main() {
 	// transcript to media_subtitles, and releases the voice safety gate on
 	// completion (or routes to manual review on terminal failure).
 	mediaSvc.StartCaptionWorker(ctx)
+
+	// Alternate audio tracks (2026-09-27). MEDIA_DUBBING_BACKEND selects the
+	// AI generation backend (openai | stub | unset); a bad value or the stub
+	// in production refuses to start. The mux worker runs either way, since
+	// creator-uploaded tracks need only ffmpeg (in this image).
+	dubber, dubErr := dubbing.Select(os.Getenv)
+	if dubErr != nil {
+		slog.Error("media-service: dubbing configuration refused", "error", dubErr)
+		os.Exit(1)
+	}
+	if dubber != nil {
+		mediaSvc.WithDubber(dubber)
+		slog.Info("audio tracks: dubbing backend configured", "backend", dubber.Name())
+	}
+	mediaSvc.StartAudioTrackWorker(ctx)
 
 	// LB-1 requirement 7: retry blob deletions whose object keys were
 	// durably recorded before the media rows were removed.
