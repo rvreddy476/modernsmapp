@@ -73,6 +73,10 @@ type Post struct {
 	// is what the author posted as a video — the MediaTranscodeConsumer
 	// only reclassifies rows where this is FALSE.
 	ContentTypeExplicit bool `json:"content_type_explicit"`
+	// Source is "upload" or "live" (a recording promoted by the live VOD consumer);
+	// LiveStreamID is set only for the latter (migration 051).
+	Source       string     `json:"source"`
+	LiveStreamID *uuid.UUID `json:"live_stream_id,omitempty"`
 	// TaggedUserIDs is the people picked in the composer, distinct from
 	// Mentions, which are parsed out of the text.
 	TaggedUserIDs  []uuid.UUID `json:"tagged_user_ids,omitempty"`
@@ -230,6 +234,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
 	hide_share, allow_download, tagged_user_ids, content_type_explicit,
+	source, live_stream_id,
 	tier_required_id,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
@@ -269,6 +274,7 @@ func postScanDestinations(p *Post) []any {
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 		&p.HideShare, &p.AllowDownload, &p.TaggedUserIDs, &p.ContentTypeExplicit,
+		&p.Source, &p.LiveStreamID,
 		&p.TierRequiredID,
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
