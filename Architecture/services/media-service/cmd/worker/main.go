@@ -539,6 +539,22 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		return permanentUnlessCancelled(ctx, fmt.Errorf("transcode: %w", err))
 	}
 
+	// 4b. Storyboard (MTube seek preview, 2026-09-27): a sprite sheet plus
+	// a VTT cue file for videos longer than a minute, recorded as the
+	// storyboard_jpg / storyboard_vtt variants. A failure here is logged
+	// and skipped rather than failing the transcode: the video plays
+	// without a hover preview, which beats never becoming ready.
+	if plan, ok := processing.PlanStoryboard(meta.DurationFloat); ok {
+		if sb, sbErr := processing.GenerateStoryboard(ctx, inputPath, tmpDir, plan); sbErr != nil {
+			if ctx.Err() != nil {
+				return sbErr
+			}
+			log.Printf("Warning: storyboard for media %s not generated: %v", payload.MediaAssetID, sbErr)
+		} else {
+			outputs = append(outputs, sb...)
+		}
+	}
+
 	// 5. Upload variants to MinIO and update job records
 	baseKey := strings.TrimSuffix(payload.StorageKey, "/original")
 	var variants []postgres.MediaVariant
@@ -549,7 +565,11 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 			return fmt.Errorf("read transcode output %s: %w", out.Name, err)
 		}
 
-		objectKey := fmt.Sprintf("%s/%s", baseKey, out.Name)
+		objectName := out.ObjectName
+		if objectName == "" {
+			objectName = out.Name
+		}
+		objectKey := fmt.Sprintf("%s/%s", baseKey, objectName)
 		if err := blobStore.UploadObject(ctx, objectKey, data, out.Mime); err != nil {
 			return fmt.Errorf("upload transcode variant %s: %w", out.Name, err)
 		}

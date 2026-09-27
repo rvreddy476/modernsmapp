@@ -468,6 +468,17 @@ func (s *Service) runCaptionJob(ctx context.Context, mediaID uuid.UUID, language
 				"media_id", mediaID, "error", err)
 			return
 		}
+		// MTube captions (migration 020): a generated track is a DRAFT the
+		// creator reviews from GET /v1/subtitles/mine. Only the row this
+		// job wrote — an owner-edited track kept its text and keeps its
+		// state (the store's WHERE says so). Not a safety input; a failed
+		// write leaves the track published, which is what it was before.
+		if !sub.EditedByOwner {
+			if err := s.pgStore.MarkGeneratedSubtitleDraft(ctx, mediaID, sub.Language); err != nil {
+				slog.Warn("captions: could not mark generated track as draft",
+					"media_id", mediaID, "language", sub.Language, "error", err)
+			}
+		}
 		// (c) evaluate the PROVIDER-GENERATED transcript.
 		providerText := ""
 		if evidence != nil {

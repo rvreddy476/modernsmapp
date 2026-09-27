@@ -391,6 +391,9 @@ type Gate struct {
 	// image. Nil disables the open-graph poster path entirely — see
 	// public_poster.go for what it may and may not admit.
 	publicPoster PublicPostLookup
+	// downloads is the per-post download authority (download.go). Nil
+	// leaves every non-owner download unresolved, never allowed.
+	downloads DownloadAuthorizer
 }
 
 func NewGate(signer URLSigner, authz ContentAuthorizer) *Gate {

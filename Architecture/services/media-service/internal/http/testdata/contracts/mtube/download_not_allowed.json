@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "DOWNLOAD_NOT_ALLOWED",
+    "message": "Downloading this video is not allowed"
+  },
+  "meta": {}
+}

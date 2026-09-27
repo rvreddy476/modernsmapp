@@ -30,6 +30,12 @@ type Handler struct {
 	// audioTracks backs the alternate-audio-track routes (audio_tracks_handler.go);
 	// nil means the service. An interface for the same reason as subtitles.
 	audioTracks audioTracksService
+	// downloads backs GET /v1/media/:id/download (download_handler.go);
+	// nil means the service.
+	downloads downloadService
+	// captionsMine backs the creator caption list/publish routes
+	// (subtitles_mine_handler.go); nil means the service.
+	captionsMine captionsMineService
 }
 
 func New(svc *service.Service) *Handler {
@@ -87,6 +93,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		// Alternate audio tracks (2026-09-27): list is gated like serve, the
 		// writes are owner-only. Playback is /serve/dub_<lang>_<rung>.
 		h.registerAudioTrackRoutes(v1, authMW)
+		// MTube download (2026-09-27): owner, or post-service says the
+		// post allows it. 403 DOWNLOAD_NOT_ALLOWED otherwise.
+		h.registerDownloadRoutes(v1)
 	}
 
 	// Module 1 fixes-v3 / LB-1 — service-to-service only.

@@ -48,6 +48,9 @@ func (h *Handler) RegisterClipsRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 
 	subtitles := r.Group("/v1/subtitles")
 	{
+		// Creator caption list (MTube, 2026-09-27). Registered before
+		// /:mediaId so "mine" is never read as a media id.
+		h.registerCaptionsMineRoutes(subtitles, authMW)
 		subtitles.GET("/:mediaId", h.GetSubtitles)
 		// The browser caption track. Same group, same gate; no authMW,
 		// for the same reason the media reads carry none — a public

@@ -1,0 +1,41 @@
+{
+  "data": {
+    "items": [
+      {
+        "media_id": "5d1d1e4e-0c1a-4d3e-9a7b-3b1e6c2f8a01",
+        "post_id": null,
+        "languages": [
+          {
+            "language": "en",
+            "source": "manual",
+            "published": true,
+            "updated_at": "2026-09-27T09:15:00Z"
+          },
+          {
+            "language": "hi",
+            "source": "auto_generated",
+            "published": false,
+            "updated_at": "2026-09-27T10:30:00Z"
+          }
+        ],
+        "modified_at": "2026-09-27T10:30:00Z"
+      },
+      {
+        "media_id": "0b6a2c7d-8e9f-4a1b-8c2d-4e5f6a7b8c02",
+        "post_id": null,
+        "languages": [
+          {
+            "language": "en",
+            "source": "auto_generated",
+            "published": false,
+            "updated_at": "2026-09-26T18:00:00Z"
+          }
+        ],
+        "modified_at": "2026-09-26T18:00:00Z"
+      }
+    ]
+  },
+  "meta": {
+    "next_cursor": "MjAyNi0wOS0yNlQxODowMDowMFp8MGI2YTJjN2QtOGU5Zi00YTFiLThjMmQtNGU1ZjZhN2I4YzAy"
+  }
+}

@@ -197,6 +197,16 @@ func (s *Store) GeneratePresignedGetURL(ctx context.Context, objectKey string, e
 	return s.presignClient.PresignedGetObject(ctx, s.bucket, objectKey, expiry, reqParams)
 }
 
+// GeneratePresignedDownloadURL is GeneratePresignedGetURL with the
+// response-content-disposition override S3/MinIO honour, so the browser
+// saves the object as an attachment named filename instead of rendering
+// it. The override is part of the signature: it cannot be edited off.
+func (s *Store) GeneratePresignedDownloadURL(ctx context.Context, objectKey string, expiry time.Duration, filename string) (*url.URL, error) {
+	reqParams := make(url.Values)
+	reqParams.Set("response-content-disposition", delivery.ContentDispositionAttachment(filename))
+	return s.presignClient.PresignedGetObject(ctx, s.bucket, objectKey, expiry, reqParams)
+}
+
 // StatObject verifies that objectKey exists without downloading its bytes.
 func (s *Store) StatObject(ctx context.Context, objectKey string) (ObjectInfo, error) {
 	info, err := s.client.StatObject(ctx, s.bucket, objectKey, minio.StatObjectOptions{})

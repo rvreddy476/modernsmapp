@@ -459,7 +459,12 @@ func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, delivery.URLSigne
 		// Production cannot select this branch.
 		signer = localBlobSigner{store: blobStore}
 	}
-	return delivery.NewGate(signer, authz), signer, nil
+	gate := delivery.NewGate(signer, authz)
+	// MTube download (2026-09-27): post-service also owns the per-post
+	// "allow download" switch. Same base URL and key as the media-access
+	// authority; see delivery/download.go for the contract.
+	gate.WithDownloadAuthorizer(delivery.NewHTTPDownloadAuthorizer(postURL, internalKey, nil))
+	return gate, signer, nil
 }
 
 type localBlobSigner struct{ store *blob.Store }
@@ -470,6 +475,16 @@ func (s localBlobSigner) PublicURL(key string) (string, error) {
 
 func (s localBlobSigner) SignProtected(key string, ttl time.Duration, _ time.Time) (string, error) {
 	u, err := s.store.GeneratePresignedGetURL(context.Background(), key, ttl)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
+// SignProtectedDownload marks the presigned URL as an attachment
+// (delivery.DownloadSigner) for GET /v1/media/:id/download.
+func (s localBlobSigner) SignProtectedDownload(key string, ttl time.Duration, _ time.Time, filename string) (string, error) {
+	u, err := s.store.GeneratePresignedDownloadURL(context.Background(), key, ttl, filename)
 	if err != nil {
 		return "", err
 	}

@@ -244,27 +244,11 @@ func (h *DashboardHandler) GetCreatorTrend(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, trend, nil)
 }
 
+// requireOwnedContent is the owner-privacy gate for the dashboard routes.
+// The decision lives in requireOwnedContentID (content_insights.go) so the
+// MTube content route and these share one implementation.
 func (h *DashboardHandler) requireOwnedContent(c *gin.Context) (uuid.UUID, bool) {
-	creatorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil || creatorID == uuid.Nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return uuid.Nil, false
-	}
-	contentID, err := uuid.Parse(c.Param("contentId"))
-	if err != nil || contentID == uuid.Nil {
-		writePrivateContentNotFound(c)
-		return uuid.Nil, false
-	}
-	owns, err := h.aggStore.OwnsContent(c.Request.Context(), creatorID, contentID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "ANALYTICS_UNAVAILABLE", "Analytics authorization is unavailable", nil)
-		return uuid.Nil, false
-	}
-	if !owns {
-		writePrivateContentNotFound(c)
-		return uuid.Nil, false
-	}
-	return contentID, true
+	return requireOwnedContentID(c, h.aggStore.OwnsContent)
 }
 
 func writePrivateContentNotFound(c *gin.Context) {

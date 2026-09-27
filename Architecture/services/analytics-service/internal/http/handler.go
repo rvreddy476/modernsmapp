@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/atpost/analytics-service/internal/aggregation"
 	"github.com/atpost/analytics-service/internal/personalization"
@@ -29,6 +30,11 @@ type Handler struct {
 	// aggregation_ops.go. Optional.
 	hourlyAgg   *aggregation.HourlyAggregator
 	dailyRollup *aggregation.DailyRollup
+	// insights backs GET /v1/analytics/content/:contentId
+	// (content_insights.go); nil means aggStore. now pins the clock in
+	// tests; nil means time.Now.
+	insights contentInsightsStore
+	now      func() time.Time
 }
 
 // WithAggregateStore wires the durable aggregate store that backs the
@@ -66,6 +72,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.POST("/events", h.IngestEvents)
 		v1.GET("/content/:contentId/views", h.GetContentViews)
+		// MTube (2026-09-27): owner-or-admin content insights. See
+		// content_insights.go.
+		v1.GET("/content/:contentId", h.GetContentInsights)
 		v1.GET("/creator/me", h.GetMyCreatorStats)
 
 		// Viewer-signal warmer: run it now, or ask when it last ran.

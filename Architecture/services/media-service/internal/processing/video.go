@@ -121,11 +121,15 @@ func GenerateHLSVariantsFor(ctx context.Context, inputPath, outputDir string, pl
 
 // TranscodeOutput holds the result of a single transcode operation.
 type TranscodeOutput struct {
-	Name     string
-	FilePath string
-	Width    int
-	Height   int
-	Mime     string
+	Name string
+	// ObjectName is the file name under the asset prefix when it differs
+	// from Name (the storyboard: variant storyboard_jpg, object
+	// storyboard.jpg). Empty means Name, which is every rendition.
+	ObjectName string
+	FilePath   string
+	Width      int
+	Height     int
+	Mime       string
 }
 
 // VideoMeta holds extracted video metadata.

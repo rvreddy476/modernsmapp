@@ -147,7 +147,16 @@ func (s *Signer) SignProtected(key string, ttl time.Duration, now time.Time) (st
 		return "", fmt.Errorf("delivery: ttl %s outside (0, %s]", ttl, MaxProtectedTTL)
 	}
 
-	resource := s.cdnBaseURL + "/" + key
+	return s.signResource(s.cdnBaseURL+"/"+key, ttl, now)
+}
+
+// signResource signs one resource URL (base URL plus any query string that
+// is part of the policy) with a canned policy. Shared by SignProtected and
+// SignProtectedDownload (download.go) so there is one signing routine.
+func (s *Signer) signResource(resource string, ttl time.Duration, now time.Time) (string, error) {
+	if ttl <= 0 || ttl > MaxProtectedTTL {
+		return "", fmt.Errorf("delivery: ttl %s outside (0, %s]", ttl, MaxProtectedTTL)
+	}
 	expires := now.Add(ttl).Unix()
 
 	policy := cannedPolicy{
@@ -175,7 +184,11 @@ func (s *Signer) SignProtected(key string, ttl time.Duration, now time.Time) (st
 	// NOTE: no bearer token, session id, or viewer id appears in the URL or
 	// the query. CloudFront caches on the full URL, so a token in the cache key
 	// both fragments the cache and writes the credential into edge logs.
-	return resource + "?" + q.Encode(), nil
+	sep := "?"
+	if strings.Contains(resource, "?") {
+		sep = "&"
+	}
+	return resource + sep + q.Encode(), nil
 }
 
 // cloudFrontBase64 is standard base64 with the characters that are unsafe in a

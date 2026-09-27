@@ -38,6 +38,12 @@ type MediaSubtitle struct {
 	Confidence    *float32        `json:"confidence,omitempty"`
 	EditedByOwner bool            `json:"edited_by_owner"`
 	CreatedAt     time.Time       `json:"created_at"`
+	// Published is the creator-facing review state (migration 020): a
+	// caption the job generated stays a draft (false) until the creator
+	// publishes it from GET /v1/subtitles/mine; uploads and corrections
+	// are published on write.
+	Published bool      `json:"published"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // SaveMediaClips replaces all clips for a post within a single transaction.
@@ -100,12 +106,12 @@ func (s *MediaAssetStore) CreateSubtitle(ctx context.Context, sub *MediaSubtitle
 		        updated_at      = NOW()
 		    WHERE media_subtitles.edited_by_owner = FALSE
 		RETURNING id, media_asset_id, language, source, format, content_url,
-		          COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at`,
+		          COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at, published, updated_at`,
 		sub.MediaAssetID, sub.Language, sub.Source, sub.Format, sub.ContentURL,
 		sub.Content, sub.WordLevelJSON, sub.Confidence,
 	).Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
 		&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
-		&sub.EditedByOwner, &sub.CreatedAt)
+		&sub.EditedByOwner, &sub.CreatedAt, &sub.Published, &sub.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The WHERE guard suppressed the update because the owner has
 		// edited this track. Return the existing row unchanged.
@@ -121,7 +127,7 @@ func (s *MediaAssetStore) CreateSubtitle(ctx context.Context, sub *MediaSubtitle
 func (s *MediaAssetStore) GetSubtitles(ctx context.Context, mediaAssetID uuid.UUID) ([]MediaSubtitle, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, media_asset_id, language, source, format, content_url,
-		       COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at
+		       COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at, published, updated_at
 		FROM media_subtitles WHERE media_asset_id = $1 ORDER BY language ASC`, mediaAssetID)
 	if err != nil {
 		return nil, err
@@ -132,7 +138,7 @@ func (s *MediaAssetStore) GetSubtitles(ctx context.Context, mediaAssetID uuid.UU
 		var sub MediaSubtitle
 		if err := rows.Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
 			&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
-			&sub.EditedByOwner, &sub.CreatedAt); err != nil {
+			&sub.EditedByOwner, &sub.CreatedAt, &sub.Published, &sub.UpdatedAt); err != nil {
 			return nil, err
 		}
 		subs = append(subs, sub)
@@ -146,12 +152,12 @@ func (s *MediaAssetStore) getSubtitle(ctx context.Context, mediaAssetID uuid.UUI
 	var sub MediaSubtitle
 	err := s.db.QueryRow(ctx, `
 		SELECT id, media_asset_id, language, source, format, content_url,
-		       COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at
+		       COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at, published, updated_at
 		FROM media_subtitles WHERE media_asset_id = $1 AND language = $2`,
 		mediaAssetID, language).
 		Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
 			&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
-			&sub.EditedByOwner, &sub.CreatedAt)
+			&sub.EditedByOwner, &sub.CreatedAt, &sub.Published, &sub.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
