@@ -19,16 +19,19 @@ type fakePostEditStore struct {
 	posts   map[uuid.UUID]*postgres.Post
 	media   map[uuid.UUID]postgres.MediaOwnership
 	updates []postgres.PostEditPatch
-	bulk    []uuid.UUID
-	counts  postgres.CreatorCounts
-	catSet  map[uuid.UUID]string
+	written []uuid.UUID
+	// failWrite makes UpdatePostFields fail for one post (bulk isolation).
+	failWrite map[uuid.UUID]error
+	counts    postgres.CreatorCounts
+	catSet    map[uuid.UUID]string
 }
 
 func newFakePostEditStore() *fakePostEditStore {
 	return &fakePostEditStore{
-		posts:  map[uuid.UUID]*postgres.Post{},
-		media:  map[uuid.UUID]postgres.MediaOwnership{},
-		catSet: map[uuid.UUID]string{},
+		posts:     map[uuid.UUID]*postgres.Post{},
+		media:     map[uuid.UUID]postgres.MediaOwnership{},
+		catSet:    map[uuid.UUID]string{},
+		failWrite: map[uuid.UUID]error{},
 	}
 }
 
@@ -49,7 +52,11 @@ func (f *fakePostEditStore) UpdatePostFields(_ context.Context, postID, actorID 
 	if p.AuthorID != actorID {
 		return nil, postgres.ErrPostEditNotOwned
 	}
+	if err := f.failWrite[postID]; err != nil {
+		return nil, err
+	}
 	f.updates = append(f.updates, patch)
+	f.written = append(f.written, postID)
 	if patch.Title != nil {
 		p.Title = *patch.Title
 	}
@@ -61,6 +68,31 @@ func (f *fakePostEditStore) UpdatePostFields(_ context.Context, postID, actorID 
 	}
 	if patch.Hashtags != nil {
 		p.Hashtags = *patch.Hashtags
+	}
+	if patch.Tags != nil {
+		p.Tags = *patch.Tags
+	}
+	if patch.AgeRestricted != nil {
+		p.AgeRestricted = *patch.AgeRestricted
+	}
+	if patch.HideLikeCount != nil {
+		p.HideLikeCount = *patch.HideLikeCount
+	}
+	if patch.DefaultCommentSort != nil {
+		p.DefaultCommentSort = *patch.DefaultCommentSort
+	}
+	if patch.License != nil {
+		p.License = *patch.License
+	}
+	if patch.ClearRelatedPost {
+		p.RelatedPostID = nil
+	} else if patch.RelatedPostID != nil {
+		id := *patch.RelatedPostID
+		p.RelatedPostID = &id
+	}
+	if patch.Distribution != nil {
+		p.Distribution = patch.Distribution
+		p.DistributionRev++
 	}
 	cp := *p
 	return &cp, nil
@@ -84,16 +116,6 @@ func (f *fakePostEditStore) PostAuthorsByIDs(_ context.Context, ids []uuid.UUID)
 		}
 	}
 	return out, nil
-}
-
-func (f *fakePostEditStore) BulkSetVisibility(_ context.Context, _ uuid.UUID, ids []uuid.UUID, v string) []postgres.BulkVisibilityOutcome {
-	f.bulk = append(f.bulk, ids...)
-	out := make([]postgres.BulkVisibilityOutcome, 0, len(ids))
-	for _, id := range ids {
-		f.posts[id].Visibility = v
-		out = append(out, postgres.BulkVisibilityOutcome{ID: id, OK: true})
-	}
-	return out
 }
 
 func (f *fakePostEditStore) CountCreatorContent(_ context.Context, _ uuid.UUID) (postgres.CreatorCounts, error) {
@@ -237,40 +259,6 @@ func TestSetPostCategoryIsOwnerOnlyAndTaxonomyBound(t *testing.T) {
 	}
 	if err := svc.SetPostCategory(ctx, owner, post.ID, "Kids"); err != nil || store.catSet[post.ID] != "kids" {
 		t.Fatalf("valid: err=%v stored=%q", err, store.catSet[post.ID])
-	}
-}
-
-func TestBulkSetVisibilityRequiresOwnershipOfEveryID(t *testing.T) {
-	svc, store, owner, post := newEditRig(t)
-	ctx := context.Background()
-	other := &postgres.Post{ID: uuid.New(), AuthorID: uuid.New(), Visibility: "public"}
-	store.posts[other.ID] = other
-	mine2 := &postgres.Post{ID: uuid.New(), AuthorID: owner, Visibility: "public"}
-	store.posts[mine2.ID] = mine2
-
-	_, err := svc.BulkSetVisibility(ctx, owner, BulkVisibilityInput{PostIDs: []uuid.UUID{post.ID, other.ID}, Visibility: "private"})
-	if !errors.Is(err, ErrNotPostAuthor) {
-		t.Fatalf("one foreign id: err=%v want ErrNotPostAuthor", err)
-	}
-	_, err = svc.BulkSetVisibility(ctx, owner, BulkVisibilityInput{PostIDs: []uuid.UUID{post.ID, uuid.New()}, Visibility: "private"})
-	if !errors.Is(err, ErrNotPostAuthor) {
-		t.Fatalf("one unknown id: err=%v want ErrNotPostAuthor (nothing disclosed)", err)
-	}
-	if len(store.bulk) != 0 {
-		t.Fatalf("a refused bulk reached the store: %v", store.bulk)
-	}
-	if _, err := svc.BulkSetVisibility(ctx, owner, BulkVisibilityInput{PostIDs: []uuid.UUID{post.ID}, Visibility: "staged"}); !errors.Is(err, ErrInvalidVisibility) {
-		t.Fatalf("bad visibility: %v", err)
-	}
-	if _, err := svc.BulkSetVisibility(ctx, owner, BulkVisibilityInput{Visibility: "private"}); !errors.Is(err, ErrBulkNothing) {
-		t.Fatalf("empty: %v", err)
-	}
-	out, err := svc.BulkSetVisibility(ctx, owner, BulkVisibilityInput{PostIDs: []uuid.UUID{post.ID, mine2.ID, post.ID}, Visibility: "Private"})
-	if err != nil {
-		t.Fatalf("own ids: %v", err)
-	}
-	if len(out) != 2 || !out[0].OK || !out[1].OK || store.posts[post.ID].Visibility != "private" {
-		t.Fatalf("outcomes=%+v visibility=%q", out, store.posts[post.ID].Visibility)
 	}
 }
 

@@ -12,18 +12,24 @@ import (
 // while a cached post body still exists. It is deliberately read from
 // PostgreSQL on every cache hit: cache invalidation is best-effort and cannot
 // be the safety boundary for moderation or deletion.
+//
+// Visibility and AgeRestricted joined it with the Creator Hub (2026-09-28):
+// a bulk edit to private or 18+ must bind the next read even if the cache
+// drop that follows it was lost.
 type PostAccessState struct {
-	ReviewStatus string
-	Deleted      bool
+	ReviewStatus  string
+	Deleted       bool
+	Visibility    string
+	AgeRestricted bool
 }
 
 func (s *Store) GetPostAccessState(ctx context.Context, postID uuid.UUID) (*PostAccessState, error) {
 	var state PostAccessState
 	err := s.db.QueryRow(ctx, `
-		SELECT review_status, deleted_at IS NOT NULL
+		SELECT review_status, deleted_at IS NOT NULL, visibility, age_restricted
 		FROM posts
 		WHERE id=$1
-	`, postID).Scan(&state.ReviewStatus, &state.Deleted)
+	`, postID).Scan(&state.ReviewStatus, &state.Deleted, &state.Visibility, &state.AgeRestricted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

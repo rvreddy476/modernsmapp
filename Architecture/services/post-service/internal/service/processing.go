@@ -121,6 +121,12 @@ func (s *Service) attachMediaState(ctx context.Context, posts []*postgres.Post) 
 // attachMediaStateToDetails is attachMediaState over a page of details and
 // drops the rows the viewer may not see while they process. The page order
 // is preserved.
+//
+// It is also the page filter every list read here shares (by-author,
+// recent, bookmarks, trending, hashtag, live recordings), so the Creator Hub
+// read rules ride on it (2026-09-28): an age-restricted post leaves the
+// page for anonymous, under-18 and unknown-age viewers, and a hidden like
+// count reads 0 / null for everyone but the owner.
 func (s *Service) attachMediaStateToDetails(ctx context.Context, details []PostDetail, viewerID *uuid.UUID) ([]PostDetail, error) {
 	posts := make([]*postgres.Post, 0, len(details))
 	for i := range details {
@@ -129,12 +135,17 @@ func (s *Service) attachMediaStateToDetails(ctx context.Context, details []PostD
 	if err := s.attachMediaState(ctx, posts); err != nil {
 		return nil, err
 	}
+	ageOK := s.ageAllowance(ctx, viewerID)
 	out := details[:0]
 	for _, d := range details {
 		// Both author-only gates: still processing, still scheduled.
 		if hiddenFromViewer(d.Post, viewerID) {
 			continue
 		}
+		if !ageOK(d.Post) {
+			continue
+		}
+		applyLikeCountPrivacy(&d, viewerID, false)
 		out = append(out, d)
 	}
 	return out, nil

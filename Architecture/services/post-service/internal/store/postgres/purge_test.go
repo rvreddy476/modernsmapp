@@ -258,6 +258,15 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO watch_progress (user_id, post_id, duration_ms) VALUES ($1,$2,1000)`, userA, postB1); err != nil {
 		t.Fatal(err)
 	}
+	// Private sharing (migration 053): userA is on userB's share list, and
+	// userB is on userA's. A related_post_id on userB's post points at
+	// userA's (migration 052's FK must SET NULL, not fail the purge).
+	if _, err := pool.Exec(ctx, `INSERT INTO post_private_shares (post_id, user_id) VALUES ($1,$2), ($3,$4)`, postB1, userA, postA1, userB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE posts SET related_post_id = $2 WHERE id = $1`, postB1, postA1); err != nil {
+		t.Fatal(err)
+	}
 
 	// Baseline counters on the survivor: seed non-zero so the decrement is
 	// unambiguous (the AFTER-INSERT trigger creates the row at all-zero).
@@ -292,6 +301,9 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	assertZero(t, pool, "post_drafts", "author_id=$1", userA)
 	assertZero(t, pool, "reel_drafts", "author_id=$1", userA)
 	assertZero(t, pool, "post_hidden_authors", "user_id=$1", userA)
+	assertZero(t, pool, "post_private_shares", "user_id=$1", userA)
+	assertZero(t, pool, "post_private_shares", "post_id=$1", postA1)
+	assertZero(t, pool, "posts", "related_post_id=$1", postA1)
 
 	// Cross-user rows owned by userA are gone.
 	assertZero(t, pool, "comments", "id=$1", commentID)

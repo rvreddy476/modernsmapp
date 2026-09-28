@@ -167,6 +167,19 @@ type Service struct {
 	// rules (video_series.go). Nil when there is no Postgres store; every
 	// series flow then fails closed.
 	videoSeries videoSeriesStore
+
+	// Creator Hub (2026-09-28): the viewer's date of birth behind the 18+
+	// gate (age_gate.go; nil = nobody's age is known, so an age-restricted
+	// post opens to its owner only) and the private share list
+	// (private_shares.go; nil = no private post is shared with anyone).
+	birthDates   birthDateSource
+	privateShare privateShareStore
+	// now is the clock seam for the recording-date and age rules.
+	now func() time.Time
+	// readGate stands in for singlePostRead in tests (comment_counts.go);
+	// bulkDelete for DeletePost in the bulk-delete route (post_edit.go).
+	readGate   func(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) error
+	bulkDelete func(ctx context.Context, postID, callerID uuid.UUID) error
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -188,6 +201,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.systemPlaylists = pg
 		svc.creatorComments = pg
 		svc.liveVOD = pg
+		svc.privateShare = pg
 	}
 	if rdb != nil {
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
@@ -454,6 +468,18 @@ type PostDetail struct {
 	// on the direct read (GET /v1/posts/:id); null on list surfaces, which
 	// do not load chapters.
 	Chapters []ChapterRef `json:"chapters"`
+
+	// Creator Hub (2026-09-28). LikeCount is the like number when the
+	// author hid it (hide_like_count): null for everyone but the owner, and
+	// counts.likes is 0 for them too. The direct read always sets it; list
+	// surfaces set it only when hidden (absent otherwise). RelatedPost is
+	// the owner-picked related post as a card, on the direct read only and
+	// only when this viewer may see it (else null, and related_post_id is
+	// null too). NotifySubscribers is the owner's (resolved distribution)
+	// and absent for everyone else.
+	LikeCount         *LikeCount        `json:"like_count,omitempty"`
+	RelatedPost       *RelatedPostField `json:"related_post,omitempty"`
+	NotifySubscribers *bool             `json:"notify_subscribers,omitempty"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
@@ -1484,6 +1510,11 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	if !s.viewerMayViewPost(ctx, p, viewerID) {
 		return nil, nil
 	}
+	// Age-restricted (age_gate.go): only after the viewer may see the post
+	// at all, so the refusal never confirms a post they could not open.
+	if err := s.checkAgeGate(ctx, p, viewerID); err != nil {
+		return nil, err
+	}
 
 	counts, err := s.countsForPost(ctx, id)
 	if err != nil {
@@ -1551,6 +1582,9 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 		attachViewer = *viewerID
 	}
 	s.attachChannelRefs(ctx, attachViewer, []*PostDetail{detail})
+	// Creator Hub (hub_detail.go): like_count / hide_like_count, the
+	// related post card, the owner's notify_subscribers.
+	s.applyHubDetail(ctx, detail, viewerID)
 
 	return detail, nil
 }
@@ -1757,6 +1791,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		}
 	}
 	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
+	ageOK := s.ageAllowance(ctx, viewerID)
 
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
@@ -1796,6 +1831,11 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		// at create time; this is where they stay hidden until the media
 		// lands (feed-service mirrors it at its hydration tail).
 		if hiddenFromViewer(&post, viewerID) {
+			continue
+		}
+		// Creator Hub: an age-restricted post leaves feed hydration for
+		// anonymous / under-18 / unknown-age viewers (age_gate.go).
+		if !ageOK(&post) {
 			continue
 		}
 
@@ -1844,6 +1884,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 			}
 		}
 
+		applyLikeCountPrivacy(detail, viewerID, false)
 		result[post.ID] = detail
 	}
 
@@ -2664,7 +2705,11 @@ func (s *Service) ListCommentsPG(ctx context.Context, postID uuid.UUID, viewerID
 // GetCommentsAroundPG returns comments surrounding a target comment
 // for deep-link navigation. viewerID drives moderation visibility:
 // held-for-review comments are only shown to their own author.
+// The post's read decision comes first, as in ListCommentsSortedPG.
 func (s *Service) GetCommentsAroundPG(ctx context.Context, postID, commentID uuid.UUID, viewerID *uuid.UUID, limit int) ([]postgres.Comment, error) {
+	if err := s.singlePostRead(ctx, postID, viewerID); err != nil {
+		return nil, err
+	}
 	return s.pgStore.GetCommentsAround(ctx, postID, commentID, viewerID, limit)
 }
 
@@ -2817,7 +2862,9 @@ func (s *Service) viewerMayViewPost(ctx context.Context, post *postgres.Post, vi
 	case "", "public", "unlisted":
 		return true
 	case "private":
-		return false
+		// Private sharing (2026-09-28): a user on the post's share list.
+		// This is a single-post gate only; no listing calls it.
+		return s.sharedWithViewer(ctx, post.ID, viewerID)
 	case "followers", "circle":
 		if viewerID == nil {
 			return false
@@ -3046,6 +3093,12 @@ func (s *Service) GetVideoDetail(ctx context.Context, postID uuid.UUID) (*postgr
 func (s *Service) GetVideoDetailForCaller(ctx context.Context, postID uuid.UUID, callerID *uuid.UUID) (*postgres.VideoMetadata, error) {
 	if s.authoringOwners == nil {
 		return nil, ErrAuthoringStoreUnavailable
+	}
+	// The post's own read decision first (2026-09-28): this route answered
+	// playback_url for any post id, private and age-restricted ones
+	// included. Same gate as GET /v1/posts/:id, private shares honoured.
+	if err := s.singlePostRead(ctx, postID, callerID); err != nil {
+		return nil, err
 	}
 	vm, err := s.authoringOwners.GetVideoMetadata(ctx, postID)
 	if err != nil {

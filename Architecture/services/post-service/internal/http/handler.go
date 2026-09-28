@@ -110,6 +110,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// creator summary, and the viewer's Queue.
 		v1.PATCH("/:postId", h.UpdatePost)
 		v1.GET("/me/summary", h.GetCreatorSummary)
+		// Creator Hub private sharing (2026-09-28, post_edit.go): owner only.
+		v1.GET("/:postId/private-shares", h.GetPrivateShares)
+		v1.PUT("/:postId/private-shares", h.PutPrivateShares)
 		v1.POST("/:postId/watch-later", h.AddWatchLater)
 		v1.DELETE("/:postId/watch-later", h.RemoveWatchLater)
 
@@ -875,6 +878,10 @@ func (h *Handler) GetPost(c *gin.Context) {
 
 	p, err := h.svc.GetPost(c.Request.Context(), postID, viewerUUID)
 	if err != nil {
+		// Age-restricted posts (2026-09-28): 401 / 403 with the age codes.
+		if writeReadGateError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -1415,6 +1422,11 @@ func (h *Handler) ListComments(c *gin.Context) {
 
 	comments, nextCursor, err := h.svc.ListCommentsSortedPG(c.Request.Context(), postID, viewerID, cursor, limit, sort)
 	if err != nil {
+		// The post's read gate (2026-09-28): 404 for a post the viewer may
+		// not see (private shares honoured), the age codes for an 18+ one.
+		if writeReadGateError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -1461,6 +1473,9 @@ func (h *Handler) ListCommentsAround(c *gin.Context) {
 
 	comments, err := h.svc.GetCommentsAroundPG(c.Request.Context(), postID, commentID, viewerID, limit)
 	if err != nil {
+		if writeReadGateError(c, err) {
+			return
+		}
 		if err.Error() == "COMMENT_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 			return
@@ -2368,6 +2383,13 @@ func (h *Handler) GetVideoDetail(c *gin.Context) {
 	}
 	vm, err := h.svc.GetVideoDetailForCaller(c.Request.Context(), videoID, callerID)
 	if err != nil {
+		// The post's own read gate (2026-09-28): a post the caller may not
+		// see is the same 404 as a missing one; an 18+ post answers the
+		// age codes GET /v1/posts/:id answers.
+		if errors.Is(err, service.ErrAgeSignIn) || errors.Is(err, service.ErrAgeRestricted) || errors.Is(err, service.ErrAgeUnverified) {
+			writeReadGateError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Video metadata not found", nil)
 		return
 	}

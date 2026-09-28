@@ -63,7 +63,9 @@ func TestStaleApprovedCacheCannotBypassCanonicalModeration(t *testing.T) {
 
 	// Simulate a committed canonical moderation decision whose best-effort
 	// Redis DEL was lost. The cache remains deliberately approved.
-	if _, err := pool.Exec(ctx, `UPDATE posts SET review_status='rejected' WHERE id=$1`, postID); err != nil {
+	// Creator Hub (2026-09-28): a flip to private or to 18+ whose cache drop
+	// was lost binds the next read the same way.
+	if _, err := pool.Exec(ctx, `UPDATE posts SET review_status='rejected', visibility='private', age_restricted=true WHERE id=$1`, postID); err != nil {
 		t.Fatal(err)
 	}
 	svc := New(postgres.New(pool), nil, rdb)
@@ -73,5 +75,8 @@ func TestStaleApprovedCacheCannotBypassCanonicalModeration(t *testing.T) {
 	}
 	if got == nil || got.ReviewStatus != "rejected" {
 		t.Fatalf("cache returned review_status %v, want canonical rejected", got)
+	}
+	if got.Visibility != "private" || !got.AgeRestricted {
+		t.Fatalf("cache returned visibility=%q age_restricted=%v, want canonical private / true", got.Visibility, got.AgeRestricted)
 	}
 }

@@ -216,6 +216,10 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		`DELETE FROM post_drafts WHERE author_id = $1`,
 		`DELETE FROM reel_drafts WHERE author_id = $1`,
 
+		// Private sharing (migration 053): the user on someone else's share
+		// list. Their own posts' lists cascade with the posts below.
+		`DELETE FROM post_private_shares WHERE user_id = $1`,
+
 		// post_moderation_decisions is ON DELETE RESTRICT from posts(id) —
 		// must be emptied before the posts row goes.
 		`DELETE FROM post_moderation_decisions WHERE post_id IN (SELECT id FROM _purge_posts)`,

@@ -64,11 +64,13 @@ func (s *Service) ViewerMayDownloadMedia(ctx context.Context, viewerID, mediaID 
 	if err != nil {
 		return false, err
 	}
+	shared := s.privateSharedSet(ctx, viewerID, privatePostIDs(candidates, viewerID))
+	ageOK := s.ageAllowance(ctx, &viewerID)
 	for _, p := range candidates {
 		// The same per-post visibility rule the media-access route applies
 		// (viewerMayAccessPostMedia), so a download can never be allowed on
 		// a post the viewer could not watch.
-		if evaluatePostMediaVisibility(viewerID, p, rels[p.AuthorID.String()]) {
+		if evaluatePostMediaVisibility(viewerID, p, rels[p.AuthorID.String()], shared[p.ID]) && ageOK(p) {
 			return true, nil
 		}
 	}

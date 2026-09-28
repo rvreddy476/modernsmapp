@@ -85,6 +85,9 @@ func (f *fakeAuthoringStore) GetVideoMetadata(_ context.Context, _ uuid.UUID) (*
 func newAuthoringService(store videoAuthoringStore) *Service {
 	s := &Service{}
 	s.authoringOwners = store
+	// The post's own read gate (GET /v1/videos/:id, 2026-09-28) is pinned
+	// in hub_batch_test.go; here every post is readable.
+	s.readGate = func(context.Context, uuid.UUID, *uuid.UUID) error { return nil }
 	return s
 }
 

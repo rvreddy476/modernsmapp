@@ -537,12 +537,18 @@ func TestMTubeEditWritesAuditAndSearchRevisionAndIsOwnerGuarded(t *testing.T) {
 	if _, err := r.store.UpdatePostFields(ctx, uuid.New(), r.owner, postgres.PostEditPatch{Title: &title}); err != pgx.ErrNoRows {
 		t.Fatalf("missing: %v", err)
 	}
-	// Bulk visibility: one audit row per changed post, unknown ids reported.
+	// The bulk route writes through UpdatePostFields with its own audit
+	// action (2026-09-28; hub_batch_integration_test.go covers the rest).
 	other := r.newPost(t, r.owner, "flick", "public", "")
 	ghost := uuid.New()
-	out := r.store.BulkSetVisibility(ctx, r.owner, []uuid.UUID{post.ID, other.ID, ghost}, "private")
-	if len(out) != 3 || !out[0].OK || !out[1].OK || out[2].OK || out[2].Error != "NOT_FOUND" {
-		t.Fatalf("bulk: %+v", out)
+	private := "private"
+	for _, id := range []uuid.UUID{post.ID, other.ID} {
+		if _, err := r.store.UpdatePostFields(ctx, id, r.owner, postgres.PostEditPatch{Visibility: &private, AuditAction: "post.bulk_edit"}); err != nil {
+			t.Fatalf("bulk write %s: %v", id, err)
+		}
+	}
+	if _, err := r.store.UpdatePostFields(ctx, ghost, r.owner, postgres.PostEditPatch{Visibility: &private, AuditAction: "post.bulk_edit"}); err != pgx.ErrNoRows {
+		t.Fatalf("ghost: %v", err)
 	}
 	authors, _ := r.store.PostAuthorsByIDs(ctx, []uuid.UUID{post.ID, ghost})
 	if authors[post.ID] != r.owner || len(authors) != 1 {

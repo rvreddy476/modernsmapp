@@ -62,6 +62,8 @@ func (s *Service) getCachedPostBody(ctx context.Context, id uuid.UUID) (*postgre
 					return nil, nil
 				}
 				p.ReviewStatus = state.ReviewStatus
+				p.Visibility = state.Visibility
+				p.AgeRestricted = state.AgeRestricted
 				return &p, nil
 			}
 			// Corrupt entry: drop it so the next read repopulates.

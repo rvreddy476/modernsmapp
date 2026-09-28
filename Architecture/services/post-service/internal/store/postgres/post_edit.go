@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -42,6 +43,38 @@ type PostEditPatch struct {
 	NoComments    *bool
 	MadeForKids   *bool
 	Language      *string
+
+	// Creator Hub (2026-09-28): the create route's columns (006/038) and
+	// the migration 052 settings. ClearRecordingDate / ClearRelatedPost
+	// write NULL ("" on the wire); they win over the value pointers.
+	PaidPromotion      *bool
+	AlteredContent     *bool
+	License            *string
+	AllowEmbedding     *bool
+	RecordingDate      *time.Time
+	ClearRecordingDate bool
+	RecordingLocation  *string
+	RemixSetting       *string
+	CommentModeration  *string
+	CommentAccess      *string
+	AgeRestricted      *bool
+	HideLikeCount      *bool
+	DefaultCommentSort *string
+	RelatedPostID      *uuid.UUID
+	ClearRelatedPost   bool
+
+	// Distribution replaces posts.distribution (the service built it from
+	// the stored policy plus notify_subscribers). When set, the same
+	// transaction bumps distribution_rev and writes DistributionEvent(rev)
+	// to the outbox, exactly as PATCH /distribution does.
+	// DistributionChange is the audit entry for it.
+	Distribution       json.RawMessage
+	DistributionEvent  func(rev int64) (eventType string, payload interface{})
+	DistributionChange *PostEditChange
+
+	// AuditAction names the post_edit_audit row: "post.edit" (the default)
+	// or "post.bulk_edit".
+	AuditAction string
 }
 
 // PostEditChange is one field's before/after in the audit row.
@@ -98,19 +131,49 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 			no_comments      = COALESCE($11, no_comments),
 			is_made_for_kids = COALESCE($12, is_made_for_kids),
 			language         = COALESCE($13, language),
+			paid_promotion       = COALESCE($14, paid_promotion),
+			altered_content      = COALESCE($15, altered_content),
+			license              = COALESCE($16, license),
+			allow_embedding      = COALESCE($17, allow_embedding),
+			recording_date       = CASE WHEN $19::boolean THEN NULL ELSE COALESCE($18::date, recording_date) END,
+			recording_location   = COALESCE($20, recording_location),
+			remix_setting        = COALESCE($21, remix_setting),
+			comment_moderation   = COALESCE($22, comment_moderation),
+			comment_access       = COALESCE($23, comment_access),
+			age_restricted       = COALESCE($24, age_restricted),
+			hide_like_count      = COALESCE($25, hide_like_count),
+			default_comment_sort = COALESCE($26, default_comment_sort),
+			related_post_id      = CASE WHEN $28::boolean THEN NULL ELSE COALESCE($27::uuid, related_post_id) END,
+			distribution         = COALESCE($29::jsonb, distribution),
+			distribution_rev     = distribution_rev + CASE WHEN $29::jsonb IS NULL THEN 0 ELSE 1 END,
 			updated_at       = NOW()
 		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
 		RETURNING `+postCols,
 		postID, actorID,
 		patch.Title, patch.Text, textArrayArg(patch.Tags), textArrayArg(patch.Hashtags),
 		patch.Category, patch.Visibility, patch.CoverMediaID,
-		patch.AllowDownload, patch.NoComments, patch.MadeForKids, patch.Language))
+		patch.AllowDownload, patch.NoComments, patch.MadeForKids, patch.Language,
+		patch.PaidPromotion, patch.AlteredContent, patch.License, patch.AllowEmbedding,
+		patch.RecordingDate, patch.ClearRecordingDate, patch.RecordingLocation,
+		patch.RemixSetting, patch.CommentModeration, patch.CommentAccess,
+		patch.AgeRestricted, patch.HideLikeCount, patch.DefaultCommentSort,
+		patch.RelatedPostID, patch.ClearRelatedPost, jsonArg(patch.Distribution)))
 	if err != nil {
 		return nil, fmt.Errorf("update post fields: %w", err)
 	}
 
-	if err := insertPostEditAudit(ctx, tx, postID, actorID, "post.edit", changes); err != nil {
+	action := patch.AuditAction
+	if action == "" {
+		action = "post.edit"
+	}
+	if err := insertPostEditAudit(ctx, tx, postID, actorID, action, changes); err != nil {
 		return nil, err
+	}
+	if patch.Distribution != nil && patch.DistributionEvent != nil {
+		eventType, payload := patch.DistributionEvent(after.DistributionRev)
+		if err := InsertOutboxEventTx(ctx, tx, eventType, "post", postID, payload); err != nil {
+			return nil, fmt.Errorf("emit distribution update on edit: %w", err)
+		}
 	}
 	if _, changed := changes["visibility"]; changed {
 		if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
@@ -177,7 +240,73 @@ func postEditChanges(before *Post, patch PostEditPatch) map[string]PostEditChang
 	boolean("no_comments", before.NoComments, patch.NoComments)
 	boolean("is_made_for_kids", before.IsMadeForKids, patch.MadeForKids)
 	str("language", before.Language, patch.Language)
+
+	boolean("paid_promotion", before.PaidPromotion, patch.PaidPromotion)
+	boolean("altered_content", before.AlteredContent, patch.AlteredContent)
+	str("license", before.License, patch.License)
+	boolean("allow_embedding", before.AllowEmbedding, patch.AllowEmbedding)
+	if from, to := dateString(before.RecordingDate), nextRecordingDate(before.RecordingDate, patch); from != to {
+		changes["recording_date"] = PostEditChange{From: from, To: to}
+	}
+	str("recording_location", before.RecordingLocation, patch.RecordingLocation)
+	str("remix_setting", before.RemixSetting, patch.RemixSetting)
+	str("comment_moderation", before.CommentModeration, patch.CommentModeration)
+	str("comment_access", before.CommentAccess, patch.CommentAccess)
+	boolean("age_restricted", before.AgeRestricted, patch.AgeRestricted)
+	boolean("hide_like_count", before.HideLikeCount, patch.HideLikeCount)
+	str("default_comment_sort", before.DefaultCommentSort, patch.DefaultCommentSort)
+	if from, to := uuidString(before.RelatedPostID), nextRelatedPost(before.RelatedPostID, patch); from != to {
+		changes["related_post_id"] = PostEditChange{From: from, To: to}
+	}
+	if patch.Distribution != nil && patch.DistributionChange != nil {
+		changes["notify_subscribers"] = *patch.DistributionChange
+	}
 	return changes
+}
+
+// dateString renders a DATE column value the way the wire carries it
+// ("YYYY-MM-DD", "" for NULL) so the diff compares days, not instants.
+func dateString(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format("2006-01-02")
+}
+
+func nextRecordingDate(cur *time.Time, patch PostEditPatch) string {
+	switch {
+	case patch.ClearRecordingDate:
+		return ""
+	case patch.RecordingDate != nil:
+		return dateString(patch.RecordingDate)
+	}
+	return dateString(cur)
+}
+
+func uuidString(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
+}
+
+func nextRelatedPost(cur *uuid.UUID, patch PostEditPatch) string {
+	switch {
+	case patch.ClearRelatedPost:
+		return ""
+	case patch.RelatedPostID != nil:
+		return patch.RelatedPostID.String()
+	}
+	return uuidString(cur)
+}
+
+// jsonArg is a nullable JSONB argument: empty -> SQL NULL (COALESCE keeps
+// the column).
+func jsonArg(raw json.RawMessage) interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	return string(raw)
 }
 
 func sameStrings(a, b []string) bool {
@@ -212,50 +341,13 @@ func insertPostEditAudit(ctx context.Context, tx pgx.Tx, postID, actorID uuid.UU
 	return nil
 }
 
-// BulkVisibilityOutcome is one id's result from BulkSetVisibility.
+// BulkVisibilityOutcome is one id's result from the bulk routes
+// (POST /v1/uploads/bulk and /bulk-delete): ok, or the error code the single
+// route would have answered for that post. The name predates the widening.
 type BulkVisibilityOutcome struct {
 	ID    uuid.UUID `json:"id"`
 	OK    bool      `json:"ok"`
 	Error string    `json:"error,omitempty"`
-}
-
-// BulkSetVisibility applies one visibility to the caller's posts, one
-// transaction per post (audit + search revision each), and reports a per-id
-// outcome. The service has already established that every id belongs to the
-// caller; the UPDATE is still guarded by author_id.
-func (s *Store) BulkSetVisibility(ctx context.Context, actorID uuid.UUID, postIDs []uuid.UUID, visibility string) []BulkVisibilityOutcome {
-	out := make([]BulkVisibilityOutcome, 0, len(postIDs))
-	for _, id := range postIDs {
-		outcome := BulkVisibilityOutcome{ID: id, OK: true}
-		_, err := s.WithSearchEligibilityTx(ctx, id, func(ctx context.Context, tx pgx.Tx) (bool, error) {
-			var previous string
-			err := tx.QueryRow(ctx,
-				`SELECT visibility FROM posts WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL FOR UPDATE`,
-				id, actorID).Scan(&previous)
-			if err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return false, fmt.Errorf("NOT_FOUND")
-				}
-				return false, err
-			}
-			if previous == visibility {
-				return false, nil
-			}
-			if _, err := tx.Exec(ctx,
-				`UPDATE posts SET visibility = $3, updated_at = NOW() WHERE id = $1 AND author_id = $2`,
-				id, actorID, visibility); err != nil {
-				return false, err
-			}
-			return true, insertPostEditAudit(ctx, tx, id, actorID, "post.bulk_visibility",
-				map[string]PostEditChange{"visibility": {From: previous, To: visibility}})
-		})
-		if err != nil {
-			outcome.OK = false
-			outcome.Error = err.Error()
-		}
-		out = append(out, outcome)
-	}
-	return out
 }
 
 // PostAuthorsByIDs returns author_id for each live post id (missing and

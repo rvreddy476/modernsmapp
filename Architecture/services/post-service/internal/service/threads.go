@@ -277,7 +277,8 @@ func (s *Service) GetThread(ctx context.Context, postID uuid.UUID, viewerID *uui
 
 // canViewThread applies the same visibility rules a single post read
 // uses: public is open; the author always sees their own; followers /
-// trusted / close_friends consult graph-service; private is author-only.
+// trusted / close_friends consult graph-service; private is the author
+// and the users on the root's private share list.
 func (s *Service) canViewThread(ctx context.Context, root *postgres.Post, viewerID *uuid.UUID) bool {
 	if root.Visibility == "public" || root.Visibility == "unlisted" {
 		// unlisted is reachable by direct link (which this is) but is
@@ -305,6 +306,10 @@ func (s *Service) canViewThread(ctx context.Context, root *postgres.Post, viewer
 	switch root.Visibility {
 	case "followers":
 		return rel.Follows
+	case "private":
+		// Private sharing (2026-09-28): a user on the root's share list,
+		// after the block check above.
+		return s.sharedWithViewer(ctx, root.ID, viewerID)
 	// "trusted" and "close_friends" are deliberately absent. That audience
 	// was retired on 21 Sep (graph-service migration 012) along with the
 	// "Trusted Circle" tier, so there is no membership left to check. Both

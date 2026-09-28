@@ -149,6 +149,11 @@ func main() {
 	// Comment-author hydration (same identity-profile batch contract the
 	// feed uses for post authors).
 	postSvc.SetProfileServiceURL(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"))
+	// Age-restricted posts (Creator Hub, 2026-09-28): the viewer's date of
+	// birth from identity-profile's service-only identity read (the one
+	// dating-service uses; needs the same INTERNAL_SERVICE_KEY). Every
+	// failure keeps an 18+ post closed (service/age_gate.go).
+	postSvc.SetBirthDateSource(service.NewIdentityBirthDates(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"), internalServiceKey))
 	// The APP user-service (app.users), not identity-user: it owns usernames
 	// (@mention resolution) and the internal channels/by-owner contract.
 	// Never wired before 2026-09-05, so mentions silently resolved to nobody.

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -35,6 +36,24 @@ type UploadDetail struct {
 	// Flags: processing_failed, review_hold, made_for_kids, scheduled.
 	// Always an array.
 	Flags []string `json:"flags"`
+	// Creator Hub (2026-09-28): the first 200 runes of the description
+	// ("" when none) and made_for_kids under the Hub's name. The post's
+	// age_restricted, hide_like_count, default_comment_sort and
+	// related_post_id ride on the embedded post.
+	Description string `json:"description"`
+	MadeForKids bool   `json:"made_for_kids"`
+}
+
+// uploadDescriptionRunes caps an upload row's description preview.
+const uploadDescriptionRunes = 200
+
+// uploadDescription is the row's description preview: the post text cut
+// at uploadDescriptionRunes runes.
+func uploadDescription(text string) string {
+	if utf8.RuneCountInString(text) <= uploadDescriptionRunes {
+		return text
+	}
+	return string([]rune(text)[:uploadDescriptionRunes])
 }
 
 // Upload row flags.
@@ -313,6 +332,8 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 			ScheduledAt:      post.PublishAt,
 			ProcessingStatus: UploadProcessingStatus(&post),
 			Flags:            UploadFlags(&post),
+			Description:      uploadDescription(post.Text),
+			MadeForKids:      post.IsMadeForKids,
 		}
 		if counts != nil {
 			d.CommentCount = counts.Comments

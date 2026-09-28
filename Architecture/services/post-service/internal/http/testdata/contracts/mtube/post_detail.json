@@ -31,6 +31,10 @@
   "overlay_audio_volume": 0,
   "hide_share": false,
   "allow_download": true,
+  "age_restricted": false,
+  "hide_like_count": false,
+  "default_comment_sort": "top",
+  "related_post_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   "content_type_explicit": true,
   "source": "",
   "distribution_rev": 0,
@@ -83,5 +87,13 @@
       "start_ms": 725000,
       "title": "The build"
     }
-  ]
+  ],
+  "like_count": 12,
+  "related_post": {
+    "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "title": "Thursday build",
+    "thumbnail_url": "/v1/media/55555555-5555-4555-8555-555555555555/serve",
+    "duration_seconds": 640,
+    "channel_name": "Raghu Builds"
+  }
 }

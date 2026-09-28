@@ -66,6 +66,16 @@ type Post struct {
 	// RemixSetting above.
 	HideShare     bool `json:"hide_share"`
 	AllowDownload bool `json:"allow_download"`
+	// Creator Hub settings (migration 052), never omitempty. AgeRestricted
+	// gates every read behind the viewer's date of birth (service/age_gate.go);
+	// HideLikeCount turns like_count into null for everyone but the owner;
+	// DefaultCommentSort is 'top' | 'newest'; RelatedPostID is one of the
+	// owner's own posts, null when unset (the detail nulls it for a viewer
+	// who cannot see that post).
+	AgeRestricted      bool       `json:"age_restricted"`
+	HideLikeCount      bool       `json:"hide_like_count"`
+	DefaultCommentSort string     `json:"default_comment_sort"`
+	RelatedPostID      *uuid.UUID `json:"related_post_id"`
 	// ContentTypeExplicit is TRUE when ContentType was the author's choice
 	// (flick / long_video sent by the Reel or Tube composer, or a category
 	// override) rather than the server's measurement of a plain "post" that
@@ -235,6 +245,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
 	hide_share, allow_download, tagged_user_ids, content_type_explicit,
 	source, live_stream_id,
+	age_restricted, hide_like_count, default_comment_sort, related_post_id,
 	tier_required_id,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
@@ -275,6 +286,7 @@ func postScanDestinations(p *Post) []any {
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 		&p.HideShare, &p.AllowDownload, &p.TaggedUserIDs, &p.ContentTypeExplicit,
 		&p.Source, &p.LiveStreamID,
+		&p.AgeRestricted, &p.HideLikeCount, &p.DefaultCommentSort, &p.RelatedPostID,
 		&p.TierRequiredID,
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,

@@ -38,7 +38,15 @@ type creatorCommentStore interface {
 // ListCommentsSortedPG is ListCommentsPG with a sort order (comments.go in
 // the store): "" / "newest" is the historic order, "top" ranks by
 // reaction_count, reply_count, created_at. The pinned comment leads both.
+//
+// The post's read decision comes first (2026-09-28): the thread of a post
+// the viewer may not open is ErrPostNotVisible (404), including a private
+// post unless the viewer is on its share list; an 18+ post answers the
+// age refusal the detail answers.
 func (s *Service) ListCommentsSortedPG(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID, cursor string, limit int, sort string) ([]postgres.Comment, string, error) {
+	if err := s.singlePostRead(ctx, postID, viewerID); err != nil {
+		return nil, "", err
+	}
 	if sort != postgres.CommentSortTop {
 		sort = postgres.CommentSortNewest
 	}

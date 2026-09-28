@@ -20,9 +20,11 @@ func (h *Handler) RegisterMyUploadsRoutes(r *gin.Engine) {
 		uploads.GET("/flicks", h.GetMyFlicks)
 		uploads.GET("/posts", h.GetMyTextPosts)
 		uploads.GET("/counts", h.GetUploadCounts)
-		// Creator Hub bulk edit (2026-09-27, post_edit.go). Static "bulk"
-		// beside :postId.
+		// Creator Hub bulk edit and bulk delete (2026-09-27 / 09-28,
+		// post_edit.go). Static "bulk" / "bulk-delete" are POSTs; the only
+		// :postId route here is a DELETE, so neither is ever read as an id.
 		uploads.POST("/bulk", h.BulkUpdateUploads)
+		uploads.POST("/bulk-delete", h.BulkDeleteUploads)
 		uploads.DELETE("/:postId", h.DeleteUpload)
 	}
 }

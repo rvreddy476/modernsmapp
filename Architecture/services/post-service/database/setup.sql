@@ -334,3 +334,38 @@ ALTER TABLE posts
 CREATE INDEX IF NOT EXISTS idx_posts_search_eligibility
     ON posts (visibility, review_status)
     WHERE deleted_at IS NULL;
+
+-- Creator Hub settings (migration 052): age restriction, hidden like count,
+-- the watch page's default comment order and the owner-picked related post.
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS age_restricted       BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS hide_like_count      BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS default_comment_sort TEXT    NOT NULL DEFAULT 'top';
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS related_post_id      UUID    NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'posts_default_comment_sort_check') THEN
+        ALTER TABLE posts ADD CONSTRAINT posts_default_comment_sort_check
+            CHECK (default_comment_sort IN ('top', 'newest'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'posts_related_post_id_fkey') THEN
+        ALTER TABLE posts ADD CONSTRAINT posts_related_post_id_fkey
+            FOREIGN KEY (related_post_id) REFERENCES posts(id) ON DELETE SET NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'posts_related_post_not_self') THEN
+        ALTER TABLE posts ADD CONSTRAINT posts_related_post_not_self
+            CHECK (related_post_id IS NULL OR related_post_id <> id);
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_posts_related_post_id ON posts (related_post_id) WHERE related_post_id IS NOT NULL;
+
+-- Private sharing (migration 053): the users a 'private' post is also
+-- readable by (direct read, playback, comments; never a feed or listing).
+-- The users FK and the widened post_edit_audit action CHECK live in the
+-- migration only (post_edit_audit itself is created by migration 051).
+CREATE TABLE IF NOT EXISTS post_private_shares (
+    post_id  UUID        NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    user_id  UUID        NOT NULL,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (post_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_private_shares_user ON post_private_shares (user_id);

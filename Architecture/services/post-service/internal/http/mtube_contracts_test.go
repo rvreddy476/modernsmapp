@@ -38,6 +38,7 @@ var (
 	fxPlaylist = uuid.MustParse("88888888-8888-4888-8888-888888888888")
 	fxBanner   = uuid.MustParse("99999999-9999-4999-8999-999999999999")
 	fxStream   = uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	fxRelated  = uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 )
 
 func fixturePost() *postgres.Post {
@@ -48,7 +49,8 @@ func fixturePost() *postgres.Post {
 		ReviewStatus: "approved", Title: "Friday build", Tags: []string{"go", "kafka"}, Category: "science-tech",
 		Language: "en", AllowEmbedding: true, PublishToFeed: true, CoverMediaID: &fxCover, AllowDownload: true,
 		ContentTypeExplicit: true, Hashtags: []string{"build"}, CreatedAt: fxTime.Add(-2 * time.Hour), UpdatedAt: fxTime,
-		PublishedAt: &publishedAt,
+		DefaultCommentSort: "top",
+		PublishedAt:        &publishedAt,
 		Media: []postgres.PostMedia{{MediaID: fxMedia, Kind: "video", Position: 0, ProcessingStatus: "ready", ModerationStatus: "passed",
 			DurationMs: 725000, HLSURL: "/v1/media/" + fxMedia.String() + "/hls/master.m3u8"}},
 	}
@@ -68,19 +70,49 @@ func fixtureComment() postgres.Comment {
 
 func mtubeContracts() map[string]any {
 	post := fixturePost()
+	post.RelatedPostID = &fxRelated
 	detail := service.PostDetail{
 		Post: post, Counts: &scylla.Counts{Likes: 12, Comments: 3}, ViewCount: 480, IsRepostable: true,
 		Channel:        &service.ChannelRef{UserID: fxAuthor, Name: "Raghu Builds", Handle: "raghu.builds"},
 		ViewerDisliked: false, ViewerQueued: true,
-		Chapters: []service.ChapterRef{{StartMs: 0, Title: "Intro"}, {StartMs: 83000, Title: "Setup"}, {StartMs: 725000, Title: "The build"}},
+		Chapters:    []service.ChapterRef{{StartMs: 0, Title: "Intro"}, {StartMs: 83000, Title: "Setup"}, {StartMs: 725000, Title: "The build"}},
+		LikeCount:   &service.LikeCount{Value: 12},
+		RelatedPost: &service.RelatedPostField{Card: fixtureRelatedCard()},
+	}
+	// Creator Hub (2026-09-28): the owner's read carries notify_subscribers
+	// and every owner setting; a viewer of a post whose author hid the like
+	// count gets like_count null and counts.likes 0, and a related post they
+	// cannot open is not named (related_post null, related_post_id null).
+	ownerPost := fixturePost()
+	ownerPost.RelatedPostID, ownerPost.PaidPromotion, ownerPost.AlteredContent = &fxRelated, true, false
+	ownerPost.License, ownerPost.RemixSetting, ownerPost.CommentModeration, ownerPost.CommentAccess = "creative_commons", "allow_audio_only", "basic", "followers"
+	recorded := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	ownerPost.RecordingDate, ownerPost.RecordingLocation = &recorded, "Hyderabad"
+	ownerPost.AgeRestricted, ownerPost.HideLikeCount, ownerPost.DefaultCommentSort = true, true, "newest"
+	notifyOwner := false
+	ownerDetail := service.PostDetail{
+		Post: ownerPost, Counts: &scylla.Counts{Likes: 12, Comments: 3}, ViewCount: 480, IsRepostable: true,
+		Channel:           &service.ChannelRef{UserID: fxAuthor, Name: "Raghu Builds", Handle: "raghu.builds"},
+		Chapters:          []service.ChapterRef{},
+		LikeCount:         &service.LikeCount{Value: 12},
+		RelatedPost:       &service.RelatedPostField{Card: fixtureRelatedCard()},
+		NotifySubscribers: &notifyOwner,
+	}
+	hiddenPost := fixturePost()
+	hiddenPost.HideLikeCount = true
+	hiddenDetail := service.PostDetail{
+		Post: hiddenPost, Counts: &scylla.Counts{Likes: 0, Comments: 3}, ViewCount: 480, IsRepostable: true,
+		Chapters: []service.ChapterRef{}, LikeCount: &service.LikeCount{Hidden: true}, RelatedPost: &service.RelatedPostField{},
 	}
 	scheduledAt := fxTime.Add(24 * time.Hour)
 	scheduled := fixturePost()
 	scheduled.PublishAt, scheduled.PublishedAt, scheduled.IsScheduled, scheduled.Visibility = &scheduledAt, nil, true, "private"
+	scheduled.AgeRestricted, scheduled.RelatedPostID = true, &fxRelated
 	upload := service.UploadDetail{
 		PostDetail:    service.PostDetail{Post: scheduled, Counts: &scylla.Counts{Likes: 0, Comments: 0}, ViewCount: 0},
 		VideoMetadata: &postgres.VideoMetadata{PostID: fxPost, DurationSeconds: 725, Orientation: "landscape", ComputedCategory: "long_video", FinalCategory: "long_video", UploadStatus: "ready", MediaAssetID: &fxMedia, CreatedAt: fxTime, UpdatedAt: fxTime},
 		ScheduledAt:   &scheduledAt, CommentCount: 0, ProcessingStatus: "ready", Flags: []string{"scheduled"},
+		Description: scheduled.Text, MadeForKids: false,
 	}
 	reel := fixturePost()
 	reel.ContentType, reel.PostType, reel.Text, reel.Title = "flick", "video", "quick one #build", "Quick one"
@@ -96,11 +128,17 @@ func mtubeContracts() map[string]any {
 	subscribed := true
 	notify := "all"
 	return map[string]any{
-		"categories.json":  service.VideoCategories(),
-		"post_detail.json": detail,
+		"categories.json":               service.VideoCategories(),
+		"post_detail.json":              detail,
+		"post_detail_owner.json":        ownerDetail,
+		"post_detail_hidden_likes.json": hiddenDetail,
 		"post_edit_request.json": updatePostRequest{Title: strp("Friday build (final)"), Text: strp("0:00 Intro\n1:23 Setup\n12:05 The build"),
 			Tags: &[]string{"go", "kafka"}, Hashtags: &[]string{"build"}, Category: strp("science-tech"), Visibility: strp("public"),
-			CoverMediaID: strp(fxCover.String()), AllowDownload: boolp(true), NoComments: boolp(false), MadeForKids: boolp(false), Language: strp("en")},
+			CoverMediaID: strp(fxCover.String()), AllowDownload: boolp(true), NoComments: boolp(false), MadeForKids: boolp(false), Language: strp("en"),
+			PaidPromotion: boolp(true), AlteredContent: boolp(false), License: strp("creative_commons"), AllowEmbedding: boolp(true),
+			RecordingDate: strp("2026-09-20"), RecordingLocation: strp("Hyderabad"), RemixSetting: strp("allow_audio_only"),
+			CommentModeration: strp("basic"), CommentAccess: strp("followers"), NotifySubscribers: boolp(false),
+			AgeRestricted: boolp(true), HideLikeCount: boolp(true), DefaultCommentSort: strp("newest"), RelatedPostID: strp(fxRelated.String())},
 		"reel_feed_item.json":     service.ReelFeedItem{Post: reel, ViewerReaction: "like", IsSaved: false, ViewerDisliked: false},
 		"playlist.json":           postgres.Playlist{ID: fxPlaylist, CreatorID: fxAuthor, Title: "Build logs", Description: "Every Friday", Visibility: "public", ItemCount: 4, CreatedAt: fxTime, UpdatedAt: fxTime, Kind: "user"},
 		"system_playlist.json":    postgres.Playlist{ID: fxPlaylist, CreatorID: fxViewer, Title: "Queue", Visibility: "private", ItemCount: 1, CreatedAt: fxTime, UpdatedAt: fxTime, Kind: "watch_later"},
@@ -110,10 +148,15 @@ func mtubeContracts() map[string]any {
 		"comment_heart.json":      service.CommentHeartResult{CommentID: fxComment, HeartedByAuthor: true},
 		"comment_pin.json":        service.CommentPinResult{CommentID: fxComment, PostID: fxPost, Pinned: true},
 		"upload_row.json":         upload,
-		"uploads_bulk_request.json": bulkUploadsRequest{PostIDs: []string{fxPost.String()}, Patch: struct {
-			Visibility string `json:"visibility"`
-		}{Visibility: "private"}},
-		"uploads_bulk.json":    bulkUploadsResponse{Results: []postgres.BulkVisibilityOutcome{{ID: fxPost, OK: true}, {ID: fxStream, OK: false, Error: "NOT_FOUND"}}},
+		"uploads_bulk_request.json": bulkUploadsRequest{PostIDs: []string{fxPost.String(), fxRelated.String()}, Patch: bulkPatchRequest{
+			Visibility: strp("private"), AgeRestricted: boolp(true), DefaultCommentSort: strp("top"), License: strp("standard"),
+			Tags: &[]string{"kafka"}, TagsMode: "add"}},
+		"uploads_bulk.json":                bulkUploadsResponse{Results: []service.BulkOutcome{{ID: fxPost, OK: true}, {ID: fxRelated, OK: false, Error: "INVALID_TAGS"}}},
+		"uploads_bulk_delete_request.json": bulkDeleteRequest{PostIDs: []string{fxPost.String(), fxStream.String()}},
+		"uploads_bulk_delete.json":         bulkUploadsResponse{Results: []service.BulkOutcome{{ID: fxPost, OK: true}, {ID: fxStream, OK: false, Error: "NOT_FOUND"}}},
+		"private_shares_request.json":      privateSharesRequest{UserIDs: []string{fxViewer.String()}},
+		"private_shares.json": service.PrivateSharesView{Users: []service.PrivateShareUser{{UserID: fxViewer, Username: "call.b", DisplayName: "Call B",
+			AvatarURL: "/v1/media/" + fxBanner.String() + "/serve/avatar", AddedAt: fxTime}}},
 		"live_recordings.json": liveRecordings,
 		"creator_summary.json": service.CreatorSummary{Videos: 12, Shorts: 30, Live: 2, Collections: 3, Followers: 1200},
 		"channel.json": service.ChannelView{UserID: fxAuthor, Name: "Raghu Builds", Handle: "raghu.builds", About: "Weekly builds", AvatarMediaID: nil, AvatarURL: nil,
@@ -123,6 +166,12 @@ func mtubeContracts() map[string]any {
 		"channel_update_request.json": map[string]any{"banner_media_id": fxBanner.String(), "links": []postgres.ChannelLink{{Title: "Site", URL: "https://example.com"}},
 			"contact_email": "hello@example.com", "featured_post_id": fxPost.String()},
 	}
+}
+
+// fixtureRelatedCard is the related_post block the direct read builds.
+func fixtureRelatedCard() *service.RelatedPostCard {
+	return &service.RelatedPostCard{ID: fxRelated, Title: "Thursday build", ThumbnailURL: "/v1/media/" + fxCover.String() + "/serve",
+		DurationSeconds: 640, ChannelName: "Raghu Builds"}
 }
 
 func strp(s string) *string { return &s }
@@ -166,12 +215,22 @@ func TestMTubeContracts(t *testing.T) {
 func TestMTubeRequestFixturesDecode(t *testing.T) {
 	dir := filepath.Join("testdata", "contracts", "mtube")
 	var edit updatePostRequest
-	if b, err := os.ReadFile(filepath.Join(dir, "post_edit_request.json")); err != nil || json.Unmarshal(b, &edit) != nil || edit.Title == nil {
+	if b, err := os.ReadFile(filepath.Join(dir, "post_edit_request.json")); err != nil || json.Unmarshal(b, &edit) != nil || edit.Title == nil ||
+		edit.AgeRestricted == nil || edit.RelatedPostID == nil || edit.DefaultCommentSort == nil || edit.NotifySubscribers == nil {
 		t.Fatalf("post_edit_request.json: %v", err)
 	}
 	var bulk bulkUploadsRequest
-	if b, err := os.ReadFile(filepath.Join(dir, "uploads_bulk_request.json")); err != nil || json.Unmarshal(b, &bulk) != nil || bulk.Patch.Visibility != "private" {
+	if b, err := os.ReadFile(filepath.Join(dir, "uploads_bulk_request.json")); err != nil || json.Unmarshal(b, &bulk) != nil ||
+		bulk.Patch.Visibility == nil || *bulk.Patch.Visibility != "private" || bulk.Patch.TagsMode != "add" || bulk.Patch.toService().Empty() {
 		t.Fatalf("uploads_bulk_request.json: %v", err)
+	}
+	var del bulkDeleteRequest
+	if b, err := os.ReadFile(filepath.Join(dir, "uploads_bulk_delete_request.json")); err != nil || json.Unmarshal(b, &del) != nil || len(del.PostIDs) != 2 {
+		t.Fatalf("uploads_bulk_delete_request.json: %v", err)
+	}
+	var shares privateSharesRequest
+	if b, err := os.ReadFile(filepath.Join(dir, "private_shares_request.json")); err != nil || json.Unmarshal(b, &shares) != nil || len(shares.UserIDs) != 1 {
+		t.Fatalf("private_shares_request.json: %v", err)
 	}
 	var ch updateChannelRequest
 	if b, err := os.ReadFile(filepath.Join(dir, "channel_update_request.json")); err != nil || json.Unmarshal(b, &ch) != nil || ch.Links == nil {

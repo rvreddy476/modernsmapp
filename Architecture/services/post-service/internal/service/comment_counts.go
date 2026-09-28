@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
 )
 
@@ -142,22 +143,55 @@ func (s *Service) publishCommentChange(postID, commentID uuid.UUID, parentID *uu
 // (review status, scheduled/hidden, visibility incl. private accounts and
 // blocks), so a room admits exactly the audience the post itself admits.
 func (s *Service) PostVisibleTo(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) (bool, error) {
+	p, err := s.loadVisiblePost(ctx, postID, viewerID)
+	return p != nil, err
+}
+
+// loadVisiblePost is PostVisibleTo returning the post: nil (no error) when
+// the viewer may not see it. Private sharing counts (viewerMayViewPost);
+// the age gate does not — callers that serve content add checkAgeGate.
+func (s *Service) loadVisiblePost(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) (*postgres.Post, error) {
 	p, err := s.getCachedPostBody(ctx, postID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if p == nil {
-		return false, nil
+		return nil, nil
 	}
 	if p.ReviewStatus != "" && p.ReviewStatus != "approved" {
 		if viewerID == nil || *viewerID != p.AuthorID {
-			return false, nil
+			return nil, nil
 		}
 	}
 	if hiddenFromViewer(p, viewerID) {
-		return false, nil
+		return nil, nil
 	}
-	return s.viewerMayViewPost(ctx, p, viewerID), nil
+	if !s.viewerMayViewPost(ctx, p, viewerID) {
+		return nil, nil
+	}
+	return p, nil
+}
+
+// singlePostRead is the direct read's decision for routes that hold only a
+// post id and serve its content (GET /v1/videos/:id, the comments read):
+// ErrPostNotVisible when the viewer may not see the post, an age refusal
+// (age_gate.go) when it is 18+ and they do not pass, nil otherwise.
+// readGate replaces it in tests.
+func (s *Service) singlePostRead(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) error {
+	if s.readGate != nil {
+		return s.readGate(ctx, postID, viewerID)
+	}
+	if s.pgStore == nil {
+		return ErrAuthoringStoreUnavailable
+	}
+	p, err := s.loadVisiblePost(ctx, postID, viewerID)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		return ErrPostNotVisible
+	}
+	return s.checkAgeGate(ctx, p, viewerID)
 }
 
 // PostAuthor is the author block GET /v1/posts/:id now carries, in the shape

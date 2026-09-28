@@ -431,12 +431,20 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 			authorIDs = append(authorIDs, value)
 		}
 	}
+	var privateIDs []uuid.UUID
 	for i := range posts {
 		postsByID[posts[i].ID] = &posts[i]
 		if strings.EqualFold(posts[i].ReviewStatus, "approved") {
 			addAuthor(posts[i].AuthorID)
 		}
+		if strings.EqualFold(posts[i].Visibility, "private") && posts[i].AuthorID != viewerID {
+			privateIDs = append(privateIDs, posts[i].ID)
+		}
 	}
+	// Private sharing: one lookup for the page's private posts.
+	shared := s.privateSharedSet(ctx, viewerID, privateIDs)
+	// Age-restricted posts: at most one date-of-birth lookup per batch.
+	ageOK := s.ageAllowance(ctx, &viewerID)
 	for _, story := range storiesByMedia {
 		if story != nil {
 			addAuthor(story.AuthorID)
@@ -525,7 +533,7 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 			if post == nil || !strings.EqualFold(post.ReviewStatus, "approved") {
 				continue
 			}
-			if evaluatePostMediaVisibility(viewerID, post, rels[post.AuthorID.String()]) {
+			if evaluatePostMediaVisibility(viewerID, post, rels[post.AuthorID.String()], shared[post.ID]) && ageOK(post) {
 				postAllowed = true
 				break
 			}
@@ -604,16 +612,48 @@ func (s *Service) viewerMayAccessPostMedia(ctx context.Context, viewerID, mediaI
 	if err != nil {
 		return false, err
 	}
+	shared := s.privateSharedSet(ctx, viewerID, privatePostIDs(posts, viewerID))
+	ageOK := s.ageAllowance(ctx, &viewerID)
 	for _, p := range posts {
 		rel := rels[p.AuthorID.String()]
-		if evaluatePostMediaVisibility(viewerID, p, rel) {
+		if evaluatePostMediaVisibility(viewerID, p, rel, shared[p.ID]) && ageOK(p) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, rel ViewerRelationship) bool {
+// privatePostIDs is the ids of the private posts in posts that viewerID
+// does not own: the only ones whose share list matters to a media decision.
+func privatePostIDs(posts []*postgres.Post, viewerID uuid.UUID) []uuid.UUID {
+	var out []uuid.UUID
+	for _, p := range posts {
+		if p != nil && p.AuthorID != viewerID && strings.EqualFold(p.Visibility, "private") {
+			out = append(out, p.ID)
+		}
+	}
+	return out
+}
+
+// privateSharedSet is the subset of postIDs whose share list names viewerID.
+// Fails closed: no store or a lookup error shares nothing.
+func (s *Service) privateSharedSet(ctx context.Context, viewerID uuid.UUID, postIDs []uuid.UUID) map[uuid.UUID]bool {
+	if len(postIDs) == 0 || s.privateShare == nil {
+		return map[uuid.UUID]bool{}
+	}
+	shared, err := s.privateShare.PrivateSharedPostIDs(ctx, viewerID, postIDs)
+	if err != nil {
+		slog.WarnContext(ctx, "media access: private share lookup failed; denying shared posts", "viewer_id", viewerID, "err", err)
+		return map[uuid.UUID]bool{}
+	}
+	return shared
+}
+
+// evaluatePostMediaVisibility is the per-post playback rule. shared is
+// "viewerID is on p's private share list" (private sharing, 2026-09-28),
+// consulted for a private post only, after the block / mute checks. The
+// age gate is the caller's (ageAllowance), so this stays pure.
+func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, rel ViewerRelationship, shared bool) bool {
 	if p == nil || p.AuthorID == viewerID || !strings.EqualFold(p.ReviewStatus, "approved") {
 		return p != nil && p.AuthorID == viewerID
 	}
@@ -625,10 +665,12 @@ func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, rel Viewe
 		return true
 	case "followers":
 		return rel.Follows
+	case "private":
+		return shared
 	// "circle", "trusted" and "close_friends" are deliberately absent: the
 	// audience was retired on 21 Sep (graph-service migration 012), so they
 	// fall through to author-only below.
-	default: // private, the retired close-friends values, staged, and
+	default: // the retired close-friends values, staged, and
 		// future/unknown values all fail closed
 		return false
 	}

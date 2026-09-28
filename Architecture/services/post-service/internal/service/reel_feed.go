@@ -35,8 +35,13 @@ func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int, 
 
 	// Filter out seen reels
 	seenKey := fmt.Sprintf("reel:seen:%s", userID.String())
+	// Creator Hub: age-restricted reels only for adults (age_gate.go).
+	ageOK := s.ageAllowance(ctx, &userID)
 	var filtered []*postgres.Post
 	for _, reel := range reels {
+		if !ageOK(reel) {
+			continue
+		}
 		isSeen, _ := s.rdb.SIsMember(ctx, seenKey, reel.ID.String()).Result()
 		if !isSeen {
 			filtered = append(filtered, reel)

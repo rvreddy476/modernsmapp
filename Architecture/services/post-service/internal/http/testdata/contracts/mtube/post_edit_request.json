@@ -14,5 +14,19 @@
   "allow_download": true,
   "no_comments": false,
   "made_for_kids": false,
-  "language": "en"
+  "language": "en",
+  "paid_promotion": true,
+  "altered_content": false,
+  "license": "creative_commons",
+  "allow_embedding": true,
+  "recording_date": "2026-09-20",
+  "recording_location": "Hyderabad",
+  "remix_setting": "allow_audio_only",
+  "comment_moderation": "basic",
+  "comment_access": "followers",
+  "notify_subscribers": false,
+  "age_restricted": true,
+  "hide_like_count": true,
+  "default_comment_sort": "newest",
+  "related_post_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 }

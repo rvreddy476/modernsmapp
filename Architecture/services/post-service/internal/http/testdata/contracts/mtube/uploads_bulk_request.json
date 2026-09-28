@@ -1,8 +1,28 @@
 {
   "post_ids": [
-    "11111111-1111-4111-8111-111111111111"
+    "11111111-1111-4111-8111-111111111111",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
   ],
   "patch": {
-    "visibility": "private"
+    "visibility": "private",
+    "category": null,
+    "language": null,
+    "made_for_kids": null,
+    "age_restricted": true,
+    "no_comments": null,
+    "comment_moderation": null,
+    "comment_access": null,
+    "default_comment_sort": "top",
+    "allow_embedding": null,
+    "license": "standard",
+    "remix_setting": null,
+    "recording_date": null,
+    "hide_like_count": null,
+    "altered_content": null,
+    "paid_promotion": null,
+    "tags": [
+      "kafka"
+    ],
+    "tags_mode": "add"
   }
 }
