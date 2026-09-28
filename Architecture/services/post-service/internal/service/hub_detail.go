@@ -130,10 +130,21 @@ func resolvedNotifySubscribers(p *postgres.Post) bool {
 // read applies (review, processing / scheduled, visibility incl. private
 // shares, age) and returns nil when any of them says no.
 func (s *Service) relatedPostCard(ctx context.Context, p *postgres.Post, viewerID *uuid.UUID) *RelatedPostCard {
-	if p == nil || p.RelatedPostID == nil || s.pgStore == nil {
+	if p == nil || p.RelatedPostID == nil {
 		return nil
 	}
-	rp, err := s.getCachedPostBody(ctx, *p.RelatedPostID)
+	return s.viewablePostCard(ctx, *p.RelatedPostID, viewerID)
+}
+
+// viewablePostCard is the card for any post the viewer may open, nil when
+// one of the direct read's gates says no. Shared by the related post and by
+// every end-screen / card video target (end_screens.go), so there is one
+// answer to "may this viewer be shown this post".
+func (s *Service) viewablePostCard(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) *RelatedPostCard {
+	if s.pgStore == nil {
+		return nil
+	}
+	rp, err := s.getCachedPostBody(ctx, postID)
 	if err != nil || rp == nil {
 		return nil
 	}

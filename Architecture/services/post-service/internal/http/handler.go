@@ -339,6 +339,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/v1/posts/:postId/end-screens", h.GetEndScreens)
 	r.POST("/v1/posts/:postId/cards", h.SaveVideoCards)
 	r.GET("/v1/posts/:postId/cards", h.GetVideoCards)
+	// Impressions and clicks (2026-09-29, end_screens_handler.go): signed-in
+	// or anonymous, one of each per viewer per element per day. 204.
+	r.POST("/v1/posts/:postId/end-screens/:elementId/impression", h.RecordEndScreenImpression)
+	r.POST("/v1/posts/:postId/end-screens/:elementId/click", h.RecordEndScreenClick)
+	r.POST("/v1/posts/:postId/cards/:cardId/impression", h.RecordCardImpression)
+	r.POST("/v1/posts/:postId/cards/:cardId/click", h.RecordCardClick)
 	r.PUT("/v1/posts/:postId/membership", h.SetPostMembershipGate)
 
 	// Watch Progress. The static segments (continue-watching, history) are
@@ -1161,6 +1167,10 @@ func (h *Handler) React(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
+		return
+	}
 	if err := h.svc.React(c.Request.Context(), postID, userID, req.Reaction); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -1247,6 +1257,10 @@ func (h *Handler) GetPoll(c *gin.Context) {
 		viewerUUID = &id
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, viewerUUID) {
+		return
+	}
 	poll, err := h.svc.GetPoll(c.Request.Context(), postID, viewerUUID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -1291,6 +1305,10 @@ func (h *Handler) CastVote(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
+		return
+	}
 	if err := h.svc.CastVote(c.Request.Context(), postID, optionID, userID); err != nil {
 		h.writePollVoteError(c, err)
 		return
@@ -1375,6 +1393,10 @@ func (h *Handler) GetMyReaction(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
+		return
+	}
 	reaction, err := h.svc.GetMyReaction(c.Request.Context(), postID, userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -1791,9 +1813,17 @@ func (h *Handler) ToggleCommentDislike(c *gin.Context) {
 
 	result, err := h.svc.ToggleCommentDislike(c.Request.Context(), commentID, userID)
 	if err != nil {
+		// The post's read gate runs first in the service (2026-09-29): a
+		// comment under a post the caller may not open is the like toggle's
+		// 404; an 18+ post answers the detail's age codes.
+		if writeReadGateError(c, err) {
+			return
+		}
 		switch err.Error() {
 		case "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comment dislike toggles, please slow down", nil)
+		case "COMMENT_NOT_FOUND":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
@@ -1989,6 +2019,10 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
+		return
+	}
 	result, err := h.svc.ToggleReaction(c.Request.Context(), postID, userID, req.ReactionType)
 	if err != nil {
 		switch {
@@ -2019,6 +2053,10 @@ func (h *Handler) GetReactionCounts(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
+		return
+	}
 	counts, err := h.svc.GetReactionCounts(c.Request.Context(), postID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -2058,6 +2096,10 @@ func (h *Handler) SaveItem(c *gin.Context) {
 		return
 	}
 
+	// The saved post must be one the caller may open (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, targetID, &userID) {
+		return
+	}
 	item, err := h.svc.SaveItem(c.Request.Context(), userID, req.TargetType, targetID, req.CollectionName)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -2569,6 +2611,10 @@ func (h *Handler) CastPollVote(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
+		return
+	}
 	if err := h.svc.CastPollVote(c.Request.Context(), postID, req.OptionID, userID); err != nil {
 		h.writePollVoteError(c, err)
 		return
@@ -2580,6 +2626,10 @@ func (h *Handler) GetPollResults(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
 		return
 	}
 	results, err := h.svc.GetPollResults(c.Request.Context(), postID)
@@ -2606,6 +2656,10 @@ func (h *Handler) CreateTune(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
 		return
 	}
 	if err := h.svc.CreateTune(c.Request.Context(), userID, postID); err != nil {
@@ -2642,6 +2696,10 @@ func (h *Handler) GetTune(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
 		return
 	}
 	tuned, err := h.svc.HasTune(c.Request.Context(), userID, postID)
@@ -2802,8 +2860,14 @@ func (h *Handler) GetSeriesEpisodes(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil)
 		return
 	}
-	items, err := h.svc.GetSeriesEpisodes(c.Request.Context(), seriesID)
+	// The series owner gets every episode; everyone else loses the ones
+	// they may not open (service/series_visibility.go). 404 for no series.
+	items, err := h.svc.GetSeriesEpisodes(c.Request.Context(), seriesID, optionalCallerID(c))
 	if err != nil {
+		if errors.Is(err, service.ErrFlickSeriesNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "series not found", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -2901,6 +2965,10 @@ func (h *Handler) GetRemixToken(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid post id", nil)
+		return
+	}
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
 		return
 	}
 	result, err := h.svc.GetRemixToken(c.Request.Context(), postID)
@@ -3064,6 +3132,10 @@ func (h *Handler) ListReposters(c *gin.Context) {
 	}
 	cursor := c.Query("cursor")
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
+		return
+	}
 	result, err := h.svc.ListReposters(c.Request.Context(), postID, limit, cursor)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

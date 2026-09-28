@@ -228,13 +228,21 @@ func (s *Service) AddEpisodeToVideoSeries(ctx context.Context, callerID, seriesI
 // GetVideoSeriesEpisodes returns the episodes of a video series, behind the
 // same is_public gate as the series itself: reading the contents of a private
 // series is reading the series, and the two endpoints must not disagree.
-// Only the creator sees episodes whose post is deleted or still scheduled.
+// Only the creator sees episodes whose post is deleted or still scheduled,
+// and (2026-09-29) only the creator sees episodes the caller may not open:
+// a private or followers-only episode, an 18+ one for someone who does not
+// pass the age gate (series_visibility.go).
 func (s *Service) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID, callerID *uuid.UUID) ([]postgres.VideoSeriesEpisode, error) {
 	vs, err := s.GetVideoSeries(ctx, seriesID, callerID)
 	if err != nil {
 		return nil, err
 	}
-	return s.videoSeries.GetVideoSeriesEpisodes(ctx, seriesID, isVideoSeriesOwner(vs, callerID))
+	owner := isVideoSeriesOwner(vs, callerID)
+	eps, err := s.videoSeries.GetVideoSeriesEpisodes(ctx, seriesID, owner)
+	if err != nil || owner {
+		return eps, err
+	}
+	return s.visibleVideoEpisodes(ctx, eps, callerID), nil
 }
 
 func isVideoSeriesOwner(vs *postgres.VideoSeries, callerID *uuid.UUID) bool {
@@ -329,6 +337,12 @@ func (s *Service) GetPostSeries(ctx context.Context, postID uuid.UUID, callerID 
 		episodes, err := s.videoSeries.GetVideoSeriesEpisodes(ctx, vs.ID, owner)
 		if err != nil {
 			return nil, err
+		}
+		if !owner {
+			// The same drop as GET /v1/video-series/:id/episodes: an
+			// episode the caller may not open is not listed, and is never
+			// a prev / next either.
+			episodes = s.visibleVideoEpisodes(ctx, episodes, callerID)
 		}
 		current, ok := findEpisodeByPost(episodes, postID)
 		if !ok {

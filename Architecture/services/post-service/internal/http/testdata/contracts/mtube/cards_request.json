@@ -1,0 +1,36 @@
+{
+  "cards": [
+    {
+      "type": "video",
+      "target_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "target_url": null,
+      "title": "Watch part two",
+      "teaser_text": "The part two build",
+      "appear_at_ms": 83000
+    },
+    {
+      "type": "playlist",
+      "target_id": "88888888-8888-4888-8888-888888888888",
+      "target_url": null,
+      "title": "All the builds",
+      "teaser_text": null,
+      "appear_at_ms": 240000
+    },
+    {
+      "type": "external_link",
+      "target_id": null,
+      "target_url": "https://example.com/parts",
+      "title": "Parts list",
+      "teaser_text": null,
+      "appear_at_ms": 400000
+    },
+    {
+      "type": "poll",
+      "target_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "target_url": null,
+      "title": "Vote",
+      "teaser_text": null,
+      "appear_at_ms": 600000
+    }
+  ]
+}

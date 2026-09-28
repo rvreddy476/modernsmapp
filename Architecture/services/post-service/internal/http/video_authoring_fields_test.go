@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,11 @@ import (
 //   - appear_at_ms: -5000 — a timestamp that never arrives;
 //   - an end screen whose window closes before it opens.
 //
+// Timing moved on 2026-09-29: a window that closes before it opens, a
+// negative start and an appear_at_ms outside the video are now the
+// contract's 422 END_SCREEN_TIMING / CARD_TIMING, checked against the
+// video's length by the service (end_screens_routes_test.go).
+//
 // media_chapters.source was the other half: a CHECK constraint with no
 // handler validation, so "bogus" reached Postgres and came back as a 500
 // naming media_chapters_source_check — exactly the shape the card enum fixed.
@@ -40,7 +46,6 @@ func TestSaveVideoCardsRejectsBadFields(t *testing.T) {
 		{"no title", map[string]any{"type": "video", "appear_at_ms": 1000}, "INVALID_TITLE"},
 		{"blank title", map[string]any{"type": "video", "title": "   ", "appear_at_ms": 1000}, "INVALID_TITLE"},
 		{"target_id is not a uuid", map[string]any{"type": "video", "title": "t", "target_id": "not-a-uuid"}, "INVALID_TARGET_ID"},
-		{"negative appear_at_ms", map[string]any{"type": "video", "title": "t", "appear_at_ms": -5000}, "INVALID_TIMING"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,9 +131,9 @@ func TestSaveEndScreensRejectsBadFields(t *testing.T) {
 		code   string
 	}{
 		{"target_id is not a uuid", map[string]any{"type": "video", "title": "t", "target_id": "not-a-uuid", "position": pos, "start_ms": 0, "end_ms": 100}, "INVALID_TARGET_ID"},
-		{"negative start_ms", map[string]any{"type": "video", "title": "t", "position": pos, "start_ms": -100, "end_ms": 100}, "INVALID_TIMING"},
-		{"inverted window", map[string]any{"type": "video", "title": "t", "position": pos, "start_ms": 9000, "end_ms": 1000}, "INVALID_TIMING"},
-		{"empty window", map[string]any{"type": "video", "title": "t", "position": pos, "start_ms": 5000, "end_ms": 5000}, "INVALID_TIMING"},
+		{"title over 60 runes", map[string]any{"type": "external_link", "title": strings.Repeat("é", 61), "position": pos, "start_ms": 0, "end_ms": 100}, "INVALID_TITLE"},
+		{"unknown video_mode", map[string]any{"type": "video", "video_mode": "random", "position": pos, "start_ms": 0, "end_ms": 100}, "INVALID_VIDEO_MODE"},
+		{"echoed id is not a uuid", map[string]any{"id": "nope", "type": "video", "position": pos, "start_ms": 0, "end_ms": 100}, "INVALID_ID"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

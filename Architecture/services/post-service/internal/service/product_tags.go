@@ -121,9 +121,12 @@ func (s *Service) DeleteProductTag(ctx context.Context, tagID, callerID uuid.UUI
 // move). Errors propagate when the underlying UPDATE fails.
 func (s *Service) RecordProductTagImpression(
 	ctx context.Context,
-	tagID uuid.UUID,
+	postID, tagID uuid.UUID,
 	ipHash string,
 ) error {
+	if err := s.requireTagOnPost(ctx, postID, tagID); err != nil {
+		return err
+	}
 	if !s.AcceptProductTagImpression(ctx, tagID, ipHash) {
 		return nil
 	}
@@ -134,9 +137,12 @@ func (s *Service) RecordProductTagImpression(
 // impression dedup (15m vs 1h) — see product_tag_dedup.go.
 func (s *Service) RecordProductTagClick(
 	ctx context.Context,
-	tagID uuid.UUID,
+	postID, tagID uuid.UUID,
 	ipHash string,
 ) error {
+	if err := s.requireTagOnPost(ctx, postID, tagID); err != nil {
+		return err
+	}
 	if !s.AcceptProductTagClick(ctx, tagID, ipHash) {
 		return nil
 	}
@@ -150,3 +156,20 @@ func (s *Service) RecordProductTagClick(
 // admin overrides might want to distinguish "wrong user" from
 // "permission denied for this action".
 var ErrProductTagNotAuthorized = errors.New("caller is not the post's author")
+
+// requireTagOnPost: the event names an active tag of the post whose read
+// gate the handler ran (2026-09-29); anything else is postgres.ErrTagNotFound
+// (404), checked before the dedupe so a bad pair never consumes a window.
+func (s *Service) requireTagOnPost(ctx context.Context, postID, tagID uuid.UUID) error {
+	if s.pgStore == nil {
+		return ErrAuthoringStoreUnavailable
+	}
+	ok, err := s.pgStore.ProductTagOnPost(ctx, postID, tagID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return postgres.ErrTagNotFound
+	}
+	return nil
+}

@@ -134,6 +134,17 @@ WHERE id = $1`
 	return t, nil
 }
 
+// ProductTagOnPost reports whether tagID is an active tag of postID — the
+// impression / click routes name both, and the post's read gate is only a
+// gate if the tag really belongs to the post it was asked through.
+func (s *Store) ProductTagOnPost(ctx context.Context, postID, tagID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM post_product_tags WHERE id = $1 AND post_id = $2 AND is_active = TRUE)`,
+		tagID, postID).Scan(&ok)
+	return ok, err
+}
+
 // SoftDeleteProductTag flips is_active=false. Real delete (DELETE FROM)
 // would break audit + creator-analytics historical reads.
 func (s *Store) SoftDeleteProductTag(ctx context.Context, tagID uuid.UUID) error {

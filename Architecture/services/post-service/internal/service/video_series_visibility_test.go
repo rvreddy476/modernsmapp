@@ -158,6 +158,9 @@ func (f *fakeVideoSeriesStore) DeleteVideoSeriesEpisodeByPost(_ context.Context,
 func newSeriesService(store videoSeriesStore) *Service {
 	s := &Service{}
 	s.videoSeries = store
+	// Every episode post is readable here; the per-episode drop (2026-09-29)
+	// is pinned in series_visibility_test.go.
+	s.readGate = func(context.Context, uuid.UUID, *uuid.UUID) error { return nil }
 	return s
 }
 

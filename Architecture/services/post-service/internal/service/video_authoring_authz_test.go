@@ -105,12 +105,14 @@ func TestPostAuthoringWritesRefuseNonAuthor(t *testing.T) {
 		call func(s *Service) error
 	}{
 		{"SaveVideoCards", func(s *Service) error {
-			return s.SaveVideoCards(context.Background(), attacker, postID,
-				[]postgres.VideoCard{{PostID: postID, Type: "video", Title: "pwned"}})
+			_, err := s.SaveVideoCards(context.Background(), attacker, postID,
+				[]VideoCardInput{{Type: "video", Title: "pwned"}})
+			return err
 		}},
 		{"SaveEndScreens", func(s *Service) error {
-			return s.SaveEndScreens(context.Background(), attacker, postID,
-				[]postgres.EndScreen{{PostID: postID, Type: "video"}})
+			_, err := s.SaveEndScreens(context.Background(), attacker, postID,
+				[]EndScreenInput{{Type: "video"}})
+			return err
 		}},
 		{"SaveChapters", func(s *Service) error {
 			return s.SaveChapters(context.Background(), attacker, postID,
@@ -136,8 +138,8 @@ func TestPostAuthoringWritesRefuseNonAuthor(t *testing.T) {
 // must stop there.
 func TestPostAuthoringWritesRefuseMissingPost(t *testing.T) {
 	store := &fakeAuthoringStore{authorErr: pgx.ErrNoRows}
-	err := newAuthoringService(store).SaveVideoCards(context.Background(), uuid.New(), uuid.New(),
-		[]postgres.VideoCard{{Type: "video", Title: "x"}})
+	_, err := newAuthoringService(store).SaveVideoCards(context.Background(), uuid.New(), uuid.New(),
+		[]VideoCardInput{{Type: "video", Title: "x"}})
 	if !errors.Is(err, ErrPostNotFound) {
 		t.Fatalf("missing post: err=%v want ErrPostNotFound", err)
 	}
@@ -159,7 +161,7 @@ func TestPostAuthoringWritesFailClosedOnLookupError(t *testing.T) {
 
 // An unwired ownership store refuses rather than writing unchecked.
 func TestPostAuthoringWritesFailClosedWithoutStore(t *testing.T) {
-	err := (&Service{}).SaveEndScreens(context.Background(), uuid.New(), uuid.New(), nil)
+	_, err := (&Service{}).SaveEndScreens(context.Background(), uuid.New(), uuid.New(), nil)
 	if !errors.Is(err, ErrAuthoringStoreUnavailable) {
 		t.Fatalf("no ownership store: err=%v want ErrAuthoringStoreUnavailable", err)
 	}

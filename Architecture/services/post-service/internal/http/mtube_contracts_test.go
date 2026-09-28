@@ -185,7 +185,11 @@ func TestMTubeContracts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for name, value := range mtubeContracts() {
+	all := mtubeContracts()
+	for name, value := range endScreenContracts() {
+		all[name] = value
+	}
+	for name, value := range all {
 		t.Run(name, func(t *testing.T) {
 			got, err := json.MarshalIndent(value, "", "  ")
 			if err != nil {

@@ -74,6 +74,10 @@ func (h *Handler) ReactToReel(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, &userID) {
+		return
+	}
 	if err := h.svc.ReactToReel(c.Request.Context(), reelID, userID, req.Reaction); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -116,6 +120,10 @@ func (h *Handler) GetReelReaction(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, &userID) {
+		return
+	}
 	reaction, err := h.svc.GetReelReaction(c.Request.Context(), reelID, userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -148,6 +156,10 @@ func (h *Handler) AddReelComment(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, &userID) {
+		return
+	}
 	commentID, err := h.svc.AddReelComment(c.Request.Context(), reelID, userID, req.Text)
 	if err != nil {
 		switch {
@@ -179,6 +191,10 @@ func (h *Handler) ListReelComments(c *gin.Context) {
 		limit = l
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, optionalCallerID(c)) {
+		return
+	}
 	comments, err := h.svc.ListReelComments(c.Request.Context(), reelID, limit)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -213,6 +229,10 @@ func (h *Handler) ShareReel(c *gin.Context) {
 		req.ShareType = "direct"
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, &userID) {
+		return
+	}
 	if err := h.svc.ShareReel(c.Request.Context(), reelID, userID, req.ShareType); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -234,6 +254,10 @@ func (h *Handler) SaveReel(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, &userID) {
+		return
+	}
 	if err := h.svc.SaveReel(c.Request.Context(), reelID, userID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -276,6 +300,10 @@ func (h *Handler) IsReelSaved(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, &userID) {
+		return
+	}
 	saved, err := h.svc.IsReelSaved(c.Request.Context(), reelID, userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -308,6 +336,10 @@ func (h *Handler) GetReelCounts(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, reelID, optionalCallerID(c)) {
+		return
+	}
 	counts, err := h.svc.GetReelCounts(c.Request.Context(), reelID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -324,6 +356,12 @@ func (h *Handler) BatchGetReelCounts(c *gin.Context) {
 		return
 	}
 
+	// Each id now runs the post detail's read gate, so the batch is bounded.
+	if len(req.ReelIDs) > maxReelCountsBatch {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"at most 100 reel_ids per request", nil)
+		return
+	}
 	ids := make([]uuid.UUID, 0, len(req.ReelIDs))
 	for _, raw := range req.ReelIDs {
 		id, err := uuid.Parse(raw)
@@ -334,6 +372,9 @@ func (h *Handler) BatchGetReelCounts(c *gin.Context) {
 		ids = append(ids, id)
 	}
 
+	// A reel the caller may not open is left out of the map, as if unknown
+	// (2026-09-29): its counts were answered for any id.
+	ids = h.svc.ViewablePostIDs(c.Request.Context(), ids, optionalCallerID(c))
 	counts, err := h.svc.BatchGetReelCounts(c.Request.Context(), ids)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -392,3 +433,7 @@ func (h *Handler) GetUserReelLikes(c *gin.Context) {
 
 	api.JSON(c.Writer, http.StatusOK, reelIDs, nil)
 }
+
+// maxReelCountsBatch bounds POST /v1/reels/batch/counts: every id runs the
+// post detail's read gate.
+const maxReelCountsBatch = 100

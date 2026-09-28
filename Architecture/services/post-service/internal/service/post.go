@@ -180,6 +180,16 @@ type Service struct {
 	// bulkDelete for DeletePost in the bulk-delete route (post_edit.go).
 	readGate   func(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) error
 	bulkDelete func(ctx context.Context, postID, callerID uuid.UUID) error
+
+	// End screens and cards (end_screens.go, 2026-09-29): the store slice,
+	// the one-per-viewer-per-day dedupe behind the impression / click
+	// counters (Redis SETNX; nil = count every event), and the target-post
+	// resolver seam tests use in place of viewablePostCard. flickSeries is
+	// the reels series read the episode filter needs (series_visibility.go).
+	endScreens   endScreenStore
+	statDedupe   statDeduper
+	postCardSeam func(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) *RelatedPostCard
+	flickSeries  flickSeriesStore
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -202,8 +212,11 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.creatorComments = pg
 		svc.liveVOD = pg
 		svc.privateShare = pg
+		svc.endScreens = pg
+		svc.flickSeries = pg
 	}
 	if rdb != nil {
+		svc.statDedupe = redisStatDeduper{rdb: rdb}
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
 		// comment_count is not sharded: PostgreSQL post_engagement_counts is
 		// written directly, once per transition (store/postgres/comment_counts.go).
@@ -2325,6 +2338,12 @@ type CommentDislikeToggleResult struct {
 
 // ToggleCommentDislike executes the atomic Lua toggle for comment dislikes with mutual exclusion.
 func (s *Service) ToggleCommentDislike(ctx context.Context, commentID, userID uuid.UUID) (*CommentDislikeToggleResult, error) {
+	// The post's read gate first (2026-09-29): the like toggle already
+	// refused comments under a post the viewer may not open; the dislike
+	// did not, and its counts answered for private and 18+ posts.
+	if err := s.gateCommentPost(ctx, commentID, &userID); err != nil {
+		return nil, err
+	}
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:comment_like:%s", userID), engagement.CommentLikeLimitPerHour, time.Hour) {
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
@@ -2814,34 +2833,16 @@ func (s *Service) loadPostForEngagement(ctx context.Context, postID, viewerID uu
 	if post == nil {
 		return nil, ErrPostNotFound
 	}
-	if post.AuthorID == viewerID {
-		return post, nil
-	}
-	// Account-level gate (private accounts) before the per-post one; see
-	// viewerMayViewPost. Fail-closed.
-	if !s.canViewAuthor(ctx, &viewerID, post.AuthorID) {
+	// One visibility rule (2026-09-29): this used to restate
+	// viewerMayViewPost without 'unlisted' and without the private share
+	// list, so a viewer the detail let in (an unlisted link, a user a
+	// private post is shared with) was refused every engagement — while
+	// the routes gated by the detail's gate let them through. Same fail-
+	// closed answers: an unknown value or a graph outage denies.
+	if !s.viewerMayViewPost(ctx, post, &viewerID) {
 		return nil, ErrPostNotVisible
 	}
-	switch strings.ToLower(post.Visibility) {
-	case "", "public":
-		return post, nil
-	case "private":
-		return nil, ErrPostNotVisible
-	case "followers", "circle":
-		follows, err := s.checkViewerFollowsAuthor(ctx, viewerID, post.AuthorID)
-		if err != nil {
-			log.Printf("Warning: visibility check graph lookup failed; rejecting: %v", err)
-			return nil, ErrPostNotVisible
-		}
-		if !follows {
-			return nil, ErrPostNotVisible
-		}
-		return post, nil
-	default:
-		// Unknown visibility value: treat as private (defense in
-		// depth — a typo in a migration shouldn't open up engagement).
-		return nil, ErrPostNotVisible
-	}
+	return post, nil
 }
 
 // viewerMayViewPost applies the visibility policy to an ALREADY-LOADED post
@@ -3207,7 +3208,16 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 	return nil
 }
 
-// PublishVideo publishes a video post, checking processing status first.
+// PublishVideo is POST /v1/videos/:videoId/publish: a SCHEDULED video goes
+// live now, keeping the visibility its creator chose (PublishScheduled, the
+// same flip "publish now" and the schedule worker make).
+//
+// It used to UPDATE visibility = 'public' on any post — a private or
+// unlisted video, or one staged for review, went public on one call
+// (2026-09-29 audit). A post that is already live is left exactly as it is
+// and the call answers 200, as before. No client calls this route today: the
+// upload studio publishes through the create path and PATCH
+// /v1/posts/:id/schedule, so nothing relied on the old flip.
 func (s *Service) PublishVideo(ctx context.Context, postID, userID uuid.UUID) error {
 	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
 	if err != nil {
@@ -3226,7 +3236,10 @@ func (s *Service) PublishVideo(ctx context.Context, postID, userID uuid.UUID) er
 		return fmt.Errorf("video not ready: current status is %s", vm.UploadStatus)
 	}
 
-	return s.pgStore.PublishPost(ctx, postID)
+	if _, err := s.PublishScheduled(ctx, postID, &userID, false); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetReactionCounts returns the breakdown of reaction counts for a post.

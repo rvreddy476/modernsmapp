@@ -27,11 +27,12 @@ import (
 // listed by the function that owns them, not by line number, so ordinary edits
 // above them do not silently re-arm or disarm the guard.
 var exemptFromOrdering = map[string]string{
-	"PostIDsByMediaID":   "reverse lookup: returns post ids, not carousel order",
-	"PostIDsByMediaIDs":  "reverse lookup: returns post ids, not carousel order",
-	"OrphanedDraftMedia": "NOT EXISTS existence check: selects no post_media column and returns none",
-	"PurgeUser":          "DELETE, not a read: erases post_media rows for a purged user, returns nothing to order",
-	"PurgePost":          "purge: unreferenced-media existence check and DELETE of a purged post's post_media rows, returns media ids not carousel order",
+	"PostIDsByMediaID":    "reverse lookup: returns post ids, not carousel order",
+	"PostIDsByMediaIDs":   "reverse lookup: returns post ids, not carousel order",
+	"OrphanedDraftMedia":  "NOT EXISTS existence check: selects no post_media column and returns none",
+	"PurgeUser":           "DELETE, not a read: erases post_media rows for a purged user, returns nothing to order",
+	"PurgePost":           "purge: unreferenced-media existence check and DELETE of a purged post's post_media rows, returns media ids not carousel order",
+	"GetEndScreenSubject": "aggregate: MAX of the attached video durations, returns one number not carousel order",
 }
 
 var (

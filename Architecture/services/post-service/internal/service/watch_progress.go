@@ -209,35 +209,11 @@ func (s *Service) SaveChapters(ctx context.Context, callerID, postID uuid.UUID, 
 	return s.pgStore.SaveChapters(ctx, postID, chapters)
 }
 
-// GetChapters delegates to the store.
+// GetChapters delegates to the store. The caller has run the post's read
+// gate (GET /v1/posts/:postId/chapters).
 func (s *Service) GetChapters(ctx context.Context, postID uuid.UUID) ([]postgres.MediaChapter, error) {
+	if s.pgStore == nil {
+		return nil, ErrAuthoringStoreUnavailable
+	}
 	return s.pgStore.GetChapters(ctx, postID)
-}
-
-// SaveEndScreens replaces a post's end screens after authorising the caller
-// as the post's author. Full replace: see SaveChapters.
-func (s *Service) SaveEndScreens(ctx context.Context, callerID, postID uuid.UUID, screens []postgres.EndScreen) error {
-	if err := s.requirePostAuthor(ctx, callerID, postID); err != nil {
-		return err
-	}
-	return s.pgStore.SaveEndScreens(ctx, postID, screens)
-}
-
-// GetEndScreens delegates to the store.
-func (s *Service) GetEndScreens(ctx context.Context, postID uuid.UUID) ([]postgres.EndScreen, error) {
-	return s.pgStore.GetEndScreens(ctx, postID)
-}
-
-// SaveVideoCards replaces a post's cards after authorising the caller as the
-// post's author. Full replace: see SaveChapters.
-func (s *Service) SaveVideoCards(ctx context.Context, callerID, postID uuid.UUID, cards []postgres.VideoCard) error {
-	if err := s.requirePostAuthor(ctx, callerID, postID); err != nil {
-		return err
-	}
-	return s.pgStore.SaveVideoCards(ctx, postID, cards)
-}
-
-// GetVideoCards delegates to the store.
-func (s *Service) GetVideoCards(ctx context.Context, postID uuid.UUID) ([]postgres.VideoCard, error) {
-	return s.pgStore.GetVideoCards(ctx, postID)
 }

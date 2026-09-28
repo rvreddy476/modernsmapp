@@ -369,3 +369,46 @@ CREATE TABLE IF NOT EXISTS post_private_shares (
     PRIMARY KEY (post_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_post_private_shares_user ON post_private_shares (user_id);
+
+-- End screens v2 (migration 054): video_mode, the 'channel' type, and the
+-- per-day impression / click tables. video_end_screens and video_cards are
+-- created by migration 012, which runs AFTER this file, so on a fresh
+-- database this block is skipped and 054 does the work; on an existing one
+-- it is the same idempotent DDL.
+DO $$
+BEGIN
+    IF to_regclass('public.video_end_screens') IS NOT NULL THEN
+        ALTER TABLE video_end_screens ADD COLUMN IF NOT EXISTS video_mode TEXT NOT NULL DEFAULT 'specific';
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'video_end_screens_video_mode_check') THEN
+            ALTER TABLE video_end_screens ADD CONSTRAINT video_end_screens_video_mode_check
+                CHECK (video_mode IN ('specific', 'latest', 'popular'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                       WHERE conname = 'video_end_screens_type_check'
+                         AND pg_get_constraintdef(oid) LIKE '%''channel''%') THEN
+            ALTER TABLE video_end_screens DROP CONSTRAINT IF EXISTS video_end_screens_type_check;
+            ALTER TABLE video_end_screens ADD CONSTRAINT video_end_screens_type_check
+                CHECK (type IN ('video', 'playlist', 'channel_subscribe', 'channel', 'external_link'));
+        END IF;
+        CREATE TABLE IF NOT EXISTS end_screen_stats (
+            post_id     UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            element_id  UUID NOT NULL REFERENCES video_end_screens(id) ON DELETE CASCADE,
+            day         DATE NOT NULL,
+            impressions INT  NOT NULL DEFAULT 0,
+            clicks      INT  NOT NULL DEFAULT 0,
+            PRIMARY KEY (element_id, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_end_screen_stats_post_day ON end_screen_stats (post_id, day);
+    END IF;
+    IF to_regclass('public.video_cards') IS NOT NULL THEN
+        CREATE TABLE IF NOT EXISTS card_stats (
+            post_id     UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            card_id     UUID NOT NULL REFERENCES video_cards(id) ON DELETE CASCADE,
+            day         DATE NOT NULL,
+            impressions INT  NOT NULL DEFAULT 0,
+            clicks      INT  NOT NULL DEFAULT 0,
+            PRIMARY KEY (card_id, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_card_stats_post_day ON card_stats (post_id, day);
+    END IF;
+END $$;

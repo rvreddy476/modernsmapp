@@ -107,12 +107,16 @@ func (h *Handler) CreateProductTag(c *gin.Context) {
 
 // ListProductTagsByPost — GET /v1/posts/:postId/product-tags
 //
-// Public read — the player calls this on every open. Visibility gating
-// (private post → only follower etc.) is done by the same upstream
-// middleware that gates the post itself, not here.
+// Public read — the player calls this on every open. It said visibility
+// gating was "done upstream"; nothing did, so a private post's tags answered
+// anyone. The post detail's read gate now runs here (read_gate.go,
+// 2026-09-29).
 func (h *Handler) ListProductTagsByPost(c *gin.Context) {
 	postID, ok := parsePathUUID(c, "postId")
 	if !ok {
+		return
+	}
+	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
 		return
 	}
 	tags, err := h.svc.ListProductTagsByPost(c.Request.Context(), postID)
@@ -176,17 +180,17 @@ func (h *Handler) DeleteProductTag(c *gin.Context) {
 // Player view event. Unauthenticated path — gateway rate-limit (H5)
 // throttles aggregate traffic, and per-(tag, IP) dedup in the service
 // layer prevents a single viewer's repeat watches from inflating
-// counts. We don't validate that postId matches the tag's post; the
-// tag ID alone is sufficient.
+// counts. Since 2026-09-29 the post detail's read gate runs on postId and
+// the tag must be one of postId's active tags (404 otherwise) — without the
+// match, gating postId would be a gate any tag id walks around.
 func (h *Handler) RecordProductTagImpression(c *gin.Context) {
-	tagID, ok := parsePathUUID(c, "tagId")
+	postID, tagID, ok := h.gateProductTagEvent(c)
 	if !ok {
 		return
 	}
 	ipHash := hashClientIP(c)
-	if err := h.svc.RecordProductTagImpression(c.Request.Context(), tagID, ipHash); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer,
-			http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+	if err := h.svc.RecordProductTagImpression(c.Request.Context(), postID, tagID, ipHash); err != nil {
+		writeProductTagError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -194,16 +198,16 @@ func (h *Handler) RecordProductTagImpression(c *gin.Context) {
 
 // RecordProductTagClick — POST /v1/posts/:postId/product-tags/:tagId/click
 func (h *Handler) RecordProductTagClick(c *gin.Context) {
-	tagID, ok := parsePathUUID(c, "tagId")
+	postID, tagID, ok := h.gateProductTagEvent(c)
 	if !ok {
 		return
 	}
 	ipHash := hashClientIP(c)
-	if err := h.svc.RecordProductTagClick(c.Request.Context(), tagID, ipHash); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer,
-			http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+	if err := h.svc.RecordProductTagClick(c.Request.Context(), postID, tagID, ipHash); err != nil {
+		writeProductTagError(c, err)
 		return
 	}
+
 	c.Status(http.StatusNoContent)
 }
 
@@ -282,4 +286,21 @@ func writeProductTagError(c *gin.Context, err error) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 	}
+}
+
+// gateProductTagEvent parses the impression / click path and runs the post
+// detail's read gate on the post (read_gate.go). false: answered.
+func (h *Handler) gateProductTagEvent(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {
+	postID, ok := parsePathUUID(c, "postId")
+	if !ok {
+		return uuid.Nil, uuid.Nil, false
+	}
+	tagID, ok := parsePathUUID(c, "tagId")
+	if !ok {
+		return uuid.Nil, uuid.Nil, false
+	}
+	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
+		return uuid.Nil, uuid.Nil, false
+	}
+	return postID, tagID, true
 }

@@ -44,10 +44,6 @@ func (s *Service) AddEpisodeToSeries(ctx context.Context, userID, seriesID, post
 	return s.pgStore.AddEpisodeToSeries(ctx, seriesID, postID, episodeNum)
 }
 
-func (s *Service) GetSeriesEpisodes(ctx context.Context, seriesID uuid.UUID) ([]postgres.FlickSeriesItem, error) {
-	return s.pgStore.GetSeriesEpisodes(ctx, seriesID)
-}
-
 func (s *Service) FollowSeries(ctx context.Context, userID, seriesID uuid.UUID) error {
 	return s.pgStore.FollowSeries(ctx, seriesID, userID)
 }

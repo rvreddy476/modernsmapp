@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -66,13 +65,14 @@ func writeVideoAuthoringError(c *gin.Context, err error) {
 }
 
 // The two type enums. They are NOT the same list and must not be unified:
-// cards can point at a poll, end screens can offer a channel subscribe.
-// Both mirror the CHECK constraints in migrations/012_posttube_features.sql;
+// cards can point at a poll, end screens can offer a channel subscribe or
+// another channel. Both mirror the CHECK constraints in
+// migrations/012_posttube_features.sql (end screens widened by 054);
 // validating here turns a constraint violation (500) into a 400 that names
 // the bad value.
 var (
-	videoCardTypeList = []string{"video", "playlist", "poll", "external_link"}
-	endScreenTypeList = []string{"video", "playlist", "channel_subscribe", "external_link"}
+	videoCardTypeList = service.VideoCardTypes
+	endScreenTypeList = service.EndScreenTypes
 
 	validVideoCardTypes = sliceToSet(videoCardTypeList)
 	validEndScreenTypes = sliceToSet(endScreenTypeList)
@@ -857,6 +857,11 @@ func (h *Handler) GetChapters(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
+	// The detail's gate (2026-09-29): a private post's chapter titles are
+	// its content.
+	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
+		return
+	}
 	chapters, err := h.svc.GetChapters(c.Request.Context(), postID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -866,202 +871,6 @@ func (h *Handler) GetChapters(c *gin.Context) {
 		chapters = []postgres.MediaChapter{}
 	}
 	api.JSON(c.Writer, http.StatusOK, chapters, nil)
-}
-
-// ─── End Screens ──────────────────────────────────────────────────────────────
-
-type endScreenInput struct {
-	Type      string          `json:"type" binding:"required"`
-	TargetID  *string         `json:"target_id"`
-	TargetURL *string         `json:"target_url"`
-	Title     *string         `json:"title"`
-	Position  json.RawMessage `json:"position" binding:"required"`
-	StartMs   int             `json:"start_ms"`
-	EndMs     int             `json:"end_ms"`
-}
-
-type saveEndScreensRequest struct {
-	Screens []endScreenInput `json:"screens" binding:"required"`
-}
-
-func (h *Handler) SaveEndScreens(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
-		return
-	}
-	postID, err := uuid.Parse(c.Param("postId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
-		return
-	}
-	var req saveEndScreensRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	screens := make([]postgres.EndScreen, len(req.Screens))
-	for i, sc := range req.Screens {
-		// Validated here, not left to the video_end_screens CHECK: a bad
-		// value used to reach Postgres and come back as a 500 with a
-		// constraint name in it. The list differs from the cards one on
-		// purpose (channel_subscribe here, poll there) — see
-		// migrations/012_posttube_features.sql.
-		if !validEndScreenTypes[sc.Type] {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TYPE",
-				invalidEnumMessage("screens", i, "type", sc.Type, endScreenTypeList), nil)
-			return
-		}
-		targetID, ok := parseOptionalTargetID(sc.TargetID)
-		if !ok {
-			badRequest(c, "INVALID_TARGET_ID",
-				invalidFieldMessage("screens", i, "target_id", "must be a UUID"))
-			return
-		}
-		if sc.StartMs < 0 || sc.EndMs < 0 {
-			badRequest(c, "INVALID_TIMING",
-				invalidFieldMessage("screens", i, "start_ms/end_ms", "must not be negative"))
-			return
-		}
-		// An end screen is a window. One that closes before — or exactly
-		// when — it opens can never be shown, so it is a mistake, not a
-		// preference.
-		if sc.EndMs <= sc.StartMs {
-			badRequest(c, "INVALID_TIMING",
-				invalidFieldMessage("screens", i, "end_ms", "must be greater than start_ms"))
-			return
-		}
-		screens[i] = postgres.EndScreen{
-			PostID:    postID,
-			Type:      sc.Type,
-			TargetID:  targetID,
-			TargetURL: sc.TargetURL,
-			Title:     sc.Title,
-			Position:  sc.Position,
-			StartMs:   sc.StartMs,
-			EndMs:     sc.EndMs,
-		}
-	}
-
-	if err := h.svc.SaveEndScreens(c.Request.Context(), userID, postID, screens); err != nil {
-		writeVideoAuthoringError(c, err)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(screens)}, nil)
-}
-
-func (h *Handler) GetEndScreens(c *gin.Context) {
-	postID, err := uuid.Parse(c.Param("postId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
-		return
-	}
-	screens, err := h.svc.GetEndScreens(c.Request.Context(), postID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if screens == nil {
-		screens = []postgres.EndScreen{}
-	}
-	api.JSON(c.Writer, http.StatusOK, screens, nil)
-}
-
-// ─── Video Cards ──────────────────────────────────────────────────────────────
-
-type videoCardInput struct {
-	Type       string  `json:"type" binding:"required"`
-	TargetID   *string `json:"target_id"`
-	TargetURL  *string `json:"target_url"`
-	Title      string  `json:"title" binding:"required"`
-	TeaserText *string `json:"teaser_text"`
-	AppearAtMs int     `json:"appear_at_ms"`
-}
-
-type saveVideoCardsRequest struct {
-	Cards []videoCardInput `json:"cards" binding:"required"`
-}
-
-func (h *Handler) SaveVideoCards(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
-		return
-	}
-	postID, err := uuid.Parse(c.Param("postId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
-		return
-	}
-	var req saveVideoCardsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	cards := make([]postgres.VideoCard, len(req.Cards))
-	for i, card := range req.Cards {
-		// See SaveEndScreens: same reason, deliberately different list
-		// (cards have poll, end screens have channel_subscribe).
-		if !validVideoCardTypes[card.Type] {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TYPE",
-				invalidEnumMessage("cards", i, "type", card.Type, videoCardTypeList), nil)
-			return
-		}
-		// title is NOT NULL in the table but "" satisfies that, so a card
-		// with no title stored an empty string and the player drew an empty
-		// box. A card is a label on a link; without one there is nothing to
-		// render.
-		if strings.TrimSpace(card.Title) == "" {
-			badRequest(c, "INVALID_TITLE",
-				invalidFieldMessage("cards", i, "title", "is required and must not be blank"))
-			return
-		}
-		targetID, ok := parseOptionalTargetID(card.TargetID)
-		if !ok {
-			badRequest(c, "INVALID_TARGET_ID",
-				invalidFieldMessage("cards", i, "target_id", "must be a UUID"))
-			return
-		}
-		if card.AppearAtMs < 0 {
-			badRequest(c, "INVALID_TIMING",
-				invalidFieldMessage("cards", i, "appear_at_ms", "must not be negative"))
-			return
-		}
-		cards[i] = postgres.VideoCard{
-			PostID:     postID,
-			Type:       card.Type,
-			TargetID:   targetID,
-			TargetURL:  card.TargetURL,
-			Title:      card.Title,
-			TeaserText: card.TeaserText,
-			AppearAtMs: card.AppearAtMs,
-		}
-	}
-
-	if err := h.svc.SaveVideoCards(c.Request.Context(), userID, postID, cards); err != nil {
-		writeVideoAuthoringError(c, err)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(cards)}, nil)
-}
-
-func (h *Handler) GetVideoCards(c *gin.Context) {
-	postID, err := uuid.Parse(c.Param("postId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
-		return
-	}
-	cards, err := h.svc.GetVideoCards(c.Request.Context(), postID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if cards == nil {
-		cards = []postgres.VideoCard{}
-	}
-	api.JSON(c.Writer, http.StatusOK, cards, nil)
 }
 
 // ─── Watch Progress ───────────────────────────────────────────────────────────
@@ -1097,6 +906,11 @@ func (h *Handler) SaveWatchProgress(c *gin.Context) {
 	}
 	if req.PositionMs < 0 || req.DurationMs < 0 {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "position_ms and duration_ms must not be negative", nil)
+		return
+	}
+	// The detail's gate (2026-09-29): progress on a post the viewer may not
+	// open would record, and later list, a post they cannot see.
+	if !h.requirePostReadable(c, postID, &userID) {
 		return
 	}
 
@@ -1175,6 +989,10 @@ func (h *Handler) GetWatchProgress(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	// The post detail's read gate (read_gate.go, 2026-09-29).
+	if !h.requirePostReadable(c, postID, &userID) {
 		return
 	}
 	wp, err := h.svc.GetWatchProgress(c.Request.Context(), userID, postID)

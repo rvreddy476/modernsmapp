@@ -1243,21 +1243,6 @@ func (s *Store) UpdatePostCoverMedia(ctx context.Context, postID uuid.UUID, cove
 	return err
 }
 
-// PublishPost sets publish status and published_at on a post.
-// M2-P0-2: changes visibility → routed through the projection.
-func (s *Store) PublishPost(ctx context.Context, postID uuid.UUID) error {
-	_, err := s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
-		tag, err := tx.Exec(ctx, `
-			UPDATE posts SET visibility = 'public', updated_at = NOW() WHERE id = $1
-		`, postID)
-		if err != nil {
-			return false, err
-		}
-		return tag.RowsAffected() > 0, nil
-	})
-	return err
-}
-
 // --- Bookmark methods ---
 
 // AddBookmark adds a post to the user's bookmarks.
