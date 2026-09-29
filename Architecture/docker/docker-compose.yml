@@ -2444,6 +2444,12 @@ services:
       # Absolute host for feed enclosures and artwork: the web proxy follows media
       # redirects, so podcast apps must fetch files from the API host directly.
       FEED_MEDIA_BASE_URL: ${FEED_MEDIA_BASE_URL:-https://api-dev.cleestudio.com}
+      # Media through the /v1 proxy: a redirect to the public storage origin is
+      # fetched from MinIO on this network, under the Host the link was signed
+      # for. Followed over the tunnel, every byte left the machine and came
+      # back, and each seek failed to connect (2026-09-29).
+      MEDIA_STORAGE_PUBLIC_ORIGIN: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      MEDIA_STORAGE_INTERNAL_ORIGIN: http://minio:9000
       AUTH_SERVICE_URL: http://identity-auth:8081
       CHAT_BACKEND_URL: http://chat-message-service:8092/v1/chat
       # Through the GATEWAY, not the services directly. identity-profile,
