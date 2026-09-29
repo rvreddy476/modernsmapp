@@ -4,9 +4,9 @@
 # switch-ready across clouds.
 #
 # Trigger model (mirrors the ECR workflow):
-#   push to main         → build changed services → push :sha + :staging-latest
+#   push to main         → build changed services → push :sha (no moving tag)
 #                          → bump values-azure-staging.yaml.
-#   push to release/prod → build changed services → push :sha + :prod-latest
+#   push to release/prod → build changed services → push :sha (no moving tag)
 #                          → bump values-azure-prod.yaml.
 #   workflow_dispatch    → 'all' or a comma list.
 #
@@ -181,7 +181,6 @@ jobs:
           push: true
           tags: |
             ${{ steps.acr.outputs.registry }}/atpost/${{ matrix.service }}:${{ github.sha }}
-            ${{ steps.acr.outputs.registry }}/atpost/${{ matrix.service }}:${{ needs.detect-changes.outputs.env_name }}-latest
           cache-from: type=gha,scope=acr-${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=acr-${{ matrix.service }}
           # AKS general node pool is Standard_D*s_v5 (x86).
@@ -203,7 +202,6 @@ jobs:
           push: true
           tags: |
             ${{ steps.acr.outputs.registry }}/atpost/${{ steps.path.outputs.worker_image }}:${{ github.sha }}
-            ${{ steps.acr.outputs.registry }}/atpost/${{ steps.path.outputs.worker_image }}:${{ needs.detect-changes.outputs.env_name }}-latest
           cache-from: type=gha,scope=acr-${{ steps.path.outputs.worker_image }}
           cache-to: type=gha,mode=max,scope=acr-${{ steps.path.outputs.worker_image }}
           platforms: linux/amd64

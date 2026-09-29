@@ -4,10 +4,10 @@
 #
 # Trigger model:
 #   push to main           → build all changed services → push :sha,
-#                            :latest → bump values-staging.yaml,
+#                            bump values-staging.yaml,
 #                            commit + push back.
 #   push to release/prod   → build all changed services → push :sha,
-#                            :prod-latest → bump values-prod.yaml,
+#                            bump values-prod.yaml,
 #                            commit + push back.
 #
 # `Changed services` = the set of services whose code-under-test
@@ -162,11 +162,10 @@ jobs:
           context: ${{ steps.path.outputs.workspace_root }}
           file: ${{ steps.path.outputs.service_path }}/Dockerfile
           push: true
-          # Two tags: immutable :<sha> for ArgoCD pinning + a moving
-          # :<env>-latest for ops convenience (kubectl debug etc).
+          # One tag: the immutable :<sha> that ArgoCD pins. No moving
+          # :<env>-latest — ECR is IMMUTABLE and refuses to re-point a tag.
           tags: |
             ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
-            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}:${{ needs.detect-changes.outputs.env_name }}-latest
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           # Linux/arm64 because the EKS node groups are Graviton.
@@ -191,7 +190,6 @@ jobs:
           push: true
           tags: |
             ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ steps.path.outputs.worker_image }}:${{ github.sha }}
-            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ steps.path.outputs.worker_image }}:${{ needs.detect-changes.outputs.env_name }}-latest
           cache-from: type=gha,scope=${{ steps.path.outputs.worker_image }}
           cache-to: type=gha,mode=max,scope=${{ steps.path.outputs.worker_image }}
           platforms: linux/arm64
