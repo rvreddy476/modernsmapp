@@ -66,6 +66,9 @@ type PostDraftPayload struct {
 	CoverFrameMs *int    `json:"cover_frame_ms,omitempty"`
 	Filter       string  `json:"filter,omitempty"`
 	AudioTrackID *string `json:"audio_track_id,omitempty"`
+	// AudioStartMs is where in the sound playback starts (2026-09-29);
+	// stored with the link at publication, 0 when absent or out of range.
+	AudioStartMs *int    `json:"audio_start_ms,omitempty"`
 	CoverMediaID *string `json:"cover_media_id,omitempty"`
 	// Reel disclosure/rights fields the composer may include.
 	Tags           []string `json:"tags,omitempty"`
@@ -401,14 +404,7 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 
 	// P1-5: background audio chosen in the reel composer must survive
 	// scheduling, exactly as it does on the immediate-publish path.
-	if payload.AudioTrackID != nil && *payload.AudioTrackID != "" {
-		if audioID, err := uuid.Parse(*payload.AudioTrackID); err == nil {
-			if err := s.AttachAudioToPost(ctx, d.AuthorID, post.ID, audioID); err != nil {
-				slog.Warn("draft publish: attach audio failed",
-					"post_id", post.ID, "audio_id", audioID, "err", err)
-			}
-		}
-	}
+	s.keepComposerDraftSound(ctx, post, payload)
 
 	if err := s.pgStore.MarkPostDraftPublished(ctx, d.ID, post.ID, d.ClaimToken); err != nil {
 		// Post exists; the stale-claim reclaim will retry the finalize and
@@ -416,6 +412,28 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 		slog.Error("draft publish: finalize failed", "draft_id", d.ID, "err", err)
 	}
 	return post, nil
+}
+
+// keepComposerDraftSound links the sound a composer draft chose to the post
+// published from it. No audio_track_id, an empty one and one that is not a
+// sound id all mean the post plays no added sound (attachDraftSound).
+// Best-effort: the post exists, so a refusal is logged and it goes out
+// without the sound.
+func (s *Service) keepComposerDraftSound(ctx context.Context, post *postgres.Post, payload *PostDraftPayload) {
+	if post == nil || payload == nil {
+		return
+	}
+	startMs := 0
+	if payload.AudioStartMs != nil {
+		startMs = *payload.AudioStartMs
+	}
+	link, err := s.attachDraftSound(ctx, post.AuthorID, post.ID, payload.AudioTrackID, startMs)
+	if err != nil {
+		slog.Warn("draft publish: attach audio failed",
+			"post_id", post.ID, "audio_id", *payload.AudioTrackID, "err", err)
+		return
+	}
+	ApplySoundLink(post, link)
 }
 
 // PublishScheduledPostDrafts is the worker tick: claim due drafts

@@ -67,6 +67,12 @@ type Post struct {
 	CoverMediaID           *uuid.UUID `json:"cover_media_id,omitempty"`
 	OriginalAudioVol       float32    `json:"original_audio_volume"`
 	OverlayAudioVol        float32    `json:"overlay_audio_volume"`
+	// AudioTrackID is the added sound the post plays over its own video
+	// (service/audio.go), nil when it plays none. AudioStartMs is where in
+	// that sound playback starts; deriveAudio keeps the pair together, so
+	// both are on the wire with a sound and neither without one.
+	AudioTrackID *uuid.UUID `json:"audio_track_id,omitempty"`
+	AudioStartMs *int       `json:"audio_start_ms,omitempty"`
 	// Per-reel controls (2026-09-04). Never omitempty: a renderer must be
 	// able to tell "downloads allowed" from "field missing", and the two
 	// remaining switches — comments and remix — are NoComments and
@@ -254,6 +260,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	comment_moderation, comment_access,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
+	audio_track_id, audio_start_ms,
 	hide_share, allow_download, tagged_user_ids, content_type_explicit,
 	source, live_stream_id,
 	age_restricted, hide_like_count, default_comment_sort, related_post_id,
@@ -270,6 +277,7 @@ func scanPost(row pgx.Row) (*Post, error) {
 		return nil, err
 	}
 	p.deriveScheduled()
+	p.deriveAudio()
 	return &p, nil
 }
 
@@ -277,6 +285,21 @@ func scanPost(row pgx.Row) (*Post, error) {
 // scan path calls it so the flag can never disagree with the column.
 func (p *Post) deriveScheduled() {
 	p.IsScheduled = p.PublishAt != nil
+}
+
+// deriveAudio keeps audio_start_ms with audio_track_id. The column defaults
+// to 0 on every row and is NULL on rows older than it, so the scanned value
+// says nothing by itself: without a sound there is no start, and with one
+// an absent or negative start is 0. Every scan path calls it.
+func (p *Post) deriveAudio() {
+	if p.AudioTrackID == nil {
+		p.AudioStartMs = nil
+		return
+	}
+	if p.AudioStartMs == nil || *p.AudioStartMs < 0 {
+		zero := 0
+		p.AudioStartMs = &zero
+	}
 }
 
 // postScanDestinations is the single source of truth for postCols scan order.
@@ -295,6 +318,7 @@ func postScanDestinations(p *Post) []any {
 		&p.CommentModeration, &p.CommentAccess,
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
+		&p.AudioTrackID, &p.AudioStartMs,
 		&p.HideShare, &p.AllowDownload, &p.TaggedUserIDs, &p.ContentTypeExplicit,
 		&p.Source, &p.LiveStreamID,
 		&p.AgeRestricted, &p.HideLikeCount, &p.DefaultCommentSort, &p.RelatedPostID,
@@ -314,6 +338,7 @@ func scanPostRows(rows pgx.Rows) ([]Post, error) {
 			return nil, err
 		}
 		p.deriveScheduled()
+		p.deriveAudio()
 		posts = append(posts, p)
 	}
 	return posts, rows.Err()
@@ -1423,6 +1448,7 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes
 		if err := rows.Scan(destinations...); err != nil {
 			return nil, "", err
 		}
+		p.deriveAudio()
 		posts = append(posts, p)
 		savedAt = append(savedAt, saved)
 	}

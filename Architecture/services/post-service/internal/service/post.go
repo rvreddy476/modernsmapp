@@ -161,6 +161,19 @@ type Service struct {
 	// means the Postgres store and ViewerMayAccessMedia.
 	audioTracks   audioTrackStore
 	audioAudience func(ctx context.Context, authorID, mediaID uuid.UUID) (bool, error)
+	// Original sounds (sounds.go, 2026-09-29), each nil-safe: the reads
+	// (nil = the Postgres store), the viewer's audience over a page of
+	// sounds (nil = ViewerMayAccessMediaBatch), the counts of a listed page
+	// (nil = Scylla + PostgreSQL), media-service's sound maker (nil = the
+	// HTTP client against mediaServiceURL) and the per-user limit on making
+	// one (nil = the Redis limiter, or none without Redis). mediaStates is
+	// the store slice behind attachMediaState (processing.go).
+	soundReads    soundStore
+	soundAudience func(ctx context.Context, viewerID uuid.UUID, mediaIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+	soundCounts   func(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*scylla.Counts, error)
+	soundMaker    soundSource
+	soundLimiter  func(ctx context.Context, userID uuid.UUID) bool
+	mediaStates   mediaStateStore
 
 	postEdits       postEditStore
 	systemPlaylists systemPlaylistStore
@@ -239,6 +252,8 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.endScreens = pg
 		svc.flickSeries = pg
 		svc.channelFeed = pg
+		svc.soundReads = pg
+		svc.mediaStates = pg
 	}
 	if rdb != nil {
 		svc.statDedupe = redisStatDeduper{rdb: rdb}
@@ -523,6 +538,12 @@ type PostDetail struct {
 	// empty) for the owner, absent for everyone else — a viewer never
 	// reaches this struct for a restricted post at all.
 	Restrictions []RestrictionNotice `json:"restrictions,omitempty"`
+	// Sound is the added sound the post plays (audio_track_id), for a
+	// viewer who may hear it; absent when there is none, when this viewer
+	// may not, and when that could not be decided (sounds.go). It is on the
+	// detail and not on the post because the post body is what the cache
+	// holds (post_cache.go), and a cached body carries nothing per viewer.
+	Sound *PostSound `json:"sound,omitempty"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
@@ -1641,6 +1662,9 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	// Creator Hub (hub_detail.go): like_count / hide_like_count, the
 	// related post card, the owner's notify_subscribers.
 	s.applyHubDetail(ctx, detail, viewerID)
+	// The sound the post plays, for this viewer (sounds.go). After the
+	// cache read, like everything else that depends on who is asking.
+	s.attachSounds(ctx, viewerID, []*PostDetail{detail})
 
 	return detail, nil
 }
@@ -1944,6 +1968,14 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		applyLikeCountPrivacy(detail, viewerID, false)
 		result[post.ID] = detail
 	}
+
+	// The sounds the page plays: one read and one audience decision for
+	// every row (sounds.go). Never a reason to fail the page.
+	page := make([]*PostDetail, 0, len(result))
+	for _, detail := range result {
+		page = append(page, detail)
+	}
+	s.attachSounds(ctx, viewerID, page)
 
 	return result, nil
 }

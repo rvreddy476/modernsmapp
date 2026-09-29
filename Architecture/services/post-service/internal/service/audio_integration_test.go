@@ -32,6 +32,7 @@ type audioITFixture struct {
 	// no source). orphan: neither. processing: not ready yet.
 	extracted, uploaded, orphan, processing uuid.UUID
 	target                                  uuid.UUID // the stranger's own post
+	second                                  uuid.UUID // another post of the video's author
 }
 
 func newAudioITFixture(t *testing.T) *audioITFixture {
@@ -40,7 +41,7 @@ func newAudioITFixture(t *testing.T) *audioITFixture {
 		anonMediaFixture: newAnonMediaFixture(t),
 		stranger:         uuid.New(),
 		extracted:        uuid.New(), uploaded: uuid.New(), orphan: uuid.New(), processing: uuid.New(),
-		target: uuid.New(),
+		target: uuid.New(), second: uuid.New(),
 	}
 	f.store = postgres.New(f.pool)
 	f.set(t, `INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING`, f.stranger)
@@ -51,11 +52,14 @@ func newAudioITFixture(t *testing.T) *audioITFixture {
 	f.set(t, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type, review_status, created_at, updated_at)
 		VALUES ($1, $2, 'a reel that plays a sound', 'public', 'flick', 'approved', NOW(), NOW())`, f.target, f.stranger)
+	f.set(t, `
+		INSERT INTO posts (id, author_id, text, visibility, content_type, review_status, created_at, updated_at)
+		VALUES ($1, $2, 'the author reuses their own sound', 'public', 'flick', 'approved', NOW(), NOW())`, f.second, f.author)
 	t.Cleanup(func() {
 		bg := context.Background()
 		_, _ = f.pool.Exec(bg, `UPDATE posts SET audio_track_id = NULL WHERE audio_track_id = ANY($1)`, f.sounds())
-		_, _ = f.pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, f.target)
-		_, _ = f.pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, f.target)
+		_, _ = f.pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = ANY($1)`, []uuid.UUID{f.target, f.second})
+		_, _ = f.pool.Exec(bg, `DELETE FROM posts WHERE id = ANY($1)`, []uuid.UUID{f.target, f.second})
 		_, _ = f.pool.Exec(bg, `DELETE FROM audio_tracks WHERE id = ANY($1)`, f.sounds())
 		_, _ = f.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, f.stranger)
 	})
@@ -120,7 +124,10 @@ func TestAudioITReadsBothShapesOfTheSharedTable(t *testing.T) {
 func TestAudioITAttachFollowsTheSourceVideosAudience(t *testing.T) {
 	f := newAudioITFixture(t)
 	ctx := context.Background()
-	attach := func(sound uuid.UUID) error { return f.svc.AttachAudioToPost(ctx, f.stranger, f.target, sound) }
+	attach := func(sound uuid.UUID) error {
+		_, err := f.svc.AttachAudioToPost(ctx, f.stranger, f.target, sound, 0)
+		return err
+	}
 
 	// The video is public: anyone may play its sound on their own post.
 	if err := attach(f.extracted); err != nil {
@@ -147,8 +154,9 @@ func TestAudioITAttachFollowsTheSourceVideosAudience(t *testing.T) {
 	if n := f.uses(t, f.extracted); n != 1 {
 		t.Fatalf("a refused use was counted: use_count = %d", n)
 	}
-	if err := f.svc.AttachAudioToPost(ctx, f.author, f.post, f.extracted); err != nil {
-		t.Fatalf("the author on their own private video's sound: %v", err)
+	// On another reel of theirs: the video's own post already plays it.
+	if link, err := f.svc.AttachAudioToPost(ctx, f.author, f.second, f.extracted, 0); err != nil || link == nil {
+		t.Fatalf("the author on their own private video's sound: link=%v err=%v", link, err)
 	}
 
 	f.set(t, `UPDATE posts SET visibility = 'public', audio_track_id = NULL WHERE id = $1`, f.post)

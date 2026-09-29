@@ -567,6 +567,7 @@ func scanPostRowsWithScore(rows pgx.Rows) ([]Post, []float64, error) {
 			return nil, nil, err
 		}
 		p.deriveScheduled()
+		p.deriveAudio()
 		posts = append(posts, p)
 		scores = append(scores, topScore)
 	}

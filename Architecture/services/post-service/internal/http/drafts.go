@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -110,6 +111,11 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 
 	draft, err := h.svc.UpdateDraft(c.Request.Context(), draftID, authorID, &input)
 	if err != nil {
+		// audio_track_id is a sound id, or "" to remove the sound.
+		if errors.Is(err, service.ErrInvalidDraftSound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

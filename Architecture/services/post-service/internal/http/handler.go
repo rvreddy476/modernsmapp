@@ -97,6 +97,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// MTube (2026-09-27): public listing of promoted live recordings
 		// (source = 'live'); same hydrated rows as by-author.
 		v1.GET("/live-recordings", h.GetLiveRecordings)
+		// Original sounds (2026-09-29, sounds.go): the reels that play a
+		// sound, and "use this sound" on a reel.
+		v1.GET("/by-sound/:soundId", h.GetPostsBySound)
+		v1.POST("/:postId/sound", h.UseSound)
 		v1.GET("/bookmarks", h.GetBookmarks)
 		v1.GET("/by-author/:authorId", h.GetPostsByAuthor)
 		v1.GET("/by-author/:authorId/counts", h.GetAuthorCounts)
@@ -446,6 +450,9 @@ type CreatePostRequest struct {
 	// create. Used by the Flicks composer's audio browser. Optional —
 	// posts without background audio leave this empty.
 	AudioTrackID *string `json:"audio_track_id"`
+	// AudioStartMs is where in that sound playback starts, in
+	// milliseconds (2026-09-29). A value outside the sound is stored as 0.
+	AudioStartMs *int `json:"audio_start_ms"`
 	// Per-reel controls (2026-09-04). The four switches on the reel
 	// composer are no_comments, hide_share, allow_download and
 	// remix_setting. AllowDownload is presence-aware like ShareToPostbook:
@@ -832,17 +839,18 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	// Attach background audio if the client picked a track. Best-effort:
 	// failure here logs but doesn't fail the create — the post is already
 	// persisted and a missing audio reference is recoverable from the UI.
-	if req.AudioTrackID != nil && *req.AudioTrackID != "" {
-		if audioID, parseErr := uuid.Parse(*req.AudioTrackID); parseErr == nil {
-			// M10: pass authorID so the service enforces the private-
-			// track ownership check. Failure is logged at slog.Warn
-			// (a private-track refusal shouldn't bring down the
-			// post; the post is already persisted).
-			if err := h.svc.AttachAudioToPost(c.Request.Context(), authorID, p.ID, audioID); err != nil {
-				slog.Warn("create-post: attach audio failed",
-					"post_id", p.ID, "audio_id", audioID, "err", err)
-			}
+	if audioID, startMs, ok := requestedSound(&req); ok {
+		// M10: pass authorID so the service enforces the private-
+		// track ownership check. Failure is logged at slog.Warn
+		// (a private-track refusal shouldn't bring down the
+		// post; the post is already persisted).
+		link, err := h.svc.AttachAudioToPost(c.Request.Context(), authorID, p.ID, audioID, startMs)
+		if err != nil {
+			slog.Warn("create-post: attach audio failed",
+				"post_id", p.ID, "audio_id", audioID, "err", err)
 		}
+		// The body answers what was stored: the sound and its start.
+		service.ApplySoundLink(p, link)
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, p, nil)

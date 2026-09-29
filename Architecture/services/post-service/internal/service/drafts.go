@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -52,6 +55,47 @@ type UpdateDraftInput struct {
 	OverlayAudioVol   *float32 `json:"overlay_audio_volume"`
 	CoverMediaID      *string  `json:"cover_media_id"`
 	ScheduleAt        *string  `json:"schedule_at"`
+}
+
+// ErrInvalidDraftSound: audio_track_id on a draft patch is neither a sound
+// id nor the empty string that removes the sound.
+var ErrInvalidDraftSound = errors.New("audio_track_id must be a sound id, or empty to remove the sound")
+
+// draftSoundUpdates resolves the sound of a draft patch into column writes
+// (2026-09-29).
+//
+//   - audio_track_id absent: the sound is left as it is, and audio_start_ms,
+//     when sent, moves the start.
+//   - audio_track_id "": the sound is REMOVED. audio_track_id becomes NULL
+//     and audio_start_ms 0, whatever start came with it. The draft used to
+//     keep the sound its author had taken off, and publish it.
+//   - anything else must be a sound id, or the patch is refused
+//     (ErrInvalidDraftSound) before a single column is written.
+//
+// A negative start is 0; the upper bound is the sound's, applied when the
+// link is made (clampSoundStart).
+func draftSoundUpdates(input *UpdateDraftInput, updates map[string]interface{}) error {
+	if input.AudioTrackID != nil {
+		raw := strings.TrimSpace(*input.AudioTrackID)
+		if raw == "" {
+			updates["audio_track_id"] = nil
+			updates["audio_start_ms"] = 0
+			return nil
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return ErrInvalidDraftSound
+		}
+		updates["audio_track_id"] = id.String()
+	}
+	if input.AudioStartMs != nil {
+		start := *input.AudioStartMs
+		if start < 0 {
+			start = 0
+		}
+		updates["audio_start_ms"] = start
+	}
+	return nil
 }
 
 // CreateDraft creates a new reel draft.
@@ -108,6 +152,10 @@ func (s *Service) GetDraft(ctx context.Context, draftID uuid.UUID, authorID uuid
 func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID uuid.UUID, input *UpdateDraftInput) (*postgres.ReelDraft, error) {
 	updates := make(map[string]interface{})
 
+	// First, so a patch that is refused writes nothing.
+	if err := draftSoundUpdates(input, updates); err != nil {
+		return nil, err
+	}
 	if input.Title != nil {
 		updates["title"] = *input.Title
 	}
@@ -196,12 +244,6 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	}
 	if input.RecordingLocation != nil {
 		updates["recording_location"] = *input.RecordingLocation
-	}
-	if input.AudioTrackID != nil {
-		updates["audio_track_id"] = *input.AudioTrackID
-	}
-	if input.AudioStartMs != nil {
-		updates["audio_start_ms"] = *input.AudioStartMs
 	}
 	if input.OriginalAudioVol != nil {
 		updates["original_audio_volume"] = *input.OriginalAudioVol
@@ -326,12 +368,14 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 		if postgres.IsUniqueViolation(err) {
 			// Already published by a previous attempt — resolve to it.
 			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
+				s.keepDraftSound(ctx, existing, draft)
 				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
 				return existing, nil
 			}
 		}
 		return nil, fmt.Errorf("publish draft as post: %w", err)
 	}
+	s.keepDraftSound(ctx, post, draft)
 
 	// Mark draft as published
 	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
@@ -425,14 +469,35 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
 			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
+				s.keepDraftSound(ctx, existing, draft)
 				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
 				return existing, nil
 			}
 		}
 		return nil, fmt.Errorf("publish claimed draft: %w", err)
 	}
+	s.keepDraftSound(ctx, post, draft)
 	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
 		// Non-fatal: idempotency resolves this on the stale-claim retry.
 	}
 	return post, nil
+}
+
+// keepDraftSound carries the sound a reel draft chose (audio_track_id,
+// audio_start_ms) onto the post published from it; both publish paths used
+// to drop it. It runs on the crash-retry path too: the link is idempotent,
+// and a first attempt may have died between the create and the link.
+// Best-effort, as on the create route: the post exists, so a sound its
+// author may not use is logged and the reel goes out with its own audio.
+func (s *Service) keepDraftSound(ctx context.Context, post *postgres.Post, draft *postgres.ReelDraft) {
+	if post == nil || draft == nil {
+		return
+	}
+	link, err := s.attachDraftSound(ctx, post.AuthorID, post.ID, draft.AudioTrackID, draft.AudioStartMs)
+	if err != nil {
+		slog.Warn("reel draft publish: attach audio failed",
+			"post_id", post.ID, "draft_id", draft.ID, "err", err)
+		return
+	}
+	ApplySoundLink(post, link)
 }

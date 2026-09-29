@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/google/uuid"
 )
 
@@ -45,6 +46,16 @@ type HandlerTestDeps struct {
 	ChannelFeed   channelFeedStore
 	FeedMedia     feedMediaSource
 	HiddenAuthors hiddenAuthorsStore
+	// Original sounds (sounds.go): the reads, the media state of a listed
+	// page, its counts in place of Scylla, and media-service itself, which
+	// the tests stand up as an httptest server (MediaServiceURL, reached
+	// with InternalServiceKey).
+	SoundReads         soundStore
+	SoundAudience      func(ctx context.Context, viewerID uuid.UUID, mediaIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+	MediaStates        mediaStateStore
+	SoundCounts        func(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*scylla.Counts, error)
+	MediaServiceURL    string
+	InternalServiceKey string
 }
 
 // NewForHandlerTests builds a Service over HandlerTestDeps, with no
@@ -70,6 +81,12 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		mediaAccess:         d.MediaAccess,
 		channelFeed:         d.ChannelFeed,
 		feedMedia:           d.FeedMedia,
+		soundReads:          d.SoundReads,
+		soundAudience:       d.SoundAudience,
+		mediaStates:         d.MediaStates,
+		soundCounts:         d.SoundCounts,
+		mediaServiceURL:     d.MediaServiceURL,
+		internalServiceKey:  d.InternalServiceKey,
 	}
 	s.hiddenAuthors = d.HiddenAuthors
 	s.authoringOwners = d.Authoring

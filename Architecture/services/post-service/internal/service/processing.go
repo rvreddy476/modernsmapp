@@ -72,6 +72,19 @@ func applyMediaState(p *postgres.Post, state map[uuid.UUID]postgres.MediaOwnersh
 	p.IsProcessing = processing
 }
 
+// mediaStateStore is the storage slice attachMediaState reads; mediaStates
+// replaces the Postgres store in tests.
+type mediaStateStore interface {
+	BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]postgres.MediaOwnership, error)
+}
+
+func (s *Service) mediaStateStore() mediaStateStore {
+	if s.mediaStates != nil {
+		return s.mediaStates
+	}
+	return s.pgStore
+}
+
 // hiddenWhileProcessing is the read-side gate: a processing post is hidden
 // from everyone but its author. An anonymous viewer is never the author.
 func hiddenWhileProcessing(p *postgres.Post, viewerID *uuid.UUID) bool {
@@ -107,7 +120,7 @@ func (s *Service) attachMediaState(ctx context.Context, posts []*postgres.Post) 
 	var state map[uuid.UUID]postgres.MediaOwnership
 	if len(ids) > 0 {
 		var err error
-		state, err = s.pgStore.BatchGetMediaOwnership(ctx, ids)
+		state, err = s.mediaStateStore().BatchGetMediaOwnership(ctx, ids)
 		if err != nil {
 			return fmt.Errorf("load media processing state: %w", err)
 		}
@@ -126,7 +139,8 @@ func (s *Service) attachMediaState(ctx context.Context, posts []*postgres.Post) 
 // recent, bookmarks, trending, hashtag, live recordings), so the Creator Hub
 // read rules ride on it (2026-09-28): an age-restricted post leaves the
 // page for anonymous, under-18 and unknown-age viewers, and a hidden like
-// count reads 0 / null for everyone but the owner.
+// count reads 0 / null for everyone but the owner. The sound a row plays is
+// attached here too (sounds.go, 2026-09-29), per viewer and best-effort.
 func (s *Service) attachMediaStateToDetails(ctx context.Context, details []PostDetail, viewerID *uuid.UUID) ([]PostDetail, error) {
 	posts := make([]*postgres.Post, 0, len(details))
 	for i := range details {
@@ -148,6 +162,11 @@ func (s *Service) attachMediaStateToDetails(ctx context.Context, details []PostD
 		applyLikeCountPrivacy(&d, viewerID, false)
 		out = append(out, d)
 	}
+	ptrs := make([]*PostDetail, len(out))
+	for i := range out {
+		ptrs[i] = &out[i]
+	}
+	s.attachSounds(ctx, viewerID, ptrs)
 	return out, nil
 }
 
