@@ -61,6 +61,15 @@ type ServerOptions struct {
 	// Zero means the 30s default.
 	SubscriptionReconcileInterval time.Duration
 
+	// PostRoomRecheckInterval is how often the same loop re-authorizes the
+	// connection's post:<id> rooms against PostViewer (P-8 e: a join-time
+	// yes must not outlive the post going private/scheduled/deleted or the
+	// author's account turning private). Zero means postRoomRecheckInterval
+	// (5 min). PostRoomRecheckBatch bounds the posts re-asked per sweep,
+	// round-robin; zero means postRoomRecheckBatch (200).
+	PostRoomRecheckInterval time.Duration
+	PostRoomRecheckBatch    int
+
 	// AllowAllOriginsForDev opts into the "no policy" mode where any
 	// browser origin is accepted. Audit H10: the previous default
 	// was *always* allow-all when AllowedOrigins was empty, which is
@@ -296,7 +305,7 @@ func (s *Server) serveConnection(
 
 	go s.readLoop(ctx, cancel, conn, pubsub, userID, subs, postGrants)
 	go s.redisLoop(ctx, cancel, pubsub, outbound, userID, subs)
-	go s.reconcileRoomSubscriptions(ctx, pubsub, userID, subs)
+	go s.reconcileRoomSubscriptions(ctx, pubsub, outbound, userID, subs, postGrants)
 	s.writeLoop(ctx, cancel, conn, outbound, userID)
 
 	_ = conn.Close()
@@ -309,13 +318,30 @@ func (s *Server) serveConnection(
 // left a removed member subscribed until disconnect. Each sweep drops a
 // subscription whose token has expired, whose revocation marker outranks its
 // membership generation, or whose marker cannot be checked — fail closed.
-func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, userID uuid.UUID, subs *roomSubscriptions) {
+//
+// The same goroutine re-authorizes the connection's post rooms on a slower
+// tick (P-8 e, postrooms.go): those are re-asked of post-service over HTTP,
+// so they get the 5-minute cadence and a per-sweep bound rather than the
+// 30-second Redis sweep.
+func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants *postRoomGrants) {
 	interval := s.opts.SubscriptionReconcileInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	postInterval := s.opts.PostRoomRecheckInterval
+	if postInterval <= 0 {
+		postInterval = postRoomRecheckInterval
+	}
+	postBatch := s.opts.PostRoomRecheckBatch
+	if postBatch <= 0 {
+		postBatch = postRoomRecheckBatch
+	}
+	postTicker := time.NewTicker(postInterval)
+	defer postTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -330,6 +356,12 @@ func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.P
 				_ = pubsub.Unsubscribe(ctx, "convroom:"+convID)
 				subs.delete(convID)
 			}
+		case <-postTicker.C:
+			if !s.opts.EnablePostRooms {
+				continue
+			}
+			evicted := s.recheckPostRooms(ctx, postGrants, userID, time.Now(), postBatch)
+			s.evictPostRooms(ctx, pubsub, outbound, userID, evicted)
 		}
 	}
 }
