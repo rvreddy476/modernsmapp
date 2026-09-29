@@ -66,6 +66,9 @@ jobs:
         id: branch
         run: |
           BRANCH="promote/$(date -u +%Y%m%d-%H%M%S)"
+          # The tag helper comes from THIS checkout (main), not from
+          # release/prod, which may not carry it yet.
+          cp scripts/ci/values-tag.sh "$RUNNER_TEMP/values-tag.sh"
           # Start from release/prod so we're only ahead by the values
           # bump, not by anything else that's been merged to main.
           git fetch origin release/prod
@@ -86,17 +89,22 @@ jobs:
               echo "::warning ::$svc missing values files — skipping"
               continue
             fi
-            # Pull the staging tag. The CI workflow always writes it
-            # as `tag: "<sha>"` (quoted, single space).
-            staging_tag=$(awk '/^[[:space:]]*tag:[[:space:]]*/{
-              gsub(/^[[:space:]]*tag:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }' "$staging")
-            prod_tag=$(awk '/^[[:space:]]*tag:[[:space:]]*/{
-              gsub(/^[[:space:]]*tag:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }' "$prod")
-            if [[ "$staging_tag" == "$prod_tag" ]]; then
+            # Key-specific (P-17): image.tag, and worker.image.tag when the
+            # staging file has one — each copied from its own staging key, so
+            # a worker tag is never overwritten with the server's.
+            vt="$RUNNER_TEMP/values-tag.sh"
+            staging_tag=$(bash "$vt" get "$staging" image.tag)
+            prod_tag=$(bash "$vt" get "$prod" image.tag)
+            staging_worker_tag=$(bash "$vt" get "$staging" worker.image.tag 2>/dev/null || true)
+            prod_worker_tag=$(bash "$vt" get "$prod" worker.image.tag 2>/dev/null || true)
+            if [[ "$staging_tag" == "$prod_tag" && "$staging_worker_tag" == "$prod_worker_tag" ]]; then
               echo "::notice ::$svc already at $staging_tag in prod"
               continue
             fi
-            sed -i -E "s|^([[:space:]]*tag:[[:space:]]*).*$|\1\"$staging_tag\"|" "$prod"
+            bash "$vt" set "$prod" image.tag "$staging_tag"
+            if [[ -n "$staging_worker_tag" ]]; then
+              bash "$vt" set "$prod" worker.image.tag "$staging_worker_tag"
+            fi
             git add "$prod"
             PROMOTED+=("$svc:$prod_tag→$staging_tag")
           done

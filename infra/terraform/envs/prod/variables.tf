@@ -47,6 +47,17 @@ variable "service_names" {
   ]
 }
 
+# Second images a service ships beside its server image. They go through the
+# same ECR module (immutable tags, scan on push, the 50-image lifecycle) and
+# the CI role's push grant, which module.iam derives from the ECR ARNs.
+#   media-worker: media-service's transcode worker (Dockerfile.worker: ffmpeg +
+#   cmd/worker), built by build-push.yml beside the server image and deployed
+#   through worker.image.tag (docs/designs/copyright-match-plan.md P-17).
+variable "worker_image_names" {
+  type    = list(string)
+  default = ["media-worker"]
+}
+
 variable "github_repos" {
   description = <<EOT
 Repos allowed to assume the prod CI role. Should narrow to main only:

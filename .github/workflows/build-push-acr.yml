@@ -134,6 +134,16 @@ jobs:
           fi
           echo "service_path=$root/services/$src" >> "$GITHUB_OUTPUT"
           echo "workspace_root=$root" >> "$GITHUB_OUTPUT"
+          # A service that ships a Dockerfile.worker gets a SECOND image,
+          # <name>-worker (media-service -> atpost/media-worker), built below
+          # from the same context. Empty when there is none.
+          if [[ -f "$root/services/$src/Dockerfile.worker" ]]; then
+            echo "worker_dockerfile=$root/services/$src/Dockerfile.worker" >> "$GITHUB_OUTPUT"
+            echo "worker_image=${SVC%-service}-worker" >> "$GITHUB_OUTPUT"
+          else
+            echo "worker_dockerfile=" >> "$GITHUB_OUTPUT"
+            echo "worker_image=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve ACR registry
         id: acr
@@ -178,6 +188,27 @@ jobs:
           platforms: linux/amd64
           provenance: false
 
+      # P-17 (docs/designs/copyright-match-plan.md §4): the transcode worker is
+      # its own image (Dockerfile.worker: ffmpeg + cmd/worker; the server image
+      # has neither). Same context and platform as the server image, its own
+      # repository and cache scope, the same commit sha — which bump-tag writes
+      # into worker.image.tag. ACR creates the repository on first push; the CI
+      # identity's AcrPush is registry-wide, so nothing to provision.
+      - name: Build + push worker image
+        if: ${{ steps.path.outputs.worker_dockerfile != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.path.outputs.workspace_root }}
+          file: ${{ steps.path.outputs.worker_dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.acr.outputs.registry }}/atpost/${{ steps.path.outputs.worker_image }}:${{ github.sha }}
+            ${{ steps.acr.outputs.registry }}/atpost/${{ steps.path.outputs.worker_image }}:${{ needs.detect-changes.outputs.env_name }}-latest
+          cache-from: type=gha,scope=acr-${{ steps.path.outputs.worker_image }}
+          cache-to: type=gha,mode=max,scope=acr-${{ steps.path.outputs.worker_image }}
+          platforms: linux/amd64
+          provenance: false
+
   # ─── Job 3: bump tag in the -azure values file + push back ───────
   bump-tag:
     needs: [detect-changes, build-push]
@@ -206,7 +237,10 @@ jobs:
               echo "::warning ::$f missing — skipping bump for $svc"
               continue
             fi
-            sed -i -E "s|^([[:space:]]*tag:[[:space:]]*).*$|\1\"$SHA\"|" "$f"
+            # Key-specific (P-17): image.tag always; worker.image.tag only when
+            # a worker image was pushed at this sha or the worker runs from the
+            # server image. Tested by scripts/ci/values-tag-test.sh.
+            bash scripts/ci/bump-service-tags.sh "$svc" "$f" "$SHA"
             git add "$f"
           done
           if ! git diff --cached --quiet; then

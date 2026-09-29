@@ -6,6 +6,7 @@
 # swapped:
 #
 #   image.repository      ECR  → ACR  (atpost<env>.azurecr.io/atpost/<name>)
+#   worker.image.repository  same (media-worker is its own image, P-17)
 #   serviceAccount        drop irsaRoleArn (Azure app pods get creds via ESO,
 #                         not pod identity — only ESO needs Workload Identity)
 #   externalSecret        secretStoreName → azure-key-vault;
@@ -48,6 +49,15 @@ def transform(doc, env, kind, name):
     if isinstance(img, dict) and img.get("repository"):
         repo_name = img["repository"].rsplit("/", 1)[-1]  # e.g. atpost/api-gateway → api-gateway
         img["repository"] = f"{acr_registry(env)}/atpost/{repo_name}"
+
+    # worker.image → ACR too. media-service's worker is its own image
+    # (atpost/media-worker, P-17); dating-service's worker is the server image.
+    # Either way only the registry host changes.
+    w = doc.get("worker")
+    wimg = w.get("image") if isinstance(w, dict) else None
+    if isinstance(wimg, dict) and wimg.get("repository"):
+        repo_name = wimg["repository"].rsplit("/", 1)[-1]
+        wimg["repository"] = f"{acr_registry(env)}/atpost/{repo_name}"
 
     # serviceAccount → drop IRSA (no Azure pod identity for app pods)
     sa = doc.get("serviceAccount")

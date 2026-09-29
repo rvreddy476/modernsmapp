@@ -19,8 +19,10 @@ module "vpc" {
 module "ecr" {
   source = "../../modules/ecr"
 
-  environment  = "staging"
-  repositories = var.service_names
+  environment = "staging"
+  # Server images plus the second images some services ship (media-worker):
+  # same repo settings, lifecycle policy and CI push grant for all of them.
+  repositories = concat(var.service_names, var.worker_image_names)
 }
 
 # Container images for the atpost-web Multi-Zone apps (atpost/web-<zone>).

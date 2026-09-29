@@ -35,3 +35,20 @@ env:
   JWT_RS256_KID: rsa-1
 ingress:
   enabled: false
+# P-17: the transcode worker is its own image (ffmpeg + cmd/worker); the server
+# image carries neither. build-push-acr.yml builds and pushes atpost/media-worker
+# beside the server image and bumps worker.image.tag to the sha it pushed.
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: atpoststaging454350.azurecr.io/atpost/media-worker
+    tag: latest # CI overrides via --set worker.image.tag=<sha>
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2
+      memory: 2Gi
+  scratchSizeLimit: 20Gi
