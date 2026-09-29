@@ -1,10 +1,12 @@
 package http
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/media-service/internal/delivery"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -79,9 +81,12 @@ func (h *Handler) GetAudioTrack(c *gin.Context) {
 		return
 	}
 
-	track, err := h.svc.GetAudioTrack(c.Request.Context(), audioID)
+	// A sound is a piece of its source video: its record is answered to that
+	// video's audience (service/audio_reads.go). It used to be answered to
+	// anyone holding the id, storage key and source included.
+	track, err := h.recordsSvc().AudioTrackForViewer(c.Request.Context(), deliveryViewer(c), audioID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil)
+		writeDeliveryErrorAs(c, err, "Audio track not found")
 		return
 	}
 
@@ -112,9 +117,12 @@ func (h *Handler) GetTrendingAudio(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	tracks, err := h.svc.GetTrendingAudio(c.Request.Context(), limit, offset)
+	// Only the sounds this viewer may hear: a private video's sound is not
+	// listed to a stranger. An unresolved authority is a retryable 503, never
+	// a shorter list that looks complete.
+	tracks, err := h.recordsSvc().TrendingAudioForViewer(c.Request.Context(), deliveryViewer(c), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeAudioListError(c, err)
 		return
 	}
 
@@ -130,13 +138,24 @@ func (h *Handler) SearchAudio(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	tracks, err := h.svc.SearchAudio(c.Request.Context(), query, limit, offset)
+	tracks, err := h.recordsSvc().SearchAudioForViewer(c.Request.Context(), deliveryViewer(c), query, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeAudioListError(c, err)
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusOK, gin.H{"tracks": tracks}, nil)
+}
+
+// writeAudioListError answers a sound list that could not be built. There is
+// no denial for a list (a sound the viewer may not hear is left out), so the
+// only outcomes are "try again" and a fault whose text stays on the server.
+func writeAudioListError(c *gin.Context, err error) {
+	if errors.Is(err, delivery.ErrDeliveryUnresolved) {
+		writeDeliveryErrorAs(c, err, "Audio track not found")
+		return
+	}
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Could not list audio tracks", nil)
 }
 
 func (h *Handler) UseAudioTrack(c *gin.Context) {
@@ -146,8 +165,13 @@ func (h *Handler) UseAudioTrack(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UseAudioTrack(c.Request.Context(), audioID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	// Only a sound the caller may hear can be counted as used by them.
+	if err := h.recordsSvc().UseAudioTrackAsViewer(c.Request.Context(), deliveryViewer(c), audioID); err != nil {
+		if errors.Is(err, delivery.ErrDeliveryDenied) || errors.Is(err, delivery.ErrDeliveryUnresolved) {
+			writeDeliveryErrorAs(c, err, "Audio track not found")
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Could not record the use", nil)
 		return
 	}
 

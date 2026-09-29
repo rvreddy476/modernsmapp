@@ -117,31 +117,11 @@ func (s *Service) ExtractAudioFromMedia(ctx context.Context, mediaID uuid.UUID, 
 	return track, nil
 }
 
-// GetAudioTrack returns an audio track by ID.
-func (s *Service) GetAudioTrack(ctx context.Context, id uuid.UUID) (*postgres.AudioTrack, error) {
-	return s.pgStore.GetAudioTrack(ctx, id)
-}
-
-// GetTrendingAudio returns trending audio tracks.
-func (s *Service) GetTrendingAudio(ctx context.Context, limit, offset int) ([]postgres.AudioTrack, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-	return s.pgStore.GetTrendingAudioTracks(ctx, limit, offset)
-}
-
-// SearchAudio searches audio tracks by title or artist.
-func (s *Service) SearchAudio(ctx context.Context, query string, limit, offset int) ([]postgres.AudioTrack, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-	return s.pgStore.SearchAudioTracks(ctx, query, limit, offset)
-}
-
-// UseAudioTrack increments usage count (snapshot) for a track.
-func (s *Service) UseAudioTrack(ctx context.Context, audioTrackID uuid.UUID) error {
-	return s.pgStore.IncrementAudioUsageCount(ctx, audioTrackID)
-}
+// The sound reads — one track, trending, search — and the usage counter are
+// RecordReads' (audio_reads.go): each takes the viewer and answers only for
+// tracks whose SOURCE video that viewer may watch. The viewer-less forms
+// that lived here listed every track, a private video's included, to anyone;
+// they are gone so they cannot be called again.
 
 // The presigned audio URL (GET /v1/audio/:audioId/url) is
 // RecordReads.AudioTrackURLForViewer (record_read.go): it takes the viewer

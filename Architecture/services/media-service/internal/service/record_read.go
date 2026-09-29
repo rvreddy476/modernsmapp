@@ -64,6 +64,10 @@ type recordReadStore interface {
 	GetMediaWithVariants(ctx context.Context, id uuid.UUID) (*postgres.MediaAsset, error)
 	GetTranscodingJobs(ctx context.Context, mediaAssetID uuid.UUID) ([]postgres.TranscodingJob, error)
 	GetAudioTrack(ctx context.Context, id uuid.UUID) (*postgres.AudioTrack, error)
+	// The sound lists and the usage counter (audio_reads.go).
+	GetTrendingAudioTracks(ctx context.Context, limit, offset int) ([]postgres.AudioTrack, error)
+	SearchAudioTracks(ctx context.Context, query string, limit, offset int) ([]postgres.AudioTrack, error)
+	IncrementAudioUsageCount(ctx context.Context, id uuid.UUID) error
 }
 
 // recordPresigner signs the one URL a record read still hands out: the
@@ -216,20 +220,8 @@ func mediaStatusResponse(ctx context.Context, media *postgres.MediaAsset,
 // every row audio_tracks holds today came from ExtractAudioFromMedia, which
 // always records its source.
 func (r *RecordReads) AudioTrackURLForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (string, error) {
-	if r == nil || r.store == nil {
-		return "", fmt.Errorf("%w: record store not configured", delivery.ErrDeliveryUnresolved)
-	}
-	track, err := r.store.GetAudioTrack(ctx, audioID)
+	track, err := r.AudioTrackForViewer(ctx, viewerID, audioID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", delivery.ErrDeliveryDenied
-		}
-		return "", fmt.Errorf("%w: load audio track: %v", delivery.ErrDeliveryUnresolved, err)
-	}
-	if track == nil || track.SourceMediaID == nil || *track.SourceMediaID == uuid.Nil {
-		return "", delivery.ErrDeliveryDenied
-	}
-	if _, err := r.MediaForViewer(ctx, viewerID, *track.SourceMediaID); err != nil {
 		return "", err
 	}
 	if r.blobs == nil {

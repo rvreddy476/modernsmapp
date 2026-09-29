@@ -35,6 +35,57 @@ type fakeRecordStore struct {
 	tracks map[uuid.UUID]*postgres.AudioTrack
 	jobs   map[uuid.UUID][]postgres.TranscodingJob
 	fail   error
+
+	// The sound lists (audio_reads_handler_test.go): listed is the order the
+	// store returns ready sounds in; listFail fails the list alone; used
+	// counts IncrementAudioUsageCount per track.
+	listed   []uuid.UUID
+	listFail error
+	used     map[uuid.UUID]int
+}
+
+func (f *fakeRecordStore) page(match func(*postgres.AudioTrack) bool, limit, offset int) ([]postgres.AudioTrack, error) {
+	if f.listFail != nil {
+		return nil, f.listFail
+	}
+	var out []postgres.AudioTrack
+	for _, id := range f.listed {
+		t, ok := f.tracks[id]
+		if !ok || t.Status != "ready" || !match(t) {
+			continue
+		}
+		out = append(out, *t)
+	}
+	if offset >= len(out) {
+		return nil, nil
+	}
+	out = out[offset:]
+	if limit < len(out) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeRecordStore) GetTrendingAudioTracks(_ context.Context, limit, offset int) ([]postgres.AudioTrack, error) {
+	return f.page(func(*postgres.AudioTrack) bool { return true }, limit, offset)
+}
+
+func (f *fakeRecordStore) SearchAudioTracks(_ context.Context, query string, limit, offset int) ([]postgres.AudioTrack, error) {
+	q := strings.ToLower(query)
+	return f.page(func(t *postgres.AudioTrack) bool {
+		return strings.Contains(strings.ToLower(t.Title), q) || strings.Contains(strings.ToLower(t.Artist), q)
+	}, limit, offset)
+}
+
+func (f *fakeRecordStore) IncrementAudioUsageCount(_ context.Context, id uuid.UUID) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	if f.used == nil {
+		f.used = map[uuid.UUID]int{}
+	}
+	f.used[id]++
+	return nil
 }
 
 func (f *fakeRecordStore) GetMediaWithVariants(_ context.Context, id uuid.UUID) (*postgres.MediaAsset, error) {
@@ -520,6 +571,10 @@ func TestRecordReadRoutesAreWired(t *testing.T) {
 		"GET /v1/media/:mediaId":        ".GetMedia",
 		"GET /v1/media/:mediaId/status": ".GetMediaStatus",
 		"GET /v1/audio/:audioId/url":    ".GetAudioTrackURL",
+		"GET /v1/audio/:audioId":        ".GetAudioTrack",
+		"GET /v1/audio/trending":        ".GetTrendingAudio",
+		"GET /v1/audio/search":          ".SearchAudio",
+		"POST /v1/audio/:audioId/use":   ".UseAudioTrack",
 	}
 	found := map[string]string{}
 	for _, ri := range f.router.Routes() {
