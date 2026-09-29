@@ -442,7 +442,7 @@ type CreatePostRequest struct {
 	CoverMediaID      *string `json:"cover_media_id"`
 	OriginalAudioVol  float32 `json:"original_audio_volume"`
 	OverlayAudioVol   float32 `json:"overlay_audio_volume"`
-	// AudioTrackID attaches a track from /v1/audio/tracks to the post on
+	// AudioTrackID attaches a sound from media-service's /v1/audio to the post on
 	// create. Used by the Flicks composer's audio browser. Optional —
 	// posts without background audio leave this empty.
 	AudioTrackID *string `json:"audio_track_id"`

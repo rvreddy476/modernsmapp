@@ -582,7 +582,7 @@ func main() {
 	postHandler.RegisterReportRoutes(r)
 	postHandler.RegisterCrosspostRoutes(r)
 	postHandler.RegisterMyUploadsRoutes(r)
-	postHandler.RegisterAudioRoutes(r)
+	// No sound catalogue here: media-service owns /v1/audio (service/audio.go).
 	postHandler.RegisterRepostRoutes(r)
 
 	// 12a. Engagement counter reconciler (every hour). Existed unused;

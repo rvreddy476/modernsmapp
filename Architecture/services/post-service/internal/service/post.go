@@ -157,6 +157,11 @@ type Service struct {
 	// is testable without a database: owner edits (post_edit.go), the
 	// server-owned collections (system_playlists.go), the creator's comment
 	// tools (comment_creator.go) and live -> video (live_vod.go).
+	// audioTracks and audioAudience back AttachAudioToPost (audio.go); nil
+	// means the Postgres store and ViewerMayAccessMedia.
+	audioTracks   audioTrackStore
+	audioAudience func(ctx context.Context, authorID, mediaID uuid.UUID) (bool, error)
+
 	postEdits       postEditStore
 	systemPlaylists systemPlaylistStore
 	creatorComments creatorCommentStore
@@ -297,11 +302,11 @@ func (s *Service) adjustAudioUseCount(ctx context.Context, audioTrackID uuid.UUI
 		if err := s.audioCounter.Inc(ctx, audioTrackID.String(), 1); err != nil {
 			slog.Warn("sharded audio counter inc failed; falling back to PG",
 				"audio_track_id", audioTrackID, "err", err)
-			return s.pgStore.IncrementAudioUseCount(ctx, audioTrackID)
+			return s.audioStore().IncrementAudioUseCount(ctx, audioTrackID)
 		}
 		return nil
 	}
-	return s.pgStore.IncrementAudioUseCount(ctx, audioTrackID)
+	return s.audioStore().IncrementAudioUseCount(ctx, audioTrackID)
 }
 
 // adjustEngagementCount fans an increment/decrement to the sharded
