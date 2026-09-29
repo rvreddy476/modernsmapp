@@ -391,6 +391,11 @@ func TestPostCreated_OnlyPublicApprovedIsIndexed(t *testing.T) {
 		{"public+flagged", "public", "flagged", false},
 		{"public+rejected", "public", "rejected", false},
 		{"public+needs_changes", "public", "needs_changes", false},
+		// post-service migration 056: the effective status while a
+		// case-specific restriction (Copyright Match) holds the post. The
+		// base status may still be 'approved'; the event carries the
+		// effective one and the allowlist must not admit it.
+		{"public+restricted", "public", "restricted", false},
 		{"public+missing_status_legacy", "public", "", false},
 		{"followers+approved", "followers", "approved", false},
 		{"private+approved", "private", "approved", false},
@@ -580,6 +585,9 @@ func TestEligibility_DeletionAndVisibilityDowngradeRemove(t *testing.T) {
 		{"downgraded_to_followers", "followers", "approved", false},
 		{"downgraded_to_private", "private", "approved", false},
 		{"taken_down_via_rejected", "public", "rejected", false},
+		// A restriction placed on an approved post: review_status on the
+		// event is the EFFECTIVE value 'restricted' (migration 056).
+		{"held_by_restriction", "public", "restricted", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeOS(t)

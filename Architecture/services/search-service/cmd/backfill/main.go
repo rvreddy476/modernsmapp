@@ -211,6 +211,78 @@ func limitClause(limit int, paramN int) string {
 	return fmt.Sprintf(" LIMIT $%d", paramN)
 }
 
+// Column names the posts rebuild applies the eligibility rule to. The
+// effective column is the one a rebuild must read; the base column is
+// only ever a fallback for a database that predates it.
+const (
+	postsEffectiveReviewStatusColumn = "effective_review_status"
+	postsBaseReviewStatusColumn      = "review_status"
+)
+
+// reviewStatusExpr is the SELECT expression the posts rebuild feeds to
+// events.SearchEligible.
+//
+// WHY effective_review_status AND NOT review_status:
+//
+// post-service migration 056 (Copyright Match, section 6.2) keeps a
+// case-specific hold OUT of posts.review_status: the base status stays
+// 'approved' while a restriction is active, and the viewer-facing answer
+// is the stored generated column
+//
+//	effective_review_status = CASE WHEN active_restriction_count > 0
+//	                          THEN 'restricted' ELSE review_status END
+//
+// Every live event (PostCreated, PostSearchEligibilityChanged) carries the
+// EFFECTIVE value in review_status, so the consumer removes a held post the
+// moment the hold lands. A rebuild that read the base column would see
+// 'approved', pass the eligibility rule, and put the held video straight
+// back into the public index — a reindex would undo a copyright hold.
+// Reading the effective column makes the rebuild agree with the live path:
+// 'restricted' is not on SearchEligible's allowlist, so the row is treated
+// exactly like a rejection (removed if indexed, skipped otherwise).
+//
+// hasEffective=false is the pre-056 database: the column is absent, so the
+// base column is the only status there is, and (because the restriction
+// tables arrive in the same migration) no holds can exist to be missed.
+func reviewStatusExpr(hasEffective bool) string {
+	col := postsBaseReviewStatusColumn
+	if hasEffective {
+		col = postsEffectiveReviewStatusColumn
+	}
+	// COALESCE to '' so a NULL status scans as the empty string, which the
+	// allowlist rejects — same fail-closed reading the consumer applies to
+	// an event with no review_status at all.
+	return "COALESCE(p." + col + ", '')"
+}
+
+// effectiveReviewStatusExpr detects whether this database has applied
+// post-service migration 056 and picks the column accordingly.
+//
+// Detection is through information_schema (columnExists, as for the MTube
+// filter columns) rather than a COALESCE-safe query, because there is no
+// such query: PostgreSQL resolves every column reference at parse time, so
+// a COALESCE over the effective column and the base column is an
+// "undefined column" error on a pre-056 database, not a fallback. The presence check
+// is the only way one statement can serve both schemas without dynamic SQL
+// inside the database.
+//
+// Direction of failure: columnExists answers "no" on any lookup error, so a
+// broken catalogue read degrades to the base column with a WARN — the same
+// pre-056 behaviour — rather than aborting the rebuild. That is acceptable
+// only because on a 056 database the live consumer has already removed
+// every held post and this run would then merely re-add it; the warning
+// exists so an operator who sees it on a database that HAS 056 knows the
+// rebuild must be re-run before it is trusted.
+func effectiveReviewStatusExpr(ctx context.Context, pool *pgxpool.Pool) string {
+	has := columnExists(ctx, pool, "posts", postsEffectiveReviewStatusColumn)
+	if !has {
+		slog.Warn("backfill posts: posts.effective_review_status not on this database (post-service migration 056 not applied); "+
+			"eligibility read from the base review_status column — case-specific restrictions cannot be seen by this run",
+			"fallback_column", postsBaseReviewStatusColumn)
+	}
+	return reviewStatusExpr(has)
+}
+
 // --- posts -----------------------------------------------------------------
 
 // backfillPosts rebuilds posts_v1 from Postgres, which is the source of
@@ -222,10 +294,12 @@ func limitClause(limit int, paramN int) string {
 // or a followers-only post, would be published to the public index by an
 // operator running a routine reindex.
 //
-// Now it walks the SAME eligibility predicate the consumer uses and
-// reconciles in both directions:
+// Now it walks the SAME eligibility predicate the consumer uses, over the
+// SAME status the consumer sees (posts.effective_review_status, which is
+// 'restricted' while a case-specific hold is active — see
+// reviewStatusExpr), and reconciles in both directions:
 //
-//	eligible   → upsert with the row's current review_status and search_rev
+//	eligible   → upsert with the row's current effective status and search_rev
 //	ineligible → DELETE from the index (repairing drift left behind by a
 //	             lost, failed, or dead-lettered eligibility event)
 //
@@ -248,13 +322,14 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	// row, which is the same answer a producer that does not report them
 	// gives, and the run says so.
 	heightExpr, subtitlesExpr := videoFilterExprs(ctx, pool)
+	reviewExpr := effectiveReviewStatusExpr(ctx, pool)
 
 	// Result-row projection (title, first attached asset, longest video
 	// duration) is read here exactly as post-service puts it on the
 	// PostCreated / eligibility events, so a rebuilt document matches a
 	// live one.
 	q := `SELECT p.id, p.author_id, p.text, p.visibility,
-	             COALESCE(p.review_status, ''), COALESCE(p.search_rev, 1),
+	             ` + reviewExpr + `, COALESCE(p.search_rev, 1),
 	             COALESCE(p.content_type, ''), p.created_at,
 	             (p.deleted_at IS NOT NULL) AS is_deleted,
 	             (p.publish_at IS NOT NULL) AS is_scheduled,
