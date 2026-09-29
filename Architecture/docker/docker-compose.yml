@@ -960,6 +960,14 @@ services:
       MINIO_BUCKET: media
       KAFKA_BROKERS: redpanda:9092
       MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
+      # Copyright Match in SHADOW on dev (founder, 2026-09-29): new uploads
+      # are fingerprinted and compared, and a match is recorded in
+      # copyright_pairs. Nothing is shown to anyone and nothing is held:
+      # the pair relay (COPYRIGHT_PAIR_RELAY, media-service) stays off, and
+      # the backfill of older videos stays off. Dev only; staging and
+      # production take their own values.
+      COPYRIGHT_FINGERPRINT_ENABLED: ${COPYRIGHT_FINGERPRINT_ENABLED:-true}
+      COPYRIGHT_MATCHING_ENABLED: ${COPYRIGHT_MATCHING_ENABLED:-true}
     depends_on:
       postgres:
         condition: service_healthy
