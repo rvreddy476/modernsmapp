@@ -702,9 +702,15 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	defer os.RemoveAll(hlsDir)
 	// The same reel/source facts that sized the MP4 renditions size the HLS
 	// ladder, so a phone reel is not re-encoded at 1080p after the MP4 pass
-	// deliberately skipped it.
+	// deliberately skipped it. Each rung is repackaged from the MP4
+	// rendition of its height (still in tmpDir) instead of being encoded a
+	// second time; only a rung without one is encoded from the original.
 	masterPath, variantFiles, hlsErr := processing.GenerateHLSVariantsFor(
-		ctx, inputPath, hlsDir, processing.HLSPlan{Reel: isReel, SourceHeight: meta.Height},
+		ctx, inputPath, hlsDir, processing.HLSPlan{
+			Reel:         isReel,
+			SourceHeight: meta.Height,
+			Renditions:   processing.MP4Renditions(outputs),
+		},
 	)
 	if hlsErr != nil {
 		return permanentUnlessCancelled(ctx, fmt.Errorf("generate HLS variants: %w", hlsErr))

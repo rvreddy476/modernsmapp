@@ -959,9 +959,12 @@ services:
         condition: service_started
     deploy:
       resources:
+        # x264 uses every CPU it is given; at 1 CPU a 24-minute upload
+        # took ~10 hours and every other upload queued behind it
+        # (2026-09-29). The dev host has 8 CPUs / 16 GB.
         limits:
-          cpus: '1.0'
-          memory: 1G
+          cpus: '4.0'
+          memory: 2G
         reservations:
           cpus: '0.5'
           memory: 512M

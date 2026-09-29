@@ -35,6 +35,13 @@ type HLSPlan struct {
 	// SourceHeight in pixels, or 0 when unknown. A rung taller than the
 	// source is an upscale: a full encode that adds no detail.
 	SourceHeight int
+	// Renditions maps a quality name ("360p", "720p", "1080p") to the MP4
+	// rendition of that height the first stage already encoded (see
+	// MP4Renditions). A rung with a rendition is REPACKAGED into HLS with a
+	// stream copy instead of being encoded a second time from the original;
+	// a rung without one, or whose copy fails, is encoded from the original
+	// as before. Nil means "encode every rung from the original".
+	Renditions map[string]string
 }
 
 // hlsVariantsFor picks the rungs of the ladder for a plan. Always at least
@@ -69,54 +76,14 @@ func GenerateHLSVariants(ctx context.Context, inputPath, outputDir string) (mast
 	return GenerateHLSVariantsFor(ctx, inputPath, outputDir, HLSPlan{})
 }
 
-// GenerateHLSVariantsFor transcodes the video at inputPath into HLS adaptive bitrate segments
-// for the rungs the plan calls for. Returns paths to the generated files (local temp paths)
-// and the master playlist path.
+// GenerateHLSVariantsFor produces the HLS ladder for the rungs the plan
+// calls for: each rung is repackaged from its MP4 rendition when the plan
+// has one (HLSPlan.Renditions) and encoded from inputPath otherwise. Returns
+// the master playlist path and the paths of every variant playlist and
+// segment (local temp paths). The pipeline lives in hls.go.
 func GenerateHLSVariantsFor(ctx context.Context, inputPath, outputDir string, plan HLSPlan) (masterPlaylistPath string, variantPaths []string, err error) {
-	variants := hlsVariantsFor(plan)
-	preset := hlsPreset(plan)
-	for _, v := range variants {
-		outputM3U8 := filepath.Join(outputDir, v.Quality+".m3u8")
-		segmentPattern := filepath.Join(outputDir, v.Quality+"_%03d.ts")
-
-		args := []string{
-			"-i", inputPath,
-			"-vf", fmt.Sprintf("scale=-2:%d", v.Height),
-			"-c:v", "libx264", "-preset", preset,
-			"-b:v", v.VideoBitrate,
-			"-c:a", "aac", "-b:a", v.AudioBitrate,
-			"-hls_time", "6",
-			"-hls_playlist_type", "vod",
-			"-hls_segment_filename", segmentPattern,
-			outputM3U8,
-			"-y",
-		}
-
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		out, cmdErr := cmd.CombinedOutput()
-		if cmdErr != nil {
-			return "", nil, fmt.Errorf("ffmpeg HLS %s failed: %w\n%s", v.Quality, cmdErr, out)
-		}
-		variantPaths = append(variantPaths, outputM3U8)
-		// Also collect .ts segment paths
-		tsFiles, _ := filepath.Glob(filepath.Join(outputDir, v.Quality+"_*.ts"))
-		variantPaths = append(variantPaths, tsFiles...)
-	}
-
-	// Generate master playlist
-	masterPlaylistPath = filepath.Join(outputDir, "master.m3u8")
-	master := "#EXTM3U\n#EXT-X-VERSION:3\n"
-	bandwidths := map[string]int{"360p": 800000, "720p": 2500000, "1080p": 5000000}
-	resolutions := map[string]string{"360p": "640x360", "720p": "1280x720", "1080p": "1920x1080"}
-	// Only the rungs that were encoded: a master listing a variant that does
-	// not exist sends the player to a 404 mid-stream.
-	for _, v := range variants {
-		master += fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%s\n%s.m3u8\n",
-			bandwidths[v.Quality], resolutions[v.Quality], v.Quality)
-	}
-	os.WriteFile(masterPlaylistPath, []byte(master), 0644) //nolint:errcheck
-
-	return masterPlaylistPath, variantPaths, nil
+	masterPlaylistPath, variantPaths, _, err = generateHLS(ctx, inputPath, outputDir, plan, execFFmpeg)
+	return masterPlaylistPath, variantPaths, err
 }
 
 // TranscodeOutput holds the result of a single transcode operation.
@@ -184,18 +151,67 @@ func thumbnailTimestamp(durationSeconds float64) float64 {
 	return durationSeconds * 0.25
 }
 
-// TranscodeToMP4 transcodes a video to a specific resolution.
-func TranscodeToMP4(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
-	vf := fmt.Sprintf("scale=-2:%d", maxHeight)
+// mp4Profile is the x264 rate/speed trade-off for one kind of rendition.
+type mp4Profile struct {
+	Preset string
+	CRF    string
+}
+
+// longFormMP4Profile encodes the long-video renditions. It was "medium";
+// a 24-minute upload took ~10 hours on the dev worker (2026-09-29). Since
+// the HLS ladder is now a stream copy of these files, this is also what
+// viewers are served, where they used to get a separate "fast" encode at a
+// fixed bitrate. Measured on a synthetic 1080p clip
+// (TestTranscodePipelineTiming): "veryfast" encodes the renditions ~1.4-1.7x
+// faster than "medium" at 720p SSIM 0.9933 vs 0.9943 and ~12% fewer bytes.
+// CRF 21 is the knob if served quality should match the old fixed-bitrate
+// ladder more closely (SSIM 0.9948, ~+33% bytes, about the same time).
+var longFormMP4Profile = mp4Profile{Preset: "veryfast", CRF: "23"}
+
+// reelMP4Profile encodes the short-form renditions, where the readiness
+// window on the phone matters more than bytes. The reel HLS rungs are now
+// copies of these; ultrafast is a bitrate-hungry encoder (720p ~1.6x the
+// bytes of the old 2500k rung on the synthetic clip, at slightly higher
+// SSIM) — "superfast"/CRF 26 matched the old rung's bytes for ~10% more
+// encode time.
+var reelMP4Profile = mp4Profile{Preset: "ultrafast", CRF: "28"}
+
+// keyframeIntervalSeconds forces an IDR frame at every multiple of this many
+// seconds of presentation time in every MP4 rendition. The HLS muxer can
+// only cut a stream copy on a keyframe, so this is what makes the copied
+// segments hlsSegmentSeconds long (and seekable): x264's default GOP of 250
+// frames is 8-10 s, and a scene-cut-only stream can go longer. Expressed in
+// time, not frames, so it holds for 24, 30, 60 fps and variable frame rate.
+const keyframeIntervalSeconds = 2
+
+// hlsSegmentSeconds is -hls_time for every rung. It must be a multiple of
+// keyframeIntervalSeconds for a copied segment to land on it exactly.
+const hlsSegmentSeconds = 6
+
+func keyframeArgs() []string {
+	return []string{"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", keyframeIntervalSeconds)}
+}
+
+// mp4TranscodeArgs builds the ffmpeg arguments for one MP4 rendition. No
+// -threads: ffmpeg's default (0, auto) lets x264 use every CPU the container
+// is given; pinning it would throw the worker's CPU limit away.
+func mp4TranscodeArgs(inputPath, outputPath string, maxHeight int, p mp4Profile) []string {
 	args := []string{
 		"-y", "-i", inputPath,
-		"-vf", vf,
-		"-c:v", "libx264", "-preset", "medium", "-crf", "23",
+		"-vf", fmt.Sprintf("scale=-2:%d", maxHeight),
+		"-c:v", "libx264", "-preset", p.Preset, "-crf", p.CRF,
+	}
+	args = append(args, keyframeArgs()...)
+	return append(args,
 		"-c:a", "aac", "-b:a", "128k",
 		"-movflags", "+faststart",
 		outputPath,
-	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	)
+}
+
+// TranscodeToMP4 transcodes a long video to a specific resolution.
+func TranscodeToMP4(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
+	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, longFormMP4Profile)...)
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -304,16 +320,7 @@ const MinVideoResolution = 360
 // TranscodeToMP4Fast transcodes with ultrafast preset for reels where encode
 // speed matters more than compression ratio.
 func TranscodeToMP4Fast(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
-	vf := fmt.Sprintf("scale=-2:%d", maxHeight)
-	args := []string{
-		"-y", "-i", inputPath,
-		"-vf", vf,
-		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-		"-c:a", "aac", "-b:a", "128k",
-		"-movflags", "+faststart",
-		outputPath,
-	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, reelMP4Profile)...)
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
