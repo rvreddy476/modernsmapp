@@ -170,6 +170,16 @@ func main() {
 
 	go startMetricsServer()
 
+	// Transcode lease sweeper (migration 021): re-queues assets whose job
+	// died mid-transcode, fails them after the attempts cap. Runs beside the
+	// consumer loop; the tracker tells it whether this worker is busy.
+	tracker := newBusyTracker(time.Now())
+	if stallSweepEnabled() {
+		go runStallSweeper(ctx, pgStore, tracker, postgres.DefaultStallPolicy(), stallSweepInterval)
+	} else {
+		log.Println("Transcode stall sweeper DISABLED (MEDIA_TRANSCODE_STALL_SWEEP=off)")
+	}
+
 	log.Println("Media transcode worker started, waiting for messages...")
 
 	// M4-P0-3 — THE OFFSET IS COMMITTED BY THIS LOOP, AND ONLY AFTER THE
@@ -192,7 +202,10 @@ func main() {
 			continue
 		}
 
-		if !handleUntilDurable(ctx, m, pgStore, blobStore, scanner) {
+		tracker.begin()
+		durable := handleUntilDurable(ctx, m, pgStore, blobStore, scanner)
+		tracker.end(time.Now())
+		if !durable {
 			// Shutting down mid-message. The offset is deliberately left
 			// uncommitted so the next owner of this partition redelivers it.
 			log.Println("Context cancelled before commit; stopping without committing")
@@ -254,8 +267,18 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		log.Printf("Transcode for media %s already applied; skipping", payload.MediaAssetID)
 		return nil
 	}
+	if superseded, current := supersededDelivery(ctx, pgStore, mediaAssetID, envelope.EventID); superseded {
+		log.Printf("Transcode event %s for media %s superseded by re-queued event %s; skipping",
+			envelope.EventID, payload.MediaAssetID, current)
+		return nil
+	}
 
 	log.Printf("Processing video transcode for media %s", payload.MediaAssetID)
+
+	// The lease: stamped now and every heartbeatInterval until this returns.
+	// A failed stamp is logged inside and never fails the job.
+	stopHeartbeat := startTranscodeHeartbeat(ctx, pgStore, mediaAssetID, heartbeatInterval)
+	defer stopHeartbeat()
 
 	transcodeStart := time.Now()
 	moderationResult := ""

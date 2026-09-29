@@ -18,8 +18,9 @@ COPY shared /shared
 # Copy all services to satisfy go.work
 COPY services /services
 
-# Build the worker
-RUN go build -mod=vendor -o /worker ./services/media-service/cmd/worker/main.go
+# Build the worker — the PACKAGE, not main.go alone: cmd/worker has more than
+# one source file (transcode_lease.go), and a single-file build drops them.
+RUN go build -mod=vendor -o /worker ./services/media-service/cmd/worker
 
 FROM alpine:3.19
 RUN apk add --no-cache ffmpeg

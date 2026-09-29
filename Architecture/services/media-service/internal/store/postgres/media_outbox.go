@@ -215,6 +215,36 @@ func (s *MediaAssetStore) RequeueTranscode(ctx context.Context, media *MediaAsse
 	if media == nil || media.ID == uuid.Nil || media.UploaderID == uuid.Nil {
 		return "", fmt.Errorf("requeue transcode: invalid media identity")
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin requeue transcode: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// An operator reprocess is a fresh start: the stall sweeper's attempt
+	// count goes back to zero (transcode_lease.go).
+	eventID, err := requeueTranscodeTx(ctx, tx, media, rotateDegrees, false)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit requeue transcode: %w", err)
+	}
+	return eventID, nil
+}
+
+// requeueTranscodeTx is RequeueTranscode inside the caller's transaction, so
+// the stall sweeper can re-check its candidate and re-queue it under one row
+// lock. stallRetry counts the re-queue against transcode_attempts; an
+// operator reprocess resets the count instead.
+//
+// The media row is locked first. The sweeper already holds that lock; for the
+// operator route it serialises a reprocess against a concurrent sweep, so the
+// two can never both pass the in-flight check and double-queue.
+func requeueTranscodeTx(ctx context.Context, tx pgx.Tx, media *MediaAsset, rotateDegrees int, stallRetry bool) (string, error) {
+	if media == nil || media.ID == uuid.Nil || media.UploaderID == uuid.Nil {
+		return "", fmt.Errorf("requeue transcode: invalid media identity")
+	}
 	payload, err := json.Marshal(TranscodeRequestPayload{
 		MediaTranscodeRequestedPayload: sharedevents.MediaTranscodeRequestedPayload{
 			MediaAssetID: media.ID.String(),
@@ -228,11 +258,10 @@ func (s *MediaAssetStore) RequeueTranscode(ctx context.Context, media *MediaAsse
 		return "", fmt.Errorf("requeue transcode payload: %w", err)
 	}
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return "", fmt.Errorf("begin requeue transcode: %w", err)
+	var locked int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM media_assets WHERE id = $1 FOR UPDATE`, media.ID).Scan(&locked); err != nil {
+		return "", fmt.Errorf("lock media for requeue: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
 	var pending int
 	if err := tx.QueryRow(ctx, `
@@ -264,16 +293,17 @@ func (s *MediaAssetStore) RequeueTranscode(ctx context.Context, media *MediaAsse
 		return "", fmt.Errorf("insert transcode re-request outbox: %w", err)
 	}
 
+	// The heartbeat is cleared: the new request has not started, and the
+	// stale stamp of the run it replaces must not read as a dead job again.
 	if _, err := tx.Exec(ctx, `
 		UPDATE media_assets
 		   SET processing_status = CASE WHEN processing_status = 'ready' THEN 'ready' ELSE 'processing' END,
+		       transcode_heartbeat_at = NULL,
+		       transcode_attempts = CASE WHEN $2::boolean THEN transcode_attempts + 1 ELSE 0 END,
 		       updated_at = NOW()
 		 WHERE id = $1
-	`, media.ID); err != nil {
+	`, media.ID, stallRetry); err != nil {
 		return "", fmt.Errorf("mark media for reprocess: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("commit requeue transcode: %w", err)
 	}
 	return eventID, nil
 }

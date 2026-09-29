@@ -67,6 +67,35 @@ func (s *MediaAssetStore) CompleteTranscode(
 	moderationStatus string,
 	completion TranscodeCompletion,
 ) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transcode completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := completeTranscodeTx(ctx, tx, eventID, mediaAssetID, outcome, hlsMasterKey, moderationStatus, completion); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transcode completion: %w", err)
+	}
+	return nil
+}
+
+// completeTranscodeTx is CompleteTranscode inside the caller's transaction.
+// The stall sweeper records its give-up through it (transcode_lease.go), so a
+// stalled asset reaches 'failed' by exactly the path a worker failure does:
+// inbox row, media row and completion event in one commit.
+func completeTranscodeTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	eventID string,
+	mediaAssetID uuid.UUID,
+	outcome string,
+	hlsMasterKey string,
+	moderationStatus string,
+	completion TranscodeCompletion,
+) error {
 	switch outcome {
 	case "ready", "failed":
 	default:
@@ -92,24 +121,16 @@ func (s *MediaAssetStore) CompleteTranscode(
 		return fmt.Errorf("marshal transcode completion: %w", err)
 	}
 
-	tx, err := s.db.Begin(ctx)
+	ct, err := tx.Exec(ctx, `
+		INSERT INTO media_transcode_inbox (event_id, media_asset_id, outcome)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (event_id) DO NOTHING
+	`, eventID, mediaAssetID, outcome)
 	if err != nil {
-		return fmt.Errorf("begin transcode completion: %w", err)
+		return fmt.Errorf("claim transcode inbox: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if eventID != "" {
-		ct, err := tx.Exec(ctx, `
-			INSERT INTO media_transcode_inbox (event_id, media_asset_id, outcome)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (event_id) DO NOTHING
-		`, eventID, mediaAssetID, outcome)
-		if err != nil {
-			return fmt.Errorf("claim transcode inbox: %w", err)
-		}
-		if ct.RowsAffected() == 0 {
-			return ErrTranscodeAlreadyApplied
-		}
+	if ct.RowsAffected() == 0 {
+		return ErrTranscodeAlreadyApplied
 	}
 
 	// processing_status and moderation_status move together with the inbox
@@ -140,10 +161,6 @@ func (s *MediaAssetStore) CompleteTranscode(
 		ON CONFLICT (media_asset_id, event_type) DO NOTHING
 	`, eventID+":completed", mediaAssetID, sharedevents.MediaTranscodeCompleted, completionPayload); err != nil {
 		return fmt.Errorf("insert transcode completion outbox: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transcode completion: %w", err)
 	}
 	return nil
 }
