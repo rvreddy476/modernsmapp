@@ -42,6 +42,13 @@ type Handler struct {
 	// service. An interface so the audience wiring of those routes can be
 	// pinned without a database.
 	records recordReadService
+	// heads backs HEAD on the serve routes (handler_head.go); nil means the
+	// service. An interface for the same reason as records.
+	heads serveHeadService
+	// streams backs the byte stream of an anonymous-scoped asset
+	// (handler_anonymous.go); nil means the service. An interface so a test
+	// can stand an object store behind it and count the reads.
+	streams anonymousStreamService
 }
 
 func New(svc *service.Service) *Handler {
@@ -92,6 +99,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.GET("/:mediaId/url/:variant", h.GetMediaVariantURL)
 		v1.GET("/:mediaId/serve", h.ServeMedia)
 		v1.GET("/:mediaId/serve/:variant", h.ServeMediaVariant)
+		// Feed validators and podcast apps HEAD an enclosure, and a HEAD that
+		// follows the GET's 307 to a GET-signed S3/MinIO URL is refused — so
+		// HEAD is answered here, from the rows, behind the same gate
+		// (handler_head.go). No body, no redirect, no object read.
+		v1.HEAD("/:mediaId/serve", h.HeadMedia)
+		v1.HEAD("/:mediaId/serve/:variant", h.HeadMediaVariant)
 		v1.GET("/:mediaId/hls/:playlist", h.ServeHLSPlaylist)
 		// Segments of an anonymous asset come back through this service
 		// rather than a signed object URL (handler_anonymous.go).
@@ -490,11 +503,18 @@ func (h *Handler) ServeMedia(c *gin.Context) {
 const redirectCacheTTL = 60
 
 func writeDeliveryRedirect(c *gin.Context, url string) {
+	writeDeliveryCacheHeaders(c)
+	c.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+// writeDeliveryCacheHeaders sets how long, and for whom, an authorized serve
+// answer may be reused. One function for the GET's redirect and the HEAD's
+// metadata answer (handler_head.go), so the two cannot disagree.
+func writeDeliveryCacheHeaders(c *gin.Context) {
 	c.Header("Cache-Control", fmt.Sprintf("private, max-age=%d", redirectCacheTTL))
-	// The decision depends on the viewer the edge resolved, so the redirect is
+	// The decision depends on the viewer the edge resolved, so the answer is
 	// only reusable for that same viewer.
 	c.Header("Vary", "Cookie, Authorization, X-User-Id")
-	c.Redirect(http.StatusTemporaryRedirect, url)
 }
 
 // ServeMediaVariant redirects to the presigned URL of a specific variant.

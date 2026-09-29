@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -58,11 +59,25 @@ func (h *Handler) ServeHLSSegment(c *gin.Context) {
 	writeStream(c, res)
 }
 
+// anonymousStreamService is the slice of the service that reads an anonymous
+// asset's bytes for GET /serve. An interface so the HEAD tests can prove a
+// HEAD reads none (handler_head_test.go).
+type anonymousStreamService interface {
+	StreamAnonymous(ctx context.Context, viewerID, mediaID uuid.UUID, variant, rangeHeader string) (*service.StreamResult, error)
+}
+
+func (h *Handler) streamsSvc() anonymousStreamService {
+	if h.streams != nil {
+		return h.streams
+	}
+	return h.svc
+}
+
 // tryStreamAnonymous serves the bytes itself when the asset is anonymous.
 // It reports handled=true whenever it wrote a response; false means "not an
 // anonymous asset — take the redirect path".
 func (h *Handler) tryStreamAnonymous(c *gin.Context, mediaID uuid.UUID, variant string) (handled bool) {
-	res, err := h.svc.StreamAnonymous(c.Request.Context(), deliveryViewer(c), mediaID, variant, c.GetHeader("Range"))
+	res, err := h.streamsSvc().StreamAnonymous(c.Request.Context(), deliveryViewer(c), mediaID, variant, c.GetHeader("Range"))
 	if err != nil {
 		if errors.Is(err, service.ErrNotAnonymousScope) {
 			return false
