@@ -278,7 +278,7 @@ func (s *Service) PublishPostDraft(ctx context.Context, id, authorID uuid.UUID, 
 		return nil, nil, err
 	}
 
-	post, err := s.publishDraftRow(ctx, claimed)
+	post, err := s.publishDraftRow(ctx, claimed, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -289,7 +289,13 @@ func (s *Service) PublishPostDraft(ctx context.Context, id, authorID uuid.UUID, 
 // the draft id as the post id (idempotency: a retry after a crash hits
 // the posts PK and resolves to the already-created post — exactly one
 // post, exactly one PostCreated outbox event).
-func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft) (*postgres.Post, error) {
+//
+// interactive is true when the author is waiting (PublishPostDraft): a
+// standing refusal comes back as AuthorSuspendedError (403) and an unknown
+// as ErrStandingUnknown (503), both after the claim is settled. The worker
+// passes false and gets the background policy: per-item backoff on
+// unknown, parked as blocked after 24 h of it or on a refusal.
+func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, interactive bool) (*postgres.Post, error) {
 	payload, err := parseDraftPayload(d.Payload)
 	if err != nil {
 		s.pgStore.MarkPostDraftBlocked(ctx, d.ID, "payload no longer parses: "+err.Error(), d.ClaimToken) //nolint:errcheck
@@ -302,19 +308,8 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft) (*
 		s.pgStore.MarkPostDraftBlocked(ctx, d.ID, err.Error(), d.ClaimToken) //nolint:errcheck
 		return nil, err
 	}
-	reason, standingErr := s.authorStandingOK(ctx, d.AuthorID)
-	switch {
-	case errors.Is(standingErr, ErrStandingUnknown):
-		// P2-1: never publish through uncertainty. Release the claim so a
-		// later tick retries once trust-safety is reachable again.
-		s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
-		return nil, fmt.Errorf("author standing unavailable; will retry: %w", standingErr)
-	case standingErr != nil:
-		s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
-		return nil, standingErr
-	case reason != "":
-		s.pgStore.MarkPostDraftBlocked(ctx, d.ID, reason, d.ClaimToken) //nolint:errcheck
-		return nil, fmt.Errorf("author standing check failed: %s", reason)
+	if err := s.draftPublishStanding(ctx, d, interactive); err != nil {
+		return nil, err
 	}
 
 	contentType := payload.ContentType
@@ -432,7 +427,7 @@ func (s *Service) PublishScheduledPostDrafts(ctx context.Context) (int, error) {
 	}
 	published := 0
 	for i := range claimed {
-		if _, err := s.publishDraftRow(ctx, &claimed[i]); err != nil {
+		if _, err := s.publishDraftRow(ctx, &claimed[i], false); err != nil {
 			slog.Warn("scheduled draft publish failed", "draft_id", claimed[i].ID, "err", err)
 			continue
 		}
@@ -441,71 +436,44 @@ func (s *Service) PublishScheduledPostDrafts(ctx context.Context) (int, error) {
 	return published, nil
 }
 
-// ErrStandingUnknown means the authoritative standing data could not be
-// read. Publication must NOT proceed through that uncertainty
-// (Codex P2-1) — the caller releases the claim and retries later.
-var ErrStandingUnknown = errors.New("author standing unavailable")
-
-// authorStandingOK checks trust-safety for an active suspension-grade
-// strike at publish time.
-//
-// Failure policy (Codex P2-1): the v1 implementation treated missing
-// config, transport errors, non-200 responses and decode failures as
-// "allowed", so a trust-safety outage published everything unchecked.
-// Now every one of those is ErrStandingUnknown → retryable, not a pass.
-// Only a genuine "no active severe strike" answer permits publication.
-//
-// The single deliberate exception is an unconfigured URL in dev, which is
-// gated by DRAFT_REQUIRE_STANDING_CHECK (default: required in production).
-func (s *Service) authorStandingOK(ctx context.Context, authorID uuid.UUID) (string, error) {
-	if s.trustSafetyURL == "" {
-		if s.requireStandingCheck {
-			return "", ErrStandingUnknown
-		}
-		return "", nil // dev: explicitly opted out
-	}
-	url := fmt.Sprintf("%s/v1/strikes/%s", s.trustSafetyURL, authorID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", ErrStandingUnknown
-	}
-	req.Header.Set("X-User-Id", authorID.String())
-	if s.internalServiceKey != "" {
-		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", ErrStandingUnknown
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", ErrStandingUnknown
-	}
-	var body struct {
-		Data []struct {
-			Severity  string     `json:"severity"`
-			ExpiresAt *time.Time `json:"expires_at"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", ErrStandingUnknown
-	}
-	now := time.Now()
-	for _, strike := range body.Data {
-		if strike.ExpiresAt != nil && strike.ExpiresAt.Before(now) {
-			continue
-		}
-		switch strings.ToLower(strike.Severity) {
-		case "ban", "suspend", "suspension", "severe":
-			return "account has an active " + strike.Severity + " strike", nil
+// draftPublishStanding applies the standing choke point to one claimed
+// composer draft and settles the claim: a refusal parks the draft as
+// blocked with a reason the composer can show; an unknown releases the
+// claim for a later attempt (interactive: 503 now; worker: backoff, and
+// after 24 h of unknown the draft is parked with standing_unavailable).
+func (s *Service) draftPublishStanding(ctx context.Context, d *postgres.PostDraft, interactive bool) error {
+	if interactive {
+		err := s.requirePublishStanding(ctx, d.AuthorID)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, ErrAuthorSuspended):
+			reason := BlockReasonAuthorSuspended
+			var suspended *AuthorSuspendedError
+			if errors.As(err, &suspended) {
+				reason = suspended.BlockReason()
+			}
+			s.pgStore.MarkPostDraftBlocked(ctx, d.ID, reason, d.ClaimToken) //nolint:errcheck
+			return err
+		default:
+			// P2-1: never publish through uncertainty. Release the claim so
+			// a later attempt retries once trust-safety is reachable again.
+			s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
+			return err
 		}
 	}
-	return "", nil
+	verdict, reason, err := s.backgroundPublishStanding(ctx, standingKeyPostDraft(d.ID), d.AuthorID)
+	switch verdict {
+	case standingProceed:
+		return nil
+	case standingBlock:
+		s.pgStore.MarkPostDraftBlocked(ctx, d.ID, reason, d.ClaimToken) //nolint:errcheck
+		return err
+	default:
+		s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
+		return err
+	}
 }
-
-// SetRequireStandingCheck controls whether an unreachable/unconfigured
-// trust-safety service blocks scheduled publication.
-func (s *Service) SetRequireStandingCheck(v bool) { s.requireStandingCheck = v }
 
 // CleanupOrphanDraftMedia deletes media referenced only by drafts that
 // were soft-deleted beyond the retention window and that no live post or
@@ -562,6 +530,3 @@ func (s *Service) deleteMediaAsset(ctx context.Context, mediaID uuid.UUID) error
 	}
 	return nil
 }
-
-// SetTrustSafetyURL configures the standing-check endpoint.
-func (s *Service) SetTrustSafetyURL(url string) { s.trustSafetyURL = url }

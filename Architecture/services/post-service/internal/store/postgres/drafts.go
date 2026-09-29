@@ -62,6 +62,10 @@ type ReelDraft struct {
 	PublishedPostID   *uuid.UUID `json:"published_post_id,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
+	// BlockedReason is set with status 'blocked' when the schedule worker
+	// parked the draft (migration 055): author_suspended…, or
+	// standing_unavailable after 24 h without an answer from trust-safety.
+	BlockedReason *string `json:"blocked_reason,omitempty"`
 }
 
 const draftCols = `id, author_id, media_id,
@@ -76,7 +80,7 @@ const draftCols = `id, author_id, media_id,
 	audio_track_id, audio_start_ms, original_audio_volume, overlay_audio_volume,
 	cover_media_id, schedule_at,
 	status, moderation_status, published_post_id,
-	created_at, updated_at`
+	created_at, updated_at, blocked_reason`
 
 func scanDraft(row pgx.Row) (*ReelDraft, error) {
 	var d ReelDraft
@@ -93,7 +97,7 @@ func scanDraft(row pgx.Row) (*ReelDraft, error) {
 		&d.AudioTrackID, &d.AudioStartMs, &d.OriginalAudioVol, &d.OverlayAudioVol,
 		&d.CoverMediaID, &d.ScheduleAt,
 		&d.Status, &d.ModerationStatus, &d.PublishedPostID,
-		&d.CreatedAt, &d.UpdatedAt,
+		&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
 	)
 	if err != nil {
 		return nil, err
@@ -118,7 +122,7 @@ func scanDraftRows(rows pgx.Rows) ([]ReelDraft, error) {
 			&d.AudioTrackID, &d.AudioStartMs, &d.OriginalAudioVol, &d.OverlayAudioVol,
 			&d.CoverMediaID, &d.ScheduleAt,
 			&d.Status, &d.ModerationStatus, &d.PublishedPostID,
-			&d.CreatedAt, &d.UpdatedAt,
+			&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
 		); err != nil {
 			return nil, err
 		}
@@ -144,7 +148,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO reel_drafts (`+draftCols+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42)`,
 		d.ID, d.AuthorID, d.MediaID,
 		d.Title, d.Caption, d.Hashtags, d.Tags,
 		d.Visibility, d.TopicID, d.Category, d.Language, d.SEOTitle,
@@ -157,7 +161,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 		d.AudioTrackID, d.AudioStartMs, d.OriginalAudioVol, d.OverlayAudioVol,
 		d.CoverMediaID, d.ScheduleAt,
 		d.Status, d.ModerationStatus, d.PublishedPostID,
-		d.CreatedAt, d.UpdatedAt,
+		d.CreatedAt, d.UpdatedAt, d.BlockedReason,
 	)
 	return err
 }
@@ -293,6 +297,18 @@ func (s *Store) ReleaseReelDraftClaim(ctx context.Context, draftID uuid.UUID) er
 	_, err := s.db.Exec(ctx,
 		`UPDATE reel_drafts SET status = 'draft', updated_at = NOW()
 		 WHERE id = $1 AND status = 'publishing_pending'`, draftID)
+	return err
+}
+
+// MarkReelDraftBlocked parks a claimed reel draft (migration 055): the
+// schedule worker could not publish it because trust-safety refused the
+// author or stayed unknown for 24 h. Conditional on the claim so a stale
+// worker cannot block a draft the author has since edited back to 'draft'.
+// The author re-arms it by editing (UpdateDraft sets status back).
+func (s *Store) MarkReelDraftBlocked(ctx context.Context, draftID uuid.UUID, reason string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reel_drafts SET status = 'blocked', blocked_reason = $2, updated_at = NOW()
+		 WHERE id = $1 AND status = 'publishing_pending'`, draftID, reason)
 	return err
 }
 

@@ -118,11 +118,15 @@ type Post struct {
 	// The schedule worker clears it at publish time and stamps PublishedAt.
 	// IsScheduled is derived from it at scan time and never omitempty, so a
 	// client cannot confuse "live" with "unknown".
-	PublishAt   *time.Time  `json:"publish_at,omitempty"`
-	PublishedAt *time.Time  `json:"published_at,omitempty"`
-	IsScheduled bool        `json:"is_scheduled"`
-	Media       []PostMedia `json:"media,omitempty"`
-	Poll        *PollData   `json:"poll,omitempty"`
+	PublishAt   *time.Time `json:"publish_at,omitempty"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	IsScheduled bool       `json:"is_scheduled"`
+	// PublishBlockedReason is set on the author's scheduled list when the
+	// schedule worker parked the post (migration 055: author_suspended…,
+	// standing_unavailable). Not a posts column; attached by the list read.
+	PublishBlockedReason *string     `json:"publish_blocked_reason,omitempty"`
+	Media                []PostMedia `json:"media,omitempty"`
+	Poll                 *PollData   `json:"poll,omitempty"`
 
 	// IsProcessing is true until EVERY attached asset is processing_status
 	// "ready" AND moderation_status "passed" (2026-09-04: a reel is

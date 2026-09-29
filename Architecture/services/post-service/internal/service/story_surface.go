@@ -200,6 +200,10 @@ func nowUnix() int64 { return time.Now().Unix() }
 // two independent failures: a story visible before anyone reviewed it, and a
 // story whose moderation request was never recorded at all.
 func (s *Service) CreateStoryPending(ctx context.Context, input *CreateStoryInput) (*postgres.Story, error) {
+	// A story is a publication: author standing first (publish_standing.go).
+	if err := s.requirePublishStanding(ctx, input.AuthorID); err != nil {
+		return nil, err
+	}
 	visibility := input.Visibility
 	if visibility == "" {
 		// Default to the narrowest audience, not the widest. A missing

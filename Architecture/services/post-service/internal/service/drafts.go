@@ -273,6 +273,12 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 		return &postgres.Post{ID: draftID, AuthorID: authorID, Text: draft.Caption}, nil
 	}
 
+	// Author standing before anything is built (publish_standing.go):
+	// 403 AUTHOR_SUSPENDED or 503 STANDING_UNAVAILABLE, never a post.
+	if err := s.requirePublishStanding(ctx, authorID); err != nil {
+		return nil, err
+	}
+
 	// Build CreatePostInput from draft
 	var mediaIDs []uuid.UUID
 	if draft.MediaID != nil {
@@ -367,6 +373,18 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 	}
 	if draft.Status == "published" || draft.Status == "deleted" {
 		return nil, fmt.Errorf("draft no longer publishable (status %s)", draft.Status)
+	}
+	// Author standing (publish_standing.go), background policy: a refusal
+	// parks the draft as 'blocked' with the reason; an unknown is retried
+	// with per-item backoff (the caller releases the claim) and parked as
+	// standing_unavailable after 24 h of it.
+	switch verdict, reason, serr := s.backgroundPublishStanding(ctx, standingKeyReelDraft(draftID), authorID); verdict {
+	case standingProceed:
+	case standingBlock:
+		s.pgStore.MarkReelDraftBlocked(ctx, draftID, reason) //nolint:errcheck
+		return nil, serr
+	default:
+		return nil, serr
 	}
 	var mediaIDs []uuid.UUID
 	if draft.MediaID != nil {

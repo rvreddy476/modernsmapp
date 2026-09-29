@@ -44,6 +44,9 @@ func (h *Handler) CreateCrosspost(c *gin.Context) {
 
 	link, err := h.svc.CreateCrosspost(c.Request.Context(), postID, userID, req.TargetModule)
 	if err != nil {
+		if writeStandingError(c, err) {
+			return
+		}
 		switch err.Error() {
 		case "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many crossposts. Limit: 5 per hour.", nil)

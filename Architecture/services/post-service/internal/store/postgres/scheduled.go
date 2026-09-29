@@ -43,10 +43,14 @@ func (s *Store) ListDueScheduledPosts(ctx context.Context, now time.Time, limit 
 	if limit <= 0 {
 		limit = 100
 	}
+	// A parked post (post_publish_blocks, migration 055) is not due: the
+	// worker would only refuse it again. Rescheduling or "publish now"
+	// clears the block.
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, publish_at FROM posts
-		WHERE publish_at IS NOT NULL AND publish_at <= $1 AND deleted_at IS NULL
-		ORDER BY publish_at ASC
+		SELECT p.id, p.author_id, p.publish_at FROM posts p
+		WHERE p.publish_at IS NOT NULL AND p.publish_at <= $1 AND p.deleted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM post_publish_blocks b WHERE b.post_id = p.id)
+		ORDER BY p.publish_at ASC
 		LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, err
@@ -139,6 +143,10 @@ func (s *Store) PublishScheduledPost(
 			}
 		}
 	}
+	// A live post carries no publication block (migration 055).
+	if _, err := tx.Exec(ctx, `DELETE FROM post_publish_blocks WHERE post_id = $1`, postID); err != nil {
+		return nil, fmt.Errorf("publish scheduled: clear block: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("publish scheduled: commit: %w", err)
@@ -151,7 +159,12 @@ func (s *Store) PublishScheduledPost(
 // published (or that was deleted) returns ErrPostNotScheduled. The window
 // check (≥5 min, ≤30 days) is the service's; this is the durable half.
 func (s *Store) ReschedulePost(ctx context.Context, postID, authorID uuid.UUID, publishAt time.Time) error {
-	tag, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("reschedule: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		UPDATE posts SET publish_at = $3, updated_at = NOW()
 		WHERE id = $1 AND author_id = $2 AND publish_at IS NOT NULL AND deleted_at IS NULL`,
 		postID, authorID, publishAt)
@@ -160,6 +173,77 @@ func (s *Store) ReschedulePost(ctx context.Context, postID, authorID uuid.UUID, 
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrPostNotScheduled
+	}
+	// The author acted on the post: a parked post is re-armed (migration
+	// 055). If standing still refuses, the worker parks it again.
+	if _, err := tx.Exec(ctx, `DELETE FROM post_publish_blocks WHERE post_id = $1`, postID); err != nil {
+		return fmt.Errorf("reschedule: clear block: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("reschedule: commit: %w", err)
+	}
+	return nil
+}
+
+// BlockScheduledPost parks a scheduled post (migration 055) with the
+// reason the author's Scheduled list shows. Only a post that is still
+// scheduled can be parked; a live or deleted one is left alone (false).
+// Idempotent: a second park overwrites the reason.
+func (s *Store) BlockScheduledPost(ctx context.Context, postID uuid.UUID, reason string) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		INSERT INTO post_publish_blocks (post_id, reason, blocked_at)
+		SELECT id, $2, NOW() FROM posts
+		WHERE id = $1 AND publish_at IS NOT NULL AND deleted_at IS NULL
+		ON CONFLICT (post_id) DO UPDATE SET reason = EXCLUDED.reason, blocked_at = EXCLUDED.blocked_at`,
+		postID, reason)
+	if err != nil {
+		return false, fmt.Errorf("block scheduled: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// PublishBlockReason reads a parked post's reason ("" when not parked).
+func (s *Store) PublishBlockReason(ctx context.Context, postID uuid.UUID) (string, error) {
+	var reason string
+	err := s.db.QueryRow(ctx, `SELECT reason FROM post_publish_blocks WHERE post_id = $1`, postID).Scan(&reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return reason, err
+}
+
+// attachPublishBlocks sets PublishBlockedReason on every parked post in
+// the slice (the author's Scheduled list).
+func (s *Store) attachPublishBlocks(ctx context.Context, posts []Post) error {
+	if len(posts) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(posts))
+	for i := range posts {
+		ids = append(ids, posts[i].ID)
+	}
+	rows, err := s.db.Query(ctx, `SELECT post_id, reason FROM post_publish_blocks WHERE post_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	reasons := map[uuid.UUID]string{}
+	for rows.Next() {
+		var id uuid.UUID
+		var reason string
+		if err := rows.Scan(&id, &reason); err != nil {
+			return err
+		}
+		reasons[id] = reason
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range posts {
+		if r, ok := reasons[posts[i].ID]; ok {
+			reason := r
+			posts[i].PublishBlockedReason = &reason
+		}
 	}
 	return nil
 }
@@ -199,6 +283,9 @@ func (s *Store) ListScheduledPostsByAuthor(ctx context.Context, authorID uuid.UU
 		posts = posts[:limit]
 	}
 	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
+	}
+	if err := s.attachPublishBlocks(ctx, posts); err != nil {
 		return nil, "", err
 	}
 	return posts, next, nil

@@ -76,6 +76,9 @@ func (h *Handler) CreateThread(c *gin.Context) {
 		IdempotencyKey: idemKey,
 	})
 	if err != nil {
+		if writeStandingError(c, err) {
+			return
+		}
 		if errors.Is(err, service.ErrInvalidThread) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_THREAD", err.Error(), nil)
 			return

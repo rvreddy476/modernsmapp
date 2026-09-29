@@ -53,6 +53,7 @@ func parseScheduleAt(raw *string) (*time.Time, bool) {
 
 func (h *Handler) writePostDraftError(c *gin.Context, err error) {
 	switch {
+	case writeStandingError(c, err):
 	case writeDistributionError(c, err):
 	case errors.Is(err, service.ErrInvalidDraft):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DRAFT", err.Error(), nil)

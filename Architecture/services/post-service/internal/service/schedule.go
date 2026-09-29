@@ -326,6 +326,27 @@ func (s *Service) PublishScheduled(ctx context.Context, postID uuid.UUID, author
 		return false, nil
 	}
 
+	// Author standing at flip time (publish_standing.go). The worker
+	// (dueOnly) gets the background policy: a refusal parks the post with a
+	// reason the Scheduled list shows and the due scan skips it until the
+	// author reschedules; an unknown is retried with per-item backoff and
+	// parked as standing_unavailable after 24 h. The author ("publish now",
+	// PublishVideo) gets 403 AUTHOR_SUSPENDED or 503 STANDING_UNAVAILABLE.
+	if dueOnly {
+		switch verdict, reason, serr := s.backgroundPublishStanding(ctx, standingKeyScheduledPost(postID), p.AuthorID); verdict {
+		case standingProceed:
+		case standingBlock:
+			if _, berr := s.pgStore.BlockScheduledPost(ctx, postID, reason); berr != nil {
+				slog.Error("publish scheduled: park failed", "post_id", postID, "reason", reason, "err", berr)
+			}
+			return false, serr
+		default:
+			return false, serr
+		}
+	} else if err := s.requirePublishStanding(ctx, p.AuthorID); err != nil {
+		return false, err
+	}
+
 	// Everything the event needs that lives outside the row, resolved
 	// before the transaction so it holds no locks while calling out.
 	policy, perr := ParseDistributionPolicy(p.Distribution)

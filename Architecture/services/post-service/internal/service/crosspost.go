@@ -20,6 +20,12 @@ func (s *Service) CreateCrosspost(ctx context.Context, sourcePostID, userID uuid
 		return nil, fmt.Errorf("invalid target module: only 'postbook' is supported")
 	}
 
+	// The embed post publishes on the user's behalf: author standing first
+	// (publish_standing.go).
+	if err := s.requirePublishStanding(ctx, userID); err != nil {
+		return nil, err
+	}
+
 	// Rate limit: 5 crossposts per hour per user
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:crosspost:%s", userID), engagement.CrosspostLimitPerHour, time.Hour) {
 		return nil, fmt.Errorf("RATE_LIMITED")

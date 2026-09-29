@@ -193,6 +193,9 @@ func (h *Handler) PublishDraft(c *gin.Context) {
 
 	post, err := h.svc.PublishDraft(c.Request.Context(), draftID, authorID, req.ScheduleAt)
 	if err != nil {
+		if writeStandingError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

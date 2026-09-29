@@ -115,6 +115,9 @@ func (h *Handler) CreateStory(c *gin.Context) {
 		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
+		if writeStandingError(c, err) {
+			return
+		}
 		// Media that is missing, owned by another user, deleted, or the wrong
 		// type all return ONE response. Distinguishing them would let a caller
 		// probe which media ids exist and who owns them.

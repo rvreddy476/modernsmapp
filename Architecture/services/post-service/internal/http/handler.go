@@ -800,6 +800,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	p, err := h.svc.CreatePost(c.Request.Context(), input)
 	if err != nil {
+		if writeStandingError(c, err) {
+			return
+		}
 		if writeCreateGuardError(c, err) {
 			return
 		}
@@ -2575,6 +2578,9 @@ func (h *Handler) PublishVideo(c *gin.Context) {
 	}
 
 	if err := h.svc.PublishVideo(c.Request.Context(), videoID, userID); err != nil {
+		if writeStandingError(c, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "unauthorized") {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
@@ -3044,6 +3050,9 @@ func (h *Handler) CreateRepost(c *gin.Context) {
 		SourceContextID:   sourceCtxID,
 	})
 	if err != nil {
+		if writeStandingError(c, err) {
+			return
+		}
 		switch err.Error() {
 		case "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reposts, please slow down", nil)

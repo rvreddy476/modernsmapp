@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
+	"github.com/atpost/post-service/internal/standing"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/atpost/post-service/internal/streamhub"
@@ -47,7 +49,8 @@ func main() {
 	scyllaHosts := env("SCYLLA_HOSTS", "localhost")
 	kafkaBrokers := env("KAFKA_BROKERS", "kafka:9092")
 	internalServiceKey := os.Getenv("INTERNAL_SERVICE_KEY")
-	if (strings.EqualFold(os.Getenv("ENV"), "prod") || strings.EqualFold(os.Getenv("APP_ENV"), "production")) && strings.TrimSpace(internalServiceKey) == "" {
+	isProduction := strings.EqualFold(os.Getenv("ENV"), "prod") || strings.EqualFold(os.Getenv("APP_ENV"), "production")
+	if isProduction && strings.TrimSpace(internalServiceKey) == "" {
 		slog.Error("INTERNAL_SERVICE_KEY is required in production")
 		os.Exit(1)
 	}
@@ -168,10 +171,35 @@ func main() {
 	// Community review is parked at launch; an explicit URL is required to
 	// enqueue into that future system. Empty disables the best-effort call.
 	postSvc.SetReviewerServiceURL(env("REVIEWER_SERVICE_URL", ""))
-	postSvc.SetTrustSafetyURL(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8118"))
-	// Default ON: a scheduled post never publishes while author standing
-	// is unverifiable. Set DRAFT_REQUIRE_STANDING_CHECK=false only in dev.
-	postSvc.SetRequireStandingCheck(env("DRAFT_REQUIRE_STANDING_CHECK", "true") != "false")
+	// Author standing at publication (Copyright Match plan 6.4, P-5): the
+	// trust-safety standing route, called with post-service's own Ed25519
+	// service token (POST_SERVICE_TOKEN_KEY / POST_SERVICE_TOKEN_KID) at
+	// TRUST_SAFETY_SERVICE_URL (default http://trust-safety-service:8091).
+	// Every publication path fails CLOSED while the client is missing or
+	// trust-safety is unreachable (founder default F-7). The one opt-out,
+	// PUBLISH_REQUIRE_STANDING_CHECK=false (the older DRAFT_REQUIRE_STANDING_CHECK
+	// still counts), is for a dev stack without a key; production refuses
+	// to boot without the key.
+	requireStanding := env("PUBLISH_REQUIRE_STANDING_CHECK", env("DRAFT_REQUIRE_STANDING_CHECK", "true")) != "false"
+	postSvc.SetRequireStandingCheck(requireStanding)
+	standingClient, err := standing.FromEnv(os.Getenv, internalServiceKey)
+	switch {
+	case err == nil:
+		postSvc.SetStandingChecker(standingClient)
+		slog.Info("trust-safety standing client configured", "url", env(standing.EnvURL, standing.DefaultURL))
+	case errors.Is(err, standing.ErrNotConfigured) && isProduction:
+		slog.Error(standing.EnvTokenKey + " and " + standing.EnvTokenKID + " are required in production: every publication path needs the trust-safety standing check")
+		os.Exit(1)
+	case errors.Is(err, standing.ErrNotConfigured) && requireStanding:
+		slog.Warn(standing.EnvTokenKey + " / " + standing.EnvTokenKID + " unset — every publication answers 503 STANDING_UNAVAILABLE and scheduled work is parked; set the key or PUBLISH_REQUIRE_STANDING_CHECK=false on a dev stack")
+	case errors.Is(err, standing.ErrNotConfigured):
+		slog.Warn(standing.EnvTokenKey + " / " + standing.EnvTokenKID + " unset and PUBLISH_REQUIRE_STANDING_CHECK=false — author standing is NOT checked at publication (dev only)")
+	default:
+		// A key that is set but does not load is a misconfiguration, never
+		// a reason to publish unchecked.
+		slog.Error("trust-safety standing client", "error", err)
+		os.Exit(1)
+	}
 	postSvc.SetReviewAllVideos(env("REVIEW_ALL_VIDEOS", "false") == "true")
 	postSvc.SetInternalServiceKey(internalServiceKey)
 

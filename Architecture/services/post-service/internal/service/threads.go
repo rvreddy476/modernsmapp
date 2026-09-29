@@ -87,6 +87,10 @@ func (s *Service) CreateThread(ctx context.Context, input *CreateThreadInput) ([
 	if !validPostVisibility[visibility] {
 		return nil, fmt.Errorf("%w: unsupported visibility %q", ErrInvalidThread, visibility)
 	}
+	// Author standing before any store read (publish_standing.go).
+	if err := s.requirePublishStanding(ctx, input.AuthorID); err != nil {
+		return nil, err
+	}
 
 	// Codex P1-6: enforce media ownership and readiness. Thread entries
 	// used ResolveMediaKind only, so any user could attach another

@@ -96,6 +96,17 @@ func (s *Service) CreateLiveVODPost(ctx context.Context, in LiveVODInput) (*Live
 		return &LiveVODOutcome{Post: existing}, nil
 	}
 
+	// Author standing (publish_standing.go), background policy: a refused
+	// creator is a skip (the recording stays in media-service; nothing to
+	// park), an unknown is returned so the consumer retries with backoff.
+	switch verdict, reason, err := s.backgroundPublishStanding(ctx, standingKeyLiveStream(in.StreamID), in.CreatorID); verdict {
+	case standingProceed:
+	case standingBlock:
+		return &LiveVODOutcome{Skipped: "creator standing: " + reason}, nil
+	default:
+		return nil, err
+	}
+
 	mediaID, err := s.resolveRecordingMedia(ctx, in)
 	if err != nil {
 		return nil, err

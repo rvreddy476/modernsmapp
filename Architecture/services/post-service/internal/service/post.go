@@ -86,14 +86,20 @@ type Service struct {
 	graphServiceURL        string
 	monetizationServiceURL string
 	reviewerServiceURL     string
-	trustSafetyURL         string
+	// standing is the trust-safety standing client consulted on every
+	// publication path (publish_standing.go). nil = unconfigured, which
+	// fails closed unless requireStandingCheck is false.
+	standing            StandingChecker
+	standingBackoff     *standingBackoff
+	standingBackoffOnce sync.Once
 	// analyticsServiceURL serves the visible view count on a post
 	// (view_counts.go). Empty means every count is 0, with a warning.
 	analyticsServiceURL string
 	viewCountMu         sync.Mutex
 	viewCountCache      map[uuid.UUID]viewCountEntry
-	// requireStandingCheck makes an unreachable trust-safety service block
-	// scheduled publication instead of letting it through (Codex P2-1).
+	// requireStandingCheck makes a MISSING standing client block every
+	// publication instead of letting it through (Codex P2-1, founder F-7).
+	// It is the dev-only opt-out; a wired client is always consulted.
 	requireStandingCheck bool
 	reviewAllVideos      bool
 	internalServiceKey   string
@@ -865,6 +871,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 	// Scheduling window, before anything is written (schedule.go).
 	if err := ValidatePublishAt(input.PublishAt, time.Now()); err != nil {
+		return nil, err
+	}
+	// Author standing, before anything is written (publish_standing.go):
+	// a suspended author gets 403 AUTHOR_SUSPENDED, an unanswerable
+	// trust-safety 503 — never a post.
+	if err := s.requirePublishStanding(ctx, input.AuthorID); err != nil {
 		return nil, err
 	}
 
@@ -3494,6 +3506,12 @@ type CreateRepostInput struct {
 
 // CreateRepost creates a plain or quote repost per the spec.
 func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*RepostResult, error) {
+	// A repost publishes on the reposter's behalf: author standing first
+	// (publish_standing.go). Cached per user, so it is cheap before the
+	// rate limit.
+	if err := s.requirePublishStanding(ctx, input.UserID); err != nil {
+		return nil, err
+	}
 	// Rate limit
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:repost:%s", input.UserID), 30, time.Hour) {
 		return nil, fmt.Errorf("RATE_LIMITED")

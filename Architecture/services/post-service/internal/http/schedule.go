@@ -106,6 +106,7 @@ func (h *Handler) UpdateSchedule(c *gin.Context) {
 	p, err := h.svc.ReschedulePost(c.Request.Context(), postID, actorID, publishAt)
 	if err != nil {
 		switch {
+		case writeStandingError(c, err):
 		case writeScheduleError(c, err):
 		case errors.Is(err, service.ErrPostNotFound):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
