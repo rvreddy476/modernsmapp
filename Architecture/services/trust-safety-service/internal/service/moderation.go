@@ -71,6 +71,10 @@ type Service struct {
 	postModeration PostModerationClient
 	// overturnGrace overrides DefaultOverturnReplayGrace when set (appeals.go).
 	overturnGrace *time.Duration
+	// copyright owns the case shell and restriction commands (copyright.go);
+	// restrictionKick wakes the dispatcher after a committed transition.
+	copyright       copyrightStore
+	restrictionKick func()
 }
 
 func New(store *postgres.ReportStore, kafkaWriter *kafka.Writer) *Service {

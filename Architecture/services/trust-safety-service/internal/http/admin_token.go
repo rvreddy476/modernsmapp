@@ -57,6 +57,11 @@ const (
 	PermMediaLabelsRead    = "trust_safety:media_labels.read"    // not in catalogue
 	PermKeywordFiltersRead = "trust_safety:keyword_filters.read" // not in catalogue
 	PermAuditRead          = "trust_safety:audit.read"
+	// PermCopyrightAct places and releases copyright holds
+	// (copyright_handler.go). Not in catalogue: identity must add it, and
+	// admin-service must register the routes with step-up, before any
+	// token can carry it.
+	PermCopyrightAct = "trust_safety:copyright.act" // not in catalogue
 )
 
 // AdminPermissions lists every permission an admin-service token may carry
@@ -65,6 +70,7 @@ var AdminPermissions = []string{
 	PermStatsRead, PermReportsRead, PermReportsAct, PermAppealsRead, PermAppealsAct,
 	PermGrievancesRead, PermGrievancesAct, PermStrikesRead, PermStrikesManage,
 	PermVerificationReview, PermMediaLabelsRead, PermKeywordFiltersRead, PermAuditRead,
+	PermCopyrightAct,
 }
 
 // Error codes for the token path.
@@ -118,6 +124,10 @@ func rawServiceToken(c *gin.Context) string {
 //	GET   /verification-requests     verification.review
 //	GET   /media-labels/:mediaId     media_labels.read
 //	GET   /keyword-filters           keyword_filters.read (platform scope by default)
+//	POST  /copyright/cases           copyright.act                   (audited; opens a case and places its hold)
+//	GET   /copyright/cases/:id       copyright.act
+//	POST  /copyright/cases/:id/place copyright.act                   (audited; re-places a released hold)
+//	POST  /copyright/cases/:id/release copyright.act                 (audited; releases an active hold)
 //
 // The first permission is the one named in a refusal. A read admits the
 // matching act permission too, so a moderator (who holds the act names
@@ -141,6 +151,10 @@ func (h *Handler) RegisterAdminTokenRoutes(r gin.IRouter) {
 	g.GET("/verification-requests", gate(PermVerificationReview), h.AdminListVerificationRequests)
 	g.GET("/media-labels/:mediaId", gate(PermMediaLabelsRead), h.GetMediaLabels)
 	g.GET("/keyword-filters", gate(PermKeywordFiltersRead), h.GetKeywordFilters)
+	g.POST("/copyright/cases", gate(PermCopyrightAct), h.CreateCopyrightCase)
+	g.GET("/copyright/cases/:id", gate(PermCopyrightAct), h.GetCopyrightCase)
+	g.POST("/copyright/cases/:id/place", gate(PermCopyrightAct), h.PlaceCopyrightHold)
+	g.POST("/copyright/cases/:id/release", gate(PermCopyrightAct), h.ReleaseCopyrightHold)
 }
 
 // requireAdminToken admits ONLY an admin-service token (see

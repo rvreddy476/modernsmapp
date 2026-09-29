@@ -20,6 +20,7 @@ import (
 	"github.com/atpost/trust-safety-service/internal/outbox"
 	"github.com/atpost/trust-safety-service/internal/purge"
 	"github.com/atpost/trust-safety-service/internal/reconcile"
+	"github.com/atpost/trust-safety-service/internal/restriction"
 	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
@@ -156,6 +157,36 @@ func main() {
 	}
 	defer outboxPublisher.Close()
 	go outbox.New(postgres.NewOutboxStore(dbPool), outboxPublisher, slog.Default()).Run(ctx)
+
+	// 7a'. Copyright holds (Copyright Match plan sections 6.4, 9.2, 9.5): a
+	// case transition commits its restriction command row; this dispatcher
+	// signs and sends it (POST_RESTRICTION_HMAC_KEY) and records the
+	// outcome; the sweep compares open cases with post-service's rows
+	// every 10 min (TRUST_SAFETY_SERVICE_TOKEN_KEY/KID sign the read).
+	// Without the HMAC key no command can be sent: the routes still record
+	// the transition and the row waits, which is logged loudly at boot.
+	restrictionClient, err := restriction.FromEnv(os.Getenv, env("INTERNAL_SERVICE_KEY", ""))
+	if err != nil {
+		slog.Error("restriction client configuration", "error", err)
+		os.Exit(1)
+	}
+	if !restrictionClient.CanSend() {
+		slog.Warn("trust-safety-service: " + restriction.EnvRestrictionKey + " not set — copyright hold commands are queued but never sent")
+	}
+	if !restrictionClient.CanRead() {
+		slog.Warn("trust-safety-service: " + restriction.EnvTokenKey + " not set — copyright hold reconciliation cannot read post-service")
+	}
+	copyrightStore := postgres.NewCopyrightStore(dbPool)
+	restrictionMetrics := restriction.NewMetrics()
+	restrictionDispatcher := restriction.NewDispatcher(copyrightStore, restrictionClient, slog.Default(), restrictionMetrics)
+	svc.SetCopyrightStore(copyrightStore)
+	svc.SetRestrictionKick(restrictionDispatcher.Kick)
+	if restrictionClient.CanSend() {
+		go restrictionDispatcher.Run(ctx)
+	}
+	if restrictionClient.CanRead() {
+		go reconcile.NewHoldReconciler(copyrightStore, restrictionClient, restrictionMetrics, restrictionDispatcher.Kick, slog.Default()).Start(ctx)
+	}
 
 	// 7b. Trust-score recompute job (spec §8.11/§10.1/§10.2) — read-only:
 	// recomputes trust_score/trust_tier in trust.user_trust_state every 6h.

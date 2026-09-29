@@ -26,14 +26,20 @@ func trustCase(rt productRoute) string {
 		return `{"user_id":"` + nobody + `","reason":"repeat spam after a warning","severity":"strike","idempotency_key":"click-1"}`
 	case opTrustStrikeVoid:
 		return `{"strike_id":"` + nobody + `","reason":"issued against the wrong account"}`
+	case opTrustCopyrightCaseCreate:
+		return `{"subject_post_id":"` + nobody + `","subject_author_id":"` + nobody + `","reason_code":"removal_upheld"}`
+	case opTrustCopyrightCasePlace:
+		return `{"reason_code":"reinstated_on_review"}`
+	case opTrustCopyrightCaseRelease:
+		return `{"reason_code":"claim_withdrawn"}`
 	}
 	return ""
 }
 
 func TestTrustRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(TrustRoutes) != 16 {
-		t.Fatalf("TrustRoutes has %d entries, want 16", len(TrustRoutes))
+	if len(TrustRoutes) != 20 {
+		t.Fatalf("TrustRoutes has %d entries, want 20", len(TrustRoutes))
 	}
 	for _, rt := range TrustRoutes {
 		t.Run(rt.operation+" "+rt.method+" "+rt.path, func(t *testing.T) {
@@ -118,7 +124,8 @@ func TestTrustOutcomeGates_DecidedBeforeTheProxyCall(t *testing.T) {
 func TestTrustRoutes_StepUp(t *testing.T) {
 	rg := newProductsRig(t, true)
 	for _, rt := range TrustRoutes {
-		wantStepUp := rt.operation == "trust.verification_requests.list" || rt.operation == opTrustStrikeIssue || rt.operation == opTrustStrikeVoid
+		wantStepUp := rt.operation == "trust.verification_requests.list" || rt.operation == opTrustStrikeIssue || rt.operation == opTrustStrikeVoid ||
+			rt.operation == opTrustCopyrightCaseCreate || rt.operation == opTrustCopyrightCasePlace || rt.operation == opTrustCopyrightCaseRelease
 		stepUpCase(t, rg, trustPrefix, trustAll, rt, trustCase(rt), wantStepUp)
 	}
 }

@@ -319,6 +319,7 @@ var catalogue = map[string][]entry{
 		p("grievances.act", mod),
 		p("strikes.read", mod),
 		p("strikes.manage"),
+		p("copyright.act"),
 		p("verification.review", kyc),
 		p("media_labels.read", mod),
 		p("keyword_filters.read", mod),

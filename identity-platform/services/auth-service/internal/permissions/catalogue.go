@@ -341,6 +341,8 @@ var catalogue = map[string][]entry{
 		p("grievances.act", mod),
 		p("strikes.read", mod),
 		p("strikes.manage"),
+		// copyright.act: place and release case-specific holds (trust-safety copyright cases); no default role.
+		p("copyright.act"),
 		// verification.review: identity documents, so KYC reviewer, never moderator.
 		p("verification.review", kyc),
 		p("media_labels.read", mod),

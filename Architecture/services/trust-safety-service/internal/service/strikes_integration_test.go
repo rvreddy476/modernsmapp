@@ -450,8 +450,9 @@ func TestMigration011_IdempotentAndBackfillsLegacyStrikes(t *testing.T) {
 	if second := snapshot(); second != first || mustCount(t, extras) != after {
 		t.Fatalf("second run changed rows:\n%s\n%s", first, second)
 	}
-	// The audit CHECK now admits 'strike' and still refuses anything else.
-	if _, err := pool.Exec(ctx, `INSERT INTO trust.admin_audit (actor_type, actor_service, action, target_type, target_id) VALUES ('service', 't', 'x', 'copyright_case', $1)`, uuid.New()); err == nil {
+	// The audit CHECK now admits 'strike' (and, since 013, 'copyright_case')
+	// and still refuses anything else.
+	if _, err := pool.Exec(ctx, `INSERT INTO trust.admin_audit (actor_type, actor_service, action, target_type, target_id) VALUES ('service', 't', 'x', 'not_a_target', $1)`, uuid.New()); err == nil {
 		t.Fatal("an unknown audit target type must be refused")
 	}
 }

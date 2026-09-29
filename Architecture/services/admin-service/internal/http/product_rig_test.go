@@ -32,7 +32,7 @@ var (
 	}
 	trustAll = []string{
 		permTrustStatsRead, permTrustReportsRead, permTrustReportsAct, permTrustAppealsRead, permTrustAppealsAct,
-		permTrustGrievancesRead, permTrustGrievancesAct, permTrustStrikesRead, permTrustStrikesManage,
+		permTrustGrievancesRead, permTrustGrievancesAct, permTrustStrikesRead, permTrustStrikesManage, permTrustCopyrightAct,
 		permTrustVerificationReview, permTrustMediaLabelsRead, permTrustKeywordFiltersRead, permTrustAuditRead,
 	}
 	monAll = []string{

@@ -24,6 +24,7 @@ const (
 	permTrustGrievancesAct      = "trust_safety:grievances.act"
 	permTrustStrikesRead        = "trust_safety:strikes.read"
 	permTrustStrikesManage      = "trust_safety:strikes.manage"
+	permTrustCopyrightAct       = "trust_safety:copyright.act"
 	permTrustVerificationReview = "trust_safety:verification.review"
 	permTrustMediaLabelsRead    = "trust_safety:media_labels.read"
 	permTrustKeywordFiltersRead = "trust_safety:keyword_filters.read"
@@ -38,6 +39,13 @@ const (
 	// the struck user as its target.
 	opTrustStrikeIssue = "trust.strike.issue"
 	opTrustStrikeVoid  = "trust.strike.void"
+
+	// Copyright case holds (phase 3): trust-safety owns the case and mints the
+	// signed restriction command; the console only opens, places and releases.
+	opTrustCopyrightCaseCreate  = "trust.copyright.case.create"
+	opTrustCopyrightCaseGet     = "trust.copyright.case.get"
+	opTrustCopyrightCasePlace   = "trust.copyright.case.place"
+	opTrustCopyrightCaseRelease = "trust.copyright.case.release"
 )
 
 // Strike severities, as trust-safety validates them (lower-case, trimmed).
@@ -81,6 +89,11 @@ var TrustRoutes = []productRoute{
 	{method: http.MethodPost, path: "/strikes", operation: opTrustStrikeIssue, permission: permTrustStrikesManage, stepUp: true},
 	// Voiding never deletes: trust-safety keeps the row and stops counting it.
 	{method: http.MethodPost, path: "/strikes/:userId/void", operation: opTrustStrikeVoid, permission: permTrustStrikesManage, stepUp: true, targetType: "user"},
+	// Copyright holds: every write is a step-up action; reads are not.
+	{method: http.MethodPost, path: "/copyright/cases", operation: opTrustCopyrightCaseCreate, permission: permTrustCopyrightAct, stepUp: true},
+	{method: http.MethodGet, path: "/copyright/cases/:id", operation: opTrustCopyrightCaseGet, permission: permTrustCopyrightAct, targetType: "copyright_case"},
+	{method: http.MethodPost, path: "/copyright/cases/:id/place", operation: opTrustCopyrightCasePlace, permission: permTrustCopyrightAct, stepUp: true, targetType: "copyright_case"},
+	{method: http.MethodPost, path: "/copyright/cases/:id/release", operation: opTrustCopyrightCaseRelease, permission: permTrustCopyrightAct, stepUp: true, targetType: "copyright_case"},
 	{method: http.MethodGet, path: "/verification-requests", operation: "trust.verification_requests.list", permission: permTrustVerificationReview, stepUp: true},
 	{method: http.MethodGet, path: "/media-labels/:mediaId", operation: "trust.media_labels.read", permission: permTrustMediaLabelsRead, targetType: "media"},
 	{method: http.MethodGet, path: "/keyword-filters", operation: "trust.keyword_filters.list", permission: permTrustKeywordFiltersRead},

@@ -70,9 +70,21 @@ CREATE INDEX IF NOT EXISTS idx_user_strikes_active
     ON trust.user_strikes (user_id, expires_at) WHERE voided_at IS NULL;
 
 -- The audit log may now name a strike (strike.issued / strike.voided).
-ALTER TABLE trust.admin_audit DROP CONSTRAINT IF EXISTS admin_audit_target_type_check;
-ALTER TABLE trust.admin_audit ADD CONSTRAINT admin_audit_target_type_check
-    CHECK (target_type IN ('report', 'appeal', 'grievance', 'strike'));
+-- Guarded: a later migration widens this CHECK again (013 adds
+-- copyright_case), and re-running an unguarded DROP + ADD here after rows
+-- of the wider type exist would fail. The constraint is replaced only when
+-- it is missing or does not yet admit 'strike'.
+DO $$
+DECLARE def TEXT;
+BEGIN
+    SELECT pg_get_constraintdef(oid) INTO def FROM pg_constraint
+     WHERE conname = 'admin_audit_target_type_check' AND conrelid = 'trust.admin_audit'::regclass;
+    IF def IS NULL OR def NOT LIKE '%strike%' THEN
+        ALTER TABLE trust.admin_audit DROP CONSTRAINT IF EXISTS admin_audit_target_type_check;
+        ALTER TABLE trust.admin_audit ADD CONSTRAINT admin_audit_target_type_check
+            CHECK (target_type IN ('report', 'appeal', 'grievance', 'strike'));
+    END IF;
+END $$;
 
 -- Transactional outbox. payload is the exact Kafka message value (an
 -- EventEnvelope for the trust topic, a bare ack for the purge-acks topic);
