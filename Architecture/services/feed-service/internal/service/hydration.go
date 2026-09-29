@@ -91,6 +91,40 @@ type HydratedPost struct {
 	LocationLat   *float64    `json:"location_lat,omitempty"`
 	LocationLng   *float64    `json:"location_lng,omitempty"`
 
+	// Original sounds on reels (2026-09-29). A reel can play another
+	// creator's reel audio next to its own video; the player keeps the two
+	// in sync and nothing is mixed on the server. All of it is decided by
+	// post-service and passed through here untouched — this struct decodes
+	// by field name, so before these were declared the batch answer's sound
+	// was dropped between post-service and the reel player.
+	//
+	// Every one of them is a pointer (or a string) with omitempty, so the
+	// feed says exactly what post-service said and nothing more:
+	//
+	//   - a post with no added sound gains no key at all, not a
+	//     `"sound": null` on every row of every feed;
+	//   - a value post-service DID send survives even when it is the zero
+	//     value. `original_audio_volume: 0` is a creator muting their own
+	//     video under the sound and must not be confused with "absent",
+	//     which the player reads as full volume;
+	//   - a hydration-cache row written before these fields existed decodes
+	//     with them absent, so for the five minutes that row lives the reel
+	//     plays as it did before rather than at volume zero.
+	//
+	// AudioTrackID is a string rather than a uuid.UUID on purpose: one id
+	// that failed to parse would fail the decode of the whole batch, and a
+	// sound is never a reason to lose a feed page.
+	//
+	// Sound is per viewer — post-service omits it when this viewer may not
+	// watch the sound's source video. That is safe in the hydration cache
+	// because the cache key carries the viewer. It holds no URL: the bytes
+	// are asked for from media-service, which gates every request itself.
+	AudioTrackID        string         `json:"audio_track_id,omitempty"`
+	AudioStartMs        *int           `json:"audio_start_ms,omitempty"`
+	Sound               *HydratedSound `json:"sound,omitempty"`
+	OriginalAudioVolume *float64       `json:"original_audio_volume,omitempty"`
+	OverlayAudioVolume  *float64       `json:"overlay_audio_volume,omitempty"`
+
 	// IsProcessing (instant publish, 2026-09-04): post-service sets it while
 	// any attached asset is not yet ready+passed. Such a post is the
 	// author's alone — post-service's batch already drops it for anyone
@@ -146,6 +180,30 @@ type HydratedPost struct {
 	// enrichReasons can tell recommendation-path posts apart after the
 	// filters have run. Never serialized, never cached.
 	source string
+}
+
+// HydratedSound is the sound a reel plays, exactly as post-service describes
+// it on a post (`sound`): the same eight keys, the same names, nothing
+// added. StartMs is where in the sound playback begins for THIS reel.
+//
+// SourcePostID and CreatorUserID are "uuid or null" upstream and stay that
+// way here — never omitempty, so a sound whose source reel is gone reads
+// `null` on the feed exactly as it does on the post. They are strings for
+// the reason AudioTrackID is: feed-service forwards them, it does not
+// interpret them.
+//
+// There is deliberately no URL field. A presigned URL in here would be
+// cached for five minutes and handed out at its expiry edge, and would
+// outlive the source video going private.
+type HydratedSound struct {
+	ID            string  `json:"id"`
+	Title         string  `json:"title"`
+	Artist        string  `json:"artist"`
+	DurationMs    int     `json:"duration_ms"`
+	StartMs       int     `json:"start_ms"`
+	UseCount      int     `json:"use_count"`
+	SourcePostID  *string `json:"source_post_id"`
+	CreatorUserID *string `json:"creator_user_id"`
 }
 
 // Author is the deliberately small, public identity needed to render a feed
