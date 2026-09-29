@@ -264,7 +264,7 @@ func EvaluateMediaAccessFacts(viewerID, uploaderID uuid.UUID, processingStatus, 
 	return false, MediaAccessResult{}
 }
 
-// ViewerMayAccessMedia reports whether a viewer may receive the bytes of a
+// / ViewerMayAccessMedia reports whether a viewer may receive the bytes of a
 // canonical media asset, based on the content that references it.
 //
 // Module 4 M4-P0-5. This is the exact media-to-owner-content lookup the
@@ -278,12 +278,19 @@ func EvaluateMediaAccessFacts(viewerID, uploaderID uuid.UUID, processingStatus, 
 // never created, and media whose content was deleted — both of which must stop
 // being fetchable. The uploader keeps access so an in-progress compose screen
 // can still preview its own upload.
+//
+// viewerID == uuid.Nil is the SIGNED-OUT viewer (2026-09-29, founder decision
+// 2): stories have no anonymous reading, a channel avatar is public, and a
+// post plays only under anonymousMayAccessPost (media_access.go).
 func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (MediaAccessResult, error) {
-	if viewerID == uuid.Nil || mediaID == uuid.Nil {
+	if mediaID == uuid.Nil {
 		return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "nil_id"}, nil
 	}
+	if s.mediaAccess == nil {
+		return MediaAccessResult{}, errMediaAccessUnwired()
+	}
 
-	facts, err := s.pgStore.GetMediaAccessFacts(ctx, mediaID)
+	facts, err := s.mediaAccess.GetMediaAccessFacts(ctx, mediaID)
 	if err != nil {
 		return MediaAccessResult{}, err
 	}
@@ -314,41 +321,33 @@ func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uu
 
 	// Tube: a channel avatar is public to every viewer once the canonical
 	// gate above (moderation) has let a non-uploader through.
-	if owners, err := s.pgStore.ChannelAvatarOwners(ctx, []uuid.UUID{mediaID}); err != nil {
+	if owners, err := s.mediaAccess.ChannelAvatarOwners(ctx, []uuid.UUID{mediaID}); err != nil {
 		return MediaAccessResult{}, err
 	} else if _, isAvatar := owners[mediaID]; isAvatar {
 		return channelAvatarAccess(facts.ProcessingStatus), nil
 	}
 
-	story, err := s.pgStore.StoryForMedia(ctx, mediaID)
-	if err != nil {
-		return MediaAccessResult{}, err
-	}
-	if story != nil {
-		rel := ViewerRelationship{}
-		if story.AuthorID != viewerID {
-			rels, relErr := s.storyAudience.Relationships(ctx, viewerID.String(), []string{story.AuthorID.String()})
-			if relErr != nil {
-				return MediaAccessResult{}, relErr
-			}
-			rel = rels[story.AuthorID.String()]
+	if viewerID != uuid.Nil {
+		// Stories carry an audience that needs a viewer to evaluate blocks
+		// for (GetStoryForViewer); a signed-out viewer never reaches this.
+		story, err := s.mediaAccess.StoryForMedia(ctx, mediaID)
+		if err != nil {
+			return MediaAccessResult{}, err
 		}
-		d := EvaluateStoryVisibility(viewerID.String(), story.AuthorID.String(),
-			storyFacts(story, nowUnix()), rel)
-		if d == DenyNone {
-			if facts.ProcessingStatus != "ready" {
-				slog.InfoContext(ctx, "media access permitted: story visible but asset not ready",
-					"viewer_id", viewerID,
-					"media_id", mediaID,
-					"processing_status", facts.ProcessingStatus,
-					"reason", "story_not_ready")
-				return MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "story_not_ready"}, nil
+		if story != nil {
+			rel := ViewerRelationship{}
+			if story.AuthorID != viewerID {
+				rels, relErr := s.storyAudience.Relationships(ctx, viewerID.String(), []string{story.AuthorID.String()})
+				if relErr != nil {
+					return MediaAccessResult{}, relErr
+				}
+				rel = rels[story.AuthorID.String()]
 			}
-			slog.DebugContext(ctx, "media access allowed: story visible",
-				"viewer_id", viewerID,
-				"media_id", mediaID,
-				"reason", "story_allowed")
-			return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "story_allowed"}, nil
+			d := EvaluateStoryVisibility(viewerID.String(), story.AuthorID.String(),
+				storyFacts(story, nowUnix()), rel)
+			if d == DenyNone {
+				return storyMediaVerdict(ctx, viewerID, mediaID, facts.ProcessingStatus), nil
+			}
 		}
 	}
 
@@ -357,26 +356,9 @@ func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uu
 		return MediaAccessResult{}, err
 	}
 	if postVisible {
-		if facts.ProcessingStatus != "ready" {
-			slog.InfoContext(ctx, "media access permitted: post visible but asset not ready",
-				"viewer_id", viewerID,
-				"media_id", mediaID,
-				"processing_status", facts.ProcessingStatus,
-				"reason", "post_not_ready")
-			return MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "post_not_ready"}, nil
-		}
-		slog.DebugContext(ctx, "media access allowed: post visible",
-			"viewer_id", viewerID,
-			"media_id", mediaID,
-			"reason", "post_allowed")
-		return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "post_allowed"}, nil
+		return postMediaVerdict(ctx, viewerID, mediaID, facts.ProcessingStatus), nil
 	}
-
-	slog.InfoContext(ctx, "media access excluded: no visible post or story for viewer",
-		"viewer_id", viewerID,
-		"media_id", mediaID,
-		"reason", "no_visible_post_or_story")
-	return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "no_visible_post_or_story"}, nil
+	return noVisibleContent(ctx, viewerID, mediaID), nil
 }
 
 // ViewerMayAccessMediaBatch evaluates a feed page with a fixed number of
@@ -384,23 +366,23 @@ func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uu
 // to ViewerMayAccessMedia; only the data-loading shape differs.
 func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.UUID, mediaIDs []uuid.UUID) (map[uuid.UUID]MediaAccessResult, error) {
 	results := make(map[uuid.UUID]MediaAccessResult, len(mediaIDs))
-	if len(mediaIDs) == 0 || viewerID == uuid.Nil {
+	if len(mediaIDs) == 0 {
 		return results, nil
 	}
+	if s.mediaAccess == nil {
+		return nil, errMediaAccessUnwired()
+	}
+	anonymous := viewerID == uuid.Nil
 
-	factsByMedia, err := s.pgStore.GetMediaAccessFactsBatch(ctx, mediaIDs)
+	factsByMedia, err := s.mediaAccess.GetMediaAccessFactsBatch(ctx, mediaIDs)
 	if err != nil {
 		return nil, err
 	}
-	storiesByMedia, err := s.pgStore.StoriesForMediaBatch(ctx, mediaIDs)
+	postIDsByMedia, err := s.mediaAccess.PostIDsByMediaIDs(ctx, mediaIDs)
 	if err != nil {
 		return nil, err
 	}
-	postIDsByMedia, err := s.pgStore.PostIDsByMediaIDs(ctx, mediaIDs)
-	if err != nil {
-		return nil, err
-	}
-	avatarOwners, err := s.pgStore.ChannelAvatarOwners(ctx, mediaIDs)
+	avatarOwners, err := s.mediaAccess.ChannelAvatarOwners(ctx, mediaIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -414,47 +396,50 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 			}
 		}
 	}
-	posts, err := s.pgStore.GetPostsByIDs(ctx, postIDs)
+	posts, err := s.mediaAccess.GetPostsByIDs(ctx, postIDs)
 	if err != nil {
 		return nil, err
 	}
 	postsByID := make(map[uuid.UUID]*postgres.Post, len(posts))
-	authorSet := make(map[string]bool)
-	var authorIDs []string
-	addAuthor := func(id uuid.UUID) {
-		if id == viewerID {
-			return
-		}
-		value := id.String()
-		if !authorSet[value] {
-			authorSet[value] = true
-			authorIDs = append(authorIDs, value)
-		}
-	}
-	var privateIDs []uuid.UUID
+	candidates := make([]*postgres.Post, 0, len(posts))
 	for i := range posts {
 		postsByID[posts[i].ID] = &posts[i]
 		if strings.EqualFold(posts[i].ReviewStatus, "approved") {
-			addAuthor(posts[i].AuthorID)
-		}
-		if strings.EqualFold(posts[i].Visibility, "private") && posts[i].AuthorID != viewerID {
-			privateIDs = append(privateIDs, posts[i].ID)
+			candidates = append(candidates, &posts[i])
 		}
 	}
-	// Private sharing: one lookup for the page's private posts.
-	shared := s.privateSharedSet(ctx, viewerID, privateIDs)
-	// Age-restricted posts: at most one date-of-birth lookup per batch.
-	ageOK := s.ageAllowance(ctx, &viewerID)
-	for _, story := range storiesByMedia {
-		if story != nil {
-			addAuthor(story.AuthorID)
-		}
+	// One resolution of the account gate, relationships, shares and age for
+	// the whole page.
+	judge, err := s.postMediaJudge(ctx, viewerID, candidates)
+	if err != nil {
+		return nil, err
 	}
-	rels := map[string]ViewerRelationship{}
-	if len(authorIDs) > 0 {
-		rels, err = s.storyAudience.Relationships(ctx, viewerID.String(), authorIDs)
+
+	// Stories: signed-in only, with their own relationship lookup (a story's
+	// author is rarely one of the page's post authors).
+	storiesByMedia := map[uuid.UUID]*postgres.Story{}
+	storyRels := map[string]ViewerRelationship{}
+	if !anonymous {
+		storiesByMedia, err = s.mediaAccess.StoriesForMediaBatch(ctx, mediaIDs)
 		if err != nil {
 			return nil, err
+		}
+		var storyAuthors []string
+		seenAuthor := map[string]bool{}
+		for _, story := range storiesByMedia {
+			if story == nil || story.AuthorID == viewerID {
+				continue
+			}
+			if id := story.AuthorID.String(); !seenAuthor[id] {
+				seenAuthor[id] = true
+				storyAuthors = append(storyAuthors, id)
+			}
+		}
+		if len(storyAuthors) > 0 {
+			storyRels, err = s.storyAudience.Relationships(ctx, viewerID.String(), storyAuthors)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -499,181 +484,27 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 
 		if story := storiesByMedia[mediaID]; story != nil {
 			decision := EvaluateStoryVisibility(viewerID.String(), story.AuthorID.String(),
-				storyFacts(story, nowUnix()), rels[story.AuthorID.String()])
+				storyFacts(story, nowUnix()), storyRels[story.AuthorID.String()])
 			if decision == DenyNone {
-				if facts.ProcessingStatus != "ready" {
-					slog.InfoContext(ctx, "media access permitted: story visible but asset not ready",
-						"viewer_id", viewerID,
-						"media_id", mediaID,
-						"processing_status", facts.ProcessingStatus,
-						"reason", "story_not_ready")
-					results[mediaID] = MediaAccessResult{
-						Allowed:  true,
-						Decision: DecisionNotReady,
-						Reason:   "story_not_ready",
-					}
-				} else {
-					slog.DebugContext(ctx, "media access allowed: story visible",
-						"viewer_id", viewerID,
-						"media_id", mediaID,
-						"reason", "story_allowed")
-					results[mediaID] = MediaAccessResult{
-						Allowed:  true,
-						Decision: DecisionAllowed,
-						Reason:   "story_allowed",
-					}
-				}
+				results[mediaID] = storyMediaVerdict(ctx, viewerID, mediaID, facts.ProcessingStatus)
 				continue
 			}
 		}
 
 		postAllowed := false
 		for _, postID := range postIDsByMedia[mediaID] {
-			post := postsByID[postID]
-			if post == nil || !strings.EqualFold(post.ReviewStatus, "approved") {
-				continue
-			}
-			if evaluatePostMediaVisibility(viewerID, post, rels[post.AuthorID.String()], shared[post.ID]) && ageOK(post) {
+			if judge(postsByID[postID]) {
 				postAllowed = true
 				break
 			}
 		}
-
 		if postAllowed {
-			if facts.ProcessingStatus != "ready" {
-				slog.InfoContext(ctx, "media access permitted: post visible but asset not ready",
-					"viewer_id", viewerID,
-					"media_id", mediaID,
-					"processing_status", facts.ProcessingStatus,
-					"reason", "post_not_ready")
-				results[mediaID] = MediaAccessResult{
-					Allowed:  true,
-					Decision: DecisionNotReady,
-					Reason:   "post_not_ready",
-				}
-			} else {
-				slog.DebugContext(ctx, "media access allowed: post visible",
-					"viewer_id", viewerID,
-					"media_id", mediaID,
-					"reason", "post_allowed")
-				results[mediaID] = MediaAccessResult{
-					Allowed:  true,
-					Decision: DecisionAllowed,
-					Reason:   "post_allowed",
-				}
-			}
+			results[mediaID] = postMediaVerdict(ctx, viewerID, mediaID, facts.ProcessingStatus)
 			continue
 		}
-
-		slog.InfoContext(ctx, "media access excluded: no visible post or story for viewer",
-			"viewer_id", viewerID,
-			"media_id", mediaID,
-			"reason", "no_visible_post_or_story")
-		results[mediaID] = MediaAccessResult{
-			Allowed:  false,
-			Decision: DecisionDenied,
-			Reason:   "no_visible_post_or_story",
-		}
+		results[mediaID] = noVisibleContent(ctx, viewerID, mediaID)
 	}
 	return results, nil
-}
-
-// viewerMayAccessPostMedia extends protected delivery to the shared canonical
-// media used by posts, Reels and PostTube. PostTube stays a separate product
-// surface; this merely honors its existing post/media reference and never
-// creates or merges a second video record.
-func (s *Service) viewerMayAccessPostMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error) {
-	postIDs, err := s.pgStore.PostIDsByMediaID(ctx, mediaID)
-	if err != nil {
-		return false, err
-	}
-	posts := make([]*postgres.Post, 0, len(postIDs))
-	authors := make([]string, 0, len(postIDs))
-	seenAuthor := make(map[string]bool)
-	for _, id := range postIDs {
-		p, err := s.pgStore.GetPost(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		if p == nil || !strings.EqualFold(p.ReviewStatus, "approved") {
-			continue
-		}
-		posts = append(posts, p)
-		author := p.AuthorID.String()
-		if !seenAuthor[author] {
-			seenAuthor[author] = true
-			authors = append(authors, author)
-		}
-	}
-	if len(posts) == 0 {
-		return false, nil
-	}
-	rels, err := s.storyAudience.Relationships(ctx, viewerID.String(), authors)
-	if err != nil {
-		return false, err
-	}
-	shared := s.privateSharedSet(ctx, viewerID, privatePostIDs(posts, viewerID))
-	ageOK := s.ageAllowance(ctx, &viewerID)
-	for _, p := range posts {
-		rel := rels[p.AuthorID.String()]
-		if evaluatePostMediaVisibility(viewerID, p, rel, shared[p.ID]) && ageOK(p) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// privatePostIDs is the ids of the private posts in posts that viewerID
-// does not own: the only ones whose share list matters to a media decision.
-func privatePostIDs(posts []*postgres.Post, viewerID uuid.UUID) []uuid.UUID {
-	var out []uuid.UUID
-	for _, p := range posts {
-		if p != nil && p.AuthorID != viewerID && strings.EqualFold(p.Visibility, "private") {
-			out = append(out, p.ID)
-		}
-	}
-	return out
-}
-
-// privateSharedSet is the subset of postIDs whose share list names viewerID.
-// Fails closed: no store or a lookup error shares nothing.
-func (s *Service) privateSharedSet(ctx context.Context, viewerID uuid.UUID, postIDs []uuid.UUID) map[uuid.UUID]bool {
-	if len(postIDs) == 0 || s.privateShare == nil {
-		return map[uuid.UUID]bool{}
-	}
-	shared, err := s.privateShare.PrivateSharedPostIDs(ctx, viewerID, postIDs)
-	if err != nil {
-		slog.WarnContext(ctx, "media access: private share lookup failed; denying shared posts", "viewer_id", viewerID, "err", err)
-		return map[uuid.UUID]bool{}
-	}
-	return shared
-}
-
-// evaluatePostMediaVisibility is the per-post playback rule. shared is
-// "viewerID is on p's private share list" (private sharing, 2026-09-28),
-// consulted for a private post only, after the block / mute checks. The
-// age gate is the caller's (ageAllowance), so this stays pure.
-func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, rel ViewerRelationship, shared bool) bool {
-	if p == nil || p.AuthorID == viewerID || !strings.EqualFold(p.ReviewStatus, "approved") {
-		return p != nil && p.AuthorID == viewerID
-	}
-	if rel.Blocked || rel.BlockedBy || rel.Muted {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(p.Visibility)) {
-	case "", "public", "unlisted":
-		return true
-	case "followers":
-		return rel.Follows
-	case "private":
-		return shared
-	// "circle", "trusted" and "close_friends" are deliberately absent: the
-	// audience was retired on 21 Sep (graph-service migration 012), so they
-	// fall through to author-only below.
-	default: // the retired close-friends values, staged, and
-		// future/unknown values all fail closed
-		return false
-	}
 }
 
 // channelAvatarAccess is the verdict for a media asset that is some Tube

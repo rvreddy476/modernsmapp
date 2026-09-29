@@ -61,9 +61,7 @@ func (s *Service) getCachedPostBody(ctx context.Context, id uuid.UUID) (*postgre
 					_ = s.rdb.Del(ctx, key).Err()
 					return nil, nil
 				}
-				p.ReviewStatus = state.ReviewStatus
-				p.Visibility = state.Visibility
-				p.AgeRestricted = state.AgeRestricted
+				applyPostAccessState(&p, state)
 				return &p, nil
 			}
 			// Corrupt entry: drop it so the next read repopulates.
@@ -88,6 +86,19 @@ func (s *Service) getCachedPostBody(ctx context.Context, id uuid.UUID) (*postgre
 		}
 	}
 	return p, nil
+}
+
+// applyPostAccessState overwrites the revocable fields of a cached body with
+// the canonical row's. Every field the read gates consult for "may this be
+// seen at all" must be here: review status, visibility, the 18+ flag and
+// the schedule (hiddenWhileScheduled reads PublishAt; IsScheduled is the
+// wire-only mirror deriveScheduled sets at scan time).
+func applyPostAccessState(p *postgres.Post, state *postgres.PostAccessState) {
+	p.ReviewStatus = state.ReviewStatus
+	p.Visibility = state.Visibility
+	p.AgeRestricted = state.AgeRestricted
+	p.PublishAt = state.PublishAt
+	p.IsScheduled = state.PublishAt != nil
 }
 
 // InvalidatePostBodyCache drops the cached body for one post. Called

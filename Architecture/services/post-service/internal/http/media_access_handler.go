@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/shared/api"
@@ -21,11 +22,33 @@ import (
 // the drift would be silent — media would keep being served under rules that
 // no longer match what the feed enforces.
 //
+// THE ANONYMOUS SENTINEL (2026-09-29, founder decision 2)
+//
+// A request with no verified identity arrives as viewer_id "" (media-service
+// delivery/authz.go sends exactly that; the nil UUID is accepted as the same
+// thing). It is a real question with a real, narrower answer — see
+// service.anonymousMayAccessPost — not a malformed request. Anything else
+// that is not a UUID is still refused.
+//
 // SERVICE-TO-SERVICE ONLY
 //
 // The route is registered only when an internal key is configured. An empty
 // credential must never produce a permissive endpoint, so with no key the route
 // does not exist at all and a request 404s without revealing anything.
+
+// parseMediaAccessViewer resolves the wire viewer_id: "" or the nil UUID is
+// the anonymous stranger (uuid.Nil); anything else must parse as a UUID.
+func parseMediaAccessViewer(raw string) (uuid.UUID, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return uuid.Nil, true
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return id, true
+}
 
 type mediaAccessRequest struct {
 	ViewerID string `json:"viewer_id"`
@@ -58,11 +81,12 @@ func (h *Handler) MediaAccessBatch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, mediaAccessBatchResponse{Allowed: map[string]bool{}})
 		return
 	}
-	viewerID, err := uuid.Parse(req.ViewerID)
-	if err != nil {
+	viewerID, ok := parseMediaAccessViewer(req.ViewerID)
+	if !ok {
 		c.JSON(http.StatusForbidden, mediaAccessBatchResponse{Allowed: map[string]bool{}})
 		return
 	}
+	var err error
 	mediaIDs := make([]uuid.UUID, len(req.MediaIDs))
 	for i, raw := range req.MediaIDs {
 		mediaIDs[i], err = uuid.Parse(raw)
@@ -107,8 +131,8 @@ func (h *Handler) MediaAccess(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, mediaAccessResponse{Allowed: false, Decision: service.DecisionDenied, Reason: "invalid_request"})
 		return
 	}
-	viewerID, err := uuid.Parse(req.ViewerID)
-	if err != nil {
+	viewerID, ok := parseMediaAccessViewer(req.ViewerID)
+	if !ok {
 		c.JSON(http.StatusForbidden, mediaAccessResponse{Allowed: false, Decision: service.DecisionDenied, Reason: "invalid_viewer_id"})
 		return
 	}

@@ -174,6 +174,10 @@ type Service struct {
 	// (private_shares.go; nil = no private post is shared with anyone).
 	birthDates   birthDateSource
 	privateShare privateShareStore
+	// mediaAccess is the storage slice behind the media byte gate
+	// (media_access.go). Nil = unwired, which answers unresolved (503),
+	// never allowed.
+	mediaAccess mediaAccessStore
 	// now is the clock seam for the recording-date and age rules.
 	now func() time.Time
 	// readGate stands in for singlePostRead in tests (comment_counts.go);
@@ -212,6 +216,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.creatorComments = pg
 		svc.liveVOD = pg
 		svc.privateShare = pg
+		svc.mediaAccess = pg
 		svc.endScreens = pg
 		svc.flickSeries = pg
 	}
@@ -1647,11 +1652,12 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 		if !isAuthor {
 			switch strings.ToLower(post.Visibility) {
 			case "", "public", "unlisted":
-			case "followers", "circle":
+			case "followers":
 				if !viewerFollows() {
 					continue
 				}
-			default: // private, or an unknown value — fail closed
+			default: // private, the retired "circle" (author-only, see
+				// viewerMayViewPost), or an unknown value — fail closed
 				continue
 			}
 		}
@@ -2802,8 +2808,8 @@ func (s *Service) CleanupExpiredStories(ctx context.Context) (int64, error) {
 //
 //   - the viewer is the author (always allowed)
 //   - visibility == "public" (everyone)
-//   - visibility == "followers" or "circle" AND the viewer follows
-//     the author
+//   - visibility == "followers" AND the viewer follows the author
+//     (the retired "circle" is author-only)
 //
 // All other cases return ErrPostNotVisible. Graph errors fail closed:
 // without a working relationship check we can't distinguish a
@@ -2866,7 +2872,7 @@ func (s *Service) viewerMayViewPost(ctx context.Context, post *postgres.Post, vi
 		// Private sharing (2026-09-28): a user on the post's share list.
 		// This is a single-post gate only; no listing calls it.
 		return s.sharedWithViewer(ctx, post.ID, viewerID)
-	case "followers", "circle":
+	case "followers":
 		if viewerID == nil {
 			return false
 		}
@@ -2877,6 +2883,13 @@ func (s *Service) viewerMayViewPost(ctx context.Context, post *postgres.Post, vi
 		}
 		return follows
 	default:
+		// "circle" (and "trusted" / "close_friends") is author-only here as
+		// on the media gate (evaluatePostMediaVisibility) since 2026-09-29:
+		// the close-friends audience was retired on 21 Sep (graph-service
+		// migration 012), no writer can set it (PostVisibilities), and the
+		// old "treat it as followers" widened a close-friends post to every
+		// follower. "staged", "private" without a share and unknown values
+		// fail closed as before.
 		return false
 	}
 }

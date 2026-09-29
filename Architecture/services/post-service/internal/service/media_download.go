@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"strings"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -36,41 +35,30 @@ func (s *Service) ViewerMayDownloadMedia(ctx context.Context, viewerID, mediaID 
 		return false, nil
 	}
 
-	postIDs, err := s.pgStore.PostIDsByMediaID(ctx, mediaID)
+	posts, err := s.approvedPostsForMedia(ctx, mediaID)
 	if err != nil {
 		return false, err
 	}
 	var candidates []*postgres.Post
-	var authors []string
-	seenAuthor := map[string]bool{}
-	for _, id := range postIDs {
-		p, err := s.pgStore.GetPost(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		if p == nil || p.DeletedAt != nil || !p.AllowDownload || !strings.EqualFold(p.ReviewStatus, "approved") {
+	for _, p := range posts {
+		if p == nil || p.DeletedAt != nil || !p.AllowDownload {
 			continue
 		}
 		candidates = append(candidates, p)
-		if a := p.AuthorID.String(); !seenAuthor[a] {
-			seenAuthor[a] = true
-			authors = append(authors, a)
-		}
 	}
 	if len(candidates) == 0 {
 		return false, nil
 	}
-	rels, err := s.storyAudience.Relationships(ctx, viewerID.String(), authors)
+	// The same per-post rule the media-access route applies
+	// (postMediaJudge: account privacy, hidden authors, schedule, blocks,
+	// audience, shares, age), so a download can never be allowed on a post
+	// the viewer could not watch.
+	judge, err := s.postMediaJudge(ctx, viewerID, candidates)
 	if err != nil {
 		return false, err
 	}
-	shared := s.privateSharedSet(ctx, viewerID, privatePostIDs(candidates, viewerID))
-	ageOK := s.ageAllowance(ctx, &viewerID)
 	for _, p := range candidates {
-		// The same per-post visibility rule the media-access route applies
-		// (viewerMayAccessPostMedia), so a download can never be allowed on
-		// a post the viewer could not watch.
-		if evaluatePostMediaVisibility(viewerID, p, rels[p.AuthorID.String()], shared[p.ID]) && ageOK(p) {
+		if judge(p) {
 			return true, nil
 		}
 	}

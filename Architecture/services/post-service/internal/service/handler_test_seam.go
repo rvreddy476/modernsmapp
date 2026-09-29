@@ -36,6 +36,9 @@ type HandlerTestDeps struct {
 	// view counts at httptest fakes.
 	GraphServiceURL     string
 	AnalyticsServiceURL string
+	// MediaAccess backs /v1/internal/media-access (media_access.go); nil
+	// leaves the gate unresolved (503), never allowed.
+	MediaAccess mediaAccessStore
 }
 
 // NewForHandlerTests builds a Service over HandlerTestDeps, with no
@@ -58,6 +61,7 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		flickSeries:         d.FlickSeries,
 		graphServiceURL:     d.GraphServiceURL,
 		analyticsServiceURL: d.AnalyticsServiceURL,
+		mediaAccess:         d.MediaAccess,
 	}
 	s.authoringOwners = d.Authoring
 	return s
