@@ -399,10 +399,56 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 	return out, rows.Err()
 }
 
-// PostIDsByMediaID returns the (non-deleted) posts that attach a given
-// media asset. Used to release a held voice post once media-service
-// publishes its safety verdict (fixes-v2 / Codex P0-2).
+// postCoverOwnedByAuthor is the clause that lets a post stand for its COVER
+// in the by-media lookups (2026-09-29): the cover asset must be the post
+// author's own upload. It is what keeps "a cover inherits its post's
+// audience" from becoming "name any asset as your cover and publish it":
+// POST /v1/posts and POST /v1/videos/:id/cover-frame store cover_media_id
+// without an ownership check (only PATCH /v1/posts/:id verifies it), so a
+// public post could otherwise name a stranger's private asset as its cover
+// and open that asset to everyone. Aliases: p = posts, ma = media_assets.
+const postCoverOwnedByAuthor = `ma.uploader_id = p.author_id`
+
+// PostIDsByMediaID returns the (non-deleted) posts that carry a given media
+// asset: the posts that ATTACH it (post_media), and the posts whose COVER it
+// is when the cover is the author's own upload (postCoverOwnedByAuthor). The
+// media byte gate reads it, so a cover inherits its post's audience; so does
+// GET /v1/internal/posts/by-media/:mediaId.
+//
+// The review-gate release must NOT use this: see PostIDsAttachingMedia.
 func (s *Store) PostIDsByMediaID(ctx context.Context, mediaID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id
+		FROM post_media pm
+		JOIN posts p ON p.id = pm.post_id
+		WHERE pm.media_id = $1 AND p.deleted_at IS NULL
+		UNION
+		SELECT p.id
+		FROM posts p
+		JOIN media_assets ma ON ma.id = p.cover_media_id
+		WHERE p.cover_media_id = $1 AND p.deleted_at IS NULL AND `+postCoverOwnedByAuthor, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// PostIDsAttachingMedia returns the (non-deleted) posts that ATTACH a media
+// asset, covers excluded. Used to release a held voice post once
+// media-service publishes its safety verdict (fixes-v2 / Codex P0-2): a
+// verdict on an asset speaks for the posts that play it, never for a post
+// that merely names it as its cover, whose own attachments may still be
+// under review.
+func (s *Store) PostIDsAttachingMedia(ctx context.Context, mediaID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT p.id
 		FROM post_media pm
@@ -424,7 +470,8 @@ func (s *Store) PostIDsByMediaID(ctx context.Context, mediaID uuid.UUID) ([]uuid
 }
 
 // PostIDsByMediaIDs is the page-sized form used by media delivery
-// authorization. It replaces one post lookup per media asset.
+// authorization. It replaces one post lookup per media asset. Same two
+// sources as PostIDsByMediaID: attachments, and covers the author uploaded.
 func (s *Store) PostIDsByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
 	result := make(map[uuid.UUID][]uuid.UUID, len(mediaIDs))
 	if len(mediaIDs) == 0 {
@@ -435,6 +482,11 @@ func (s *Store) PostIDsByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (ma
 		FROM post_media pm
 		JOIN posts p ON p.id = pm.post_id
 		WHERE pm.media_id = ANY($1) AND p.deleted_at IS NULL
+		UNION
+		SELECT p.cover_media_id, p.id
+		FROM posts p
+		JOIN media_assets ma ON ma.id = p.cover_media_id
+		WHERE p.cover_media_id = ANY($1) AND p.deleted_at IS NULL AND `+postCoverOwnedByAuthor+`
 	`, mediaIDs)
 	if err != nil {
 		return nil, err

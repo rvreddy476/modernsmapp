@@ -25,6 +25,7 @@ import (
 //	GET   /v1/channels/search             ?q=&limit= -> {"data":[channel…]} (Tube search page)
 //	GET   /v1/channels/subscriptions      ?limit&cursor -> the caller's subscriptions, newest first
 //	GET   /v1/channels/:ref               public channel by handle or user id
+//	GET   /v1/channels/:ref/feed          ?category=&limit= the published feed (RSS), one document for everyone
 //	POST  /v1/channels/:ref/subscribe     {notify_on?} follow + subscribe (one button)
 //	DELETE /v1/channels/:ref/subscribe    unfollow + unsubscribe
 //	GET   /v1/channels/:ref/subscription  {subscribed:false} | {subscribed:true, notify_on, subscribed_at}
@@ -52,6 +53,7 @@ func (h *Handler) registerChannelRoutes(r *gin.Engine) {
 		// never read as a handle.
 		channels.GET("/subscriptions", h.ListMySubscriptions)
 		channels.GET("/:ref", h.GetChannelByRef)
+		channels.GET("/:ref/feed", h.GetChannelFeed)
 		channels.POST("/:ref/subscribe", h.SubscribeToChannel)
 		channels.DELETE("/:ref/subscribe", h.UnsubscribeFromChannel)
 		channels.GET("/:ref/subscription", h.GetChannelSubscription)
@@ -381,4 +383,48 @@ func (h *Handler) GetChannelByRef(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, view, nil)
+}
+
+// channelFeedCacheControl is the feed's cache policy: the document is the
+// same for every caller, so a shared cache may keep it for five minutes.
+const channelFeedCacheControl = "public, max-age=300"
+
+// GetChannelFeed handles GET /v1/channels/:ref/feed?category=&limit= — the
+// JSON behind the channel's RSS feed (service/channel_feed.go).
+//
+// The feed is evaluated as the anonymous stranger. X-User-Id is NOT read
+// here, on purpose: the response is publicly cacheable, so it must not
+// depend on who asked, and the owner gets the same document as a podcast
+// app. No identity Vary is set for the same reason.
+//
+//	200 {channel, category, updated_at, items[]}   Cache-Control: public, max-age=300
+//	400 INVALID_CATEGORY   category is not a long-video taxonomy id
+//	400 INVALID_REQUEST    limit is not a non-negative integer
+//	404 NOT_FOUND          no such channel, or its owner is private / hidden
+//	                       (one answer for both; nothing tells them apart)
+func (h *Handler) GetChannelFeed(c *gin.Context) {
+	ctx := c.Request.Context()
+	limit := 0
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "limit must be a non-negative integer", nil)
+			return
+		}
+		limit = n
+	}
+	feed, err := h.svc.ChannelFeed(ctx, c.Param("ref"), c.Query("category"), limit)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidCategory):
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", err.Error(), nil)
+		case errors.Is(err, service.ErrChannelNotFound):
+			api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", "Channel not found", nil)
+		default:
+			api.ErrorWithContext(ctx, c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Could not build the channel feed", nil)
+		}
+		return
+	}
+	c.Writer.Header().Set("Cache-Control", channelFeedCacheControl)
+	api.JSON(c.Writer, http.StatusOK, feed, nil)
 }

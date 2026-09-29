@@ -313,6 +313,146 @@ const channelVideoCountWhere = `
 	AND `+viewerApprovedSQL+`
 	AND publish_at IS NULL`
 
+// channelFeedWhere is what "a video in the channel's published feed" means
+// (RSS, 2026-09-29): channelVideoCountWhere for ONE owner ($1) plus the two
+// clauses only the signed-out audience needs. The feed is one document for
+// the whole internet, so every row must be readable by a viewer with no
+// identity: no date of birth to pass the 18+ gate, no membership to pass a
+// tier. The Go mirror is service.anonymousMayAccessPost, which re-checks
+// every row this predicate returns.
+const channelFeedWhere = `
+	author_id = $1
+	AND content_type IN ('long_video', 'video')
+	AND deleted_at IS NULL
+	AND visibility = 'public'
+	AND ` + viewerApprovedSQL + `
+	AND publish_at IS NULL
+	AND age_restricted = FALSE
+	AND tier_required_id IS NULL`
+
+// MaxChannelFeedVideos is the feed's page: the newest 50, no cursor.
+const MaxChannelFeedVideos = 50
+
+// ChannelFeedVideo is one feed row: the whole post (so the service can
+// re-judge it) and its primary video asset as media_assets describes it.
+// MediaID is nil when the post attaches no video at all.
+type ChannelFeedVideo struct {
+	Post             Post
+	MediaID          *uuid.UUID
+	DurationMs       int
+	ProcessingStatus string
+	ModerationStatus string
+}
+
+// ListChannelFeedVideos lists an owner's feed-eligible long videos, newest
+// first by publication (never by pin), optionally narrowed to one taxonomy
+// id. limit <= 0 or above MaxChannelFeedVideos reads MaxChannelFeedVideos.
+func (s *Store) ListChannelFeedVideos(ctx context.Context, ownerID uuid.UUID, category string, limit int) ([]ChannelFeedVideo, error) {
+	if limit <= 0 || limit > MaxChannelFeedVideos {
+		limit = MaxChannelFeedVideos
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT `+postCols+`
+		FROM posts
+		WHERE `+channelFeedWhere+`
+		  AND ($2 = '' OR category = $2)
+		ORDER BY COALESCE(published_at, created_at) DESC, id DESC
+		LIMIT $3`, ownerID, category, limit)
+	if err != nil {
+		return nil, err
+	}
+	posts, err := scanPostRows(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ChannelFeedVideo, 0, len(posts))
+	if len(posts) == 0 {
+		return out, nil
+	}
+	ids := make([]uuid.UUID, 0, len(posts))
+	for i := range posts {
+		ids = append(ids, posts[i].ID)
+	}
+	primary, err := s.channelFeedPrimaryVideos(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range posts {
+		row := ChannelFeedVideo{Post: posts[i]}
+		if v, ok := primary[posts[i].ID]; ok {
+			id := v.mediaID
+			row.MediaID = &id
+			row.DurationMs = v.durationMs
+			row.ProcessingStatus = v.processingStatus
+			row.ModerationStatus = v.moderationStatus
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+type channelFeedPrimary struct {
+	mediaID          uuid.UUID
+	durationMs       int
+	processingStatus string
+	moderationStatus string
+}
+
+// channelFeedPrimaryVideos resolves each post's primary video: the first
+// video attachment in carousel order, with the duration and pipeline state
+// media_assets holds for it.
+func (s *Store) channelFeedPrimaryVideos(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]channelFeedPrimary, error) {
+	out := make(map[uuid.UUID]channelFeedPrimary, len(postIDs))
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT ON (pm.post_id) pm.post_id, pm.media_id,
+		       COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0),
+		       COALESCE(ma.processing_status, ''), COALESCE(ma.moderation_status, '')
+		FROM post_media pm JOIN media_assets ma ON ma.id = pm.media_id
+		WHERE pm.post_id = ANY($1) AND ma.file_type = 'video'
+		ORDER BY pm.post_id, pm.position NULLS LAST, pm.media_id`, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			postID uuid.UUID
+			v      channelFeedPrimary
+		)
+		if err := rows.Scan(&postID, &v.mediaID, &v.durationMs, &v.processingStatus, &v.moderationStatus); err != nil {
+			return nil, err
+		}
+		out[postID] = v
+	}
+	return out, rows.Err()
+}
+
+// ChannelFeedFacts is what the feed says about the channel as a whole.
+type ChannelFeedFacts struct {
+	// Language is channels.language when the owner set one, else the
+	// language most of the feed's videos carry; "" when neither is known.
+	Language string
+	// DominantCategory is the taxonomy id most of the feed's videos carry
+	// (ties broken by id order); "" when none is categorised.
+	DominantCategory string
+}
+
+// ChannelFeedFacts reads the feed-wide facts for one owner over the same
+// rows ListChannelFeedVideos can return (channelFeedWhere, every category).
+func (s *Store) ChannelFeedFacts(ctx context.Context, ownerID uuid.UUID) (ChannelFeedFacts, error) {
+	var f ChannelFeedFacts
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			COALESCE(NULLIF((SELECT language FROM channels WHERE user_id = $1), ''),
+			         (SELECT language FROM posts WHERE `+channelFeedWhere+` AND COALESCE(language, '') <> ''
+			          GROUP BY language ORDER BY COUNT(*) DESC, language ASC LIMIT 1), ''),
+			COALESCE((SELECT category FROM posts WHERE `+channelFeedWhere+` AND COALESCE(category, '') <> ''
+			          GROUP BY category ORDER BY COUNT(*) DESC, category ASC LIMIT 1), '')`, ownerID,
+	).Scan(&f.Language, &f.DominantCategory)
+	return f, err
+}
+
 // CountChannelVideos returns the public long-video count for one owner.
 func (s *Store) CountChannelVideos(ctx context.Context, userID uuid.UUID) (int, error) {
 	counts, err := s.CountChannelVideosBatch(ctx, []uuid.UUID{userID})

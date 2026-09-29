@@ -29,6 +29,8 @@ import (
 var exemptFromOrdering = map[string]string{
 	"PostIDsByMediaID":    "reverse lookup: returns post ids, not carousel order",
 	"PostIDsByMediaIDs":   "reverse lookup: returns post ids, not carousel order",
+	// The attachment-only sibling the review-gate release uses (2026-09-29).
+	"PostIDsAttachingMedia": "reverse lookup: returns post ids, not carousel order",
 	"OrphanedDraftMedia":  "NOT EXISTS existence check: selects no post_media column and returns none",
 	"PurgeUser":           "DELETE, not a read: erases post_media rows for a purged user, returns nothing to order",
 	"PurgePost":           "purge: unreferenced-media existence check and DELETE of a purged post's post_media rows, returns media ids not carousel order",

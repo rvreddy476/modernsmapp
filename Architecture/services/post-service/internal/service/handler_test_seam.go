@@ -39,6 +39,12 @@ type HandlerTestDeps struct {
 	// MediaAccess backs /v1/internal/media-access (media_access.go); nil
 	// leaves the gate unresolved (503), never allowed.
 	MediaAccess mediaAccessStore
+	// Channel feed (channel_feed.go): the store, the media-record source in
+	// place of media-service, and the hidden-author list the account gate
+	// reads.
+	ChannelFeed   channelFeedStore
+	FeedMedia     feedMediaSource
+	HiddenAuthors hiddenAuthorsStore
 }
 
 // NewForHandlerTests builds a Service over HandlerTestDeps, with no
@@ -62,7 +68,10 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		graphServiceURL:     d.GraphServiceURL,
 		analyticsServiceURL: d.AnalyticsServiceURL,
 		mediaAccess:         d.MediaAccess,
+		channelFeed:         d.ChannelFeed,
+		feedMedia:           d.FeedMedia,
 	}
+	s.hiddenAuthors = d.HiddenAuthors
 	s.authoringOwners = d.Authoring
 	return s
 }

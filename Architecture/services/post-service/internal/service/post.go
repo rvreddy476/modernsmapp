@@ -200,6 +200,14 @@ type Service struct {
 	statDedupe   statDeduper
 	postCardSeam func(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) *RelatedPostCard
 	flickSeries  flickSeriesStore
+
+	// Channel feed (channel_feed.go, 2026-09-29): the store slice, the
+	// media-record source (nil = the HTTP client against mediaServiceURL)
+	// and the 10-minute in-process cache of resolved enclosures.
+	channelFeed     channelFeedStore
+	feedMedia       feedMediaSource
+	feedEnclosureMu sync.Mutex
+	feedEnclosures  map[uuid.UUID]feedEnclosureEntry
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -225,6 +233,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.mediaAccess = pg
 		svc.endScreens = pg
 		svc.flickSeries = pg
+		svc.channelFeed = pg
 	}
 	if rdb != nil {
 		svc.statDedupe = redisStatDeduper{rdb: rdb}

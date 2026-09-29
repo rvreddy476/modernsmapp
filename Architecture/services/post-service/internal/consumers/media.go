@@ -280,7 +280,9 @@ func (c *MediaTranscodeConsumer) handleVoiceSafetyResolved(ctx context.Context, 
 		return nil // non-terminal status; wait for the real verdict
 	}
 
-	postIDs, err := c.store.PostIDsByMediaID(ctx, mediaID)
+	// Attachments only: a verdict on a voice asset must not release a post
+	// that merely names the asset as its cover (store/postgres/posts.go).
+	postIDs, err := c.store.PostIDsAttachingMedia(ctx, mediaID)
 	if err != nil {
 		// Retryable: returning the error redelivers the event.
 		return fmt.Errorf("voice safety: resolve posts for media %s: %w", mediaID, err)

@@ -2441,6 +2441,9 @@ services:
       # INSIDE this container, so they must be compose service names.
       # localhost here would mean the container itself.
       API_GATEWAY_URL: http://api-gateway:8080
+      # Absolute host for feed enclosures and artwork: the web proxy follows media
+      # redirects, so podcast apps must fetch files from the API host directly.
+      FEED_MEDIA_BASE_URL: ${FEED_MEDIA_BASE_URL:-https://api-dev.cleestudio.com}
       AUTH_SERVICE_URL: http://identity-auth:8081
       CHAT_BACKEND_URL: http://chat-message-service:8092/v1/chat
       # Through the GATEWAY, not the services directly. identity-profile,

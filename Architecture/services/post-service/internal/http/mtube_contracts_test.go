@@ -164,6 +164,9 @@ func mtubeContracts() map[string]any {
 			VideoCount: 12, SubscriberCount: 1200, IsSubscribed: &subscribed, NotifyOn: &notify, CreatedAt: fxTime.Add(-72 * time.Hour), UpdatedAt: fxTime,
 			BannerMediaID: &fxBanner, BannerURL: &bannerURL, Links: []postgres.ChannelLink{{Title: "Site", URL: "https://example.com"}},
 			ContactEmail: "hello@example.com", FeaturedPostID: &fxPost, ShortCount: 30, LiveCount: 2, CollectionCount: 3},
+		// GET /v1/channels/:ref/feed (RSS publishing, 2026-09-29): one
+		// document for everyone, enclosure paths gateway-relative.
+		"channel_feed.json": fixtureChannelFeed(),
 		"channel_update_request.json": map[string]any{"banner_media_id": fxBanner.String(), "links": []postgres.ChannelLink{{Title: "Site", URL: "https://example.com"}},
 			"contact_email": "hello@example.com", "featured_post_id": fxPost.String()},
 	}
@@ -173,6 +176,27 @@ func mtubeContracts() map[string]any {
 func fixtureRelatedCard() *service.RelatedPostCard {
 	return &service.RelatedPostCard{ID: fxRelated, Title: "Thursday build", ThumbnailURL: "/v1/media/" + fxCover.String() + "/serve",
 		DurationSeconds: 640, ChannelName: "Raghu Builds"}
+}
+
+// fixtureChannelFeed is the feed of a channel with an avatar and two
+// episodes: one served as the 720p rendition with a cover, one as the
+// author's original with neither cover nor hashtags.
+func fixtureChannelFeed() service.ChannelFeed {
+	avatarURL := "/v1/media/" + fxBanner.String() + "/serve"
+	return service.ChannelFeed{
+		Channel: service.ChannelFeedChannel{UserID: fxAuthor, Name: "Raghu Builds", Handle: "raghu.builds", About: "Weekly builds",
+			AvatarMediaID: &fxBanner, AvatarURL: &avatarURL, ContactEmail: "hello@example.com", Language: "en", DominantCategory: "science-tech"},
+		Category:  "",
+		UpdatedAt: fxTime,
+		Items: []service.ChannelFeedItem{
+			{ID: fxPost, Title: "Friday build", Text: "0:00 Intro\n1:23 Setup\n12:05 The build", Category: "science-tech", Language: "en",
+				Hashtags: []string{"build"}, PublishedAt: fxTime.Add(-time.Hour), MediaID: fxMedia, DurationMs: 725000, CoverMediaID: &fxCover,
+				Enclosure: service.ChannelFeedEnclosure{Variant: "720p", Path: "/v1/media/" + fxMedia.String() + "/serve/720p", Mime: "video/mp4", SizeBytes: 184320000}},
+			{ID: fxRelated, Title: "Thursday talk", Text: "", Category: "podcasts", Language: "",
+				Hashtags: []string{}, PublishedAt: fxTime.Add(-25 * time.Hour), MediaID: fxStream, DurationMs: 3600000, CoverMediaID: nil,
+				Enclosure: service.ChannelFeedEnclosure{Variant: "original", Path: "/v1/media/" + fxStream.String() + "/serve", Mime: "video/quicktime", SizeBytes: 912680550}},
+		},
+	}
 }
 
 func strp(s string) *string { return &s }
