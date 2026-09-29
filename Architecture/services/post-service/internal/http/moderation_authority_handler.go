@@ -88,7 +88,12 @@ func (h *Handler) GetModerationSubjectInternal(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
-	subject, err := h.svc.GetModerationSubject(c.Request.Context(), postID)
+	reader := h.restrictionStore()
+	if reader == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Moderation subject reader not configured", nil)
+		return
+	}
+	subject, err := reader.GetModerationSubject(c.Request.Context(), postID)
 	if err != nil {
 		// Deliberately non-enumerating to callers: trust-safety only needs to
 		// know that the submitted subject is not appealable.

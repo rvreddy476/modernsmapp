@@ -112,7 +112,8 @@ func mtubeContracts() map[string]any {
 		PostDetail:    service.PostDetail{Post: scheduled, Counts: &scylla.Counts{Likes: 0, Comments: 0}, ViewCount: 0},
 		VideoMetadata: &postgres.VideoMetadata{PostID: fxPost, DurationSeconds: 725, Orientation: "landscape", ComputedCategory: "long_video", FinalCategory: "long_video", UploadStatus: "ready", MediaAssetID: &fxMedia, CreatedAt: fxTime, UpdatedAt: fxTime},
 		ScheduledAt:   &scheduledAt, CommentCount: 0, ProcessingStatus: "ready", Flags: []string{"scheduled"},
-		Description: scheduled.Text, MadeForKids: false,
+		Restrictions: []service.RestrictionNotice{}, // always an array (migration 056)
+		Description:  scheduled.Text, MadeForKids: false,
 	}
 	reel := fixturePost()
 	reel.ContentType, reel.PostType, reel.Text, reel.Title = "flick", "video", "quick one #build", "Quick one"

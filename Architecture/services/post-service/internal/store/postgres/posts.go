@@ -33,33 +33,40 @@ type Post struct {
 	// MentionUsernames is every @mention on the post — the explicit
 	// `mentions` form field merged with what the caption parser found
 	// (2026-09-05), leading @ stripped, deduped.
-	MentionUsernames  []string   `json:"mentions,omitempty"`
-	LocationName      *string    `json:"location_name,omitempty"`
-	LocationLat       *float64   `json:"location_lat,omitempty"`
-	LocationLng       *float64   `json:"location_lng,omitempty"`
-	PostType          string     `json:"post_type"`
-	AppOrigin         string     `json:"app_origin"`
-	ShareToPostbook   bool       `json:"share_to_postbook"`
-	ReviewStatus      string     `json:"review_status"` // "approved", "flagged", "rejected"
-	Title             string     `json:"title,omitempty"`
-	Tags              []string   `json:"tags,omitempty"`
-	Category          string     `json:"category,omitempty"`
-	Language          string     `json:"language,omitempty"`
-	SEOTitle          string     `json:"seo_title,omitempty"`
-	PaidPromotion     bool       `json:"paid_promotion"`
-	AlteredContent    bool       `json:"altered_content"`
-	IsMadeForKids     bool       `json:"is_made_for_kids"`
-	License           string     `json:"license,omitempty"`
-	AllowEmbedding    bool       `json:"allow_embedding"`
-	PublishToFeed     bool       `json:"publish_to_feed"`
-	RemixSetting      string     `json:"remix_setting,omitempty"`
-	CommentModeration string     `json:"comment_moderation,omitempty"`
-	CommentAccess     string     `json:"comment_access,omitempty"`
-	RecordingDate     *time.Time `json:"recording_date,omitempty"`
-	RecordingLocation string     `json:"recording_location,omitempty"`
-	CoverMediaID      *uuid.UUID `json:"cover_media_id,omitempty"`
-	OriginalAudioVol  float32    `json:"original_audio_volume"`
-	OverlayAudioVol   float32    `json:"overlay_audio_volume"`
+	MentionUsernames []string `json:"mentions,omitempty"`
+	LocationName     *string  `json:"location_name,omitempty"`
+	LocationLat      *float64 `json:"location_lat,omitempty"`
+	LocationLng      *float64 `json:"location_lng,omitempty"`
+	PostType         string   `json:"post_type"`
+	AppOrigin        string   `json:"app_origin"`
+	ShareToPostbook  bool     `json:"share_to_postbook"`
+	ReviewStatus     string   `json:"review_status"` // "approved", "flagged", "rejected"
+	// ActiveRestrictionCount is the number of ACTIVE case-specific
+	// restrictions on the post (migration 056). Not on the wire: viewers get
+	// the same absence a rejected post gets, and the owner's Hub carries the
+	// restriction rows explicitly. Never trusted from the body cache: the
+	// access-state revalidation overlays it on every cache hit. Judge a row
+	// through EffectiveReviewStatus(), never through ReviewStatus alone.
+	ActiveRestrictionCount int        `json:"-"`
+	Title                  string     `json:"title,omitempty"`
+	Tags                   []string   `json:"tags,omitempty"`
+	Category               string     `json:"category,omitempty"`
+	Language               string     `json:"language,omitempty"`
+	SEOTitle               string     `json:"seo_title,omitempty"`
+	PaidPromotion          bool       `json:"paid_promotion"`
+	AlteredContent         bool       `json:"altered_content"`
+	IsMadeForKids          bool       `json:"is_made_for_kids"`
+	License                string     `json:"license,omitempty"`
+	AllowEmbedding         bool       `json:"allow_embedding"`
+	PublishToFeed          bool       `json:"publish_to_feed"`
+	RemixSetting           string     `json:"remix_setting,omitempty"`
+	CommentModeration      string     `json:"comment_moderation,omitempty"`
+	CommentAccess          string     `json:"comment_access,omitempty"`
+	RecordingDate          *time.Time `json:"recording_date,omitempty"`
+	RecordingLocation      string     `json:"recording_location,omitempty"`
+	CoverMediaID           *uuid.UUID `json:"cover_media_id,omitempty"`
+	OriginalAudioVol       float32    `json:"original_audio_volume"`
+	OverlayAudioVol        float32    `json:"overlay_audio_volume"`
 	// Per-reel controls (2026-09-04). Never omitempty: a renderer must be
 	// able to tell "downloads allowed" from "field missing", and the two
 	// remaining switches — comments and remix — are NoComments and
@@ -254,7 +261,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
 	created_at, updated_at, review_status, deleted_at,
-	publish_at, published_at, mention_usernames`
+	publish_at, published_at, mention_usernames, active_restriction_count`
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
@@ -295,7 +302,7 @@ func postScanDestinations(p *Post) []any {
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
 		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus, &p.DeletedAt,
-		&p.PublishAt, &p.PublishedAt, &p.MentionUsernames,
+		&p.PublishAt, &p.PublishedAt, &p.MentionUsernames, &p.ActiveRestrictionCount,
 	}
 }
 
@@ -826,7 +833,7 @@ func (s *Store) GetThreadPosts(ctx context.Context, rootID uuid.UUID) ([]Post, e
 	rows, err := s.db.Query(ctx, `
 		SELECT `+postCols+`
 		FROM posts
-		WHERE thread_root_id = $1 AND deleted_at IS NULL AND review_status = 'approved' AND publish_at IS NULL
+		WHERE thread_root_id = $1 AND deleted_at IS NULL AND `+viewerApprovedSQL+` AND publish_at IS NULL
 		ORDER BY thread_seq ASC
 	`, rootID)
 	if err != nil {
@@ -910,7 +917,7 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL`
 
 	if !includeNonApproved {
-		query += ` AND review_status = 'approved'`
+		query += " AND " + viewerApprovedSQL
 	}
 
 	argIdx := 3
@@ -973,7 +980,7 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, co
 	query := `SELECT ` + postCols + `
 		FROM posts
 		WHERE visibility = 'public' AND deleted_at IS NULL
-			AND review_status = 'approved' AND publish_at IS NULL`
+			AND ` + viewerApprovedSQL + ` AND publish_at IS NULL`
 
 	argIdx := 2
 	if excludeAuthor != nil {

@@ -33,9 +33,16 @@ type UploadDetail struct {
 	// ProcessingStatus summarises the attached media: ready | processing |
 	// failed (any asset failed or was rejected) | none (no media).
 	ProcessingStatus string `json:"processing_status"`
-	// Flags: processing_failed, review_hold, made_for_kids, scheduled.
-	// Always an array.
+	// Flags: processing_failed, review_hold, copyright_hold, made_for_kids,
+	// scheduled. Always an array. copyright_hold (migration 056) means a
+	// case-specific restriction is active: the base review status may
+	// still be approved, but viewers get the same absence a rejected post
+	// gets. The web's hubApi maps it onto its review_hold flag
+	// (LEGACY_NOTICES); Restrictions below carries the detail.
 	Flags []string `json:"flags"`
+	// Restrictions is every ACTIVE restriction on the row, for the owner's
+	// notice ("Removed: copyright case", case link). Always an array.
+	Restrictions []RestrictionNotice `json:"restrictions"`
 	// Creator Hub (2026-09-28): the first 200 runes of the description
 	// ("" when none) and made_for_kids under the Hub's name. The post's
 	// age_restricted, hide_like_count, default_comment_sort and
@@ -60,9 +67,33 @@ func uploadDescription(text string) string {
 const (
 	UploadFlagProcessingFailed = "processing_failed"
 	UploadFlagReviewHold       = "review_hold"
+	UploadFlagCopyrightHold    = "copyright_hold"
 	UploadFlagMadeForKids      = "made_for_kids"
 	UploadFlagScheduled        = "scheduled"
 )
+
+// RestrictionNotice is one active restriction as the owner sees it: the
+// case to follow up on and why, never the reviewer or the claimant.
+type RestrictionNotice struct {
+	CaseID        uuid.UUID `json:"case_id"`
+	Source        string    `json:"source"`
+	ReasonCode    string    `json:"reason_code"`
+	PolicyVersion string    `json:"policy_version"`
+	PlacedAt      time.Time `json:"placed_at"`
+}
+
+// restrictionNotices maps the store rows onto the owner's notices. Never nil.
+func restrictionNotices(rows []postgres.PostRestriction) []RestrictionNotice {
+	out := make([]RestrictionNotice, 0, len(rows))
+	for _, r := range rows {
+		if r.State != postgres.RestrictionStateActive {
+			continue
+		}
+		out = append(out, RestrictionNotice{CaseID: r.CaseID, Source: r.Source, ReasonCode: r.ReasonCode,
+			PolicyVersion: r.PolicyVersion, PlacedAt: r.PlacedAt})
+	}
+	return out
+}
 
 var (
 	ErrPostNotFound  = errors.New("post not found")
@@ -117,6 +148,9 @@ func UploadProcessingStatus(p *postgres.Post) string {
 }
 
 // UploadFlags is the Creator Hub's flag list for a row. Pure; never nil.
+// The base review status and the restriction count are judged separately
+// on purpose: an approved post under a copyright hold carries
+// copyright_hold alone, a rejected one under a hold carries both.
 func UploadFlags(p *postgres.Post) []string {
 	flags := []string{}
 	if p == nil {
@@ -128,6 +162,9 @@ func UploadFlags(p *postgres.Post) []string {
 	switch p.ReviewStatus {
 	case "pending", "flagged", "needs_changes", "rejected":
 		flags = append(flags, UploadFlagReviewHold)
+	}
+	if p.ActiveRestrictionCount > 0 {
+		flags = append(flags, UploadFlagCopyrightHold)
 	}
 	if p.IsMadeForKids {
 		flags = append(flags, UploadFlagMadeForKids)
@@ -322,6 +359,13 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 		slog.Warn("my uploads: media state overlay failed", "error", err)
 	}
 
+	// The owner's restriction notices (migration 056). Best effort like
+	// the media overlay: the flag still comes from the row's count.
+	restrictions, err := s.pgStore.ActiveRestrictionsByPost(ctx, postIDs)
+	if err != nil {
+		slog.Warn("my uploads: restriction overlay failed", "error", err)
+	}
+
 	details := make([]UploadDetail, len(posts))
 	for i, p := range posts {
 		post := p
@@ -332,6 +376,7 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 			ScheduledAt:      post.PublishAt,
 			ProcessingStatus: UploadProcessingStatus(&post),
 			Flags:            UploadFlags(&post),
+			Restrictions:     restrictionNotices(restrictions[p.ID]),
 			Description:      uploadDescription(post.Text),
 			MadeForKids:      post.IsMadeForKids,
 		}

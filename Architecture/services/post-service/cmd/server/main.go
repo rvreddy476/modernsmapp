@@ -72,6 +72,27 @@ func main() {
 		slog.Error("post moderation capability configuration", "error", err)
 		os.Exit(1)
 	}
+	// Case-specific restrictions (Copyright Match plan, section 3): a
+	// separate key from the appeal protocol's, held only by trust-safety
+	// and post-service, capabilities good for ≤ 15 minutes.
+	// Until the key is provisioned (plan section 14.2, phase 3 step 4) a
+	// non-production deployment boots with no verifier: every command is
+	// refused with 403 INVALID_CAPABILITY, nothing is ever admitted.
+	// Production refuses to boot without it, like the moderation key.
+	var postRestrictionVerifier *moderationcap.RestrictionVerifier
+	if os.Getenv("POST_RESTRICTION_HMAC_KEY") == "" && !isProduction {
+		slog.Warn("POST_RESTRICTION_HMAC_KEY is not set: restriction commands are refused until it is provisioned")
+	} else {
+		postRestrictionVerifier, err = moderationcap.NewRestrictionVerifier(
+			[]byte(os.Getenv("POST_RESTRICTION_HMAC_KEY")),
+			[]byte(os.Getenv("POST_RESTRICTION_HMAC_KEY_PREVIOUS")),
+			moderationcap.MaxRestrictionTTL,
+		)
+		if err != nil {
+			slog.Error("post restriction capability configuration", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	// 3. Database (Postgres)
 	ctx := context.Background()
@@ -540,6 +561,7 @@ func main() {
 		WithStreamHub(sseHub).
 		WithInternalKey(internalServiceKey).
 		WithModerationVerifier(postModerationVerifier).
+		WithRestrictionVerifier(postRestrictionVerifier).
 		WithServiceAuth(serviceVerifier)
 
 	gin.SetMode(gin.ReleaseMode)
@@ -567,6 +589,10 @@ func main() {
 	// without it any missed PG-counter consumer event silently leaves
 	// post comment counts off-by-N forever.
 	go reconcile.NewEngagementReconciler(dbPool).Start(consumerCtx)
+	// 12a'. Restriction count self-check (nightly; plan section 9.5).
+	go reconcile.NewRestrictionCountReconciler(dbPool, func(ctx context.Context, id string) {
+		_ = rdb.Del(ctx, "post:body:"+id).Err()
+	}).Start(consumerCtx)
 
 	// 12b. Scheduled draft publish worker (every 60 seconds)
 	go func() {

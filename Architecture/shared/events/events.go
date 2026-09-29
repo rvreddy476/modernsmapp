@@ -636,9 +636,20 @@ type PostSearchEligibilityChangedPayload struct {
 	PostID     string `json:"post_id"`
 	AuthorID   string `json:"author_id"`
 	Visibility string `json:"visibility"`
-	// ReviewStatus is the canonical persisted value. Same fail-closed
-	// contract as PostCreatedPayload.ReviewStatus.
+	// ReviewStatus is the canonical persisted EFFECTIVE value
+	// (posts.effective_review_status, migration 056): the base review
+	// status, or "restricted" while a case-specific restriction is active
+	// (Copyright Match plan, section 6.2). Same fail-closed contract as
+	// PostCreatedPayload.ReviewStatus: SearchEligible is an allowlist, so a
+	// consumer that has never heard of "restricted" treats it as ineligible.
 	ReviewStatus string `json:"review_status"`
+	// BaseReviewStatus is posts.review_status itself, for consumers that
+	// need to tell "rejected" from "held by a case". Never consulted for
+	// eligibility.
+	BaseReviewStatus string `json:"base_review_status,omitempty"`
+	// Restricted is true when ReviewStatus is "restricted", i.e. an active
+	// restriction is what makes the post ineligible.
+	Restricted bool `json:"restricted,omitempty"`
 	// Deleted short-circuits to removal regardless of the other fields.
 	Deleted bool `json:"deleted,omitempty"`
 	// Scheduled marks a post whose publish_at is still in the future
@@ -2040,3 +2051,9 @@ type StrikeVoidedPayload struct {
 	VoidedAt   time.Time `json:"voided_at"`
 	VoidReason string    `json:"void_reason"`
 }
+
+// AppealResolved is emitted by trust-safety through its enforcement outbox
+// when an ordinary content appeal reaches a terminal state (upheld,
+// overturned or superseded by a later decision). Payload shape:
+// trust-safety-service internal/store/postgres AppealResolvedPayload.
+const AppealResolved = "AppealResolved"

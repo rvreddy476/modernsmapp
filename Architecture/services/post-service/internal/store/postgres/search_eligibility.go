@@ -61,6 +61,13 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		mediaKinds  []string
 		durationMs  int
 		height      int
+		// effective is posts.effective_review_status (migration 056): the
+		// base status, or "restricted" while a case holds the post. The
+		// event's review_status carries THIS value, so a held post leaves
+		// search the way a rejected one does, and every allowlist consumer
+		// (SearchEligible) treats "restricted" as ineligible unchanged.
+		effective  string
+		restricted int
 	)
 	// The search document is replaced whole on re-approval, so the
 	// result-row projection (title, attached assets in carousel order, the
@@ -72,6 +79,7 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		WHERE id = $1
 		RETURNING author_id, visibility, review_status, text, COALESCE(title, ''), content_type,
 		          created_at, deleted_at, publish_at, search_rev,
+		          effective_review_status, active_restriction_count,
 		          COALESCE((SELECT array_agg(pm.media_id::text ORDER BY pm.position) FROM post_media pm WHERE pm.post_id = posts.id), '{}'),
 		          COALESCE((SELECT array_agg(pm.kind ORDER BY pm.position) FROM post_media pm WHERE pm.post_id = posts.id), '{}'),
 		          COALESCE((SELECT MAX(COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0))
@@ -79,7 +87,7 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		                    WHERE pm.post_id = posts.id AND pm.kind = 'video'), 0)::int,
 		          COALESCE((SELECT vm.height FROM video_metadata vm WHERE vm.post_id = posts.id), 0)::int`, postID).
 		Scan(&authorID, &visibility, &review, &text, &title, &contentType,
-			&createdAt, &deletedAt, &publishAt, &rev, &mediaIDs, &mediaKinds, &durationMs, &height)
+			&createdAt, &deletedAt, &publishAt, &rev, &effective, &restricted, &mediaIDs, &mediaKinds, &durationMs, &height)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrPostRowMissing
 	}
@@ -88,11 +96,13 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 	}
 
 	payload := events.PostSearchEligibilityChangedPayload{
-		PostID:       postID.String(),
-		AuthorID:     authorID.String(),
-		Visibility:   visibility,
-		ReviewStatus: review,
-		Deleted:      deletedAt != nil,
+		PostID:           postID.String(),
+		AuthorID:         authorID.String(),
+		Visibility:       visibility,
+		ReviewStatus:     effective,
+		BaseReviewStatus: review,
+		Restricted:       restricted > 0,
+		Deleted:          deletedAt != nil,
 		// A scheduled post (publish_at set, migration 042) is not public yet
 		// whatever its visibility and review say; the consumer treats the
 		// flag as ineligible. Its PostCreated arrives at publish time with a
@@ -106,7 +116,7 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 	// Only carry the body when the post is actually eligible. There is no
 	// reason to put non-public or unapproved text on the bus, and it keeps
 	// removal events small.
-	if publishAt == nil && events.SearchEligible(visibility, review, deletedAt != nil) {
+	if publishAt == nil && events.SearchEligible(visibility, effective, deletedAt != nil) {
 		payload.Text = text
 		payload.Title = title
 		payload.DurationMs = durationMs
@@ -164,10 +174,14 @@ func (s *Store) WithSearchEligibilityTx(ctx context.Context, postID uuid.UUID,
 // EligibilityRow is the canonical projection state for one post, used by
 // the reconciler and by the initial index build.
 type EligibilityRow struct {
-	PostID      uuid.UUID
-	AuthorID    uuid.UUID
-	Visibility  string
+	PostID     uuid.UUID
+	AuthorID   uuid.UUID
+	Visibility string
+	// Review is the EFFECTIVE review status (migration 056), the value the
+	// event carries; BaseReview is posts.review_status itself.
 	Review      string
+	BaseReview  string
+	Restricted  bool
 	Deleted     bool
 	Scheduled   bool
 	SearchRev   int64
@@ -190,7 +204,7 @@ func (s *Store) ScanEligibility(ctx context.Context, afterID uuid.UUID, limit in
 		limit = 500
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, visibility, review_status,
+		SELECT id, author_id, visibility, effective_review_status, review_status, (active_restriction_count > 0),
 		       (deleted_at IS NOT NULL), (publish_at IS NOT NULL), search_rev, text, content_type, created_at
 		FROM posts
 		WHERE id > $1
@@ -204,7 +218,7 @@ func (s *Store) ScanEligibility(ctx context.Context, afterID uuid.UUID, limit in
 	var out []EligibilityRow
 	for rows.Next() {
 		var r EligibilityRow
-		if err := rows.Scan(&r.PostID, &r.AuthorID, &r.Visibility, &r.Review,
+		if err := rows.Scan(&r.PostID, &r.AuthorID, &r.Visibility, &r.Review, &r.BaseReview, &r.Restricted,
 			&r.Deleted, &r.Scheduled, &r.SearchRev, &r.Text, &r.ContentType, &r.CreatedAt); err != nil {
 			return nil, err
 		}

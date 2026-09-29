@@ -88,7 +88,7 @@ func (s *Store) ChannelPublicVideoIDs(ctx context.Context, ownerID, excludeID uu
 		  AND content_type IN ('long_video', 'video')
 		  AND deleted_at IS NULL
 		  AND visibility = 'public'
-		  AND review_status = 'approved'
+		  AND `+viewerApprovedSQL+`
 		  AND publish_at IS NULL
 		ORDER BY COALESCE(published_at, created_at) DESC, id DESC
 		LIMIT $3`, ownerID, excludeID, limit)

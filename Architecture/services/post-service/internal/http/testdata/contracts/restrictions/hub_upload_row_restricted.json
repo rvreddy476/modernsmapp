@@ -2,7 +2,7 @@
   "id": "11111111-1111-4111-8111-111111111111",
   "author_id": "22222222-2222-4222-8222-222222222222",
   "text": "0:00 Intro\n1:23 Setup\n12:05 The build",
-  "visibility": "private",
+  "visibility": "public",
   "content_type": "long_video",
   "is_pinned": false,
   "no_comments": false,
@@ -31,17 +31,17 @@
   "overlay_audio_volume": 0,
   "hide_share": false,
   "allow_download": true,
-  "age_restricted": true,
+  "age_restricted": false,
   "hide_like_count": false,
   "default_comment_sort": "top",
-  "related_post_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "related_post_id": null,
   "content_type_explicit": true,
   "source": "",
   "distribution_rev": 0,
   "created_at": "2026-09-27T10:00:00Z",
   "updated_at": "2026-09-27T12:00:00Z",
-  "publish_at": "2026-09-28T12:00:00Z",
-  "is_scheduled": true,
+  "published_at": "2026-09-27T11:00:00Z",
+  "is_scheduled": false,
   "media": [
     {
       "media_id": "44444444-4444-4444-8444-444444444444",
@@ -56,10 +56,7 @@
     }
   ],
   "is_processing": false,
-  "counts": {
-    "likes": 0,
-    "comments": 0
-  },
+  "counts": null,
   "view_count": 0,
   "has_reacted": false,
   "is_bookmarked": false,
@@ -69,25 +66,21 @@
   "viewer_disliked": false,
   "viewer_queued": false,
   "chapters": null,
-  "video_metadata": {
-    "post_id": "11111111-1111-4111-8111-111111111111",
-    "duration_seconds": 725,
-    "orientation": "landscape",
-    "trim_start_ms": 0,
-    "computed_category": "long_video",
-    "final_category": "long_video",
-    "upload_status": "ready",
-    "media_asset_id": "44444444-4444-4444-8444-444444444444",
-    "created_at": "2026-09-27T12:00:00Z",
-    "updated_at": "2026-09-27T12:00:00Z"
-  },
-  "scheduled_at": "2026-09-28T12:00:00Z",
+  "scheduled_at": null,
   "comment_count": 0,
   "processing_status": "ready",
   "flags": [
-    "scheduled"
+    "copyright_hold"
   ],
-  "restrictions": [],
+  "restrictions": [
+    {
+      "case_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "source": "copyright",
+      "reason_code": "removal_upheld",
+      "policy_version": "copyright-v1",
+      "placed_at": "2026-09-27T12:00:00Z"
+    }
+  ],
   "description": "0:00 Intro\n1:23 Setup\n12:05 The build",
   "made_for_kids": false
 }

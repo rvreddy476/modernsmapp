@@ -408,7 +408,7 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 	candidates := make([]*postgres.Post, 0, len(posts))
 	for i := range posts {
 		postsByID[posts[i].ID] = &posts[i]
-		if strings.EqualFold(posts[i].ReviewStatus, "approved") {
+		if strings.EqualFold(posts[i].EffectiveReviewStatus(), "approved") {
 			candidates = append(candidates, &posts[i])
 		}
 	}

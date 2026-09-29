@@ -108,8 +108,11 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		// Module 2 M2-P0-1: carry the CANONICAL persisted moderation
 		// state so search can refuse to index held content. Without
 		// this, a post gated at 'pending' by the video/voice safety
-		// check was indexed and publicly findable immediately.
-		ReviewStatus: p.ReviewStatus,
+		// check was indexed and publicly findable immediately. The
+		// EFFECTIVE status (migration 056): a scheduled post held by a
+		// case before its publication announces itself "restricted", so
+		// search leaves it out the way the eligibility event would.
+		ReviewStatus: p.EffectiveReviewStatus(),
 		SearchRev:    searchRev,
 		// Search result-row projection (page-scoped search, 2026-09-05):
 		// title, duration and the attached assets in carousel order so the

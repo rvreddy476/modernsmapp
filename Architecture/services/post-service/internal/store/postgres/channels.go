@@ -297,7 +297,7 @@ func (s *Store) CountChannelContent(ctx context.Context, userID uuid.UUID) (Chan
 		WHERE author_id = $1
 		  AND deleted_at IS NULL
 		  AND visibility = 'public'
-		  AND review_status = 'approved'
+		  AND `+viewerApprovedSQL+`
 		  AND publish_at IS NULL`, userID,
 	).Scan(&c.Videos, &c.Shorts, &c.Live, &c.Collections)
 	return c, err
@@ -310,7 +310,7 @@ const channelVideoCountWhere = `
 	AND content_type IN ('long_video', 'video')
 	AND deleted_at IS NULL
 	AND visibility = 'public'
-	AND review_status = 'approved'
+	AND `+viewerApprovedSQL+`
 	AND publish_at IS NULL`
 
 // CountChannelVideos returns the public long-video count for one owner.
@@ -360,7 +360,7 @@ const channelVideoCountCorrelated = `
 	AND p.content_type IN ('long_video', 'video')
 	AND p.deleted_at IS NULL
 	AND p.visibility = 'public'
-	AND p.review_status = 'approved'
+	AND p.`+viewerApprovedSQL+`
 	AND p.publish_at IS NULL`
 
 // EscapeLikePattern makes q safe to embed in a LIKE pattern: the wildcard

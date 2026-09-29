@@ -18,12 +18,38 @@ var (
 )
 
 type ModerationSubject struct {
-	PostID       uuid.UUID `json:"post_id"`
-	AuthorID     uuid.UUID `json:"author_id"`
-	ReviewStatus string    `json:"review_status"`
-	SearchRev    int64     `json:"content_revision"`
-	Deleted      bool      `json:"deleted"`
+	PostID   uuid.UUID `json:"post_id"`
+	AuthorID uuid.UUID `json:"author_id"`
+	// ReviewStatus is the BASE status (what the moderation authority and
+	// appeals act on). Kept under its old key for the appeal-overturn caller.
+	ReviewStatus string `json:"review_status"`
+	SearchRev    int64  `json:"content_revision"`
+	Deleted      bool   `json:"deleted"`
+	// Copyright Match plan section 6.2 (extended subject): the base status
+	// again under its explicit name, the effective status a viewer is
+	// judged by, the latest base decision, and every active restriction.
+	// Always an array, so a caller can tell "none" from "not asked".
+	BaseReviewStatus      string            `json:"base_review_status"`
+	EffectiveReviewStatus string            `json:"effective_review_status"`
+	LatestBaseDecisionID  *uuid.UUID        `json:"latest_base_decision_id"`
+	ActiveRestrictions    []PostRestriction `json:"active_restrictions"`
+	// LastDecisionID is the latest BASE moderation decision
+	// (post_moderation_decisions) — the id an ordinary appeal binds to.
+	// Restriction command ids (post_restriction_events) never appear here.
+	// Same value as LatestBaseDecisionID; both names are kept because the
+	// plan names one and the appeal client reads the other.
+	LastDecisionID *uuid.UUID `json:"last_decision_id"`
+	// LastDecisionSource is "copyright" while an active copyright
+	// restriction exists on the post (an appeal is the wrong instrument:
+	// COPYRIGHT_CASE_USE_COUNTER_NOTICE), else the latest base decision's
+	// source ("admin" | "appeal"), else "" when the post was never decided.
+	LastDecisionSource string `json:"last_decision_source"`
+	// LatestBaseDecisionSource is the same value under the plan's name.
+	LatestBaseDecisionSource string `json:"latest_base_decision_source"`
 }
+
+// LastDecisionSourceCopyright is LastDecisionSource while a copyright hold is active.
+const LastDecisionSourceCopyright = "copyright"
 
 type ModeratePostInput struct {
 	DecisionID       uuid.UUID
@@ -51,14 +77,47 @@ type ModerationDecision struct {
 }
 
 func (s *Store) GetModerationSubject(ctx context.Context, postID uuid.UUID) (*ModerationSubject, error) {
-	var subject ModerationSubject
+	var (
+		subject    ModerationSubject
+		lastSource *string
+	)
+	// The latest base decision comes from post_moderation_decisions ONLY:
+	// a restriction command writes post_restriction_events, never a
+	// moderation decision, so a hold cannot move the id an appeal binds to.
 	err := s.db.QueryRow(ctx, `
-		SELECT id, author_id, review_status, search_rev, deleted_at IS NOT NULL
-		FROM posts WHERE id=$1
-	`, postID).Scan(&subject.PostID, &subject.AuthorID, &subject.ReviewStatus, &subject.SearchRev, &subject.Deleted)
+		SELECT p.id, p.author_id, p.review_status, p.search_rev, p.deleted_at IS NOT NULL, p.effective_review_status,
+		       d.decision_id, d.source
+		FROM posts p
+		LEFT JOIN LATERAL (
+			SELECT decision_id, source FROM post_moderation_decisions
+			WHERE post_id = p.id ORDER BY created_at DESC, decision_id DESC LIMIT 1
+		) d ON TRUE
+		WHERE p.id=$1
+	`, postID).Scan(&subject.PostID, &subject.AuthorID, &subject.ReviewStatus, &subject.SearchRev, &subject.Deleted,
+		&subject.EffectiveReviewStatus, &subject.LastDecisionID, &lastSource)
 	if err != nil {
 		return nil, err
 	}
+	subject.BaseReviewStatus = subject.ReviewStatus
+	subject.LatestBaseDecisionID = subject.LastDecisionID
+	if lastSource != nil {
+		subject.LastDecisionSource = *lastSource
+	}
+	active, err := s.ActiveRestrictionsByPost(ctx, []uuid.UUID{postID})
+	if err != nil {
+		return nil, err
+	}
+	subject.ActiveRestrictions = active[postID]
+	if subject.ActiveRestrictions == nil {
+		subject.ActiveRestrictions = []PostRestriction{}
+	}
+	for _, r := range subject.ActiveRestrictions {
+		if r.Source == RestrictionSourceCopyright && r.State == RestrictionStateActive {
+			subject.LastDecisionSource = LastDecisionSourceCopyright
+			break
+		}
+	}
+	subject.LatestBaseDecisionSource = subject.LastDecisionSource
 	return &subject, nil
 }
 

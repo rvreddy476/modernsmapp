@@ -86,7 +86,7 @@ func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, in postMe
 		// Owner preview: pending, private, scheduled and 18+ are all theirs.
 		return true
 	}
-	if !strings.EqualFold(strings.TrimSpace(p.ReviewStatus), "approved") {
+	if !strings.EqualFold(strings.TrimSpace(p.EffectiveReviewStatus()), "approved") {
 		return false
 	}
 	if p.DeletedAt != nil {
@@ -153,7 +153,7 @@ func anonymousMayAccessPost(p *postgres.Post, authorVisible bool) bool {
 	if p.PublishAt != nil {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(p.ReviewStatus), "approved") {
+	if !strings.EqualFold(strings.TrimSpace(p.EffectiveReviewStatus()), "approved") {
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(p.Visibility), "public") {
@@ -245,7 +245,7 @@ func (s *Service) approvedPostsForMedia(ctx context.Context, mediaID uuid.UUID) 
 		if err != nil {
 			return nil, err
 		}
-		if p == nil || !strings.EqualFold(p.ReviewStatus, "approved") {
+		if p == nil || !strings.EqualFold(p.EffectiveReviewStatus(), "approved") {
 			continue
 		}
 		posts = append(posts, p)

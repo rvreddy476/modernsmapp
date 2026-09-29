@@ -1,0 +1,37 @@
+{
+  "items": [
+    {
+      "restriction_id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "post_id": "11111111-1111-4111-8111-111111111111",
+      "source": "copyright",
+      "case_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "scope": "global",
+      "state": "active",
+      "case_revision": 7,
+      "last_decision_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "policy_version": "copyright-v1",
+      "reason_code": "removal_upheld",
+      "first_placed_at": "2026-09-27T12:00:00Z",
+      "placed_at": "2026-09-27T12:00:00Z",
+      "released_at": null,
+      "updated_at": "2026-09-27T12:00:00Z"
+    },
+    {
+      "restriction_id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "post_id": "11111111-1111-4111-8111-111111111111",
+      "source": "copyright",
+      "case_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "scope": "global",
+      "state": "released",
+      "case_revision": 8,
+      "last_decision_id": "dddddddd-dddd-4ddd-8ddd-000000000002",
+      "policy_version": "copyright-v1",
+      "reason_code": "claim_withdrawn",
+      "first_placed_at": "2026-09-27T12:00:00Z",
+      "placed_at": "2026-09-27T12:00:00Z",
+      "released_at": "2026-09-27T13:00:00Z",
+      "updated_at": "2026-09-27T13:00:00Z"
+    }
+  ],
+  "next_cursor": "2026-09-27T13:00:00Z_ffffffff-ffff-4fff-8fff-ffffffffffff"
+}

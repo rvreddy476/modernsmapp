@@ -30,8 +30,14 @@ type Handler struct {
 	internalKey        string
 	moderationVerifier *moderationcap.Verifier
 	// verifier admits admin-service tokens on /v1/posts/internal/admin
-	// (admin_token.go). nil: no token is accepted.
+	// (admin_token.go) and trust-safety tokens on the restrictions read
+	// (post_restrictions_handler.go). nil: no token is accepted.
 	verifier *servicetoken.Verifier
+	// restrictionVerifier admits post_restriction capabilities on
+	// POST /v1/posts/internal/restrictions. nil: every command is refused.
+	restrictionVerifier *moderationcap.RestrictionVerifier
+	// restrictions overrides the service as the restriction store (tests).
+	restrictions restrictionStore
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
@@ -166,6 +172,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/posts/internal/visibility", h.SetVisibilityInternal)
 	r.GET("/v1/posts/internal/moderation-subject/:postId", h.GetModerationSubjectInternal)
 	r.POST("/v1/posts/internal/moderation", h.ModeratePostInternal)
+	// Case-specific restrictions (post_restrictions_handler.go): the
+	// signed command from trust-safety, and its reconciliation read.
+	r.POST("/v1/posts/internal/restrictions", h.ApplyPostRestriction)
+	r.GET("/v1/posts/internal/restrictions", h.requireTrustSafetyToken(OpRestrictionsRead), h.ListPostRestrictions)
 
 	// Events
 	r.POST("/v1/events", h.CreateEvent)

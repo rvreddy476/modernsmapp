@@ -92,9 +92,12 @@ func (s *Service) getCachedPostBody(ctx context.Context, id uuid.UUID) (*postgre
 // the canonical row's. Every field the read gates consult for "may this be
 // seen at all" must be here: review status, visibility, the 18+ flag and
 // the schedule (hiddenWhileScheduled reads PublishAt; IsScheduled is the
-// wire-only mirror deriveScheduled sets at scan time).
+// wire-only mirror deriveScheduled sets at scan time), and the active
+// restriction count that turns the effective status "restricted"
+// (migration 056; the cached JSON never carries it).
 func applyPostAccessState(p *postgres.Post, state *postgres.PostAccessState) {
 	p.ReviewStatus = state.ReviewStatus
+	p.ActiveRestrictionCount = state.ActiveRestrictionCount
 	p.Visibility = state.Visibility
 	p.AgeRestricted = state.AgeRestricted
 	p.PublishAt = state.PublishAt

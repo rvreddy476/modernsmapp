@@ -112,6 +112,15 @@ func (s *Service) applyHubDetail(ctx context.Context, d *PostDetail, viewerID *u
 	if isOwner {
 		ns := resolvedNotifySubscribers(d.Post)
 		d.NotifySubscribers = &ns
+		// The owner still sees a held post, with the case to follow up on
+		// (plan section 6.2, "Owner view"). Best effort: the row's flag is
+		// carried by the Hub list; the detail names the cases.
+		d.Restrictions = []RestrictionNotice{}
+		if s.pgStore != nil && d.Post.ActiveRestrictionCount > 0 {
+			if active, err := s.pgStore.ActiveRestrictionsByPost(ctx, []uuid.UUID{d.Post.ID}); err == nil {
+				d.Restrictions = restrictionNotices(active[d.Post.ID])
+			}
+		}
 	}
 }
 
@@ -149,7 +158,7 @@ func (s *Service) viewablePostCard(ctx context.Context, postID uuid.UUID, viewer
 		return nil
 	}
 	isAuthor := viewerID != nil && *viewerID == rp.AuthorID
-	if rp.ReviewStatus != "" && rp.ReviewStatus != "approved" && !isAuthor {
+	if rp.EffectiveReviewStatus() != "" && rp.EffectiveReviewStatus() != "approved" && !isAuthor {
 		return nil
 	}
 	if err := s.attachMediaState(ctx, []*postgres.Post{rp}); err != nil {

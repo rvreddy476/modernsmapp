@@ -158,7 +158,7 @@ func (s *Service) loadVisiblePost(ctx context.Context, postID uuid.UUID, viewerI
 	if p == nil {
 		return nil, nil
 	}
-	if p.ReviewStatus != "" && p.ReviewStatus != "approved" {
+	if p.EffectiveReviewStatus() != "" && p.EffectiveReviewStatus() != "approved" {
 		if viewerID == nil || *viewerID != p.AuthorID {
 			return nil, nil
 		}

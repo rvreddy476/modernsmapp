@@ -759,6 +759,9 @@ services:
       # AdminPermissions. A distinct .env name, because SERVICE_CALLERS in
       # .env is payments'.
       SERVICE_CALLERS: ${POST_SERVICE_CALLERS:-}
+      SERVICE_CALLER_TRUST_SAFETY_SERVICE_KID: ${TRUST_SAFETY_SERVICE_TOKEN_KID:-t1}
+      SERVICE_CALLER_TRUST_SAFETY_SERVICE_PUBKEY: ${TRUST_SAFETY_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS: post:restrictions.read
       SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
       SERVICE_CALLER_ADMIN_SERVICE_OPS: social:stats.read,social:posts.moderate,social:posts.remove,social:reels.moderate,social:reels.remove,social:comments.moderate,social:comments.remove,social:reports.act,social:users.read,tube:stats.read,tube:videos.moderate,tube:videos.remove,tube:channels.moderate,tube:reports.act
@@ -787,6 +790,8 @@ services:
       # exit 1 on boot and the local stack has no moderation path at all.
       STORY_MODERATION_HMAC_KEY: ${STORY_MODERATION_HMAC_KEY:-local_dev_story_moderation_hmac_key_change_me}
       POST_MODERATION_HMAC_KEY: ${POST_MODERATION_HMAC_KEY:-local_dev_post_moderation_hmac_key_change_me}
+      # Case-specific holds (phase 3): shared with trust-safety only.
+      POST_RESTRICTION_HMAC_KEY: ${POST_RESTRICTION_HMAC_KEY:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       # Migration runner baseline knob — leave default ("false") so new migration
       # files added to database/migrations/ get applied on next boot. Set to
@@ -1136,6 +1141,9 @@ services:
       # capabilities that post-service verifies. See the note in post-service.
       STORY_MODERATION_HMAC_KEY: ${STORY_MODERATION_HMAC_KEY:-local_dev_story_moderation_hmac_key_change_me}
       POST_MODERATION_HMAC_KEY: ${POST_MODERATION_HMAC_KEY:-local_dev_post_moderation_hmac_key_change_me}
+      POST_RESTRICTION_HMAC_KEY: ${POST_RESTRICTION_HMAC_KEY:-}
+      TRUST_SAFETY_SERVICE_TOKEN_KEY: ${TRUST_SAFETY_SERVICE_TOKEN_KEY:-}
+      TRUST_SAFETY_SERVICE_TOKEN_KID: ${TRUST_SAFETY_SERVICE_TOKEN_KID:-t1}
       # Admin console: admin-service reaches /v1/internal/admin/trust/* only
       # with a token scoped to the one permission it checked, naming the admin.
       # A distinct .env name, because SERVICE_CALLERS in .env is payments'.

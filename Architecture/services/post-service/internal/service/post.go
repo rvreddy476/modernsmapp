@@ -504,6 +504,11 @@ type PostDetail struct {
 	LikeCount         *LikeCount        `json:"like_count,omitempty"`
 	RelatedPost       *RelatedPostField `json:"related_post,omitempty"`
 	NotifySubscribers *bool             `json:"notify_subscribers,omitempty"`
+	// Restrictions (migration 056) is the owner's view of every active
+	// case-specific restriction on the direct read: present (possibly
+	// empty) for the owner, absent for everyone else — a viewer never
+	// reaches this struct for a restricted post at all.
+	Restrictions []RestrictionNotice `json:"restrictions,omitempty"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
@@ -1516,7 +1521,7 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	// flagged/rejected — or one still pending a verdict — must not be
 	// reachable by direct link. Feeds already filter on review_status;
 	// this closes the GetPost hole. The author still sees their own.
-	if p.ReviewStatus != "" && p.ReviewStatus != "approved" {
+	if p.EffectiveReviewStatus() != "" && p.EffectiveReviewStatus() != "approved" {
 		if viewerID == nil || *viewerID != p.AuthorID {
 			return nil, nil
 		}
@@ -1851,7 +1856,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		// rejected / pending) from everyone but the author — mirrors the
 		// GetPost gate so feed hydration never surfaces moderated-out
 		// content even when fanout already wrote a recipient timeline row.
-		if post.ReviewStatus != "" && !strings.EqualFold(post.ReviewStatus, "approved") {
+		if post.EffectiveReviewStatus() != "" && !strings.EqualFold(post.EffectiveReviewStatus(), "approved") {
 			if viewerID == nil || *viewerID != post.AuthorID {
 				continue
 			}

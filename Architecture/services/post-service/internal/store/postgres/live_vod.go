@@ -150,7 +150,7 @@ func (s *Store) ListLiveRecordings(ctx context.Context, limit int, cursor string
 		FROM posts
 		WHERE source = '` + PostSourceLive + `'
 			AND visibility = 'public' AND deleted_at IS NULL
-			AND review_status = 'approved' AND publish_at IS NULL`
+			AND ` + viewerApprovedSQL + ` AND publish_at IS NULL`
 	if cursor != "" {
 		if cursorTime, err := time.Parse(time.RFC3339Nano, cursor); err == nil {
 			query += ` AND created_at < $2`
