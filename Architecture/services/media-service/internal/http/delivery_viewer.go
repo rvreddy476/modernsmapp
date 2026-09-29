@@ -43,10 +43,19 @@ func deliveryViewer(c *gin.Context) uuid.UUID {
 //   - An unresolved authorization is 503. Answering 404 during a post-service
 //     outage would tell the client the media is gone, and clients cache that.
 func writeDeliveryError(c *gin.Context, err error) {
+	writeDeliveryErrorAs(c, err, "Media not found")
+}
+
+// writeDeliveryErrorAs is writeDeliveryError with the not-found message a
+// route uses for a missing resource, so a denial on that route is
+// byte-for-byte the missing answer (the audio URL route says "Audio track
+// not found" for a track that does not exist, and must say exactly that for
+// one the viewer may not have).
+func writeDeliveryErrorAs(c *gin.Context, err error, notFoundMessage string) {
 	switch {
 	case errors.Is(err, delivery.ErrDeliveryDenied):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
-			"NOT_FOUND", "Media not found", nil)
+			"NOT_FOUND", notFoundMessage, nil)
 	case errors.Is(err, delivery.ErrDeliveryUnresolved):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
 			"DEPENDENCY_UNAVAILABLE", "Media access could not be determined; retry", nil)
@@ -56,6 +65,6 @@ func writeDeliveryError(c *gin.Context, err error) {
 		// not have it" from "does not exist", which is the distinction the
 		// denial path exists to hide.
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
-			"NOT_FOUND", "Media not found", nil)
+			"NOT_FOUND", notFoundMessage, nil)
 	}
 }

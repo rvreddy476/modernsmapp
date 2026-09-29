@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/atpost/media-service/internal/service"
+	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -36,6 +37,11 @@ type Handler struct {
 	// captionsMine backs the creator caption list/publish routes
 	// (subtitles_mine_handler.go); nil means the service.
 	captionsMine captionsMineService
+	// records backs the metadata reads — GET /v1/media/:id, /status and
+	// GET /v1/audio/:audioId/url (record_read_handler.go); nil means the
+	// service. An interface so the audience wiring of those routes can be
+	// pinned without a database.
+	records recordReadService
 }
 
 func New(svc *service.Service) *Handler {
@@ -276,13 +282,18 @@ func (h *Handler) GetMedia(c *gin.Context) {
 		return
 	}
 
-	res, err := h.svc.GetMedia(c.Request.Context(), mediaID)
-	if err != nil || service.DatingScopeDenies(res, deliveryViewer(c)) || service.AnonymousScopeDenies(res, deliveryViewer(c)) {
-		// Lane D6: a dating photo's record (keys, renditions) is its
-		// owner's alone; everyone else gets the not-found every read gives.
-		// An anonymous group attachment's record (uploader_id, user-keyed
-		// storage keys) is likewise its uploader's alone.
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+	// The record is answered to the same audience as the bytes, plus the
+	// uploader; a keyed service caller asks no audience question. See
+	// record_read_handler.go and service/record_read.go. A denial is the
+	// not-found every read gives, so the route confirms no id's existence.
+	var res *postgres.MediaAsset
+	if h.trustedServiceCaller(c) {
+		res, err = h.recordsSvc().MediaForService(c.Request.Context(), mediaID)
+	} else {
+		res, err = h.recordsSvc().MediaForViewer(c.Request.Context(), deliveryViewer(c), mediaID)
+	}
+	if err != nil {
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -392,14 +403,17 @@ func (h *Handler) GetMediaStatus(c *gin.Context) {
 	}
 
 	// transcoding_jobs[].output_url is an object key, which names the
-	// uploader: an anonymous asset's status is its uploader's alone.
-	if m, err := h.svc.GetMedia(c.Request.Context(), mediaID); err != nil || service.AnonymousScopeDenies(m, deliveryViewer(c)) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
-		return
+	// uploader, and the rest is the record's own metadata: the status is
+	// answered to the record's audience (record_read_handler.go). The
+	// uploader always sees their own, which is what the studio polls.
+	var res *service.MediaStatusResponse
+	if h.trustedServiceCaller(c) {
+		res, err = h.recordsSvc().StatusForService(c.Request.Context(), mediaID)
+	} else {
+		res, err = h.recordsSvc().StatusForViewer(c.Request.Context(), deliveryViewer(c), mediaID)
 	}
-	res, err := h.svc.GetMediaStatus(c.Request.Context(), mediaID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		writeDeliveryError(c, err)
 		return
 	}
 

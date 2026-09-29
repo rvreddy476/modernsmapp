@@ -143,26 +143,11 @@ func (s *Service) UseAudioTrack(ctx context.Context, audioTrackID uuid.UUID) err
 	return s.pgStore.IncrementAudioUsageCount(ctx, audioTrackID)
 }
 
-// GetAudioTrackURL returns a presigned URL for the audio file.
-//
-// The URL lives defaultURLExpiry (the delivery gate's 5-minute cap, P-9): an
-// "Original Sound" track is the audio of a post's video, so a longer window
-// would hand out a piece of protected post media for longer than the gate
-// ever would. Note for the next change here: this route takes no viewer at
-// all (GET /v1/audio/:audioId/url), so it is the TTL alone that bounds it;
-// routing it through gate.AuthorizeAsset on the track's source media is the
-// follow-up that closes the gap fully.
-func (s *Service) GetAudioTrackURL(ctx context.Context, id uuid.UUID) (string, error) {
-	track, err := s.pgStore.GetAudioTrack(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	u, err := s.blobStore.GeneratePresignedGetURL(ctx, track.AudioKey, defaultURLExpiry)
-	if err != nil {
-		return "", err
-	}
-	return u.String(), nil
-}
+// The presigned audio URL (GET /v1/audio/:audioId/url) is
+// RecordReads.AudioTrackURLForViewer (record_read.go): it takes the viewer
+// and is answered to the source video's audience through the delivery gate.
+// The viewer-less form that lived here was the TTL-only gap that note
+// described; it is gone so it cannot be called again.
 
 // ─── Audio Library ──────────────────────────────────────────────────
 

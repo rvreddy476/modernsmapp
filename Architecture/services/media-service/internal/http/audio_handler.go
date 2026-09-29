@@ -95,9 +95,13 @@ func (h *Handler) GetAudioTrackURL(c *gin.Context) {
 		return
 	}
 
-	url, err := h.svc.GetAudioTrackURL(c.Request.Context(), audioID)
+	// The track is the audio of a source video: the URL is answered to that
+	// video's audience through the delivery gate (service/record_read.go).
+	// It used to take no viewer at all. A denial is the same body as a
+	// missing track; an unresolved authority is a retryable 503.
+	url, err := h.recordsSvc().AudioTrackURLForViewer(c.Request.Context(), deliveryViewer(c), audioID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil)
+		writeDeliveryErrorAs(c, err, "Audio track not found")
 		return
 	}
 

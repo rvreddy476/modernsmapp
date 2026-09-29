@@ -29,7 +29,9 @@ const (
 	MaxGIFSize    int64 = 15 * 1024 * 1024       // 15 MB
 
 	// defaultURLExpiry bounds every presigned GET this service hands to a
-	// caller outside the delivery gate (today: GetAudioTrackURL, audio.go).
+	// caller outside the delivery gate's signer (today: the extracted-audio
+	// URL, RecordReads.AudioTrackURLForViewer in record_read.go, which is
+	// still authorized THROUGH the gate before it is signed).
 	// It is the gate's own cap (P-9, 2026-09-29): a presigned URL cannot be
 	// revoked before it expires, so the TTL is the revocation window, and a
 	// window longer than the gate's would make the ungated route the
@@ -1296,34 +1298,16 @@ func (s *Service) CheckProfileMediaAuthority(ctx context.Context, mediaID, owner
 }
 
 // GetMediaStatus returns the processing status and transcoding job details.
+//
+// No audience decision here: the viewer-facing route is
+// RecordReads.StatusForViewer / StatusForService (record_read.go), which
+// authorize first and then shape the same DTO through mediaStatusResponse.
 func (s *Service) GetMediaStatus(ctx context.Context, mediaID uuid.UUID) (*MediaStatusResponse, error) {
 	media, err := s.pgStore.GetMedia(ctx, mediaID)
 	if err != nil {
 		return nil, err
 	}
-
-	resp := &MediaStatusResponse{
-		MediaID:          media.ID,
-		ProcessingStatus: media.ProcessingStatus,
-		ModerationStatus: media.ModerationStatus,
-		FileType:         media.FileType,
-		Width:            media.Width,
-		Height:           media.Height,
-		DurationSeconds:  media.DurationSeconds,
-		DurationMs:       media.DurationMsValue(),
-	}
-
-	// Include transcoding jobs for videos
-	if media.FileType == "video" {
-		jobs, err := s.pgStore.GetTranscodingJobs(ctx, mediaID)
-		if err != nil {
-			slog.Warn("Failed to fetch transcoding jobs", "media_id", mediaID, "error", err)
-		} else {
-			resp.TranscodingJobs = jobs
-		}
-	}
-
-	return resp, nil
+	return mediaStatusResponse(ctx, media, s.pgStore.GetTranscodingJobs), nil
 }
 
 // ─── URL Population ────────────────────────────────────────────────
