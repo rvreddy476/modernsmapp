@@ -46,7 +46,11 @@ func openM7TrustDB(t *testing.T) *pgxpool.Pool {
 		pool.Close()
 		t.Fatal(err)
 	}
+	// On every failure below the transaction is rolled back BEFORE the pool
+	// closes: Close waits for the connection the open transaction holds,
+	// and the deferred rollback would only run after Fatalf.
 	if _, err := tx.Exec(context.Background(), database.SetupSQL); err != nil {
+		_ = tx.Rollback(context.Background())
 		pool.Close()
 		t.Fatalf("apply real setup.sql: %v", err)
 	}
@@ -60,6 +64,7 @@ func openM7TrustDB(t *testing.T) *pgxpool.Pool {
 		"migrations/009_dating_report_grievances.sql",
 		"migrations/010_admin_audit.sql",
 		"migrations/011_strike_lifecycle_outbox.sql",
+		"migrations/012_appeal_decision_binding.sql",
 	} {
 		raw, readErr := database.Migrations.ReadFile(name)
 		if readErr != nil {
@@ -67,11 +72,13 @@ func openM7TrustDB(t *testing.T) *pgxpool.Pool {
 			t.Fatal(readErr)
 		}
 		if _, execErr := tx.Exec(context.Background(), string(raw)); execErr != nil {
+			_ = tx.Rollback(context.Background())
 			pool.Close()
 			t.Fatalf("apply real %s: %v", name, execErr)
 		}
 	}
 	if err := tx.Commit(context.Background()); err != nil {
+		_ = tx.Rollback(context.Background())
 		pool.Close()
 		t.Fatal(err)
 	}
@@ -176,7 +183,9 @@ func TestAppealOwnershipDedupAndRetryAfterCanonicalSuccess(t *testing.T) {
 	svc := New(postgres.New(pool), nil)
 	svc.SetExtrasStore(postgres.NewExtrasStore(pool))
 	svc.SetPostModerationClient(client)
-	if _, err := svc.SubmitAppeal(ctx, uuid.New(), "post", postID.String(), "I own this"); !errors.Is(err, ErrAppealNotEligible) {
+	// The retry below replays the in-flight approve at once.
+	svc.SetOverturnReplayGrace(0)
+	if _, err := svc.SubmitAppeal(ctx, uuid.New(), "post", postID.String(), "I own this", nil); !errors.Is(err, ErrAppealNotEligible) {
 		t.Fatalf("non-owner appeal=%v", err)
 	}
 
@@ -187,7 +196,7 @@ func TestAppealOwnershipDedupAndRetryAfterCanonicalSuccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			a, err := svc.SubmitAppeal(ctx, owner, "post", postID.String(), "Please review")
+			a, err := svc.SubmitAppeal(ctx, owner, "post", postID.String(), "Please review", nil)
 			if err == nil {
 				appeals <- a
 			} else if !errors.Is(err, postgres.ErrActiveAppealExists) {
@@ -216,6 +225,10 @@ func TestAppealOwnershipDedupAndRetryAfterCanonicalSuccess(t *testing.T) {
 	if _, err := pool.Exec(ctx, `CREATE TRIGGER m7_fail_appeal_update BEFORE UPDATE ON trust.content_appeals FOR EACH ROW EXECUTE FUNCTION trust.m7_fail_appeal_update()`); err != nil {
 		t.Fatal(err)
 	}
+	// Since P-3 the local transition to 'overturning' commits BEFORE the
+	// canonical approve, so a failed finish leaves the appeal in flight
+	// (never 'open' beside an approved post); the retry replays the same
+	// decision id and lands 'overturned'.
 	reviewer := postgres.AuditMeta{Actor: postgres.UserActor(uuid.New())}
 	if err := svc.ReviewAppeal(ctx, appeal.ID, "overturned", "restored", reviewer); err == nil {
 		t.Fatal("injected appeal update failure succeeded")
@@ -224,8 +237,8 @@ func TestAppealOwnershipDedupAndRetryAfterCanonicalSuccess(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT status FROM trust.content_appeals WHERE id=$1`, appeal.ID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "open" || client.overturns.Load() != 1 {
-		t.Fatalf("after failure status/calls=%s/%d", status, client.overturns.Load())
+	if status != "overturning" || client.overturns.Load() != 1 {
+		t.Fatalf("after failure status/calls=%s/%d, want overturning/1", status, client.overturns.Load())
 	}
 	_, _ = pool.Exec(ctx, `DROP TRIGGER m7_fail_appeal_update ON trust.content_appeals`)
 	_, _ = pool.Exec(ctx, `DROP FUNCTION trust.m7_fail_appeal_update()`)

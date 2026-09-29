@@ -69,6 +69,8 @@ type Service struct {
 	extras         *postgres.TrustExtrasStore
 	kafkaWriter    *kafka.Writer
 	postModeration PostModerationClient
+	// overturnGrace overrides DefaultOverturnReplayGrace when set (appeals.go).
+	overturnGrace *time.Duration
 }
 
 func New(store *postgres.ReportStore, kafkaWriter *kafka.Writer) *Service {

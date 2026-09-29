@@ -141,7 +141,7 @@ func TestAppealReviewIsAuditedWithRealActorInSameTransaction(t *testing.T) {
 	svc := New(store, nil)
 	svc.SetExtrasStore(postgres.NewExtrasStore(pool))
 	svc.SetPostModerationClient(&fakePostModeration{subject: &PostModerationSubject{PostID: postID, AuthorID: owner, ReviewStatus: "rejected", ContentRevision: 1}})
-	appeal, err := svc.SubmitAppeal(ctx, owner, "post", postID.String(), "please")
+	appeal, err := svc.SubmitAppeal(ctx, owner, "post", postID.String(), "please", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

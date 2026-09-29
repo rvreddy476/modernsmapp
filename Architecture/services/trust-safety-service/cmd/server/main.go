@@ -125,6 +125,11 @@ func main() {
 		postModerationSigner,
 		nil,
 	))
+	// Copyright Match plan section 6.3 (P-3): an appeal whose canonical
+	// approve did not complete stays 'overturning'; the sweeper replays it
+	// with the same decision id and claims once it is older than the grace
+	// period (so it never races the request that started it).
+	go svc.RunOverturnSweeper(ctx, time.Minute, service.DefaultOverturnReplayGrace)
 	handler := http.New(svc)
 	// Admin console (Wave 1 — B4): admin-service calls the token-only family
 	// under http.InternalAdminPrefix with a per-call signed token. The same

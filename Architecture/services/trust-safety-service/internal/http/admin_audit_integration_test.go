@@ -41,12 +41,16 @@ func openTrustTestDB(t *testing.T) *pgxpool.Pool {
 		pool.Close()
 		t.Fatal(err)
 	}
+	// Rolled back before every Close below: Close waits for the connection
+	// the open transaction holds, and this defer only runs after Fatalf.
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	if _, err := tx.Exec(context.Background(), `SELECT pg_advisory_xact_lock(7710010)`); err != nil {
+		_ = tx.Rollback(context.Background())
 		pool.Close()
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(context.Background(), database.SetupSQL); err != nil {
+		_ = tx.Rollback(context.Background())
 		pool.Close()
 		t.Fatal(err)
 	}
@@ -60,18 +64,22 @@ func openTrustTestDB(t *testing.T) *pgxpool.Pool {
 		"migrations/009_dating_report_grievances.sql",
 		"migrations/010_admin_audit.sql",
 		"migrations/011_strike_lifecycle_outbox.sql",
+		"migrations/012_appeal_decision_binding.sql",
 	} {
 		raw, err := database.Migrations.ReadFile(name)
 		if err != nil {
+			_ = tx.Rollback(context.Background())
 			pool.Close()
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(context.Background(), string(raw)); err != nil {
+			_ = tx.Rollback(context.Background())
 			pool.Close()
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
 	if err := tx.Commit(context.Background()); err != nil {
+		_ = tx.Rollback(context.Background())
 		pool.Close()
 		t.Fatal(err)
 	}

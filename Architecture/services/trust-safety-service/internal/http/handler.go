@@ -34,12 +34,16 @@ type Handler struct {
 	verifier *servicetoken.Verifier
 	// standing answers the standing route; svc by default, a fake in tests.
 	standing standingReader
+	// appeals answers the appeal routes (appeals_handler.go); svc by
+	// default, a fake in tests.
+	appeals appealsAPI
 }
 
 func New(svc *service.Service) *Handler {
 	h := &Handler{svc: svc}
 	if svc != nil {
 		h.standing = svc
+		h.appeals = svc
 	}
 	return h
 }

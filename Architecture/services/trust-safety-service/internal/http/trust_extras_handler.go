@@ -1,118 +1,15 @@
 package http
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/atpost/shared/api"
-	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
-
-// ─── Appeals ──────────────────────────────────────────────────────────────────
-
-type submitAppealRequest struct {
-	ContentType  string `json:"content_type" binding:"required"`
-	ContentID    string `json:"content_id" binding:"required"`
-	AppealReason string `json:"appeal_reason" binding:"required"`
-}
-
-func (h *Handler) SubmitAppeal(c *gin.Context) {
-	userIDStr := c.GetHeader("X-User-Id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-	var req submitAppealRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-	appeal, err := h.svc.SubmitAppeal(c.Request.Context(), userID, req.ContentType, req.ContentID, req.AppealReason)
-	if err != nil {
-		slog.Error("SubmitAppeal", "err", err)
-		if errors.Is(err, postgres.ErrActiveAppealExists) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ACTIVE_APPEAL_EXISTS", "An active appeal already exists", nil)
-			return
-		}
-		if errors.Is(err, service.ErrAppealNotEligible) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "NOT_APPEALABLE", "Content is not eligible for appeal", nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "APPEALS_UNAVAILABLE", "Appeals are temporarily unavailable", nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusCreated, appeal, nil)
-}
-
-func (h *Handler) AdminListAppeals(c *gin.Context) {
-	// ?mine=true is a user's own list; it has no meaning on the admin token path.
-	if c.Query("mine") == "true" && !viaAdminToken(c) {
-		userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-			return
-		}
-		appeals, err := h.svc.ListUserAppeals(c.Request.Context(), userID)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "APPEALS_UNAVAILABLE", "Appeals are temporarily unavailable", nil)
-			return
-		}
-		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": appeals}, nil)
-		return
-	}
-	if !adminAllowed(c) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
-		return
-	}
-	status := c.Query("status")
-	limit, offset := paginate(c)
-	appeals, err := h.svc.ListAppeals(c.Request.Context(), status, limit, offset)
-	if err != nil {
-		slog.Error("ListAppeals", "err", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list appeals", nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": appeals}, nil)
-}
-
-type reviewAppealRequest struct {
-	Status string `json:"status" binding:"required"`
-	Note   string `json:"note"`
-}
-
-func (h *Handler) ReviewAppeal(c *gin.Context) {
-	if !adminAllowed(c) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
-		return
-	}
-	meta, ok := adminAuditMeta(c, "")
-	if !ok {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, codeActorRequired, "A verified admin user is required", nil)
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid appeal ID", nil)
-		return
-	}
-	var req reviewAppealRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-	meta.Reason = req.Note
-	if err := h.svc.ReviewAppeal(c.Request.Context(), id, req.Status, req.Note, meta); err != nil {
-		writeAuditedChangeError(c, "ReviewAppeal", err)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
-}
 
 // ─── Keyword filters ──────────────────────────────────────────────────────────
 

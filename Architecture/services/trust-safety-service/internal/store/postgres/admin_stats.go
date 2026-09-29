@@ -37,7 +37,7 @@ func (s *ReportStore) AdminStats(ctx context.Context) (*AdminStats, error) {
 		SELECT
 			(SELECT count(*) FROM trust.reports WHERE status = 'open'),
 			(SELECT count(*) FROM trust.reports WHERE status = 'reviewing'),
-			(SELECT count(*) FROM trust.content_appeals WHERE status IN ('open', 'under_review')),
+			(SELECT count(*) FROM trust.content_appeals WHERE status IN ('open', 'under_review', 'overturning')),
 			(SELECT count(*) FROM trust.grievances WHERE status IN ('open', 'acknowledged')),
 			(SELECT count(*) FROM trust.grievances
 			  WHERE status IN ('open', 'acknowledged') AND due_at < NOW()),
