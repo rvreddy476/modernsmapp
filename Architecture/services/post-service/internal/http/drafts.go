@@ -196,6 +196,9 @@ func (h *Handler) PublishDraft(c *gin.Context) {
 		if writeStandingError(c, err) {
 			return
 		}
+		if writeCoverMediaError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

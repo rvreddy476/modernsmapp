@@ -813,6 +813,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		if writeStandingError(c, err) {
 			return
 		}
+		if writeCoverMediaError(c, err) {
+			return
+		}
 		if writeCreateGuardError(c, err) {
 			return
 		}
@@ -2565,6 +2568,9 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 	}
 
 	if err := h.svc.SetCoverFrame(c.Request.Context(), videoID, userID, coverMediaID, req.ThumbnailURL); err != nil {
+		if writeCoverMediaError(c, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "unauthorized") {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
@@ -2573,6 +2579,19 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+// writeCoverMediaError answers a refused COVER exactly as PATCH /v1/posts/:id
+// does (writePostEditError): 403 MEDIA_NOT_OWNED, 422 MEDIA_NOT_FOUND,
+// MEDIA_NOT_READY, MEDIA_TYPE_MISMATCH. It runs before the create guards,
+// whose 400s are about attachments; returns false for any other error.
+func writeCoverMediaError(c *gin.Context, err error) bool {
+	var coverErr *service.CoverMediaError
+	if !errors.As(err, &coverErr) {
+		return false
+	}
+	writePostEditError(c, err)
+	return true
 }
 
 func (h *Handler) PublishVideo(c *gin.Context) {
