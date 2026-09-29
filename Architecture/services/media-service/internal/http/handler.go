@@ -124,6 +124,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// Re-run the transcode pipeline for a video (Tube thumbnail
 			// sideways, 2026-09-05); optional rotation override in the body.
 			internal.POST("/:mediaId/reprocess", h.ReprocessMedia)
+			// Copyright Match phase 1 (shadow): queue or inspect the visual
+			// fingerprint job of a ready video. No URLs, no user ids.
+			internal.POST("/:mediaId/fingerprint", h.EnqueueFingerprint)
+			internal.GET("/:mediaId/fingerprint", h.GetFingerprintStatus)
 		}
 	} else {
 		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — the internal orphan-delete route is NOT registered; draft-media reclamation is disabled")

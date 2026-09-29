@@ -179,6 +179,10 @@ func sweepStalledTranscodes(ctx context.Context, store stallSweeper, tracker *bu
 			stallReclaims.WithLabelValues("give_up").Inc()
 			log.Printf("Transcode stall: GAVE UP on media %s, marked failed (event %s): %s",
 				o.MediaID, o.EventID, o.Reason)
+		case postgres.StallAbandonReprocess:
+			stallReclaims.WithLabelValues("abandon_reprocess").Inc()
+			log.Printf("Transcode stall: ABANDONED reprocess of ready media %s; it keeps serving its last good generation (event %s): %s",
+				o.MediaID, o.EventID, o.Reason)
 		default:
 			skipped++
 		}

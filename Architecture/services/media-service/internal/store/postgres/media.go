@@ -388,6 +388,9 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	if _, err := tx.Exec(ctx, `DELETE FROM media_variants WHERE media_asset_id = $1`, id); err != nil {
 		return nil, fmt.Errorf("delete variants: %w", err)
 	}
+	if err := purgeCopyrightDataTx(ctx, tx, id); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM media_assets WHERE id = $1`, id); err != nil {
 		return nil, fmt.Errorf("delete media_asset: %w", err)
 	}

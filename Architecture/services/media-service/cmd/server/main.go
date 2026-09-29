@@ -155,12 +155,11 @@ func main() {
 			"Set MEDIA_CDN_BASE_URL, MEDIA_CLOUDFRONT_KEY_PAIR_ID, MEDIA_CLOUDFRONT_PRIVATE_KEY "+
 			"and POST_SERVICE_URL to enable protected delivery.", "err", gerr)
 	} else {
-		// The open-graph poster authority (2026-09-18). It can only ADD an
-		// allow, and only for an anonymous caller asking for a still image of
-		// an asset on a post that is public to the whole internet — see
-		// delivery/public_poster.go and postgres.MediaIsOnPublicPost. Without
-		// it a shared video link and every search result has no picture.
-		gate.WithPublicPoster(pgStore)
+		// Signed-out reads (a shared link's og:image, a public video playing
+		// without sign-in) go through the same gate: post-service answers
+		// the anonymous question itself since 2026-09-29 — see
+		// delivery/public_poster.go for why the local poster authority that
+		// used to be wired here was retired.
 		mediaSvc.WithDeliveryGate(gate)
 		deliverySigner = signer
 		slog.Info("delivery gate configured", "cdn", env("MEDIA_CDN_BASE_URL", ""))
@@ -180,6 +179,13 @@ func main() {
 	mediaSvc.SetProducer(producer)
 	mediaSvc.StartMediaEventOutboxRelay(ctx)
 	slog.Info("kafka producer initialized")
+
+	// Copyright Match phase 1: the pair relay has its own producer, topic
+	// and outbox (copyright_pair_outbox), and its own switch
+	// (COPYRIGHT_PAIR_RELAY, default off). media.events is untouched.
+	pairProducer := mediaEvents.NewProducerWithDialer(brokers, service.CopyrightPairsTopic, kafkaDialer)
+	defer pairProducer.Close()
+	mediaSvc.StartCopyrightPairRelay(ctx, pairProducer)
 
 	// Module 1 fixes-v1: durable caption worker. Claims media_caption_jobs
 	// with FOR UPDATE SKIP LOCKED (safe in every replica), persists the

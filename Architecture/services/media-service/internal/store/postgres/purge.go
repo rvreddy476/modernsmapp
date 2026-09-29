@@ -67,6 +67,11 @@ func (s *MediaAssetStore) PurgeUser(ctx context.Context, userID uuid.UUID) error
 		// 4. Library audio: anonymise the source, keep the track.
 		{"audio_library", `UPDATE audio_library SET source_user_id = NULL WHERE source_user_id = $1`},
 	}
+	// Copyright Match (migration 023): per asset, invalidate its pairs (one
+	// outbox event each) and drop its derived rows, before the assets go.
+	if err := purgeCopyrightDataForUploaderTx(ctx, tx, userID); err != nil {
+		return fmt.Errorf("purge: %w", err)
+	}
 	present := map[string]bool{}
 	for _, st := range steps {
 		ok, known := present[st.table]

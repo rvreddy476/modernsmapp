@@ -10,10 +10,16 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/atpost/media-service/internal/delivery"
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
+
+// captionsSourceURLExpiry is the life of the presigned source URL handed to
+// the captions backend (generateAutoCaptions). Internal-only; see the
+// justification at its use.
+const captionsSourceURLExpiry = 30 * time.Minute
 
 // ExtractAudioFromMedia extracts the audio track from a video media asset,
 // uploads it to blob storage, and creates an audio_tracks record.
@@ -138,6 +144,14 @@ func (s *Service) UseAudioTrack(ctx context.Context, audioTrackID uuid.UUID) err
 }
 
 // GetAudioTrackURL returns a presigned URL for the audio file.
+//
+// The URL lives defaultURLExpiry (the delivery gate's 5-minute cap, P-9): an
+// "Original Sound" track is the audio of a post's video, so a longer window
+// would hand out a piece of protected post media for longer than the gate
+// ever would. Note for the next change here: this route takes no viewer at
+// all (GET /v1/audio/:audioId/url), so it is the TTL alone that bounds it;
+// routing it through gate.AuthorizeAsset on the track's source media is the
+// follow-up that closes the gap fully.
 func (s *Service) GetAudioTrackURL(ctx context.Context, id uuid.UUID) (string, error) {
 	track, err := s.pgStore.GetAudioTrack(ctx, id)
 	if err != nil {
@@ -367,9 +381,16 @@ func (s *Service) generateAutoCaptions(ctx context.Context, mediaID uuid.UUID, l
 	}
 
 	// Use a presigned GET URL so the backend can fetch directly from
-	// blob storage (Whisper needs the raw audio file). Short expiry —
-	// transcription rarely takes more than a minute or two.
-	signed, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, 30*time.Minute)
+	// blob storage (Whisper needs the raw audio file).
+	//
+	// Thirty minutes, deliberately longer than the delivery gate's 5-minute
+	// cap (P-9 audit, 2026-09-29): this URL is INTERNAL — it goes to the
+	// configured captions backend and to nothing else (never returned to a
+	// caller, never stored), and a long source file can take the backend
+	// longer than five minutes to fetch and transcribe. The window bounds
+	// how long a leaked backend request log could fetch the source; it is
+	// not a viewer-facing capability. Keep it out of any response body.
+	signed, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, captionsSourceURLExpiry)
 	if err != nil {
 		return nil, nil, fmt.Errorf("sign audio url: %w", err)
 	}
@@ -475,7 +496,12 @@ func (s *Service) RecordVoiceover(ctx context.Context, uploaderID uuid.UUID, aud
 		return nil, fmt.Errorf("upload voiceover: %w", err)
 	}
 
-	presignURL, err := s.blobStore.GeneratePresignedGetURL(ctx, storageKey, 24*time.Hour)
+	// The gate's cap (P-9): this URL is returned to the uploader (and
+	// recorded as original_url) for the composer's immediate preview. It
+	// used to live 24 hours, which made a stored, unrevocable capability out
+	// of a convenience; the durable way to fetch the voiceover is
+	// GET /v1/media/:id, which signs through the gate every time.
+	presignURL, err := s.blobStore.GeneratePresignedGetURL(ctx, storageKey, delivery.MaxProtectedTTL)
 	if err != nil {
 		return nil, fmt.Errorf("presign voiceover URL: %w", err)
 	}

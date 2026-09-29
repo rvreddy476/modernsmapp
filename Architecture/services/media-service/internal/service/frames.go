@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
+	"github.com/atpost/media-service/internal/delivery"
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -62,7 +62,11 @@ func (s *Service) ExtractFrames(ctx context.Context, mediaID uuid.UUID, userID u
 		return nil, fmt.Errorf("extract frames: %w", err)
 	}
 
-	expiry := 15 * time.Minute
+	// The owner's own frames (ownership is checked above), but still a
+	// presigned URL outside the delivery gate, so it carries the gate's cap
+	// (P-9): the cover picker loads these immediately and re-asks if it
+	// needs them again.
+	expiry := delivery.MaxProtectedTTL
 	var frames []FrameResult
 
 	for i, fp := range framePaths {

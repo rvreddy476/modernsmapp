@@ -184,6 +184,11 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 			return nil, fmt.Errorf("purge asset: %s: %w", st.table, err)
 		}
 	}
+	// Copyright Match (migration 023): invalidate the asset's pairs (one
+	// outbox event each) before its fingerprint rows go.
+	if err := purgeCopyrightDataTx(ctx, tx, mediaID); err != nil {
+		return nil, fmt.Errorf("purge asset: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM media_assets WHERE id = $1`, mediaID); err != nil {
 		if isForeignKeyViolation(err) {
 			// A RESTRICT foreign key found a claim the checks above did not

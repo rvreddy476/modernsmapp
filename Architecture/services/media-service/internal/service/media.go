@@ -28,7 +28,13 @@ const (
 	MaxCoverSize  int64 = 10 * 1024 * 1024       // 10 MB
 	MaxGIFSize    int64 = 15 * 1024 * 1024       // 15 MB
 
-	defaultURLExpiry = 15 * time.Minute
+	// defaultURLExpiry bounds every presigned GET this service hands to a
+	// caller outside the delivery gate (today: GetAudioTrackURL, audio.go).
+	// It is the gate's own cap (P-9, 2026-09-29): a presigned URL cannot be
+	// revoked before it expires, so the TTL is the revocation window, and a
+	// window longer than the gate's would make the ungated route the
+	// durable capability the gate exists to remove.
+	defaultURLExpiry = delivery.MaxProtectedTTL
 )
 
 var (
@@ -386,8 +392,11 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 		return nil, fmt.Errorf("invalid %s file: magic bytes do not match declared MIME type", media.FileType)
 	}
 
-	// 2. Update status to 'uploaded'
-	if err := s.pgStore.UpdateStatus(ctx, mediaID, "uploaded"); err != nil {
+	// 2. Update status to 'uploaded' and pin the upload-time identity
+	// (P-14): upload_confirmed_at is set once, here, on both the single
+	// PUT and the resumable path (CompleteResumableUpload ends here), with
+	// the ETag the object store reported for the original.
+	if err := s.pgStore.MarkUploadConfirmed(ctx, mediaID, info.ETag); err != nil {
 		return nil, err
 	}
 

@@ -323,6 +323,15 @@ var DerivedMediaTables = []string{
 	// unbounded storage cost.
 	"media_event_outbox",    // this service's own published-event ledger
 	"media_transcode_inbox", // its record of applied transcode outcomes
+
+	// Copyright Match phase 1 (migration 023): derived from the asset's
+	// bytes, rebuilt by the backfill command, deleted with the asset by
+	// purgeCopyrightDataTx (after an invalidation event is written).
+	"media_fingerprint_jobs",       // fingerprint work records
+	"copyright_fingerprints",       // the 2 fps hash sequence of one generation
+	"copyright_anchor_postings",    // the multi-index rows of those hashes
+	"copyright_match_observations", // shadow-mode verification results
+	"copyright_pairs",              // media_lo/media_hi: not matched by name, listed for completeness
 }
 
 // UploadPurposeComposer is the lease written by the social composer's `init`.

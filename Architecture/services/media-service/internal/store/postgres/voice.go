@@ -250,6 +250,9 @@ func (s *MediaAssetStore) DeleteOrphanMediaAtomic(ctx context.Context, mediaID u
 	if _, err := tx.Exec(ctx, `DELETE FROM media_variants WHERE media_asset_id = $1`, mediaID); err != nil {
 		return nil, fmt.Errorf("delete variants: %w", err)
 	}
+	if err := purgeCopyrightDataTx(ctx, tx, mediaID); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM media_assets WHERE id = $1`, mediaID); err != nil {
 		if isForeignKeyViolation(err) {
 			return nil, ErrMediaStillReferenced

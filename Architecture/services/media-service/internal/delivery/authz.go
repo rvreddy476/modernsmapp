@@ -43,7 +43,7 @@ var errBatchUnsupported = errors.New("delivery: batch authorization unsupported"
 
 // mediaAccessAnswer decodes a content authority's verdict in either wire shape.
 //
-// WHY TWO SHAPES ARE TOLERATED
+// # WHY TWO SHAPES ARE TOLERATED
 //
 // This decoder is the single consumer of three separate authorities, and they
 // do not agree on an envelope. post-service and commerce-service answer with a
@@ -123,17 +123,52 @@ type URLSigner interface {
 	SignProtected(key string, ttl time.Duration, now time.Time) (string, error)
 }
 
-// HTTPContentAuthorizer asks post-service, which owns the content that
-// references an asset.
-type HTTPContentAuthorizer struct {
-	baseURL        string
-	path           string
-	internalKey    string
-	client         *http.Client
-	allowAnonymous bool
+// nilViewerID is uuid.Nil rendered. Every read path in this service resolves a
+// missing X-User-Id to uuid.Nil and stringifies it, so this — not "" — is what
+// an anonymous request looks like by the time it reaches the gate. Both are
+// treated as anonymous so a future caller that passes the empty string cannot
+// accidentally be read as an identified viewer.
+const nilViewerID = "00000000-0000-0000-0000-000000000000"
+
+// AnonymousViewer reports whether viewerID carries no identity.
+func AnonymousViewer(viewerID string) bool {
+	trimmed := strings.TrimSpace(viewerID)
+	return trimmed == "" || trimmed == nilViewerID
 }
 
-func NewHTTPContentAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
+// anonymousPolicy is what an HTTP authority does with a viewer that carries
+// no identity.
+type anonymousPolicy int
+
+const (
+	// anonymousDenied: protected bytes have no signed-out reading on this
+	// surface (chat attachments, group posts). Refused here, without a call.
+	anonymousDenied anonymousPolicy = iota
+	// anonymousForwarded: the viewer string is sent exactly as it arrived;
+	// the authority accepts a nil viewer itself (profile photos against
+	// `who_can_see_profile_photo`, commerce product photos).
+	anonymousForwarded
+	// anonymousAsEmpty: the nil UUID and "" are both sent as viewer_id "",
+	// the documented sentinel post-service resolves to the signed-out
+	// stranger (post-service media_access_handler.go, 2026-09-29). The
+	// answer is post-service's, and it is narrower than its signed-in one:
+	// exactly public, approved, live, unscheduled, not 18+, not members-only,
+	// by a public and unhidden account.
+	anonymousAsEmpty
+)
+
+// HTTPContentAuthorizer asks the service that owns the content referencing
+// an asset — post-service by default; the other constructors below point it
+// at chat, group, profile and commerce.
+type HTTPContentAuthorizer struct {
+	baseURL     string
+	path        string
+	internalKey string
+	client      *http.Client
+	anonymous   anonymousPolicy
+}
+
+func newHTTPAuthorizer(baseURL, path, internalKey string, client *http.Client, anonymous anonymousPolicy) *HTTPContentAuthorizer {
 	if client == nil {
 		// A short timeout on purpose. This call is on the media read path, and
 		// a slow dependency must become a fast retryable failure rather than a
@@ -142,16 +177,24 @@ func NewHTTPContentAuthorizer(baseURL, internalKey string, client *http.Client) 
 	}
 	return &HTTPContentAuthorizer{
 		baseURL:     strings.TrimRight(baseURL, "/"),
-		path:        "/v1/internal/media-access",
+		path:        path,
 		internalKey: internalKey,
 		client:      client,
+		anonymous:   anonymous,
 	}
 }
 
+// NewHTTPContentAuthorizer asks post-service. A signed-out viewer is a real
+// question here since 2026-09-29 (founder decision 2: public videos play
+// without sign-in) — it is sent as viewer_id "" and post-service decides.
+func NewHTTPContentAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
+	return newHTTPAuthorizer(baseURL, "/v1/internal/media-access", internalKey, client, anonymousAsEmpty)
+}
+
+// NewHTTPChatAuthorizer asks chat-service. Chat attachments have no
+// signed-out reading.
 func NewHTTPChatAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
-	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
-	authorizer.path = "/internal/v1/chat/media-access"
-	return authorizer
+	return newHTTPAuthorizer(baseURL, "/internal/v1/chat/media-access", internalKey, client, anonymousDenied)
 }
 
 // NewHTTPGroupAuthorizer asks group-service, which owns group posts and their
@@ -159,31 +202,42 @@ func NewHTTPChatAuthorizer(baseURL, internalKey string, client *http.Client) *HT
 // member who had not uploaded a photo themselves got "Media not found" for
 // every attachment in every group. The route it calls is registered in
 // group-service's handler.go and answers with the same wire shape as
-// post-service, batch included.
+// post-service, batch included. Group content has no signed-out reading.
 func NewHTTPGroupAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
-	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
-	authorizer.path = "/v1/internal/groups/media-access"
-	return authorizer
+	return newHTTPAuthorizer(baseURL, "/v1/internal/groups/media-access", internalKey, client, anonymousDenied)
 }
 
+// NewHTTPProfileAuthorizer asks profile-service. An anonymous viewer is a
+// real audience category for public profile photos; profile-service resolves
+// it against `who_can_see_profile_photo`, from whatever viewer string it is
+// sent.
 func NewHTTPProfileAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
-	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
-	authorizer.path = "/v1/profiles/internal/media-access"
-	// An anonymous viewer is a real audience category for public profile
-	// photos. Profile-service resolves it against `who_can_see_profile_photo`;
-	// post and chat authorities remain authenticated-only.
-	authorizer.allowAnonymous = true
-	return authorizer
+	return newHTTPAuthorizer(baseURL, "/v1/profiles/internal/media-access", internalKey, client, anonymousForwarded)
+}
+
+// wireViewer applies the anonymous policy: the viewer string to send, or a
+// resolved denial when this surface has no signed-out audience.
+func (a *HTTPContentAuthorizer) wireViewer(viewerID string) (string, error) {
+	switch {
+	case !AnonymousViewer(viewerID):
+		return viewerID, nil
+	case a.anonymous == anonymousAsEmpty:
+		return "", nil
+	case a.anonymous == anonymousForwarded:
+		return viewerID, nil
+	default:
+		// No viewer means no audience decision is possible on this surface.
+		return "", fmt.Errorf("%w: no viewer", ErrDeliveryDenied)
+	}
 }
 
 func (a *HTTPContentAuthorizer) Authorize(ctx context.Context, viewerID, mediaID string) error {
 	if a == nil || a.baseURL == "" {
 		return fmt.Errorf("%w: no content authorizer configured", ErrDeliveryUnresolved)
 	}
-	if viewerID == "" && !a.allowAnonymous {
-		// No viewer means no audience decision is possible. Protected bytes
-		// have no anonymous reading.
-		return fmt.Errorf("%w: no viewer", ErrDeliveryDenied)
+	viewerID, err := a.wireViewer(viewerID)
+	if err != nil {
+		return err
 	}
 
 	body, err := json.Marshal(map[string]string{"viewer_id": viewerID, "media_id": mediaID})
@@ -236,6 +290,10 @@ func (a *HTTPContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID str
 	}
 	if a.path != "/v1/internal/media-access" {
 		return nil, errBatchUnsupported
+	}
+	viewerID, err := a.wireViewer(viewerID)
+	if err != nil {
+		return nil, err
 	}
 	body, err := json.Marshal(map[string]any{"viewer_id": viewerID, "media_ids": mediaIDs})
 	if err != nil {
@@ -386,11 +444,6 @@ func (authorizers AnyContentAuthorizer) AuthorizeBatch(ctx context.Context, view
 type Gate struct {
 	signer URLSigner
 	authz  ContentAuthorizer
-	// publicPoster is the ONLY authority consulted for an anonymous caller
-	// that the authorizers above have already refused, and only for a still
-	// image. Nil disables the open-graph poster path entirely — see
-	// public_poster.go for what it may and may not admit.
-	publicPoster PublicPostLookup
 	// downloads is the per-post download authority (download.go). Nil
 	// leaves every non-owner download unresolved, never allowed.
 	downloads DownloadAuthorizer
@@ -599,8 +652,5 @@ func (g *Gate) URLsForAssets(ctx context.Context, viewerID string, assets map[st
 // answers per product — live and approved is public, a draft is the seller's
 // alone — so the audience decision stays with the service that owns it.
 func NewHTTPCommerceAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
-	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
-	authorizer.path = "/v1/commerce/internal/media-access"
-	authorizer.allowAnonymous = true
-	return authorizer
+	return newHTTPAuthorizer(baseURL, "/v1/commerce/internal/media-access", internalKey, client, anonymousForwarded)
 }

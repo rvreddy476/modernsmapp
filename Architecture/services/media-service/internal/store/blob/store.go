@@ -239,6 +239,26 @@ func (s *Store) ReadObjectRange(ctx context.Context, objectKey string, start, en
 	return data, nil
 }
 
+// OpenObject returns a streaming reader over an object's bytes plus its
+// metadata (size, ETag). The fingerprint worker reads HLS segments, MP4
+// variants and originals through it so nothing is buffered whole in memory
+// and no presigned URL is ever created for the purpose. The caller closes
+// the reader.
+func (s *Store) OpenObject(ctx context.Context, objectKey string) (io.ReadCloser, ObjectInfo, error) {
+	obj, err := s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, ObjectInfo{}, normalizeObjectError(objectKey, err)
+	}
+	// GetObject is lazy: Stat forces the first request, so a missing key is
+	// reported here rather than on the first Read.
+	st, err := obj.Stat()
+	if err != nil {
+		_ = obj.Close()
+		return nil, ObjectInfo{}, normalizeObjectError(objectKey, err)
+	}
+	return obj, ObjectInfo{Size: st.Size, ContentType: st.ContentType, ETag: st.ETag}, nil
+}
+
 // DownloadObject fetches an object's content from the bucket.
 func (s *Store) DownloadObject(ctx context.Context, objectKey string) ([]byte, error) {
 	obj, err := s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})

@@ -180,6 +180,17 @@ func main() {
 		log.Println("Transcode stall sweeper DISABLED (MEDIA_TRANSCODE_STALL_SWEEP=off)")
 	}
 
+	// Readiness gauges (P-16) and the Copyright Match fingerprint runner
+	// (shadow mode; claims nothing unless COPYRIGHT_FINGERPRINT_ENABLED).
+	go runReadinessGauges(ctx, pgStore, 30*time.Second)
+	go runFingerprintLoop(ctx, &fingerprintRunner{
+		store:      pgStore,
+		blobs:      blobStore,
+		tracker:    tracker,
+		loadConfig: loadFingerprintConfig,
+		scratchDir: os.TempDir(),
+	})
+
 	log.Println("Media transcode worker started, waiting for messages...")
 
 	// M4-P0-3 — THE OFFSET IS COMMITTED BY THIS LOOP, AND ONLY AFTER THE
@@ -273,7 +284,16 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		return nil
 	}
 
-	log.Printf("Processing video transcode for media %s", payload.MediaAssetID)
+	log.Printf("Processing video transcode for media %s (generation %d)", payload.MediaAssetID, payload.MediaGeneration)
+
+	// Readiness metrics (P-16): queue wait now, confirm→ready at the end.
+	// A failed read costs the observation, never the job.
+	timing, timingErr := pgStore.GetTranscodeTiming(ctx, mediaAssetID)
+	if timingErr != nil {
+		log.Printf("Warning: transcode timing for %s not read: %v", payload.MediaAssetID, timingErr)
+	} else {
+		observeQueueWait(timing.RequestedAt, time.Now())
+	}
 
 	// The lease: stamped now and every heartbeatInterval until this returns.
 	// A failed stamp is logged inside and never fails the job.
@@ -301,11 +321,20 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		if err := pgStore.CompleteTranscode(ctx, envelope.EventID, mediaAssetID,
 			"failed", "", "manual_review", postgres.TranscodeCompletion{
 				ProcessingStatus: "failed", ModerationStatus: "manual_review",
+				MediaGeneration: payload.MediaGeneration,
 			}); err != nil {
 			if errors.Is(err, postgres.ErrTranscodeAlreadyApplied) {
 				return nil
 			}
+			if errors.Is(err, postgres.ErrTranscodeGenerationStale) {
+				log.Printf("Transcode failure for media %s generation %d not recorded: a newer generation owns the asset",
+					payload.MediaAssetID, payload.MediaGeneration)
+				return nil
+			}
 			return fmt.Errorf("record terminal failure for %s: %w", payload.MediaAssetID, err)
+		}
+		if timingErr == nil {
+			observeReadyLatency(timing.UploadConfirmedAt, time.Now(), "failed")
 		}
 		return nil
 	}
@@ -351,12 +380,24 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 			MP4URL:           mp4URL,
 			ThumbnailURL:     thumbURL,
 			ModerationStatus: modStatus,
+			MediaGeneration:  payload.MediaGeneration,
 		}); err != nil {
 		if errors.Is(err, postgres.ErrTranscodeAlreadyApplied) {
 			log.Printf("Transcode for media %s completed by another replica", payload.MediaAssetID)
 			return nil
 		}
+		if errors.Is(err, postgres.ErrTranscodeGenerationStale) {
+			// A re-queue bumped the generation while this ran; the objects
+			// this run wrote are being rewritten by the current generation's
+			// own run, which will record the asset's state (P-14, rule 3).
+			log.Printf("Transcode for media %s generation %d finished after a newer generation was queued; outcome not applied",
+				payload.MediaAssetID, payload.MediaGeneration)
+			return nil
+		}
 		return fmt.Errorf("record transcode completion for %s: %w", payload.MediaAssetID, err)
+	}
+	if timingErr == nil {
+		observeReadyLatency(timing.UploadConfirmedAt, time.Now(), "ready")
 	}
 	if modStatus == "passed" {
 		if err := pgStore.ActivatePendingSlot(ctx, mediaAssetID); err != nil {

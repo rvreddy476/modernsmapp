@@ -31,21 +31,31 @@ func (s *MediaAssetStore) QueueTranscode(ctx context.Context, media *MediaAsset)
 	if media == nil || media.ID == uuid.Nil || media.UploaderID == uuid.Nil {
 		return fmt.Errorf("queue transcode: invalid media identity")
 	}
-	payload, err := json.Marshal(sharedevents.MediaTranscodeRequestedPayload{
-		MediaAssetID: media.ID.String(),
-		UploaderID:   media.UploaderID.String(),
-		StorageKey:   media.StorageKey,
-		MimeType:     media.MimeType,
-	})
-	if err != nil {
-		return fmt.Errorf("queue transcode payload: %w", err)
-	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin queue transcode: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The request names the asset's generation (P-14), read under the row
+	// lock so a concurrent re-queue cannot slip a bump in between.
+	var generation int64
+	if err := tx.QueryRow(ctx, `SELECT media_generation FROM media_assets WHERE id = $1 FOR UPDATE`, media.ID).Scan(&generation); err != nil {
+		return fmt.Errorf("queue transcode: lock media %s: %w", media.ID, err)
+	}
+	payload, err := json.Marshal(TranscodeRequestPayload{
+		MediaTranscodeRequestedPayload: sharedevents.MediaTranscodeRequestedPayload{
+			MediaAssetID: media.ID.String(),
+			UploaderID:   media.UploaderID.String(),
+			StorageKey:   media.StorageKey,
+			MimeType:     media.MimeType,
+		},
+		MediaGeneration: generation,
+	})
+	if err != nil {
+		return fmt.Errorf("queue transcode payload: %w", err)
+	}
 
 	eventID := uuid.NewString()
 	if _, err := tx.Exec(ctx, `
@@ -190,6 +200,21 @@ type TranscodeRequestPayload struct {
 	// before processing it. For a file whose pixels are sideways with no
 	// rotation metadata (Family Outing, 2026-09-05).
 	RotateDegrees int `json:"rotate_degrees,omitempty"`
+	// MediaGeneration is media_assets.media_generation at the time the
+	// request was written (P-14). The worker hands it back in the
+	// completion, where completeTranscodeTx sets ready_generation only if
+	// it still equals the row's generation. 0 (a request written before
+	// migration 022) means "unknown" and is treated as current.
+	MediaGeneration int64 `json:"media_generation,omitempty"`
+}
+
+// TranscodeCompletedPayload is the wire shape of MediaTranscodeCompleted as
+// media-service writes it: the shared payload plus the generation the
+// completed run processed. Consumers decoding into the shared struct ignore
+// the extra field.
+type TranscodeCompletedPayload struct {
+	sharedevents.MediaTranscodeCompletedPayload
+	MediaGeneration int64 `json:"media_generation,omitempty"`
 }
 
 // ErrTranscodeInFlight means a transcode request or completion for this
@@ -245,18 +270,6 @@ func requeueTranscodeTx(ctx context.Context, tx pgx.Tx, media *MediaAsset, rotat
 	if media == nil || media.ID == uuid.Nil || media.UploaderID == uuid.Nil {
 		return "", fmt.Errorf("requeue transcode: invalid media identity")
 	}
-	payload, err := json.Marshal(TranscodeRequestPayload{
-		MediaTranscodeRequestedPayload: sharedevents.MediaTranscodeRequestedPayload{
-			MediaAssetID: media.ID.String(),
-			UploaderID:   media.UploaderID.String(),
-			StorageKey:   media.StorageKey,
-			MimeType:     media.MimeType,
-		},
-		RotateDegrees: rotateDegrees,
-	})
-	if err != nil {
-		return "", fmt.Errorf("requeue transcode payload: %w", err)
-	}
 
 	var locked int
 	if err := tx.QueryRow(ctx, `SELECT 1 FROM media_assets WHERE id = $1 FOR UPDATE`, media.ID).Scan(&locked); err != nil {
@@ -275,6 +288,31 @@ func requeueTranscodeTx(ctx context.Context, tx pgx.Tx, media *MediaAsset, rotat
 	if pending > 0 {
 		return "", ErrTranscodeInFlight
 	}
+
+	// P-14: the generation bump commits with the new request, so it is
+	// durable before the relay publishes and before any object under the
+	// asset's keys is overwritten. Fingerprints of older generations are
+	// superseded, their queued jobs too, and every pair they took part in is
+	// invalidated with one pair-outbox row each. A fingerprint job that read
+	// objects mid-overwrite fails the generation fence at its final write.
+	generation, err := bumpMediaGenerationTx(ctx, tx, media.ID)
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(TranscodeRequestPayload{
+		MediaTranscodeRequestedPayload: sharedevents.MediaTranscodeRequestedPayload{
+			MediaAssetID: media.ID.String(),
+			UploaderID:   media.UploaderID.String(),
+			StorageKey:   media.StorageKey,
+			MimeType:     media.MimeType,
+		},
+		RotateDegrees:   rotateDegrees,
+		MediaGeneration: generation,
+	})
+	if err != nil {
+		return "", fmt.Errorf("requeue transcode payload: %w", err)
+	}
+
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM media_event_outbox
 		 WHERE media_asset_id = $1

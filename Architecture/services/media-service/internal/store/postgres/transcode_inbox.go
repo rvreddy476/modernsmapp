@@ -29,7 +29,19 @@ type TranscodeCompletion struct {
 	MP4URL           string
 	ThumbnailURL     string
 	ModerationStatus string
+	// MediaGeneration is the generation the completed run processed, copied
+	// from the request payload (P-14). 0 means a request from before
+	// migration 022 and is treated as the current generation.
+	MediaGeneration int64
 }
+
+// ErrTranscodeGenerationStale means the completion belongs to a generation
+// the asset has since left behind (a re-queue bumped media_generation while
+// the run was in flight). The inbox row is written so the delivery is
+// applied and never retried, but the media row, the completion event and
+// the fingerprint queue are all left alone: the current generation's own
+// run decides them.
+var ErrTranscodeGenerationStale = errors.New("transcode completion is for a superseded generation")
 
 // AlreadyApplied reports whether this event has a recorded terminal outcome.
 //
@@ -73,13 +85,17 @@ func (s *MediaAssetStore) CompleteTranscode(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := completeTranscodeTx(ctx, tx, eventID, mediaAssetID, outcome, hlsMasterKey, moderationStatus, completion); err != nil {
+	err = completeTranscodeTx(ctx, tx, eventID, mediaAssetID, outcome, hlsMasterKey, moderationStatus, completion)
+	if err != nil && !errors.Is(err, ErrTranscodeGenerationStale) {
 		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transcode completion: %w", err)
+	// A stale-generation completion still commits its inbox row: the
+	// delivery is applied (so it is never retried) while the asset itself is
+	// left to the current generation's run.
+	if cerr := tx.Commit(ctx); cerr != nil {
+		return fmt.Errorf("commit transcode completion: %w", cerr)
 	}
-	return nil
+	return err
 }
 
 // completeTranscodeTx is CompleteTranscode inside the caller's transaction.
@@ -109,18 +125,6 @@ func completeTranscodeTx(
 	if eventID == "" {
 		return fmt.Errorf("transcode completion for %s has no event id", mediaAssetID)
 	}
-	completionPayload, err := json.Marshal(sharedevents.MediaTranscodeCompletedPayload{
-		MediaAssetID:     mediaAssetID.String(),
-		ProcessingStatus: completion.ProcessingStatus,
-		HLSMasterURL:     completion.HLSMasterURL,
-		MP4URL:           completion.MP4URL,
-		ThumbnailURL:     completion.ThumbnailURL,
-		ModerationStatus: completion.ModerationStatus,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal transcode completion: %w", err)
-	}
-
 	ct, err := tx.Exec(ctx, `
 		INSERT INTO media_transcode_inbox (event_id, media_asset_id, outcome)
 		VALUES ($1, $2, $3)
@@ -133,22 +137,71 @@ func completeTranscodeTx(
 		return ErrTranscodeAlreadyApplied
 	}
 
+	// The generation fence (P-14, generation rule 3). The row is locked so
+	// a re-queue cannot bump the generation between this read and the
+	// update below. A completion that carries no generation (a request
+	// written before migration 022) is treated as current.
+	var currentGeneration int64
+	var fileType string
+	if err := tx.QueryRow(ctx, `
+		SELECT media_generation, file_type FROM media_assets WHERE id = $1 FOR UPDATE
+	`, mediaAssetID).Scan(&currentGeneration, &fileType); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("update media asset %s: row not found", mediaAssetID)
+		}
+		return fmt.Errorf("lock media asset %s: %w", mediaAssetID, err)
+	}
+	generation := completion.MediaGeneration
+	if generation == 0 {
+		generation = currentGeneration
+	}
+	if generation != currentGeneration {
+		return ErrTranscodeGenerationStale
+	}
+
+	completionPayload, err := json.Marshal(TranscodeCompletedPayload{
+		MediaTranscodeCompletedPayload: sharedevents.MediaTranscodeCompletedPayload{
+			MediaAssetID:     mediaAssetID.String(),
+			ProcessingStatus: completion.ProcessingStatus,
+			HLSMasterURL:     completion.HLSMasterURL,
+			MP4URL:           completion.MP4URL,
+			ThumbnailURL:     completion.ThumbnailURL,
+			ModerationStatus: completion.ModerationStatus,
+		},
+		MediaGeneration: generation,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal transcode completion: %w", err)
+	}
+
 	// processing_status and moderation_status move together with the inbox
 	// row. There is no ordering in which the event is recorded applied but the
-	// asset is left mid-flight.
+	// asset is left mid-flight. ready_generation moves only on 'ready'.
 	tag, err := tx.Exec(ctx, `
 		UPDATE media_assets
 		   SET processing_status = $2,
 		       moderation_status = $3,
 		       hls_master_key    = COALESCE(NULLIF($4, ''), hls_master_key),
+		       ready_generation  = CASE WHEN $2 = 'ready' THEN $5::bigint ELSE ready_generation END,
 		       updated_at        = NOW()
 		 WHERE id = $1
-	`, mediaAssetID, outcome, moderationStatus, hlsMasterKey)
+	`, mediaAssetID, outcome, moderationStatus, hlsMasterKey, generation)
 	if err != nil {
 		return fmt.Errorf("update media asset %s: %w", mediaAssetID, err)
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("update media asset %s: row not found", mediaAssetID)
+	}
+
+	// A ready video of the current generation gets its fingerprint job in
+	// this same transaction (plan section 5, step 1). ON CONFLICT DO NOTHING:
+	// a replayed completion or an operator enqueue cannot create a second
+	// row for the same (asset, generation, algorithm). The worker does
+	// nothing with the row while COPYRIGHT_FINGERPRINT_ENABLED is off.
+	if outcome == "ready" && fileType == "video" {
+		if err := enqueueFingerprintJobTx(ctx, tx, mediaAssetID, generation, FingerprintPriorityUpload); err != nil {
+			return err
+		}
 	}
 
 	// Completion notification is part of the same durable effect. A relay

@@ -64,6 +64,29 @@ func (p *Producer) PublishEnvelope(ctx context.Context, envelope events.EventEnv
 	})
 }
 
+// PublishEnvelopeKeyed is PublishEnvelope with an explicit partition key.
+// The pair relay keys by pair_id so every revision of one pair lands on one
+// partition in order (plan 9.1).
+func (p *Producer) PublishEnvelopeKeyed(ctx context.Context, key string, envelope events.EventEnvelope) error {
+	if p == nil || p.writer == nil {
+		return fmt.Errorf("media event producer is not configured")
+	}
+	if envelope.EventID == "" || envelope.EventType == "" {
+		return fmt.Errorf("media event envelope is missing identity")
+	}
+	if key == "" {
+		key = envelope.EventID
+	}
+	b, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal media event envelope: %w", err)
+	}
+	return p.writer.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(key),
+		Value: b,
+	})
+}
+
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }

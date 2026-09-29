@@ -82,6 +82,12 @@ const (
 	StallSkip    StallAction = "skip"
 	StallRequeue StallAction = "requeue"
 	StallGiveUp  StallAction = "give_up"
+	// StallAbandonReprocess: a READY asset's reprocess died and used up its
+	// re-queues. The asset keeps serving what it has; the outstanding
+	// request is recorded as failed so it is not swept again, and
+	// ready_generation stays behind media_generation, which keeps the
+	// fingerprint fence closed for it (plan O-obs-1 / P-14).
+	StallAbandonReprocess StallAction = "abandon_reprocess"
 )
 
 // StalledTranscodeCandidate is the state the rule decides on.
@@ -95,6 +101,12 @@ type StalledTranscodeCandidate struct {
 	// InFlight: an unpublished transcode request or completion exists, so
 	// the relay has work for this asset that nobody has seen yet.
 	InFlight bool
+	// OutstandingReprocess (plan O-obs-1): the asset is 'ready' but a
+	// re-queue bumped media_generation past ready_generation and the
+	// current request has no recorded outcome — a reprocess whose worker
+	// died, or whose message was lost, on an asset that keeps serving the
+	// previous generation. The 'processing'-only sweep never saw these.
+	OutstandingReprocess bool
 }
 
 // StallVerdict is the decision plus the human reason logged with it.
@@ -108,7 +120,11 @@ type StallVerdict struct {
 // sweep passes the database's NOW()). pipelineBusy is true when any
 // transcode heartbeat is fresh or the sweeping worker is itself busy.
 func ClassifyStalledTranscode(c StalledTranscodeCandidate, p StallPolicy, now time.Time, pipelineBusy bool) StallVerdict {
-	if c.ProcessingStatus != "processing" || c.FileType != "video" {
+	if c.FileType != "video" {
+		return StallVerdict{StallSkip, "not a processing video"}
+	}
+	reprocess := c.ProcessingStatus == "ready" && c.OutstandingReprocess
+	if c.ProcessingStatus != "processing" && !reprocess {
 		return StallVerdict{StallSkip, "not a processing video"}
 	}
 	if c.InFlight {
@@ -137,8 +153,17 @@ func ClassifyStalledTranscode(c StalledTranscodeCandidate, p StallPolicy, now ti
 	}
 
 	if c.Attempts >= p.MaxAttempts {
+		if reprocess {
+			return StallVerdict{StallAbandonReprocess, fmt.Sprintf(
+				"reprocess of a ready asset stalled: %s; abandoned after %d automatic re-queues (asset keeps serving generation %s)",
+				stalled, c.Attempts, "ready_generation")}
+		}
 		return StallVerdict{StallGiveUp, fmt.Sprintf(
 			"transcode stalled: %s; gave up after %d automatic re-queues", stalled, c.Attempts)}
+	}
+	if reprocess {
+		return StallVerdict{StallRequeue, fmt.Sprintf(
+			"reprocess of a ready asset %s; automatic re-queue %d of %d", stalled, c.Attempts+1, p.MaxAttempts)}
 	}
 	return StallVerdict{StallRequeue, fmt.Sprintf(
 		"%s; automatic re-queue %d of %d", stalled, c.Attempts+1, p.MaxAttempts)}
@@ -200,17 +225,30 @@ func (s *MediaAssetStore) ReclaimStalledTranscodes(ctx context.Context, p StallP
 	if p.Batch <= 0 || p.Batch > 500 {
 		p.Batch = 20
 	}
+	// Two kinds of candidate: a 'processing' video, and a 'ready' video with
+	// an outstanding reprocess (media_generation bumped past
+	// ready_generation by a re-queue — always ≥ 2 — with the current
+	// request published and no outcome recorded for it). A ready asset
+	// whose transcode simply finished has ready_generation =
+	// media_generation and is never a candidate, stale heartbeat or not.
 	rows, err := s.db.Query(ctx, `
-		SELECT id FROM media_assets
-		 WHERE processing_status = 'processing'
-		   AND file_type = 'video'
-		   AND (   (transcode_heartbeat_at IS NOT NULL
-		            AND transcode_heartbeat_at <= NOW() - $1::bigint * INTERVAL '1 millisecond')
-		        OR (transcode_heartbeat_at IS NULL
-		            AND updated_at <= NOW() - $2::bigint * INTERVAL '1 millisecond'))
-		 ORDER BY updated_at
+		SELECT m.id FROM media_assets m
+		 WHERE m.file_type = 'video'
+		   AND (   m.processing_status = 'processing'
+		        OR (m.processing_status = 'ready'
+		            AND m.media_generation >= 2
+		            AND m.media_generation > COALESCE(m.ready_generation, 0)
+		            AND EXISTS (SELECT 1 FROM media_event_outbox o
+		                         WHERE o.media_asset_id = m.id AND o.event_type = $4
+		                           AND o.published_at IS NOT NULL
+		                           AND NOT EXISTS (SELECT 1 FROM media_transcode_inbox i WHERE i.event_id = o.event_id))))
+		   AND (   (m.transcode_heartbeat_at IS NOT NULL
+		            AND m.transcode_heartbeat_at <= NOW() - $1::bigint * INTERVAL '1 millisecond')
+		        OR (m.transcode_heartbeat_at IS NULL
+		            AND m.updated_at <= NOW() - $2::bigint * INTERVAL '1 millisecond'))
+		 ORDER BY m.updated_at
 		 LIMIT $3
-	`, millis(p.HeartbeatStaleAfter), millis(p.OrphanAfter), p.Batch)
+	`, millis(p.HeartbeatStaleAfter), millis(p.OrphanAfter), p.Batch, sharedevents.MediaTranscodeRequested)
 	if err != nil {
 		return nil, fmt.Errorf("list stalled transcodes: %w", err)
 	}
@@ -289,14 +327,20 @@ func (s *MediaAssetStore) reclaimStalledTranscode(ctx context.Context, id uuid.U
 		       EXISTS (SELECT 1 FROM media_event_outbox o
 		                WHERE o.media_asset_id = m.id
 		                  AND o.event_type IN ($2, $3)
-		                  AND o.published_at IS NULL)
+		                  AND o.published_at IS NULL),
+		       (m.media_generation >= 2
+		        AND m.media_generation > COALESCE(m.ready_generation, 0)
+		        AND EXISTS (SELECT 1 FROM media_event_outbox o
+		                     WHERE o.media_asset_id = m.id AND o.event_type = $2
+		                       AND o.published_at IS NOT NULL
+		                       AND NOT EXISTS (SELECT 1 FROM media_transcode_inbox i WHERE i.event_id = o.event_id)))
 		  FROM media_assets m
 		 WHERE m.id = $1
 		   FOR UPDATE OF m SKIP LOCKED
 	`, id, sharedevents.MediaTranscodeRequested, sharedevents.MediaTranscodeCompleted).Scan(
 		&c.MediaID, &uploaderID, &c.FileType, &mimeType, &storageKey,
 		&c.ProcessingStatus, &c.HeartbeatAt, &c.UpdatedAt,
-		&c.Attempts, &now, &c.InFlight)
+		&c.Attempts, &now, &c.InFlight, &c.OutstandingReprocess)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -335,6 +379,17 @@ func (s *MediaAssetStore) reclaimStalledTranscode(ctx context.Context, id uuid.U
 			return nil, fmt.Errorf("commit stall give-up: %w", err)
 		}
 		return &StallOutcome{MediaID: c.MediaID, Action: StallGiveUp, Reason: verdict.Reason,
+			EventID: eventID, Attempts: c.Attempts}, nil
+
+	case StallAbandonReprocess:
+		eventID, err := abandonStalledReprocessTx(ctx, tx, c.MediaID, verdict.Reason)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit stall abandon: %w", err)
+		}
+		return &StallOutcome{MediaID: c.MediaID, Action: StallAbandonReprocess, Reason: verdict.Reason,
 			EventID: eventID, Attempts: c.Attempts}, nil
 	}
 	return &StallOutcome{MediaID: c.MediaID, Action: StallSkip, Reason: verdict.Reason, Attempts: c.Attempts}, nil
@@ -424,6 +479,54 @@ func failStalledTranscodeTx(ctx context.Context, tx pgx.Tx, mediaID uuid.UUID, r
 			VALUES ($1, $2, 'pipeline', 'failed', $3, NOW(), NOW())
 		`, uuid.New(), mediaID, reason); err != nil {
 			return "", fmt.Errorf("record stall failure job: %w", err)
+		}
+	}
+	return eventID, nil
+}
+
+// abandonStalledReprocessTx ends a dead reprocess of a READY asset without
+// touching what it serves: the current request gets an inbox row with
+// outcome 'failed' (so its message, if it still arrives, is skipped and the
+// asset is not swept again), the heartbeat is cleared, and its lingering
+// transcoding_jobs rows carry the reason. processing_status,
+// moderation_status, hls_master_key and ready_generation are left exactly
+// as they were: the previous generation's renditions keep playing, and
+// ready_generation < media_generation keeps the fingerprint fence closed.
+func abandonStalledReprocessTx(ctx context.Context, tx pgx.Tx, mediaID uuid.UUID, reason string) (string, error) {
+	eventID, _, err := currentRequestTx(ctx, tx, mediaID)
+	if err != nil {
+		return "", err
+	}
+	if eventID == "" {
+		eventID = "transcode-stalled:" + uuid.NewString()
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO media_transcode_inbox (event_id, media_asset_id, outcome)
+		VALUES ($1, $2, 'failed')
+		ON CONFLICT (event_id) DO NOTHING
+	`, eventID, mediaID); err != nil {
+		return "", fmt.Errorf("record abandoned reprocess: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE media_assets SET transcode_heartbeat_at = NULL WHERE id = $1
+	`, mediaID); err != nil {
+		return "", fmt.Errorf("clear heartbeat of abandoned reprocess: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE transcoding_jobs
+		   SET status = 'failed', error_message = $2, completed_at = NOW()
+		 WHERE media_asset_id = $1 AND status IN ('queued', 'processing')
+	`, mediaID, reason)
+	if err != nil {
+		return "", fmt.Errorf("fail lingering reprocess jobs: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO transcoding_jobs
+			       (id, media_asset_id, target_quality, status, error_message, completed_at, created_at)
+			VALUES ($1, $2, 'pipeline', 'failed', $3, NOW(), NOW())
+		`, uuid.New(), mediaID, reason); err != nil {
+			return "", fmt.Errorf("record abandoned reprocess job: %w", err)
 		}
 	}
 	return eventID, nil

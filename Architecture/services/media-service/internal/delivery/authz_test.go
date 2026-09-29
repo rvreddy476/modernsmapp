@@ -227,12 +227,13 @@ func TestHTTPAuthorizerAllowsAnExplicitYes(t *testing.T) {
 	}
 }
 
-// An anonymous caller can never receive protected bytes: with no viewer there
-// is no audience decision to make.
-func TestAnonymousCallerIsDeniedProtectedMedia(t *testing.T) {
-	a := NewHTTPContentAuthorizer("http://unused", "k", nil)
-	if err := a.Authorize(context.Background(), "", "media"); !errors.Is(err, ErrDeliveryDenied) {
-		t.Fatalf("anonymous caller got %v, want ErrDeliveryDenied", err)
+// An anonymous caller is a question for the post authority since 2026-09-29
+// (authz_anonymous_test.go); with no authority reachable it is unresolved,
+// never served.
+func TestAnonymousCallerWithoutAnAuthorityIsUnresolved(t *testing.T) {
+	a := NewHTTPContentAuthorizer("", "k", nil)
+	if err := a.Authorize(context.Background(), "", "media"); !errors.Is(err, ErrDeliveryUnresolved) {
+		t.Fatalf("anonymous caller got %v, want ErrDeliveryUnresolved", err)
 	}
 }
 
