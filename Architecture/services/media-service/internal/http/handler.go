@@ -49,6 +49,10 @@ type Handler struct {
 	// (handler_anonymous.go); nil means the service. An interface so a test
 	// can stand an object store behind it and count the reads.
 	streams anonymousStreamService
+	// sounds backs the two routes that ensure a video's sound
+	// (sound_handler.go); nil means the service. An interface so the ensure
+	// path can be driven without PostgreSQL or ffmpeg.
+	sounds soundService
 }
 
 func New(svc *service.Service) *Handler {
@@ -143,6 +147,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// Re-run the transcode pipeline for a video (Tube thumbnail
 			// sideways, 2026-09-05); optional rotation override in the body.
 			internal.POST("/:mediaId/reprocess", h.ReprocessMedia)
+			// Original sounds on reels (2026-09-29): post-service, on "use
+			// this sound". The one sound of the video, extracted on first use.
+			internal.POST("/:mediaId/sound", h.EnsureSound)
 			// Copyright Match phase 1 (shadow): queue or inspect the visual
 			// fingerprint job of a ready video. No URLs, no user ids.
 			internal.POST("/:mediaId/fingerprint", h.EnqueueFingerprint)

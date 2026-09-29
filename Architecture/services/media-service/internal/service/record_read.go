@@ -216,13 +216,20 @@ func mediaStatusResponse(ctx context.Context, media *postgres.MediaAsset,
 // presigned URL for the track's audio, once the viewer is admitted to the
 // SOURCE video's record. The URL lives defaultURLExpiry — the gate's cap.
 //
+// It is also the decision of GET and HEAD /v1/audio/:audioId/serve, which
+// redirect to the URL or discard it.
+//
 // A track with no source asset has nobody to answer for it, so it is refused:
-// every row audio_tracks holds today came from ExtractAudioFromMedia, which
-// always records its source.
+// every sound this service writes records its source (sounds.go). A track
+// with no audio object (a row post-service's shape wrote) has nothing to
+// sign, and is the missing answer rather than a URL to nothing.
 func (r *RecordReads) AudioTrackURLForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (string, error) {
 	track, err := r.AudioTrackForViewer(ctx, viewerID, audioID)
 	if err != nil {
 		return "", err
+	}
+	if track.AudioKey == "" {
+		return "", delivery.ErrDeliveryDenied
 	}
 	if r.blobs == nil {
 		return "", fmt.Errorf("%w: blob store not configured", delivery.ErrDeliveryUnresolved)

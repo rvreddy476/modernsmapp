@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,13 @@ type fakeRecordStore struct {
 	listed   []uuid.UUID
 	listFail error
 	used     map[uuid.UUID]int
+
+	// The ensure path (sounds_handler_test.go): mu makes the insert the
+	// arbiter of a race, as the unique index is; inserted and filled count
+	// the writes that changed a row.
+	mu       sync.Mutex
+	inserted int
+	filled   int
 }
 
 func (f *fakeRecordStore) page(match func(*postgres.AudioTrack) bool, limit, offset int) ([]postgres.AudioTrack, error) {
@@ -108,6 +116,8 @@ func (f *fakeRecordStore) GetAudioTrack(_ context.Context, id uuid.UUID) (*postg
 	if f.fail != nil {
 		return nil, f.fail
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	t, ok := f.tracks[id]
 	if !ok {
 		return nil, pgx.ErrNoRows
@@ -116,7 +126,17 @@ func (f *fakeRecordStore) GetAudioTrack(_ context.Context, id uuid.UUID) (*postg
 	return &cp, nil
 }
 
-type fakeRecordBlobs struct{ signed []string }
+type fakeRecordBlobs struct {
+	signed []string
+
+	// The ensure path (sounds_handler_test.go): every object opened, every
+	// object written, and the faults to answer them with.
+	mu         sync.Mutex
+	opened     []string
+	uploaded   map[string][]byte
+	openFail   error
+	uploadFail error
+}
 
 func (b *fakeRecordBlobs) GeneratePresignedGetURL(_ context.Context, key string, ttl time.Duration) (*url.URL, error) {
 	b.signed = append(b.signed, key)
@@ -150,6 +170,8 @@ type recordFixture struct {
 	store  *fakeRecordStore
 	blobs  *fakeRecordBlobs
 	authz  *fakeRecordAuthz
+	// extractor stands in for ffmpeg on the ensure path.
+	extractor *fakeSoundExtractor
 
 	owner, viewer, stranger uuid.UUID
 
@@ -207,6 +229,7 @@ func newRecordFixture(t *testing.T) *recordFixture {
 		f.store.jobs[id] = []postgres.TranscodingJob{{ID: uuid.New(), MediaAssetID: id, TargetQuality: "720p", Status: "completed", OutputURL: &out}}
 	}
 	f.blobs = &fakeRecordBlobs{}
+	f.extractor = &fakeSoundExtractor{}
 	f.authz = &fakeRecordAuthz{allow: func(viewerID, mediaID string) bool {
 		switch mediaID {
 		case f.publicID.String(), f.datingID.String(), f.anonID.String():
@@ -224,7 +247,10 @@ func newRecordFixture(t *testing.T) *recordFixture {
 // service-caller path unconfigured.
 func (f *recordFixture) build(internalKey string) *gin.Engine {
 	r := gin.New()
-	h := &Handler{records: service.NewRecordReads(f.store, f.blobs, delivery.NewGate(nil, f.authz))}
+	h := &Handler{
+		records: service.NewRecordReads(f.store, f.blobs, delivery.NewGate(nil, f.authz)),
+		sounds:  service.NewSounds(f.store, f.blobs, f.extractor),
+	}
 	if internalKey != "" {
 		h.WithInternalKey(internalKey)
 	}
@@ -575,6 +601,11 @@ func TestRecordReadRoutesAreWired(t *testing.T) {
 		"GET /v1/audio/trending":        ".GetTrendingAudio",
 		"GET /v1/audio/search":          ".SearchAudio",
 		"POST /v1/audio/:audioId/use":   ".UseAudioTrack",
+		// The sound's bytes and the two ensure routes (sound_handler.go).
+		"GET /v1/audio/:audioId/serve":           ".ServeAudioTrack",
+		"HEAD /v1/audio/:audioId/serve":          ".HeadAudioTrack",
+		"POST /v1/audio/extract/:mediaId":        ".ExtractAudio",
+		"POST /v1/media/internal/:mediaId/sound": ".EnsureSound",
 	}
 	found := map[string]string{}
 	for _, ri := range f.router.Routes() {

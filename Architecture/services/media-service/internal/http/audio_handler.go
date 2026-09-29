@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/atpost/media-service/internal/delivery"
+	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,10 @@ func (h *Handler) RegisterAudioRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 		v1.GET("/search", h.SearchAudio)
 		v1.GET("/:audioId", h.GetAudioTrack)
 		v1.GET("/:audioId/url", h.GetAudioTrackURL)
+		// The bytes of a sound, for an <audio> element: the /url decision,
+		// answered as a redirect (sound_handler.go).
+		v1.GET("/:audioId/serve", h.ServeAudioTrack)
+		v1.HEAD("/:audioId/serve", h.HeadAudioTrack)
 		v1.POST("/:audioId/use", authMW, h.UseAudioTrack)
 		v1.POST("/voiceover", authMW, h.UploadVoiceover)
 	}
@@ -54,20 +59,13 @@ func (h *Handler) ExtractAudio(c *gin.Context) {
 	var req ExtractAudioRequest
 	_ = c.ShouldBindJSON(&req)
 
-	// Verify ownership
-	media, err := h.svc.GetMedia(c.Request.Context(), mediaID)
+	// Owner-only, and the same ensure path as the internal route
+	// (service/sounds.go): a second call answers the row the first one made.
+	track, err := h.soundsSvc().EnsureForOwner(c.Request.Context(), userID, service.EnsureSoundInput{
+		MediaID: mediaID, Title: req.Title, Artist: req.Artist,
+	})
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
-		return
-	}
-	if media.UploaderID != userID {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this media", nil)
-		return
-	}
-
-	track, err := h.svc.ExtractAudioFromMedia(c.Request.Context(), mediaID, req.Title, req.Artist)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeSoundError(c, err)
 		return
 	}
 

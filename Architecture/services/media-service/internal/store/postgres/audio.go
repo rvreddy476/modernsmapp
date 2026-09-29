@@ -10,73 +10,149 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AudioTrack represents an extracted or uploaded audio track for the music/sound system.
+// AudioTrack is a sound: the audio of a source video, extracted once.
+//
+// audio_tracks is ONE table shared with post-service, which declares its own
+// columns on it (use_count, creator_user_id, is_public, ...). Whichever
+// service migrated first created it, so every read here COALESCEs what the
+// other shape leaves NULL (audioTrackCols) and migration 024 adds the
+// post-service columns this service reads.
 type AudioTrack struct {
 	ID            uuid.UUID  `json:"id"`
 	SourceMediaID *uuid.UUID `json:"source_media_id,omitempty"`
-	SourceReelID  *uuid.UUID `json:"source_reel_id,omitempty"`
-	Title         string     `json:"title"`
-	Artist        string     `json:"artist"`
-	Genre         *string    `json:"genre,omitempty"`
-	AudioKey      string     `json:"audio_key"`
-	WaveformKey   *string    `json:"waveform_key,omitempty"`
-	DurationMs    int        `json:"duration_ms"`
-	SampleRate    *int       `json:"sample_rate,omitempty"`
-	Status        string     `json:"status"`
-	IsOriginal    bool       `json:"is_original"`
-	LicenseType   string     `json:"license_type"`
+	// SourceReelID is the post the sound was taken from. On the wire it is
+	// source_post_id, and source_reel_id as before (MarshalJSON).
+	SourceReelID *uuid.UUID `json:"source_reel_id,omitempty"`
+	Title        string     `json:"title"`
+	Artist       string     `json:"artist"`
+	Genre        *string    `json:"genre,omitempty"`
+	// AudioKey and WaveformKey are storage paths, and the path names the
+	// uploader: they never leave the service. The bytes are
+	// GET /v1/audio/:audioId/serve.
+	AudioKey    string  `json:"-"`
+	WaveformKey *string `json:"-"`
+	DurationMs  int     `json:"duration_ms"`
+	SampleRate  *int    `json:"sample_rate,omitempty"`
+	Status      string  `json:"status"`
+	IsOriginal  bool    `json:"is_original"`
+	LicenseType string  `json:"license_type"`
+	// UsageCount is this service's counter and UseCount post-service's
+	// (use_count) of the same thing. The wire carries the greater of the two
+	// as usage_count (WireUsageCount).
 	UsageCount    int        `json:"usage_count"`
+	UseCount      int        `json:"-"`
+	CreatorUserID *uuid.UUID `json:"creator_user_id"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
-// CreateAudioTrack inserts a new audio track record.
-func (s *MediaAssetStore) CreateAudioTrack(ctx context.Context, a *AudioTrack) error {
+// WireUsageCount is GREATEST(usage_count, use_count).
+func (a AudioTrack) WireUsageCount() int {
+	if a.UseCount > a.UsageCount {
+		return a.UseCount
+	}
+	return a.UsageCount
+}
+
+// MarshalJSON is the Sound shape: the row, usage_count as the greater of the
+// two counters, and source_post_id (null when there is none) beside the
+// source_reel_id it has always carried.
+func (a AudioTrack) MarshalJSON() ([]byte, error) {
+	type row AudioTrack // the fields, without this method
+	sound := struct {
+		row
+		SourcePostID *uuid.UUID `json:"source_post_id"`
+	}{row: row(a), SourcePostID: a.SourceReelID}
+	sound.UsageCount = a.WireUsageCount()
+	return json.Marshal(sound)
+}
+
+// audioTrackCols is the one column list of every sound read, in
+// scanSound's order. audio_key is NULL on a row post-service wrote, and
+// use_count is its column.
+const audioTrackCols = `id, source_media_id, source_reel_id, title, artist, genre,
+		       COALESCE(audio_key, ''), waveform_key, duration_ms, sample_rate, status, is_original,
+		       license_type, COALESCE(usage_count, 0), COALESCE(use_count, 0), creator_user_id,
+		       created_at, updated_at`
+
+// audioTrackUses is the counter the lists order by: the one the wire carries.
+const audioTrackUses = `GREATEST(COALESCE(usage_count, 0), COALESCE(use_count, 0))`
+
+func scanSound(row pgx.Row, a *AudioTrack) error {
+	return row.Scan(
+		&a.ID, &a.SourceMediaID, &a.SourceReelID, &a.Title, &a.Artist, &a.Genre,
+		&a.AudioKey, &a.WaveformKey, &a.DurationMs, &a.SampleRate, &a.Status, &a.IsOriginal,
+		&a.LicenseType, &a.UsageCount, &a.UseCount, &a.CreatorUserID,
+		&a.CreatedAt, &a.UpdatedAt,
+	)
+}
+
+// InsertSoundIfAbsent inserts the sound of a.SourceMediaID unless that asset
+// already has one, and reports whether this call's row is the one kept. The
+// unique index of migration 024 is the arbiter, so two callers racing on one
+// asset leave one row; the loser re-reads it (GetAudioTrackByMedia).
+//
+// genre is left to the column default: post-service's shape declares it
+// NOT NULL with an empty default, and a NULL written here would break it.
+func (s *MediaAssetStore) InsertSoundIfAbsent(ctx context.Context, a *AudioTrack) (bool, error) {
+	if a.SourceMediaID == nil || *a.SourceMediaID == uuid.Nil {
+		return false, errors.New("a sound needs a source media asset")
+	}
 	if a.ID == uuid.Nil {
 		a.ID = uuid.New()
 	}
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO audio_tracks (id, source_media_id, source_reel_id, title, artist, genre,
-		    audio_key, waveform_key, duration_ms, sample_rate, status, is_original, license_type, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
-	`, a.ID, a.SourceMediaID, a.SourceReelID, a.Title, a.Artist, a.Genre,
+	tag, err := s.db.Exec(ctx, `
+		INSERT INTO audio_tracks (id, source_media_id, source_reel_id, creator_user_id, title, artist,
+		    audio_key, waveform_key, duration_ms, sample_rate, status, is_original, is_public,
+		    license_type, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13, NOW(), NOW())
+		ON CONFLICT (source_media_id) WHERE source_media_id IS NOT NULL DO NOTHING
+	`, a.ID, a.SourceMediaID, a.SourceReelID, a.CreatorUserID, a.Title, a.Artist,
 		a.AudioKey, a.WaveformKey, a.DurationMs, a.SampleRate, a.Status, a.IsOriginal, a.LicenseType)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// FillSoundOrigin records the source post and the creator of a sound that
+// has none yet (a row the owner's extract route wrote before any post named
+// it). A value already there is kept: COALESCE, never an overwrite.
+func (s *MediaAssetStore) FillSoundOrigin(ctx context.Context, id uuid.UUID, sourcePostID, creatorUserID *uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE audio_tracks
+		   SET source_reel_id  = COALESCE(source_reel_id, $2),
+		       creator_user_id = COALESCE(creator_user_id, $3),
+		       updated_at      = NOW()
+		 WHERE id = $1
+		   AND (source_reel_id IS NULL OR creator_user_id IS NULL)
+	`, id, sourcePostID, creatorUserID)
 	return err
 }
 
 // GetAudioTrack returns a single audio track by ID.
 func (s *MediaAssetStore) GetAudioTrack(ctx context.Context, id uuid.UUID) (*AudioTrack, error) {
 	var a AudioTrack
-	err := s.db.QueryRow(ctx, `
-		SELECT id, source_media_id, source_reel_id, title, artist, genre,
-		       audio_key, waveform_key, duration_ms, sample_rate, status, is_original,
-		       license_type, usage_count, created_at, updated_at
+	err := scanSound(s.db.QueryRow(ctx, `
+		SELECT `+audioTrackCols+`
 		FROM audio_tracks WHERE id = $1
-	`, id).Scan(
-		&a.ID, &a.SourceMediaID, &a.SourceReelID, &a.Title, &a.Artist, &a.Genre,
-		&a.AudioKey, &a.WaveformKey, &a.DurationMs, &a.SampleRate, &a.Status, &a.IsOriginal,
-		&a.LicenseType, &a.UsageCount, &a.CreatedAt, &a.UpdatedAt,
-	)
+	`, id), &a)
 	if err != nil {
 		return nil, err
 	}
 	return &a, nil
 }
 
-// GetAudioTrackByMedia returns the audio track extracted from a specific media asset.
+// GetAudioTrackByMedia returns the audio track extracted from a specific
+// media asset: the one row the unique index of migration 024 allows.
 func (s *MediaAssetStore) GetAudioTrackByMedia(ctx context.Context, mediaID uuid.UUID) (*AudioTrack, error) {
 	var a AudioTrack
-	err := s.db.QueryRow(ctx, `
-		SELECT id, source_media_id, source_reel_id, title, artist, genre,
-		       audio_key, waveform_key, duration_ms, sample_rate, status, is_original,
-		       license_type, usage_count, created_at, updated_at
+	err := scanSound(s.db.QueryRow(ctx, `
+		SELECT `+audioTrackCols+`
 		FROM audio_tracks WHERE source_media_id = $1
+		ORDER BY created_at ASC, id ASC
 		LIMIT 1
-	`, mediaID).Scan(
-		&a.ID, &a.SourceMediaID, &a.SourceReelID, &a.Title, &a.Artist, &a.Genre,
-		&a.AudioKey, &a.WaveformKey, &a.DurationMs, &a.SampleRate, &a.Status, &a.IsOriginal,
-		&a.LicenseType, &a.UsageCount, &a.CreatedAt, &a.UpdatedAt,
-	)
+	`, mediaID), &a)
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +178,10 @@ func (s *MediaAssetStore) UpdateAudioTrackWaveform(ctx context.Context, id uuid.
 // GetTrendingAudioTracks returns audio tracks ordered by usage count (snapshot-based).
 func (s *MediaAssetStore) GetTrendingAudioTracks(ctx context.Context, limit, offset int) ([]AudioTrack, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, source_media_id, source_reel_id, title, artist, genre,
-		       audio_key, waveform_key, duration_ms, sample_rate, status, is_original,
-		       license_type, usage_count, created_at, updated_at
+		SELECT `+audioTrackCols+`
 		FROM audio_tracks
 		WHERE status = 'ready'
-		ORDER BY usage_count DESC, created_at DESC
+		ORDER BY `+audioTrackUses+` DESC, created_at DESC
 		LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
@@ -120,13 +194,11 @@ func (s *MediaAssetStore) GetTrendingAudioTracks(ctx context.Context, limit, off
 // SearchAudioTracks searches audio tracks by title or artist.
 func (s *MediaAssetStore) SearchAudioTracks(ctx context.Context, query string, limit, offset int) ([]AudioTrack, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, source_media_id, source_reel_id, title, artist, genre,
-		       audio_key, waveform_key, duration_ms, sample_rate, status, is_original,
-		       license_type, usage_count, created_at, updated_at
+		SELECT `+audioTrackCols+`
 		FROM audio_tracks
 		WHERE status = 'ready'
 		  AND (title ILIKE '%' || $1 || '%' OR artist ILIKE '%' || $1 || '%')
-		ORDER BY usage_count DESC
+		ORDER BY `+audioTrackUses+` DESC
 		LIMIT $2 OFFSET $3
 	`, query, limit, offset)
 	if err != nil {
@@ -136,10 +208,16 @@ func (s *MediaAssetStore) SearchAudioTracks(ctx context.Context, query string, l
 	return scanAudioTracks(rows)
 }
 
-// IncrementAudioUsageCount bumps usage_count by 1 (snapshot — not the truth source).
+// IncrementAudioUsageCount counts one use (snapshot — not the truth source).
+// Both counters are written to the same value, one more than the greater of
+// the two, so a use counted here is not hidden behind post-service's column.
 func (s *MediaAssetStore) IncrementAudioUsageCount(ctx context.Context, id uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE audio_tracks SET usage_count = usage_count + 1, updated_at = NOW() WHERE id = $1
+		UPDATE audio_tracks
+		   SET usage_count = `+audioTrackUses+` + 1,
+		       use_count   = `+audioTrackUses+` + 1,
+		       updated_at  = NOW()
+		 WHERE id = $1
 	`, id)
 	return err
 }
@@ -148,16 +226,12 @@ func scanAudioTracks(rows pgx.Rows) ([]AudioTrack, error) {
 	var tracks []AudioTrack
 	for rows.Next() {
 		var a AudioTrack
-		if err := rows.Scan(
-			&a.ID, &a.SourceMediaID, &a.SourceReelID, &a.Title, &a.Artist, &a.Genre,
-			&a.AudioKey, &a.WaveformKey, &a.DurationMs, &a.SampleRate, &a.Status, &a.IsOriginal,
-			&a.LicenseType, &a.UsageCount, &a.CreatedAt, &a.UpdatedAt,
-		); err != nil {
+		if err := scanSound(rows, &a); err != nil {
 			return nil, err
 		}
 		tracks = append(tracks, a)
 	}
-	return tracks, nil
+	return tracks, rows.Err()
 }
 
 // ─── Audio Library (audio_library table) ───────────────────────────
