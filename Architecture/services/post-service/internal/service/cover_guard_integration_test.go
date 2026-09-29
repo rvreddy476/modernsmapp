@@ -137,6 +137,7 @@ func TestCoverWriteCreateRefusesAStrangersAsset(t *testing.T) {
 		{"a stranger's video", f.theirVideo, ErrMediaNotOwned},
 		{"no such asset", uuid.New(), ErrMediaNotFound},
 		{"own video the post does not attach", f.ownOtherVideo, ErrMediaTypeMismatch},
+		{"the post's own video", f.media, ErrMediaTypeMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id, err := f.create(t, "post", "image", []uuid.UUID{f.ownImage}, tc.cover)
@@ -160,13 +161,16 @@ func TestCoverWriteCreateAcceptsTheAuthorsOwnUpload(t *testing.T) {
 		t.Fatalf("stored cover = %v, want %s", got, f.ownImage)
 	}
 
-	// A reel draft whose cover came from the frame picker names the video.
-	id, err = f.create(t, "flick", "video", []uuid.UUID{f.ownOtherVideo}, f.ownOtherVideo)
-	if err != nil {
-		t.Fatalf("the post's own video as cover: %v", err)
-	}
-	if got := f.coverOf(t, id); got == nil || *got != f.ownOtherVideo {
-		t.Fatalf("stored cover = %v, want %s", got, f.ownOtherVideo)
+}
+
+// A video is never a cover, the post's own included: the old frame picker
+// named it, and every card drew a video where it wanted a picture.
+func TestCoverWriteCreateRefusesThePostsOwnVideo(t *testing.T) {
+	f := newCoverWriteFixture(t)
+	id, err := f.create(t, "flick", "video", []uuid.UUID{f.ownOtherVideo}, f.ownOtherVideo)
+	assertCoverRefused(t, err, ErrMediaTypeMismatch)
+	if f.postExists(t, id) {
+		t.Fatal("a refused cover still created the post")
 	}
 }
 
@@ -185,6 +189,7 @@ func TestCoverWriteCoverFrameRefusesAStrangersAsset(t *testing.T) {
 		{"a stranger's video", f.theirVideo, ErrMediaNotOwned},
 		{"no such asset", uuid.New(), ErrMediaNotFound},
 		{"own video the post does not attach", f.ownOtherVideo, ErrMediaTypeMismatch},
+		{"the post's own video", f.media, ErrMediaTypeMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cover := tc.cover
@@ -220,26 +225,5 @@ func TestCoverWriteCoverFrameAcceptsTheAuthorsOwnUpload(t *testing.T) {
 	}
 	if got := f.coverOf(t, f.post); got == nil || *got != f.ownImage {
 		t.Fatalf("stored cover = %v, want %s", got, f.ownImage)
-	}
-
-	// The frame picker: the post's own video, the picture in thumbnail_url.
-	video := f.media
-	if err := f.svc.SetCoverFrame(ctx, f.post, f.author, &video, nil); err != nil {
-		t.Fatalf("the post's own video as cover: %v", err)
-	}
-	if got := f.coverOf(t, f.post); got == nil || *got != f.media {
-		t.Fatalf("stored cover = %v, want %s", got, f.media)
-	}
-}
-
-func TestCoverWritePostMediaIDs(t *testing.T) {
-	f := newCoverWriteFixture(t)
-	ids, err := postgres.New(f.pool).PostMediaIDs(context.Background(), f.post)
-	if err != nil || len(ids) != 1 || ids[0] != f.media {
-		t.Fatalf("PostMediaIDs = %v (%v), want [%s]", ids, err, f.media)
-	}
-	ids, err = postgres.New(f.pool).PostMediaIDs(context.Background(), uuid.New())
-	if err != nil || len(ids) != 0 {
-		t.Fatalf("PostMediaIDs of no post = %v (%v)", ids, err)
 	}
 }

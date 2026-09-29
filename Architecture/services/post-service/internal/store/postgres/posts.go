@@ -1300,29 +1300,6 @@ func (s *Store) GetPostAuthorAndContentType(ctx context.Context, postID uuid.UUI
 	return st.AuthorID, st.ContentType, err
 }
 
-// PostMediaIDs returns the media a post attaches, in carousel order. The
-// cover-frame route reads it to tell "a frame of this post's own video" from
-// any other video (service/cover_guard.go).
-func (s *Store) PostMediaIDs(ctx context.Context, postID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT media_id FROM post_media
-		WHERE post_id = $1
-		ORDER BY position NULLS LAST, media_id`, postID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
 // UpdatePostCoverMedia updates the cover_media_id of a post.
 func (s *Store) UpdatePostCoverMedia(ctx context.Context, postID uuid.UUID, coverMediaID *uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `UPDATE posts SET cover_media_id = $2, updated_at = NOW() WHERE id = $1`, postID, coverMediaID)

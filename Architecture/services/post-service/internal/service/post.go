@@ -1134,7 +1134,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// The cover answers the same questions as an attachment (cover_guard.go):
 	// it used to be stored as sent, a stranger's asset included.
 	if input.CoverMediaID != nil {
-		if err := s.verifyCoverOnWrite(ctx, input.AuthorID, *input.CoverMediaID, input.MediaIDs); err != nil {
+		if err := s.verifyCoverOnWrite(ctx, input.AuthorID, *input.CoverMediaID); err != nil {
 			return nil, err
 		}
 	}
@@ -3234,14 +3234,9 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 
 	// Update cover_media_id on the post
 	if coverMediaID != nil {
-		// Authority before the write (cover_guard.go). The frame picker names
-		// the post's own video, so the post's attachments are part of the
-		// question; nothing is written, thumbnail included, when it fails.
-		attached, err := s.pgStore.PostMediaIDs(ctx, postID)
-		if err != nil {
-			return fmt.Errorf("verify cover media: %w", err)
-		}
-		if err := s.verifyCoverOnWrite(ctx, authorID, *coverMediaID, attached); err != nil {
+		// Authority before the write (cover_guard.go); nothing is written,
+		// thumbnail included, when it fails.
+		if err := s.verifyCoverOnWrite(ctx, authorID, *coverMediaID); err != nil {
 			return err
 		}
 		if err := s.pgStore.UpdatePostCoverMedia(ctx, postID, coverMediaID); err != nil {

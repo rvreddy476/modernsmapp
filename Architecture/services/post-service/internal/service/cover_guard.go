@@ -30,9 +30,7 @@ func (e *CoverMediaError) Error() string { return e.Err.Error() }
 func (e *CoverMediaError) Unwrap() error { return e.Err }
 
 // verifyCoverOnWrite is the cover's authority on create and cover-frame.
-// attached is the post's own media: what the request attaches on create, what
-// the post already attaches on cover-frame.
-func (s *Service) verifyCoverOnWrite(ctx context.Context, authorID, coverID uuid.UUID, attached []uuid.UUID) error {
+func (s *Service) verifyCoverOnWrite(ctx context.Context, authorID, coverID uuid.UUID) error {
 	ownership, err := s.pgStore.BatchGetMediaOwnership(ctx, []uuid.UUID{coverID})
 	if err != nil {
 		// FAIL CLOSED, like verifyMediaAuthority: an unreadable authority is
@@ -40,41 +38,28 @@ func (s *Service) verifyCoverOnWrite(ctx context.Context, authorID, coverID uuid
 		return fmt.Errorf("verify cover media: %w", err)
 	}
 	m, ok := ownership[coverID]
-	if err := checkCoverAuthority(coverID, authorID, m, ok, attached); err != nil {
+	if err := checkCoverAuthority(coverID, authorID, m, ok); err != nil {
 		return &CoverMediaError{Err: err}
 	}
 	return nil
 }
 
-// checkCoverAuthority is the whole cover decision, as a pure function.
+// checkCoverAuthority is the whole cover decision, as a pure function, and
+// it is verifyCoverMedia's: the asset exists, the author uploaded it, it is
+// confirmed and not refused, and it is an IMAGE. One rule on every route.
 //
-// The rules are verifyCoverMedia's: the asset exists, the author uploaded it,
-// it is confirmed and not refused, and it is an IMAGE. One case is added,
-// because a shipped client depends on it: the frame picker (web
-// extractCoverFrame, then cover-frame) names the VIDEO ITSELF as the cover
-// and carries the picture in thumbnail_url. A video is therefore accepted
-// only when it is one of this post's own attachments, which adds nothing to
-// the post's audience; every other video is a type mismatch, as on PATCH.
+// A video is never a cover, the post's own included. The web frame picker
+// used to name the video itself and carry the picture in thumbnail_url; it
+// now uploads the frame as an image (postbook-ui e00b88b), and every card
+// draws the cover as /v1/media/<cover>/serve, where a video is a broken
+// picture.
 //
-// Ownership is asked first in both branches, so a stranger's asset answers
-// ErrMediaNotOwned whatever its kind, and the answer says nothing about it.
+// Ownership is asked before kind, so a stranger's asset answers
+// ErrMediaNotOwned whatever it is, and the answer says nothing about it.
 func checkCoverAuthority(
 	coverID, authorID uuid.UUID,
 	m postgres.MediaOwnership,
 	found bool,
-	attached []uuid.UUID,
 ) error {
-	if found && m.Kind == mediaKindVideo && containsMediaID(attached, coverID) {
-		return checkMediaAuthority(coverID, authorID, m, found, "long_video", "video")
-	}
 	return checkMediaAuthority(coverID, authorID, m, found, "post", postTypeImage)
-}
-
-func containsMediaID(ids []uuid.UUID, id uuid.UUID) bool {
-	for _, v := range ids {
-		if v == id {
-			return true
-		}
-	}
-	return false
 }
