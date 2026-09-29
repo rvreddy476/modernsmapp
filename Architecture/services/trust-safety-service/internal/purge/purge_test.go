@@ -169,3 +169,90 @@ func TestMalformedPayloadIsPermanent(t *testing.T) {
 		t.Fatalf("unrelated events are a no-op: %v", err)
 	}
 }
+
+// ── TxEraser: erase and ack in one transaction ──────────────────────────────
+
+type fakeTxStore struct {
+	fakeStore
+	acks     []Ack
+	topics   []string
+	failBoth error
+}
+
+func (f *fakeTxStore) PurgeUserAndAck(_ context.Context, id uuid.UUID, topic string, ack []byte) error {
+	f.purges++
+	if f.failBoth != nil {
+		return f.failBoth
+	}
+	var a Ack
+	if err := json.Unmarshal(ack, &a); err != nil {
+		return err
+	}
+	delete(f.rows, id)
+	f.acks = append(f.acks, a)
+	f.topics = append(f.topics, topic)
+	*f.log = append(*f.log, "erase+ack-committed")
+	return nil
+}
+
+// With a TxEraser the ack rides in the erase transaction: no AckPublisher
+// is consulted, the ack names the service and the clock, the topic is the
+// configured one, and every delivery acks again.
+func TestTxEraserAcksInTheEraseTransaction(t *testing.T) {
+	id := uuid.New()
+	var order []string
+	st := &fakeTxStore{fakeStore: fakeStore{rows: map[uuid.UUID]int{id: 2}, hidden: map[uuid.UUID]bool{}, log: &order}}
+	acks := &fakeAcks{log: &order, fail: errors.New("must not be called")}
+	fixed := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	h := NewHandler("trust-safety", st, acks, st, nil).WithClock(func() time.Time { return fixed }).WithAckTopic("platform.purge-acks.test")
+
+	for i := 0; i < 2; i++ {
+		if err := h.Handle(context.Background(), EventUserPurgeRequested, payload(id)); err != nil {
+			t.Fatalf("purge %d: %v", i, err)
+		}
+	}
+	if len(acks.acks) != 0 {
+		t.Fatal("the direct publisher must not be used by a TxEraser")
+	}
+	if st.purges != 2 || len(st.acks) != 2 || len(order) != 2 {
+		t.Fatalf("purges=%d acks=%d order=%v", st.purges, len(st.acks), order)
+	}
+	if a := st.acks[0]; a.Service != "trust-safety" || a.UserID != id.String() || !a.PurgedAt.Equal(fixed) {
+		t.Fatalf("bad ack: %+v", a)
+	}
+	if st.topics[0] != "platform.purge-acks.test" {
+		t.Fatalf("topic=%q", st.topics[0])
+	}
+	if _, still := st.rows[id]; still {
+		t.Fatal("rows must be gone")
+	}
+}
+
+// A TxEraser failure leaves nothing: no erase, no ack, and the consumer
+// holds the offset.
+func TestTxEraserFailureLeavesNothing(t *testing.T) {
+	id := uuid.New()
+	var order []string
+	st := &fakeTxStore{fakeStore: fakeStore{rows: map[uuid.UUID]int{id: 1}, hidden: map[uuid.UUID]bool{}, log: &order}, failBoth: errors.New("db down")}
+	h := NewHandler("trust-safety", st, nil, st, nil)
+	if err := h.Handle(context.Background(), EventUserPurgeRequested, payload(id)); err == nil {
+		t.Fatal("expected error")
+	}
+	if len(st.acks) != 0 || len(order) != 0 {
+		t.Fatalf("acks=%d order=%v, want nothing", len(st.acks), order)
+	}
+	if _, still := st.rows[id]; !still {
+		t.Fatal("rows must survive a failed transaction")
+	}
+}
+
+// A plain Eraser with no AckPublisher is a wiring mistake, refused at build.
+func TestPlainEraserNeedsAnAckPublisher(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewHandler must panic on a plain Eraser without an AckPublisher")
+		}
+	}()
+	var order []string
+	NewHandler("trust-safety", &fakeStore{log: &order}, nil, nil, nil)
+}

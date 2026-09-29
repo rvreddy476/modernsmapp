@@ -53,11 +53,13 @@ func openM7TrustDB(t *testing.T) *pgxpool.Pool {
 	for _, name := range []string{
 		"migrations/002_case_workflow.sql",
 		"migrations/004_trust_extras.sql",
+		"migrations/006_user_trust_state.sql",
 		"migrations/005_report_categories.sql",
 		"migrations/007_grievances.sql",
 		"migrations/008_launch_report_and_appeal_integrity.sql",
 		"migrations/009_dating_report_grievances.sql",
 		"migrations/010_admin_audit.sql",
+		"migrations/011_strike_lifecycle_outbox.sql",
 	} {
 		raw, readErr := database.Migrations.ReadFile(name)
 		if readErr != nil {

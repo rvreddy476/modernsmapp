@@ -201,7 +201,8 @@ func TestAdminTokenIntegration_ActorIsActAndEachChangeAuditedOnce(t *testing.T) 
 
 	// Read-only queues.
 	struck := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO trust.user_strikes (user_id, reason, severity, created_by) VALUES ($1, 'seeded', 'strike', $2)`, struck, uuid.New()); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO trust.user_strikes (user_id, reason, severity, created_by, expires_at)
+		VALUES ($1, 'seeded', 'strike', $2, NOW() + interval '90 days')`, struck, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	reads := []struct {
@@ -279,9 +280,13 @@ func TestAdminTokenIntegration_StatsCounts(t *testing.T) {
 	insertGrievance(t, pool, "rejected", 24*time.Hour)     // closed: neither
 	insertGrievance(t, pool, "open", 72*time.Hour)         // open, not soon
 
-	if _, err := pool.Exec(ctx, `INSERT INTO trust.user_strikes (user_id, reason, severity, created_at) VALUES
-		($1, 'seeded', 'warning', NOW() - interval '1 day'),
-		($2, 'seeded', 'strike', NOW() - interval '8 days')`, uuid.New(), uuid.New()); err != nil {
+	// Three strikes in the window, one of them voided: stats count two.
+	if _, err := pool.Exec(ctx, `INSERT INTO trust.user_strikes (user_id, reason, severity, created_at, expires_at, voided_at, void_reason, voided_by) VALUES
+		($1, 'seeded', 'warning', NOW() - interval '1 day', NOW() + interval '89 days', NULL, NULL, NULL),
+		($2, 'seeded', 'strike', NOW() - interval '8 days', NOW() + interval '82 days', NULL, NULL, NULL),
+		($3, 'seeded', 'strike', NOW() - interval '2 days', NOW() + interval '88 days', NOW(), 'duplicate', $4),
+		($5, 'seeded', 'severe_strike', NOW() - interval '3 days', NOW() + interval '87 days', NULL, NULL, NULL)`,
+		uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -297,7 +302,7 @@ func TestAdminTokenIntegration_StatsCounts(t *testing.T) {
 		{"open_grievances", after.OpenGrievances - before.OpenGrievances, 5},
 		{"grievances_overdue", after.GrievancesOverdue - before.GrievancesOverdue, 2},
 		{"grievances_due_within_48h", after.GrievancesDueSoon - before.GrievancesDueSoon, 2},
-		{"strikes_last_7_days", after.StrikesLast7Days - before.StrikesLast7Days, 1},
+		{"strikes_last_7_days", after.StrikesLast7Days - before.StrikesLast7Days, 2},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

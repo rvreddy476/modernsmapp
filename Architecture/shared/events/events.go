@@ -1939,3 +1939,104 @@ type RiderRidePaymentPaidPayload struct {
 	Method         string    `json:"method"`
 	PaidAt         time.Time `json:"paid_at"`
 }
+
+// ── Copyright Match, phase 1 (media-service, 2026-09-29) ─────────────────────
+//
+// Fingerprint PAIRS found by the media worker's visual matcher. They travel on
+// their own topic and their own outbox (copyright_pair_outbox); media.events
+// and media_event_outbox are untouched (plan P-15). Keyed by pair_id, so all
+// revisions of one pair land on one partition in order. The consumer
+// (post-service, phase 2) keeps an inbox by event_id and drops any revision
+// ≤ the last one it applied for that pair_id.
+//
+// The payload carries media facts only: ids, generations, revision, class,
+// scores, direction and status. No URLs, no user ids, no legal PII.
+const (
+	// MediaCopyrightPairsTopic is the Kafka topic the pair relay writes to.
+	MediaCopyrightPairsTopic = "media.copyright.pairs"
+
+	// MediaFingerprintPairFound: a pair was created or its class, score,
+	// status or direction changed (pair_revision bumped). Payload:
+	// MediaFingerprintPairPayload with Status "active".
+	MediaFingerprintPairFound = "media.copyright_pair.upserted"
+	// MediaFingerprintPairInvalidated: a side was reprocessed, deleted or the
+	// algorithm version retired. Payload: MediaFingerprintPairPayload with
+	// Status "invalidated" and InvalidatedReason set. It carries a revision
+	// and can be superseded by a later upsert.
+	MediaFingerprintPairInvalidated = "media.copyright_pair.invalidated"
+)
+
+// MediaFingerprintPairPayload is the wire shape of both pair events (plan
+// section 6.6). MediaLo < MediaHi in byte order; the pair key is
+// (media_lo, gen_lo, media_hi, gen_hi, algo_version).
+//
+// Direction is a fact about upload time, never an ownership verdict:
+// "lo_earlier", "hi_earlier", "contemporaneous" (|Δ| ≤ 60 s) or
+// "ambiguous_legacy" (a side dated from legacy created_at within 24 h).
+// Class is one of full_or_near_full, contains, partial,
+// short_clip_candidate, insufficient_evidence; only full_or_near_full is
+// ever actionable, and in phase 1 it is the only class relayed at all.
+type MediaFingerprintPairPayload struct {
+	EventID      string    `json:"event_id"`
+	OccurredAt   time.Time `json:"occurred_at"`
+	PairID       string    `json:"pair_id"`
+	PairRevision int64     `json:"pair_revision"`
+	MediaLo      string    `json:"media_lo"`
+	GenLo        int64     `json:"gen_lo"`
+	MediaHi      string    `json:"media_hi"`
+	GenHi        int64     `json:"gen_hi"`
+	AlgoVersion  int       `json:"algo_version"`
+	Status       string    `json:"status"`
+	// InvalidatedReason is set only when Status is "invalidated":
+	// reprocessed, deleted or algo_retired.
+	InvalidatedReason string  `json:"invalidated_reason,omitempty"`
+	Class             string  `json:"class"`
+	Direction         string  `json:"direction"`
+	RefCoverage       float64 `json:"ref_coverage"`
+	CopyCoverage      float64 `json:"copy_coverage"`
+	// MatchedInformativeS is the matched duration in seconds counted on
+	// informative weight (flat frames weigh 0, static runs cap at 2 s).
+	MatchedInformativeS float64 `json:"matched_informative_s"`
+	MedianHamming       float64 `json:"median_hamming"`
+	Diversity           int     `json:"diversity"`
+}
+
+// ── Trust & Safety — strikes (trust-safety-service) ─────────────────────────
+//
+// Copyright Match plan, section 6.4 (P-6 / P-7). Both events are written to
+// trust.enforcement_outbox in the SAME transaction as the strike row and its
+// audit row, and relayed to the trust topic (social.events.v1) by
+// trust-safety's outbox dispatcher, so a strike cannot exist without its
+// event or the other way round. The envelope's event_id is the outbox row's
+// id, stable across dispatcher retries; consumers dedupe on it.
+//
+// These events are informational. Nothing derives a user's standing from
+// them: post-service asks GET /v1/internal/standing/:userId, where
+// trust-safety alone applies the standing policy.
+const (
+	StrikeIssued = "StrikeIssued" // payload: StrikeIssuedPayload
+	StrikeVoided = "StrikeVoided" // payload: StrikeVoidedPayload
+)
+
+// StrikeIssuedPayload describes one strike as issued. Severity is one of
+// warning | strike | severe_strike (the trust.user_strikes CHECK). CaseID is
+// null until a case links the strike; PolicyVersion names the strike policy
+// that set ExpiresAt (strike-v1: issued_at + 90 days; legacy-f15-90d for
+// rows backfilled by migration 011).
+type StrikeIssuedPayload struct {
+	StrikeID      string    `json:"strike_id"`
+	UserID        string    `json:"user_id"`
+	Severity      string    `json:"severity"`
+	CaseID        *string   `json:"case_id"`
+	PolicyVersion string    `json:"policy_version"`
+	IssuedAt      time.Time `json:"issued_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}
+
+// StrikeVoidedPayload is the strike as it was, plus when and why it was
+// voided. A voided strike is never deleted and never counts again.
+type StrikeVoidedPayload struct {
+	StrikeIssuedPayload
+	VoidedAt   time.Time `json:"voided_at"`
+	VoidReason string    `json:"void_reason"`
+}

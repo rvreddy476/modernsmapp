@@ -179,23 +179,113 @@ func (s *Service) GetTeenAccount(ctx context.Context, userID uuid.UUID) (*postgr
 	return s.extras.GetTeenAccount(ctx, userID)
 }
 
-func (s *Service) IssueStrike(ctx context.Context, userID uuid.UUID, reason, contentType string, contentID *uuid.UUID, severity string, createdBy uuid.UUID) (*postgres.UserStrike, error) {
-	if !validSeverities[severity] {
-		return nil, fmt.Errorf("invalid severity: %s (must be warning, strike, or severe_strike)", severity)
-	}
-	var ct *string
-	if contentType != "" {
-		ct = &contentType
-	}
-	strike := &postgres.UserStrike{ID: uuid.New(), UserID: userID, Reason: reason, ContentType: ct, ContentID: contentID, Severity: severity, CreatedBy: &createdBy, CreatedAt: time.Now()}
-	if err := s.extras.CreateStrike(ctx, strike); err != nil {
-		return nil, err
-	}
-	return strike, nil
+// ErrInvalidStrike is a strike request that fails validation; the message
+// says which field.
+var ErrInvalidStrike = errors.New("invalid strike")
+
+// IssueStrikeInput is one strike as an admin asks for it. Expiry is not an
+// input: strike-v1 fixes it at issue + 90 days for every severity.
+type IssueStrikeInput struct {
+	UserID      uuid.UUID
+	Reason      string
+	Severity    string
+	ContentType string
+	ContentID   *uuid.UUID
+	CaseID      *uuid.UUID
+	StrikeGroup string
+	// IdempotencyKey is required: a retried request with the same key gets
+	// the strike the first request issued, never a second one. The admin
+	// console mints one per click; a case uses "copyright_case:<id>:strike".
+	IdempotencyKey string
 }
 
+// Validate normalises the input and refuses anything the store would
+// refuse, so a bad request is answered before a transaction starts.
+func (in *IssueStrikeInput) Validate() error {
+	in.Reason = strings.TrimSpace(in.Reason)
+	in.Severity = strings.ToLower(strings.TrimSpace(in.Severity))
+	in.ContentType = strings.TrimSpace(in.ContentType)
+	in.StrikeGroup = strings.TrimSpace(in.StrikeGroup)
+	in.IdempotencyKey = strings.TrimSpace(in.IdempotencyKey)
+	switch {
+	case in.UserID == uuid.Nil:
+		return fmt.Errorf("%w: user_id is required", ErrInvalidStrike)
+	case in.Reason == "" || len(in.Reason) > 2000:
+		return fmt.Errorf("%w: reason is required (at most 2000 characters)", ErrInvalidStrike)
+	case !validSeverities[in.Severity]:
+		return fmt.Errorf("%w: severity must be warning, strike or severe_strike", ErrInvalidStrike)
+	case in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200:
+		return fmt.Errorf("%w: idempotency_key is required (at most 200 characters)", ErrInvalidStrike)
+	case len(in.ContentType) > 64 || len(in.StrikeGroup) > 128:
+		return fmt.Errorf("%w: content_type or strike_group is too long", ErrInvalidStrike)
+	case in.CaseID != nil && *in.CaseID == uuid.Nil:
+		return fmt.Errorf("%w: case_id must not be the nil uuid", ErrInvalidStrike)
+	}
+	return nil
+}
+
+// IssueStrike issues one strike under strike-v1, audited and outboxed in
+// one transaction; a replayed idempotency key returns the existing strike
+// with created=false. The issuing admin is meta's human actor.
+func (s *Service) IssueStrike(ctx context.Context, in IssueStrikeInput, meta postgres.AuditMeta) (*postgres.UserStrike, bool, error) {
+	if s.extras == nil {
+		return nil, false, errors.New("strikes are unavailable")
+	}
+	if err := in.Validate(); err != nil {
+		return nil, false, err
+	}
+	// Strikes are issued by people: a service actor is not an issuer.
+	if meta.Actor.UserID == uuid.Nil || meta.Actor.Validate() != nil {
+		return nil, false, ErrActorRequired
+	}
+	now := time.Now().UTC()
+	createdBy := meta.Actor.UserID
+	st := &postgres.UserStrike{
+		ID:             uuid.New(),
+		UserID:         in.UserID,
+		Reason:         in.Reason,
+		ContentType:    nilIfBlank(in.ContentType),
+		ContentID:      in.ContentID,
+		Severity:       in.Severity,
+		CaseID:         in.CaseID,
+		StrikeGroup:    nilIfBlank(in.StrikeGroup),
+		PolicyVersion:  postgres.StrikePolicyVersion,
+		IdempotencyKey: &in.IdempotencyKey,
+		ExpiresAt:      now.Add(postgres.StrikeDuration),
+		CreatedBy:      &createdBy,
+		CreatedAt:      now,
+	}
+	return s.extras.IssueStrike(ctx, st, meta)
+}
+
+// VoidStrike voids one of userID's strikes (never deletes it), audited and
+// outboxed in one transaction. A replay on an already-voided strike is a
+// no-op with changed=false. postgres.ErrStrikeNotFound when the strike does
+// not exist or is another user's.
+func (s *Service) VoidStrike(ctx context.Context, userID, strikeID uuid.UUID, reason string, meta postgres.AuditMeta) (*postgres.UserStrike, bool, error) {
+	if s.extras == nil {
+		return nil, false, errors.New("strikes are unavailable")
+	}
+	if meta.Actor.UserID == uuid.Nil || meta.Actor.Validate() != nil {
+		return nil, false, ErrActorRequired
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len(reason) > 2000 {
+		return nil, false, fmt.Errorf("%w: reason is required (at most 2000 characters)", ErrInvalidStrike)
+	}
+	return s.extras.VoidStrike(ctx, strikeID, &userID, reason, meta)
+}
+
+// GetUserStrikes lists the strikes that count now (not voided, not expired).
 func (s *Service) GetUserStrikes(ctx context.Context, userID uuid.UUID) ([]postgres.UserStrike, error) {
 	return s.extras.GetActiveStrikes(ctx, userID)
+}
+
+func nilIfBlank(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 func (s *Service) SubmitVerificationRequest(ctx context.Context, userID uuid.UUID, vtype string, docs map[string]string) (*postgres.VerificationRequest, error) {

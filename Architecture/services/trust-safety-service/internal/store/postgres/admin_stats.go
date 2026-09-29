@@ -21,9 +21,11 @@ type AdminStats struct {
 	// timer); the same set as GET /grievances?overdue=true.
 	GrievancesOverdue int64 `json:"grievances_overdue"`
 	// GrievancesDueSoon: open grievances not yet overdue but due within 48 h.
-	GrievancesDueSoon int64     `json:"grievances_due_within_48h"`
-	StrikesLast7Days  int64     `json:"strikes_last_7_days"`
-	GeneratedAt       time.Time `json:"generated_at"`
+	GrievancesDueSoon int64 `json:"grievances_due_within_48h"`
+	// StrikesLast7Days: strikes issued in the last 7 days that were not
+	// voided. A voided strike never counts anywhere.
+	StrikesLast7Days int64     `json:"strikes_last_7_days"`
+	GeneratedAt      time.Time `json:"generated_at"`
 }
 
 // AdminStats reads every dashboard count in one statement, so the numbers
@@ -41,7 +43,8 @@ func (s *ReportStore) AdminStats(ctx context.Context) (*AdminStats, error) {
 			  WHERE status IN ('open', 'acknowledged') AND due_at < NOW()),
 			(SELECT count(*) FROM trust.grievances
 			  WHERE status IN ('open', 'acknowledged') AND due_at >= NOW() AND due_at < NOW() + interval '48 hours'),
-			(SELECT count(*) FROM trust.user_strikes WHERE created_at >= NOW() - interval '7 days'),
+			(SELECT count(*) FROM trust.user_strikes
+			  WHERE created_at >= NOW() - interval '7 days' AND voided_at IS NULL),
 			NOW()
 	`).Scan(&open, &reviewing, &out.OpenAppeals, &out.OpenGrievances,
 		&out.GrievancesOverdue, &out.GrievancesDueSoon, &out.StrikesLast7Days, &out.GeneratedAt)

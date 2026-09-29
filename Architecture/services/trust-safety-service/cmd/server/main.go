@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/trust-safety-service/database"
 	tsevents "github.com/atpost/trust-safety-service/internal/events"
 	"github.com/atpost/trust-safety-service/internal/http"
+	"github.com/atpost/trust-safety-service/internal/outbox"
 	"github.com/atpost/trust-safety-service/internal/purge"
 	"github.com/atpost/trust-safety-service/internal/reconcile"
 	"github.com/atpost/trust-safety-service/internal/service"
@@ -108,7 +109,16 @@ func main() {
 	// 7. Dependencies
 	store := postgres.New(dbPool)
 	svc := service.New(store, kafkaWriter)
-	svc.SetExtrasStore(postgres.NewExtrasStore(dbPool))
+	trustEventsTopic := env("TRUST_EVENTS_TOPIC", postgres.DefaultTrustEventsTopic)
+	extras := postgres.NewExtrasStore(dbPool).WithEventsTopic(trustEventsTopic)
+	svc.SetExtrasStore(extras)
+	// Migration 011 gave legacy strikes without an expiry 90 days from issue
+	// (founder default F-15). The count is a matter of record.
+	if n, err := extras.CountLegacyBackfilledStrikes(ctx); err != nil {
+		slog.Warn("could not count legacy backfilled strikes", "error", err)
+	} else {
+		slog.Info("legacy strikes carrying the F-15 90-day expiry", "count", n, "policy_version", postgres.LegacyStrikePolicyVersion)
+	}
 	svc.SetPostModerationClient(service.NewHTTPPostModerationClient(
 		env("POST_SERVICE_URL", "http://post-service:8084"),
 		env("INTERNAL_SERVICE_KEY", ""),
@@ -117,17 +127,30 @@ func main() {
 	))
 	handler := http.New(svc)
 	// Admin console (Wave 1 — B4): admin-service calls the token-only family
-	// under http.InternalAdminPrefix with a per-call signed token. Absent
-	// SERVICE_CALLERS, that family answers 401 to everything.
+	// under http.InternalAdminPrefix with a per-call signed token. The same
+	// verifier admits post-service (SERVICE_CALLER_POST_SERVICE_*, op
+	// trust_safety:standing.read) on the standing route. Absent
+	// SERVICE_CALLERS, both answer 401 to everything.
 	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
 	if err != nil {
 		slog.Error("service token caller configuration", "error", err)
 		os.Exit(1)
 	}
 	if serviceVerifier == nil {
-		slog.Warn("trust-safety-service: SERVICE_CALLERS not set — " + http.InternalAdminPrefix + " refuses every request")
+		slog.Warn("trust-safety-service: SERVICE_CALLERS not set — " + http.InternalAdminPrefix + " and " + http.StandingPath + " refuse every request")
 	}
 	handler.WithServiceAuth(serviceVerifier)
+
+	// 7a. Enforcement outbox dispatcher (Copyright Match plan P-7): strike
+	// events and purge acks are written to trust.enforcement_outbox in the
+	// transaction that made the change; this relays them to Kafka.
+	outboxPublisher, err := outbox.NewKafkaPublisher(strings.Split(kafkaBrokers, ","), kafkaDialer)
+	if err != nil {
+		slog.Error("enforcement outbox publisher configuration", "error", err)
+		os.Exit(1)
+	}
+	defer outboxPublisher.Close()
+	go outbox.New(postgres.NewOutboxStore(dbPool), outboxPublisher, slog.Default()).Run(ctx)
 
 	// 7b. Trust-score recompute job (spec §8.11/§10.1/§10.2) — read-only:
 	// recomputes trust_score/trust_tier in trust.user_trust_state every 6h.
@@ -185,14 +208,14 @@ func main() {
 	// user.purge_requested erase the user's trust slice (filters, appeals,
 	// teen row, trust state, strikes, grievances, verifications; reports
 	// they filed are kept as evidence with the reporter anonymised) in one
-	// transaction and ack as "trust-safety" onto platform.purge-acks.v1.
+	// transaction and ack as "trust-safety" onto platform.purge-acks.v1. The
+	// ack row is written to the enforcement outbox IN the erase transaction
+	// (store is a purge.TxEraser) and published by the dispatcher above.
 	// Trust state is not a public surface, so hide is a no-op here.
-	purgeAcks := purge.NewKafkaAckPublisher(strings.Split(kafkaBrokers, ","),
-		env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
-	defer purgeAcks.Close()
 	lifecycle := purge.NewConsumer(strings.Split(kafkaBrokers, ","),
 		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), "trust-safety-account-lifecycle", kafkaDialer,
-		purge.NewHandler("trust-safety", store, purgeAcks, nil, slog.Default()), slog.Default())
+		purge.NewHandler("trust-safety", store, nil, nil, slog.Default()).
+			WithAckTopic(env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic)), slog.Default())
 	defer lifecycle.Close()
 	go lifecycle.Start(ctx)
 

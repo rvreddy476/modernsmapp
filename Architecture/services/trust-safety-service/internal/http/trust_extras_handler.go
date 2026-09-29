@@ -316,53 +316,10 @@ func (h *Handler) GetMediaLabels(c *gin.Context) {
 }
 
 // ─── Strikes ──────────────────────────────────────────────────────────────────
+//
+// Issuing and voiding live in strikes_handler.go (admin-service token only).
 
-type issueStrikeRequest struct {
-	UserID      string  `json:"user_id" binding:"required"`
-	Reason      string  `json:"reason" binding:"required"`
-	ContentType string  `json:"content_type"`
-	ContentID   *string `json:"content_id,omitempty"`
-	Severity    string  `json:"severity" binding:"required"`
-}
-
-func (h *Handler) IssueStrike(c *gin.Context) {
-	if !adminAllowed(c) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
-		return
-	}
-	createdBy, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-	var req issueStrikeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user_id", nil)
-		return
-	}
-	var contentID *uuid.UUID
-	if req.ContentID != nil {
-		id, err := uuid.Parse(*req.ContentID)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content_id", nil)
-			return
-		}
-		contentID = &id
-	}
-	strike, err := h.svc.IssueStrike(c.Request.Context(), userID, req.Reason, req.ContentType, contentID, req.Severity, createdBy)
-	if err != nil {
-		slog.Error("IssueStrike", "err", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusCreated, strike, nil)
-}
-
+// GetUserStrikes lists the user's ACTIVE strikes (not voided, not expired).
 func (h *Handler) GetUserStrikes(c *gin.Context) {
 	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)

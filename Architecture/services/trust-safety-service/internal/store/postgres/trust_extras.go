@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -69,9 +71,31 @@ type UserStrike struct {
 	ContentType *string    `json:"content_type,omitempty"`
 	ContentID   *uuid.UUID `json:"content_id,omitempty"`
 	Severity    string     `json:"severity"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	// CaseID links the strike to the case that produced it; nil for a
+	// strike issued by hand. StrikeGroup is a free label for policies that
+	// count strikes per group.
+	CaseID      *uuid.UUID `json:"case_id,omitempty"`
+	StrikeGroup *string    `json:"strike_group,omitempty"`
+	// PolicyVersion names the policy that set ExpiresAt (StrikePolicyVersion
+	// for new rows; LegacyStrikePolicyVersion for rows backfilled by 011).
+	PolicyVersion string `json:"policy_version"`
+	// IdempotencyKey makes a retried issue return this row instead of a
+	// second strike. Unique where set.
+	IdempotencyKey *string `json:"idempotency_key,omitempty"`
+	// ExpiresAt is always set: issued_at + the policy duration.
+	ExpiresAt time.Time  `json:"expires_at"`
+	CreatedBy *uuid.UUID `json:"created_by,omitempty"`
+	// CreatedAt is the issue time (issued_at on the wire).
+	CreatedAt time.Time `json:"created_at"`
+	// A voided strike stays in the table and never counts again.
+	VoidedAt   *time.Time `json:"voided_at,omitempty"`
+	VoidReason *string    `json:"void_reason,omitempty"`
+	VoidedBy   *uuid.UUID `json:"voided_by,omitempty"`
+}
+
+// Active reports whether the strike counts at now: not voided, not expired.
+func (st *UserStrike) Active(now time.Time) bool {
+	return st.VoidedAt == nil && st.ExpiresAt.After(now)
 }
 
 type VerificationRequest struct {
@@ -90,6 +114,9 @@ type VerificationRequest struct {
 
 type TrustExtrasStore struct {
 	db *pgxpool.Pool
+	// eventsTopic is where strike events are enqueued for (see
+	// WithEventsTopic).
+	eventsTopic string
 }
 
 func NewExtrasStore(db *pgxpool.Pool) *TrustExtrasStore {
@@ -470,50 +497,331 @@ func (s *TrustExtrasStore) GetMediaLabels(ctx context.Context, mediaAssetID uuid
 }
 
 // ─── Strike methods ───────────────────────────────────────────────────────────
+//
+// Strikes are issued and voided in one transaction with their audit row
+// and outbox event (Copyright Match plan section 6.4). They are never
+// deleted here; purge (purge.go) is the only DELETE, and that is the
+// account-erasure path.
 
-func (s *TrustExtrasStore) CreateStrike(ctx context.Context, st *UserStrike) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO trust.user_strikes
-			(id, user_id, reason, content_type, content_id, severity, expires_at, created_by, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, st.ID, st.UserID, st.Reason, st.ContentType, st.ContentID,
-		st.Severity, st.ExpiresAt, st.CreatedBy, st.CreatedAt)
-	return err
+// StrikePolicyVersion is the policy new strikes carry. It fixes the
+// duration: every severity expires StrikeDuration after issue.
+const StrikePolicyVersion = "strike-v1"
+
+// LegacyStrikePolicyVersion marks rows migration 011 gave a 90-day expiry
+// (founder default F-15) because they had none.
+const LegacyStrikePolicyVersion = "legacy-f15-90d"
+
+// StrikeDuration is strike-v1's duration for every severity.
+const StrikeDuration = 90 * 24 * time.Hour
+
+// Audit target and actions for strikes.
+const (
+	AuditTargetStrike  = "strike"
+	AuditStrikeIssued  = "strike.issued"
+	AuditStrikeVoided  = "strike.voided"
+	strikeStatusActive = "active"
+	strikeStatusVoided = "voided"
+)
+
+// ErrStrikeNotFound is returned by VoidStrike when no strike has the id.
+var ErrStrikeNotFound = errors.New("strike not found")
+
+// WithEventsTopic sets the Kafka topic strike events are enqueued for
+// (DefaultTrustEventsTopic when unset).
+func (s *TrustExtrasStore) WithEventsTopic(topic string) *TrustExtrasStore {
+	s.eventsTopic = strings.TrimSpace(topic)
+	return s
 }
 
+func (s *TrustExtrasStore) topic() string {
+	if s.eventsTopic == "" {
+		return DefaultTrustEventsTopic
+	}
+	return s.eventsTopic
+}
+
+const strikeColumns = `id, user_id, reason, content_type, content_id, severity, case_id, strike_group,
+	policy_version, idempotency_key, expires_at, created_by, created_at, voided_at, void_reason, voided_by`
+
+func scanStrike(row pgx.Row) (*UserStrike, error) {
+	var st UserStrike
+	if err := row.Scan(&st.ID, &st.UserID, &st.Reason, &st.ContentType, &st.ContentID, &st.Severity,
+		&st.CaseID, &st.StrikeGroup, &st.PolicyVersion, &st.IdempotencyKey, &st.ExpiresAt,
+		&st.CreatedBy, &st.CreatedAt, &st.VoidedAt, &st.VoidReason, &st.VoidedBy); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
+func strikeIssuedPayload(st *UserStrike) events.StrikeIssuedPayload {
+	p := events.StrikeIssuedPayload{
+		StrikeID:      st.ID.String(),
+		UserID:        st.UserID.String(),
+		Severity:      st.Severity,
+		PolicyVersion: st.PolicyVersion,
+		IssuedAt:      st.CreatedAt.UTC(),
+		ExpiresAt:     st.ExpiresAt.UTC(),
+	}
+	if st.CaseID != nil {
+		id := st.CaseID.String()
+		p.CaseID = &id
+	}
+	return p
+}
+
+// IssueStrike inserts the strike, its strike.issued audit row and its
+// StrikeIssued outbox event in ONE transaction. When st.IdempotencyKey
+// names a strike that already exists, nothing is written and that row is
+// returned with created=false: a retried issue is one strike.
+//
+// st.ID, st.CreatedAt and st.ExpiresAt are the caller's (the service sets
+// them from one clock); meta.Actor must be a human admin.
+func (s *TrustExtrasStore) IssueStrike(ctx context.Context, st *UserStrike, meta AuditMeta) (*UserStrike, bool, error) {
+	if err := meta.Actor.Validate(); err != nil {
+		return nil, false, err
+	}
+	if st == nil || st.ID == uuid.Nil || st.UserID == uuid.Nil || st.CreatedAt.IsZero() || !st.ExpiresAt.After(st.CreatedAt) {
+		return nil, false, fmt.Errorf("issue strike: incomplete strike")
+	}
+	if st.PolicyVersion == "" {
+		st.PolicyVersion = StrikePolicyVersion
+	}
+	var (
+		stored  *UserStrike
+		created bool
+	)
+	err := withTx(ctx, s.db.Begin, func(tx pgx.Tx) error {
+		// The partial unique index turns a repeated key into no row here.
+		var insertedID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			INSERT INTO trust.user_strikes
+				(id, user_id, reason, content_type, content_id, severity, case_id, strike_group,
+				 policy_version, idempotency_key, expires_at, created_by, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+			RETURNING id
+		`, st.ID, st.UserID, st.Reason, st.ContentType, st.ContentID, st.Severity, st.CaseID, st.StrikeGroup,
+			st.PolicyVersion, st.IdempotencyKey, st.ExpiresAt, st.CreatedBy, st.CreatedAt).Scan(&insertedID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Replay: hand back the strike the first call wrote.
+			existing, err := scanStrike(tx.QueryRow(ctx, `SELECT `+strikeColumns+` FROM trust.user_strikes WHERE idempotency_key = $1`, st.IdempotencyKey))
+			if err != nil {
+				return fmt.Errorf("issue strike: read replay: %w", err)
+			}
+			stored = existing
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("issue strike: insert: %w", err)
+		}
+		inserted, err := scanStrike(tx.QueryRow(ctx, `SELECT `+strikeColumns+` FROM trust.user_strikes WHERE id = $1`, insertedID))
+		if err != nil {
+			return fmt.Errorf("issue strike: read back: %w", err)
+		}
+		if err := insertAudit(ctx, tx, meta, auditChange{
+			Action:     AuditStrikeIssued,
+			TargetType: AuditTargetStrike,
+			TargetID:   inserted.ID,
+			NewStatus:  strikeStatusActive,
+		}); err != nil {
+			return err
+		}
+		ev, err := newEnvelopeEvent(s.topic(), events.StrikeIssued, inserted.UserID.String(), inserted.CreatedAt, strikeIssuedPayload(inserted))
+		if err != nil {
+			return err
+		}
+		if err := enqueueOutbox(ctx, tx, ev); err != nil {
+			return err
+		}
+		stored, created = inserted, true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return stored, created, nil
+}
+
+// VoidStrike voids the strike (never deletes it) and writes the
+// strike.voided audit row and the StrikeVoided outbox event in ONE
+// transaction. An already-voided strike is returned unchanged with
+// changed=false and nothing is written: a void replay is a no-op. A strike
+// that does not exist, or (when userID is set) belongs to another user,
+// is ErrStrikeNotFound. meta.Actor must be a human admin; they become
+// voided_by.
+func (s *TrustExtrasStore) VoidStrike(ctx context.Context, id uuid.UUID, userID *uuid.UUID, reason string, meta AuditMeta) (*UserStrike, bool, error) {
+	if err := meta.Actor.Validate(); err != nil {
+		return nil, false, err
+	}
+	if meta.Actor.UserID == uuid.Nil {
+		return nil, false, ErrActorRequired
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, false, fmt.Errorf("void strike: a reason is required")
+	}
+	var (
+		stored  *UserStrike
+		changed bool
+	)
+	err := withTx(ctx, s.db.Begin, func(tx pgx.Tx) error {
+		current, err := scanStrike(tx.QueryRow(ctx, `SELECT `+strikeColumns+` FROM trust.user_strikes WHERE id = $1 FOR UPDATE`, id))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrStrikeNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("void strike: lock: %w", err)
+		}
+		if userID != nil && current.UserID != *userID {
+			return ErrStrikeNotFound
+		}
+		if current.VoidedAt != nil {
+			stored = current
+			return nil
+		}
+		voided, err := scanStrike(tx.QueryRow(ctx, `
+			UPDATE trust.user_strikes
+			   SET voided_at = NOW(), void_reason = $2, voided_by = $3
+			 WHERE id = $1 AND voided_at IS NULL
+			RETURNING `+strikeColumns, id, reason, meta.Actor.UserID))
+		if err != nil {
+			return fmt.Errorf("void strike: update: %w", err)
+		}
+		if err := insertAudit(ctx, tx, meta, auditChange{
+			Action:        AuditStrikeVoided,
+			TargetType:    AuditTargetStrike,
+			TargetID:      voided.ID,
+			PrevStatus:    strikeStatusActive,
+			NewStatus:     strikeStatusVoided,
+			NewResolution: reason,
+		}); err != nil {
+			return err
+		}
+		ev, err := newEnvelopeEvent(s.topic(), events.StrikeVoided, voided.UserID.String(), *voided.VoidedAt, events.StrikeVoidedPayload{
+			StrikeIssuedPayload: strikeIssuedPayload(voided),
+			VoidedAt:            voided.VoidedAt.UTC(),
+			VoidReason:          reason,
+		})
+		if err != nil {
+			return err
+		}
+		if err := enqueueOutbox(ctx, tx, ev); err != nil {
+			return err
+		}
+		stored, changed = voided, true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return stored, changed, nil
+}
+
+// GetStrike returns one strike, voided or not.
+func (s *TrustExtrasStore) GetStrike(ctx context.Context, id uuid.UUID) (*UserStrike, error) {
+	return scanStrike(s.db.QueryRow(ctx, `SELECT `+strikeColumns+` FROM trust.user_strikes WHERE id = $1`, id))
+}
+
+// GetActiveStrikes lists the user's strikes that count now: not voided,
+// not expired. Newest first; never nil.
 func (s *TrustExtrasStore) GetActiveStrikes(ctx context.Context, userID uuid.UUID) ([]UserStrike, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, reason, content_type, content_id, severity, expires_at, created_by, created_at
+		SELECT `+strikeColumns+`
 		FROM trust.user_strikes
-		WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())
-		ORDER BY created_at DESC
+		WHERE user_id = $1 AND voided_at IS NULL AND expires_at > NOW()
+		ORDER BY created_at DESC, id
 	`, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var strikes []UserStrike
+	strikes := []UserStrike{}
 	for rows.Next() {
-		var st UserStrike
-		if err := rows.Scan(
-			&st.ID, &st.UserID, &st.Reason, &st.ContentType, &st.ContentID,
-			&st.Severity, &st.ExpiresAt, &st.CreatedBy, &st.CreatedAt,
-		); err != nil {
+		st, err := scanStrike(rows)
+		if err != nil {
 			return nil, err
 		}
-		strikes = append(strikes, st)
+		strikes = append(strikes, *st)
 	}
-	return strikes, nil
+	return strikes, rows.Err()
 }
 
 func (s *TrustExtrasStore) CountActiveStrikes(ctx context.Context, userID uuid.UUID) (int, error) {
 	var count int
 	err := s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM trust.user_strikes
-		WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		WHERE user_id = $1 AND voided_at IS NULL AND expires_at > NOW()
 	`, userID).Scan(&count)
 	return count, err
+}
+
+// CountLegacyBackfilledStrikes counts the rows migration 011 gave a 90-day
+// expiry (F-15); main logs it at boot.
+func (s *TrustExtrasStore) CountLegacyBackfilledStrikes(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM trust.user_strikes WHERE policy_version = $1`, LegacyStrikePolicyVersion).Scan(&n)
+	return n, err
+}
+
+// StandingSnapshot is everything the standing policy reads for one user,
+// from one query at one instant.
+type StandingSnapshot struct {
+	// SuspendedUntil is trust.user_trust_state.suspended_until (nil when
+	// unset or no row).
+	SuspendedUntil *time.Time
+	// ActiveStrikes are the strikes that count at the snapshot's instant:
+	// not voided, expires_at after it. Newest first; never nil.
+	ActiveStrikes []UserStrike
+}
+
+// StandingSnapshot reads the user's suspension and active strikes in ONE
+// statement, evaluated at now (passed in, so the caller's clock and the
+// filter agree). A user with no rows anywhere is an empty snapshot.
+func (s *TrustExtrasStore) StandingSnapshot(ctx context.Context, userID uuid.UUID, now time.Time) (*StandingSnapshot, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT ts.suspended_until,
+		       st.id, st.user_id, st.reason, st.content_type, st.content_id, st.severity, st.case_id, st.strike_group,
+		       st.policy_version, st.idempotency_key, st.expires_at, st.created_by, st.created_at,
+		       st.voided_at, st.void_reason, st.voided_by
+		  FROM (SELECT $1::uuid AS user_id) u
+		  LEFT JOIN trust.user_trust_state ts ON ts.user_id = u.user_id
+		  LEFT JOIN trust.user_strikes st
+		         ON st.user_id = u.user_id AND st.voided_at IS NULL AND st.expires_at > $2
+		 ORDER BY st.created_at DESC, st.id
+	`, userID, now)
+	if err != nil {
+		return nil, fmt.Errorf("standing snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	snap := &StandingSnapshot{ActiveStrikes: []UserStrike{}}
+	for rows.Next() {
+		var (
+			suspendedUntil *time.Time
+			id             *uuid.UUID
+			st             UserStrike
+			user           *uuid.UUID
+			reason         *string
+			severity       *string
+			policy         *string
+			expiresAt      *time.Time
+			createdAt      *time.Time
+		)
+		if err := rows.Scan(&suspendedUntil, &id, &user, &reason, &st.ContentType, &st.ContentID, &severity,
+			&st.CaseID, &st.StrikeGroup, &policy, &st.IdempotencyKey, &expiresAt, &st.CreatedBy, &createdAt,
+			&st.VoidedAt, &st.VoidReason, &st.VoidedBy); err != nil {
+			return nil, fmt.Errorf("standing snapshot: scan: %w", err)
+		}
+		snap.SuspendedUntil = suspendedUntil
+		if id == nil {
+			continue // the LEFT JOIN's "no strike" row
+		}
+		st.ID, st.UserID, st.Reason, st.Severity, st.PolicyVersion, st.ExpiresAt, st.CreatedAt =
+			*id, *user, *reason, *severity, *policy, *expiresAt, *createdAt
+		snap.ActiveStrikes = append(snap.ActiveStrikes, st)
+	}
+	return snap, rows.Err()
 }
 
 // ─── Verification request methods ─────────────────────────────────────────────

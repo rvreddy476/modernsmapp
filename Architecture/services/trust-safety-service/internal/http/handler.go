@@ -29,12 +29,19 @@ func hasScope(scopes, target string) bool {
 type Handler struct {
 	svc *service.Service
 	// verifier admits admin-service tokens on the InternalAdminPrefix family
-	// (admin_token.go). nil: no token is accepted.
+	// (admin_token.go) and post-service tokens on the standing route
+	// (standing_handler.go). nil: no token is accepted.
 	verifier *servicetoken.Verifier
+	// standing answers the standing route; svc by default, a fake in tests.
+	standing standingReader
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+	h := &Handler{svc: svc}
+	if svc != nil {
+		h.standing = svc
+	}
+	return h
 }
 
 // RegisterRoutes declares the key-gated routes. The token-only admin family
@@ -90,9 +97,14 @@ func (h *Handler) RegisterRoutes(r gin.IRouter) {
 
 	strikes := r.Group("/v1/strikes")
 	{
-		strikes.POST("", h.IssueStrike)
+		// Issuing moved to the admin-service token family (strikes_handler.go).
+		strikes.POST("", h.LegacyIssueStrikeRetired)
 		strikes.GET("/:userId", h.GetUserStrikes)
 	}
+
+	// post-service asks whether a user may publish (standing_handler.go).
+	// Behind the internal key AND a post-service token.
+	r.GET(StandingPath, h.requireServiceCaller(OpStandingRead, StandingCallers...), h.GetStanding)
 
 	verification := r.Group("/v1/verification-requests")
 	{

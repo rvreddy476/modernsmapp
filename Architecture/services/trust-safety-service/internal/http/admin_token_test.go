@@ -77,6 +77,7 @@ type adminTokenRig struct {
 	notifier *servicetoken.Signer // a registered caller that is not admin-service
 	rogue    *servicetoken.Signer // claims to be admin-service, unregistered key
 	actor    uuid.UUID
+	adminPub string // admin-service's registered public key (base64)
 }
 
 func newAdminTokenRig(t *testing.T) *adminTokenRig {
@@ -122,6 +123,7 @@ func newAdminTokenRig(t *testing.T) *adminTokenRig {
 		notifier: mk("dating-service", "d1", nPriv),
 		rogue:    mk(IssuerAdminService, "a1", rPriv),
 		actor:    uuid.New(),
+		adminPub: aPub,
 	}
 }
 
@@ -235,6 +237,8 @@ var adminRouteTable = map[string][]string{
 	"GET " + InternalAdminPrefix + "/grievances/:id/history": {PermGrievancesRead, PermGrievancesAct, PermAuditRead},
 	"PATCH " + InternalAdminPrefix + "/grievances/:id":       {PermGrievancesAct},
 	"GET " + InternalAdminPrefix + "/strikes/:userId":        {PermStrikesRead, PermStrikesManage},
+	"POST " + InternalAdminPrefix + "/strikes":               {PermStrikesManage},
+	"POST " + InternalAdminPrefix + "/strikes/:userId/void":  {PermStrikesManage},
 	"GET " + InternalAdminPrefix + "/verification-requests":  {PermVerificationReview},
 	"GET " + InternalAdminPrefix + "/media-labels/:mediaId":  {PermMediaLabelsRead},
 	"GET " + InternalAdminPrefix + "/keyword-filters":        {PermKeywordFiltersRead},

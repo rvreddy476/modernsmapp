@@ -9,7 +9,10 @@
 //
 // The handler is idempotent: auth re-emits user.purge_requested every 24h
 // until it sees the ack, so a redelivery must find nothing to erase and still
-// ack. The ack is published only AFTER the erase committed; the caller commits
+// ack. With a TxEraser (trust-safety's store) the ack row is written to the
+// transactional outbox IN the erase transaction and published by the outbox
+// dispatcher, so the two cannot disagree. With a plain Eraser the ack is
+// published only AFTER the erase committed. Either way the caller commits
 // the Kafka offset only after Handle returns nil, so a crash anywhere in
 // between replays the (idempotent) erase on restart.
 package purge
@@ -64,9 +67,19 @@ type Hider interface {
 
 // AckPublisher delivers the ack durably. It is called only after the erase
 // committed. An error is retried by the consumer (the erase re-runs as a
-// no-op first).
+// no-op first). Not used when the eraser is a TxEraser.
 type AckPublisher interface {
 	PublishPurgeAck(ctx context.Context, ack Ack) error
+}
+
+// TxEraser erases and records the ack in the SAME transaction: the ack goes
+// into the service's transactional outbox (trust.enforcement_outbox here)
+// and its dispatcher publishes it after commit. ack is the exact message
+// value for ackTopic, keyed by the user id. Preferred over AckPublisher:
+// there is no window in which the erase committed and the ack is lost.
+type TxEraser interface {
+	Eraser
+	PurgeUserAndAck(ctx context.Context, userID uuid.UUID, ackTopic string, ack []byte) error
 }
 
 // ErrPermanent marks a payload that can never be processed (malformed JSON,
@@ -76,24 +89,39 @@ var ErrPermanent = errors.New("permanent: event can never be processed")
 
 // Handler dispatches the lifecycle events for one service.
 type Handler struct {
-	service string
-	eraser  Eraser
-	acks    AckPublisher
-	hider   Hider
-	now     func() time.Time
-	log     *slog.Logger
+	service  string
+	eraser   Eraser
+	acks     AckPublisher
+	hider    Hider
+	ackTopic string
+	now      func() time.Time
+	log      *slog.Logger
 }
 
 // NewHandler builds a handler. hider may be nil (hide is then a no-op).
+// acks may be nil when eraser is a TxEraser: the ack then travels through
+// the outbox, on DefaultAcksTopic unless WithAckTopic says otherwise.
 func NewHandler(service string, eraser Eraser, acks AckPublisher, hider Hider, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{service: service, eraser: eraser, acks: acks, hider: hider, now: func() time.Time { return time.Now().UTC() }, log: log}
+	if _, tx := eraser.(TxEraser); !tx && acks == nil {
+		panic("purge: an AckPublisher is required unless the eraser is a TxEraser")
+	}
+	return &Handler{service: service, eraser: eraser, acks: acks, hider: hider,
+		ackTopic: DefaultAcksTopic, now: func() time.Time { return time.Now().UTC() }, log: log}
 }
 
 // WithClock overrides the purged_at source (tests).
 func (h *Handler) WithClock(now func() time.Time) *Handler { h.now = now; return h }
+
+// WithAckTopic sets the topic a TxEraser's ack is enqueued for.
+func (h *Handler) WithAckTopic(topic string) *Handler {
+	if topic != "" {
+		h.ackTopic = topic
+	}
+	return h
+}
 
 // Service returns the ack service name.
 func (h *Handler) Service() string { return h.service }
@@ -149,10 +177,22 @@ func (h *Handler) hide(ctx context.Context, userID uuid.UUID, hidden bool, reaso
 }
 
 func (h *Handler) purge(ctx context.Context, userID uuid.UUID) error {
+	ack := Ack{UserID: userID.String(), Service: h.service, PurgedAt: h.now()}
+	if tx, ok := h.eraser.(TxEraser); ok {
+		// Erase and ack commit together; the outbox dispatcher publishes.
+		body, err := json.Marshal(ack)
+		if err != nil {
+			return fmt.Errorf("%s: encode purge ack for %s: %w", h.service, userID, err)
+		}
+		if err := tx.PurgeUserAndAck(ctx, userID, h.ackTopic, body); err != nil {
+			return fmt.Errorf("%s: purge %s: %w", h.service, userID, err)
+		}
+		h.log.Info("user purged; ack queued in the outbox", "event", "user_purged", "service", h.service, "user_id", userID)
+		return nil
+	}
 	if err := h.eraser.PurgeUser(ctx, userID); err != nil {
 		return fmt.Errorf("%s: purge %s: %w", h.service, userID, err)
 	}
-	ack := Ack{UserID: userID.String(), Service: h.service, PurgedAt: h.now()}
 	if err := h.acks.PublishPurgeAck(ctx, ack); err != nil {
 		return fmt.Errorf("%s: publish purge ack for %s: %w", h.service, userID, err)
 	}
@@ -193,42 +233,6 @@ func (h *Handler) HandleUntilDurable(ctx context.Context, eventType string, payl
 		}
 	}
 }
-
-// ── Direct Kafka ack publisher ──────────────────────────────────────────────
-
-// KafkaAckPublisher writes bare acks straight to the acks topic with
-// RequiredAcks=all. Used by services without a transactional outbox (or whose
-// outbox is bound to a single topic).
-type KafkaAckPublisher struct {
-	writer *kafka.Writer
-}
-
-// NewKafkaAckPublisher builds the writer. dialer may be nil.
-func NewKafkaAckPublisher(brokers []string, topic string, dialer *kafka.Dialer) *KafkaAckPublisher {
-	if topic == "" {
-		topic = DefaultAcksTopic
-	}
-	return &KafkaAckPublisher{writer: kafka.NewWriter(kafka.WriterConfig{
-		Brokers:      brokers,
-		Topic:        topic,
-		Balancer:     &kafka.Hash{},
-		RequiredAcks: int(kafka.RequireAll),
-		WriteTimeout: 10 * time.Second,
-		Dialer:       dialer,
-	})}
-}
-
-// PublishPurgeAck writes one ack keyed by user_id.
-func (p *KafkaAckPublisher) PublishPurgeAck(ctx context.Context, ack Ack) error {
-	b, err := json.Marshal(ack)
-	if err != nil {
-		return err
-	}
-	return p.writer.WriteMessages(ctx, kafka.Message{Key: []byte(ack.UserID), Value: b})
-}
-
-// Close releases the writer.
-func (p *KafkaAckPublisher) Close() error { return p.writer.Close() }
 
 // ── Standalone durable consumer ─────────────────────────────────────────────
 

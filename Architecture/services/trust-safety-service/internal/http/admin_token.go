@@ -113,6 +113,8 @@ func rawServiceToken(c *gin.Context) string {
 //	GET   /grievances/:id/history    grievances.read | grievances.act | audit.read
 //	PATCH /grievances/:id            grievances.act                  (audited; officer hand-over)
 //	GET   /strikes/:userId           strikes.read | strikes.manage
+//	POST  /strikes                   strikes.manage                  (audited; idempotency_key)
+//	POST  /strikes/:userId/void      strikes.manage                  (audited; never deletes)
 //	GET   /verification-requests     verification.review
 //	GET   /media-labels/:mediaId     media_labels.read
 //	GET   /keyword-filters           keyword_filters.read (platform scope by default)
@@ -134,6 +136,8 @@ func (h *Handler) RegisterAdminTokenRoutes(r gin.IRouter) {
 	g.GET("/grievances/:id/history", gate(PermGrievancesRead, PermGrievancesAct, PermAuditRead), h.GetGrievanceHistory)
 	g.PATCH("/grievances/:id", gate(PermGrievancesAct), h.UpdateGrievance)
 	g.GET("/strikes/:userId", gate(PermStrikesRead, PermStrikesManage), h.GetUserStrikes)
+	g.POST("/strikes", gate(PermStrikesManage), h.IssueStrike)
+	g.POST("/strikes/:userId/void", gate(PermStrikesManage), h.VoidStrike)
 	g.GET("/verification-requests", gate(PermVerificationReview), h.AdminListVerificationRequests)
 	g.GET("/media-labels/:mediaId", gate(PermMediaLabelsRead), h.GetMediaLabels)
 	g.GET("/keyword-filters", gate(PermKeywordFiltersRead), h.GetKeywordFilters)
