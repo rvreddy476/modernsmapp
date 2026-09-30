@@ -20,6 +20,13 @@ func (s *Store) OrdersDueForStubDelivery(ctx context.Context, status string, aft
 		SELECT o.id
 		  FROM orders o
 		 WHERE o.status = $1
+		   -- Only orders the stub courier booked. An order a real courier
+		   -- booked (or one with no shipment) is moved by that courier's
+		   -- webhooks or not at all: on 30 Sep 2026 the first dev sweep
+		   -- moved a live Shiprocket order and 61 old test orders.
+		   AND EXISTS (SELECT 1 FROM shipments sh WHERE sh.order_id = o.id)
+		   AND NOT EXISTS (SELECT 1 FROM shipments sh
+		                    WHERE sh.order_id = o.id AND LOWER(sh.courier) <> 'stub')
 		   AND COALESCE(
 		         (SELECT MAX(h.created_at) FROM order_status_history h
 		           WHERE h.order_id = o.id AND h.to_status = $1),

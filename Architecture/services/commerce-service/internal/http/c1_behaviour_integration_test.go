@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -256,6 +257,29 @@ func TestC1StubCourierDeliversAndReviewsBecomePossible(t *testing.T) {
 		         WHERE order_id = $1 AND to_status = $2`, ctOConfirmed, to)
 	}
 	backdate("shipped")
+
+	// Two overdue shipped orders the timer must NEVER move, even with the
+	// stub courier configured: one a real courier booked (found on dev,
+	// 30 Sep 2026: the first sweep moved a live Shiprocket order and 61 old
+	// test orders), one with no shipment at all. The exact counts below
+	// (one order per sweep) fail if either is picked.
+	realBooked, unbooked := uuid.New(), uuid.New()
+	for i, id := range []uuid.UUID{realBooked, unbooked} {
+		e.exec(`INSERT INTO orders (id,customer_user_id,order_number,subtotal,final_amount,subtotal_minor,final_amount_minor,
+		           payment_method,payment_status,status,created_at,updated_at)
+		        VALUES ($1,$2,$3,1299.00,1299.00,129900,129900,'upi','paid','shipped',
+		                NOW() - interval '1 day',NOW() - interval '1 day')`,
+			id, ctBuyer, fmt.Sprintf("ORD-C1-SD-%d", i))
+	}
+	e.exec(`INSERT INTO shipments (order_id,seller_id,courier,tracking_number,status,shipped_at)
+	        VALUES ($1,$2,'shiprocket','SR-REAL-1','booked',NOW() - interval '1 day')`, realBooked, ctSeller)
+	defer func() {
+		for _, id := range []uuid.UUID{realBooked, unbooked} {
+			if st, _ := e.orderState(id); st != "shipped" {
+				t.Errorf("the stub timer moved order %s to %s; only stub-booked orders may move", id, st)
+			}
+		}
+	}()
 
 	// A real courier's webhooks decide delivery: the timer refuses to run.
 	realSvc := service.New(postgres.New(e.pool), nil, "").WithCourier(c1RealCourier{})
