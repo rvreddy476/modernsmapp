@@ -159,6 +159,26 @@ func seed(ctx context.Context, pool *pgxpool.Pool, cat demoCatalogue) (*summary,
 			return nil, fmt.Errorf("product %s: %w", p.Slug, err)
 		}
 	}
+
+	// Tax class and HSN, only where a product has none: a re-run never
+	// overwrites a class someone set on purpose (see tax.go).
+	for _, p := range cat.Products {
+		t, ok := demoTax[p.Slug]
+		if !ok {
+			return nil, fmt.Errorf("tax: no demo tax line for %s", p.Slug)
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE products
+			   SET tax_class_id = (SELECT id FROM tax_classes WHERE name = $2),
+			       hsn_code = COALESCE(NULLIF(hsn_code, ''), $3),
+			       updated_at = NOW()
+			 WHERE id = $1 AND tax_class_id IS NULL
+			   AND EXISTS (SELECT 1 FROM tax_classes WHERE name = $2)`, p.ID, t.Class, t.HSN)
+		if err != nil {
+			return nil, fmt.Errorf("tax %s: %w", p.Slug, err)
+		}
+		sum.record("products.tax_class", tag.RowsAffected())
+	}
 	for _, b := range cat.Banners {
 		if err := seedBanner(ctx, tx, b, sum); err != nil {
 			return nil, fmt.Errorf("banner %q: %w", b.Title, err)

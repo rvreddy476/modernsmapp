@@ -201,3 +201,25 @@ func TestValidateCatchesTheMistakesItIsFor(t *testing.T) {
 		})
 	}
 }
+
+// Every demo product carries a tax line naming a seeded class, or the quote
+// refuses the whole demo shop with PRODUCT_TAX_UNCONFIGURED.
+func TestEveryProductHasADemoTaxLine(t *testing.T) {
+	cat := catalogue()
+	for _, p := range cat.Products {
+		line, ok := demoTax[p.Slug]
+		if !ok {
+			t.Errorf("%s has no demo tax line", p.Slug)
+			continue
+		}
+		if !demoTaxClasses[line.Class] {
+			t.Errorf("%s names tax class %q, which setup.sql does not seed", p.Slug, line.Class)
+		}
+		if len(line.HSN) != 8 {
+			t.Errorf("%s HSN %q is not 8 digits", p.Slug, line.HSN)
+		}
+	}
+	if len(demoTax) != len(cat.Products) {
+		t.Errorf("demoTax has %d lines for %d products", len(demoTax), len(cat.Products))
+	}
+}
