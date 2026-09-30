@@ -1,0 +1,49 @@
+{
+  "data": {
+    "id": "00000000-0000-4000-8000-0000000c0200",
+    "order_number": "ORD-2026-010001",
+    "subtotal_minor": 129900,
+    "discount_minor": 0,
+    "shipping_minor": 4900,
+    "tax_minor": 19815,
+    "total_minor": 134800,
+    "currency": "INR",
+    "payment_method": "upi",
+    "payment_status": "paid",
+    "status": "confirmed",
+    "items": [
+      {
+        "id": "00000000-0000-4000-8000-0000000c0201",
+        "product_id": "00000000-0000-4000-8000-0000000c0100",
+        "variant_id": "00000000-0000-4000-8000-0000000c0101",
+        "seller_id": "00000000-0000-4000-8000-0000000c0010",
+        "product_title": "Momentum Wireless Earbuds",
+        "sku": "MOM-EB-BLK",
+        "quantity": 1,
+        "unit_mrp_minor": 149900,
+        "unit_price_minor": 129900,
+        "tax_minor": 19815,
+        "line_total_minor": 129900,
+        "status": "confirmed",
+        "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/medium_1080.jpg",
+        "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/thumb_150.jpg"
+      }
+    ],
+    "delivery_address": {
+      "contact_name": "Asha Buyer",
+      "phone": "9111111111",
+      "address_line_1": "5 Main Street",
+      "address_line_2": "Flat 2B",
+      "landmark": "Near the park",
+      "city": "Bengaluru",
+      "state": "KA",
+      "postal_code": "560002",
+      "country": "IN"
+    },
+    "can_cancel": true,
+    "can_retry_payment": false,
+    "created_at": "2026-09-10T10:00:00Z",
+    "created_at_epoch": 1789034400
+  }
+}
+

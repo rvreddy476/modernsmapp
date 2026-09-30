@@ -357,7 +357,7 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 	// The order exists and its stock is held, so a failure here is
 	// recoverable — the customer retries payment, or the reservation
 	// expires and the order terminates. Nothing is left half-written.
-	intent, err := s.openPaymentIntent(ctx, res.OrderID, in.UserID, res.TotalMinor, in.PaymentMethod)
+	intent, err := s.openPaymentIntent(ctx, res.OrderID, in.UserID, res.TotalMinor, in.PaymentMethod, 1)
 	if err != nil {
 		slog.Warn("commerce: order created but payment could not be opened",
 			"order_id", res.OrderID, "error", err)
@@ -368,8 +368,9 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 }
 
 // openPaymentIntent asks payments for a payable, with the amount authored
-// here from the order we own.
-func (s *Service) openPaymentIntent(ctx context.Context, orderID, userID uuid.UUID, total money.Paise, method string) (*payments.Intent, error) {
+// here from the order we own. `attempt` is 1 for the first payment and the
+// retry count after a failure — see payments.IntentIdempotencyKey.
+func (s *Service) openPaymentIntent(ctx context.Context, orderID, userID uuid.UUID, total money.Paise, method string, attempt int) (*payments.Intent, error) {
 	if s.payments == nil {
 		return nil, ErrPaymentsClientMissing
 	}
@@ -383,6 +384,7 @@ func (s *Service) openPaymentIntent(ctx context.Context, orderID, userID uuid.UU
 		PayeeID:     sellerID, // D4: sellers.id, typed, never a user id
 		AmountMinor: total,
 		Method:      method,
+		Attempt:     attempt,
 	})
 	if err != nil {
 		return nil, err
@@ -397,6 +399,12 @@ func (s *Service) openPaymentIntent(ctx context.Context, orderID, userID uuid.UU
 //
 // This is the endpoint that replaces the removed public
 // POST /v1/payments/intents. The client names an ORDER, not an amount.
+//
+// On an order in `payment_failed` it is also the RETRY: the order's lines are
+// re-held for the checkout TTL and the order returns to payment_pending in one
+// transaction (store.RetryPaymentReservation), and a fresh intent is opened
+// under a new attempt key. Stock gone means OutOfStockError, nothing held, and
+// the order stays payment_failed.
 func (s *Service) OpenPaymentForOrder(ctx context.Context, orderID, userID uuid.UUID) (*payments.Intent, error) {
 	order, err := s.store.GetOrderByID(ctx, orderID)
 	if err != nil || order == nil {
@@ -405,11 +413,34 @@ func (s *Service) OpenPaymentForOrder(ctx context.Context, orderID, userID uuid.
 	if order.CustomerUserID != userID {
 		return nil, ErrNotOrderOwner
 	}
-	if order.Status != "payment_pending" {
+	attempt := 1
+	switch {
+	case CanRetryPayment(order, userID):
+		if s.payments == nil {
+			// Refused BEFORE the transaction: re-holding stock for an intent
+			// that can never be opened would park the units for twenty
+			// minutes for nothing.
+			return nil, ErrPaymentsClientMissing
+		}
+		n, err := s.store.RetryPaymentReservation(ctx, orderID, userID)
+		if err != nil {
+			return nil, err
+		}
+		attempt = n
+	case order.Status != "payment_pending":
 		return nil, ErrOrderNotPaymentPending
-	}
-	if existing, err := s.store.OrderPaymentIntentID(ctx, orderID); err == nil && existing != uuid.Nil {
-		return s.payments.GetIntent(ctx, existing)
+	default:
+		if existing, err := s.store.OrderPaymentIntentID(ctx, orderID); err == nil && existing != uuid.Nil {
+			return s.payments.GetIntent(ctx, existing)
+		}
+		// No intent bound. After a retry whose intent failed to open, this
+		// is the retry's attempt, not the first: the first attempt's key
+		// would hand back the intent that already failed.
+		n, err := s.store.OrderPaymentAttempt(ctx, orderID)
+		if err != nil {
+			return nil, err
+		}
+		attempt = n
 	}
 	total, err := s.store.OrderTotalMinor(ctx, orderID)
 	if err != nil {
@@ -419,7 +450,7 @@ func (s *Service) OpenPaymentForOrder(ctx context.Context, orderID, userID uuid.
 	if order.PaymentMethod != nil {
 		method = *order.PaymentMethod
 	}
-	return s.openPaymentIntent(ctx, orderID, userID, total, method)
+	return s.openPaymentIntent(ctx, orderID, userID, total, method, attempt)
 }
 
 // PaymentStatus reports the authoritative payment state for an order.

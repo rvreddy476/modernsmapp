@@ -1749,6 +1749,14 @@ services:
       # (production endpoint apiv2.shiprocket.in — no sandbox available).
       # SHIPROCKET_PICKUP_LOCATION_ID was passed but never read; dropped.
       COURIER_PROVIDER: ${COURIER_PROVIDER:-stub}
+      # Dev only: the stub courier moves a shipped order to out_for_delivery
+      # after this Go duration, and to delivered after the same again, through
+      # the normal transition path. Ignored unless the courier IS the stub and
+      # ENV is not staging/prod. No values file sets it.
+      COURIER_STUB_AUTO_DELIVER_AFTER: ${COURIER_STUB_AUTO_DELIVER_AFTER:-2m}
+      # Dev only: a complete listing from an APPROVED shop is approved on
+      # submit (moderation log actor system:auto_approve). No values file sets it.
+      COMMERCE_PRODUCT_AUTO_APPROVE: ${COMMERCE_PRODUCT_AUTO_APPROVE:-true}
       SHIPROCKET_EMAIL: ${SHIPROCKET_EMAIL:-}
       SHIPROCKET_PASSWORD: ${SHIPROCKET_PASSWORD:-}
       SHIPROCKET_WEBHOOK_TOKEN: ${SHIPROCKET_WEBHOOK_TOKEN:-}

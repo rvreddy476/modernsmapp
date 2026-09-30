@@ -119,6 +119,8 @@ type Service struct {
 	// permits in a local environment and says so loudly.
 	media     *media.Client
 	payoutCfg PayoutConfig
+	// productAutoApprove — see WithProductAutoApprove.
+	productAutoApprove bool
 
 	// productViewCounter shards products.view_count across Redis so a
 	// trending product taking 100k+ views/hour doesn't bottleneck on a
@@ -622,8 +624,30 @@ func (s *Service) ListMyProducts(ctx context.Context, actorUserID uuid.UUID, sta
 	}
 	limit, offset = clampListPagination(limit, offset)
 	products, total, err := s.store.ListSellerProducts(ctx, seller.ID, status, false, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
 	s.hydrateProductImages(ctx, products)
-	return products, total, err
+	// The variant ids, on the seller's own list only. The public summary
+	// carries default_variant_id and nothing else, and the stock/price
+	// screens address a VARIANT — so a two-colour listing had one id to
+	// edit with and one it could not reach.
+	ids := make([]uuid.UUID, 0, len(products))
+	for _, p := range products {
+		ids = append(ids, p.ID)
+	}
+	variants, err := s.store.SellerVariantsForProducts(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, p := range products {
+		if rows := variants[p.ID]; len(rows) > 0 {
+			p.Variants = rows
+		} else {
+			p.Variants = []postgres.SellerVariantRow{}
+		}
+	}
+	return products, total, nil
 }
 
 // ListProducts returns the customer-facing product catalog: published +
@@ -834,6 +858,7 @@ func (s *Service) ListOrderCards(ctx context.Context, userID uuid.UUID, limit in
 	if err != nil {
 		return nil, err
 	}
+	s.hydrateOrderCardImages(ctx, cards)
 	res := &ListOrderCardsResult{Items: cards}
 	if hasMore && len(cards) > 0 {
 		last := cards[len(cards)-1]
@@ -1141,8 +1166,12 @@ type OrderDetail struct {
 	// a missing address is not a reason to fail an order screen.
 	DeliveryAddress *pii.Address `json:"delivery_address,omitempty"`
 
-	CanCancel   bool    `json:"can_cancel"`
-	TrackingURL *string `json:"tracking_url,omitempty"`
+	CanCancel bool `json:"can_cancel"`
+	// CanRetryPayment is true only in payment_failed, for the payer: the
+	// state POST /orders/:id/payment/intent re-reserves stock from. See
+	// CanRetryPayment and RetryPaymentForOrder.
+	CanRetryPayment bool    `json:"can_retry_payment"`
+	TrackingURL     *string `json:"tracking_url,omitempty"`
 
 	CreatedAt      time.Time `json:"created_at"`
 	CreatedAtEpoch int64     `json:"created_at_epoch"`
@@ -1227,9 +1256,10 @@ func (s *Service) GetOrderDetail(ctx context.Context, orderID, userID uuid.UUID)
 		PaymentMethod:  order.PaymentMethod,
 		PaymentStatus:  order.PaymentStatus,
 		Status:         order.Status,
-		Items:          lines,
-		CanCancel:      postgres.CustomerCanCancel(order.Status),
-		CreatedAt:      order.CreatedAt,
+		Items:           lines,
+		CanCancel:       postgres.CustomerCanCancel(order.Status),
+		CanRetryPayment: CanRetryPayment(order, userID),
+		CreatedAt:       order.CreatedAt,
 		CreatedAtEpoch: order.CreatedAt.Unix(),
 	}
 
@@ -1337,7 +1367,13 @@ func (s *Service) AddToCart(ctx context.Context, userID, variantID uuid.UUID, qt
 		return fmt.Errorf("inventory not found: %w", err)
 	}
 	if inv.AvailableQty() < qty {
-		return fmt.Errorf("only %d units available", inv.AvailableQty())
+		// Typed, so the edge answers 409 OUT_OF_STOCK with the line — the
+		// same shape checkout refuses with — rather than a 400 whose only
+		// content was this sentence.
+		return &postgres.OutOfStockError{Lines: []postgres.OutOfStockLine{{
+			VariantID: variantID, ProductID: variant.ProductID,
+			Requested: qty, Available: inv.AvailableQty(),
+		}}}
 	}
 
 	cart, err := s.store.GetOrCreateCart(ctx, userID)
@@ -2217,7 +2253,13 @@ func (s *Service) assertNoRealProvider(ctx context.Context, intentID uuid.UUID) 
 			"which provider is configured", "intent_id", intentID, "error", err)
 		return ErrPaymentVerifyFailed
 	}
-	if intent != nil && len(intent.ClientSession) > 0 {
+	// payments-service in stub mode now names itself: it attaches a session
+	// whose provider is "stub" (so a client can detect the stub by that
+	// field rather than by sniffing the order handle). That session is the
+	// stub's, not a provider's, and is the ONE value admitted here. Any
+	// other provider name, or a session with no provider named at all, is
+	// a real adapter and the webhook settles.
+	if intent != nil && len(intent.ClientSession) > 0 && intent.ClientSession["provider"] != StubProviderName {
 		slog.Warn("commerce: refusing stub settlement — payments-service has a real provider "+
 			"configured, so the signature-verified webhook is the settlement path",
 			"intent_id", intentID, "provider", intent.ClientSession["provider"])
@@ -2225,6 +2267,10 @@ func (s *Service) assertNoRealProvider(ctx context.Context, intentID uuid.UUID) 
 	}
 	return nil
 }
+
+// StubProviderName is what payments-service's stub mode writes as
+// client_session.provider. Only this value lets ConfirmPayment settle.
+const StubProviderName = "stub"
 
 // checkoutInitialState is the (status, payment_status) pair a fresh order
 // is created in. Prepaid orders park in payment_pending/pending until the
@@ -2395,13 +2441,28 @@ func (s *Service) applyPaidStatus(ctx context.Context, orderID uuid.UUID, paymen
 		orderNumber = order.OrderNumber
 		amount = order.FinalAmount
 	}
-	s.publish(ctx, events.EventCommerceOrderPaid, map[string]any{
+	paid := map[string]any{
 		"order_id":     orderID,
 		"order_number": orderNumber,
 		"amount":       amount,
 		"payment_id":   paymentID,
 		"buyer_email":  buyerEmail,
-	})
+	}
+	if order != nil {
+		paid["user_id"] = order.CustomerUserID
+		paid["amount_minor"] = order.TotalMinor()
+	}
+	// The seller the new-order notice goes to, as the signed-event path's
+	// outbox row carries it (store.OrderEventParties). Best effort: a failed
+	// read leaves the keys absent, which the notification consumer counts.
+	if s.store != nil {
+		if parties, err := s.store.OrderEventParties(ctx, orderID); err == nil {
+			parties.FillMissing(paid)
+		} else {
+			slog.Warn("commerce: paid event without its parties", "order_id", orderID, "error", err)
+		}
+	}
+	s.publish(ctx, events.EventCommerceOrderPaid, paid)
 
 	// Phase 6.1 — enqueue a durable fulfillment job rather than firing
 	// `go s.fulfillPaidOrder(orderID)`. A service restart between this
@@ -3304,6 +3365,18 @@ func derefOrEmpty(p *string) string {
 // across the call sites.
 func (s *Service) WithMedia(c *media.Client) *Service {
 	s.media = c
+	return s
+}
+
+// WithProductAutoApprove makes POST /products/:id/submit approve the listing
+// immediately when the seller is `approved` and the completeness gate
+// passed, instead of queueing it for a moderator. Wired from
+// COMMERCE_PRODUCT_AUTO_APPROVE in cmd/server; the dev compose sets it, no
+// values file does. The moderation log still gets a row, with
+// postgres.AutoApproveReason as the actor, so an auto-approved listing is
+// distinguishable from a reviewed one afterwards.
+func (s *Service) WithProductAutoApprove(on bool) *Service {
+	s.productAutoApprove = on
 	return s
 }
 

@@ -1,0 +1,12 @@
+{
+  "data": {
+    "order_id": "00000000-0000-4000-8000-0000000f000c",
+    "order_number": "ORD-2026-010006",
+    "total_minor": 134800,
+    "tax_minor": 20563,
+    "shipping_minor": 4900,
+    "currency": "INR",
+    "payment_intent_id": "00000000-0000-4000-8000-0000000f000d"
+  }
+}
+

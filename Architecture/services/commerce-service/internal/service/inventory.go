@@ -217,6 +217,34 @@ func (s *Service) hydrateOrderItemImages(ctx context.Context, items []*postgres.
 	}
 }
 
+// hydrateOrderCardImages resolves each order card's first-item cover in one
+// media batch. Fails soft, like every other image read: a list with
+// placeholders beats a list that will not load.
+func (s *Service) hydrateOrderCardImages(ctx context.Context, cards []postgres.OrderCard) {
+	if s.media == nil || len(cards) == 0 {
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(cards))
+	for i := range cards {
+		if cards[i].FirstItemMediaID != nil {
+			ids = append(ids, *cards[i].FirstItemMediaID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	resolved := s.media.ResolveURLs(ctx, ids)
+	for i := range cards {
+		if cards[i].FirstItemMediaID == nil {
+			continue
+		}
+		if r, ok := resolved[*cards[i].FirstItemMediaID]; ok {
+			cards[i].FirstItemImageURL = r.URL()
+			cards[i].FirstItemThumbnailURL = r.Thumbnail()
+		}
+	}
+}
+
 // CartView is the cart as a client reads it: flat lines, paise, and image
 // URLs already resolved.
 //

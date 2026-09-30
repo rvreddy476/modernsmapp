@@ -1,0 +1,52 @@
+{
+  "data": {
+    "items": [
+      {
+        "id": "00000000-0000-4000-8000-0000000c0201",
+        "order_id": "00000000-0000-4000-8000-0000000c0200",
+        "product_id": "00000000-0000-4000-8000-0000000c0100",
+        "variant_id": "00000000-0000-4000-8000-0000000c0101",
+        "seller_id": "00000000-0000-4000-8000-0000000c0010",
+        "product_title": "Momentum Wireless Earbuds",
+        "variant_details": "eyJvcHRpb25fMV9uYW1lIjogIkNvbG91ciIsICJvcHRpb25fMV92YWx1ZSI6ICJCbGFjayJ9",
+        "sku": "MOM-EB-BLK",
+        "quantity": 1,
+        "unit_mrp": 1499,
+        "unit_price": 1299,
+        "tax_amount": 198.15,
+        "final_price": 1299,
+        "status": "confirmed",
+        "created_at": "2026-09-10T10:00:00Z",
+        "unit_mrp_minor": 149900,
+        "unit_price_minor": 129900,
+        "tax_minor": 19815,
+        "final_price_minor": 129900,
+        "image_media_id": "00000000-0000-4000-8000-0000000d0001",
+        "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/medium_1080.jpg",
+        "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/thumb_150.jpg"
+      }
+    ],
+    "order": {
+      "id": "00000000-0000-4000-8000-0000000c0200",
+      "customer_user_id": "00000000-0000-4000-8000-0000000c0001",
+      "order_number": "ORD-2026-010001",
+      "subtotal": 1299,
+      "shipping_charges": 49,
+      "tax_amount": 198.15,
+      "final_amount": 1348,
+      "subtotal_minor": 129900,
+      "shipping_minor": 4900,
+      "tax_minor": 19815,
+      "total_minor": 134800,
+      "currency_code": "INR",
+      "payment_method": "upi",
+      "payment_status": "paid",
+      "delivery_address_id": "00000000-0000-4000-8000-0000000c0021",
+      "delivery_address_snapshot": "eyJjaXR5IjogIkJlbmdhbHVydSIsICJwaG9uZSI6ICI5MTExMTExMTExIiwgInN0YXRlIjogIktBIiwgImNvdW50cnkiOiAiSU4iLCAibGFuZG1hcmsiOiAiTmVhciB0aGUgcGFyayIsICJwb3N0YWxfY29kZSI6ICI1NjAwMDIiLCAiY29udGFjdF9uYW1lIjogIkFzaGEgQnV5ZXIiLCAiYWRkcmVzc19saW5lXzEiOiAiNSBNYWluIFN0cmVldCIsICJhZGRyZXNzX2xpbmVfMiI6ICJGbGF0IDJCIn0=",
+      "status": "confirmed",
+      "created_at": "2026-09-10T10:00:00Z",
+      "updated_at": "2026-09-10T10:00:00Z"
+    }
+  }
+}
+

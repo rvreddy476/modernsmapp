@@ -1,0 +1,18 @@
+{
+  "data": {
+    "id": "00000000-0000-4000-8000-0000000f0005",
+    "user_id": "00000000-0000-4000-8000-0000000c0001",
+    "contact_name": "Ravi Buyer",
+    "phone": "9222222222",
+    "address_line_1": "12 Lake View",
+    "address_line_2": "2nd floor",
+    "landmark": "Opposite the temple",
+    "city": "Mysuru",
+    "state": "KA",
+    "country": "IN",
+    "postal_code": "570001",
+    "address_type": "other",
+    "created_at": "2026-09-30T10:00:00Z"
+  }
+}
+

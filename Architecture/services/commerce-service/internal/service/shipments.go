@@ -474,6 +474,12 @@ func (s *Service) HandleShipmentWebhook(ctx context.Context, courierName string,
 	if err != nil {
 		return fmt.Errorf("parse webhook: %w", err)
 	}
+	// The first delivery transition that could not be written. Every update
+	// in the payload is still processed; the error is returned at the end
+	// so the courier retries the batch rather than losing it. A refusal by
+	// the matrix (the order was cancelled by an admin while in transit) is
+	// logged and NOT returned: retrying it changes nothing.
+	var firstErr error
 	for _, u := range updates {
 		sh, err := s.store.GetShipmentByTracking(ctx, courierName, u.TrackingNumber)
 		if err != nil {
@@ -511,18 +517,25 @@ func (s *Service) HandleShipmentWebhook(ctx context.Context, courierName string,
 			}
 			order, _ := s.store.GetOrderByID(ctx, sh.OrderID)
 			if allDelivered {
-				_ = s.store.UpdateOrderStatus(ctx, sh.OrderID, "delivered", nil, "system", "all shipments delivered")
-				buyerEmail := ""
-				if order != nil {
-					buyerEmail, _ = s.resolveBuyer(ctx, order.CustomerUserID)
+				// Through the matrix, with the history row and every line
+				// following in the same transaction (AdvanceDelivery). This
+				// was an unguarded UPDATE whose error was discarded, so a
+				// refused or failed write left the order `shipped` with no
+				// trace of why — and the lines never became `delivered`
+				// either way, which is what made reviews impossible.
+				t, err := s.store.AdvanceDelivery(ctx, sh.OrderID, "delivered", "all shipments delivered")
+				switch {
+				case errors.Is(err, postgres.ErrTransitionNotPermitted):
+					slog.Error("webhook: the courier reports delivered but the order cannot move there",
+						"order_id", sh.OrderID, "shipment_id", sh.ID, "error", err)
+				case err != nil:
+					slog.Error("webhook: delivered transition failed", "order_id", sh.OrderID, "error", err)
+					if firstErr == nil {
+						firstErr = fmt.Errorf("order %s delivered transition: %w", sh.OrderID, err)
+					}
+				case t.Applied:
+					s.publishOrderDelivered(ctx, sh.OrderID, order, sh.ID, u.OccurredAt)
 				}
-				s.publish(ctx, events.EventCommerceOrderDelivered, map[string]any{
-					"order_id":     sh.OrderID,
-					"order_number": orderNumberOrEmpty(order),
-					"shipment_id":  sh.ID,
-					"occurred_at":  u.OccurredAt,
-					"buyer_email":  buyerEmail,
-				})
 			} else {
 				slog.Info("webhook: shipment delivered but order has pending siblings",
 					"order_id", sh.OrderID, "shipment_id", sh.ID)
@@ -535,7 +548,27 @@ func (s *Service) HandleShipmentWebhook(ctx context.Context, courierName string,
 			s.recordCODRemittance(ctx, sh, order, u.OccurredAt)
 		}
 	}
-	return nil
+	return firstErr
+}
+
+// publishOrderDelivered emits commerce.order.delivered with the buyer's id
+// and the order number, which notification-service needs to address the
+// in-app notice; the payload used to carry neither, so no delivered notice
+// was ever sent. Shared by the webhook path and the stub courier's timer.
+func (s *Service) publishOrderDelivered(ctx context.Context, orderID uuid.UUID, order *postgres.Order, shipmentID uuid.UUID, occurredAt time.Time) {
+	payload := map[string]any{
+		"order_id":     orderID,
+		"order_number": orderNumberOrEmpty(order),
+		"shipment_id":  shipmentID,
+		"occurred_at":  occurredAt,
+		"user_id":      nil,
+		"buyer_email":  "",
+	}
+	if order != nil {
+		payload["user_id"] = order.CustomerUserID
+		payload["buyer_email"], _ = s.resolveBuyer(ctx, order.CustomerUserID)
+	}
+	s.publish(ctx, events.EventCommerceOrderDelivered, payload)
 }
 
 // ─── Invoices ─────────────────────────────────────────────────────────

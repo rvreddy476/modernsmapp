@@ -1,0 +1,15 @@
+{
+  "data": {
+    "quote_id": "00000000-0000-4000-8000-0000000f000b",
+    "subtotal_minor": 259800,
+    "discount_minor": 0,
+    "shipping_minor": 4900,
+    "tax_minor": 40378,
+    "total_minor": 264700,
+    "currency": "INR",
+    "courier_code": "stub",
+    "expires_at": "2026-09-30T10:15:00Z",
+    "serviceable": true
+  }
+}
+

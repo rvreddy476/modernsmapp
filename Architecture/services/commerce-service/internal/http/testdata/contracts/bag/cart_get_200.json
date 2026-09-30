@@ -1,0 +1,55 @@
+{
+  "data": {
+    "cart_id": "00000000-0000-4000-8000-0000000c0400",
+    "items": [
+      {
+        "variant_id": "00000000-0000-4000-8000-0000000c0111",
+        "product_id": "00000000-0000-4000-8000-0000000c0110",
+        "title": "Momentum Canvas Cap",
+        "sku": "MOM-CAP-OS",
+        "quantity": 1,
+        "unit_price_minor": 49900,
+        "line_total_minor": 49900,
+        "price_was_minor": 45900,
+        "available_qty": 40,
+        "seller_id": "00000000-0000-4000-8000-0000000c0010",
+        "seller_name": "Momentum Electronics",
+        "sellable": true
+      },
+      {
+        "variant_id": "00000000-0000-4000-8000-0000000c0121",
+        "product_id": "00000000-0000-4000-8000-0000000c0120",
+        "title": "Momentum Steel Bottle",
+        "sku": "MOM-BTL-750",
+        "quantity": 1,
+        "unit_price_minor": 79900,
+        "line_total_minor": 79900,
+        "available_qty": 12,
+        "seller_id": "00000000-0000-4000-8000-0000000c0010",
+        "seller_name": "Momentum Electronics",
+        "sellable": false
+      },
+      {
+        "variant_id": "00000000-0000-4000-8000-0000000c0101",
+        "product_id": "00000000-0000-4000-8000-0000000c0100",
+        "title": "Momentum Wireless Earbuds",
+        "sku": "MOM-EB-BLK",
+        "image_media_id": "00000000-0000-4000-8000-0000000d0001",
+        "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/medium_1080.jpg",
+        "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/thumb_150.jpg",
+        "quantity": 2,
+        "unit_price_minor": 129900,
+        "line_total_minor": 259800,
+        "available_qty": 24,
+        "seller_id": "00000000-0000-4000-8000-0000000c0010",
+        "seller_name": "Momentum Electronics",
+        "sellable": true
+      }
+    ],
+    "subtotal_minor": 389600,
+    "item_count": 4,
+    "seller_id": "00000000-0000-4000-8000-0000000c0010",
+    "seller_name": "Momentum Electronics"
+  }
+}
+

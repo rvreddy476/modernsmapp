@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "QUOTE_STALE",
+    "message": "your cart or address changed after the delivery quote; please re-quote"
+  },
+  "meta": {}
+}
+

@@ -1,0 +1,16 @@
+{
+  "data": {
+    "amount_minor": 134800,
+    "client_session": {
+      "key_id": "rzp_test_ContractKey01",
+      "merchant_display_name": "Momentum Store",
+      "order_id": "order_Contract0002",
+      "provider": "razorpay"
+    },
+    "currency": "INR",
+    "payment_intent_id": "00000000-0000-4000-8000-0000000f000d",
+    "provider_ref": "order_Contract0002",
+    "status": "pending"
+  }
+}
+

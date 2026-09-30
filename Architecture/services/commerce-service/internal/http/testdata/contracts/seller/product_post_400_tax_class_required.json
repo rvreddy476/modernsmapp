@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "TAX_CLASS_REQUIRED",
+    "message": "a GST rate is required; GET /v1/commerce/tax-classes lists the options"
+  },
+  "meta": {}
+}
+

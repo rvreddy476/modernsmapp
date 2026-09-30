@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/atpost/commerce-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 )
 
@@ -450,6 +451,24 @@ func (s *Service) SubmitProduct(ctx context.Context, productID, userID uuid.UUID
 	s.publish(ctx, "commerce.product.submitted", map[string]any{
 		"product_id": productID, "seller_id": sel.ID,
 	})
+
+	// Auto-approve (COMMERCE_PRODUCT_AUTO_APPROVE): the listing passed the
+	// gate above, and the SHOP has been approved by a person, so the second
+	// review is of a checklist a machine already ran. The seller guard is
+	// the one that matters — a listing from a shop still under review must
+	// queue however complete it is, because approving it would put an
+	// unreviewed shop's goods on sale.
+	if s.productAutoApprove && sel.Status == "approved" {
+		if err := s.store.AutoApproveProduct(ctx, productID); err != nil {
+			return err
+		}
+		s.publish(ctx, events.EventProductApproved, map[string]any{
+			"product_id": productID, "actor": postgres.AutoApproveReason,
+		})
+		s.publishProductVisibility(ctx, productID)
+		return nil
+	}
+
 	// A submit is a visibility transition too, even though the usual case —
 	// a draft going to review — was never visible in the first place. It is
 	// published anyway rather than guarded by "was it live before?", because
@@ -460,6 +479,9 @@ func (s *Service) SubmitProduct(ctx context.Context, productID, userID uuid.UUID
 	s.publishProductVisibility(ctx, productID)
 	return nil
 }
+
+// ProductAutoApproveEnabled reports the flag, for the handler tests.
+func (s *Service) ProductAutoApproveEnabled() bool { return s.productAutoApprove }
 
 // ProductReadiness reports what a listing still needs, WITHOUT submitting it.
 //

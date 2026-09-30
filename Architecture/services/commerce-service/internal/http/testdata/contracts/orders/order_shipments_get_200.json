@@ -1,0 +1,55 @@
+{
+  "data": {
+    "shipments": [
+      {
+        "shipment": {
+          "id": "00000000-0000-4000-8000-0000000c0211",
+          "order_id": "00000000-0000-4000-8000-0000000c0210",
+          "seller_id": "00000000-0000-4000-8000-0000000c0010",
+          "courier": "stub",
+          "tracking_number": "CT0C0210",
+          "courier_order_id": "stub-CT0C0210",
+          "label_url": "https://example.test/labels/CT0C0210.pdf",
+          "tracking_url": "https://example.test/track/CT0C0210",
+          "status": "delivered",
+          "eta": "2026-09-14T10:00:00Z",
+          "shipped_at": "2026-09-11T12:00:00Z",
+          "delivered_at": "2026-09-14T15:00:00Z",
+          "last_event_at": "2026-09-14T15:00:00Z",
+          "created_at": "2026-09-11T12:00:00Z",
+          "updated_at": "2026-09-14T15:00:00Z"
+        },
+        "events": [
+          {
+            "id": "00000000-0000-4000-8000-0000000f0006",
+            "shipment_id": "00000000-0000-4000-8000-0000000c0211",
+            "status": "delivered",
+            "location": "Bengaluru",
+            "remark": "handed to the customer",
+            "occurred_at": "2026-09-14T15:00:00Z",
+            "created_at": "2026-09-14T15:00:00Z"
+          },
+          {
+            "id": "00000000-0000-4000-8000-0000000f0007",
+            "shipment_id": "00000000-0000-4000-8000-0000000c0211",
+            "status": "in_transit",
+            "location": "Bengaluru hub",
+            "remark": "left origin",
+            "occurred_at": "2026-09-12T09:00:00Z",
+            "created_at": "2026-09-12T09:00:00Z"
+          },
+          {
+            "id": "00000000-0000-4000-8000-0000000f0008",
+            "shipment_id": "00000000-0000-4000-8000-0000000c0211",
+            "status": "booked",
+            "location": "Bengaluru",
+            "remark": "booked with stub",
+            "occurred_at": "2026-09-11T12:00:00Z",
+            "created_at": "2026-09-11T12:00:00Z"
+          }
+        ]
+      }
+    ]
+  }
+}
+

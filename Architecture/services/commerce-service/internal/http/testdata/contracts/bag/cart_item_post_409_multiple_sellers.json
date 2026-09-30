@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "MULTIPLE_SELLERS",
+    "message": "your cart contains items from more than one seller"
+  },
+  "meta": {}
+}
+

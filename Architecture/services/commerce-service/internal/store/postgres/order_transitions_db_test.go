@@ -1,3 +1,5 @@
+//go:build integration
+
 package postgres
 
 import (
@@ -7,23 +9,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/commerce-service/internal/testdsn"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DB-backed proof of the guarded transition. Skips unless
-// COMMERCE_TEST_POSTGRES_DSN points at a migrated commerce_db, e.g. the
-// dev stack:
+// DB-backed proof of the guarded transition.
 //
-//	COMMERCE_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/commerce_db?sslmode=disable' \
-//	  go test ./services/commerce-service/internal/store/postgres/ -run DB -v
+// Reads COMMERCE_TEST_DSN — the SAME variable and the SAME guard every other
+// integration suite uses. This file used to read its own
+// COMMERCE_TEST_POSTGRES_DSN, carried no build tag and no guard, and its own
+// header suggested pointing it at commerce_db: it was the one suite that
+// reached the live database by following its documentation.
+//
+//	COMMERCE_TEST_DSN='postgres://…/commerce_it_test?sslmode=disable' \
+//	  go test -tags=integration ./internal/store/postgres/ -run DB -v
 //
 // Rows are created under a throwaway customer id and deleted afterwards.
 func dbStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
-	dsn := os.Getenv("COMMERCE_TEST_POSTGRES_DSN")
+	dsn := os.Getenv("COMMERCE_TEST_DSN")
+	testdsn.Refuse(dsn)
 	if dsn == "" {
-		t.Skip("COMMERCE_TEST_POSTGRES_DSN not set")
+		t.Skip("COMMERCE_TEST_DSN not set")
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {

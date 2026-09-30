@@ -267,7 +267,7 @@ jobs:
 
       - name: Create scratch databases
         run: |
-          psql -c "CREATE DATABASE commerce_p0;"
+          psql -c "CREATE DATABASE commerce_p0_test;"
           psql -c "CREATE DATABASE payments_p0;"
 
       # Applied in order, with ON_ERROR_STOP, so a migration that cannot
@@ -276,10 +276,10 @@ jobs:
         working-directory: Architecture/services/commerce-service
         run: |
           set -euo pipefail
-          psql -d commerce_p0 -v ON_ERROR_STOP=1 -q -f database/setup.sql
+          psql -d commerce_p0_test -v ON_ERROR_STOP=1 -q -f database/setup.sql
           for f in database/migrations/*.sql; do
             echo "applying $f"
-            psql -d commerce_p0 -v ON_ERROR_STOP=1 -q -f "$f"
+            psql -d commerce_p0_test -v ON_ERROR_STOP=1 -q -f "$f"
           done
 
           # B11 review follow-up: the GATED contract half must be applied
@@ -297,22 +297,22 @@ jobs:
           # (`commerce-migrate` then `commerce-migrate -gated`), so applying
           # it here makes CI match the deployment rather than a subset of it.
           echo "applying gated contract half"
-          psql -d commerce_p0 -v ON_ERROR_STOP=1 -q -f database/gated/998_contract_triggers_and_fences.sql
+          psql -d commerce_p0_test -v ON_ERROR_STOP=1 -q -f database/gated/998_contract_triggers_and_fences.sql
 
           # And assert it actually installed, so a silent no-op cannot leave
           # the proofs asserting against an unfenced schema.
-          psql -d commerce_p0 -v ON_ERROR_STOP=1 -tAc "
+          psql -d commerce_p0_test -v ON_ERROR_STOP=1 -tAc "
             SELECT CASE WHEN count(*) >= 10 THEN 'fences ok'
                         ELSE 'FENCES MISSING: ' || count(*) END
               FROM fenced_surfaces" | tee /tmp/fences.txt
           grep -q 'fences ok' /tmp/fences.txt || { echo "::error::gated 998 did not install the fence triggers"; exit 1; }
           for c in orders_payment_method_prepaid_only; do
-            psql -d commerce_p0 -v ON_ERROR_STOP=1 -tAc \
+            psql -d commerce_p0_test -v ON_ERROR_STOP=1 -tAc \
               "SELECT 1 FROM pg_constraint WHERE conname='$c'" | grep -q 1 \
               || { echo "::error::gated 998 did not install constraint $c"; exit 1; }
           done
           for tg in trg_order_transition trg_fence_returns; do
-            psql -d commerce_p0 -v ON_ERROR_STOP=1 -tAc \
+            psql -d commerce_p0_test -v ON_ERROR_STOP=1 -tAc \
               "SELECT 1 FROM pg_trigger WHERE tgname='$tg'" | grep -q 1 \
               || { echo "::error::gated 998 did not install trigger $tg"; exit 1; }
           done
@@ -333,7 +333,7 @@ jobs:
       - name: Commerce proofs
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: go test -tags=integration ./internal/store/postgres/... -run TestProof -count=1 -v
 
       # ── C3 (Commerce Money Truth + Payable Android Checkout) ──────────
@@ -344,7 +344,7 @@ jobs:
       - name: C3 quote-breakdown and payment-method proofs
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: go test -tags=integration ./internal/store/postgres/... -run TestC3 -count=1 -v
 
       # The HTTP half: the public edge refuses a non-launch method, and a
@@ -356,7 +356,7 @@ jobs:
       - name: C3 checkout journey and edge refusals (real routes)
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: go test -tags=integration ./internal/http/... -count=1 -v
 
       # C3-LB-1: exact provider money truth on the two paths review 3 found
@@ -373,7 +373,7 @@ jobs:
       - name: The C3 proofs actually executed
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
           PAYMENTS_TEST_DSN: postgres://postgres:postgres@localhost:5432/payments_p0?sslmode=disable
         run: |
           set -euo pipefail
@@ -415,7 +415,7 @@ jobs:
       - name: Seller surface proofs (stock, storefront, pickup address)
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/store/postgres/... -count=1 -v \
@@ -456,7 +456,7 @@ jobs:
       - name: Create-product contract (GST class required, money in paise)
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/http/... -count=1 -v \
@@ -493,7 +493,7 @@ jobs:
       - name: Seller onboarding contract (readiness, payout, submit)
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/http/... -count=1 -v \
@@ -523,7 +523,7 @@ jobs:
       - name: KYC document ownership
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/http/... -count=1 -v \
@@ -550,7 +550,7 @@ jobs:
       - name: The journey through the real routes (nothing seeded)
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/http/... -count=1 -v \
@@ -573,7 +573,7 @@ jobs:
       - name: Repricing contract (both money columns move, paise are authority)
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/http/... -count=1 -v \
@@ -744,7 +744,7 @@ jobs:
       - name: The commerce N-proofs actually executed
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/store/postgres/... -run "TestProof" -count=1 -v | tee n.log
@@ -773,7 +773,7 @@ jobs:
       - name: Negative control must reproduce the oversell
         working-directory: Architecture/services/commerce-service
         env:
-          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/store/postgres/... \

@@ -292,6 +292,11 @@ func (h *Handler) RegisterP0Routes(r *gin.Engine) {
 	// an order; commerce authors the amount from the order it owns.
 	v1.POST("/orders/:orderId/payment/intent", h.OpenPaymentIntent)
 	v1.GET("/orders/:orderId/payment/status", h.PaymentStatus)
+	// The three-state read new clients poll (confirming | paid | failed).
+	// Registered beside the legacy status route, which is unchanged for the
+	// shipped Android build. Outside the fence: it is a read on the buyer's
+	// own order, with no authority over anything.
+	v1.GET("/orders/:orderId/payment", h.CustomerPaymentStatus)
 }
 
 // PrepareQuote POST /v1/commerce/checkout/quote
@@ -503,6 +508,38 @@ func (h *Handler) PaymentStatus(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, st, nil)
 }
 
+// CustomerPaymentStatus GET /v1/commerce/orders/:orderId/payment
+//
+// The customer's three-state answer: {order_id, status, amount_minor,
+// currency, refund_status, updated_at} — the exact shape food-service's
+// order payment read has, so one poller serves both. See
+// service.CustomerPaymentState for the rules.
+//
+// Customer only. A seller on the order reads its state from the seller
+// surface; anyone else is a 403, which is a permanent answer the poller
+// stops on (as is ORDER_NOT_FOUND).
+func (h *Handler) CustomerPaymentStatus(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	orderID, ok := parseUUID(c, "orderId")
+	if !ok {
+		return
+	}
+	st, err := h.svc.CustomerPaymentStatusFor(c.Request.Context(), orderID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrNotOrderCustomer) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden,
+				"FORBIDDEN", "only the order's customer may read its payment", nil)
+			return
+		}
+		writeCommerceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, st, nil)
+}
+
 // ─── Typed errors ────────────────────────────────────────────────────
 
 // writeCommerceError maps a domain error to a status and a machine-readable
@@ -624,8 +661,14 @@ func writeCommerceError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrApplicationIncomplete):
 		// 409, not 400: nothing about the REQUEST is malformed. The shop is
 		// not ready yet, which is a state the seller can resolve, and the
-		// message names everything still missing.
-		api.ErrorWithContext(ctx, w, http.StatusConflict, "APPLICATION_INCOMPLETE", err.Error(), nil)
+		// message names everything still missing. The codes travel in
+		// details.missing as well, so a client keys on them.
+		var incomplete *service.ApplicationIncompleteError
+		var details any
+		if errors.As(err, &incomplete) {
+			details = gin.H{"missing": incomplete.Missing}
+		}
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "APPLICATION_INCOMPLETE", err.Error(), details)
 	case errors.Is(err, postgres.ErrPriceDisagreement):
 		// Both shapes of the same price, disagreeing. Refused rather than
 		// resolved: picking one silently decides what the buyer pays.
@@ -690,6 +733,12 @@ func writeCommerceError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrOrderNotPaymentPending):
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "ORDER_NOT_PAYABLE",
 			"this order is not awaiting payment", nil)
+	case errors.Is(err, postgres.ErrPaymentNotRetryable):
+		// The order left payment_failed between the read and the locked
+		// transaction (a concurrent retry, or a cancel). Same family as
+		// ORDER_NOT_PAYABLE: the client re-reads the order.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "ORDER_NOT_PAYABLE",
+			"this order's payment cannot be retried from its current state", nil)
 	case postgres.IsFenced(err):
 		api.ErrorWithContext(ctx, w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
 	case postgres.IsRetryable(err):

@@ -294,6 +294,15 @@ func main() {
 			"with real credentials the signature-verified webhook is the only settlement path.")
 	}
 
+	// Product auto-approve (lane C1). On, POST /products/:id/submit approves
+	// a listing at once when the SHOP is approved and the completeness gate
+	// passed, writing the moderation-log row an admin approval writes with
+	// actor system:auto_approve. Off (the default, and every values file),
+	// submissions queue for a moderator as before. Dev compose turns it on.
+	productAutoApprove := env("COMMERCE_PRODUCT_AUTO_APPROVE", "") == "true"
+	svc.WithProductAutoApprove(productAutoApprove)
+	slog.Info("product auto-approve", "enabled", productAutoApprove)
+
 	// KYC validator (Phase 3.2). The stub does format-only checks and tags
 	// every verdict with Source="stub" so admins know they're approving on
 	// incomplete verification. Wire a vendor (Karza/Signzy/Hyperverge)
@@ -339,6 +348,28 @@ func main() {
 	// the hold and left the order payment_pending, so a late capture could
 	// still pay for stock that had already been sold to someone else.
 	go svc.RunReservationExpiry(consumerCtx, time.Minute)
+
+	// Lane C1 — the stub courier's delivery timer (dev only). The stub never
+	// sends a webhook, so without this a dev order stops at `shipped`
+	// forever. RunStubAutoDelivery refuses to run unless the configured
+	// courier IS the stub; a managed environment (staging/prod) refuses here
+	// as well, whatever the courier, because a timer that delivers parcels
+	// has no place where real ones exist. An unparsable value is logged and
+	// ignored rather than fatal: the flag is a convenience, never a boot
+	// dependency.
+	if raw := strings.TrimSpace(os.Getenv("COURIER_STUB_AUTO_DELIVER_AFTER")); raw != "" {
+		after, perr := time.ParseDuration(raw)
+		switch {
+		case perr != nil || after <= 0:
+			slog.Error("commerce: COURIER_STUB_AUTO_DELIVER_AFTER is not a positive Go duration; ignored",
+				"value", raw, "error", perr)
+		case classifyPIIEnvironment(os.Getenv("ENV")) == piiEnvManaged:
+			slog.Error("commerce: COURIER_STUB_AUTO_DELIVER_AFTER is set in a managed environment; ignored — "+
+				"only a dev stack may deliver orders on a timer", "env", os.Getenv("ENV"))
+		default:
+			go svc.RunStubAutoDelivery(consumerCtx, after, 0)
+		}
+	}
 
 	// Phase 6.1 — durable fulfillment worker. Replaces the old
 	// `go s.fulfillPaidOrder()` goroutines that disappeared on restart.

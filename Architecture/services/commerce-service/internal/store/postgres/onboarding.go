@@ -69,7 +69,58 @@ func (s *Store) GetSellerOnboardingStatus(ctx context.Context, userID uuid.UUID)
 		&sel.SubmittedAt, &sel.ApprovedAt, &sel.RejectedAt, &sel.RejectionReason, &sel.ChangesRequested,
 		&sel.VerificationStatus, &sel.StoreStatus, &sel.CreatedAt, &sel.UpdatedAt,
 	)
+	if err != nil {
+		return nil, err
+	}
+	sel.PayoutAccount, err = s.SellerPayoutSummaryFor(ctx, sel.ID)
 	return &sel, err
+}
+
+// SellerPayoutSummaryFor reads the masked payout account: the last four
+// digits the row keeps in the clear, the IFSC, the holder and the UPI id.
+// The sealed number (`account_number_enc`) and the legacy plaintext column
+// are never selected here. Nil when the seller has saved no account.
+//
+// `account_number_last4` is written by SaveOnboardingPayout (035); a legacy
+// row that predates it and still carries plaintext is masked from that
+// value here rather than shown, so the answer is the same either way.
+func (s *Store) SellerPayoutSummaryFor(ctx context.Context, sellerID uuid.UUID) (*SellerPayoutSummary, error) {
+	var (
+		out      SellerPayoutSummary
+		last4    *string
+		legacy   *string
+		ifsc     *string
+		verified string
+	)
+	err := s.db.QueryRow(ctx, `
+		SELECT account_holder_name, account_number_last4,
+		       RIGHT(NULLIF(btrim(account_number), ''), 4),
+		       ifsc_code, bank_name, upi_id, verification_status
+		  FROM seller_payout_accounts
+		 WHERE seller_id = $1
+		 ORDER BY is_primary DESC, updated_at DESC
+		 LIMIT 1`, sellerID).Scan(
+		&out.AccountHolderName, &last4, &legacy, &ifsc, &out.BankName, &out.UPIID, &verified)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	switch {
+	case last4 != nil && *last4 != "":
+		out.AccountLast4 = *last4
+	case legacy != nil:
+		out.AccountLast4 = *legacy
+	}
+	if ifsc != nil {
+		out.IFSCCode = *ifsc
+	}
+	if out.UPIID != nil && *out.UPIID == "" {
+		out.UPIID = nil
+	}
+	out.Verified = verified == "verified"
+	return &out, nil
 }
 
 // SaveOnboardingBasic saves step 3 — basic business info.
@@ -496,6 +547,27 @@ func (s *Store) ListProductQueue(ctx context.Context, limit, offset int) ([]*Pro
 // The CHECK constraint permits both spellings, which is why this drifted in
 // silence; migration 022 narrows it and converts the existing rows.
 func (s *Store) ApproveProductByAdmin(ctx context.Context, productID, actorID uuid.UUID, notes string) error {
+	return s.approveProduct(ctx, productID, actorID, notes)
+}
+
+// SystemActorID is the actor recorded on a moderation-log row the service
+// wrote on its own authority (COMMERCE_PRODUCT_AUTO_APPROVE). The column is
+// NOT NULL and holds a user id; the nil uuid is the one value no user can
+// hold, and the reason column names the rule that acted.
+var SystemActorID = uuid.Nil
+
+// AutoApproveReason is the moderation-log reason of an automatic approval.
+const AutoApproveReason = "system:auto_approve"
+
+// AutoApproveProduct approves a product on submit, writing the SAME rows an
+// admin approval writes, with SystemActorID and AutoApproveReason so the log
+// says a rule decided rather than a person.
+func (s *Store) AutoApproveProduct(ctx context.Context, productID uuid.UUID) error {
+	return s.approveProduct(ctx, productID, SystemActorID, AutoApproveReason)
+}
+
+// approveProduct is the one approval write, for both actors.
+func (s *Store) approveProduct(ctx context.Context, productID, actorID uuid.UUID, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

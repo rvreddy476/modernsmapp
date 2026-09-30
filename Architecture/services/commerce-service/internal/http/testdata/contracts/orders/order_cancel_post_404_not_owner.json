@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "ORDER_NOT_FOUND",
+    "message": "order not found"
+  },
+  "meta": {}
+}
+

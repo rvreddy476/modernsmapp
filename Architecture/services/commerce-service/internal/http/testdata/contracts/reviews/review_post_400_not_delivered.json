@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "REVIEW_ITEM_NOT_DELIVERED",
+    "message": "order item must be delivered before review"
+  },
+  "meta": {}
+}
+

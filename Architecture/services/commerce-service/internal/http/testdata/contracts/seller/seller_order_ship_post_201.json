@@ -1,0 +1,24 @@
+{
+  "data": {
+    "shipments": [
+      {
+        "id": "00000000-0000-4000-8000-0000000f0011",
+        "order_id": "00000000-0000-4000-8000-0000000c0200",
+        "seller_id": "00000000-0000-4000-8000-0000000c0010",
+        "courier": "stub",
+        "tracking_number": "CT0C0200",
+        "courier_order_id": "stub-CT0C0200",
+        "label_url": "https://example.test/labels/CT0C0200.pdf",
+        "tracking_url": "https://example.test/track/CT0C0200",
+        "status": "booked",
+        "eta": "2026-10-03T10:00:00Z",
+        "shipped_at": "2026-09-30T10:00:00Z",
+        "delivered_at": null,
+        "last_event_at": null,
+        "created_at": "2026-09-30T10:00:00Z",
+        "updated_at": "2026-09-30T10:00:00Z"
+      }
+    ]
+  }
+}
+

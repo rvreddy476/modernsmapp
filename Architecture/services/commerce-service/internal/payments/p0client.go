@@ -38,6 +38,7 @@ package payments
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -182,6 +183,21 @@ type CreateIntentInput struct {
 	PayeeID     uuid.UUID
 	AmountMinor money.Paise
 	Method      string
+	// Attempt is which payment attempt this is for the order: 0 or 1 for
+	// the first, 2+ after a payment_failed retry (RetryPaymentReservation
+	// counts it). It changes the idempotency key, because the key is what
+	// makes payments answer a retry with the SAME intent — and after a
+	// failure the same intent is the one that failed.
+	Attempt int
+}
+
+// IntentIdempotencyKey is the deterministic key for one payment attempt on
+// one order: `order:<id>` for the first, `order:<id>:attempt:<n>` after.
+func IntentIdempotencyKey(orderID uuid.UUID, attempt int) string {
+	if attempt <= 1 {
+		return "order:" + orderID.String()
+	}
+	return fmt.Sprintf("order:%s:attempt:%d", orderID, attempt)
 }
 
 // CreateIntent opens a payment for an order (LB-4).
@@ -197,9 +213,10 @@ func (c *Client) CreateIntent(ctx context.Context, in CreateIntentInput) (*Inten
 		PayeeID:       in.PayeeID,
 		AmountMinor:   in.AmountMinor.Int64(),
 		Method:        in.Method,
-		// Deterministic: a retry for the same order collapses to one intent
-		// rather than opening a second payable for the same goods.
-		IdempotencyKey: "order:" + in.OrderID.String(),
+		// Deterministic: a retry for the same ATTEMPT collapses to one intent
+		// rather than opening a second payable for the same goods. A new
+		// attempt after a failure gets its own key — see IntentIdempotencyKey.
+		IdempotencyKey: IntentIdempotencyKey(in.OrderID, in.Attempt),
 	})
 	if err != nil {
 		return nil, err

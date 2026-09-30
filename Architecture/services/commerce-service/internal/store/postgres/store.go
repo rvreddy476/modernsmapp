@@ -1354,6 +1354,13 @@ type OrderCard struct {
 	SellerCount       int        `json:"seller_count"`
 	FirstProductID    *uuid.UUID `json:"first_product_id,omitempty"`
 	FirstProductTitle string     `json:"first_product_title,omitempty"`
+	// FirstItemMediaID is the first line's product cover (primary image,
+	// else the first gallery image), resolved into the two URLs below by
+	// the service in one media batch for the page. The list drew no
+	// picture at all before these: a row was a number and a title.
+	FirstItemMediaID     *uuid.UUID `json:"-"`
+	FirstItemImageURL    string     `json:"first_item_image_url,omitempty"`
+	FirstItemThumbnailURL string    `json:"first_item_thumbnail_url,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 	// CreatedAtEpoch is what the client actually parses; the RFC3339 form
 	// above stays for anything reading the API by hand.
@@ -1378,7 +1385,12 @@ func (s *Store) ListOrderCardsByCustomer(ctx context.Context, userID uuid.UUID, 
 		       COALESCE(items.item_count, 0),
 		       COALESCE(items.seller_count, 0),
 		       items.first_product_id,
-		       items.first_product_title
+		       items.first_product_title,
+		       (SELECT COALESCE(pr.primary_image_media_id,
+		               (SELECT pm.media_id FROM product_media pm
+		                 WHERE pm.product_id = pr.id AND pm.media_type = 'image'
+		                 ORDER BY pm.sort_order ASC, pm.created_at ASC LIMIT 1))
+		          FROM products pr WHERE pr.id = items.first_product_id) AS first_item_media_id
 		FROM orders o
 		LEFT JOIN LATERAL (
 			SELECT
@@ -1410,7 +1422,7 @@ func (s *Store) ListOrderCardsByCustomer(ctx context.Context, userID uuid.UUID, 
 			&c.TaxMinor, &c.TotalMinor,
 			&c.PaymentMethod, &c.PaymentStatus, &c.Status, &c.CreatedAt,
 			&c.ItemCount, &c.SellerCount,
-			&firstProductID, &firstProductTitle,
+			&firstProductID, &firstProductTitle, &c.FirstItemMediaID,
 		); err != nil {
 			return nil, false, err
 		}

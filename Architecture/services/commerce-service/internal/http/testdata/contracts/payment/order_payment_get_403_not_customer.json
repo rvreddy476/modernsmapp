@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "only the order's customer may read its payment"
+  },
+  "meta": {}
+}
+

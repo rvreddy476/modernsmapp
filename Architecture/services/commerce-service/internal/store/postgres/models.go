@@ -78,6 +78,23 @@ type Seller struct {
 	TotalOrders        int       `db:"total_orders" json:"total_orders"`
 	CreatedAt          time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt          time.Time `db:"updated_at" json:"updated_at"`
+
+	// PayoutAccount is the MASKED view of the seller's payout account,
+	// carried by GET /onboarding/status only (SellerPayoutSummaryFor). Nil,
+	// and absent, when no account has been saved and on every other read.
+	PayoutAccount *SellerPayoutSummary `db:"-" json:"payout_account,omitempty"`
+}
+
+// SellerPayoutSummary is what a seller may see of their own payout account
+// after migration 035 sealed the number: the last four digits the row keeps
+// in the clear (`account_number_last4`), never the sealed value.
+type SellerPayoutSummary struct {
+	AccountHolderName string  `json:"account_holder_name"`
+	AccountLast4      string  `json:"account_last4"`
+	IFSCCode          string  `json:"ifsc_code"`
+	BankName          *string `json:"bank_name,omitempty"`
+	UPIID             *string `json:"upi_id,omitempty"`
+	Verified          bool    `json:"verified"`
 }
 
 // ─── Seller Document ─────────────────────────────────────────
@@ -392,6 +409,32 @@ type Product struct {
 	MinSellingPrice *float64 `json:"min_selling_price,omitempty"`
 	MinMRP          *float64 `json:"min_mrp,omitempty"`
 	TotalStock      *int     `json:"total_stock,omitempty"`
+
+	// Variants is the seller's own view of a listing's variants, carried by
+	// GET /seller/products only (SellerVariantsForProducts). Every row has
+	// the VARIANT id, which is what the stock and price routes address —
+	// the summary above carries only default_variant_id, and the seller's
+	// stock screen had no id to send for the second colour of anything.
+	// Nil, and absent, on every other surface.
+	Variants []SellerVariantRow `db:"-" json:"variants,omitempty"`
+}
+
+// SellerVariantRow is one variant as the seller's catalogue lists it: the id
+// the stock/price routes take, its option slots, its money in paise and what
+// is available to sell now.
+type SellerVariantRow struct {
+	ID                uuid.UUID `json:"id"`
+	SKU               string    `json:"sku"`
+	Option1Name       *string   `json:"option_1_name"`
+	Option1Value      *string   `json:"option_1_value"`
+	Option2Name       *string   `json:"option_2_name"`
+	Option2Value      *string   `json:"option_2_value"`
+	Option3Name       *string   `json:"option_3_name"`
+	Option3Value      *string   `json:"option_3_value"`
+	MRPMinor          int64     `json:"mrp_minor"`
+	SellingPriceMinor int64     `json:"selling_price_minor"`
+	AvailableQty      int       `json:"available_qty"`
+	Status            string    `json:"status"`
 }
 
 // MarshalJSON emits the store name under both wire names.

@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,24 +29,47 @@ func (s *Store) NextInvoiceSequence(ctx context.Context, fy string) (int64, erro
 
 // ── Invoices ──────────────────────────────────────────────────────────────
 
+// Invoice is one issued GST invoice.
+//
+// It carried no JSON tags, so GET /orders/:id/invoice answered with Go
+// field names (`InvoiceNumber`, `GrandTotal`) while the web client's
+// Invoice type reads `invoice_number` and `grand_total`; the two never
+// matched. The tags below are the client's names. The NUMERIC totals stay
+// as the rupee floats the table stores (money-exempt: display only, nothing
+// charges from them) and the paise mirrors beside them are what a client
+// should render — see MarshalJSON.
 type Invoice struct {
-	ID            uuid.UUID `db:"id"`
-	OrderID       uuid.UUID `db:"order_id"`
-	InvoiceNumber string    `db:"invoice_number"`
-	FinancialYear string    `db:"financial_year"`
-	Sequence      int64     `db:"sequence"`
-	SellerID      uuid.UUID `db:"seller_id"`
-	BuyerUserID   uuid.UUID `db:"buyer_user_id"`
-	GrandTotal    float64   `db:"grand_total"`
-	CurrencyCode  string    `db:"currency_code"`
-	IsInterstate  bool      `db:"is_interstate"`
-	CGSTTotal     float64   `db:"cgst_total"`
-	SGSTTotal     float64   `db:"sgst_total"`
-	IGSTTotal     float64   `db:"igst_total"`
-	HTMLMediaKey  *string   `db:"html_media_key"`
-	PDFMediaKey   *string   `db:"pdf_media_key"`
-	IssuedAt      time.Time `db:"issued_at"`
-	CreatedAt     time.Time `db:"created_at"`
+	ID            uuid.UUID `db:"id" json:"id"`
+	OrderID       uuid.UUID `db:"order_id" json:"order_id"`
+	InvoiceNumber string    `db:"invoice_number" json:"invoice_number"`
+	FinancialYear string    `db:"financial_year" json:"financial_year"`
+	Sequence      int64     `db:"sequence" json:"sequence"`
+	SellerID      uuid.UUID `db:"seller_id" json:"seller_id"`
+	BuyerUserID   uuid.UUID `db:"buyer_user_id" json:"buyer_user_id"`
+	GrandTotal    float64   `db:"grand_total" json:"grand_total"` // money-exempt: NUMERIC mirror, see grand_total_minor
+	CurrencyCode  string    `db:"currency_code" json:"currency_code"`
+	IsInterstate  bool      `db:"is_interstate" json:"is_interstate"`
+	CGSTTotal     float64   `db:"cgst_total" json:"cgst_total"` // money-exempt: NUMERIC mirror
+	SGSTTotal     float64   `db:"sgst_total" json:"sgst_total"` // money-exempt: NUMERIC mirror
+	IGSTTotal     float64   `db:"igst_total" json:"igst_total"` // money-exempt: NUMERIC mirror
+	HTMLMediaKey  *string   `db:"html_media_key" json:"-"`
+	PDFMediaKey   *string   `db:"pdf_media_key" json:"-"`
+	IssuedAt      time.Time `db:"issued_at" json:"issued_at"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+}
+
+// MarshalJSON adds the paise mirrors of the four rupee totals, so a client
+// renders integer money here as it does everywhere else in this service.
+func (i Invoice) MarshalJSON() ([]byte, error) {
+	type alias Invoice
+	toMinor := func(rupees float64) int64 { return int64(math.Round(rupees * 100)) }
+	return json.Marshal(struct {
+		alias
+		GrandTotalMinor int64 `json:"grand_total_minor"`
+		CGSTTotalMinor  int64 `json:"cgst_total_minor"`
+		SGSTTotalMinor  int64 `json:"sgst_total_minor"`
+		IGSTTotalMinor  int64 `json:"igst_total_minor"`
+	}{alias(i), toMinor(i.GrandTotal), toMinor(i.CGSTTotal), toMinor(i.SGSTTotal), toMinor(i.IGSTTotal)})
 }
 
 func (s *Store) CreateInvoice(ctx context.Context, inv *Invoice) error {

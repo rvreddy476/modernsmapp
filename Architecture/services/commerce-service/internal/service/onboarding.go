@@ -194,14 +194,25 @@ func (s *Service) SellerReadiness(ctx context.Context, userID uuid.UUID) (*postg
 // the app can render the whole remaining checklist. A reviewer queue is not a
 // security boundary, and one missing item at a time turns a five-minute task
 // into five round trips.
+// ApplicationIncompleteError is the submit refusal, carrying the readiness
+// codes as data. It unwraps to ErrApplicationIncomplete, so every caller
+// matching that sentinel still does; the edge ALSO puts `Missing` in the
+// error envelope's details, so a client renders the checklist from codes
+// rather than parsing them back out of the message.
+type ApplicationIncompleteError struct{ Missing []string }
+
+func (e *ApplicationIncompleteError) Error() string {
+	return ErrApplicationIncomplete.Error() + ": " + strings.Join(e.Missing, ", ")
+}
+func (e *ApplicationIncompleteError) Unwrap() error { return ErrApplicationIncomplete }
+
 func (s *Service) SubmitApplication(ctx context.Context, userID uuid.UUID) error {
 	ready, err := s.SellerReadiness(ctx, userID)
 	if err != nil {
 		return err
 	}
 	if !ready.Complete() {
-		return fmt.Errorf("%w: %s", ErrApplicationIncomplete,
-			strings.Join(ready.Missing(), ", "))
+		return &ApplicationIncompleteError{Missing: ready.Missing()}
 	}
 	if err := s.store.SubmitSellerApplication(ctx, userID); err != nil {
 		return err

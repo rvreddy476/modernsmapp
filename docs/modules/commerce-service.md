@@ -2,6 +2,94 @@
 
 _Auto-extracted from source (DDL + route registrations). Verbatim — the source of truth is the code._
 
+> **The route list and DDL below were extracted in June 2026 and are stale.** The
+> section that follows (updated 30 Sep 2026, lane C1) describes the service as it
+> runs now. The authoritative route table is
+> `Architecture/services/commerce-service/internal/http/testdata/routes.txt`, which a
+> unit test keeps equal to what the code registers.
+
+## Current state (30 Sep 2026)
+
+Port 8109, database `commerce_db` (public schema), behind the gateway at
+`/v1/commerce`. The gateway derives `X-User-Id`; any path segment `internal` is
+404 at the edge; commerce refuses requests without the gateway's internal key.
+Money is integer paise in `*_minor` fields; every response is
+`{data, meta}` and every error `{error: {code, message, details?}}`.
+
+### The P0 buyer flow
+
+1. `POST /checkout/quote {address_id, coupon_code?, payment_method: upi|card}` →
+   a quote bound to the cart version and address, valid 15 minutes. COD and every
+   other method: 400 `PAYMENT_METHOD_NOT_SUPPORTED`.
+2. `POST /v2/orders/checkout` with a mandatory `Idempotency-Key` header →
+   one transaction reserves stock (20-minute TTL), creates the order in
+   `payment_pending/pending`, empties the bag and writes `commerce.order.created`.
+3. `POST /orders/:orderId/payment/intent` (no body) → the intent with
+   `client_session {provider, order_id, key_id, merchant_display_name}`. In stub
+   mode (`PAYMENTS_ALLOW_STUB`) payments-service now answers
+   `provider: "stub", key_id: ""`.
+4. Paid is set ONLY by the signed `payment.succeeded` event
+   (`consumers/payments_p0.go` → `Store.ApplyPaymentSucceeded`), which commits the
+   stock, marks `confirmed/paid`, enqueues fulfilment and writes
+   `commerce.order.paid` in one transaction. On a stub stack only,
+   `POST /orders/:orderId/payment/confirm {gateway: "stub", …}` settles; it is
+   registered only with `PAYMENTS_ALLOW_STUB=true` and refuses whenever
+   payments-service reports a real provider.
+5. Clients poll `GET /orders/:orderId/payment` →
+   `{order_id, status: confirming|paid|failed, amount_minor, currency,
+   refund_status: null|pending|partially_refunded|refunded, updated_at}` (the
+   food-service shape; customer only, 403 otherwise). `GET …/payment/status`
+   (`{order_id, order_status, payment_status, provider_status}`) stays for the
+   shipped Android build.
+6. Fulfilment is automatic on payment: invoice, courier booking, `shipped`, with
+   the order's lines following (`order_items.status`). `out_for_delivery` and
+   `delivered` come from the courier webhook — or, on a dev stack, from the stub
+   courier's timer — and the lines follow with `delivered_at`, which is what lets
+   `POST /products/:id/reviews` succeed.
+
+### Changed in lane C1
+
+| What | Where | Behaviour |
+|---|---|---|
+| `GET /orders/:orderId/payment` | `handler_p0.go`, `service/customer_payment.go` | New three-state read (above). Outside the fence. |
+| Retry after failure | `POST /orders/:orderId/payment/intent` on `payment_failed` | One transaction re-reserves every line (20-min TTL) and moves `payment_failed → payment_pending` as `customer`; a fresh intent opens under `order:<id>:attempt:<n>`. Stock gone: 409 `OUT_OF_STOCK`, nothing held, order unchanged. `OrderDetail.can_retry_payment` is true only in `payment_failed` for the payer. |
+| Delivered is real | `store/postgres/order_fulfilment.go` | Lines follow the order to `packed`, `shipped`, `out_for_delivery`, `delivered` (+`delivered_at`) in the transition's transaction. The webhook's delivered write goes through the matrix and no longer discards its error. |
+| Seller variants | `GET /seller/products` | Each row carries `variants[{id, sku, option_*, mrp_minor, selling_price_minor, available_qty, status}]`. |
+| Order list | `GET /orders` | Rows gain `first_item_image_url`, `first_item_thumbnail_url`. |
+| Cart refusals | `POST /cart/items` | 409 `MULTIPLE_SELLERS`, 409 `OUT_OF_STOCK` (with `details.lines`), 409 `PRODUCT_UNAVAILABLE`; `ADD_TO_CART_FAILED` only for the rest. |
+| Cancel refusals | `POST /orders/:id/cancel` | 409 `CANCEL_NOT_PERMITTED`, 404 `ORDER_NOT_FOUND` for someone else's order. |
+| Seller submit | `POST /onboarding/submit` | 409 `APPLICATION_INCOMPLETE` gains `details.missing[]`. |
+| Onboarding status | `GET /onboarding/status` | Gains `payout_account {account_holder_name, account_last4, ifsc_code, bank_name?, upi_id?, verified}` from the masked last-4 column, never the sealed number. |
+| Invoice read | `GET /orders/:id/invoice` | Snake-case keys plus `*_minor` paise mirrors. |
+| Events | outbox (`store/postgres/order_event_parties.go`) | `commerce.order.paid`, `payment_failed`, `cancelled`, `refunded` carry `order_id`, `order_number`, `user_id`, `buyer_email` (the order's own invoice e-mail, usually empty), `seller_id`, `seller_user_id`; `delivered` carries `user_id` and `order_number`. |
+
+### Flags
+
+| Env | Default | Effect |
+|---|---|---|
+| `PAYMENTS_ALLOW_STUB` | unset (compose: `true`) | Registers the stub confirm route. Must match payments-service. |
+| `COMMERCE_PRODUCT_AUTO_APPROVE` | unset = off (compose: `true`) | A complete listing from an **approved** shop is approved on submit; moderation log row with actor `00000000-…` and reason `system:auto_approve`. A shop in any other state still queues. |
+| `COURIER_STUB_AUTO_DELIVER_AFTER` | unset = off (compose: `2m`) | Go duration. The stub courier moves `shipped → out_for_delivery → delivered`, each after that long, through the matrix (system history rows, lines follow, shipment events, `commerce.order.delivered`). Refused unless the courier IS the stub, and refused when `ENV` is staging/prod. |
+
+No values file sets either new flag.
+
+### The fence
+
+`FenceMiddleware` (`internal/http/handler_p0.go`) 404s fenced prefixes and exact
+routes before routing: COD, the v1 `POST /orders/checkout` (not even registered
+now), returns, seller earnings, COD remittances, payouts, bulk import, RFQs,
+organizations, the affiliate redirect, the wallet. Payouts stay off. There is no
+client "mark paid" route.
+
+### Contracts
+
+Golden response bodies for web and Android live in
+`internal/http/testdata/contracts/<area>/<route>_<status>[_<case>].json` (67 files:
+storefront 14, bag 6, addresses 2, checkout 8, orders 10, payment 10, reviews 2,
+seller 15). They are rendered by the real handlers against a scratch database
+(`TestContractFixtures`, `-update` rewrites them) and `TestContractInventory…`
+keeps the file set equal to the registered list. See `docs/COMMERCE-TESTING.md`.
+
 ## HTTP routes
 ```
 DELETE /addresses/:addressId

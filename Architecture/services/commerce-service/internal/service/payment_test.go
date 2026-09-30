@@ -418,6 +418,47 @@ func TestConfirmPayment(t *testing.T) {
 		}
 	})
 
+	// payments-service's stub mode now names itself in the session it
+	// attaches (client_session.provider = "stub"), so a client can tell the
+	// stub apart by that field. That session is the ONE that still settles;
+	// a session with no provider named is a real adapter and is refused.
+	t.Run("a session naming the stub provider still settles", func(t *testing.T) {
+		pay := &fakePayments{providerSession: map[string]string{
+			"provider": "stub", "key_id": "", "order_id": "order_stub_x", "merchant_display_name": "Momentum",
+		}}
+		st, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
+		svc.WithAllowStubGateway(true)
+
+		stub := input
+		stub.Gateway = "stub"
+		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, stub); err != nil {
+			t.Fatalf("err = %v; a client_session whose provider is \"stub\" is payments-service's "+
+				"own stub naming itself, not a real adapter", err)
+		}
+		got, _ := st.GetOrderByID(context.Background(), o.ID)
+		if got.PaymentStatus != "paid" {
+			t.Fatalf("payment_status = %q, want paid", got.PaymentStatus)
+		}
+	})
+	t.Run("a session with no provider named is treated as a real provider", func(t *testing.T) {
+		pay := &fakePayments{providerSession: map[string]string{
+			"key_id": "rzp_test_x", "order_id": "order_x",
+		}}
+		st, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
+		svc.WithAllowStubGateway(true)
+
+		stub := input
+		stub.Gateway = "stub"
+		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, stub); !errors.Is(err, ErrStubGatewayInProd) {
+			t.Fatalf("err = %v, want ErrStubGatewayInProd", err)
+		}
+		if got, _ := st.GetOrderByID(context.Background(), o.ID); got.PaymentStatus == "paid" {
+			t.Fatal("settled on a session that named no provider")
+		}
+	})
+
 	// And an unreachable payments-service is not evidence that no provider
 	// exists. Failing closed here is the difference between "we could not
 	// check" and "we checked and there is nothing to wait for".

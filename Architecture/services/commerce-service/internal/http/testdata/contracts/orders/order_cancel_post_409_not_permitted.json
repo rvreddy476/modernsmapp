@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "CANCEL_NOT_PERMITTED",
+    "message": "this order can no longer be cancelled"
+  },
+  "meta": {}
+}
+

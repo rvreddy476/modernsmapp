@@ -1,0 +1,27 @@
+{
+  "data": {
+    "download_url": "https://media.example.test/invoices/2026-27/INV-26-27-000002.html?X-Amz-Signature=contract",
+    "invoice": {
+      "id": "00000000-0000-4000-8000-0000000c0212",
+      "order_id": "00000000-0000-4000-8000-0000000c0210",
+      "invoice_number": "INV-26-27-000002",
+      "financial_year": "2026-27",
+      "sequence": 2,
+      "seller_id": "00000000-0000-4000-8000-0000000c0010",
+      "buyer_user_id": "00000000-0000-4000-8000-0000000c0001",
+      "grand_total": 1348,
+      "currency_code": "INR",
+      "is_interstate": false,
+      "cgst_total": 99.08,
+      "sgst_total": 99.07,
+      "igst_total": 0,
+      "issued_at": "2026-09-11T10:02:00Z",
+      "created_at": "2026-09-11T10:02:00Z",
+      "grand_total_minor": 134800,
+      "cgst_total_minor": 9908,
+      "sgst_total_minor": 9907,
+      "igst_total_minor": 0
+    }
+  }
+}
+

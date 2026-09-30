@@ -1,0 +1,25 @@
+{
+  "data": {
+    "items": [
+      {
+        "media_id": "00000000-0000-4000-8000-0000000d0001",
+        "media_type": "image",
+        "sort_order": 0,
+        "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/medium_1080.jpg",
+        "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/thumb_150.jpg",
+        "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        "is_cover": true
+      },
+      {
+        "media_id": "00000000-0000-4000-8000-0000000d0002",
+        "media_type": "image",
+        "sort_order": 1,
+        "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0002/medium_1080.jpg",
+        "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0002/thumb_150.jpg",
+        "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        "is_cover": false
+      }
+    ]
+  }
+}
+

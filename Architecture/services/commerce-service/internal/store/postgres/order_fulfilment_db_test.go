@@ -1,8 +1,11 @@
+//go:build integration
+
 package postgres
 
 // DB-backed proofs of the seller transitions, against the real
-// order_status_transitions table. Skips unless COMMERCE_TEST_POSTGRES_DSN is
-// set (see order_transitions_db_test.go); point it at commerce_it_test.
+// order_status_transitions table. Skips unless COMMERCE_TEST_DSN is set (see
+// order_transitions_db_test.go, which also runs the testdsn guard); point it
+// at commerce_it_test.
 
 import (
 	"context"

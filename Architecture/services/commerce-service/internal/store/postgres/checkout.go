@@ -607,41 +607,8 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 	}
 
 	// ── 11. Reserve stock (LB-14, LB-21, LB-23) ───────────────────────
-	//
-	// The CHECK constraint from migration 009 is what actually prevents an
-	// oversell. If a concurrent checkout took the last unit between our
-	// lock and this update, the constraint raises and the whole
-	// transaction rolls back — no order, no partial state.
-	for _, pl := range priced {
-		if _, err := tx.Exec(ctx,
-			`UPDATE inventory_items
-			    SET reserved_qty = reserved_qty + $2, updated_at = NOW()
-			  WHERE variant_id = $1`, pl.VariantID, pl.Quantity); err != nil {
-			if isCheckViolation(err) {
-				return nil, &OutOfStockError{Lines: []OutOfStockLine{{
-					VariantID: pl.VariantID, ProductID: pl.ProductID,
-					ProductTitle: pl.Title, Requested: pl.Quantity,
-				}}}
-			}
-			return nil, fmt.Errorf("checkout: reserve %s: %w", pl.VariantID, err)
-		}
-
-		reservationID := uuid.New()
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO inventory_reservations
-			     (id, variant_id, order_id, user_id, quantity, type, expires_at)
-			 VALUES ($1,$2,$3,$4,$5,'order',$6)`,
-			reservationID, pl.VariantID, orderID, p.UserID, pl.Quantity,
-			time.Now().Add(reservationTTL)); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO inventory_ledger
-			     (variant_id, order_id, reservation_id, delta_reserved, reason, actor_id, actor_type)
-			 VALUES ($1,$2,$3,$4,'checkout_reserve',$5,'customer')`,
-			pl.VariantID, orderID, reservationID, pl.Quantity, p.UserID); err != nil {
-			return nil, err
-		}
+	if err := reserveLinesTx(ctx, tx, orderID, p.UserID, priced); err != nil {
+		return nil, err
 	}
 
 	// ── 12. Consume the quote, clear the cart ─────────────────────────
@@ -692,6 +659,50 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 
 // reservationTTL is how long stock is held for an unpaid order.
 const reservationTTL = 20 * time.Minute
+
+// reserveLinesTx holds every line's stock for the order, inside the caller's
+// transaction, for reservationTTL.
+//
+// The CHECK constraint from migration 009 is what actually prevents an
+// oversell. If a concurrent checkout took the last unit between the caller's
+// lock and this update, the constraint raises and the whole transaction
+// rolls back — no order, no partial state. Used by Checkout and by the
+// payment retry (RetryPaymentReservation), which re-holds the lines of an
+// order whose first payment failed.
+func reserveLinesTx(ctx context.Context, tx pgx.Tx, orderID, userID uuid.UUID, lines []pricedLine) error {
+	for _, pl := range lines {
+		if _, err := tx.Exec(ctx,
+			`UPDATE inventory_items
+			    SET reserved_qty = reserved_qty + $2, updated_at = NOW()
+			  WHERE variant_id = $1`, pl.VariantID, pl.Quantity); err != nil {
+			if isCheckViolation(err) {
+				return &OutOfStockError{Lines: []OutOfStockLine{{
+					VariantID: pl.VariantID, ProductID: pl.ProductID,
+					ProductTitle: pl.Title, Requested: pl.Quantity,
+				}}}
+			}
+			return fmt.Errorf("checkout: reserve %s: %w", pl.VariantID, err)
+		}
+
+		reservationID := uuid.New()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO inventory_reservations
+			     (id, variant_id, order_id, user_id, quantity, type, expires_at)
+			 VALUES ($1,$2,$3,$4,$5,'order',$6)`,
+			reservationID, pl.VariantID, orderID, userID, pl.Quantity,
+			time.Now().Add(reservationTTL)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO inventory_ledger
+			     (variant_id, order_id, reservation_id, delta_reserved, reason, actor_id, actor_type)
+			 VALUES ($1,$2,$3,$4,'checkout_reserve',$5,'customer')`,
+			pl.VariantID, orderID, reservationID, pl.Quantity, userID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -1282,6 +1293,11 @@ func normalizeState(s string) string {
 
 // enqueueOutboxTx writes a domain event inside the caller's transaction.
 func enqueueOutboxTx(ctx context.Context, tx pgx.Tx, eventType, partitionKey string, payload any) error {
+	// The payment-lifecycle order events carry who they concern (lane C1).
+	payload, err := withOrderPartiesTx(ctx, tx, eventType, payload)
+	if err != nil {
+		return err
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err

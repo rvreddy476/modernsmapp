@@ -144,6 +144,75 @@ func (s *Store) PackOrder(ctx context.Context, orderID uuid.UUID, actorID *uuid.
 	if err != nil {
 		return t, err
 	}
+	if t.Applied {
+		if err := followOrderItemsTx(ctx, tx, orderID, "packed"); err != nil {
+			return t, err
+		}
+	}
+	return t, tx.Commit(ctx)
+}
+
+// itemStatusFollows says which order_items.status values a line may be
+// moved FROM when the order reaches a given state. A cancelled or returned
+// line never follows: it left the parcel.
+var itemStatusFollows = map[string][]string{
+	"packed":           {"confirmed"},
+	"shipped":          {"confirmed", "packed"},
+	"out_for_delivery": {"confirmed", "packed", "shipped"},
+	"delivered":        {"confirmed", "packed", "shipped", "out_for_delivery"},
+}
+
+// followOrderItemsTx moves the order's lines to the order's new state, in
+// the SAME transaction as the order transition.
+//
+// Nothing wrote order_items.status or delivered_at after checkout: the lines
+// stayed `confirmed` behind a delivered order, so CreateReview — which
+// requires a delivered line — could never succeed, and the seller's
+// fulfilment view drew every line as unpacked. delivered_at is stamped when
+// the line reaches `delivered`, and only then.
+func followOrderItemsTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, to string) error {
+	from, ok := itemStatusFollows[to]
+	if !ok {
+		return nil
+	}
+	if to == "delivered" {
+		_, err := tx.Exec(ctx,
+			`UPDATE order_items SET status = 'delivered', delivered_at = COALESCE(delivered_at, clock_timestamp())
+			  WHERE order_id = $1 AND status = ANY($2)`, orderID, from)
+		return err
+	}
+	_, err := tx.Exec(ctx,
+		`UPDATE order_items SET status = $2 WHERE order_id = $1 AND status = ANY($3)`, orderID, to, from)
+	return err
+}
+
+// DeliveryStates are the two states the courier (or, on dev, the stub
+// courier's timer) moves a shipped order through, always as "system".
+var DeliveryStates = map[string]bool{"out_for_delivery": true, "delivered": true}
+
+// AdvanceDelivery moves a shipped order to `out_for_delivery` or
+// `delivered` as the system, through the matrix, with its history row and
+// with every line following in the same transaction. A repeat on an order
+// already there is Applied=false, nil.
+func (s *Store) AdvanceDelivery(ctx context.Context, orderID uuid.UUID, to, notes string) (StatusTransition, error) {
+	if !DeliveryStates[to] {
+		return StatusTransition{}, fmt.Errorf("%w: %q is not a delivery state", ErrTransitionNotPermitted, to)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return StatusTransition{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	t, err := transitionOrderStatusTx(ctx, tx, orderID, to, nil, "system", notes)
+	if err != nil {
+		return t, err
+	}
+	if t.Applied {
+		if err := followOrderItemsTx(ctx, tx, orderID, to); err != nil {
+			return t, err
+		}
+	}
 	return t, tx.Commit(ctx)
 }
 
@@ -212,6 +281,10 @@ func (s *Store) MarkOrderShipped(ctx context.Context, orderID uuid.UUID, actorID
 		if _, err := transitionOrderStatusTx(ctx, tx, orderID, step, actorID, actor, stepNote); err != nil {
 			return StatusTransition{From: from, To: "shipped"}, err
 		}
+	}
+	// The lines go with the parcel, in this transaction.
+	if err := followOrderItemsTx(ctx, tx, orderID, "shipped"); err != nil {
+		return StatusTransition{From: from, To: "shipped"}, err
 	}
 	return StatusTransition{Applied: true, From: from, To: "shipped"}, tx.Commit(ctx)
 }

@@ -1418,6 +1418,17 @@ func (h *Handler) AddToCart(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AddToCart(c.Request.Context(), userID, req.VariantID, req.Quantity); err != nil {
+		// The three refusals a client renders copy for keep their own codes:
+		// a second seller's item is 409 MULTIPLE_SELLERS (the bag is
+		// single-seller, D2), a withdrawn listing is 409 PRODUCT_UNAVAILABLE
+		// and too few units is 409 OUT_OF_STOCK with the line — the same
+		// codes checkout answers with. All three used to be folded into the
+		// generic 400 below, so the app could only say "could not add".
+		if errors.Is(err, postgres.ErrMultipleSellers) || errors.Is(err, postgres.ErrProductUnavailable) ||
+			errors.Is(err, postgres.ErrOutOfStock) {
+			writeCommerceError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_TO_CART_FAILED", err.Error(), nil)
 		return
 	}
@@ -1734,6 +1745,16 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	if err := h.svc.CancelOrder(c.Request.Context(), orderID, userID, "customer", req.Reason); err != nil {
+		// The store's typed refusals keep their codes: a move the matrix
+		// does not admit (a shipped order) is 409 CANCEL_NOT_PERMITTED and
+		// a stranger's order is 404 ORDER_NOT_FOUND. Everything used to be
+		// 400 CANCEL_FAILED with the raw error text, which told the client
+		// nothing it could act on and told a stranger the order existed.
+		if errors.Is(err, postgres.ErrCancelNotPermitted) || errors.Is(err, postgres.ErrNotOrderOwnerP0) ||
+			errors.Is(err, postgres.ErrOrderNotFoundP0) || errors.Is(err, postgres.ErrTransitionNotPermitted) {
+			writeCommerceError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANCEL_FAILED", err.Error(), nil)
 		return
 	}

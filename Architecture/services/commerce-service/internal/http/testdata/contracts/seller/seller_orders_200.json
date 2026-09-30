@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "id": "00000000-0000-4000-8000-0000000f000c",
+      "customer_user_id": "00000000-0000-4000-8000-0000000c0001",
+      "order_number": "ORD-2026-010006",
+      "total_minor": 134800,
+      "currency_code": "INR",
+      "payment_method": "upi",
+      "payment_status": "pending",
+      "status": "cancelled",
+      "created_at": "2026-09-30T10:00:00Z",
+      "updated_at": "2026-09-30T10:00:00Z",
+      "item_count": 1,
+      "seller_subtotal_minor": 134800
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000c0240",
+      "customer_user_id": "00000000-0000-4000-8000-0000000c0001",
+      "order_number": "ORD-2026-010005",
+      "final_amount": 1348,
+      "total_minor": 134800,
+      "currency_code": "INR",
+      "payment_method": "upi",
+      "payment_status": "paid",
+      "status": "confirmed",
+      "created_at": "2026-09-14T10:00:00Z",
+      "updated_at": "2026-09-30T10:00:00Z",
+      "item_count": 1,
+      "seller_subtotal_minor": 129900
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000c0230",
+      "customer_user_id": "00000000-0000-4000-8000-0000000c0001",
+      "order_number": "ORD-2026-010004",
+      "final_amount": 1348,
+      "total_minor": 134800,
+      "currency_code": "INR",
+      "payment_method": "upi",
+      "payment_status": "refund_pending",
+      "status": "cancelled",
+      "created_at": "2026-09-13T10:00:00Z",
+      "updated_at": "2026-09-13T10:00:00Z",
+      "item_count": 1,
+      "seller_subtotal_minor": 129900
+    }
+  ]
+}
+
