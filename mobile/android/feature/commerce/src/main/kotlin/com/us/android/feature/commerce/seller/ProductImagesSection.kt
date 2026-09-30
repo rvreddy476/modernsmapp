@@ -25,7 +25,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -170,9 +169,9 @@ private fun ImageCard(
                 .background(UsTheme.extended.bgCard)
                 .border(
                     width = if (isCover) COVER_BORDER else HAIRLINE,
-                    // Selected is WHITE across the whole shop; the accent
-                    // belongs to primary actions, not to a state.
-                    color = if (isCover) Color.White else UsTheme.extended.borderSubtle,
+                    // Selected is the text ramp's ink across the whole shop;
+                    // the accent belongs to primary actions, not to a state.
+                    color = if (isCover) UsTheme.extended.textPrimary else UsTheme.extended.borderSubtle,
                     shape = shape,
                 ),
         ) {
@@ -299,7 +298,9 @@ private fun ImageControl(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = Color.White,
+            // Drawn over the photo, on its scrim: the on-media white, which
+            // does not invert with the theme because the photo does not.
+            tint = UsTheme.extended.onMedia,
             modifier = Modifier.size(CONTROL_GLYPH),
         )
     }

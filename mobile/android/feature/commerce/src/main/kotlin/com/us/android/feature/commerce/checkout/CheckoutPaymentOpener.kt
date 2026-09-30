@@ -4,6 +4,7 @@ import android.app.Activity
 import android.util.Log
 import com.us.android.core.commerce.model.PaymentHandle
 import com.us.android.core.commerce.payment.PaymentAttempt
+import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.payments.PaymentCoordinator
@@ -62,7 +63,7 @@ class CheckoutPaymentOpener @Inject constructor(
                     handoff.publish(
                         PaymentHandoffEvent.Unavailable(
                             attempt = attempt.toSheetAttempt(),
-                            reason = "We couldn't start the payment. Please try again.",
+                            reason = paymentOpenRefusal(result.error),
                         ),
                     )
                 }
@@ -110,6 +111,24 @@ class CheckoutPaymentOpener @Inject constructor(
         const val TAG = "CheckoutPayment"
     }
 }
+
+/**
+ * One line for a refused `POST /orders/:id/payment/intent`, the ONE wording
+ * for that class of failure so checkout and the order screen say the same
+ * thing.
+ *
+ * 2026-09-30, contract §4.7: on an order in `payment_failed` the intent route
+ * re-reserves the stock before answering, and refuses with 409 OUT_OF_STOCK
+ * when it has gone. That is the one refusal a buyer can do something about
+ * (order again), so it is named; everything else is a retry.
+ */
+internal fun paymentOpenRefusal(error: CommerceError): String = when (error) {
+    is CommerceError.OutOfStock -> OUT_OF_STOCK_ON_RETRY
+    else -> "We couldn't start the payment. Please try again."
+}
+
+internal const val OUT_OF_STOCK_ON_RETRY =
+    "Those items have sold out since you ordered, so this order can't be paid for now."
 
 /**
  * The sheet session for a server payment handle, stamped as MStore's.

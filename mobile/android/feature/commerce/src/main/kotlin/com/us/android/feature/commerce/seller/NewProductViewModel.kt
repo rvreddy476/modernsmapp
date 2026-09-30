@@ -2,6 +2,7 @@ package com.us.android.feature.commerce.seller
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.commerce.model.CategoryChoice
 import com.us.android.core.commerce.model.NewProduct
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.TaxClass
@@ -36,12 +37,24 @@ data class NewProductForm(
     val taxClassId: String? = null,
     val taxClasses: List<TaxClass> = emptyList(),
     val loadingRates: Boolean = true,
+    /**
+     * Where the listing sits in browse (2026-09-30). Required at submit —
+     * a product without one appears in no category — but NOT part of
+     * [isComplete], so the button stays live and the refusal is said as
+     * one line under it rather than as a button that never enables.
+     */
+    val categoryId: String? = null,
+    val categories: List<CategoryChoice> = emptyList(),
+    val loadingCategories: Boolean = true,
     val saving: Boolean = false,
     val error: String? = null,
 ) {
     val sellingPaise: Paise? get() = parseRupees(sellingPrice)
     val mrpPaise: Paise? get() = parseRupees(mrp)
     val stock: Int? get() = openingStock.trim().toIntOrNull()?.takeIf { it >= 0 }
+
+    /** The chosen category's path, for the picker row. */
+    val categoryLabel: String? get() = categories.firstOrNull { it.id == categoryId }?.label
 
     /**
      * Whether the struck-through price is a lie.
@@ -67,6 +80,30 @@ data class NewProductForm(
 }
 
 private const val MIN_TITLE = 3
+
+/** The one line a create without a category gets. */
+const val CHOOSE_A_CATEGORY = "Choose a category"
+
+/**
+ * Why the create is refused before it leaves the device, or null when it
+ * may go. Pure, so the guard is a table test: today's only reason is a
+ * missing category (2026-09-30).
+ */
+fun createRefusal(form: NewProductForm): String? =
+    if (form.categoryId.isNullOrBlank()) CHOOSE_A_CATEGORY else null
+
+/**
+ * What a successful create hands the caller: the product, and the id of
+ * its (single) VARIANT for the stock screen — never the product id, which
+ * the stock route cannot look up. Null when no variant could be found, in
+ * which case the caller goes back to the hub rather than to a screen that
+ * would fail.
+ */
+data class CreatedProduct(
+    val productId: String,
+    val title: String,
+    val variantId: String?,
+)
 
 /**
  * Parses rupees-and-paise text into integer paise.
@@ -118,6 +155,7 @@ class NewProductViewModel @Inject constructor(
 
     init {
         loadRates()
+        loadCategories()
     }
 
     /**
@@ -148,16 +186,40 @@ class NewProductViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The categories a listing may sit under: the tree's listable leaves,
+     * labelled by path. Loaded beside the rates rather than gating on them,
+     * so a slow taxonomy does not hold the whole form. Never preselected:
+     * a listing filed under the wrong heading is one buyers never find.
+     */
+    fun loadCategories() {
+        _form.value = _form.value.copy(loadingCategories = true)
+        viewModelScope.launch {
+            val choices = when (val r = repo.listableCategories()) {
+                is CommerceResult.Success -> r.value
+                is CommerceResult.Failure -> emptyList()
+            }
+            _form.value = _form.value.copy(categories = choices, loadingCategories = false)
+        }
+    }
+
     fun update(transform: (NewProductForm) -> NewProductForm) {
         _form.value = transform(_form.value).copy(error = null)
     }
 
-    fun submit(onCreated: (productId: String) -> Unit) {
+    fun submit(onCreated: (CreatedProduct) -> Unit) {
         val form = _form.value
         val selling = form.sellingPaise ?: return
         val stock = form.stock ?: return
         val taxClassId = form.taxClassId ?: return
         if (!form.isComplete || form.saving) return
+        // Refused here, as one line, rather than by a disabled button: with
+        // five fields on the form a seller cannot tell which one is holding
+        // the button, and the category is the one they most often skip.
+        createRefusal(form)?.let { refusal ->
+            _form.value = form.copy(error = refusal)
+            return
+        }
 
         _form.value = form.copy(saving = true, error = null)
         viewModelScope.launch {
@@ -165,6 +227,7 @@ class NewProductViewModel @Inject constructor(
                 title = form.title.trim(),
                 description = form.description.trim().takeIf { it.isNotBlank() },
                 taxClassId = taxClassId,
+                categoryId = form.categoryId,
                 // The SKU is an internal identifier the buyer never sees, and
                 // asking for one on a first listing is a question most sellers
                 // cannot answer. Generated, not demanded.
@@ -181,8 +244,17 @@ class NewProductViewModel @Inject constructor(
                     _form.value = form.copy(saving = false, error = r.error.describe())
 
                 is CommerceResult.Success -> {
+                    // The stock screen needs the VARIANT's id (2026-09-30).
+                    // `POST /products` answers the product row, which today
+                    // carries no variants, so the repository reads them; a
+                    // server that does include them costs no second call.
+                    val created = r.value
+                    val variantId = when (val v = repo.variantsForEdit(created)) {
+                        is CommerceResult.Success -> v.value.firstOrNull()?.id
+                        is CommerceResult.Failure -> null
+                    }
                     _form.value = form.copy(saving = false)
-                    onCreated(r.value.id)
+                    onCreated(CreatedProduct(productId = created.id, title = created.title, variantId = variantId))
                 }
             }
         }

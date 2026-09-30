@@ -1,0 +1,94 @@
+{
+  "data": {
+    "attributes": [],
+    "media": [
+      {
+        "media_id": "00000000-0000-4000-8000-0000000d0001",
+        "media_type": "image",
+        "sort_order": 0,
+        "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/medium_1080.jpg",
+        "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/thumb_150.jpg",
+        "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        "is_cover": true
+      },
+      {
+        "media_id": "00000000-0000-4000-8000-0000000d0002",
+        "media_type": "image",
+        "sort_order": 1,
+        "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0002/medium_1080.jpg",
+        "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0002/thumb_150.jpg",
+        "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        "is_cover": false
+      }
+    ],
+    "product": {
+      "id": "00000000-0000-4000-8000-0000000c0100",
+      "seller_id": "00000000-0000-4000-8000-0000000c0010",
+      "category_id": "00000000-0000-4000-8000-00000000c001",
+      "tax_class_id": "00000000-0000-4000-8000-0000000c0e18",
+      "title": "Momentum Wireless Earbuds",
+      "slug": "momentum-wireless-earbuds",
+      "description": "Momentum Wireless Earbuds — the description.",
+      "product_type": "physical",
+      "condition": "new",
+      "status": "active",
+      "visibility": "public",
+      "approval_status": "approved",
+      "image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/medium_1080.jpg",
+      "thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/thumb_150.jpg",
+      "image_blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+      "category_name": "Electronics",
+      "is_favourite": true,
+      "source_image_url": "https://img.example.test/earbuds.jpg",
+      "retailer_name": "Momentum Electronics",
+      "weight_grams": 350,
+      "country_of_origin": "IN",
+      "return_policy_type": "7_days",
+      "return_policy_days": 7,
+      "hsn_code": "8518",
+      "avg_rating": 4.5,
+      "review_count": 1,
+      "order_count": 3,
+      "created_at": "2026-09-03T10:00:00Z",
+      "updated_at": "2026-09-03T10:00:00Z",
+      "published_at": "2026-09-03T10:00:00Z",
+      "schema_version": 0,
+      "seller_name": "Momentum Electronics"
+    },
+    "variants": [
+      {
+        "id": "00000000-0000-4000-8000-0000000c0101",
+        "product_id": "00000000-0000-4000-8000-0000000c0100",
+        "sku": "MOM-EB-BLK",
+        "option_1_name": "Colour",
+        "option_1_value": "Black",
+        "mrp": 1499,
+        "selling_price": 1299,
+        "currency_code": "INR",
+        "status": "active",
+        "created_at": "2026-09-03T10:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "mrp_minor": 149900,
+        "selling_price_minor": 129900,
+        "available_qty": 24
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000c0102",
+        "product_id": "00000000-0000-4000-8000-0000000c0100",
+        "sku": "MOM-EB-WHT",
+        "option_1_name": "Colour",
+        "option_1_value": "White",
+        "mrp": 1499,
+        "selling_price": 1299,
+        "currency_code": "INR",
+        "status": "active",
+        "created_at": "2026-09-03T10:00:01Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "mrp_minor": 149900,
+        "selling_price_minor": 129900,
+        "available_qty": 0
+      }
+    ]
+  }
+}
+

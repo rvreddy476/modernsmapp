@@ -60,8 +60,12 @@ enum class StoreMenuRow(val label: String, val icon: ImageVector) {
 }
 
 /**
- * Which rows the menu shows. Pure, so it is a table test rather than
- * something only a screenshot can check.
+ * Which rows the menu shows, in ASCENDING ALPHABETICAL order by label,
+ * case-insensitive (founder, 2026-09-30: every menu the viewer reads as a
+ * list is alphabetical, like the More sheet). The selling row is whichever
+ * of the two applies and sorts where its label falls — "Seller dashboard"
+ * before "Settings", "Start selling" after it. Pure, so it is a table test
+ * rather than something only a screenshot can check.
  */
 fun storeMenuRows(seller: SellerPresence): List<StoreMenuRow> = listOf(
     StoreMenuRow.ORDERS,
@@ -71,7 +75,7 @@ fun storeMenuRows(seller: SellerPresence): List<StoreMenuRow> = listOf(
     StoreMenuRow.PURCHASE_HISTORY,
     StoreMenuRow.SETTINGS,
     if (seller == SellerPresence.NONE) StoreMenuRow.START_SELLING else StoreMenuRow.SELLER_DASHBOARD,
-)
+).sortedBy { it.label.lowercase() }
 
 /** The selling row's own line of copy — what the switch actually offers. */
 fun sellingRowDetail(seller: SellerPresence): String = when (seller) {

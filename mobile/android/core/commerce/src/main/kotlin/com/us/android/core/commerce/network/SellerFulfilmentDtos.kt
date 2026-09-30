@@ -43,7 +43,7 @@ import java.math.RoundingMode
  */
 @Serializable
 data class SellerOrderDto(
-    val id: String,
+    val id: String = "",
     @SerialName("order_number") val orderNumber: String = "",
     val status: String = "",
     @SerialName("payment_status") val paymentStatus: String = "",
@@ -76,7 +76,9 @@ data class SellerOrderDto(
  */
 @Serializable
 data class SellerOrderCardDto(
-    val order: SellerOrderDto,
+    // Defaulted like every response field (2026-09-30): a card with no
+    // `order` decodes with a blank id rather than failing the read.
+    val order: SellerOrderDto = SellerOrderDto(),
     val items: List<SellerOrderItemDto> = emptyList(),
     val shipment: ShipmentDto? = null,
     @SerialName("seller_subtotal_minor") val sellerSubtotalMinor: Paise = Paise.ZERO,
@@ -86,7 +88,7 @@ data class SellerOrderCardDto(
 /** One of the seller's lines, as `postgres.OrderItem` marshals it. */
 @Serializable
 data class SellerOrderItemDto(
-    val id: String,
+    val id: String = "",
     @SerialName("product_id") val productId: String = "",
     @SerialName("variant_id") val variantId: String = "",
     @SerialName("product_title") val productTitle: String = "",
@@ -223,7 +225,9 @@ data class SellerReturnsDto(
  */
 @Serializable
 data class SellerReturnCardDto(
-    @SerialName("return") val request: ReturnRequestDto,
+    // Defaulted (2026-09-30): a card with no `return` decodes to a blank id,
+    // which the repository skips, rather than failing the whole inbox.
+    @SerialName("return") val request: ReturnRequestDto = ReturnRequestDto(),
     @SerialName("order_item") val orderItem: SellerOrderItemDto? = null,
     val order: SellerOrderDto? = null,
 )
@@ -236,7 +240,7 @@ data class SellerReturnCardDto(
  */
 @Serializable
 data class ReturnRequestDto(
-    val id: String,
+    val id: String = "",
     @SerialName("order_id") val orderId: String = "",
     @SerialName("order_item_id") val orderItemId: String = "",
     @SerialName("reason_code") val reasonCode: String = "",
@@ -273,7 +277,7 @@ data class SellerEarningsDto(
  */
 @Serializable
 data class SellerEarningDto(
-    @SerialName("order_item_id") val orderItemId: String,
+    @SerialName("order_item_id") val orderItemId: String = "",
     @SerialName("order_id") val orderId: String = "",
     @SerialName("order_number") val orderNumber: String = "",
     @SerialName("product_title") val productTitle: String = "",

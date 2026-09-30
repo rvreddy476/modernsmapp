@@ -1,0 +1,130 @@
+{
+  "data": [
+    {
+      "id": "00000000-0000-4000-8000-00000000c001",
+      "name": "Electronics",
+      "slug": "electronics",
+      "description": "Phones, laptops, audio, cameras and accessories",
+      "display_order": 10,
+      "is_active": true,
+      "is_featured": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 1
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c002",
+      "name": "Fashion",
+      "slug": "fashion",
+      "description": "Clothing, footwear and accessories for men and women",
+      "display_order": 20,
+      "is_active": true,
+      "is_featured": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 1
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c003",
+      "name": "Home \u0026 Kitchen",
+      "slug": "home-and-kitchen",
+      "description": "Cookware, furnishings, storage and home improvement",
+      "display_order": 30,
+      "is_active": true,
+      "is_featured": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 1
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c004",
+      "name": "Beauty \u0026 Personal Care",
+      "slug": "beauty-and-personal-care",
+      "description": "Skincare, haircare, grooming and fragrances",
+      "display_order": 40,
+      "is_active": true,
+      "is_featured": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c005",
+      "name": "Grocery \u0026 Gourmet",
+      "slug": "grocery-and-gourmet",
+      "description": "Staples, snacks, beverages and packaged foods",
+      "display_order": 50,
+      "is_active": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c006",
+      "name": "Health \u0026 Wellness",
+      "slug": "health-and-wellness",
+      "description": "Nutrition, fitness, medical devices and ayurveda",
+      "display_order": 60,
+      "is_active": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c007",
+      "name": "Sports \u0026 Fitness",
+      "slug": "sports-and-fitness",
+      "description": "Sportswear, equipment and outdoor gear",
+      "display_order": 70,
+      "is_active": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c008",
+      "name": "Books \u0026 Stationery",
+      "slug": "books-and-stationery",
+      "description": "Books, office supplies and school stationery",
+      "display_order": 80,
+      "is_active": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c009",
+      "name": "Toys \u0026 Baby",
+      "slug": "toys-and-baby",
+      "description": "Toys, games, baby care and kids essentials",
+      "display_order": 90,
+      "is_active": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c00a",
+      "name": "Jewellery \u0026 Watches",
+      "slug": "jewellery-and-watches",
+      "description": "Fine and fashion jewellery, watches and eyewear",
+      "display_order": 100,
+      "is_active": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c00b",
+      "name": "Automotive",
+      "slug": "automotive",
+      "description": "Car and two-wheeler accessories, spares and care",
+      "display_order": 110,
+      "is_active": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000c00c",
+      "name": "Handicrafts \u0026 Decor",
+      "slug": "handicrafts-and-decor",
+      "description": "Handmade crafts, art, festive and home decor",
+      "display_order": 120,
+      "is_active": true,
+      "is_featured": true,
+      "created_at": "2026-09-01T00:00:00Z",
+      "product_count": 0
+    }
+  ]
+}
+

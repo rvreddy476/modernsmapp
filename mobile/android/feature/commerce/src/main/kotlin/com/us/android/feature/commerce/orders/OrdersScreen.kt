@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -19,18 +21,26 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.commerce.model.Address
 import com.us.android.core.commerce.model.Order
+import com.us.android.core.commerce.model.OrderLine
 import com.us.android.core.commerce.model.OrderStatus
+import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.PaymentStatus
+import com.us.android.core.commerce.model.PriceBreakdown
+import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
@@ -41,6 +51,7 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.address.summary
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.CommerceProgressLine
 import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.PriceBreakdownCard
 import com.us.android.feature.commerce.ui.pressScale
@@ -140,21 +151,84 @@ fun OrdersScreen(
                 onRetry = viewModel::refresh.takeIf { s.retryable },
             )
 
-            is OrdersUiState.Content -> LazyColumn(
+            is OrdersUiState.Content -> OrdersList(
+                state = s,
                 modifier = Modifier.padding(padding),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = UsTheme.spacing.pageHorizontal,
-                    vertical = UsTheme.spacing.s,
-                ),
-                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-            ) {
-                items(s.orders, key = { it.id }) { order ->
-                    OrderRow(order = order, onClick = { onOpenOrder(order.id) })
+                onOpenOrder = onOpenOrder,
+                onLoadMore = viewModel::loadMore,
+            )
+        }
+    }
+}
+
+/**
+ * The loaded orders, with the next page asked for as the end scrolls near
+ * (2026-09-30) — from the list's own scroll position, the way the browse
+ * grid does it, because the last row is composed before it is reachable.
+ * One footer: the ember line while a page is in flight, the failure as one
+ * line with a retry when it is not, nothing when there is no more.
+ */
+@Composable
+private fun OrdersList(
+    state: OrdersUiState.Content,
+    modifier: Modifier = Modifier,
+    onOpenOrder: (orderId: String) -> Unit,
+    onLoadMore: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(state) {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                ?: return@derivedStateOf false
+            state.hasMore && !state.loadingMore && state.loadMoreError == null &&
+                last >= state.orders.size - PREFETCH_DISTANCE
+        }
+    }
+    if (shouldLoadMore) onLoadMore()
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier.testTag("mstore_orders"),
+        contentPadding = PaddingValues(
+            horizontal = UsTheme.spacing.pageHorizontal,
+            vertical = UsTheme.spacing.s,
+        ),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        items(state.orders, key = { it.id }) { order ->
+            OrderRow(order = order, onClick = { onOpenOrder(order.id) })
+        }
+        if (state.loadingMore) {
+            item(key = "orders_loading_more") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = UsTheme.spacing.l),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CommerceProgressLine(contentDescription = "Loading more orders")
+                }
+            }
+        }
+        state.loadMoreError?.let { error ->
+            item(key = "orders_load_more_failed") {
+                Column(
+                    modifier = Modifier.fillMaxWidth().testTag("mstore_orders_more_failed"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+                ) {
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = UsTheme.extended.textSecondary,
+                    )
+                    UsSecondaryButton(text = "Load more", onClick = onLoadMore)
                 }
             }
         }
     }
 }
+
+/** How many rows before the end a page is asked for. */
+private const val PREFETCH_DISTANCE = 4
 
 @Composable
 private fun OrderRow(order: Order, onClick: () -> Unit) {
@@ -187,12 +261,14 @@ private fun OrderRow(order: Order, onClick: () -> Unit) {
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textSecondary,
         )
-        order.lines.firstOrNull()?.let { first ->
+        // The list read sends no lines, only a count and the first title
+        // (2026-09-30), so the row reads those rather than lines it never has.
+        order.firstLineTitle?.let { first ->
             Text(
-                text = if (order.lines.size > 1) {
-                    "${first.title} and ${order.lines.size - 1} more"
+                text = if (order.lineCount > 1) {
+                    "$first and ${order.lineCount - 1} more"
                 } else {
-                    first.title
+                    first
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textSecondary,
@@ -205,11 +281,19 @@ private fun OrderRow(order: Order, onClick: () -> Unit) {
 
 // ─── Detail ──────────────────────────────────────────────────────────
 
+/**
+ * One order.
+ *
+ * [onOpenPaymentSheet] is `:app`'s hop onto the Activity for "Pay now": the
+ * ViewModel mints the attempt (so a late ending for an earlier one is
+ * ignored) and listens for the sheet's ending; the screen only hands the
+ * attempt across.
+ */
 @Composable
 fun OrderDetailScreen(
     onBack: () -> Unit,
     onOpenProduct: (productId: String) -> Unit,
-    onPayNow: (orderId: String, orderNumber: String) -> Unit,
+    onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: OrderDetailViewModel = hiltViewModel(),
 ) {
@@ -243,7 +327,9 @@ fun OrderDetailScreen(
                     state = s,
                     modifier = Modifier.padding(padding),
                     onOpenProduct = onOpenProduct,
-                    onPayNow = onPayNow,
+                    onPayNow = {
+                        viewModel.payNow()?.let { attempt -> onOpenPaymentSheet(attempt, s.order.orderNumber) }
+                    },
                     onCancel = viewModel::askToCancel,
                 )
             }
@@ -257,7 +343,7 @@ private fun OrderDetailBody(
     state: OrderDetailUiState.Content,
     modifier: Modifier,
     onOpenProduct: (String) -> Unit,
-    onPayNow: (String, String) -> Unit,
+    onPayNow: () -> Unit,
     onCancel: () -> Unit,
 ) {
     val order = state.order
@@ -304,12 +390,18 @@ private fun OrderDetailBody(
             }
         }
 
-        if (order.status == OrderStatus.PAYMENT_PENDING) {
+        // Awaiting payment, or failed and retryable (contract §4.7): the
+        // intent route re-reserves the stock and re-opens the order, or
+        // refuses with OUT_OF_STOCK, which lands in `message` above.
+        if (order.canPayNow) {
             item {
                 UsSecondaryButton(
-                    text = "Pay now",
-                    onClick = { onPayNow(order.id, order.orderNumber) },
-                    modifier = Modifier.fillMaxWidth(),
+                    text = if (state.paying) "Opening payment" else "Pay now",
+                    onClick = onPayNow,
+                    enabled = !state.paying,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("mstore_order_pay_now"),
                 )
             }
         }
@@ -415,7 +507,7 @@ private fun CancelOrderSheet(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         containerColor = UsTheme.extended.bgCardSolid,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = SCRIM_ALPHA),
         dragHandle = null,
     ) {
         Column(
@@ -476,3 +568,84 @@ private val SHEET_RADIUS = 28.dp
 private val HANDLE_WIDTH = 32.dp
 private val HANDLE_HEIGHT = 4.dp
 private val HANDLE_TOP = 8.dp
+
+// ─── Previews ────────────────────────────────────────────────────────
+
+@Suppress("MagicNumber")
+internal fun previewOrder(
+    status: OrderStatus = OrderStatus.PAYMENT_FAILED,
+    paymentStatus: PaymentStatus = PaymentStatus.FAILED,
+) = Order(
+    id = "o-1",
+    orderNumber = "MS-240912-0001",
+    status = status,
+    paymentStatus = paymentStatus,
+    placedAtEpochSeconds = 0L,
+    breakdown = PriceBreakdown(
+        subtotal = Paise(199_900),
+        discount = Paise.ZERO,
+        shipping = Paise(4_000),
+        tax = Paise(30_493),
+        total = Paise(203_900),
+    ),
+    lines = listOf(
+        OrderLine(
+            productId = "p-1",
+            variantId = "v-1",
+            title = "Steel kettle, 1.7 L",
+            imageMediaId = null,
+            options = emptyList(),
+            quantity = 1,
+            unitPrice = Paise(199_900),
+            lineTotal = Paise(199_900),
+        ),
+    ),
+    deliveryAddress = Address(
+        id = "a-1",
+        label = "Home",
+        contactName = "Asha",
+        phone = "9800000000",
+        line1 = "2 Test Road",
+        line2 = null,
+        landmark = null,
+        city = "Bengaluru",
+        state = "Karnataka",
+        postalCode = "560001",
+        isDefault = true,
+    ),
+    canCancel = true,
+    trackingUrl = null,
+)
+
+@Preview(showBackground = true)
+@Composable
+private fun OrderDetailBodyPreview() {
+    UsTheme {
+        OrderDetailBody(
+            state = OrderDetailUiState.Content(order = previewOrder()),
+            modifier = Modifier,
+            onOpenProduct = {},
+            onPayNow = {},
+            onCancel = {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun OrdersListPreview() {
+    UsTheme {
+        OrdersList(
+            state = OrdersUiState.Content(
+                orders = listOf(
+                    previewOrder(),
+                    previewOrder(OrderStatus.SHIPPED, PaymentStatus.PAID).copy(id = "o-2", orderNumber = "MS-2"),
+                ),
+                nextCursor = "next",
+                loadingMore = true,
+            ),
+            onOpenOrder = {},
+            onLoadMore = {},
+        )
+    }
+}

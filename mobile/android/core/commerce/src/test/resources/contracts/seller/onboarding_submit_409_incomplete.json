@@ -1,0 +1,16 @@
+{
+  "error": {
+    "code": "APPLICATION_INCOMPLETE",
+    "message": "the seller application is incomplete: email, pickup_address, payout_account, kyc_document",
+    "details": {
+      "missing": [
+        "email",
+        "pickup_address",
+        "payout_account",
+        "kyc_document"
+      ]
+    }
+  },
+  "meta": {}
+}
+

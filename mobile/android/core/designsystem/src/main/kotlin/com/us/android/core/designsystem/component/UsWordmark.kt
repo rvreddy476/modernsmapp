@@ -36,13 +36,26 @@ fun UsWordmark(
     )
 }
 
-/** The two sizes the wordmark actually ships at. */
+/**
+ * The sizes a wordmark ships at — the ONE place they are written (founder's
+ * rule: colour and font come from one file).
+ */
 object UsWordmarkSize {
     /** The home top bar. */
     val TopBar = 34.sp
 
     /** Login and the splash screen. */
     val Hero = 44.sp
+
+    /**
+     * A mini-app's mark (MStore, MSeller) in its own top bar (2026-09-30):
+     * smaller than the Momentum mark, because it sits beside a back
+     * control on every screen rather than alone on the home bar.
+     */
+    val MiniAppTopBar = 22.sp
+
+    /** A mini-app's mark on an empty state or a first-run panel. */
+    val MiniAppHero = 34.sp
 }
 
 @Preview(name = "Wordmark — top bar", showBackground = true)

@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "PRICE_CHANGED",
+    "message": "prices changed since you last saw them",
+    "details": {
+      "lines": null,
+      "new_total_minor": 134800
+    }
+  },
+  "meta": {}
+}
+

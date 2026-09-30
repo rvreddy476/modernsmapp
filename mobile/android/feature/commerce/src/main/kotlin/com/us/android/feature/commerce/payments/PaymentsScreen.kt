@@ -1,6 +1,7 @@
 package com.us.android.feature.commerce.payments
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -8,28 +9,38 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.commerce.model.Order
+import com.us.android.core.commerce.model.OrderStatus
 import com.us.android.core.commerce.model.PaymentStatus
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.feature.commerce.orders.appendOrders
+import com.us.android.feature.commerce.orders.previewOrder
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.CommerceProgressLine
 import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.describe
 import com.us.android.feature.commerce.ui.isRetryable
@@ -55,7 +66,17 @@ import javax.inject.Inject
 sealed interface PaymentsUiState {
     data object Loading : PaymentsUiState
     data object Empty : PaymentsUiState
-    data class Content(val orders: List<Order>) : PaymentsUiState
+
+    /** The charges loaded so far; [nextCursor] null means all of them (2026-09-30). */
+    data class Content(
+        val orders: List<Order>,
+        val nextCursor: String? = null,
+        val loadingMore: Boolean = false,
+        val loadMoreError: String? = null,
+    ) : PaymentsUiState {
+        val hasMore: Boolean get() = nextCursor != null
+    }
+
     data class Failed(val message: String, val retryable: Boolean) : PaymentsUiState
 }
 
@@ -81,12 +102,32 @@ class PaymentsViewModel @Inject constructor(
                 )
 
                 is CommerceResult.Success -> {
-                    _state.value = if (r.value.isEmpty()) {
+                    _state.value = if (r.value.items.isEmpty() && r.value.nextCursor == null) {
                         PaymentsUiState.Empty
                     } else {
-                        PaymentsUiState.Content(r.value)
+                        PaymentsUiState.Content(r.value.items, nextCursor = r.value.nextCursor)
                     }
                 }
+            }
+        }
+    }
+
+    /** The next page of charges, appended; a no-op while one is in flight or at the end. */
+    fun loadMore() {
+        val current = _state.value as? PaymentsUiState.Content ?: return
+        val cursor = current.nextCursor ?: return
+        if (current.loadingMore) return
+
+        _state.value = current.copy(loadingMore = true, loadMoreError = null)
+        viewModelScope.launch {
+            val latest = _state.value as? PaymentsUiState.Content ?: return@launch
+            _state.value = when (val r = repo.orders(cursor)) {
+                is CommerceResult.Failure -> latest.copy(loadingMore = false, loadMoreError = r.error.describe())
+                is CommerceResult.Success -> latest.copy(
+                    orders = appendOrders(latest.orders, r.value.items),
+                    nextCursor = r.value.nextCursor,
+                    loadingMore = false,
+                )
             }
         }
     }
@@ -129,22 +170,78 @@ fun PaymentsScreen(
                 onRetry = viewModel::refresh.takeIf { s.retryable },
             )
 
-            is PaymentsUiState.Content -> LazyColumn(
-                modifier = Modifier.padding(padding).testTag("mstore_payments"),
-                contentPadding = PaddingValues(
-                    horizontal = UsTheme.spacing.pageHorizontal,
-                    vertical = UsTheme.spacing.s,
-                ),
-                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-            ) {
-                item { CommerceNotice(text = PREPAID_NOTICE) }
-                items(s.orders, key = { it.id }) { order ->
-                    PaymentRow(order = order, onClick = { onOpenOrder(order.id) })
+            is PaymentsUiState.Content -> PaymentsList(
+                state = s,
+                modifier = Modifier.padding(padding),
+                onOpenOrder = onOpenOrder,
+                onLoadMore = viewModel::loadMore,
+            )
+        }
+    }
+}
+
+/** The charges, paged from the list's own scroll position like the orders list. */
+@Composable
+private fun PaymentsList(
+    state: PaymentsUiState.Content,
+    modifier: Modifier = Modifier,
+    onOpenOrder: (orderId: String) -> Unit,
+    onLoadMore: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(state) {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                ?: return@derivedStateOf false
+            state.hasMore && !state.loadingMore && state.loadMoreError == null &&
+                last >= state.orders.size - PREFETCH_DISTANCE
+        }
+    }
+    if (shouldLoadMore) onLoadMore()
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier.testTag("mstore_payments"),
+        contentPadding = PaddingValues(
+            horizontal = UsTheme.spacing.pageHorizontal,
+            vertical = UsTheme.spacing.s,
+        ),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        item { CommerceNotice(text = PREPAID_NOTICE) }
+        items(state.orders, key = { it.id }) { order ->
+            PaymentRow(order = order, onClick = { onOpenOrder(order.id) })
+        }
+        if (state.loadingMore) {
+            item(key = "payments_loading_more") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = UsTheme.spacing.l),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CommerceProgressLine(contentDescription = "Loading more payments")
+                }
+            }
+        }
+        state.loadMoreError?.let { error ->
+            item(key = "payments_load_more_failed") {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+                ) {
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = UsTheme.extended.textSecondary,
+                    )
+                    UsSecondaryButton(text = "Load more", onClick = onLoadMore)
                 }
             }
         }
     }
 }
+
+private const val PREFETCH_DISTANCE = 4
 
 /**
  * One charge: the order it belongs to, what it came to, and where it stands.
@@ -207,3 +304,22 @@ fun PaymentStatus.paymentLabel(): String = when (this) {
 private const val PREPAID_NOTICE =
     "Orders are paid up front by UPI or card. Cash on delivery is not available yet, and " +
         "MStore never stores your card — your bank's own sheet takes the payment."
+
+@Preview(showBackground = true)
+@Composable
+private fun PaymentsListPreview() {
+    UsTheme {
+        PaymentsList(
+            state = PaymentsUiState.Content(
+                orders = listOf(
+                    previewOrder(),
+                    previewOrder(OrderStatus.CONFIRMED, PaymentStatus.PAID).copy(id = "o-2", orderNumber = "MS-2"),
+                ),
+                nextCursor = "next",
+                loadingMore = true,
+            ),
+            onOpenOrder = {},
+            onLoadMore = {},
+        )
+    }
+}

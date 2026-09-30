@@ -5,12 +5,17 @@ import com.us.android.core.commerce.model.BannerTarget
 import com.us.android.core.commerce.model.Cart
 import com.us.android.core.commerce.model.CartLine
 import com.us.android.core.commerce.model.Category
+import com.us.android.core.commerce.model.CategoryChoice
+import com.us.android.core.commerce.model.CategoryNode
 import com.us.android.core.commerce.model.DeliveryQuote
 import com.us.android.core.commerce.model.HomeBanner
 import com.us.android.core.commerce.model.HomeSection
 import com.us.android.core.commerce.model.NewProduct
 import com.us.android.core.commerce.model.Order
 import com.us.android.core.commerce.model.OrderLine
+import com.us.android.core.commerce.model.OrderPage
+import com.us.android.core.commerce.model.OrderPayment
+import com.us.android.core.commerce.model.OrderPaymentState
 import com.us.android.core.commerce.model.OrderStatus
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.PaymentHandle
@@ -42,6 +47,9 @@ import com.us.android.core.commerce.model.TaxClass
 import com.us.android.core.commerce.model.Variant
 import com.us.android.core.commerce.model.VariantOption
 import com.us.android.core.commerce.model.discountPercent
+import com.us.android.core.commerce.model.listableCategories
+import com.us.android.core.commerce.model.listableCategoriesFromFlat
+import com.us.android.core.commerce.model.variantsForEdit
 import com.us.android.core.commerce.network.AddFavouriteRequest
 import com.us.android.core.commerce.network.AddToCartRequest
 import com.us.android.core.commerce.network.AddressDto
@@ -50,18 +58,19 @@ import com.us.android.core.commerce.network.AttachOneProductMediaRequest
 import com.us.android.core.commerce.network.AttachProductMediaRequest
 import com.us.android.core.commerce.network.CancelOrderRequest
 import com.us.android.core.commerce.network.CartDto
+import com.us.android.core.commerce.network.CategoryTreeDto
 import com.us.android.core.commerce.network.CheckoutRequest
 import com.us.android.core.commerce.network.CommerceApi
 import com.us.android.core.commerce.network.CreateProductRequest
 import com.us.android.core.commerce.network.CreateVariantRequest
 import com.us.android.core.commerce.network.DocumentInput
+import com.us.android.core.commerce.network.EARNINGS_PAGE_SIZE
 import com.us.android.core.commerce.network.OrderDto
 import com.us.android.core.commerce.network.OrderStatusHistoryDto
 import com.us.android.core.commerce.network.PayoutRequest
 import com.us.android.core.commerce.network.ProductMediaDto
 import com.us.android.core.commerce.network.ProductMediaListDto
 import com.us.android.core.commerce.network.ProductSummaryDto
-import com.us.android.core.commerce.network.EARNINGS_PAGE_SIZE
 import com.us.android.core.commerce.network.QuoteRequest
 import com.us.android.core.commerce.network.RejectReturnRequest
 import com.us.android.core.commerce.network.SELLER_PAGE_SIZE
@@ -71,15 +80,21 @@ import com.us.android.core.commerce.network.SellerCancelOrderRequest
 import com.us.android.core.commerce.network.SellerEarningDto
 import com.us.android.core.commerce.network.SellerOrderCardDto
 import com.us.android.core.commerce.network.SellerOrderDto
+import com.us.android.core.commerce.network.SellerProductDto
 import com.us.android.core.commerce.network.SellerReturnCardDto
 import com.us.android.core.commerce.network.ShipOrderRequest
 import com.us.android.core.commerce.network.StartSellingRequest
 import com.us.android.core.commerce.network.StockDto
 import com.us.android.core.commerce.network.UpdateCartItemRequest
 import com.us.android.core.commerce.network.UpdateVariantRequest
+import com.us.android.core.commerce.network.VariantDto
 import com.us.android.core.network.ApiEnvelope
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import retrofit2.Response
@@ -143,7 +158,7 @@ class CommerceRepository @Inject constructor(
             )
         }.map { dto ->
             ProductPage(
-                items = dto.items.map(::toSummary),
+                items = dto.items.withIds().map(::toSummary),
                 nextCursor = dto.nextCursor?.takeIf { it.isNotBlank() },
             )
         }
@@ -157,7 +172,7 @@ class CommerceRepository @Inject constructor(
      */
     suspend fun categories(): CommerceResult<List<Category>> =
         call { api.categories() }.map { list ->
-            list.map { c ->
+            list.filter { it.id.isNotBlank() }.map { c ->
                 Category(
                     id = c.id,
                     name = c.name,
@@ -169,6 +184,34 @@ class CommerceRepository @Inject constructor(
                 )
             }
         }
+
+    /**
+     * The categories a seller may list a product under (2026-09-30).
+     *
+     * From the tree when the server has it, because only the tree says which
+     * nodes are listable. A server that predates `?tree=true` answers the
+     * flat shape to the same URL — which decodes as a list of nodes with no
+     * `children` and every `is_listable` defaulted — so the flat route is
+     * read instead whenever the tree came back with no nesting at all, and
+     * the leaves are derived from parent ids. Either way, an empty answer is
+     * an empty answer: the create screen then says a category cannot be
+     * chosen rather than listing something nobody can browse to.
+     */
+    suspend fun listableCategories(): CommerceResult<List<CategoryChoice>> {
+        val tree = call { api.categoryTree() }
+        if (tree is CommerceResult.Success && tree.value.any { it.children.isNotEmpty() }) {
+            return CommerceResult.Success(listableCategories(tree.value.map(::toNode)))
+        }
+        return categories().map { flat -> listableCategoriesFromFlat(flat) }
+    }
+
+    private fun toNode(dto: CategoryTreeDto): CategoryNode = CategoryNode(
+        id = dto.id,
+        name = dto.name,
+        listable = dto.isListable,
+        active = dto.isActive,
+        children = dto.children.map(::toNode),
+    )
 
     /**
      * The landing page.
@@ -193,7 +236,7 @@ class CommerceRepository @Inject constructor(
                     HomeSection(
                         key = s.key,
                         title = s.title,
-                        products = s.products.map(::toSummary),
+                        products = s.products.withIds().map(::toSummary),
                     )
                 },
             )
@@ -206,7 +249,7 @@ class CommerceRepository @Inject constructor(
     // and the same person's phone and web session must agree.
 
     suspend fun favourites(): CommerceResult<List<ProductSummary>> =
-        call { api.favourites() }.map { dto -> dto.items.map(::toSummary) }
+        call { api.favourites() }.map { dto -> dto.items.withIds().map(::toSummary) }
 
     suspend fun addFavourite(productId: String): CommerceResult<Unit> =
         call { api.addFavourite(AddFavouriteRequest(productId)) }.map { }
@@ -217,7 +260,7 @@ class CommerceRepository @Inject constructor(
     // ─── Product images ──────────────────────────────────────────────
 
     suspend fun productImages(productId: String): CommerceResult<List<ProductImage>> =
-        call { api.productMedia(productId) }.map { dto -> dto.media.map(::toImage) }
+        call { api.productMedia(productId) }.map { dto -> dto.gallery.map(::toImage) }
 
     /**
      * Replaces a product's gallery, cover first.
@@ -235,7 +278,7 @@ class CommerceRepository @Inject constructor(
 
         val batch = call { api.attachProductMedia(productId, AttachProductMediaRequest(mediaIds)) }
         if (batch is CommerceResult.Success) {
-            return CommerceResult.Success(batch.value.media.map(::toImage))
+            return CommerceResult.Success(batch.value.gallery.map(::toImage))
         }
         if (!(batch as CommerceResult.Failure).error.isUnknownShape()) return batch
 
@@ -250,7 +293,7 @@ class CommerceRepository @Inject constructor(
             if (last is CommerceResult.Failure) return last as CommerceResult.Failure
         }
         return when (val result = last) {
-            is CommerceResult.Success -> CommerceResult.Success(result.value.media.map(::toImage))
+            is CommerceResult.Success -> CommerceResult.Success(result.value.gallery.map(::toImage))
             else -> batch
         }
     }
@@ -273,31 +316,67 @@ class CommerceRepository @Inject constructor(
                 // false`, and for anything half-configured — see
                 // toTryOnDescriptor.
                 tryOn = toTryOnDescriptor(dto.product.tryOn),
-                variants = dto.variants.map { v ->
-                    Variant(
-                        id = v.id,
-                        sku = v.sku,
-                        options = buildList {
-                            if (!v.option1Name.isNullOrBlank() && !v.option1Value.isNullOrBlank()) {
-                                add(VariantOption(v.option1Name, v.option1Value))
-                            }
-                            if (!v.option2Name.isNullOrBlank() && !v.option2Value.isNullOrBlank()) {
-                                add(VariantOption(v.option2Name, v.option2Value))
-                            }
-                            if (!v.option3Name.isNullOrBlank() && !v.option3Value.isNullOrBlank()) {
-                                add(VariantOption(v.option3Name, v.option3Value))
-                            }
-                        },
-                        mrp = v.mrpMinor,
-                        sellingPrice = v.sellingPriceMinor,
-                        // Availability comes from the server. The client
-                        // must not infer "in stock" from a price being
-                        // present, which an earlier revision of this screen
-                        // did and which showed sold-out items as buyable.
-                        inStock = v.status == "active" && v.availableQty > 0,
-                        availableQty = v.availableQty,
-                    )
+                variants = dto.variants.toVariants(),
+            )
+        }
+
+    /**
+     * A product's variants, every status, with their own ids.
+     *
+     * The seller half reads this before opening a stock or price edit when
+     * the catalogue row did not carry its variants (2026-09-30): the edit
+     * routes look up `product_variants.id`, so the product id is never what
+     * they are given.
+     */
+    suspend fun productVariants(productId: String): CommerceResult<List<Variant>> =
+        call { api.productVariants(productId) }.map { dto -> dto.items.toVariants() }
+
+    /**
+     * The variants a stock or price edit for [product] may address: the
+     * row's own when the server sent them, otherwise
+     * `GET /products/:id/variants`. NEVER the product id — see
+     * [variantsForEdit], which is the pure rule this wraps. An empty list is
+     * a real answer ("nothing to edit"), never an invitation to guess.
+     */
+    suspend fun variantsForEdit(product: SellerProduct): CommerceResult<List<Variant>> {
+        if (product.variants.isNotEmpty()) return CommerceResult.Success(product.variants)
+        return when (val fetched = productVariants(product.id)) {
+            is CommerceResult.Success -> CommerceResult.Success(variantsForEdit(product, fetched.value))
+            // A server that predates the public variants route is an older
+            // server; the row's own shorthand, if any, is the last resort.
+            is CommerceResult.Failure ->
+                if (fetched.error is CommerceError.NotAvailable) {
+                    CommerceResult.Success(variantsForEdit(product, emptyList()))
+                } else {
+                    fetched
+                }
+        }
+    }
+
+    private fun List<VariantDto>.toVariants(): List<Variant> =
+        filter { it.id.isNotBlank() }.map { v ->
+            Variant(
+                id = v.id,
+                sku = v.sku,
+                options = buildList {
+                    if (!v.option1Name.isNullOrBlank() && !v.option1Value.isNullOrBlank()) {
+                        add(VariantOption(v.option1Name, v.option1Value))
+                    }
+                    if (!v.option2Name.isNullOrBlank() && !v.option2Value.isNullOrBlank()) {
+                        add(VariantOption(v.option2Name, v.option2Value))
+                    }
+                    if (!v.option3Name.isNullOrBlank() && !v.option3Value.isNullOrBlank()) {
+                        add(VariantOption(v.option3Name, v.option3Value))
+                    }
                 },
+                mrp = v.mrpMinor,
+                sellingPrice = v.sellingPriceMinor,
+                // Availability comes from the server. The client
+                // must not infer "in stock" from a price being
+                // present, which an earlier revision of this screen
+                // did and which showed sold-out items as buyable.
+                inStock = v.status == "active" && v.availableQty > 0,
+                availableQty = v.availableQty,
             )
         }
 
@@ -317,7 +396,7 @@ class CommerceRepository @Inject constructor(
     // ─── Address ─────────────────────────────────────────────────────
 
     suspend fun addresses(): CommerceResult<List<Address>> =
-        call { api.listAddresses() }.map { list -> list.map(::toAddress) }
+        call { api.listAddresses() }.map { list -> list.filter { it.id.isNotBlank() }.map(::toAddress) }
 
     /**
      * Saves a new delivery address.
@@ -457,19 +536,48 @@ class CommerceRepository @Inject constructor(
         }
 
     /**
-     * The authoritative payment state.
+     * The authoritative payment state, three-state (contract §4.5).
      *
      * A1: the PSP redirect is never proof. The screen polls this until the
      * server — which only marks an order paid on a signature-verified
-     * provider webhook — says otherwise.
+     * provider webhook — says otherwise. A server that predates the route
+     * answers [CommerceError.NotAvailable]; the status source then falls
+     * back once to [paymentStatus].
+     */
+    suspend fun orderPayment(orderId: String): CommerceResult<OrderPayment> =
+        call { api.orderPayment(orderId) }.map { dto ->
+            OrderPayment(
+                orderId = dto.orderId,
+                state = OrderPaymentState.from(dto.status),
+                refundStatus = dto.refundStatus?.trim()?.lowercase()?.takeIf { it.isNotBlank() },
+                amount = dto.amountMinor,
+                currency = dto.currency,
+            )
+        }
+
+    /**
+     * The older payment read, kept for a server without [orderPayment].
      */
     suspend fun paymentStatus(orderId: String): CommerceResult<PaymentStatus> =
         call { api.paymentStatus(orderId) }.map { PaymentStatus.from(it.paymentStatus) }
 
     // ─── Orders ──────────────────────────────────────────────────────
 
-    suspend fun orders(cursor: String? = null): CommerceResult<List<Order>> =
-        call { api.listOrders(cursor) }.map { it.items.map(::toOrder) }
+    /**
+     * One page of the buyer's orders, newest first.
+     *
+     * [cursor] is the server's opaque continuation, echoed back verbatim;
+     * the page carries the next one, and null means the end. The first
+     * page used to be the only page: the list dropped `next_cursor`, so a
+     * buyer's twenty-first order did not exist on the phone (2026-09-30).
+     */
+    suspend fun orders(cursor: String? = null): CommerceResult<OrderPage> =
+        call { api.listOrders(cursor?.takeIf { it.isNotBlank() }) }.map { dto ->
+            OrderPage(
+                items = dto.items.filter { it.id.isNotBlank() }.map(::toOrder),
+                nextCursor = dto.nextCursor?.takeIf { it.isNotBlank() },
+            )
+        }
 
     suspend fun order(orderId: String): CommerceResult<Order> =
         call { api.getOrder(orderId) }.map(::toOrder)
@@ -508,17 +616,19 @@ class CommerceRepository @Inject constructor(
      */
     suspend fun sellerProducts(status: String? = null): CommerceResult<List<SellerProduct>> =
         call { api.sellerProducts(status?.takeIf { it.isNotBlank() }) }.map { dto ->
-            dto.items.map { p ->
-                SellerProduct(
-                    id = p.id,
-                    title = p.title,
-                    status = p.status,
-                    approvalStatus = p.approvalStatus,
-                    rejectionReason = p.rejectionReason,
-                    imageUrl = p.thumbnailUrl ?: p.imageUrl,
-                )
-            }
+            dto.items.filter { it.id.isNotBlank() }.map(::toSellerProduct)
         }
+
+    private fun toSellerProduct(p: SellerProductDto) = SellerProduct(
+        id = p.id,
+        title = p.title,
+        status = p.status,
+        approvalStatus = p.approvalStatus,
+        rejectionReason = p.rejectionReason,
+        imageUrl = p.thumbnailUrl ?: p.imageUrl,
+        variants = p.variants.toVariants(),
+        defaultVariantId = p.defaultVariantId?.takeIf { it.isNotBlank() },
+    )
 
     suspend fun stock(variantId: String): CommerceResult<StockLevel> =
         call { api.stock(variantId) }.map(::toStock)
@@ -619,6 +729,7 @@ class CommerceRepository @Inject constructor(
                 CreateProductRequest(
                     title = product.title.trim(),
                     taxClassId = product.taxClassId,
+                    categoryId = product.categoryId?.takeIf { it.isNotBlank() },
                     description = product.description?.trim()?.takeIf { it.isNotBlank() },
                     primaryImageMediaId = product.imageMediaId,
                     variants = listOf(
@@ -631,16 +742,7 @@ class CommerceRepository @Inject constructor(
                     ),
                 ),
             )
-        }.map { dto ->
-            SellerProduct(
-                id = dto.id,
-                title = dto.title,
-                status = dto.status,
-                approvalStatus = dto.approvalStatus,
-                rejectionReason = dto.rejectionReason,
-                imageUrl = dto.thumbnailUrl ?: dto.imageUrl,
-            )
-        }
+        }.map(::toSellerProduct)
 
     /** Submits a product for moderation review. */
     suspend fun submitProduct(productId: String): CommerceResult<Unit> =
@@ -809,7 +911,7 @@ class CommerceRepository @Inject constructor(
     /** The returns inbox. [status] is a wire value, or null for everything. */
     suspend fun sellerReturns(status: String? = null, offset: Int = 0): CommerceResult<List<SellerReturn>> =
         call { api.sellerReturns(status = status, limit = SELLER_PAGE_SIZE, offset = offset) }
-            .map { dto -> dto.returns.map(SellerReturnCardDto::toSellerReturn) }
+            .map { dto -> dto.returns.filter { it.request.id.isNotBlank() }.map(SellerReturnCardDto::toSellerReturn) }
 
     suspend fun approveReturn(returnId: String): CommerceResult<Unit> =
         call { api.approveReturn(returnId) }.map { }
@@ -828,6 +930,14 @@ class CommerceRepository @Inject constructor(
      * can never print different numbers; [discountPercent] fills in only for
      * a server that does not publish it yet.
      */
+    /**
+     * Drops rows the server sent without an id. Every response field has a
+     * default, so an unknown-shape row decodes rather than throws — and a row
+     * with no id is one nothing can open, favourite or add, so it is skipped
+     * rather than drawn as a card that does nothing.
+     */
+    private fun List<ProductSummaryDto>.withIds(): List<ProductSummaryDto> = filter { it.id.isNotBlank() }
+
     private fun toSummary(p: ProductSummaryDto) = ProductSummary(
         id = p.id,
         title = p.title,
@@ -898,10 +1008,17 @@ class CommerceRepository @Inject constructor(
                     if (err?.first.isNullOrBlank() && response.code() == HTTP_NOT_FOUND) {
                         CommerceResult.Failure(CommerceError.NotAvailable)
                     } else {
-                        CommerceResult.Failure(mapError(err?.first, err?.second, raw))
+                        CommerceResult.Failure(mapError(err?.first, err?.second, raw, response.code()))
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            // 2026-09-30: a cancelled coroutine is not a network failure. The
+            // screen that cancelled it (a ViewModel clearing, a page leaving)
+            // is not there to render one, and swallowing the cancellation
+            // here would let the caller carry on as though the read had
+            // failed rather than stop, which is what cancellation means.
+            throw e
         } catch (t: Throwable) {
             CommerceResult.Failure(CommerceError.Network(t))
         }
@@ -914,33 +1031,43 @@ class CommerceRepository @Inject constructor(
      * without saying WHICH is not actionable.
      */
     @Suppress("CyclomaticComplexMethod")
-    private fun mapError(code: String?, message: String?, rawBody: String?): CommerceError {
+    private fun mapError(code: String?, message: String?, rawBody: String?, httpStatus: Int): CommerceError {
         val details = parseDetails(rawBody)
+
+        // 2026-09-30, from the checkout goldens: `lines` arrives as JSON null
+        // on a total-only PRICE_CHANGED (`checkout_v2_post_409_amount_mismatch`),
+        // and `.jsonArray` on a null THROWS — inside call{}, which turned the
+        // refusal into CommerceError.Network. Read by type, never by cast.
+        fun lines(): List<JsonObject> =
+            (details?.get("lines") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+
+        fun JsonObject.text(key: String): String = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
         return when (code) {
             "OUT_OF_STOCK" -> CommerceError.OutOfStock(
-                details?.get("lines")?.jsonArray?.map { el ->
-                    val o = el.jsonObject
+                lines().map { o ->
                     UnavailableLine(
-                        variantId = o["variant_id"]?.jsonPrimitive?.content.orEmpty(),
-                        productId = o["product_id"]?.jsonPrimitive?.content.orEmpty(),
-                        title = o["product_title"]?.jsonPrimitive?.content.orEmpty(),
-                        requested = o["requested"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
-                        available = o["available"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
+                        variantId = o.text("variant_id"),
+                        productId = o.text("product_id"),
+                        title = o.text("product_title"),
+                        requested = o.text("requested").toIntOrNull() ?: 0,
+                        available = o.text("available").toIntOrNull() ?: 0,
                     )
-                }.orEmpty()
+                },
             )
 
             "PRICE_CHANGED" -> CommerceError.PriceChanged(
-                lines = details?.get("lines")?.jsonArray?.map { el ->
-                    val o = el.jsonObject
+                lines = lines().map { o ->
                     ChangedLine(
-                        variantId = o["variant_id"]?.jsonPrimitive?.content.orEmpty(),
-                        was = Paise(o["was_minor"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L),
-                        now = Paise(o["now_minor"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L),
+                        variantId = o.text("variant_id"),
+                        was = Paise(o.text("was_minor").toLongOrNull() ?: 0L),
+                        now = Paise(o.text("now_minor").toLongOrNull() ?: 0L),
                     )
-                }.orEmpty(),
-                newTotal = details?.get("new_total_minor")?.jsonPrimitive?.content
-                    ?.toLongOrNull()?.let(::Paise),
+                },
+                // Go sends 0 for "no new total computed" (the per-line
+                // golden, `checkout_v2_post_409_price_changed`): 0 is absent,
+                // never a total of ₹0 shown to the buyer.
+                newTotal = (details?.get("new_total_minor") as? JsonPrimitive)?.contentOrNull
+                    ?.toLongOrNull()?.takeIf { it > 0L }?.let(::Paise),
             )
 
             "QUOTE_STALE" -> CommerceError.QuoteStale
@@ -960,7 +1087,7 @@ class CommerceRepository @Inject constructor(
                 // always send the header.
                 CommerceError.Unexpected(code, "checkout was sent without an Idempotency-Key")
 
-            else -> CommerceError.Unexpected(code.orEmpty(), message.orEmpty())
+            else -> CommerceError.Unexpected(code.orEmpty(), message.orEmpty(), httpStatus)
         }
     }
 
@@ -1043,13 +1170,16 @@ class CommerceRepository @Inject constructor(
                 options = emptyList(),
                 quantity = l.quantity,
                 unitPrice = l.unitPriceMinor,
-                lineTotal = l.finalPriceMinor,
+                lineTotal = l.total,
             )
         },
         deliveryAddress = dto.deliveryAddress?.let(::toAddress)
             ?: Address("", "", "", "", "", null, null, "", "", "", false),
         canCancel = dto.canCancel,
         trackingUrl = dto.trackingUrl,
+        canRetryPayment = dto.canRetryPayment,
+        itemCount = dto.itemCount,
+        firstItemTitle = dto.firstProductTitle?.takeIf { it.isNotBlank() },
     )
 }
 

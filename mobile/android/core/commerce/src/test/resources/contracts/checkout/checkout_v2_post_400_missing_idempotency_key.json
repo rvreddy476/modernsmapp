@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "IDEMPOTENCY_KEY_REQUIRED",
+    "message": "an Idempotency-Key header is required so a retried checkout cannot create a second order"
+  },
+  "meta": {}
+}
+

@@ -6,6 +6,7 @@ import com.us.android.core.commerce.model.SellerAddress
 import com.us.android.core.commerce.model.SellerProduct
 import com.us.android.core.commerce.model.SellerProfile
 import com.us.android.core.commerce.model.SellerStatus
+import com.us.android.core.commerce.model.Variant
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.feature.commerce.ui.describe
@@ -32,6 +33,12 @@ sealed interface SellerUiState {
     data class Content(
         val profile: SellerProfile,
         val products: List<SellerProduct>,
+        /** The product whose variants are being read before its editor opens. */
+        val resolvingProductId: String? = null,
+        /** Set when a product has several variants and the seller must pick one. */
+        val chooser: VariantChooser? = null,
+        /** One line under the header: a resolution that found nothing, or failed. */
+        val message: String? = null,
     ) : SellerUiState
 
     /**
@@ -45,6 +52,33 @@ sealed interface SellerUiState {
 
     data class Failed(val message: String, val retryable: Boolean) : SellerUiState
 }
+
+/** A product with several variants, and the variants to choose from. */
+data class VariantChooser(
+    val product: SellerProduct,
+    val variants: List<Variant>,
+)
+
+/**
+ * Where a tap on a product row goes, given the variants it turned out to
+ * have. Pure, so the three-way rule is a table test: exactly one opens the
+ * editor for it, several open a chooser, none is a message — and in no case
+ * is the PRODUCT id what opens an editor.
+ */
+sealed interface VariantTarget {
+    data class One(val variantId: String) : VariantTarget
+    data class Several(val variants: List<Variant>) : VariantTarget
+    data object None : VariantTarget
+}
+
+fun variantTarget(variants: List<Variant>): VariantTarget = when (variants.size) {
+    0 -> VariantTarget.None
+    1 -> VariantTarget.One(variants.single().id)
+    else -> VariantTarget.Several(variants)
+}
+
+/** The one line for a product whose variants could not be found. */
+const val NO_VARIANT_TO_EDIT = "This product has no variant to edit yet."
 
 @HiltViewModel
 class SellerViewModel @Inject constructor(
@@ -61,6 +95,65 @@ class SellerViewModel @Inject constructor(
     fun refresh() {
         _state.value = SellerUiState.Loading
         viewModelScope.launch { load() }
+    }
+
+    /**
+     * Opens the stock (or price) editor for [product] — for its VARIANT.
+     *
+     * 2026-09-30. The row used to pass the product id as the variant id, on
+     * the comment "the P0 catalogue is single-variant"; the server looks up
+     * `product_variants.id`, so every stock and price edit answered
+     * variant-not-found. The variants come from the row when the server sent
+     * them and from `GET /products/:id/variants` otherwise; one opens
+     * straight away, several open a chooser, none is said as one line.
+     * [open] receives a variant id, never a product id.
+     */
+    fun openStock(product: SellerProduct, open: (variantId: String, title: String) -> Unit) {
+        val current = _state.value as? SellerUiState.Content ?: return
+        if (current.resolvingProductId != null) return
+        _state.value = current.copy(resolvingProductId = product.id, message = null)
+        viewModelScope.launch {
+            val result = repo.variantsForEdit(product)
+            val latest = _state.value as? SellerUiState.Content ?: return@launch
+            when (result) {
+                is CommerceResult.Failure ->
+                    _state.value = latest.copy(resolvingProductId = null, message = result.error.describe())
+
+                is CommerceResult.Success -> when (val target = variantTarget(result.value)) {
+                    is VariantTarget.One -> {
+                        _state.value = latest.copy(resolvingProductId = null)
+                        open(target.variantId, product.title)
+                    }
+
+                    is VariantTarget.Several ->
+                        _state.value = latest.copy(
+                            resolvingProductId = null,
+                            chooser = VariantChooser(product, target.variants),
+                        )
+
+                    VariantTarget.None ->
+                        _state.value = latest.copy(resolvingProductId = null, message = NO_VARIANT_TO_EDIT)
+                }
+            }
+        }
+    }
+
+    /** The seller picked one of several variants. */
+    fun chooseVariant(variant: Variant, open: (variantId: String, title: String) -> Unit) {
+        val current = _state.value as? SellerUiState.Content ?: return
+        val chooser = current.chooser ?: return
+        _state.value = current.copy(chooser = null)
+        open(variant.id, chooser.product.title)
+    }
+
+    fun dismissChooser() {
+        val current = _state.value as? SellerUiState.Content ?: return
+        _state.value = current.copy(chooser = null)
+    }
+
+    fun dismissMessage() {
+        val current = _state.value as? SellerUiState.Content ?: return
+        _state.value = current.copy(message = null)
     }
 
     private suspend fun load() {

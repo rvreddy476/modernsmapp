@@ -1,29 +1,50 @@
 package com.us.android.feature.commerce.seller
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.commerce.model.CategoryChoice
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsChoice
 import com.us.android.core.designsystem.component.UsChoiceRow
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.CommerceSheet
 import com.us.android.feature.commerce.ui.MSellerPageBar
+import com.us.android.feature.commerce.ui.pressScale
 
 /**
  * Listing a product.
@@ -50,24 +71,37 @@ import com.us.android.feature.commerce.ui.MSellerPageBar
 @Composable
 fun NewProductScreen(
     onBack: () -> Unit,
-    onCreated: (productId: String) -> Unit,
+    onCreated: (CreatedProduct) -> Unit,
     viewModel: NewProductViewModel = hiltViewModel(),
     images: ProductImagesViewModel = hiltViewModel(),
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
     val gallery by images.state.collectAsStateWithLifecycle()
+    var choosingCategory by rememberSaveable { mutableStateOf(false) }
 
     // The gallery can only be attached once the listing has an id, so the
     // create happens first and the images follow it. A seller who added no
     // photos is not held up by an attach with nothing to send.
     val submit: () -> Unit = {
-        viewModel.submit { productId ->
+        viewModel.submit { created ->
             if (readyMediaIds(gallery.images).isEmpty()) {
-                onCreated(productId)
+                onCreated(created)
             } else {
-                images.attach(productId) { onCreated(productId) }
+                images.attach(created.productId) { onCreated(created) }
             }
         }
+    }
+
+    if (choosingCategory) {
+        CategoryPickerSheet(
+            choices = form.categories,
+            selected = form.categoryId,
+            onChoose = { id ->
+                viewModel.update { it.copy(categoryId = id) }
+                choosingCategory = false
+            },
+            onDismiss = { choosingCategory = false },
+        )
     }
 
     UsScaffold(topBar = { MSellerPageBar(title = "New product", onBack = onBack) }) { padding ->
@@ -94,6 +128,7 @@ fun NewProductScreen(
                     .padding(padding)
                     .verticalScroll(rememberScrollState()),
                 onChange = viewModel::update,
+                onChooseCategory = { choosingCategory = true },
                 onSubmit = submit,
             )
         }
@@ -107,6 +142,7 @@ private fun NewProductForm(
     images: ProductImagesViewModel,
     modifier: Modifier = Modifier,
     onChange: ((NewProductForm) -> NewProductForm) -> Unit,
+    onChooseCategory: () -> Unit,
     onSubmit: () -> Unit,
 ) {
     Column(
@@ -136,6 +172,15 @@ private fun NewProductForm(
             label = "Description (optional)",
             enabled = !form.saving,
             singleLine = false,
+        )
+
+        // Required (2026-09-30): a product with no category appears in no
+        // category, so a buyer browsing never reaches it. Chosen from the
+        // tree's listable leaves, never preselected.
+        CategoryRow(
+            form = form,
+            enabled = !form.saving,
+            onClick = onChooseCategory,
         )
 
         PriceFields(form = form, onChange = onChange)
@@ -190,6 +235,149 @@ private fun NewProductForm(
             loading = form.saving || gallery.attaching,
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+/** The category row: what is chosen, or the invitation to choose. */
+@Composable
+private fun CategoryRow(
+    form: NewProductForm,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
+        Text(
+            text = "Category",
+            style = MaterialTheme.typography.labelMedium,
+            color = UsTheme.extended.textSecondary,
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(UsTheme.radii.medium))
+                .background(UsTheme.extended.bgCard)
+                .pressScale(onClick = onClick, enabled = enabled)
+                .padding(UsTheme.spacing.m)
+                .testTag("mseller_category"),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val label = form.categoryLabel
+            Text(
+                text = when {
+                    label != null -> label
+                    form.loadingCategories -> "Loading categories"
+                    form.categories.isEmpty() -> "No categories to choose from"
+                    else -> CHOOSE_A_CATEGORY
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (label != null) UsTheme.extended.textPrimary else UsTheme.extended.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = UsIcons.ChevronRight,
+                contentDescription = null,
+                tint = UsTheme.extended.textSecondary,
+                modifier = Modifier.size(CHEVRON),
+            )
+        }
+    }
+}
+
+/**
+ * The listable categories, by path, one per row. A sheet rather than a
+ * choice row: a taxonomy has dozens of leaves, and a row of chips that
+ * wraps ten lines is not a control.
+ */
+@Composable
+private fun CategoryPickerSheet(
+    choices: List<CategoryChoice>,
+    selected: String?,
+    onChoose: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    CommerceSheet(title = "Category", onDismiss = onDismiss) {
+        CategoryPickerList(choices = choices, selected = selected, onChoose = onChoose)
+    }
+}
+
+/** The picker's body, apart from the sheet so it can be previewed. */
+@Composable
+private fun CategoryPickerList(
+    choices: List<CategoryChoice>,
+    selected: String?,
+    onChoose: (String) -> Unit,
+) {
+    if (choices.isEmpty()) {
+        Text(
+            text = "No categories to choose from right now.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textSecondary,
+        )
+    }
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = PICKER_MAX_HEIGHT)
+            .testTag("mseller_category_picker"),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        items(choices, key = { it.id }) { choice ->
+            val chosen = choice.id == selected
+            Text(
+                text = choice.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (chosen) UsTheme.extended.accentSolid else UsTheme.extended.textPrimary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(UsTheme.radii.medium))
+                    .pressScale(onClick = { onChoose(choice.id) })
+                    .padding(UsTheme.spacing.m)
+                    .testTag("mseller_category:${choice.id}"),
+            )
+        }
+    }
+}
+
+private val CHEVRON = 18.dp
+private val PICKER_MAX_HEIGHT = 420.dp
+
+private val previewCategories = listOf(
+    CategoryChoice(id = "c-1", label = "Electronics"),
+    CategoryChoice(id = "c-2", label = "Books & Stationery › Textbooks"),
+    CategoryChoice(id = "c-3", label = "Home & Kitchen"),
+)
+
+@Preview(showBackground = true)
+@Composable
+private fun CategoryRowPreview() {
+    UsTheme {
+        Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+            CategoryRow(
+                form = NewProductForm(categories = previewCategories, loadingCategories = false),
+                enabled = true,
+                onClick = {},
+            )
+            CategoryRow(
+                form = NewProductForm(
+                    categories = previewCategories,
+                    categoryId = "c-2",
+                    loadingCategories = false,
+                ),
+                enabled = true,
+                onClick = {},
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun CategoryPickerListPreview() {
+    UsTheme {
+        CategoryPickerList(choices = previewCategories, selected = "c-2", onChoose = {})
     }
 }
 

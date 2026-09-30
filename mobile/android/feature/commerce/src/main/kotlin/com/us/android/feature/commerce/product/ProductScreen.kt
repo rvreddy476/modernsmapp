@@ -19,7 +19,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -302,12 +301,13 @@ private fun VariantPicker(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(UsTheme.radii.medium))
-                    // Selected is WHITE. The accent is the app's primary
-                    // action, not its selection mark, and an ember ring here
-                    // competes with the Add to bag button below it.
+                    // Selected is the text ramp's ink (white on the dark
+                    // theme). The accent is the app's primary action, not its
+                    // selection mark, and an ember ring here competes with
+                    // the Add to bag button below it.
                     .border(
                         width = if (isSelected) SELECTED_BORDER else UNSELECTED_BORDER,
-                        color = if (isSelected) Color.White else UsTheme.extended.borderSubtle,
+                        color = if (isSelected) UsTheme.extended.textPrimary else UsTheme.extended.borderSubtle,
                         shape = RoundedCornerShape(UsTheme.radii.medium),
                     )
                     .background(UsTheme.extended.bgCard)

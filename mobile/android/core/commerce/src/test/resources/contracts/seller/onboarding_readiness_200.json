@@ -1,0 +1,14 @@
+{
+  "data": {
+    "detail": {
+      "has_store_name": true,
+      "has_email": true,
+      "has_pickup_address": true,
+      "has_payout_account": true,
+      "has_kyc_document": true
+    },
+    "missing": [],
+    "ready": true
+  }
+}
+

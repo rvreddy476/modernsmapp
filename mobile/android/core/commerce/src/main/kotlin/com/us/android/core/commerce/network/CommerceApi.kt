@@ -31,20 +31,20 @@ import retrofit2.http.Query
  *
  *  1. `checkout` takes an `Idempotency-Key` HEADER and the server rejects the
  *     request without one (LB-15). The old server fabricated a key when the
- *     client omitted it ÃÂ¢ÃÂÃÂ a key that can never match a retry and therefore
+ *     client omitted it — a key that can never match a retry and therefore
  *     dedupes nothing, so the unique index existed but never fired.
  *
  *  2. There is no endpoint here that names a payment AMOUNT. The client asks
  *     to pay for an ORDER (LB-4). The removed `POST /v1/payments/intents`
  *     took an amount from the request body, which is how a buyer could open a
- *     1-paise intent against their own ÃÂ¢ÃÂÃÂ¹10,000 order ÃÂ¢ÃÂÃÂ and, with the equally
+ *     1-paise intent against their own ₹10,000 order — and, with the equally
  *     removed `PATCH /intents/:id/status`, mark it succeeded without a single
  *     rupee reaching the PSP.
  */
 @Suppress("TooManyFunctions")
 interface CommerceApi {
 
-    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Catalog ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+    // ─── Catalog ─────────────────────────────────────────────────────
 
     @GET("v1/commerce/products")
     suspend fun listProducts(
@@ -61,6 +61,19 @@ interface CommerceApi {
     ): Response<ApiEnvelope<ProductDetailDto>>
 
     /**
+     * A product's variants, every status, in creation order. Public.
+     *
+     * The seller half reads this to find the VARIANT id a stock or price edit
+     * addresses (2026-09-30). Variant ids are their own UUIDs, never the
+     * product id: `GET /seller/variants/:id/stock` looks up `product_variants.id`,
+     * and a product id sent there is a variant that does not exist.
+     */
+    @GET("v1/commerce/products/{productId}/variants")
+    suspend fun productVariants(
+        @Path("productId") productId: String,
+    ): Response<ApiEnvelope<VariantListDto>>
+
+    /**
      * The taxonomy, as a bare array in `data`.
      *
      * Not `{items: []}` — the handler writes the slice itself, and it writes
@@ -69,6 +82,21 @@ interface CommerceApi {
      */
     @GET("v1/commerce/categories")
     suspend fun categories(): Response<ApiEnvelope<List<CategoryDto>>>
+
+    /**
+     * The taxonomy NESTED, with `is_listable` and `children` on every node.
+     *
+     * A second route rather than a flag on [categories]: the flat answer is
+     * byte-identical whether or not the parameter is sent, and the server
+     * keeps it that way so two shipped clients keep decoding it. The tree is
+     * what a category PICKER needs — a flat list cannot show that
+     * "Textbooks" lives under "Books", and a seller choosing from it picks the
+     * browse heading their listing may not sit on. A server that predates the
+     * flag answers the flat shape, which fails to decode as a tree; the
+     * repository then falls back to [categories] and derives the leaves.
+     */
+    @GET("v1/commerce/categories?tree=true")
+    suspend fun categoryTree(): Response<ApiEnvelope<List<CategoryTreeDto>>>
 
     /**
      * The storefront's landing page: banners plus named product shelves.
@@ -136,7 +164,7 @@ interface CommerceApi {
         @Body body: AttachOneProductMediaRequest,
     ): Response<ApiEnvelope<ProductMediaListDto>>
 
-    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Cart ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+    // ─── Cart ────────────────────────────────────────────────────────
 
     @GET("v1/commerce/cart")
     suspend fun getCart(): Response<ApiEnvelope<CartDto>>
@@ -155,7 +183,7 @@ interface CommerceApi {
         @Path("variantId") variantId: String,
     ): Response<ApiEnvelope<CartDto>>
 
-    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Address ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+    // ─── Address ─────────────────────────────────────────────────────
 
     @GET("v1/commerce/addresses")
     suspend fun listAddresses(): Response<ApiEnvelope<List<AddressDto>>>
@@ -163,7 +191,7 @@ interface CommerceApi {
     @POST("v1/commerce/addresses")
     suspend fun addAddress(@Body body: AddressDto): Response<ApiEnvelope<AddressDto>>
 
-    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Quote (A4) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+    // ─── Quote (A4) ──────────────────────────────────────────────────
 
     /**
      * Obtained BEFORE checkout, because it is a courier call and no network
@@ -174,7 +202,7 @@ interface CommerceApi {
     @POST("v1/commerce/checkout/quote")
     suspend fun quote(@Body body: QuoteRequest): Response<ApiEnvelope<QuoteDto>>
 
-    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Checkout (LB-14, LB-15) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+    // ─── Checkout (LB-14, LB-15) ────────────────────────────────────
 
     @POST("v1/commerce/v2/orders/checkout")
     suspend fun checkout(
@@ -182,19 +210,39 @@ interface CommerceApi {
         @Body body: CheckoutRequest,
     ): Response<ApiEnvelope<CheckoutResultDto>>
 
-    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Payment (LB-4, A1) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+    // ─── Payment (LB-4, A1) ──────────────────────────────────────────
 
-    /** Opens a payment for an order. Note the absence of an amount. */
+    /**
+     * Opens a payment for an order. Note the absence of an amount.
+     *
+     * Also the RETRY after a failed payment (contract §4.7, 2026-09-30): on an
+     * order in `payment_failed` the server re-reserves the stock, moves the
+     * order back to `payment_pending` and answers a fresh intent, or refuses
+     * with 409 `OUT_OF_STOCK` when the stock has gone.
+     */
     @POST("v1/commerce/orders/{orderId}/payment/intent")
     suspend fun openPayment(
         @Path("orderId") orderId: String,
     ): Response<ApiEnvelope<PaymentHandleDto>>
 
     /**
-     * The authoritative payment state.
+     * The authoritative payment state, three-state (contract §4.5,
+     * 2026-09-30): `confirming | paid | failed` plus a `refund_status`. The
+     * same shape as food-service's `GET /orders/:id/payment`.
+     *
+     * A server that predates the route answers a bare 404; the status source
+     * then falls back ONCE, for that attempt, to [paymentStatus].
+     */
+    @GET("v1/commerce/orders/{orderId}/payment")
+    suspend fun orderPayment(
+        @Path("orderId") orderId: String,
+    ): Response<ApiEnvelope<OrderPaymentDto>>
+
+    /**
+     * The older payment state, kept for the current build.
      *
      * A1: the app polls this after the PSP sheet returns. The redirect is
-     * evidence, never proof ÃÂ¢ÃÂÃÂ the order becomes paid only when a
+     * evidence, never proof — the order becomes paid only when a
      * signature-verified provider webhook reaches the server.
      */
     @GET("v1/commerce/orders/{orderId}/payment/status")
@@ -202,7 +250,7 @@ interface CommerceApi {
         @Path("orderId") orderId: String,
     ): Response<ApiEnvelope<PaymentStatusDto>>
 
-    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Orders ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+    // ─── Orders ──────────────────────────────────────────────────────
 
     @GET("v1/commerce/orders")
     suspend fun listOrders(
@@ -221,19 +269,19 @@ interface CommerceApi {
         @Body body: CancelOrderRequest,
     ): Response<ApiEnvelope<Unit>>
 
-    // Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂ Seller Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+    // ─── Seller ──────────────────────────────────────────────────────
     //
     // These are the seller half of the launch loop. They are separate from the
     // public catalogue routes on purpose: every one resolves the seller from
     // the CALLER, never from a path parameter, so a request body cannot name
-    // somebody elseÃ¢ÂÂs shop.
+    // somebody else's shop.
 
-    /** The callerÃ¢ÂÂs own seller profile, including onboarding status. */
+    /** The caller's own seller profile, including onboarding status. */
     @GET("v1/commerce/sellers/me")
     suspend fun sellerProfile(): Response<ApiEnvelope<SellerProfileDto>>
 
     /**
-     * The sellerÃ¢ÂÂs OWN catalogue Ã¢ÂÂ every status, drafts and moderation
+     * The seller's OWN catalogue — every status, drafts and moderation
      * rejections included, because those are the ones they need to fix.
      *
      * Distinct from `GET /sellers/{id}/products`, which is the public
@@ -254,9 +302,9 @@ interface CommerceApi {
     /**
      * A signed DELTA, never a new total.
      *
-     * A Ã¢ÂÂset stock to NÃ¢ÂÂ call is a lost-update generator: the screen renders
+     * A "set stock to N" call is a lost-update generator: the screen renders
      * 42, two units sell while the seller is typing, they submit 52 meaning
-     * Ã¢ÂÂI added tenÃ¢ÂÂ, and the two sold units are restored to the shelf.
+     * "I added ten", and the two sold units are restored to the shelf.
      */
     @PATCH("v1/commerce/seller/variants/{variantId}/stock")
     suspend fun adjustStock(
@@ -275,7 +323,7 @@ interface CommerceApi {
         @Body body: StartSellingRequest,
     ): Response<ApiEnvelope<SellerProfileDto>>
 
-    /** The GST rate table. Public â statutory rates, not seller data. */
+    /** The GST rate table. Public — statutory rates, not seller data. */
     @GET("v1/commerce/tax-classes")
     suspend fun taxClasses(): Response<ApiEnvelope<TaxClassListDto>>
 
@@ -343,7 +391,7 @@ interface CommerceApi {
     @POST("v1/commerce/onboarding/submit")
     suspend fun submitSellerApplication(): Response<ApiEnvelope<Unit>>
 
-    /** The pickup point Ã¢ÂÂ the origin of every shipment this seller sends. */
+    /** The pickup point — the origin of every shipment this seller sends. */
     @PUT("v1/commerce/seller/address")
     suspend fun saveSellerAddress(
         @Body body: SellerAddressRequest,
@@ -461,13 +509,19 @@ const val SELLER_PAGE_SIZE = 20
 /** The earnings route defaults to 50; asking for the same keeps one page one screen. */
 const val EARNINGS_PAGE_SIZE = 50
 
-// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Wire DTOs ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+// ─── Wire DTOs ───────────────────────────────────────────────────────
 //
 // Every money field is `_minor` and typed [Paise]. The server also emits
 // deprecated rupee mirrors during the dual-write window; they are
 // deliberately NOT declared here. A field that does not exist in the DTO
 // cannot be read by mistake, which is a stronger guarantee than a comment
 // telling the next person not to.
+//
+// Every RESPONSE field carries a default (house rule, 2026-09-30). A row the
+// server sends in a shape this build does not expect — an id missing, a
+// title absent — decodes to its zero value and is SKIPPED by the repository
+// (`id` blank) rather than throwing and taking the whole list down with it.
+// Request DTOs keep their required fields: the client knows what it sends.
 
 @Serializable
 data class ProductListDto(
@@ -477,14 +531,14 @@ data class ProductListDto(
 
 @Serializable
 data class ProductSummaryDto(
-    val id: String,
-    val title: String,
+    val id: String = "",
+    val title: String = "",
     @SerialName("brand_name") val brandName: String? = null,
     @SerialName("primary_image_media_id") val primaryImageMediaId: String? = null,
     // Resolved server-side. Commerce used to hand back only the media UUID,
     // and :core:commerce has no dependency on :core:media (where the resolver
     // lives), so no product screen could draw an image. Absent when
-    // media-service is unreachable ÃÂ the read path fails soft and the UI
+    // media-service is unreachable — the read path fails soft and the UI
     // shows a placeholder rather than the catalogue failing to load.
     @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
@@ -541,7 +595,7 @@ data class FavouriteDto(
  */
 @Serializable
 data class CategoryDto(
-    val id: String,
+    val id: String = "",
     val name: String = "",
     val slug: String = "",
     @SerialName("parent_id") val parentId: String? = null,
@@ -549,6 +603,30 @@ data class CategoryDto(
     @SerialName("display_order") val displayOrder: Int = 0,
     @SerialName("is_featured") val isFeatured: Boolean = false,
     @SerialName("product_count") val productCount: Int = 0,
+)
+
+/**
+ * One node of `GET /categories?tree=true` (`postgres.CategoryTreeNode`).
+ *
+ * `is_listable` is whether a product may sit directly on this node; a
+ * heading that only groups other categories is not listable. `children` is
+ * always present on the wire (`[]` for a leaf).
+ */
+@Serializable
+data class CategoryTreeDto(
+    val id: String = "",
+    @SerialName("parent_id") val parentId: String? = null,
+    val name: String = "",
+    val slug: String = "",
+    val description: String? = null,
+    @SerialName("display_order") val displayOrder: Int = 0,
+    @SerialName("is_active") val isActive: Boolean = true,
+    @SerialName("is_featured") val isFeatured: Boolean = false,
+    @SerialName("is_listable") val isListable: Boolean = true,
+    @SerialName("image_media_id") val imageMediaId: String? = null,
+    @SerialName("product_count") val productCount: Int = 0,
+    val depth: Int = 0,
+    val children: List<CategoryTreeDto> = emptyList(),
 )
 
 /** The landing page: the banner rail, then the named shelves. */
@@ -560,7 +638,7 @@ data class HomeDto(
 
 @Serializable
 data class HomeBannerDto(
-    val id: String,
+    val id: String = "",
     val title: String = "",
     val subtitle: String? = null,
     @SerialName("image_url") val imageUrl: String? = null,
@@ -572,13 +650,28 @@ data class HomeBannerDto(
 @Serializable
 data class HomeSectionDto(
     /** Stable machine key: "deals", "best_sellers", "new_arrivals", ... */
-    val key: String,
+    val key: String = "",
     val title: String = "",
     val products: List<ProductSummaryDto> = emptyList(),
 )
 
+/**
+ * A product's gallery, as `GET` and `POST /products/:id/media` answer it.
+ *
+ * 2026-09-30: the server writes the list under `items` (handler.go,
+ * `ListProductMedia` and `AttachProductMedia`, pinned by the
+ * `storefront/product_media_200.json` golden). This DTO used to read only
+ * `media`, so every gallery decoded empty and a seller's attached images
+ * never came back to the screen. `media` stays declared for any build of the
+ * server that wrote it; [gallery] is what the repository reads.
+ */
 @Serializable
-data class ProductMediaListDto(val media: List<ProductMediaDto> = emptyList())
+data class ProductMediaListDto(
+    val items: List<ProductMediaDto> = emptyList(),
+    val media: List<ProductMediaDto> = emptyList(),
+) {
+    val gallery: List<ProductMediaDto> get() = items.ifEmpty { media }
+}
 
 @Serializable
 data class ProductMediaDto(
@@ -605,25 +698,25 @@ data class AttachOneProductMediaRequest(
 
 @Serializable
 data class ProductDetailDto(
-    val product: ProductBodyDto,
+    val product: ProductBodyDto = ProductBodyDto(),
     val variants: List<VariantDto> = emptyList(),
 )
 
 @Serializable
 data class ProductBodyDto(
-    val id: String,
-    val title: String,
+    val id: String = "",
+    val title: String = "",
     val description: String? = null,
     @SerialName("brand_name") val brandName: String? = null,
     @SerialName("primary_image_media_id") val primaryImageMediaId: String? = null,
     // Resolved server-side. Commerce used to hand back only the media UUID,
     // and :core:commerce has no dependency on :core:media (where the resolver
     // lives), so no product screen could draw an image. Absent when
-    // media-service is unreachable ÃÂ the read path fails soft and the UI
+    // media-service is unreachable — the read path fails soft and the UI
     // shows a placeholder rather than the catalogue failing to load.
     @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
-    @SerialName("seller_id") val sellerId: String,
+    @SerialName("seller_id") val sellerId: String = "",
     @SerialName("seller_name") val sellerName: String? = null,
     @SerialName("avg_rating") val avgRating: Float = 0f,
     @SerialName("review_count") val reviewCount: Int = 0,
@@ -722,8 +815,8 @@ internal object TryOnDtoOrNull : KSerializer<TryOnDto?> {
 
 @Serializable
 data class VariantDto(
-    val id: String,
-    val sku: String,
+    val id: String = "",
+    val sku: String = "",
     @SerialName("option_1_name") val option1Name: String? = null,
     @SerialName("option_1_value") val option1Value: String? = null,
     @SerialName("option_2_name") val option2Name: String? = null,
@@ -735,6 +828,10 @@ data class VariantDto(
     @SerialName("available_qty") val availableQty: Int = 0,
     val status: String = "active",
 )
+
+/** `GET /products/:id/variants`: `{items: [...]}`, every status, creation order. */
+@Serializable
+data class VariantListDto(val items: List<VariantDto> = emptyList())
 
 @Serializable
 data class CartDto(
@@ -748,8 +845,8 @@ data class CartDto(
 
 @Serializable
 data class CartLineDto(
-    @SerialName("variant_id") val variantId: String,
-    @SerialName("product_id") val productId: String,
+    @SerialName("variant_id") val variantId: String = "",
+    @SerialName("product_id") val productId: String = "",
     val title: String = "",
     @SerialName("image_media_id") val imageMediaId: String? = null,
     @SerialName("image_url") val imageUrl: String? = null,
@@ -772,18 +869,27 @@ data class AddToCartRequest(
 @Serializable
 data class UpdateCartItemRequest(val quantity: Int)
 
+/**
+ * An address, read AND written.
+ *
+ * The defaults are for the read: a row the server sends without a name is
+ * skipped by the repository rather than failing the whole address book. On
+ * the write the app fills every field before sending, so the defaults never
+ * shape a request (and with `encodeDefaults` off, an empty field is simply
+ * absent, which the server refuses the same way it refuses an empty one).
+ */
 @Serializable
 data class AddressDto(
     val id: String = "",
     val label: String = "Home",
-    @SerialName("contact_name") val contactName: String,
-    val phone: String,
-    @SerialName("address_line_1") val line1: String,
+    @SerialName("contact_name") val contactName: String = "",
+    val phone: String = "",
+    @SerialName("address_line_1") val line1: String = "",
     @SerialName("address_line_2") val line2: String? = null,
     val landmark: String? = null,
-    val city: String,
-    val state: String,
-    @SerialName("postal_code") val postalCode: String,
+    val city: String = "",
+    val state: String = "",
+    @SerialName("postal_code") val postalCode: String = "",
     @SerialName("is_default") val isDefault: Boolean = false,
 )
 
@@ -803,7 +909,7 @@ data class QuoteRequest(
 @Serializable
 data class QuoteDto(
     @SerialName("quote_id") val quoteId: String = "",
-    // C3-LB-2 ÃÂ¢ÃÂÃÂ the whole breakdown, server-computed. `total_minor` is the
+    // C3-LB-2 — the whole breakdown, server-computed. `total_minor` is the
     // number the buyer approves and the number sent back as
     // `expected_total_minor`; `tax_minor` is the GST already INSIDE it (D1),
     // published for display and never to be added on.
@@ -829,7 +935,7 @@ data class CheckoutRequest(
     /**
      * What the customer was last shown. A mismatch returns a typed
      * PRICE_CHANGED response rather than silently charging a different
-     * number ÃÂ¢ÃÂÃÂ which is the only reason the client sends a total at all. It
+     * number — which is the only reason the client sends a total at all. It
      * is a claim to be checked, never an instruction.
      */
     @SerialName("expected_total_minor") val expectedTotalMinor: Long = 0,
@@ -837,8 +943,8 @@ data class CheckoutRequest(
 
 @Serializable
 data class CheckoutResultDto(
-    @SerialName("order_id") val orderId: String,
-    @SerialName("order_number") val orderNumber: String,
+    @SerialName("order_id") val orderId: String = "",
+    @SerialName("order_number") val orderNumber: String = "",
     @SerialName("total_minor") val totalMinor: Paise = Paise.ZERO,
     @SerialName("tax_minor") val taxMinor: Paise = Paise.ZERO,
     @SerialName("shipping_minor") val shippingMinor: Paise = Paise.ZERO,
@@ -849,7 +955,7 @@ data class CheckoutResultDto(
 
 @Serializable
 data class PaymentHandleDto(
-    @SerialName("payment_intent_id") val paymentIntentId: String,
+    @SerialName("payment_intent_id") val paymentIntentId: String = "",
     @SerialName("amount_minor") val amountMinor: Paise = Paise.ZERO,
     val currency: String = "INR",
     @SerialName("provider_ref") val providerRef: String? = null,
@@ -860,7 +966,7 @@ data class PaymentHandleDto(
      *
      * It comes from the server that created the provider order, deliberately.
      * A key compiled into the app can disagree with the server's environment
-     * ÃÂ¢ÃÂÃÂ a test-key build cannot open a sheet for a live-key order ÃÂ¢ÃÂÃÂ and
+     * — a test-key build cannot open a sheet for a live-key order — and
      * sourcing it here makes that disagreement impossible rather than merely
      * unlikely.
      *
@@ -871,11 +977,29 @@ data class PaymentHandleDto(
     @SerialName("client_session") val clientSession: Map<String, String>? = null,
 )
 
+/**
+ * `GET /orders/:id/payment` (contract §4.5): the three-state payment read.
+ *
+ * `status` is `confirming | paid | failed`; `refund_status` is null or
+ * `pending | partially_refunded | refunded`. The same names as food-service's
+ * `OrderPaymentDto`, and pinned by the same `order_payment_get_200_*.json`
+ * fixture shape.
+ */
+@Serializable
+data class OrderPaymentDto(
+    @SerialName("order_id") val orderId: String = "",
+    val status: String = "",
+    @SerialName("amount_minor") val amountMinor: Paise = Paise.ZERO,
+    val currency: String = "INR",
+    @SerialName("refund_status") val refundStatus: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
 @Serializable
 data class PaymentStatusDto(
-    @SerialName("order_id") val orderId: String,
-    @SerialName("order_status") val orderStatus: String,
-    @SerialName("payment_status") val paymentStatus: String,
+    @SerialName("order_id") val orderId: String = "",
+    @SerialName("order_status") val orderStatus: String = "",
+    @SerialName("payment_status") val paymentStatus: String = "",
     @SerialName("provider_status") val providerStatus: String? = null,
 )
 
@@ -887,10 +1011,10 @@ data class OrderListDto(
 
 @Serializable
 data class OrderDto(
-    val id: String,
-    @SerialName("order_number") val orderNumber: String,
-    val status: String,
-    @SerialName("payment_status") val paymentStatus: String,
+    val id: String = "",
+    @SerialName("order_number") val orderNumber: String = "",
+    val status: String = "",
+    @SerialName("payment_status") val paymentStatus: String = "",
     @SerialName("created_at_epoch") val createdAtEpoch: Long = 0,
     @SerialName("subtotal_minor") val subtotalMinor: Paise = Paise.ZERO,
     @SerialName("discount_minor") val discountMinor: Paise = Paise.ZERO,
@@ -902,37 +1026,64 @@ data class OrderDto(
     /** The immutable snapshot stored on the order (LB-18). */
     @SerialName("delivery_address") val deliveryAddress: AddressDto? = null,
     @SerialName("can_cancel") val canCancel: Boolean = false,
+    /**
+     * Whether `POST /orders/:id/payment/intent` would re-open this order
+     * (contract §4.7). Absent on a server that predates the retry; the
+     * screen then offers "Pay now" on `payment_failed` regardless and lets
+     * the intent route answer.
+     */
+    @SerialName("can_retry_payment") val canRetryPayment: Boolean? = null,
     @SerialName("tracking_url") val trackingUrl: String? = null,
+    /**
+     * The LIST row's summary (2026-09-30, `orders/orders_list_200.json`):
+     * `GET /orders` sends no `items`, only how many lines the order has and
+     * the first line's title. Without these a list row had nothing to say
+     * about what was bought. Zero and null on the detail read, which sends
+     * the lines themselves.
+     */
+    @SerialName("item_count") val itemCount: Int = 0,
+    @SerialName("first_product_title") val firstProductTitle: String? = null,
 )
 
 @Serializable
 data class OrderLineDto(
-    @SerialName("product_id") val productId: String,
-    @SerialName("variant_id") val variantId: String,
+    @SerialName("product_id") val productId: String = "",
+    @SerialName("variant_id") val variantId: String = "",
     @SerialName("product_title") val title: String = "",
     @SerialName("image_media_id") val imageMediaId: String? = null,
     @SerialName("image_url") val imageUrl: String? = null,
     val quantity: Int = 1,
     @SerialName("unit_price_minor") val unitPriceMinor: Paise = Paise.ZERO,
+    /**
+     * The line's total as the buyer's order read sends it (2026-09-30,
+     * `orders/order_get_200_*.json`). The DTO used to read only
+     * `final_price_minor`, which that route does not send, so every line on
+     * the order detail read ₹0. [finalPriceMinor] stays for a server that
+     * wrote it.
+     */
+    @SerialName("line_total_minor") val lineTotalMinor: Paise = Paise.ZERO,
     @SerialName("final_price_minor") val finalPriceMinor: Paise = Paise.ZERO,
-)
+) {
+    /** The line total: `line_total_minor` when sent, else `final_price_minor` (Go sends 0 for "none"). */
+    val total: Paise get() = if (lineTotalMinor != Paise.ZERO) lineTotalMinor else finalPriceMinor
+}
 
 @Serializable
 data class CancelOrderRequest(val reason: String)
 
-// Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂ Seller DTOs Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ─── Seller DTOs ─────────────────────────────────────────────────────
 
 /**
  * The caller's own seller profile.
  *
- * `status` is the onboarding/approval state machine Ã¢ÂÂ draft, submitted,
+ * `status` is the onboarding/approval state machine — draft, submitted,
  * under_review, changes_required, approved, rejected, suspended, disabled. It
  * is NOT `verification_status`, which is the separate KYC column: a seller can
  * be format-checked and still not approved to sell.
  */
 @Serializable
 data class SellerProfileDto(
-    val id: String,
+    val id: String = "",
     @SerialName("store_name") val storeName: String = "",
     val status: String = "",
     @SerialName("onboarding_step") val onboardingStep: Int = 0,
@@ -955,16 +1106,24 @@ data class SellerProductsDto(
  * Carries both `status` and `approval_status` because they answer different
  * questions and a seller needs both: `status` is whether the seller has it
  * switched on, `approval_status` is whether moderation has let it through.
+ *
+ * `variants` (contract §6, lane C1) is the product's variants with their own
+ * ids, so a stock or price edit can be addressed without a second read. A
+ * server that predates it sends none, and the repository then reads
+ * `GET /products/:id/variants`. `default_variant_id` is the list projection's
+ * shorthand for the same thing when it is present.
  */
 @Serializable
 data class SellerProductDto(
-    val id: String,
+    val id: String = "",
     val title: String = "",
     val status: String = "",
     @SerialName("approval_status") val approvalStatus: String = "",
     @SerialName("rejection_reason") val rejectionReason: String? = null,
     @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
+    val variants: List<VariantDto> = emptyList(),
+    @SerialName("default_variant_id") val defaultVariantId: String? = null,
 )
 
 /**
@@ -1013,7 +1172,7 @@ data class StartSellingRequest(
     /**
      * `individual` or `business`. Defaulted here rather than asked, because
      * the distinction changes which KYC documents are required and that is a
-     * later step in the wizard Ã¢ÂÂ asking it on the first screen would make the
+     * later step in the wizard — asking it on the first screen would make the
      * shortest path into selling the one that needs the most explanation.
      */
     @SerialName("seller_type") val sellerType: String = "individual",
@@ -1024,7 +1183,7 @@ data class TaxClassListDto(val items: List<TaxClassDto> = emptyList())
 
 @Serializable
 data class TaxClassDto(
-    val id: String,
+    val id: String = "",
     val name: String = "",
     @SerialName("rate_percent") val ratePercent: Double = 0.0,
 )
@@ -1033,14 +1192,20 @@ data class TaxClassDto(
  * Creating a product.
  *
  * `tax_class_id` is required, not optional. A product without a GST class is
- * not untaxed â it is unsellable: checkout resolves the rate under a row lock
+ * not untaxed — it is unsellable: checkout resolves the rate under a row lock
  * and refuses with PRODUCT_TAX_UNCONFIGURED. The server rejects a create with
  * no class rather than letting a seller list something no buyer can complete.
+ *
+ * `category_id` (2026-09-30) is where the listing sits in browse. The server
+ * accepts a create without one, and that product then appears in no
+ * category, so the app refuses the create client-side until one is chosen.
+ * Nullable with a null default so an older caller's body is unchanged.
  */
 @Serializable
 data class CreateProductRequest(
     val title: String,
     @SerialName("tax_class_id") val taxClassId: String,
+    @SerialName("category_id") val categoryId: String? = null,
     val description: String? = null,
     @SerialName("primary_image_media_id") val primaryImageMediaId: String? = null,
     @SerialName("weight_grams") val weightGrams: Int? = null,
@@ -1079,7 +1244,7 @@ data class UpdateVariantRequest(
  */
 @Serializable
 data class SellerVariantDto(
-    @SerialName("variant_id") val variantId: String,
+    @SerialName("variant_id") val variantId: String = "",
     @SerialName("product_id") val productId: String = "",
     val title: String = "",
     val sku: String = "",

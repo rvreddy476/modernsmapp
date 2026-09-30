@@ -96,9 +96,45 @@ sealed interface CommerceError {
 
     data class Network(val cause: Throwable?) : CommerceError
 
-    /** Anything unmapped. Renders as a generic failure. */
-    data class Unexpected(val code: String, val message: String) : CommerceError
+    /**
+     * Anything unmapped. Renders as a generic failure.
+     *
+     * [httpStatus] (2026-09-30) is the response status, 0 when built without
+     * one, so a poll can tell a 4xx the server will keep giving — a 403
+     * NOT_YOUR_ORDER, a 400 — from a 5xx it may not. It is NOT what a screen
+     * branches on: branch on [code], as every existing `code == "NO_SELLER"`
+     * check does, and the two-argument form keeps compiling for them.
+     */
+    data class Unexpected(val code: String, val message: String, val httpStatus: Int = 0) : CommerceError
 }
+
+/**
+ * Whether the server has answered this request for good, so repeating it is
+ * pointless: the order is not there, or not this caller's, or the request
+ * itself was refused with a 4xx that will not change. A 5xx, a network
+ * failure, a 408 or a 429 are NOT permanent.
+ *
+ * [CommerceError.NotAvailable] (a bare 404, "no such route") is deliberately
+ * not permanent here: the payment source treats it as "older server" and
+ * falls back, and a poll that stops on it would strand a real payment.
+ */
+fun CommerceError.isPermanentRefusal(): Boolean = when (this) {
+    CommerceError.OrderNotFound,
+    CommerceError.CancelNotPermitted,
+    -> true
+
+    is CommerceError.Unexpected ->
+        httpStatus in HTTP_CLIENT_ERRORS && httpStatus !in HTTP_TRANSIENT_CLIENT_ERRORS
+
+    else -> false
+}
+
+private const val HTTP_BAD_REQUEST = 400
+private const val HTTP_LAST_CLIENT_ERROR = 499
+private const val HTTP_REQUEST_TIMEOUT = 408
+private const val HTTP_TOO_MANY_REQUESTS = 429
+private val HTTP_CLIENT_ERRORS = HTTP_BAD_REQUEST..HTTP_LAST_CLIENT_ERROR
+private val HTTP_TRANSIENT_CLIENT_ERRORS = setOf(HTTP_REQUEST_TIMEOUT, HTTP_TOO_MANY_REQUESTS)
 
 data class UnavailableLine(
     val variantId: String,

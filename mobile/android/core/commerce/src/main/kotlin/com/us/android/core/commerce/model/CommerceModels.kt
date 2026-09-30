@@ -204,6 +204,77 @@ data class ProductImage(
     val sortOrder: Int,
 )
 
+/**
+ * One node of `GET /categories?tree=true`, nested.
+ *
+ * [listable] is whether a product may sit directly on this node. A heading
+ * that only groups others ("Books") is not, and a seller choosing where a
+ * listing goes must be offered the leaves ("Textbooks"), never the heading.
+ */
+data class CategoryNode(
+    val id: String,
+    val name: String,
+    val listable: Boolean,
+    val active: Boolean,
+    val children: List<CategoryNode>,
+)
+
+/**
+ * A category a seller can list a product under, with the path a person reads
+ * ("Books › Textbooks"), so two leaves with the same name under different
+ * headings stay distinguishable in a picker.
+ */
+data class CategoryChoice(
+    val id: String,
+    val label: String,
+)
+
+/**
+ * The categories a product may be listed under, from the tree: every ACTIVE,
+ * LISTABLE node with no listable children, labelled with its path. Pure, so
+ * the rule is a table test. Order is the server's (display order, depth
+ * first), which is the order a picker shows.
+ *
+ * 2026-09-30: a node that is listable but has listable children is still
+ * offered — "Phones" can hold a listing that fits no sub-category — but a
+ * heading that is not listable never is, whatever its children say.
+ */
+fun listableCategories(roots: List<CategoryNode>): List<CategoryChoice> {
+    val out = mutableListOf<CategoryChoice>()
+    fun walk(node: CategoryNode, path: List<String>) {
+        if (!node.active) return
+        val here = path + node.name
+        if (node.listable && node.id.isNotBlank()) out += CategoryChoice(node.id, here.joinToString(PATH_SEPARATOR))
+        node.children.forEach { walk(it, here) }
+    }
+    roots.forEach { walk(it, emptyList()) }
+    return out
+}
+
+/**
+ * The same choice list from the FLAT taxonomy, for a server that predates
+ * `?tree=true`. Without `is_listable` the only honest rule is "a node nobody
+ * hangs a child under": a category with children is treated as a heading.
+ */
+fun listableCategoriesFromFlat(flat: List<Category>): List<CategoryChoice> {
+    val byId = flat.associateBy { it.id }
+    val parents = flat.mapNotNull { it.parentId }.toSet()
+    fun pathOf(c: Category): String {
+        val names = ArrayDeque<String>()
+        var cur: Category? = c
+        var guard = 0
+        while (cur != null && guard++ < MAX_DEPTH) {
+            names.addFirst(cur.name)
+            cur = cur.parentId?.let(byId::get)
+        }
+        return names.joinToString(PATH_SEPARATOR)
+    }
+    return flat.filter { it.id.isNotBlank() && it.id !in parents }.map { CategoryChoice(it.id, pathOf(it)) }
+}
+
+private const val PATH_SEPARATOR = " › "
+private const val MAX_DEPTH = 16
+
 /** One page of catalogue results. */
 data class ProductPage(
     val items: List<ProductSummary>,
@@ -331,7 +402,82 @@ data class Order(
     val deliveryAddress: Address,
     val canCancel: Boolean,
     val trackingUrl: String?,
+    /**
+     * Whether the server says a fresh payment intent would re-open this order
+     * (contract §4.7). Null when the server did not say — a build older than
+     * the retry — and the screen then offers "Pay now" on [OrderStatus.PAYMENT_FAILED]
+     * and lets the intent route answer, including with OUT_OF_STOCK.
+     */
+    val canRetryPayment: Boolean? = null,
+    /**
+     * How many lines the order has and the first one's title, from the LIST
+     * read, which sends no [lines] (2026-09-30). Zero and null on the detail
+     * read; use [lineCount] and [firstLineTitle], which prefer the lines.
+     */
+    val itemCount: Int = 0,
+    val firstItemTitle: String? = null,
+) {
+    /** The number of lines, from the lines when the read carried them, else the list's count. */
+    val lineCount: Int get() = maxOf(lines.size, itemCount)
+
+    /** The first line's title, from the lines when the read carried them, else the list's. */
+    val firstLineTitle: String?
+        get() = lines.firstOrNull()?.title?.takeIf { it.isNotBlank() }
+            ?: firstItemTitle?.takeIf { it.isNotBlank() }
+
+    /**
+     * Whether "Pay now" is offered (2026-09-30). Awaiting payment always;
+     * failed payment unless the server said it cannot be retried.
+     */
+    val canPayNow: Boolean
+        get() = status == OrderStatus.PAYMENT_PENDING ||
+            (status == OrderStatus.PAYMENT_FAILED && canRetryPayment != false)
+}
+
+/**
+ * One page of the buyer's orders.
+ *
+ * [nextCursor] is the server's opaque continuation; null is the last page.
+ * The list keeps it and asks for more at the end, rather than showing the
+ * first twenty orders as though they were all of them.
+ */
+data class OrderPage(
+    val items: List<Order>,
+    val nextCursor: String?,
 )
+
+/**
+ * The three-state payment read, `GET /orders/:id/payment` (contract §4.5).
+ *
+ * [refundStatus] outranks [state]: a capture that landed after the order
+ * lapsed is being returned and must never render as a paid order.
+ */
+data class OrderPayment(
+    val orderId: String,
+    val state: OrderPaymentState,
+    /** Null, or `pending`, `partially_refunded`, `refunded`. */
+    val refundStatus: String?,
+    val amount: Paise,
+    val currency: String,
+)
+
+enum class OrderPaymentState {
+    CONFIRMING,
+    PAID,
+    FAILED,
+    UNKNOWN;
+
+    companion object {
+        fun from(raw: String): OrderPaymentState = when (raw.trim().lowercase()) {
+            "confirming" -> CONFIRMING
+            "paid" -> PAID
+            "failed" -> FAILED
+            // The server's vocabulary can grow ahead of a released app; an
+            // unrecognised state keeps confirming rather than claiming one.
+            else -> UNKNOWN
+        }
+    }
+}
 
 data class OrderLine(
     val productId: String,
@@ -498,7 +644,16 @@ data class SellerProfile(
     val totalOrders: Int,
 )
 
-/** A row of the seller's own catalogue, in whatever state it is in. */
+/**
+ * A row of the seller's own catalogue, in whatever state it is in.
+ *
+ * [variants] carries the product's variants WITH THEIR OWN IDS when the
+ * server sent them (contract §6). A stock or price edit addresses a variant,
+ * never the product: the server looks up `product_variants.id`, and the
+ * product id sent there is a variant that does not exist. Empty on a server
+ * that predates the field; the repository then reads
+ * `GET /products/:id/variants` before opening either screen.
+ */
 data class SellerProduct(
     val id: String,
     val title: String,
@@ -506,7 +661,47 @@ data class SellerProduct(
     val approvalStatus: String,
     val rejectionReason: String?,
     val imageUrl: String?,
+    val variants: List<Variant> = emptyList(),
+    /** The list projection's shorthand for the single variant, when the server sends one. */
+    val defaultVariantId: String? = null,
 )
+
+/**
+ * A product's variants as known so far: the row's own, else what the server
+ * sent back for the product. NEVER the product id — see [SellerProduct.variants].
+ *
+ * Pure, so the guard is a table test: a row carrying variants uses them; a
+ * bare row uses the fetched list; a `default_variant_id` with no variant rows
+ * is one variant with that id; nothing anywhere is an empty list, which the
+ * screen renders as "this product has no variant to edit" rather than
+ * guessing.
+ */
+fun variantsForEdit(product: SellerProduct, fetched: List<Variant>): List<Variant> = when {
+    product.variants.isNotEmpty() -> product.variants
+    fetched.isNotEmpty() -> fetched
+    !product.defaultVariantId.isNullOrBlank() -> listOf(
+        Variant(
+            id = product.defaultVariantId,
+            sku = "",
+            options = emptyList(),
+            mrp = Paise.ZERO,
+            sellingPrice = Paise.ZERO,
+            inStock = false,
+            availableQty = 0,
+        ),
+    )
+    else -> emptyList()
+}
+
+/**
+ * What a variant chooser calls a variant: its options ("Size M · Blue"), or
+ * its SKU when it has none, or a numbered fallback.
+ */
+fun Variant.chooserLabel(index: Int): String = when {
+    options.isNotEmpty() -> options.joinToString(" · ") { it.value }
+    sku.isNotBlank() -> sku
+    else -> "Variant ${index + 1}"
+}
 
 /**
  * A variant's stock.
@@ -578,6 +773,11 @@ data class NewProduct(
     val sellingPrice: Paise,
     val openingStock: Int,
     val imageMediaId: String? = null,
+    /**
+     * Where the listing sits in browse (2026-09-30). Nullable so an older
+     * caller's create is unchanged; the create screen refuses without one.
+     */
+    val categoryId: String? = null,
 )
 
 /** A variant as its seller sees it: what it costs and whether it is on sale. */

@@ -24,7 +24,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -32,7 +31,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsAvatar
@@ -89,7 +87,7 @@ fun StoreProfileSheet(
         containerColor = UsTheme.extended.bgCardSolid,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = SCRIM_ALPHA),
         dragHandle = null,
         modifier = Modifier.testTag("mstore_profile_sheet"),
     ) {
@@ -159,14 +157,17 @@ private fun MenuRow(row: StoreMenuRow, detail: String?, onClick: () -> Unit) {
         Icon(
             imageVector = row.icon,
             contentDescription = null,
-            tint = Color.White,
+            // The text ramp's ink, not white: on the light theme the sheet's
+            // card surface is pale and a white glyph vanishes into it.
+            tint = UsTheme.extended.textPrimary,
             modifier = Modifier.size(ROW_GLYPH),
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = row.label,
+                // bodyLarge IS the 15sp step; the literal it carried was the
+                // same number written twice.
                 style = MaterialTheme.typography.bodyLarge,
-                fontSize = ROW_TEXT_SIZE,
                 color = UsTheme.extended.textPrimary,
             )
             if (detail != null) {
@@ -224,4 +225,3 @@ private val ROW_VERTICAL = 14.dp
 private val ROW_SIDE = 20.dp
 private val ROW_GAP = 16.dp
 private val ROW_GLYPH = 22.dp
-private val ROW_TEXT_SIZE = 15.sp

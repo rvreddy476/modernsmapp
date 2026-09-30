@@ -1,0 +1,36 @@
+{
+  "data": [
+    {
+      "id": "00000000-0000-4000-8000-0000000c0021",
+      "user_id": "00000000-0000-4000-8000-0000000c0001",
+      "label": "Home",
+      "contact_name": "Asha Buyer",
+      "phone": "9111111111",
+      "address_line_1": "5 Main Street",
+      "address_line_2": "Flat 2B",
+      "landmark": "Near the park",
+      "city": "Bengaluru",
+      "state": "KA",
+      "country": "IN",
+      "postal_code": "560002",
+      "address_type": "home",
+      "is_default": true,
+      "created_at": "2026-09-02T08:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000c0022",
+      "user_id": "00000000-0000-4000-8000-0000000c0001",
+      "label": "Work",
+      "contact_name": "Asha Buyer",
+      "phone": "9111111111",
+      "address_line_1": "Remote Outpost 9",
+      "city": "Leh",
+      "state": "LA",
+      "country": "IN",
+      "postal_code": "999999",
+      "address_type": "work",
+      "created_at": "2026-09-02T08:05:00Z"
+    }
+  ]
+}
+

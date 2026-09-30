@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "PRODUCT_NOT_FOUND",
+    "message": "product not found"
+  },
+  "meta": {}
+}
+

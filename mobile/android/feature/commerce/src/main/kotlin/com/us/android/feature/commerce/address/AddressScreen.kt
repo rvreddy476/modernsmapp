@@ -17,7 +17,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -176,12 +175,12 @@ private fun AddressCard(address: Address, selected: Boolean, onClick: () -> Unit
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(UsTheme.radii.medium))
-            // Selected is WHITE, here and on every other picker in the shop.
-            // The accent belongs to "Deliver here", the action this choice
-            // leads to.
+            // Selected is the text ramp's ink, here and on every other
+            // picker in the shop. The accent belongs to "Deliver here", the
+            // action this choice leads to.
             .border(
                 width = if (selected) SELECTED_BORDER else UNSELECTED_BORDER,
-                color = if (selected) Color.White else UsTheme.extended.borderSubtle,
+                color = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.borderSubtle,
                 shape = RoundedCornerShape(UsTheme.radii.medium),
             )
             .background(UsTheme.extended.bgCard)

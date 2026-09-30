@@ -34,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -44,6 +45,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,6 +54,8 @@ import com.us.android.core.commerce.model.BannerTarget
 import com.us.android.core.commerce.model.Category
 import com.us.android.core.commerce.model.HomeBanner
 import com.us.android.core.commerce.model.HomeSection
+import com.us.android.core.commerce.model.Paise
+import com.us.android.core.commerce.model.ProductSummary
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsMessageType
@@ -332,7 +336,9 @@ private fun CategoryTile(category: Category, onClick: () -> Unit) {
                 Icon(
                     imageVector = UsIcons.Tag,
                     contentDescription = null,
-                    tint = Color.White,
+                    // The tile is brand navy in both themes, so its glyph is
+                    // the on-media white rather than the (inverting) ink.
+                    tint = UsTheme.extended.onMedia,
                     modifier = Modifier.size(CATEGORY_GLYPH),
                 )
             } else {
@@ -431,14 +437,16 @@ private fun BannerCard(banner: HomeBanner, onClick: () -> Unit) {
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .background(BannerScrim)
+                .background(bannerScrim())
                 .padding(UsTheme.spacing.xxl),
         ) {
+            // Over the banner image, on its scrim: the on-media pair, which
+            // stays white in both themes because the image does.
             Text(
                 text = banner.title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -446,7 +454,7 @@ private fun BannerCard(banner: HomeBanner, onClick: () -> Unit) {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White,
+                    color = UsTheme.extended.onMediaMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -510,7 +518,87 @@ private const val EMPTY_CATEGORY_ALPHA = 0.45f
 private val BANNER_WIDTH = 300.dp
 private val BANNER_HEIGHT = 150.dp
 
-/** Transparent at the top of the caption block, black at 55% under the text. */
-private val BannerScrim = androidx.compose.ui.graphics.Brush.verticalGradient(
-    listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)),
+/** Transparent at the top of the caption block, the theme's scrim at 55% under the text. */
+@Composable
+private fun bannerScrim(): Brush = Brush.verticalGradient(
+    listOf(Color.Transparent, MaterialTheme.colorScheme.scrim.copy(alpha = BANNER_SCRIM_ALPHA)),
 )
+
+private const val BANNER_SCRIM_ALPHA = 0.55f
+
+// ── Previews ────────────────────────────────────────────────────────────
+
+private fun previewCategory(id: String, name: String, count: Int) = Category(
+    id = id,
+    name = name,
+    slug = name.lowercase(),
+    parentId = null,
+    imageUrl = null,
+    featured = false,
+    productCount = count,
+)
+
+private fun previewProduct(id: String, title: String, price: Long, mrp: Long) = ProductSummary(
+    id = id,
+    title = title,
+    brandName = null,
+    primaryImageMediaId = null,
+    fromPrice = Paise(price),
+    mrp = Paise(mrp),
+    avgRating = 4.2f,
+    reviewCount = 12,
+    inStock = true,
+)
+
+@Preview(showBackground = true)
+@Composable
+@Suppress("MagicNumber")
+private fun CategoryStripPreview() {
+    UsTheme {
+        CategoryStrip(
+            categories = listOf(
+                previewCategory("c-1", "Kitchen", 12),
+                previewCategory("c-2", "Books", 0),
+                previewCategory("c-3", "Phones", 3),
+            ),
+            onOpen = { _, _ -> },
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun BannerCardPreview() {
+    UsTheme {
+        BannerCard(
+            banner = HomeBanner(
+                id = "b-1",
+                title = "Monsoon kitchen deals",
+                subtitle = "Up to 40% off",
+                imageUrl = null,
+                target = BannerTarget.OfSearch("kitchen"),
+            ),
+            onClick = {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+@Suppress("MagicNumber")
+private fun ProductShelfPreview() {
+    UsTheme {
+        ProductShelf(
+            section = HomeSection(
+                key = "deals",
+                title = "Deals of the day",
+                products = listOf(
+                    previewProduct("p-1", "Steel kettle, 1.7 L", 199_900, 249_900),
+                    previewProduct("p-2", "Cast-iron tawa", 129_900, 129_900),
+                ),
+            ),
+            onOpenProduct = {},
+            onToggleFavourite = {},
+        )
+    }
+}

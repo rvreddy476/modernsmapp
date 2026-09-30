@@ -19,12 +19,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.commerce.model.Paise
+import com.us.android.core.commerce.model.PriceBreakdown
 import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsPillButton
@@ -445,11 +447,11 @@ private fun MethodRow(method: PaymentMethod, selected: Boolean, onClick: () -> U
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(UsTheme.radii.medium))
-            // Selected is WHITE. On the one screen where the ember means
-            // "pay", a chosen payment method must not wear it too.
+            // Selected is the text ramp's ink. On the one screen where the
+            // ember means "pay", a chosen payment method must not wear it too.
             .border(
                 width = if (selected) SELECTED_BORDER else UNSELECTED_BORDER,
-                color = if (selected) Color.White else UsTheme.extended.borderSubtle,
+                color = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.borderSubtle,
                 shape = RoundedCornerShape(UsTheme.radii.medium),
             )
             .background(UsTheme.extended.bgCard)
@@ -501,3 +503,34 @@ private fun CenteredProgress(label: String) {
 private const val SLOW_CONFIRMATION_SECONDS = 20
 private val SELECTED_BORDER = 2.dp
 private val UNSELECTED_BORDER = 1.dp
+
+@Preview(showBackground = true)
+@Composable
+@Suppress("MagicNumber")
+private fun ReadyBodyPreview() {
+    UsTheme {
+        Column(
+            modifier = Modifier.padding(UsTheme.spacing.pageHorizontal),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
+            ReadyBody(
+                state = CheckoutUiState.Ready(
+                    breakdown = PriceBreakdown(
+                        subtotal = Paise(199_900),
+                        discount = Paise.ZERO,
+                        shipping = Paise(4_000),
+                        tax = Paise(30_493),
+                        total = Paise(203_900),
+                    ),
+                    addressId = "a-1",
+                    addressSummary = "Asha, 2 Test Road, Bengaluru 560001",
+                    quoteId = "q-1",
+                    paymentMethod = PaymentMethod.UPI,
+                ),
+                onSelectMethod = {},
+                onPlaceOrder = {},
+                onChangeAddress = {},
+            )
+        }
+    }
+}

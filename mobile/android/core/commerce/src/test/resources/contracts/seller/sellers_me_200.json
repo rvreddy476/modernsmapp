@@ -1,0 +1,30 @@
+{
+  "data": {
+    "id": "00000000-0000-4000-8000-0000000c0010",
+    "user_id": "00000000-0000-4000-8000-0000000c0002",
+    "seller_type": "business",
+    "business_type": "",
+    "store_name": "Momentum Electronics",
+    "slug": "momentum-electronics",
+    "description": "Phones, audio and accessories",
+    "email": "shop@momentum-electronics.test",
+    "phone": "9000000001",
+    "state": "KA",
+    "city": "Bengaluru",
+    "postal_code": "560001",
+    "status": "approved",
+    "onboarding_step": 7,
+    "verification_status": "pending",
+    "store_status": "active",
+    "quality_score": 0,
+    "performance_tier": "standard",
+    "avg_rating": 0,
+    "review_count": 0,
+    "follower_count": 0,
+    "total_products": 0,
+    "total_orders": 0,
+    "created_at": "2026-09-01T09:00:00Z",
+    "updated_at": "2026-09-01T09:00:00Z"
+  }
+}
+

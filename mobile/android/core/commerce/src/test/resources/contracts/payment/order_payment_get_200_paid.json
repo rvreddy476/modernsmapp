@@ -1,0 +1,11 @@
+{
+  "data": {
+    "order_id": "00000000-0000-4000-8000-0000000c0200",
+    "status": "paid",
+    "amount_minor": 134800,
+    "currency": "INR",
+    "refund_status": null,
+    "updated_at": "2026-09-10T10:00:00Z"
+  }
+}
+

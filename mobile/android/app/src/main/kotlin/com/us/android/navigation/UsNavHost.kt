@@ -683,7 +683,8 @@ private fun NavGraphBuilder.tabDestinations(
 
     // Commerce — the buyer journey: catalogue → product → cart → address →
     // checkout → payment → orders, and the seller surface behind the
-    // catalogue. Entered from the Explore launcher's Shop tile.
+    // catalogue. Entered from the Explore launcher's MStore tile (MSeller
+    // has its own tile and graph).
     //
     // `onOpenPaymentSheet` is supplied HERE rather than inside the feature
     // because the PSP integration is an app-level concern; `:feature:commerce`

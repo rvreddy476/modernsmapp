@@ -9,6 +9,7 @@ import com.us.android.core.commerce.network.AttachProductMediaRequest
 import com.us.android.core.commerce.network.CancelOrderRequest
 import com.us.android.core.commerce.network.CartDto
 import com.us.android.core.commerce.network.CategoryDto
+import com.us.android.core.commerce.network.CategoryTreeDto
 import com.us.android.core.commerce.network.CheckoutRequest
 import com.us.android.core.commerce.network.CheckoutResultDto
 import com.us.android.core.commerce.network.CommerceApi
@@ -17,6 +18,7 @@ import com.us.android.core.commerce.network.FavouriteDto
 import com.us.android.core.commerce.network.HomeDto
 import com.us.android.core.commerce.network.OrderDto
 import com.us.android.core.commerce.network.OrderListDto
+import com.us.android.core.commerce.network.OrderPaymentDto
 import com.us.android.core.commerce.network.PaymentHandleDto
 import com.us.android.core.commerce.network.PaymentStatusDto
 import com.us.android.core.commerce.network.PayoutRequest
@@ -49,6 +51,7 @@ import com.us.android.core.commerce.network.TaxClassListDto
 import com.us.android.core.commerce.network.UpdateCartItemRequest
 import com.us.android.core.commerce.network.UpdateVariantRequest
 import com.us.android.core.commerce.network.VariantDto
+import com.us.android.core.commerce.network.VariantListDto
 import com.us.android.core.network.ApiEnvelope
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -78,7 +81,11 @@ open class FakeCommerceApi : CommerceApi {
 
     override suspend fun getProduct(productId: String): Response<ApiEnvelope<ProductDetailDto>> = unused()
 
+    override suspend fun productVariants(productId: String): Response<ApiEnvelope<VariantListDto>> = unused()
+
     override suspend fun categories(): Response<ApiEnvelope<List<CategoryDto>>> = unused()
+
+    override suspend fun categoryTree(): Response<ApiEnvelope<List<CategoryTreeDto>>> = unused()
 
     override suspend fun home(): Response<ApiEnvelope<HomeDto>> = unused()
 
@@ -123,6 +130,14 @@ open class FakeCommerceApi : CommerceApi {
     ): Response<ApiEnvelope<CheckoutResultDto>> = unused()
 
     override suspend fun openPayment(orderId: String): Response<ApiEnvelope<PaymentHandleDto>> = unused()
+
+    /**
+     * The three-state read answers "no such route" by default, so every case
+     * written against the older `/payment/status` still meets the server it
+     * was written for: the status source falls back to it. A case about the
+     * three-state route overrides this.
+     */
+    override suspend fun orderPayment(orderId: String): Response<ApiEnvelope<OrderPaymentDto>> = notFound()
 
     override suspend fun paymentStatus(orderId: String): Response<ApiEnvelope<PaymentStatusDto>> = unused()
 

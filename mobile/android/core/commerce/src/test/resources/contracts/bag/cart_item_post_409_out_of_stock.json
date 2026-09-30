@@ -1,0 +1,19 @@
+{
+  "error": {
+    "code": "OUT_OF_STOCK",
+    "message": "one or more items are no longer available",
+    "details": {
+      "lines": [
+        {
+          "variant_id": "00000000-0000-4000-8000-0000000c0102",
+          "product_id": "00000000-0000-4000-8000-0000000c0100",
+          "product_title": "",
+          "requested": 1,
+          "available": 0
+        }
+      ]
+    }
+  },
+  "meta": {}
+}
+

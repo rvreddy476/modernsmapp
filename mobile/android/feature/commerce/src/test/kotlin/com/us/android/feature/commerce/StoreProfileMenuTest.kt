@@ -10,41 +10,71 @@ import org.junit.Test
 /**
  * MStore's profile menu.
  *
- * The rows are fixed; the last one is the switch into MSeller, and WHICH
- * switch depends on whether the person already has a shop. The rule is here
- * rather than inside a composable because getting it wrong in either direction
- * is visible to the user: inviting an existing seller to "start selling", or
- * sending someone with no shop to a dashboard of nothing.
+ * The rows are in ASCENDING ALPHABETICAL order by label (founder,
+ * 2026-09-30: every menu the viewer reads as a list), and WHICH selling row
+ * appears depends on whether the person already has a shop. Both rules are
+ * here rather than inside a composable because getting either wrong is
+ * visible to the user: a menu whose order differs from every other menu, or
+ * inviting an existing seller to "start selling".
+ *
+ * 2026-09-30: this test used to pin a hand-picked order (Orders, Favourites,
+ * Addresses, ...). It was changed deliberately to the alphabetical rule.
  */
 class StoreProfileMenuTest {
 
     @Test
-    fun `the fixed rows are always there, in order`() {
+    fun `the rows are in ascending alphabetical order by label`() {
         for (presence in SellerPresence.entries) {
-            assertThat(storeMenuRows(presence).take(SIX)).containsExactly(
-                StoreMenuRow.ORDERS,
-                StoreMenuRow.FAVOURITES,
+            val labels = storeMenuRows(presence).map { it.label }
+            assertThat(labels).isEqualTo(labels.sortedBy { it.lowercase() })
+        }
+    }
+
+    @Test
+    fun `the six fixed rows are always there`() {
+        for (presence in SellerPresence.entries) {
+            assertThat(storeMenuRows(presence)).containsAtLeast(
                 StoreMenuRow.ADDRESSES,
+                StoreMenuRow.FAVOURITES,
+                StoreMenuRow.ORDERS,
                 StoreMenuRow.PAYMENTS,
                 StoreMenuRow.PURCHASE_HISTORY,
                 StoreMenuRow.SETTINGS,
-            ).inOrder()
+            )
+            assertThat(storeMenuRows(presence)).hasSize(SEVEN)
         }
+    }
+
+    @Test
+    fun `the exact order, for someone with a shop`() {
+        assertThat(storeMenuRows(SellerPresence.EXISTS)).containsExactly(
+            StoreMenuRow.ADDRESSES,
+            StoreMenuRow.FAVOURITES,
+            StoreMenuRow.ORDERS,
+            StoreMenuRow.PAYMENTS,
+            StoreMenuRow.PURCHASE_HISTORY,
+            StoreMenuRow.SELLER_DASHBOARD,
+            StoreMenuRow.SETTINGS,
+        ).inOrder()
     }
 
     @Test
     fun `someone with no shop is invited to start selling`() {
         val rows = storeMenuRows(SellerPresence.NONE)
-        assertThat(rows.last()).isEqualTo(StoreMenuRow.START_SELLING)
-        assertThat(rows.last().label).isEqualTo("Start selling")
+        assertThat(rows).contains(StoreMenuRow.START_SELLING)
+        assertThat(rows).doesNotContain(StoreMenuRow.SELLER_DASHBOARD)
+        assertThat(StoreMenuRow.START_SELLING.label).isEqualTo("Start selling")
         assertThat(sellingRowDetail(SellerPresence.NONE)).contains("Open a shop")
+        // "Start selling" sorts after "Settings": it is the last row.
+        assertThat(rows.last()).isEqualTo(StoreMenuRow.START_SELLING)
     }
 
     @Test
     fun `someone with a shop is offered the dashboard`() {
         val rows = storeMenuRows(SellerPresence.EXISTS)
-        assertThat(rows.last()).isEqualTo(StoreMenuRow.SELLER_DASHBOARD)
-        assertThat(rows.last().label).isEqualTo("Seller dashboard")
+        assertThat(rows).contains(StoreMenuRow.SELLER_DASHBOARD)
+        assertThat(rows).doesNotContain(StoreMenuRow.START_SELLING)
+        assertThat(StoreMenuRow.SELLER_DASHBOARD.label).isEqualTo("Seller dashboard")
     }
 
     /**
@@ -57,8 +87,8 @@ class StoreProfileMenuTest {
      */
     @Test
     fun `an unanswered lookup never claims the shop is missing`() {
-        assertThat(storeMenuRows(SellerPresence.UNKNOWN).last())
-            .isEqualTo(StoreMenuRow.SELLER_DASHBOARD)
+        assertThat(storeMenuRows(SellerPresence.UNKNOWN)).contains(StoreMenuRow.SELLER_DASHBOARD)
+        assertThat(storeMenuRows(SellerPresence.UNKNOWN)).doesNotContain(StoreMenuRow.START_SELLING)
     }
 
     @Test
@@ -77,6 +107,6 @@ class StoreProfileMenuTest {
     }
 
     private companion object {
-        const val SIX = 6
+        const val SEVEN = 7
     }
 }

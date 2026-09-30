@@ -13,7 +13,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.TextUnit
-import androidx.compose.ui.unit.sp
+import com.us.android.core.designsystem.component.UsWordmarkSize
 import com.us.android.core.designsystem.theme.OutfitFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -93,11 +93,14 @@ fun MStoreWordmark(modifier: Modifier = Modifier, size: TextUnit = CommerceWordm
 fun MSellerWordmark(modifier: Modifier = Modifier, size: TextUnit = CommerceWordmarkSize.TopBar) =
     CommerceWordmark(name = CommerceBrand.Seller, modifier = modifier, size = size)
 
-/** The two sizes the commerce wordmark ships at. */
+/**
+ * The two sizes the commerce wordmark ships at — aliases of the design
+ * system's tokens, so the numbers live in `:core:designsystem` and not here.
+ */
 object CommerceWordmarkSize {
     /** Every MStore and MSeller top bar. */
-    val TopBar = 22.sp
+    val TopBar: TextUnit = UsWordmarkSize.MiniAppTopBar
 
     /** An empty state or a first-run panel that introduces the app. */
-    val Hero = 34.sp
+    val Hero: TextUnit = UsWordmarkSize.MiniAppHero
 }

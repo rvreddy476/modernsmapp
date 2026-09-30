@@ -16,7 +16,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -196,7 +195,8 @@ fun FavouriteHeart(
         Icon(
             imageVector = if (on) UsIcons.HeartFilled else UsIcons.HeartOutline,
             contentDescription = null,
-            tint = if (on) UsTheme.extended.accentSolid else Color.White,
+            // Over the product image: the on-media white, in both themes.
+            tint = if (on) UsTheme.extended.accentSolid else UsTheme.extended.onMedia,
             modifier = Modifier.size(HEART_GLYPH),
         )
     }

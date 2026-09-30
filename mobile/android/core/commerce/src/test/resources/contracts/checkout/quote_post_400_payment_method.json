@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "PAYMENT_METHOD_NOT_SUPPORTED",
+    "message": "payment method is not enabled for this launch: \"cod\" (allowed: card, upi)"
+  },
+  "meta": {}
+}
+

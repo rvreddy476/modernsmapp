@@ -53,7 +53,6 @@ import com.us.android.feature.commerce.seller.SubmitProductViewModel
 import com.us.android.feature.commerce.seller.SubmitShopScreen
 import com.us.android.feature.commerce.tryon.TryOnScreen
 import kotlinx.serialization.Serializable
-import java.util.UUID
 
 /**
  * The two commerce mini-apps.
@@ -439,16 +438,11 @@ fun NavGraphBuilder.mStoreScreens(
             OrderDetailScreen(
                 onBack = navController::popBackStack,
                 onOpenProduct = { navController.navigate(ProductRoute(it)) },
-                // Retrying payment on an existing order is a NEW attempt: the
-                // previous one's late callback must not be able to settle this
-                // opening. Minted here because this screen has no checkout
-                // ViewModel to own one.
-                onPayNow = { orderId, orderNumber ->
-                    onOpenPaymentSheet(
-                        PaymentAttempt(orderId = orderId, id = UUID.randomUUID().toString()),
-                        orderNumber,
-                    )
-                },
+                // Retrying payment on an existing order is a NEW attempt,
+                // minted by the order's ViewModel (2026-09-30) so it can
+                // match the sheet's ending against it and poll the server —
+                // an attempt minted here had nobody listening for it.
+                onOpenPaymentSheet = onOpenPaymentSheet,
             )
         }
     }
@@ -549,9 +543,20 @@ fun NavGraphBuilder.mSellerScreens(navController: NavController) {
                 // create form off the back stack, so Back from there returns
                 // to the hub rather than to a filled-in form that would list a
                 // second product if resubmitted.
-                onCreated = { productId ->
-                    navController.navigate(SellerStockRoute(productId, "New product")) {
-                        popUpTo(NewProductRoute) { inclusive = true }
+                //
+                // The route takes the VARIANT id (2026-09-30), read from the
+                // create response or `GET /products/:id/variants` — never the
+                // product id, which the stock route cannot look up. When no
+                // variant could be found the seller lands on the hub, whose
+                // row resolves it again on tap.
+                onCreated = { created ->
+                    val variantId = created.variantId
+                    if (variantId == null) {
+                        navController.popBackStack()
+                    } else {
+                        navController.navigate(SellerStockRoute(variantId, created.title)) {
+                            popUpTo(NewProductRoute) { inclusive = true }
+                        }
                     }
                 },
             )
