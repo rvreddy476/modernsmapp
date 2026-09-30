@@ -254,6 +254,10 @@ func main() {
 	// The admin console family (admin-service tokens only). "Stuck" uses the
 	// reconciler's own pending age.
 	handler := nethttp.New(svc).WithProvider(provider).WithProduction(isProd).
+		// Stub-mode intents name the stub in client_session.provider, from
+		// this service's OWN resolved mode — the same fact WithStubSettlement
+		// above is wired from.
+		WithStubSession(cfg.Mode == config.ModeStub).
 		WithCallerApplications(callerApps).
 		WithAdmin(svc, time.Duration(envInt("PAYMENTS_PENDING_AGE_SEC", 600))*time.Second)
 	if verifier != nil {

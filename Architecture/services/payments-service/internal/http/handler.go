@@ -110,6 +110,8 @@ type Handler struct {
 	// nil leaves it unregistered. pendingAge is when an intent counts as stuck.
 	admin      AdminService
 	pendingAge time.Duration
+	// stubSession — see WithStubSession.
+	stubSession bool
 }
 
 func New(svc Service) *Handler {
@@ -126,6 +128,25 @@ func (h *Handler) WithServiceAuth(v *servicetoken.Verifier) *Handler {
 // for the client session attached to intent responses.
 func (h *Handler) WithProvider(p gateway.Provider) *Handler {
 	h.provider = p
+	return h
+}
+
+// StubProviderName is the client_session.provider a stub-mode intent
+// carries. Commerce's stub settlement admits exactly this value and no
+// other (service.assertNoRealProvider over there).
+const StubProviderName = "stub"
+
+// WithStubSession makes stub-mode intents carry a client_session that names
+// the stub: {provider: "stub", order_id: <provider_ref>, key_id: "",
+// merchant_display_name}. Wired from THIS service's resolved mode
+// (config.ModeStub) in cmd/server, never from a caller's claim.
+//
+// Before this a stub intent carried no session at all, and a client could
+// only tell the stub apart by sniffing the `order_stub_` prefix of the
+// order handle. A client keys on `provider` for every real adapter; the
+// stub now answers the same question the same way.
+func (h *Handler) WithStubSession(on bool) *Handler {
+	h.stubSession = on
 	return h
 }
 
@@ -740,18 +761,28 @@ func (h *Handler) withClientSession(ctx context.Context, intent *postgres.Paymen
 	if intent.Channel != "" {
 		out["channel"] = intent.Channel
 	}
-	if h.provider != nil && intent.ProviderRef != "" {
-		if session := h.provider.ClientSession(intent.ProviderRef); len(session) > 0 {
-			if intent.ApplicationID != "" {
-				if app, err := h.svc.GetApplication(ctx, intent.ApplicationID); err == nil {
-					session["merchant_display_name"] = app.MerchantDisplayName
-				} else {
-					slog.Warn("payments: could not read the application for the client session",
-						"intent_id", intent.ID, "application_id", intent.ApplicationID, "error", err)
-				}
-			}
-			out["client_session"] = session
+	var session map[string]string
+	switch {
+	case h.provider != nil && intent.ProviderRef != "":
+		session = h.provider.ClientSession(intent.ProviderRef)
+	case h.provider == nil && h.stubSession && intent.ProviderRef != "":
+		// Stub mode: no adapter, so the stub names itself. The key is
+		// empty because there is no publishable key; the order handle is the
+		// stub's own reference. See WithStubSession.
+		session = map[string]string{
+			"provider": StubProviderName, "order_id": intent.ProviderRef, "key_id": "",
 		}
+	}
+	if len(session) > 0 {
+		if intent.ApplicationID != "" {
+			if app, err := h.svc.GetApplication(ctx, intent.ApplicationID); err == nil {
+				session["merchant_display_name"] = app.MerchantDisplayName
+			} else {
+				slog.Warn("payments: could not read the application for the client session",
+					"intent_id", intent.ID, "application_id", intent.ApplicationID, "error", err)
+			}
+		}
+		out["client_session"] = session
 	}
 	return out
 }
