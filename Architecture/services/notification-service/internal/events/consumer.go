@@ -57,6 +57,9 @@ type Consumer struct {
 	// service implements it and tests pass a fake. Nil: ride events log at
 	// ERROR and are claimed.
 	ridePush ridePushDeliverer
+	// orderNotify delivers MStore order notices (commerce_consumer.go); the
+	// service implements it and tests pass a fake.
+	orderNotify orderNotifier
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -97,6 +100,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 	if svc != nil {
 		// Guarded: a nil *Service stored in the interface would be non-nil.
 		c.ridePush = svc
+		c.orderNotify = svc
 	}
 	return c
 }
@@ -430,12 +434,15 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		c.FanOutLiveStartedAsync(e)
 		return nil
 
-	case "commerce.order.created",
-		"commerce.order.paid",
-		"commerce.order.shipped",
-		"commerce.order.delivered",
-		"commerce.invoice.issued",
-		"commerce.seller.new_order":
+	case commerceOrderCreated,
+		commerceOrderPaid,
+		commerceOrderShipped,
+		commerceOrderDelivered,
+		commerceOrderCancelled,
+		commerceOrderRefunded,
+		commerceOrderPaymentFailed,
+		commerceInvoiceIssued,
+		commerceSellerNewOrder:
 		return c.handleCommerceEvent(ctx, envelope.EventType, envelope.Payload)
 
 	default:

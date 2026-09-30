@@ -284,6 +284,45 @@ var Templates = map[string]NotificationTemplate{
 		BodyTemplate: "You have a new order worth ₹{amount}. Start packing!",
 		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
+	// MStore order notices (lane C1): what the commerce consumer actually
+	// delivers. Category `orders` (push_orders / inapp_orders). The dotted
+	// commerce.* entries above are the legacy registry names, kept for any
+	// inbox row written under them.
+	OrderTypeSellerNewOrder: {
+		EventType: OrderTypeSellerNewOrder, TitleTemplate: "New order #{order_number}",
+		BodyTemplate: "A buyer has paid. Pack it and hand it to the courier.",
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	OrderTypeConfirmed: {
+		EventType: OrderTypeConfirmed, TitleTemplate: "Order confirmed",
+		BodyTemplate: "Order #{order_number} is confirmed. We'll tell you when it ships.",
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	OrderTypeShipped: {
+		EventType: OrderTypeShipped, TitleTemplate: "Order shipped",
+		BodyTemplate: "Order #{order_number} is on its way.",
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	OrderTypeDelivered: {
+		EventType: OrderTypeDelivered, TitleTemplate: "Order delivered",
+		BodyTemplate: "Order #{order_number} was delivered. Tap to review it.",
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	OrderTypeCancelled: {
+		EventType: OrderTypeCancelled, TitleTemplate: "Order cancelled",
+		BodyTemplate: "Order #{order_number} was cancelled. Any payment is refunded automatically.",
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	OrderTypeRefunded: {
+		EventType: OrderTypeRefunded, TitleTemplate: "Refund issued",
+		BodyTemplate: "The refund for order #{order_number} is on its way to you.",
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	OrderTypePaymentFailed: {
+		EventType: OrderTypePaymentFailed, TitleTemplate: "Payment failed, try again",
+		BodyTemplate: "Payment for order #{order_number} didn't go through. Tap to try again.",
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
 	"commerce.return.requested": {
 		EventType: "commerce.return.requested", TitleTemplate: "Return requested for order {order_number}",
 		BodyTemplate: "Reason: {reason}",

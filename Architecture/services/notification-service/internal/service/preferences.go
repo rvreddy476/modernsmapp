@@ -160,6 +160,7 @@ const (
 	catMessages
 	catNewVideos  // creator uploads on subscribed channels (Tube long video, flicks)
 	catFoodOrders // Feast customer order updates (migration 007)
+	catOrders     // MStore order updates, buyer and seller (migration 010)
 )
 
 // categoryForEvent maps every event type this service delivers — both the
@@ -218,6 +219,11 @@ func categoryForEvent(eventType string) prefCategory {
 	// (food_push.go); they map here only so nothing category-gates them.
 	case "food_order_status":
 		return catFoodOrders
+	// MStore orders (lane C1): the buyer's confirmed/shipped/delivered/
+	// cancelled/refunded/payment-failed notices and the seller's new order.
+	case OrderTypeSellerNewOrder, OrderTypeConfirmed, OrderTypeShipped, OrderTypeDelivered,
+		OrderTypeCancelled, OrderTypeRefunded, OrderTypePaymentFailed:
+		return catOrders
 	case "food_order_new", "food_delivery_offer":
 		return catAlwaysOn
 	// Mopedu (ride_push.go): the customer's ride progress and payment are
@@ -287,6 +293,8 @@ func pushCategoryAllowed(p *postgres.NotificationPreferences, eventType string) 
 		return p.PushNewVideos
 	case catFoodOrders:
 		return p.PushFoodOrders
+	case catOrders:
+		return p.PushOrders
 	default: // catDefault, catAlwaysOn
 		return true
 	}
@@ -336,6 +344,8 @@ func inappCategoryAllowed(p *postgres.NotificationPreferences, eventType string)
 		return p.InappNewVideos
 	case catFoodOrders:
 		return p.InappFoodOrders
+	case catOrders:
+		return p.InappOrders
 	default: // catDefault, catAlwaysOn
 		return true
 	}

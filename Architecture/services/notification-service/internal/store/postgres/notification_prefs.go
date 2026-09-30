@@ -48,8 +48,9 @@ type NotificationPreferences struct {
 	PushMessages          bool `json:"push_messages"`
 	PushNewVideos         bool `json:"push_new_videos"`
 	PushFoodOrders        bool `json:"push_food_orders"`
+	PushOrders            bool `json:"push_orders"`
 
-	InappLikes             bool `json:"inapp_likes"`
+	InappLikes            bool `json:"inapp_likes"`
 	InappSuperLikes        bool `json:"inapp_super_likes"`
 	InappComments          bool `json:"inapp_comments"`
 	InappReplies           bool `json:"inapp_replies"`
@@ -69,6 +70,7 @@ type NotificationPreferences struct {
 	InappMessages          bool `json:"inapp_messages"`
 	InappNewVideos         bool `json:"inapp_new_videos"`
 	InappFoodOrders        bool `json:"inapp_food_orders"`
+	InappOrders            bool `json:"inapp_orders"`
 
 	EmailDigest string    `json:"email_digest"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -85,14 +87,14 @@ const notifPrefsColumns = `user_id, push_enabled, email_enabled, quiet_hours_ena
 	push_channel_updates, push_channel_urgent,
 	push_community_posts, push_community_mentions,
 	push_event_reminders, push_system,
-	push_reposts, push_live, push_messages, push_new_videos, push_food_orders,
+	push_reposts, push_live, push_messages, push_new_videos, push_food_orders, push_orders,
 	inapp_likes, inapp_super_likes, inapp_comments, inapp_replies,
 	inapp_mentions, inapp_follows, inapp_friend_requests,
 	inapp_group_posts, inapp_group_mentions,
 	inapp_channel_updates, inapp_channel_urgent,
 	inapp_community_posts, inapp_community_mentions,
 	inapp_event_reminders, inapp_system,
-	inapp_reposts, inapp_live, inapp_messages, inapp_new_videos, inapp_food_orders,
+	inapp_reposts, inapp_live, inapp_messages, inapp_new_videos, inapp_food_orders, inapp_orders,
 	email_digest, updated_at`
 
 // scanNotifPrefs returns scan destinations in notifPrefsColumns order.
@@ -106,14 +108,14 @@ func scanNotifPrefs(p *NotificationPreferences) []any {
 		&p.PushChannelUpdates, &p.PushChannelUrgent,
 		&p.PushCommunityPosts, &p.PushCommunityMentions,
 		&p.PushEventReminders, &p.PushSystem,
-		&p.PushReposts, &p.PushLive, &p.PushMessages, &p.PushNewVideos, &p.PushFoodOrders,
+		&p.PushReposts, &p.PushLive, &p.PushMessages, &p.PushNewVideos, &p.PushFoodOrders, &p.PushOrders,
 		&p.InappLikes, &p.InappSuperLikes, &p.InappComments, &p.InappReplies,
 		&p.InappMentions, &p.InappFollows, &p.InappFriendRequests,
 		&p.InappGroupPosts, &p.InappGroupMentions,
 		&p.InappChannelUpdates, &p.InappChannelUrgent,
 		&p.InappCommunityPosts, &p.InappCommunityMentions,
 		&p.InappEventReminders, &p.InappSystem,
-		&p.InappReposts, &p.InappLive, &p.InappMessages, &p.InappNewVideos, &p.InappFoodOrders,
+		&p.InappReposts, &p.InappLive, &p.InappMessages, &p.InappNewVideos, &p.InappFoodOrders, &p.InappOrders,
 		&p.EmailDigest, &p.UpdatedAt,
 	}
 }
@@ -129,14 +131,14 @@ func notifPrefsValues(p *NotificationPreferences) []any {
 		p.PushChannelUpdates, p.PushChannelUrgent,
 		p.PushCommunityPosts, p.PushCommunityMentions,
 		p.PushEventReminders, p.PushSystem,
-		p.PushReposts, p.PushLive, p.PushMessages, p.PushNewVideos, p.PushFoodOrders,
+		p.PushReposts, p.PushLive, p.PushMessages, p.PushNewVideos, p.PushFoodOrders, p.PushOrders,
 		p.InappLikes, p.InappSuperLikes, p.InappComments, p.InappReplies,
 		p.InappMentions, p.InappFollows, p.InappFriendRequests,
 		p.InappGroupPosts, p.InappGroupMentions,
 		p.InappChannelUpdates, p.InappChannelUrgent,
 		p.InappCommunityPosts, p.InappCommunityMentions,
 		p.InappEventReminders, p.InappSystem,
-		p.InappReposts, p.InappLive, p.InappMessages, p.InappNewVideos, p.InappFoodOrders,
+		p.InappReposts, p.InappLive, p.InappMessages, p.InappNewVideos, p.InappFoodOrders, p.InappOrders,
 		p.EmailDigest, p.UpdatedAt,
 	}
 }
@@ -225,6 +227,7 @@ func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 		PushMessages:          true,
 		PushNewVideos:         true,
 		PushFoodOrders:        true,
+		PushOrders:            true,
 
 		InappLikes:             true,
 		InappSuperLikes:        true,
@@ -246,6 +249,7 @@ func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 		InappMessages:          true,
 		InappNewVideos:         true,
 		InappFoodOrders:        true,
+		InappOrders:            true,
 
 		EmailDigest: "weekly",
 		UpdatedAt:   time.Now(),

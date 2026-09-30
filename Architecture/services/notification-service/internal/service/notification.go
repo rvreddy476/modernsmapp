@@ -319,24 +319,7 @@ func (s *Service) deliverWithDecision(ctx context.Context, decision DeliveryDeci
 	if s.pusher != nil && s.pgStore != nil {
 		tokens, err := s.pgStore.GetUserDevices(ctx, userID)
 		if err == nil && len(tokens) > 0 {
-			title, body := notifTitleBody(notifType)
-			// entity_id and deep_link ride the data payload so the
-			// client can open the exact destination from a tap —
-			// including background taps, where FCM hands these keys
-			// to the launch intent as extras. No message content is
-			// ever included here: chat pushes stay generic by
-			// construction, which is what keeps previews and lock
-			// screens privacy-safe regardless of client settings.
-			pushData := map[string]string{
-				"type":      notifType,
-				"entity_id": entityID.String(),
-				"deep_link": deepLink,
-			}
-			// Compute collapse key so repeated notifications (e.g. many likes)
-			// replace each other on the device instead of flooding.
-			if ck := GetCollapseKey(notifType, entityID.String(), userID.String()); ck != "" {
-				pushData["collapse_key"] = ck
-			}
+			title, body, pushData := buildPushData(userID, notifType, entityType, entityID, deepLink, render)
 			for _, t := range tokens {
 				if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body, pushData); err != nil {
 					slog.Warn("push: send failed", "error", err, "platform", t.Platform)
