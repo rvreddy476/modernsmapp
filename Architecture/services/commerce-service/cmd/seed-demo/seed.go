@@ -217,6 +217,26 @@ func seedSeller(ctx context.Context, tx pgx.Tx, s demoSeller, sum *summary) erro
 		return fmt.Errorf("fulfilment settings: %w", err)
 	}
 	sum.record("seller_fulfillment_settings", tag.RowsAffected())
+
+	// The pickup address every quote prices from (courier origin). A demo
+	// warehouse, not a person's address. One per (seller, type) by
+	// uq_seller_addresses_type, so a re-run is a no-op. The seller's own
+	// postcode is the lookup's fallback and is set to the same pincode.
+	tag, err = tx.Exec(ctx, `
+		INSERT INTO seller_addresses
+		    (seller_id, address_type, contact_name, phone, address_line_1, city, state, country, postal_code, is_default)
+		VALUES ($1, 'pickup', $2, '9000000000', 'Demo Warehouse, Plot 1', $3, $4, 'IN', $5, TRUE)
+		ON CONFLICT (seller_id, address_type) DO NOTHING`,
+		s.ID, s.StoreName, s.City, s.State, s.Pincode)
+	if err != nil {
+		return fmt.Errorf("pickup address: %w", err)
+	}
+	sum.record("seller_addresses", tag.RowsAffected())
+	if _, err := tx.Exec(ctx,
+		`UPDATE sellers SET postal_code = $2 WHERE id = $1 AND COALESCE(postal_code, '') = ''`,
+		s.ID, s.Pincode); err != nil {
+		return fmt.Errorf("seller postcode: %w", err)
+	}
 	return nil
 }
 

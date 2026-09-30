@@ -56,6 +56,10 @@ type demoSeller struct {
 	Tagline     string
 	City        string
 	State       string
+	// Pincode is the pickup origin. Every quote asks the courier to price
+	// pickup -> buyer, so a seller without one cannot be bought from: the
+	// courier refuses an empty origin as an invalid pincode.
+	Pincode string
 }
 
 // demoVariant is one purchasable line under a product. The first variant of
@@ -162,6 +166,7 @@ func catalogue() demoCatalogue {
 		Tagline:     "Everything a home screen needs",
 		City:        "Hyderabad",
 		State:       "Telangana",
+		Pincode:     "500081",
 	}
 
 	// Eight of the sixteen carry a discount, eight sell at MRP. The split is
