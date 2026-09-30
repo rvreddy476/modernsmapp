@@ -67,21 +67,17 @@ import kotlinx.coroutines.launch
  * opens, everywhere (founder, 2026-09-04, from Instagram's "About this
  * reel" sheet).
  *
- * Three groups of 52dp rows with hairline dividers between them:
+ * ONE list of 52dp rows, in ascending alphabetical order by the label the
+ * viewer reads (founder, 2026-09-30, like the web): no groups and no
+ * dividers. Report and Delete post stay red wherever the alphabet puts them.
+ * Opened from a REEL ([UsPostMoreState.reel]) the same list also holds
+ * Description (unfolds the caption), Clear screen / Show controls, Quality
+ * (unfolds the rendition picker) and Use this sound.
  *
- *  1. Save / Unsave · Copy link · Share
- *  2. Why you're seeing this post (expands inline) · Interested · Not interested
- *     · Don't recommend @user
- *  3. Unfollow @user / Follow · Block @user · Report (red, last)
- *
- * The viewer's own post shows group 1 and then "Delete post" (red, last).
- * Opened from a REEL ([UsPostMoreState.reel]), a group of its own goes
- * first — Description (unfolds the caption) · Clear screen / Show controls
- * · Quality (unfolds the rendition picker) — and the rest follows unchanged.
- *
- * Which rows appear is [rowGroups]'s decision, pinned by its own test: the
- * viewer's own post shows group 1 and Delete, the relationship row needs a known
- * edge, and the "why" row needs a sentence to show. Report is a second step
+ * Which rows appear, and in what order, is [rows]'s decision, pinned by its
+ * own test: the viewer's own post offers Delete and nothing that acts on "the
+ * author", the relationship row needs a known edge, and the "why" row needs
+ * a sentence to show. Report is a second step
  * INSIDE the same sheet ([UsPostReportStep]); Block and Delete confirm in a
  * small dialog over it. Delete and "Don't recommend" are the two rows that
  * WAIT on the sheet: the host answers through [UsPostMoreState.delete] /
@@ -268,7 +264,8 @@ private class MorePresentation {
      * [leaveThen] slides the sheet away and then runs the action; the rows
      * that are complete on the tap use it. Save flips in place, Copy link
      * shows its pill, Why / Description / Quality expand, Block and Delete
-     * ask first, Report steps in, Clear screen leaves and then clears.
+     * ask first, Report steps in, Clear screen leaves and then clears, and
+     * Use this sound leaves and then asks for the sound.
      * "Don't recommend" stays and waits for the host's answer, like Delete.
      */
     fun onRow(
@@ -278,8 +275,12 @@ private class MorePresentation {
         copyLink: () -> Unit,
     ) {
         when (row) {
-            UsPostMoreRow.DESCRIPTION, UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS, UsPostMoreRow.QUALITY ->
-                onReelRow(row, callbacks, leaveThen)
+            UsPostMoreRow.DESCRIPTION,
+            UsPostMoreRow.CLEAR_SCREEN,
+            UsPostMoreRow.SHOW_CONTROLS,
+            UsPostMoreRow.QUALITY,
+            UsPostMoreRow.USE_SOUND,
+            -> onReelRow(row, callbacks, leaveThen)
             UsPostMoreRow.SAVE, UsPostMoreRow.UNSAVE -> callbacks.onToggleSave()
             UsPostMoreRow.COPY_LINK -> {
                 copyLink()
@@ -298,12 +299,17 @@ private class MorePresentation {
         }
     }
 
-    /** The reel's group: Description and Quality unfold in place; Clear screen leaves and then clears. */
+    /**
+     * The reel's rows: Description and Quality unfold in place; Clear screen
+     * leaves and then clears; Use this sound leaves and then asks — a refusal
+     * is then read over the reel, not under a sheet that is going away.
+     */
     private fun onReelRow(row: UsPostMoreRow, callbacks: UsPostMoreCallbacks, leaveThen: (() -> Unit) -> Unit) {
         when (row) {
             UsPostMoreRow.DESCRIPTION -> descriptionOpen = !descriptionOpen
             UsPostMoreRow.QUALITY -> qualityOpen = !qualityOpen
             UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS -> leaveThen(callbacks.onClearScreen)
+            UsPostMoreRow.USE_SOUND -> leaveThen(callbacks.onUseSound)
             else -> error("not a reel row: $row")
         }
     }
@@ -311,7 +317,7 @@ private class MorePresentation {
 
 // ── The menu ────────────────────────────────────────────────────────────
 
-/** The grouped rows, with the "Link copied" pill floating over the top. */
+/** The rows, one list, with the "Link copied" pill floating over the top. */
 @Composable
 private fun MoreMenu(
     state: UsPostMoreState,
@@ -329,20 +335,17 @@ private fun MoreMenu(
         ?: (dontRecommend as? UsPostDontRecommendState.Failed)?.message
     Box(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            val groups = state.rowGroups()
-            groups.forEachIndexed { index, group ->
-                if (index > 0) GroupDivider()
-                group.forEach { row ->
-                    MenuRow(
-                        row = row,
-                        state = state,
-                        ui = ui,
-                        // Quality with Auto alone is a fact, not a choice: the row stays, inert.
-                        enabled = rowsEnabled && (row != UsPostMoreRow.QUALITY || state.reel?.canPickQuality == true),
-                        onClick = { onRow(row) },
-                        onSelectQuality = onSelectQuality,
-                    )
-                }
+            // One list, already in order: no groups, so no dividers between them.
+            state.rows().forEach { row ->
+                MenuRow(
+                    row = row,
+                    state = state,
+                    ui = ui,
+                    // Quality with Auto alone is a fact, not a choice: the row stays, inert.
+                    enabled = rowsEnabled && (row != UsPostMoreRow.QUALITY || state.reel?.canPickQuality == true),
+                    onClick = { onRow(row) },
+                    onSelectQuality = onSelectQuality,
+                )
             }
             // A refused delete or "don't recommend" stays on the sheet, under
             // the rows, so the viewer reads the reason where they are looking.
@@ -442,16 +445,6 @@ private fun MenuRow(
     }
 }
 
-/**
- * What the row prints: the rows that act on the author carry the handle —
- * "Unfollow @user", "Block @user", "Don't recommend @user" — the rest their
- * own label.
- */
-private fun UsPostMoreRow.menuLabel(username: String): String = when (this) {
-    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK -> "$label @$username"
-    else -> label
-}
-
 /** Report and Delete are red: the two rows that cannot be taken back from the sheet. */
 private val UsPostMoreRow.isDestructive: Boolean
     get() = this == UsPostMoreRow.REPORT || this == UsPostMoreRow.DELETE
@@ -538,8 +531,8 @@ private fun QualityPicker(reel: UsReelMoreState?, onSelect: (UsReelQuality) -> U
 }
 
 /**
- * Lucide, one per row: the reel's four (text · maximize · minimize ·
- * sliders), the four about the author (user-x · user-minus · user-plus ·
+ * Lucide, one per row: the reel's five (text · maximize · minimize ·
+ * sliders · music), the four about the author (user-x · user-minus · user-plus ·
  * ban), then the post's own.
  */
 private fun UsPostMoreRow.icon(): ImageVector = reelIcon() ?: personIcon() ?: postIcon()
@@ -549,6 +542,7 @@ private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.CLEAR_SCREEN -> UsIcons.Maximize
     UsPostMoreRow.SHOW_CONTROLS -> UsIcons.Minimize
     UsPostMoreRow.QUALITY -> UsIcons.Sliders
+    UsPostMoreRow.USE_SOUND -> UsIcons.Music
     else -> null
 }
 
@@ -563,8 +557,12 @@ private fun UsPostMoreRow.personIcon(): ImageVector? = when (this) {
 
 /** bookmark · link · share · info · thumbs · flag · trash. */
 private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
-    UsPostMoreRow.DESCRIPTION, UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS, UsPostMoreRow.QUALITY ->
-        error("a reel row: $this")
+    UsPostMoreRow.DESCRIPTION,
+    UsPostMoreRow.CLEAR_SCREEN,
+    UsPostMoreRow.SHOW_CONTROLS,
+    UsPostMoreRow.QUALITY,
+    UsPostMoreRow.USE_SOUND,
+    -> error("a reel row: $this")
     UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK ->
         error("a row about the author: $this")
     UsPostMoreRow.SAVE -> UsIcons.BookmarkOutline
@@ -760,18 +758,6 @@ internal fun SheetRow(
     }
 }
 
-/** A hairline between groups, breathing 6dp either side. */
-@Composable
-internal fun GroupDivider() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = UsTheme.spacing.s)
-            .height(HAIRLINE)
-            .background(UsTheme.extended.borderSubtle),
-    )
-}
-
 /** 32×4, muted at 35%: a handle, not a decoration. */
 @Composable
 internal fun SheetGrabHandle() {
@@ -823,7 +809,6 @@ private val HANDLE_WIDTH = 32.dp
 private val HANDLE_HEIGHT = 4.dp
 private val HANDLE_TOP = 8.dp
 private val HANDLE_BOTTOM = 8.dp
-private val HAIRLINE = 1.dp
 private val ROW_HEIGHT = 52.dp
 
 /** A quality option is a line inside a row, not a row: 44dp, still a full target. */

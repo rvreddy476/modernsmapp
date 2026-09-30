@@ -60,6 +60,13 @@ data class UsReelMoreState(
     val qualities: List<UsReelQuality>,
     /** The session's choice, shown at the right of the Quality row. */
     val selected: UsReelQuality = UsReelQuality.Auto,
+    /**
+     * "Use this sound" is offered (original sounds, 2026-09-30): the creator
+     * allows reuse or the reel is the viewer's own, and it is not still
+     * processing. The host decides — `FeedItem.canUseSound` — the sheet only
+     * draws the row.
+     */
+    val canUseSound: Boolean = false,
 ) {
     /**
      * Auto alone means there is nothing to pick — the reel plays its original
@@ -142,7 +149,7 @@ sealed interface UsPostDontRecommendState {
     data class Failed(val message: String) : UsPostDontRecommendState
 }
 
-/** One row of the sheet's menu. The order within [rowGroups] is the design's. */
+/** One row of the sheet's menu. The order they are DRAWN in is [rows]'s: alphabetical, by the label shown. */
 enum class UsPostMoreRow(val label: String) {
     /** Reels only: the full caption, unfolded inline. */
     DESCRIPTION("Description"),
@@ -155,6 +162,9 @@ enum class UsPostMoreRow(val label: String) {
 
     /** Reels only: the rendition picker, the current choice at the right. */
     QUALITY("Quality"),
+
+    /** Reels only: make a reel with this reel's sound. */
+    USE_SOUND("Use this sound"),
     SAVE("Save"),
     UNSAVE("Unsave"),
     COPY_LINK("Copy link"),
@@ -173,60 +183,79 @@ enum class UsPostMoreRow(val label: String) {
 }
 
 /**
- * The rows to draw, grouped; hairline dividers go between groups. An empty
- * group is dropped, so no group ever has a dangling divider under it.
+ * The rows to draw: ONE list, in ascending alphabetical order by the label
+ * the viewer reads, case-insensitive. No groups, and no dividers.
  *
- * The rules, from the founder's Instagram capture (2026-09-04):
+ * founder, 2026-09-30: the More sheet is one list in alphabetical order,
+ * like the web, wherever the sheet is used — feed posts, reels and long
+ * video. It replaces the three groups taken from the Instagram capture
+ * (2026-09-04) and the reel's own group above them (YouTube Shorts,
+ * 2026-09-04). The order is by the label actually SHOWN ([menuLabel]), so
+ * "Don't recommend @user" sorts under D and "Unfollow @user" under U.
  *
- *  - Group 1 is always there: Save/Unsave, Copy link, Share.
- *  - Group 2 is for OTHER people's posts: "Why you're seeing this post" only
- *    when the server sent a sentence, then Interested, Not interested, and
- *    "Don't recommend @user" (founder, 2026-09-04, from YouTube's "Don't
- *    recommend channel") — the author-wide "Not interested".
- *  - Group 3, other people's posts: Unfollow or Follow when the edge is
- *    known, Block, and Report last.
- *  - The viewer's own post: group 1, then "Delete post" alone, red and
- *    last — a soft delete with a 30-day restore window (founder, 2026-09-04).
- *  - A REEL puts its own group ABOVE all of that (YouTube Shorts, founder,
- *    2026-09-04): "Description" when there is a caption to unfold, "Clear
- *    screen" or "Show controls" by the mode, and "Quality". Own reel or
- *    not, the group is the same — it is about the frame, not the author.
+ * WHICH rows appear is unchanged, and is [offeredRows]'s decision.
  */
-fun UsPostMoreState.rowGroups(): List<List<UsPostMoreRow>> {
-    val reelGroup = reel?.let { reel ->
-        buildList {
-            if (reel.description.isNotBlank()) add(UsPostMoreRow.DESCRIPTION)
-            add(if (reel.fullMode) UsPostMoreRow.SHOW_CONTROLS else UsPostMoreRow.CLEAR_SCREEN)
-            add(UsPostMoreRow.QUALITY)
-        }
-    }
-    val first = listOf(
-        if (isBookmarked) UsPostMoreRow.UNSAVE else UsPostMoreRow.SAVE,
-        UsPostMoreRow.COPY_LINK,
-        UsPostMoreRow.SHARE,
-    )
-    if (isOwnPost) return listOfNotNull(reelGroup, first, listOf(UsPostMoreRow.DELETE))
+fun UsPostMoreState.rows(): List<UsPostMoreRow> =
+    offeredRows().sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.menuLabel(username) })
 
-    val second = buildList {
-        if (reasonText.isNotBlank()) add(UsPostMoreRow.WHY)
-        if (suggested) add(UsPostMoreRow.INTERESTED)
-        // "Not interested" is about this post and applies to anyone; it is
-        // not an unfollow.
-        add(UsPostMoreRow.NOT_INTERESTED)
-        // Muting an account you follow is what Unfollow is for, so the row
-        // exists only while the author is not followed.
-        if (followRow != UsPostMoreFollowRow.UNFOLLOW) add(UsPostMoreRow.DONT_RECOMMEND)
+/**
+ * Which rows this post offers this viewer, in no particular order — [rows]
+ * orders them.
+ *
+ *  - Always: Save or Unsave, Copy link, Share.
+ *  - OTHER people's posts: "Why you're seeing this post" only when the
+ *    server sent a sentence; Interested only for a suggestion; Not
+ *    interested; "Don't recommend @user" (founder, 2026-09-04, from YouTube's
+ *    "Don't recommend channel") while the author is not followed; Unfollow
+ *    or Follow when the edge is known; Block; Report.
+ *  - The viewer's own post: "Delete post" — a soft delete with a 30-day
+ *    restore window (founder, 2026-09-04) — and none of the rows that act on
+ *    "the author".
+ *  - A REEL adds "Description" when there is a caption to unfold, "Clear
+ *    screen" or "Show controls" by the mode, "Quality", and "Use this sound"
+ *    when the host says it is offered. Own reel or not, these are the same:
+ *    they are about the frame and the sound, not the author.
+ */
+internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = buildList {
+    reel?.let { reel ->
+        if (reel.description.isNotBlank()) add(UsPostMoreRow.DESCRIPTION)
+        add(if (reel.fullMode) UsPostMoreRow.SHOW_CONTROLS else UsPostMoreRow.CLEAR_SCREEN)
+        add(UsPostMoreRow.QUALITY)
+        if (reel.canUseSound) add(UsPostMoreRow.USE_SOUND)
     }
-    val third = buildList {
-        when (followRow) {
-            UsPostMoreFollowRow.UNFOLLOW -> add(UsPostMoreRow.UNFOLLOW)
-            UsPostMoreFollowRow.FOLLOW -> add(UsPostMoreRow.FOLLOW)
-            UsPostMoreFollowRow.HIDDEN -> Unit
-        }
-        add(UsPostMoreRow.BLOCK)
-        add(UsPostMoreRow.REPORT)
+    add(if (isBookmarked) UsPostMoreRow.UNSAVE else UsPostMoreRow.SAVE)
+    add(UsPostMoreRow.COPY_LINK)
+    add(UsPostMoreRow.SHARE)
+    if (isOwnPost) {
+        add(UsPostMoreRow.DELETE)
+        return@buildList
     }
-    return listOfNotNull(reelGroup, first, second, third)
+
+    if (reasonText.isNotBlank()) add(UsPostMoreRow.WHY)
+    if (suggested) add(UsPostMoreRow.INTERESTED)
+    // "Not interested" is about this post and applies to anyone; it is
+    // not an unfollow.
+    add(UsPostMoreRow.NOT_INTERESTED)
+    // Muting an account you follow is what Unfollow is for, so the row
+    // exists only while the author is not followed.
+    if (followRow != UsPostMoreFollowRow.UNFOLLOW) add(UsPostMoreRow.DONT_RECOMMEND)
+    when (followRow) {
+        UsPostMoreFollowRow.UNFOLLOW -> add(UsPostMoreRow.UNFOLLOW)
+        UsPostMoreFollowRow.FOLLOW -> add(UsPostMoreRow.FOLLOW)
+        UsPostMoreFollowRow.HIDDEN -> Unit
+    }
+    add(UsPostMoreRow.BLOCK)
+    add(UsPostMoreRow.REPORT)
+}
+
+/**
+ * What the row prints, and therefore what it is sorted by: the rows that act
+ * on the author carry the handle — "Unfollow @user", "Block @user", "Don't
+ * recommend @user" — the rest their own label.
+ */
+fun UsPostMoreRow.menuLabel(username: String): String = when (this) {
+    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK -> "$label @$username"
+    else -> label
 }
 
 /**

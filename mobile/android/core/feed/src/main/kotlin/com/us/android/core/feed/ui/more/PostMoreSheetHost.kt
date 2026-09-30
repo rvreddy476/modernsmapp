@@ -43,6 +43,8 @@ fun PostMoreSheetHost(
     reel: UsReelMoreState? = null,
     onClearScreen: () -> Unit = {},
     onSelectQuality: (UsReelQuality) -> Unit = {},
+    /** Set by Reels alone: "Use this sound" was tapped on [item]. */
+    onUseSound: (FeedItem) -> Unit = {},
     /**
      * Overrides whether the post reads as a suggestion. Null derives it from
      * the row's reason, as every feed does; Tube's watch screen passes false —
@@ -68,7 +70,7 @@ fun PostMoreSheetHost(
         viewModel.opened()
     }
 
-    val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality) {
+    val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality, onUseSound) {
         UsPostMoreCallbacks(
             onToggleSave = { viewModel.toggleSave(item) },
             onShare = { onShare(item) },
@@ -82,6 +84,7 @@ fun PostMoreSheetHost(
             onDelete = { viewModel.delete(item) },
             onClearScreen = onClearScreen,
             onSelectQuality = onSelectQuality,
+            onUseSound = { onUseSound(item) },
         )
     }
     UsPostMoreSheet(

@@ -17,6 +17,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -34,12 +35,15 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -48,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -72,6 +77,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -104,13 +110,17 @@ import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
+import com.us.android.core.feed.ui.sound.ReelSoundViewModel
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerPool
+import com.us.android.core.media.sound.ReelSoundPlayer
+import com.us.android.core.media.sound.appliedVolume
 import com.us.android.core.media.ui.VideoLoadingIndicator
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.canUseSound
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -167,9 +177,17 @@ import java.io.File
  * holds a reel a feed tap asked for that the ranked pages did not have
  * ([OpenOnEntry]).
  *
- * Sound is ON when Reels opens (founder, 2026-09-05) — the feed's autoplay
- * is the silent preview, this is where the sound is — and the rail's
- * speaker mutes it for the session.
+ * Reels opens MUTED (founder, 2026-09-30, like the web), and once the viewer
+ * turns the sound on with the rail's speaker it stays on — across reels,
+ * across visits and across restarts — until they mute again. The first reel
+ * waits for that stored choice to be read ([reelMayPlay]), so a viewer who
+ * chose sound never hears a muted reel flip on.
+ *
+ * A reel may play an ADDED sound: the audio of another creator's reel
+ * (original sounds, 2026-09-30). It is a second file on a second, audio-only
+ * player ([ReelSoundPlayer]) kept in step with the settled page's video; the
+ * mute switch moves both. The author block names the sound under the
+ * hashtags, and the More sheet offers "Use this sound".
  *
  * From YouTube Shorts (founder, 2026-09-04, "combine both"): every rail
  * control carries a label — the count where there is one ([railControls]);
@@ -192,19 +210,22 @@ fun ReelsScreen(
     onOpenAuthor: (userId: String) -> Unit,
     /** The header's search glyph. Required: a header glyph that does nothing must not ship again. */
     onOpenSearch: () -> Unit,
+    /** A hashtag chip under the reel's title; `:app` pushes that tag's posts. */
+    onOpenHashtag: (tag: String) -> Unit,
+    /** The reel's sound line; `:app` pushes that sound's page. */
+    onOpenSound: (soundId: String) -> Unit,
+    /** "Use this sound": the sound is already in `SoundEntry`; `:app` opens the reel create flow. */
+    onCreateWithSound: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
+    sound: ReelSoundViewModel = hiltViewModel(),
 ) {
     val head by viewModel.head.collectAsStateWithLifecycle()
-    val muted by viewModel.muted.collectAsStateWithLifecycle()
-    val paused by viewModel.paused.collectAsStateWithLifecycle()
-    val mode by viewModel.mode.collectAsStateWithLifecycle()
-    val quality by viewModel.quality.collectAsStateWithLifecycle()
-    val chrome = mode.chrome()
+    val view = rememberReelsViewState(viewModel)
+    val chrome = view.chrome
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     val subscriptionEdges by viewModel.subscriptionEdges.collectAsStateWithLifecycle()
-    val moreMessage by more.message.collectAsStateWithLifecycle()
     val items = viewModel.items.collectAsLazyPagingItems()
     val pagerState = rememberReelsPager(viewModel, items, head)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
@@ -226,7 +247,12 @@ fun ReelsScreen(
         viewModel.onExternalShared(item.id)
     }
 
-    ReleaseOnLifecycle(pool)
+    ReleaseOnLifecycle(pool, sound.player)
+    // The mute switch moves BOTH players: the pool's through each page, the
+    // sound's here. Set before anything is attached, so the first sound a
+    // page plays already knows it.
+    LaunchedEffect(view.muted, sound) { sound.player.setMuted(view.muted) }
+    SoundDestinations(viewModel = viewModel, onOpenSound = onOpenSound, onCreateWithSound = onCreateWithSound)
 
     // The shell's bar follows the mode, and everything is given back when
     // the screen is left: the bar by HideShellBottomBar's own dispose, the
@@ -237,7 +263,7 @@ fun ReelsScreen(
     // Back in full mode brings the controls back; it never leaves the tab.
     // Without this the system Back reached the root and closed the app
     // from a screen that had hidden every other way out (founder, 2026-09-04).
-    BackHandler(enabled = mode == ReelsMode.FULL) { viewModel.toggleMode() }
+    BackHandler(enabled = view.fullMode) { viewModel.toggleMode() }
     DisposableEffect(viewModel) {
         onDispose { viewModel.resetView() }
     }
@@ -252,7 +278,8 @@ fun ReelsScreen(
             head = head,
             pagerState = pagerState,
             pool = pool,
-            view = ReelsViewState(muted = muted, paused = paused, chrome = chrome, quality = quality),
+            sound = sound.player,
+            view = view,
             overlays = overlays,
             followEdges = followEdges,
             subscriptionEdges = subscriptionEdges,
@@ -263,18 +290,19 @@ fun ReelsScreen(
                 onOpenAuthor = onOpenAuthor,
                 onShare = onShare,
                 onComment = { commentsFor = it },
+                onOpenHashtag = onOpenHashtag,
                 onSettledReel = { settledReel = it },
                 onSettledPlayer = { settledPlayer = it },
             ),
         )
 
         ScreenChrome(
-            paused = paused,
+            paused = view.paused,
             showHeader = chrome.showHeader,
             onOpenMenu = { settledReel?.let { moreFor = it } },
             onOpenSearch = onOpenSearch,
         )
-        UsMessageHost(message = moreMessage, onDismiss = more::dismissMessage)
+        ReelsMessages(viewModel = viewModel, more = more)
     }
 
     // Comments open over the reel rather than navigating away: the reel keeps
@@ -283,23 +311,110 @@ fun ReelsScreen(
         CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
     }
 
-    // The same more sheet the feed card opens, over the playing reel, with
-    // the reel's own group on top: the caption to unfold, full mode, and the
-    // ladder the settled player reports — Auto alone for an original MP4,
-    // which has no ladder to pick from.
     moreFor?.let { item ->
-        PostMoreSheetHost(
+        ReelMoreSheet(
             item = item,
-            overlay = overlays[item.id] ?: EngagementOverlay(),
-            followEdge = followEdges[item.author.id],
-            ownUserId = viewModel.ownUserId,
+            viewModel = viewModel,
+            more = more,
+            trackHeights = trackHeights,
             onShare = onShare,
             onDismiss = { moreFor = null },
-            viewModel = more,
-            reel = reelMoreState(item, mode, trackHeights, quality, viewModel.playback(item)),
-            onClearScreen = viewModel::toggleMode,
-            onSelectQuality = viewModel::selectQuality,
         )
+    }
+}
+
+/**
+ * The same more sheet the feed card opens, over the playing reel, with the
+ * reel's own rows among the rest: the caption to unfold, full mode, the
+ * ladder the settled player reports — Auto alone for an original MP4, which
+ * has no ladder to pick from — and "Use this sound" when it is offered.
+ */
+@Suppress("LongParameterList") // The sheet's collaborators, hoisted from the screen.
+@Composable
+private fun ReelMoreSheet(
+    item: FeedItem,
+    viewModel: ReelsViewModel,
+    more: PostMoreViewModel,
+    trackHeights: List<Int>,
+    onShare: (FeedItem) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val mode by viewModel.mode.collectAsStateWithLifecycle()
+    val quality by viewModel.quality.collectAsStateWithLifecycle()
+    val overlays by viewModel.overlays.collectAsStateWithLifecycle()
+    val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
+    PostMoreSheetHost(
+        item = item,
+        overlay = overlays[item.id] ?: EngagementOverlay(),
+        followEdge = followEdges[item.author.id],
+        ownUserId = viewModel.ownUserId,
+        onShare = onShare,
+        onDismiss = onDismiss,
+        viewModel = more,
+        reel = reelMoreState(
+            item = item,
+            mode = mode,
+            trackHeights = trackHeights,
+            quality = quality,
+            playback = viewModel.playback(item),
+            canUseSound = item.canUseSound(item.isOwnedBy(viewModel.ownUserId)),
+        ),
+        onClearScreen = viewModel::toggleMode,
+        onSelectQuality = viewModel::selectQuality,
+        onUseSound = { reel -> viewModel.onUseSound(reel, SoundIntent.CREATE) },
+    )
+}
+
+/** The switches the viewer flips and the mode's chrome, collected once, as the one value every page reads. */
+@Composable
+private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
+    val muted by viewModel.muted.collectAsStateWithLifecycle()
+    val soundChoiceRead by viewModel.soundChoiceRead.collectAsStateWithLifecycle()
+    val paused by viewModel.paused.collectAsStateWithLifecycle()
+    val mode by viewModel.mode.collectAsStateWithLifecycle()
+    val quality by viewModel.quality.collectAsStateWithLifecycle()
+    return ReelsViewState(
+        muted = muted,
+        paused = paused,
+        chrome = mode.chrome(),
+        quality = quality,
+        soundChoiceRead = soundChoiceRead,
+        fullMode = mode == ReelsMode.FULL,
+    )
+}
+
+/** One line at a time over the reel: why "use this sound" was refused, else what the More sheet left behind. */
+@Composable
+private fun BoxScope.ReelsMessages(viewModel: ReelsViewModel, more: PostMoreViewModel) {
+    val soundMessage by viewModel.soundMessage.collectAsStateWithLifecycle()
+    val moreMessage by more.message.collectAsStateWithLifecycle()
+    UsMessageHost(
+        message = soundMessage ?: moreMessage,
+        onDismiss = {
+            viewModel.dismissSoundMessage()
+            more.dismissMessage()
+        },
+    )
+}
+
+/**
+ * Goes where "use this sound" decided, once: the reel create flow, with the
+ * sound already waiting for it in `SoundEntry`, or the sound's own page.
+ */
+@Composable
+private fun SoundDestinations(
+    viewModel: ReelsViewModel,
+    onOpenSound: (soundId: String) -> Unit,
+    onCreateWithSound: () -> Unit,
+) {
+    val destination by viewModel.soundDestination.collectAsStateWithLifecycle()
+    LaunchedEffect(destination) {
+        when (val target = destination) {
+            null -> return@LaunchedEffect
+            SoundDestination.Create -> onCreateWithSound()
+            is SoundDestination.Page -> onOpenSound(target.soundId)
+        }
+        viewModel.onSoundDestinationTaken()
     }
 }
 
@@ -355,18 +470,24 @@ private fun OpenOnEntry(
     }
 }
 
-/** The reel's group of the more sheet: the caption, the mode, and the ladder — Auto alone for an original MP4. */
+/**
+ * The reel's rows of the more sheet: the caption, the mode, the ladder — Auto
+ * alone for an original MP4 — and whether "Use this sound" is offered.
+ */
+@Suppress("LongParameterList") // One fact per row of the sheet.
 private fun reelMoreState(
     item: FeedItem,
     mode: ReelsMode,
     trackHeights: List<Int>,
     quality: UsReelQuality,
     playback: Playback?,
+    canUseSound: Boolean,
 ) = UsReelMoreState(
     description = item.text,
     fullMode = mode == ReelsMode.FULL,
     qualities = reelQualityOptions(heights = trackHeights, adaptive = playback?.kind == PlaybackKind.Hls),
     selected = quality,
+    canUseSound = canUseSound,
 )
 
 /**
@@ -450,7 +571,14 @@ internal data class ReelsViewState(
     val paused: Boolean,
     val chrome: ReelsChrome,
     val quality: UsReelQuality,
-)
+    /** The viewer's stored choice of sound has been read; until then nothing starts. */
+    val soundChoiceRead: Boolean = true,
+    /** Full mode is on: Back brings the controls back rather than leaving the tab. */
+    val fullMode: Boolean = false,
+) {
+    /** The settled reel may run: not paused, and the viewer's choice of sound is known. */
+    val mayPlay: Boolean get() = reelMayPlay(paused, soundChoiceRead)
+}
 
 /**
  * What the SCREEN draws over the pager, as opposed to what a page draws over
@@ -542,6 +670,10 @@ internal class ReelActions(
     val onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
     val onComment: (postId: String) -> Unit,
     val onShare: (FeedItem) -> Unit,
+    /** A hashtag chip: that tag's posts. */
+    val onOpenHashtag: (tag: String) -> Unit,
+    /** The sound line: the sound's page, made first when the reel plays only its own audio. */
+    val onSoundLine: (FeedItem) -> Unit,
     val onFollow: (authorId: String) -> Unit,
     /** Subscribe to the author's channel, when the reel carries one ([reelRelationship]). */
     val onSubscribe: (channelId: String) -> Unit,
@@ -551,9 +683,10 @@ internal class ReelActions(
      * The probe is how analytics reads the player without `:core:analytics`
      * depending on media3 — the ViewModel passes it straight through, and the
      * tracker polls it on its own cadence. Null when the page has no player
-     * (a reel still transcoding), which means the view is not counted.
+     * (a reel still transcoding), which means the view is not counted. The
+     * last argument is the pager's page, for the view's rank.
      */
-    val onShown: (FeedItem, (suspend () -> WatchProbe)?) -> Unit,
+    val onShown: (FeedItem, (suspend () -> WatchProbe)?, Int) -> Unit,
     /** The reel of the settled page, or null when the settled page has none (the pending head). */
     val onSettledReel: (FeedItem?) -> Unit,
     /** The player of the settled page, or null when the settled page has none (the pending head). */
@@ -574,6 +707,7 @@ private fun reelActions(
     onOpenAuthor: (String) -> Unit,
     onShare: (FeedItem) -> Unit,
     onComment: (postId: String) -> Unit,
+    onOpenHashtag: (tag: String) -> Unit,
     onSettledReel: (FeedItem?) -> Unit,
     onSettledPlayer: (Player?) -> Unit,
 ) = ReelActions(
@@ -585,6 +719,8 @@ private fun reelActions(
     onBookmark = viewModel::onBookmark,
     onComment = onComment,
     onShare = onShare,
+    onOpenHashtag = onOpenHashtag,
+    onSoundLine = { reel -> viewModel.onUseSound(reel, SoundIntent.PAGE) },
     onFollow = viewModel::onFollow,
     onSubscribe = viewModel::onSubscribe,
     onShown = viewModel::onReelShown,
@@ -606,6 +742,7 @@ private fun ReelsBody(
     head: ReelsHead?,
     pagerState: PagerState,
     pool: PlayerPool,
+    sound: ReelSoundPlayer,
     view: ReelsViewState,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
@@ -634,6 +771,7 @@ private fun ReelsBody(
             head = head,
             pagerState = pagerState,
             pool = pool,
+            sound = sound,
             view = view,
             overlays = overlays,
             followEdges = followEdges,
@@ -652,6 +790,7 @@ private fun ReelsPager(
     head: ReelsHead?,
     pagerState: PagerState,
     pool: PlayerPool,
+    sound: ReelSoundPlayer,
     view: ReelsViewState,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
@@ -661,7 +800,9 @@ private fun ReelsPager(
     actions: ReelActions,
 ) {
     val pageCount = pagerState.pageCount
-    val paused = view.paused
+    // Read when the effect below RUNS, not when it was keyed: the viewer's
+    // choice of sound may have been read in between.
+    val soundChoiceRead by rememberUpdatedState(view.soundChoiceRead)
 
     // peek, not get: a neighbour lookup must not trigger a page load.
     fun reelAt(page: Int): FeedItem? = (pageAt(page, head, items, load = false) as? ReelsPage.Reel)?.item
@@ -674,19 +815,27 @@ private fun ReelsPager(
         val player = reel?.let(playbackFor)?.let { pool.acquire(current, it) }
         actions.onSettledReel(reel)
         actions.onSettledPlayer(player)
-        reel?.let { actions.onShown(it, player?.let(::watchProbe)) }
-        pool.playOnly(current)
+        // The added sound serves the settled page and no other. It is
+        // attached BEFORE the video is told to play, so the first frame
+        // already has the creator's mix; a reel without one lets it go.
+        val track = reel?.soundTrack()
+        if (player != null && track != null) sound.attach(player, track, reel.soundMix()) else sound.detach()
+        reel?.let { actions.onShown(it, player?.let(::watchProbe), current) }
+        // The pause is the reel's it was made on, and onShown has cleared
+        // it; what may still hold the reel is the choice of sound.
+        if (soundChoiceRead) pool.playOnly(current)
         listOf(current - 1, current + 1).forEach { index ->
             reelAt(index)?.let(playbackFor)?.let { pool.preload(index, it) }
         }
     }
 
-    // The single-tap pause, applied to whichever page is settled. A separate
-    // effect from the one above, keyed on the pause alone: folding it in
-    // would re-run onShown on every tap, and onShown is what CLEARS a pause
-    // when the pager moves on.
-    LaunchedEffect(paused) {
-        if (paused) pool.pauseAll() else pool.playOnly(pagerState.settledPage)
+    // The single-tap pause, and the wait for the viewer's choice of sound,
+    // applied to whichever page is settled. A separate effect from the one
+    // above, keyed on the answer alone: folding it in would re-run onShown
+    // on every tap, and onShown is what CLEARS a pause when the pager moves
+    // on. The sound player follows the video, so it is not told here.
+    LaunchedEffect(view.mayPlay) {
+        if (view.mayPlay) pool.playOnly(pagerState.settledPage) else pool.pauseAll()
     }
 
     VerticalPager(
@@ -715,7 +864,9 @@ private fun ReelsPager(
                     overlay = overlays[item.id] ?: EngagementOverlay(),
                     relationship = relationship,
                     offersRelationship = offersReelRelationship(relationship, ownUserId, followEdges, subscriptionEdges),
+                    soundLine = soundLine(item, item.isOwnedBy(ownUserId)),
                     pool = pool,
+                    sound = sound,
                     page = page,
                     settled = pagerState.settledPage == page,
                     view = view,
@@ -888,7 +1039,10 @@ private fun ReelPage(
     overlay: EngagementOverlay,
     relationship: ReelRelationship,
     offersRelationship: Boolean,
+    /** What the sound line under the hashtags says, or null when there is none. */
+    soundLine: SoundLine?,
     pool: PlayerPool,
+    sound: ReelSoundPlayer,
     page: Int,
     /** The pager has settled on THIS page: it is the one playing, and the one the progress line follows. */
     settled: Boolean,
@@ -916,29 +1070,16 @@ private fun ReelPage(
             },
     ) {
         if (playback != null) {
-            val player = remember(page, playback) { pool.acquire(page, playback) }
-            LaunchedEffect(view.muted, player) { player.volume = if (view.muted) 0f else 1f }
-            // The session's quality on every player as it is prepared — the
-            // neighbours too, so a swipe lands on the chosen rung, not on a
-            // beat of Auto before it corrects.
-            LaunchedEffect(view.quality, player) { player.applyQuality(view.quality) }
-            // SURFACE_VIEW, not TEXTURE_VIEW. A TextureView goes through the
-            // view hierarchy's compositor, costing a full-screen copy every
-            // frame; the difference is visible on mid-range hardware and this
-            // is the surface the whole native migration was justified by.
-            PlayerSurface(
-                player = player,
-                surfaceType = SURFACE_TYPE_SURFACE_VIEW,
-                modifier = Modifier.fillMaxSize(),
+            ReelVideo(
+                playback = playback,
+                mixed = settled && item.sound != null,
+                pool = pool,
+                sound = sound,
+                page = page,
+                polling = settled && !view.paused,
+                view = view,
+                onProgress = { progress = it },
             )
-            // A reel that has not drawn its first frame is a BLACK page —
-            // there is no poster behind a reel — so this is the surface the
-            // "stuck" complaint was loudest about. It only ever draws on the
-            // page the viewer is on: the pool preloads the neighbours with
-            // playWhenReady false, and a paused reel shows the play glyph
-            // instead. Retry re-prepares the player where it stands.
-            VideoLoadingIndicator(player = player, onRetry = player::prepare)
-            TrackProgress(player = player, polling = settled && !view.paused) { progress = it }
         } else {
             // No playable rendition yet. An asset still processing has no
             // hls_url, so this is an expected state rather than a failure.
@@ -977,14 +1118,19 @@ private fun ReelPage(
                 item = item,
                 relationship = relationship,
                 offersRelationship = offersRelationship,
+                soundLine = soundLine,
                 progress = progress,
-                onOpenAuthor = actions.onOpenAuthor,
-                onRelationship = {
-                    when (relationship) {
-                        is ReelRelationship.Follow -> actions.onFollow(relationship.ref)
-                        is ReelRelationship.Subscribe -> actions.onSubscribe(relationship.ref)
-                    }
-                },
+                actions = ReelOverlayActions(
+                    onOpenAuthor = actions.onOpenAuthor,
+                    onRelationship = {
+                        when (relationship) {
+                            is ReelRelationship.Follow -> actions.onFollow(relationship.ref)
+                            is ReelRelationship.Subscribe -> actions.onSubscribe(relationship.ref)
+                        }
+                    },
+                    onOpenHashtag = actions.onOpenHashtag,
+                    onSoundLine = { actions.onSoundLine(item) },
+                ),
             )
         }
 
@@ -1005,6 +1151,60 @@ private fun ReelPage(
                 actions = actions,
             )
         }
+    }
+}
+
+/**
+ * The video of one page: the pool's player for it, its volume and quality,
+ * the surface it draws on, the buffering indicator, and the progress poll.
+ *
+ * [mixed] is the settled page of a reel that plays an added sound: its
+ * volume is then set by the sound player — the creator's mix, from the
+ * planner — and by nothing else. Every other page follows the mute switch
+ * alone, by the same rule the planner's answer is applied with.
+ */
+@OptIn(UnstableApi::class)
+@Suppress("LongParameterList") // One fact per thing the video needs.
+@Composable
+private fun ReelVideo(
+    playback: Playback,
+    mixed: Boolean,
+    pool: PlayerPool,
+    sound: ReelSoundPlayer,
+    page: Int,
+    polling: Boolean,
+    view: ReelsViewState,
+    onProgress: (Float) -> Unit,
+) {
+    val player = remember(page, playback) { pool.acquire(page, playback) }
+    LaunchedEffect(view.muted, player, mixed) {
+        if (!mixed) player.volume = appliedVolume(PLAIN_LEVEL, view.muted)
+    }
+    // The session's quality on every player as it is prepared — the
+    // neighbours too, so a swipe lands on the chosen rung, not on a
+    // beat of Auto before it corrects.
+    LaunchedEffect(view.quality, player) { player.applyQuality(view.quality) }
+    // SURFACE_VIEW, not TEXTURE_VIEW. A TextureView goes through the
+    // view hierarchy's compositor, costing a full-screen copy every
+    // frame; the difference is visible on mid-range hardware and this
+    // is the surface the whole native migration was justified by.
+    PlayerSurface(
+        player = player,
+        surfaceType = SURFACE_TYPE_SURFACE_VIEW,
+        modifier = Modifier.fillMaxSize(),
+    )
+    // A reel that has not drawn its first frame is a BLACK page —
+    // there is no poster behind a reel — so this is the surface the
+    // "stuck" complaint was loudest about. It only ever draws on the
+    // page the viewer is on: the pool preloads the neighbours with
+    // playWhenReady false, and a paused reel shows the play glyph
+    // instead. Retry re-prepares the player where it stands.
+    VideoLoadingIndicator(player = player, onRetry = player::prepare)
+    // The same four-a-second poll is the sound's running clock: a
+    // drift too small to hear is left alone, a larger one corrected.
+    TrackProgress(player = player, polling = polling) {
+        onProgress(it)
+        sound.tick()
     }
 }
 
@@ -1109,7 +1309,8 @@ private fun BottomScrim(modifier: Modifier = Modifier) {
  * The vertical control strip over a reel, YouTube Shorts' idiom on
  * Instagram's order (founder, 2026-09-04, "combine both"): like, comment,
  * share, save — each glyph with a one-line label under it, the count
- * where there is one — then mute on its own, unlabelled. The ⋮ left the
+ * where there is one (share and save too, when the row carries theirs,
+ * 2026-09-30) — then mute on its own, unlabelled. The ⋮ left the
  * rail for the header's hamburger (founder, 2026-09-05). 56dp from the
  * bottom, 20dp between controls. Plain white glyphs on the bottom scrim —
  * no discs; the scrim carries the contrast for the whole strip.
@@ -1132,6 +1333,8 @@ private fun ReelActionRail(
         likes = overlay.likeCountOr(item.counts.likes, item.viewer.hasReacted),
         comments = item.counts.comments,
         saved = bookmarked,
+        shares = item.counts.shares,
+        saves = layeredSaves(item.counts.saves, serverSaved = item.viewer.isBookmarked, saved = bookmarked),
     )
     Column(
         modifier = modifier
@@ -1271,13 +1474,13 @@ private fun Modifier.pressScale(onClick: () -> Unit): Modifier {
  * "@username" at 15sp, the WHITE relationship pill (Follow, or Subscribe
  * when the reel carries its author's channel; only when the viewer is
  * known not to have the edge, never on the viewer's own reel, which is
- * [offersReelRelationship]'s rule), then the caption clamped to two lines
- * with "more" that opens it in place.
+ * [offersReelRelationship]'s rule), then the reel's title, the caption
+ * clamped to two lines with "more" that opens it in place, the hashtags as
+ * chips that open that tag's posts, and the sound line (2026-09-30).
  *
- * No "♪ Original audio" line: a feed row carries no audio metadata today,
- * and printing a label for a fact the server has not stated would be
- * decoration pretending to be information. It appears the day the row
- * carries a track.
+ * The sound line is a note and a name, and it is drawn only when it can be
+ * followed ([soundLine]): an added sound opens its page; "Original sound -
+ * <creator>" makes the reel's own audio a sound and then opens its page.
  *
  * Holds no rail controls. Text and targets interleaved in one column made
  * the caption look tappable and the buttons look like part of the sentence.
@@ -1287,15 +1490,17 @@ private fun ReelOverlay(
     item: FeedItem,
     relationship: ReelRelationship,
     offersRelationship: Boolean,
+    soundLine: SoundLine?,
     /** 0..1 of the reel played; drawn as the ring around the avatar. */
     progress: Float,
-    onOpenAuthor: (String) -> Unit,
-    onRelationship: () -> Unit,
+    actions: ReelOverlayActions,
     modifier: Modifier = Modifier,
 ) {
-    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
-    var overflowed by remember(item.id) { mutableStateOf(false) }
     val username = reelAuthorLabel(item.author.username, item.author.nameForDisplay)
+    val onOpenAuthor = actions.onOpenAuthor
+    val onRelationship = actions.onRelationship
+    val title = reelTitle(item)
+    val hashtags = reelHashtags(item)
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1340,29 +1545,147 @@ private fun ReelOverlay(
                 FollowPill(label = relationship.label, onClick = onRelationship)
             }
         }
-        if (item.text.isNotBlank()) {
+        if (title != null) {
             Text(
-                text = item.text,
-                style = MaterialTheme.typography.bodyMedium,
-                fontSize = CAPTION_SIZE,
-                color = Color.White,
-                maxLines = if (expanded) Int.MAX_VALUE else CAPTION_LINES,
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.onMedia,
+                maxLines = TITLE_LINES,
                 overflow = TextOverflow.Ellipsis,
-                onTextLayout = { if (!expanded) overflowed = it.hasVisualOverflow },
+                modifier = Modifier.testTag("reel_title"),
             )
-            if (overflowed || expanded) {
-                Text(
-                    text = if (expanded) "less" else "more",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = Color.White.copy(alpha = DIM_ALPHA),
-                    modifier = Modifier
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { expanded = !expanded }
-                        .semantics { role = Role.Button }
-                        .testTag("reel_caption_toggle"),
-                )
+        }
+        if (item.text.isNotBlank()) ReelCaption(item = item)
+        if (hashtags.isNotEmpty()) ReelHashtags(tags = hashtags, onOpenHashtag = actions.onOpenHashtag)
+        if (soundLine != null) ReelSoundLine(line = soundLine, onClick = actions.onSoundLine)
+    }
+}
+
+/** The caption, clamped to two lines with "more" that opens it in place and "less" that folds it. */
+@Composable
+private fun ReelCaption(item: FeedItem) {
+    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    var overflowed by remember(item.id) { mutableStateOf(false) }
+    Text(
+        text = item.text,
+        style = MaterialTheme.typography.bodyMedium,
+        fontSize = CAPTION_SIZE,
+        color = Color.White,
+        maxLines = if (expanded) Int.MAX_VALUE else CAPTION_LINES,
+        overflow = TextOverflow.Ellipsis,
+        onTextLayout = { if (!expanded) overflowed = it.hasVisualOverflow },
+    )
+    if (overflowed || expanded) {
+        Text(
+            text = if (expanded) "less" else "more",
+            style = MaterialTheme.typography.labelLarge,
+            color = Color.White.copy(alpha = DIM_ALPHA),
+            modifier = Modifier
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { expanded = !expanded }
+                .semantics { role = Role.Button }
+                .testTag("reel_caption_toggle"),
+        )
+    }
+}
+
+/** What the author block can ask for: the author, the relationship, a tag's posts, the sound. */
+internal class ReelOverlayActions(
+    val onOpenAuthor: (String) -> Unit,
+    val onRelationship: () -> Unit,
+    val onOpenHashtag: (tag: String) -> Unit,
+    val onSoundLine: () -> Unit,
+)
+
+/**
+ * The reel's hashtags, one line of chips that scrolls sideways; a chip opens
+ * that tag's posts. Material's chip, coloured from the over-media tokens: a
+ * faint white plate and white type, because what is under it is the video
+ * and its scrim, never the theme's surface.
+ */
+@Composable
+private fun ReelHashtags(tags: List<String>, onOpenHashtag: (tag: String) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .horizontalScroll(rememberScrollState())
+            .testTag("reel_hashtags"),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        tags.forEach { tag ->
+            SuggestionChip(
+                onClick = { onOpenHashtag(tag) },
+                label = {
+                    Text(
+                        text = hashtagLabel(tag),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                    )
+                },
+                shape = RoundedCornerShape(UsTheme.radii.full),
+                colors = SuggestionChipDefaults.suggestionChipColors(
+                    containerColor = UsTheme.extended.onMedia.copy(alpha = CHIP_PLATE_ALPHA),
+                    labelColor = UsTheme.extended.onMedia,
+                ),
+                border = null,
+                modifier = Modifier
+                    .height(CHIP_HEIGHT)
+                    .testTag("reel_hashtag:$tag"),
+            )
+        }
+    }
+}
+
+/**
+ * A note and the sound's name, small, on one line. The whole line is the
+ * target: it opens the sound's page, making the sound first when the reel
+ * plays only its own audio.
+ */
+@Composable
+private fun ReelSoundLine(line: SoundLine, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClickLabel = if (line.added) "Open sound" else "Use this sound",
+                onClick = onClick,
+            )
+            .sizeIn(minHeight = SOUND_LINE_TARGET)
+            .semantics(mergeDescendants = true) { contentDescription = "Sound: ${line.label}" }
+            .testTag(if (line.added) "reel_sound_line:added" else "reel_sound_line:original"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+    ) {
+        Icon(
+            imageVector = UsIcons.Music,
+            contentDescription = null,
+            tint = UsTheme.extended.onMedia,
+            modifier = Modifier.size(SOUND_LINE_ICON),
+        )
+        Text(
+            text = line.label,
+            style = MaterialTheme.typography.labelLarge,
+            color = UsTheme.extended.onMedia,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Preview
+@Composable
+private fun ReelOverlayWithSoundPreview() {
+    UsTheme {
+        Box(modifier = Modifier.background(UsTheme.extended.bgCanvas)) {
+            Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                ReelHashtags(tags = listOf("reels", "monsoon", "walk"), onOpenHashtag = {})
+                ReelSoundLine(line = SoundLine(label = "Original sound - Asha", added = true), onClick = {})
+                ReelSoundLine(line = SoundLine(label = "Original sound - Ravi", added = false), onClick = {})
             }
         }
     }
@@ -1392,15 +1715,21 @@ private fun FollowPill(label: String, onClick: () -> Unit) {
  * decoder sessions, and the device exhausts them long before the process ends.
  */
 @Composable
-private fun ReleaseOnLifecycle(pool: PlayerPool) {
+private fun ReleaseOnLifecycle(pool: PlayerPool, sound: ReelSoundPlayer) {
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) pool.pauseAll()
+            if (event == Lifecycle.Event.ON_STOP) {
+                pool.pauseAll()
+                sound.pause()
+            }
         }
         owner.lifecycle.addObserver(observer)
         onDispose {
             owner.lifecycle.removeObserver(observer)
+            // The sound first: letting it go gives the video back at its
+            // plain level, which needs the video's player still alive.
+            sound.release()
             pool.release()
         }
     }
@@ -1408,6 +1737,20 @@ private fun ReleaseOnLifecycle(pool: PlayerPool) {
 
 /** Instagram clamps the reel caption to two lines before "more". */
 private const val CAPTION_LINES = 2
+
+/** The title is a line, not a paragraph: the caption under it is where the words go. */
+private const val TITLE_LINES = 1
+
+/** The level of a page that plays no added sound: the viewer's, in full. */
+private const val PLAIN_LEVEL = 1.0
+
+/** A hashtag chip: 32dp tall on a white plate at 16%. */
+private val CHIP_HEIGHT = 32.dp
+private const val CHIP_PLATE_ALPHA = 0.16f
+
+/** The sound line: a 14dp note, and a row tall enough to be tapped on purpose. */
+private val SOUND_LINE_ICON = 14.dp
+private val SOUND_LINE_TARGET = 32.dp
 
 /** Chrome in and out — the rail, the author block, the scrim — matched to the shell's bar. */
 private const val CHROME_ANIM_MILLIS = 200

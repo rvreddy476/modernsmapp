@@ -186,6 +186,25 @@ class SettingsDataStore @Inject constructor(
         store.edit { it[KEY_AUTOPLAY_NEXT_EPISODE] = enabled }
     }
 
+    /**
+     * Whether Reels plays with SOUND.
+     *
+     * founder, 2026-09-30: reels open MUTED, like the web; once the viewer
+     * turns the sound on it STAYS on — across reels, across leaving and
+     * re-entering Reels, and across app restarts — until they mute again
+     * ("Once user makes it on on the sound keep it on"). It replaces the
+     * 2026-09-05 decision that Reels open with the sound on and keep a mute
+     * for the session only. Off until the viewer says otherwise, and the
+     * choice drives the video and its added sound together.
+     */
+    val reelsSoundOn: Flow<Boolean> = store.data
+        .safe()
+        .map { it[KEY_REELS_SOUND_ON] ?: false }
+
+    suspend fun setReelsSoundOn(on: Boolean) {
+        store.edit { it[KEY_REELS_SOUND_ON] = on }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -209,6 +228,7 @@ class SettingsDataStore @Inject constructor(
         val KEY_USAGE_LEDGER = stringPreferencesKey("usage_ledger")
         val KEY_WELLBEING_GUARD_CACHE = stringPreferencesKey("wellbeing_guard_cache")
         val KEY_AUTOPLAY_NEXT_EPISODE = booleanPreferencesKey("autoplay_next_episode")
+        val KEY_REELS_SOUND_ON = booleanPreferencesKey("reels_sound_on")
         const val KEYWORD_SEPARATOR = ","
     }
 }

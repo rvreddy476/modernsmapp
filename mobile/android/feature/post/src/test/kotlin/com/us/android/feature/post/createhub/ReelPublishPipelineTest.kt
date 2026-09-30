@@ -38,6 +38,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -630,6 +632,143 @@ class ReelPublishPipelineTest {
         assertThat(request.mentions).isNull()
         assertThat(request.publishAt).isNull()
         assertThat(json.encodeToString(CreatePostRequest.serializer(), request)).doesNotContain("publish_at")
+    }
+
+    // ── An added sound (original sounds, 2026-09-30) ────────────────────
+
+    private fun withSound(original: Double = 0.2, overlay: Double = 0.8) = pending("hi").copy(
+        audioTrackId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        audioStartMs = 0L,
+        originalAudioVolume = original,
+        overlayAudioVolume = overlay,
+    )
+
+    /** The four fields, and exactly these, go out with a sound — contract 2.4. */
+    @Test
+    fun `a reel with a sound sends the sound's four fields`() {
+        val request = ReelPublishPipeline.buildRequest(withSound(), "v", "c", language = "en")
+
+        assertThat(request.audioTrackId).isEqualTo("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+        assertThat(request.audioStartMs).isEqualTo(0L)
+        assertThat(request.originalAudioVolume).isEqualTo(0.2)
+        assertThat(request.overlayAudioVolume).isEqualTo(0.8)
+
+        val body = json.encodeToString(CreatePostRequest.serializer(), request)
+        val sent = json.parseToJsonElement(body).jsonObject
+        assertThat(sent.getValue("audio_track_id").jsonPrimitive.content)
+            .isEqualTo("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+        assertThat(sent.getValue("audio_start_ms").jsonPrimitive.content).isEqualTo("0")
+        assertThat(sent.getValue("original_audio_volume").jsonPrimitive.content).isEqualTo("0.2")
+        assertThat(sent.getValue("overlay_audio_volume").jsonPrimitive.content).isEqualTo("0.8")
+    }
+
+    /** A creator's 0 is a real 0 and is sent; a level outside 0..1 is brought inside. */
+    @Test
+    fun `a sound's levels are sent as set, inside 0 to 1`() {
+        val muted = ReelPublishPipeline.buildRequest(withSound(original = 0.0), "v", "c", language = "en")
+        assertThat(muted.originalAudioVolume).isEqualTo(0.0)
+        assertThat(json.encodeToString(CreatePostRequest.serializer(), muted))
+            .contains("\"original_audio_volume\":0.0")
+
+        val loud =
+            ReelPublishPipeline.buildRequest(withSound(original = 1.7, overlay = -0.2), "v", "c", language = "en")
+        assertThat(loud.originalAudioVolume).isEqualTo(1.0)
+        assertThat(loud.overlayAudioVolume).isEqualTo(0.0)
+    }
+
+    /** Without a sound none of the four is on the wire: the request is the one it was before sounds existed. */
+    @Test
+    fun `a reel without a sound sends none of the sound fields`() {
+        val request = ReelPublishPipeline.buildRequest(pending("hi"), "v", "c", language = "en")
+
+        assertThat(request.audioTrackId).isNull()
+        assertThat(request.audioStartMs).isNull()
+        assertThat(request.originalAudioVolume).isNull()
+        assertThat(request.overlayAudioVolume).isNull()
+        val body = json.encodeToString(CreatePostRequest.serializer(), request)
+        for (field in listOf("audio_track_id", "audio_start_ms", "original_audio_volume", "overlay_audio_volume")) {
+            assertThat(body).doesNotContain("\"$field\"")
+        }
+        // A blank id is no sound either, whatever the levels say.
+        val blank = ReelPublishPipeline.buildRequest(withSound().copy(audioTrackId = "  "), "v", "c", language = "en")
+        assertThat(blank.audioTrackId).isNull()
+        assertThat(blank.originalAudioVolume).isNull()
+    }
+
+    /** A record written before the sound fields existed still loads, and reads as a reel without one. */
+    @Test
+    fun `a stored record without the sound fields still loads`() {
+        val stored = """{"creationKey":"key-9","videoUri":"content://video/9","caption":"old"}"""
+
+        val loaded = json.decodeFromString(PendingReelPublish.serializer(), stored)
+
+        assertThat(loaded.audioTrackId).isNull()
+        assertThat(loaded.audioStartMs).isEqualTo(0L)
+        assertThat(loaded.originalAudioVolume).isEqualTo(1.0)
+        assertThat(loaded.overlayAudioVolume).isEqualTo(1.0)
+        assertThat(ReelPublishPipeline.buildRequest(loaded, "v", null, language = "en").audioTrackId).isNull()
+    }
+
+    // ── Two fixes of the same date (2026-09-30) ─────────────────────────
+
+    /**
+     * Subscribers were never notified of anything posted from Android: the
+     * policy always said `notify_subscribers: false`, and notification-service
+     * drops the fan-out on false. A reel and a long video now say true. The
+     * ordinary composer post keeps its false — `CreatePostWireTest` pins it.
+     */
+    @Test
+    fun `a reel and a long video notify subscribers`() {
+        val reel = ReelPublishPipeline.buildRequest(pending("hi"), "v", "c", language = "en")
+        val long = ReelPublishPipeline.buildRequest(
+            pending("hi").copy(kind = PublishKind.LONG, title = "T"),
+            "v",
+            "c",
+            language = "en",
+        )
+
+        assertThat(reel.distribution.notifySubscribers).isTrue()
+        assertThat(long.distribution.notifySubscribers).isTrue()
+        assertThat(reel.distribution.mainFeed).isTrue()
+        assertThat(reel.distribution.createReelPreview).isFalse()
+        val sent = json.parseToJsonElement(json.encodeToString(CreatePostRequest.serializer(), reel)).jsonObject
+        assertThat(sent.getValue("distribution").jsonObject.getValue("notify_subscribers").jsonPrimitive.content)
+            .isEqualTo("true")
+    }
+
+    /** `language` was a hard-coded "en"; it is the device's language tag now. */
+    @Test
+    fun `the language is the device's, or en when the device has none to give`() {
+        assertThat(ReelPublishPipeline.postLanguage("en")).isEqualTo("en")
+        assertThat(ReelPublishPipeline.postLanguage("hi")).isEqualTo("hi")
+        assertThat(ReelPublishPipeline.postLanguage("te")).isEqualTo("te")
+        assertThat(ReelPublishPipeline.postLanguage("EN")).isEqualTo("en")
+        assertThat(ReelPublishPipeline.postLanguage(" fr ")).isEqualTo("fr")
+        assertThat(ReelPublishPipeline.postLanguage("zh-hant")).isEqualTo("zh-hant")
+        assertThat(ReelPublishPipeline.postLanguage("")).isEqualTo("en")
+        assertThat(ReelPublishPipeline.postLanguage(null)).isEqualTo("en")
+        assertThat(ReelPublishPipeline.postLanguage("x")).isEqualTo("en")
+        assertThat(ReelPublishPipeline.postLanguage("toolongtag")).isEqualTo("en")
+        assertThat(ReelPublishPipeline.postLanguage("en_US")).isEqualTo("en")
+        assertThat(ReelPublishPipeline.postLanguage("e n")).isEqualTo("en")
+
+        assertThat(ReelPublishPipeline.buildRequest(pending("hi"), "v", "c", language = "te").language).isEqualTo("te")
+    }
+
+    /** The one place the form becomes bytes, for a reel with a sound: the whole body, so the wire is readable. */
+    @Test
+    fun `the request for a reel with a sound, whole`() {
+        val request = ReelPublishPipeline.buildRequest(withSound(), "video-1", "cover-1", language = "hi")
+
+        assertThat(json.encodeToString(CreatePostRequest.serializer(), request)).isEqualTo(
+            """{"text":"hi","visibility":"public","content_type":"flick","post_type":"video",""" +
+                """"app_origin":"postbook","media_ids":["video-1"],"language":"hi",""" +
+                """"distribution":{"version":1,"main_feed":true,"notify_subscribers":true,""" +
+                """"create_reel_preview":false},"title":"","no_comments":false,"hide_share":false,""" +
+                """"allow_download":true,"remix_setting":"allow","cover_media_id":"cover-1",""" +
+                """"audio_track_id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","audio_start_ms":0,""" +
+                """"original_audio_volume":0.2,"overlay_audio_volume":0.8}""",
+        )
     }
 
     /** A 400 the client cannot name — the server refusing a `publish_at` — is shown in the server's words. */

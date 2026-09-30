@@ -8,6 +8,8 @@ import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.ChannelState
+import com.us.android.core.media.ChosenSound
+import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ScheduleWindow
 import com.us.android.feature.post.data.dto.SupportedAudience
@@ -74,6 +76,17 @@ import javax.inject.Inject
  * post and answers `is_scheduled`; the own profile shows it with a clock
  * until then.
  *
+ * ## A SOUND (original sounds, 2026-09-30)
+ *
+ * "Use this sound" in Reels or on a sound's page leaves the sound in
+ * [SoundEntry]; this form takes it when it starts and shows it in a Sound
+ * section with Remove, a preview and two sliders — the reel's own audio and
+ * the sound. The sound belongs to the visit, not to the file: it survives
+ * picking or clearing a video, and only Remove lets it go. It is sent as
+ * `audio_track_id` at start 0 with the two levels, and never mixed into the
+ * video. A long video carries no sound: the section is not shown for one and
+ * nothing is sent.
+ *
  * ## POST HANDS OFF AND LEAVES
  *
  * Tapping Post no longer uploads here. The form writes the chosen cover to
@@ -98,8 +111,9 @@ class ReelPublishViewModel @Inject constructor(
     private val lookups: ReelLookups,
     private val probe: ReelVideoProbe,
     private val channels: ChannelRepository,
+    private val soundEntry: SoundEntry,
     @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
-    savedStateHandle: SavedStateHandle,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     sealed interface Phase {
@@ -170,6 +184,12 @@ class ReelPublishViewModel @Inject constructor(
         val locationName: String = "",
         /** When the post goes live, or null to post now. */
         val publishAt: Instant? = null,
+        /** The sound the reel is made with (original sounds, 2026-09-30), or null for its own audio alone. */
+        val sound: ChosenSound? = null,
+        /** The "Original audio" slider: the reel's own audio under the sound, 0..1. */
+        val originalAudioVolume: Float = FULL_LEVEL,
+        /** The "Sound" slider: the added sound's level, 0..1. */
+        val overlayAudioVolume: Float = FULL_LEVEL,
         val phase: Phase = Phase.Editing,
         /** The viewer's channel, asked for a long video; unknown for a reel. */
         val channel: ChannelState = ChannelState.Unknown,
@@ -248,6 +268,10 @@ class ReelPublishViewModel @Inject constructor(
         /** The cover's aspect (width / height): 16:9 for a video, 9:16 for a reel. */
         val coverAspect: Float
             get() = if (kind == PublishKind.LONG) LANDSCAPE_ASPECT else PORTRAIT_ASPECT
+
+        /** The Sound section is drawn: a reel with a sound chosen. A long video carries none. */
+        val showsSound: Boolean
+            get() = kind == PublishKind.REEL && sound != null
     }
 
     private val _state = MutableStateFlow(
@@ -270,6 +294,12 @@ class ReelPublishViewModel @Inject constructor(
     private val scrubs = MutableSharedFlow<Long>(extraBufferCapacity = 1)
 
     init {
+        // The sound "Use this sound" left for this visit, else the one this
+        // form had before the process died.
+        (soundEntry.take() ?: restoredSound())?.let { sound ->
+            _state.update { it.copy(sound = sound) }
+            rememberSound(sound)
+        }
         viewModelScope.launch {
             lookups.categories()?.let { loaded -> _state.update { it.copy(categories = loaded) } }
         }
@@ -479,6 +509,38 @@ class ReelPublishViewModel @Inject constructor(
     /** Null posts now; an instant inside [ScheduleWindow] schedules. The picker checks the window. */
     fun onScheduleChanged(publishAt: Instant?) = _state.update { it.copy(publishAt = publishAt) }
 
+    // ── The sound ───────────────────────────────────────────────────────
+
+    /** Remove: the reel plays its own audio alone. The sliders go back to full for the next sound. */
+    fun removeSound() {
+        _state.update { it.copy(sound = null, originalAudioVolume = FULL_LEVEL, overlayAudioVolume = FULL_LEVEL) }
+        rememberSound(null)
+    }
+
+    fun onOriginalVolumeChanged(level: Float) =
+        _state.update { it.copy(originalAudioVolume = level.coerceIn(0f, FULL_LEVEL)) }
+
+    fun onOverlayVolumeChanged(level: Float) =
+        _state.update { it.copy(overlayAudioVolume = level.coerceIn(0f, FULL_LEVEL)) }
+
+    /** The sound is kept across process death in the saved state, by its four facts. */
+    private fun rememberSound(sound: ChosenSound?) {
+        savedStateHandle[SOUND_ID] = sound?.id
+        savedStateHandle[SOUND_TITLE] = sound?.title
+        savedStateHandle[SOUND_ARTIST] = sound?.artist
+        savedStateHandle[SOUND_DURATION_MS] = sound?.durationMs
+    }
+
+    private fun restoredSound(): ChosenSound? {
+        val id = savedStateHandle.get<String>(SOUND_ID)?.takeIf { it.isNotBlank() } ?: return null
+        return ChosenSound(
+            id = id,
+            title = savedStateHandle.get<String>(SOUND_TITLE).orEmpty(),
+            artist = savedStateHandle.get<String>(SOUND_ARTIST).orEmpty(),
+            durationMs = savedStateHandle.get<Long>(SOUND_DURATION_MS) ?: 0L,
+        )
+    }
+
     // ── Hashtags ────────────────────────────────────────────────────────
 
     /**
@@ -581,6 +643,15 @@ class ReelPublishViewModel @Inject constructor(
         /** The Create route's argument, read to open the form as a reel or a video. */
         const val SURFACE_ARG = "surface"
 
+        /** The chosen sound in the saved state, so it outlives the process. */
+        private const val SOUND_ID = "sound_id"
+        private const val SOUND_TITLE = "sound_title"
+        private const val SOUND_ARTIST = "sound_artist"
+        private const val SOUND_DURATION_MS = "sound_duration_ms"
+
+        /** A slider at the top: the level as the creator recorded it. */
+        const val FULL_LEVEL = 1f
+
         /** What the studio's export is: H.264 in MP4. */
         const val EXPORT_MIME_TYPE = "video/mp4"
 
@@ -623,6 +694,12 @@ class ReelPublishViewModel @Inject constructor(
             locationName = current.locationName,
             hashtags = Hashtags.add(current.hashtags, current.hashtagInput),
             publishAt = current.publishAt?.let(ScheduleWindow::wire),
+            // A sound goes with a REEL only; a long video carries none, and
+            // there is no offset picker, so it starts at 0.
+            audioTrackId = current.sound?.id?.takeIf { current.kind == PublishKind.REEL },
+            audioStartMs = 0L,
+            originalAudioVolume = current.originalAudioVolume.toDouble(),
+            overlayAudioVolume = current.overlayAudioVolume.toDouble(),
         )
     }
 }

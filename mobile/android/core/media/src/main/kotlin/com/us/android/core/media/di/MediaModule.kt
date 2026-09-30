@@ -113,9 +113,10 @@ object MediaModule {
                 repeatMode = ExoPlayer.REPEAT_MODE_ONE
                 // Silent until a surface says otherwise. The feed's autoplay
                 // keeps it there — the feed is always muted — and Reels sets
-                // the volume from its own mute switch on every page (sound on
-                // by default since 2026-09-05). A player that arrived loud
-                // would play a beat of audio before the surface's rule landed.
+                // the volume from the viewer's stored choice of sound on every
+                // page (muted until they turn it on, founder 2026-09-30). A
+                // player that arrived loud would play a beat of audio before
+                // the surface's rule landed.
                 volume = 0f
             }
     }

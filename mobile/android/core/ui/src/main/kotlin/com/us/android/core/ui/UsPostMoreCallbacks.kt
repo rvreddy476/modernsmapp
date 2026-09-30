@@ -45,4 +45,10 @@ class UsPostMoreCallbacks(
     val onClearScreen: () -> Unit = {},
     /** Reels only: a rung of the quality picker was picked; the host applies and keeps it. */
     val onSelectQuality: (UsReelQuality) -> Unit = {},
+    /**
+     * Reels only: "Use this sound" (original sounds, 2026-09-30). The sheet
+     * has already left when this fires; the host asks the server for the
+     * reel's sound and opens the reel create flow with it, or says why not.
+     */
+    val onUseSound: () -> Unit = {},
 )

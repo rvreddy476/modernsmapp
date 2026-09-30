@@ -95,6 +95,20 @@ data class FeedItem(
      */
     val publishAt: String? = null,
     val isScheduled: Boolean = false,
+    /**
+     * The added sound this viewer may hear (original sounds, 2026-09-30), or
+     * null when the reel plays only its own audio. Null too when the server
+     * withheld it: a sound follows its source video's audience, so a source
+     * that went private or was removed takes the sound with it and the reel
+     * simply plays alone.
+     */
+    val sound: ReelSound? = null,
+    /** The creator's level for the reel's own audio, 0..1. 0 is a real choice: muted. See [wireVolume]. */
+    val originalVolume: Double = 1.0,
+    /** The creator's level for the added sound, 0..1. */
+    val overlayVolume: Double = 1.0,
+    /** The creator lets others reuse this reel's audio. See [allowsSoundReuse] and [canUseSound]. */
+    val soundReuseAllowed: Boolean = true,
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay
@@ -255,6 +269,13 @@ data class FeedCounts(
     val comments: Int,
     val reposts: Int,
     val views: Int,
+    /**
+     * External shares and saves, when the row carries them (2026-09-30).
+     * Null is "the server did not say", which is not zero: the reel rail
+     * prints the control's name instead of a count it was never given.
+     */
+    val shares: Int? = null,
+    val saves: Int? = null,
 )
 
 /**

@@ -74,6 +74,18 @@ data class PendingReelPublish(
     /** RFC 3339 instant the post goes live, or null to post now (2026-09-05). */
     val publishAt: String? = null,
     /**
+     * The added sound (original sounds, 2026-09-30): another reel's audio
+     * the reel is made with, by id; null when it plays only its own. Every
+     * field defaults, so a record written before they existed still loads.
+     */
+    val audioTrackId: String? = null,
+    /** Where in the sound playback starts. 0: there is no offset picker. */
+    val audioStartMs: Long = 0L,
+    /** The creator's level for the reel's own audio under the sound, 0..1. */
+    val originalAudioVolume: Double = 1.0,
+    /** The creator's level for the sound, 0..1. */
+    val overlayAudioVolume: Double = 1.0,
+    /**
      * Bytes landed and `confirm` succeeded. This is the id the post is
      * created with — instant reels need nothing more than confirmed.
      */

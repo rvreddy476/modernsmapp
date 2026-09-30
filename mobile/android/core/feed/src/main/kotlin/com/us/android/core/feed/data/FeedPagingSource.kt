@@ -4,6 +4,7 @@ import androidx.paging.PagingSource
 import androidx.paging.PagingState
 import com.us.android.core.common.error.AppError
 import com.us.android.core.feed.data.dto.FeedItemDto
+import com.us.android.core.feed.data.dto.FeedSoundDto
 import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedChannel
 import com.us.android.core.model.FeedCounts
@@ -12,6 +13,10 @@ import com.us.android.core.model.FeedPoll
 import com.us.android.core.model.FeedPollOption
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedViewerState
+import com.us.android.core.model.ReelSoundWire
+import com.us.android.core.model.allowsSoundReuse
+import com.us.android.core.model.toReelSound
+import com.us.android.core.model.wireVolume
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.CancellationException
@@ -198,12 +203,7 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     createdAt = createdAt,
     isPinned = isPinned,
     media = media.toOrderedFeedMedia(),
-    counts = FeedCounts(
-        likes = counts.likes,
-        comments = counts.comments,
-        reposts = repostCount,
-        views = viewCount,
-    ),
+    counts = toCounts(),
     viewer = FeedViewerState(
         isBookmarked = isBookmarked,
         hasReacted = hasReacted,
@@ -259,6 +259,38 @@ internal fun FeedItemDto.toDomain() = FeedItem(
             avatarUrl = it.avatarUrl?.takeIf { url -> url.isNotBlank() },
         )
     },
+    // Original sounds (2026-09-30). Only the `sound` OBJECT is a sound to
+    // play: `audio_track_id` alone means the viewer may not hear it, and the
+    // reel then plays with its own audio at the viewer's full level.
+    sound = sound?.toWire().toReelSound(postStartMs = audioStartMs),
+    originalVolume = wireVolume(originalAudioVolume),
+    overlayVolume = wireVolume(overlayAudioVolume),
+    soundReuseAllowed = allowsSoundReuse(remixSetting),
+)
+
+/**
+ * The row's counts. Share and save counts stay absent when the row does not
+ * carry them; `saves` has an older spelling, `bookmarks`.
+ */
+private fun FeedItemDto.toCounts() = FeedCounts(
+    likes = counts.likes,
+    comments = counts.comments,
+    reposts = repostCount,
+    views = viewCount,
+    shares = counts.shares,
+    saves = counts.saves ?: counts.bookmarks,
+)
+
+/** post-service's spelling of a sound, as the one reader of both spellings takes it. */
+internal fun FeedSoundDto.toWire() = ReelSoundWire(
+    id = id,
+    title = title,
+    artist = artist,
+    startMs = startMs,
+    durationMs = durationMs,
+    useCount = useCount,
+    sourcePostId = sourcePostId,
+    creatorUserId = creatorUserId,
 )
 
 private const val PROCESSING_PENDING = "pending"

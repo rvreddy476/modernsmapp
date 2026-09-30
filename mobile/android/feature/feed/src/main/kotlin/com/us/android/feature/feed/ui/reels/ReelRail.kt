@@ -9,9 +9,10 @@ import com.us.android.core.ui.formatCount
  *
  * Like and Comment carry their COUNT as the label — "8.8K" — and fall back
  * to the noun when there is nothing to count, because "0" under a heart
- * reads as a score and "Like" reads as an invitation. Save says whether it
- * is done. Share follows the author's `hide_share` switch (see
- * [railVisibility]). Mute is not in this list: it sits under the rail
+ * reads as a score and "Like" reads as an invitation. Share and Save carry
+ * theirs too WHEN THE ROW SENDS ONE (2026-09-30, as the web's rail does);
+ * a row that does not say reads "Share", and "Save" or "Saved". Share
+ * follows the author's `hide_share` switch (see [railVisibility]). Mute is not in this list: it sits under the rail
  * without a label, a setting rather than an action on the reel.
  *
  * There is no More here any more (founder, 2026-09-05): the reel's More
@@ -26,20 +27,41 @@ data class RailControl(val kind: RailKind, val label: String)
  * @param likes the like count with this session's tap already layered in.
  * @param comments the comment count.
  * @param saved whether the reel is bookmarked, this session's tap included.
+ * @param shares the share count, or null when the row does not carry one.
+ * @param saves the save count with this session's tap already layered in
+ *   ([layeredSaves]), or null when the row does not carry one.
  */
 fun railControls(
     controls: FeedPostControls,
     likes: Int,
     comments: Int,
     saved: Boolean,
+    shares: Int? = null,
+    saves: Int? = null,
 ): List<RailControl> {
     val visible = controls.railVisibility()
     return buildList {
         add(RailControl(RailKind.LIKE, railCountLabel(likes, "Like")))
         if (visible.showComment) add(RailControl(RailKind.COMMENT, railCountLabel(comments, "Comment")))
-        if (visible.showShare) add(RailControl(RailKind.SHARE, "Share"))
-        add(RailControl(RailKind.SAVE, if (saved) "Saved" else "Save"))
+        if (visible.showShare) add(RailControl(RailKind.SHARE, railCountLabel(shares ?: 0, "Share")))
+        add(RailControl(RailKind.SAVE, railCountLabel(saves ?: 0, if (saved) "Saved" else "Save")))
     }
+}
+
+/**
+ * The row's save count with this session's tap layered in: one more when the
+ * viewer saved a reel the server still has as unsaved, one fewer the other
+ * way, never below zero. Null stays null — a count the server never gave is
+ * not invented from a tap.
+ */
+fun layeredSaves(serverSaves: Int?, serverSaved: Boolean, saved: Boolean): Int? {
+    val count = serverSaves ?: return null
+    val delta = when {
+        saved == serverSaved -> 0
+        saved -> 1
+        else -> -1
+    }
+    return (count + delta).coerceAtLeast(0)
 }
 
 /** The compact count when there is one, the control's own name when there is not. */

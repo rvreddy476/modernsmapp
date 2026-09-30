@@ -83,6 +83,39 @@ data class FeedItemDto(
     /** A scheduled post's instant and flag (2026-09-05); absent on a post that went out at once. */
     @SerialName("publish_at") val publishAt: String? = null,
     @SerialName("is_scheduled") val isScheduled: Boolean = false,
+    /**
+     * Original sounds (2026-09-30, contract 2.1). `audio_track_id` stays on
+     * the wire even when [sound] is withheld from this viewer, so the id alone
+     * is NOT a sound to play: only [sound] is.
+     */
+    @SerialName("audio_track_id") val audioTrackId: String = "",
+    @SerialName("audio_start_ms") val audioStartMs: Long = 0L,
+    /** Omitted when the post plays no added sound, or this viewer may not hear it. */
+    val sound: FeedSoundDto? = null,
+    /**
+     * The creator's two levels. Nullable, never defaulted to a number: absent
+     * is 1 and a PRESENT 0 is a real 0 (the creator muted that side), and a
+     * default of either would make the two indistinguishable.
+     */
+    @SerialName("original_audio_volume") val originalAudioVolume: Double? = null,
+    @SerialName("overlay_audio_volume") val overlayAudioVolume: Double? = null,
+)
+
+/**
+ * The added sound a post plays — post-service's `PostSound`, the eight keys
+ * of contract 2.1, passed through feed-service unchanged. Go sends zero
+ * values where a value is unset; `toReelSound` reads them as absent.
+ */
+@Serializable
+data class FeedSoundDto(
+    val id: String = "",
+    val title: String = "",
+    val artist: String = "",
+    @SerialName("duration_ms") val durationMs: Long = 0L,
+    @SerialName("start_ms") val startMs: Long = 0L,
+    @SerialName("use_count") val useCount: Long = 0L,
+    @SerialName("source_post_id") val sourcePostId: String? = null,
+    @SerialName("creator_user_id") val creatorUserId: String? = null,
 )
 
 /**
@@ -166,6 +199,15 @@ data class FeedMediaDto(
 data class FeedCountsDto(
     val likes: Int = 0,
     val comments: Int = 0,
+    /**
+     * Sent by some rows and not by others (post-service's listing carries
+     * likes and comments only), so absent stays absent: the reel rail shows a
+     * count only when the server gave one. `bookmarks` is the older spelling
+     * of `saves`.
+     */
+    val shares: Int? = null,
+    val saves: Int? = null,
+    val bookmarks: Int? = null,
 )
 
 /**

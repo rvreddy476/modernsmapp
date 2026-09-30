@@ -105,6 +105,14 @@ internal object UsColorTokens {
     val GlassBg = Color(0x1AFFFFFF)
     val GlassBorder = Color(0x14FFFFFF)
 
+    // ── Over media ─────────────────────────────────────────────────────
+    // Text and glyphs drawn over a video, on its scrim: a reel's title, its
+    // hashtags, its sound line. White in BOTH themes — what is under them is
+    // the video, never the theme's surface — and the quieter step is the same
+    // white at 70%.
+    val OnMedia = Color(0xFFFFFFFF)
+    val OnMediaMuted = Color(0xB3FFFFFF)
+
     // ── Chat (Figma chat tour 98:*) ────────────────────────────────────
     // The chat vertical's own accent: outgoing bubbles, send, unread
     // badges. Shared across themes — green IS the chat identity, and

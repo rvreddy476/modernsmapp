@@ -1,6 +1,8 @@
 package com.us.android.core.datastore.di
 
+import com.us.android.core.datastore.DataStoreReelsSoundStore
 import com.us.android.core.datastore.DataStoreUsageStore
+import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.datastore.UsageStore
 import dagger.Binds
 import dagger.Module
@@ -12,4 +14,7 @@ import dagger.hilt.components.SingletonComponent
 abstract class DataStoreModule {
     @Binds
     abstract fun bindUsageStore(store: DataStoreUsageStore): UsageStore
+
+    @Binds
+    abstract fun bindReelsSoundStore(store: DataStoreReelsSoundStore): ReelsSoundStore
 }

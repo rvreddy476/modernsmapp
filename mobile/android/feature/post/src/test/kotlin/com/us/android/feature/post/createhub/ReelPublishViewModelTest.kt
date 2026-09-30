@@ -10,6 +10,8 @@ import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.feed.data.CreateChannelRequest
 import com.us.android.core.feed.data.HandleAvailabilityDto
 import com.us.android.core.feed.data.UpdateChannelRequest
+import com.us.android.core.media.ChosenSound
+import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.UploadSource
@@ -156,6 +158,8 @@ class ReelPublishViewModelTest {
         probe: ReelVideoProbe = probe(),
         channels: ChannelRepository = channels(),
         surface: CreateSurface = CreateSurface.Reel,
+        soundEntry: SoundEntry = SoundEntry(),
+        savedStateHandle: SavedStateHandle = savedState(surface),
     ) = ReelPublishViewModel(
         launcher = launcher,
         files = files,
@@ -166,9 +170,13 @@ class ReelPublishViewModelTest {
         lookups = lookups,
         probe = probe,
         channels = channels,
+        soundEntry = soundEntry,
         io = Dispatchers.Unconfined,
-        savedStateHandle = SavedStateHandle(mapOf(ReelPublishViewModel.SURFACE_ARG to surface.routeKey)),
+        savedStateHandle = savedStateHandle,
     )
+
+    private fun savedState(surface: CreateSurface = CreateSurface.Reel) =
+        SavedStateHandle(mapOf(ReelPublishViewModel.SURFACE_ARG to surface.routeKey))
 
     private fun ReelPublishViewModel.pickAndPost(caption: String = "") {
         onVideoPicked("content://video/1")
@@ -749,6 +757,7 @@ class ReelPublishViewModelTest {
     }
 
     private companion object {
+        const val TOLERANCE = 1e-6
         const val TEN_SECONDS_US = 10_000_000L
         const val NOT_FOUND = 404
         const val SETTLE_MILLIS = 100L
@@ -873,5 +882,158 @@ class ReelPublishViewModelTest {
         assertThat(vm.state.value.canPost).isFalse()
         assertThat(vm.state.value.caption).isEqualTo("kept")
         assertThat(vm.state.value.hashtags).containsExactly("kept")
+    }
+
+    // ── A sound (original sounds, 2026-09-30) ───────────────────────────
+
+    private val asha = ChosenSound(id = "s1", title = "Original sound - Asha", artist = "Asha", durationMs = 28_400L)
+
+    private fun withSound(sound: ChosenSound = asha): Pair<SoundEntry, ReelPublishViewModel> {
+        val entry = SoundEntry().apply { choose(sound) }
+        return entry to viewModel(soundEntry = entry)
+    }
+
+    @Test
+    fun `the form takes the sound Use this sound left for it, once`() = runTest {
+        val (entry, vm) = withSound()
+
+        assertThat(vm.state.value.sound).isEqualTo(asha)
+        assertThat(vm.state.value.showsSound).isTrue()
+        assertThat(vm.state.value.originalAudioVolume).isEqualTo(1f)
+        assertThat(vm.state.value.overlayAudioVolume).isEqualTo(1f)
+        // Taken: the next visit from the "+" opens without it.
+        assertThat(entry.chosen.value).isNull()
+        assertThat(viewModel(soundEntry = entry).state.value.sound).isNull()
+    }
+
+    @Test
+    fun `a form opened from the plus has no sound and shows no Sound section`() = runTest {
+        val vm = viewModel()
+
+        assertThat(vm.state.value.sound).isNull()
+        assertThat(vm.state.value.showsSound).isFalse()
+    }
+
+    @Test
+    fun `the sound goes on the record at start 0 with the two levels`() = runTest {
+        val launcher = FakeLauncher()
+        val entry = SoundEntry().apply { choose(asha) }
+        val vm = viewModel(launcher = launcher, soundEntry = entry)
+        vm.onOriginalVolumeChanged(0.2f)
+        vm.onOverlayVolumeChanged(0.8f)
+
+        vm.pickAndPost("with a sound")
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.audioTrackId).isEqualTo("s1")
+        assertThat(pending.audioStartMs).isEqualTo(0L)
+        assertThat(pending.originalAudioVolume).isWithin(TOLERANCE).of(0.2)
+        assertThat(pending.overlayAudioVolume).isWithin(TOLERANCE).of(0.8)
+    }
+
+    @Test
+    fun `a reel without a sound records none, at full levels`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+
+        vm.pickAndPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.audioTrackId).isNull()
+        assertThat(pending.audioStartMs).isEqualTo(0L)
+        assertThat(pending.originalAudioVolume).isEqualTo(1.0)
+        assertThat(pending.overlayAudioVolume).isEqualTo(1.0)
+    }
+
+    /** The sound belongs to the visit, not to the file. */
+    @Test
+    fun `the chosen sound survives picking a video, changing it and clearing it`() = runTest {
+        val (_, vm) = withSound()
+        vm.onOriginalVolumeChanged(0.3f)
+
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+        assertThat(vm.state.value.sound).isEqualTo(asha)
+
+        vm.clearVideo()
+        assertThat(vm.state.value.sound).isEqualTo(asha)
+        assertThat(vm.state.value.originalAudioVolume).isEqualTo(0.3f)
+
+        vm.onVideoPicked("content://video/2")
+        advanceUntilIdle()
+        assertThat(vm.state.value.sound).isEqualTo(asha)
+        assertThat(vm.state.value.showsSound).isTrue()
+    }
+
+    @Test
+    fun `remove lets the sound go and nothing of it is sent`() = runTest {
+        val launcher = FakeLauncher()
+        val entry = SoundEntry().apply { choose(asha) }
+        val vm = viewModel(launcher = launcher, soundEntry = entry)
+        vm.onOverlayVolumeChanged(0.4f)
+
+        vm.removeSound()
+
+        assertThat(vm.state.value.sound).isNull()
+        assertThat(vm.state.value.showsSound).isFalse()
+        assertThat(vm.state.value.overlayAudioVolume).isEqualTo(1f)
+
+        vm.pickAndPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.single().audioTrackId).isNull()
+    }
+
+    @Test
+    fun `the sliders stay inside 0 to 1`() = runTest {
+        val (_, vm) = withSound()
+
+        vm.onOriginalVolumeChanged(1.7f)
+        vm.onOverlayVolumeChanged(-0.2f)
+
+        assertThat(vm.state.value.originalAudioVolume).isEqualTo(1f)
+        assertThat(vm.state.value.overlayAudioVolume).isEqualTo(0f)
+    }
+
+    /** The reel over five minutes that became a video: a long video carries no sound. */
+    @Test
+    fun `a long video shows no Sound section and sends no sound`() = runTest {
+        val launcher = FakeLauncher()
+        val entry = SoundEntry().apply { choose(asha) }
+        val vm = viewModel(launcher = launcher, soundEntry = entry, probe = probe(durationMs = 6L * 60L * 1_000L))
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+        assertThat(vm.state.value.showsSound).isTrue()
+
+        vm.switchToLong()
+        vm.onTitleChanged("Long")
+        vm.onCategoryChanged("comedy")
+        vm.onPost()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.showsSound).isFalse()
+        assertThat(launcher.enqueued.single().audioTrackId).isNull()
+    }
+
+    /** Process death: the form that comes back has the sound the one before it had. */
+    @Test
+    fun `the sound outlives the process through the saved state`() = runTest {
+        val saved = savedState()
+        val entry = SoundEntry().apply { choose(asha) }
+        viewModel(soundEntry = entry, savedStateHandle = saved)
+
+        val restored = viewModel(soundEntry = SoundEntry(), savedStateHandle = saved)
+
+        assertThat(restored.state.value.sound).isEqualTo(asha)
+    }
+
+    @Test
+    fun `a removed sound stays removed after the process comes back`() = runTest {
+        val saved = savedState()
+        val entry = SoundEntry().apply { choose(asha) }
+        viewModel(soundEntry = entry, savedStateHandle = saved).removeSound()
+
+        assertThat(viewModel(savedStateHandle = saved).state.value.sound).isNull()
     }
 }

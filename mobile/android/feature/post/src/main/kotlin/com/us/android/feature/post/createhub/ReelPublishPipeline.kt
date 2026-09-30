@@ -15,6 +15,7 @@ import com.us.android.feature.post.data.dto.POST_TYPE_VIDEO
 import com.us.android.feature.post.data.dto.REMIX_ALLOW
 import com.us.android.feature.post.data.dto.REMIX_DISALLOW
 import java.io.IOException
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
@@ -307,8 +308,23 @@ class ReelPublishPipeline @Inject constructor(
          * The hashtag and mention chips (2026-09-05) go as their own arrays,
          * never folded into the text; `publish_at` is sent only when the user
          * scheduled the post.
+         *
+         * An added sound (2026-09-30) goes as its four fields — the id, the
+         * start, and the creator's two levels — and only when one is chosen:
+         * a reel without one sends none of them, and is the request it was.
+         *
+         * Two fixes of the same date. Subscribers are notified of a reel and
+         * of a long video (`notify_subscribers = true`; it was always false,
+         * and notification-service drops the fan-out on false, so nothing
+         * posted from Android had ever reached a subscriber). And [language]
+         * is the device's, as [postLanguage] reads it, not a hard-coded "en".
          */
-        fun buildRequest(pending: PendingReelPublish, videoId: String, coverId: String?): CreatePostRequest {
+        fun buildRequest(
+            pending: PendingReelPublish,
+            videoId: String,
+            coverId: String?,
+            language: String = postLanguage(Locale.getDefault().language),
+        ): CreatePostRequest {
             // This pipeline posts VIDEO, and only video. A photo post shares
             // the publish QUEUE (so the profile can draw both) but not this
             // pipeline: it is rendered page by page and created with a
@@ -316,14 +332,15 @@ class ReelPublishPipeline @Inject constructor(
             // `PendingReelPublish` — one video, one cover — cannot hold.
             require(pending.kind != PublishKind.PHOTO) { PHOTO_NOT_A_VIDEO }
             val long = pending.kind == PublishKind.LONG
+            val sound = pending.audioTrackId?.trim()?.takeIf { it.isNotEmpty() }
             return CreatePostRequest(
                 text = pending.caption.trim(),
                 visibility = pending.visibility,
                 contentType = if (long) CONTENT_TYPE_LONG_VIDEO else CONTENT_TYPE_FLICK,
                 postType = POST_TYPE_VIDEO,
                 mediaIds = listOf(videoId),
-                language = DEFAULT_LANGUAGE,
-                distribution = DistributionRequest(),
+                language = language,
+                distribution = DistributionRequest(notifySubscribers = true),
                 title = if (long) pending.title.trim() else "",
                 noComments = !pending.allowComments,
                 hideShare = pending.hideShare,
@@ -340,10 +357,28 @@ class ReelPublishPipeline @Inject constructor(
                 hashtags = pending.hashtags.takeIf { it.isNotEmpty() },
                 mentions = pending.mentions.takeIf { it.isNotEmpty() },
                 publishAt = pending.publishAt?.takeIf { it.isNotBlank() },
+                audioTrackId = sound,
+                audioStartMs = sound?.let { pending.audioStartMs.coerceAtLeast(0L) },
+                originalAudioVolume = sound?.let { pending.originalAudioVolume.coerceIn(0.0, 1.0) },
+                overlayAudioVolume = sound?.let { pending.overlayAudioVolume.coerceIn(0.0, 1.0) },
             )
         }
 
+        /**
+         * The language a video is posted in: the device's language tag, as
+         * `Locale.getDefault().language` gives it — two letters, lower case,
+         * or a longer code of letters, digits and hyphens (2 to 8). Anything
+         * else, an empty tag included, is [DEFAULT_LANGUAGE]. Recorded, never
+         * detected from the words: the device's language is the creator's own
+         * setting.
+         */
+        fun postLanguage(tag: String?): String {
+            val language = tag?.trim()?.lowercase().orEmpty()
+            return if (LANGUAGE_TAG.matches(language)) language else DEFAULT_LANGUAGE
+        }
+
         private const val DEFAULT_LANGUAGE = "en"
+        private val LANGUAGE_TAG = Regex("^[a-z0-9-]{2,8}$")
 
         /** A photo post never reaches this pipeline; see [buildRequest]. */
         const val PHOTO_NOT_A_VIDEO = "the reel pipeline does not publish photos"

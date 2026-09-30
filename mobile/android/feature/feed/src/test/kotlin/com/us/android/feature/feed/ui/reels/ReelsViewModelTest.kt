@@ -2,9 +2,16 @@ package com.us.android.feature.feed.ui.reels
 
 import androidx.paging.testing.asSnapshot
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.analytics.AnalyticsEvent
+import com.us.android.core.analytics.AnalyticsEventType
+import com.us.android.core.analytics.AnalyticsRecorder
+import com.us.android.core.analytics.NegativeSignalReason
 import com.us.android.core.analytics.NoOpAnalyticsRecorder
 import com.us.android.core.analytics.VideoWatchTracker
+import com.us.android.core.analytics.WatchProbe
+import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -14,12 +21,20 @@ import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedFeedbackRequest
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.PollVoteRequest
+import com.us.android.core.feed.data.SoundReelsDto
+import com.us.android.core.feed.data.SoundRowDto
+import com.us.android.core.feed.data.SoundsApi
+import com.us.android.core.feed.data.SoundsRepository
+import com.us.android.core.feed.data.UseSoundDto
 import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedMediaDto
+import com.us.android.core.feed.data.dto.FeedSoundDto
+import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.ReelsEntry
+import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishPreview
 import com.us.android.core.media.publish.ReelPublishState
@@ -33,8 +48,10 @@ import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.ReelSound
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.core.ui.UsReelQuality
@@ -43,10 +60,19 @@ import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.followGraph
 import com.us.android.feature.feed.data.subscriptionGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Rule
 import org.junit.Test
 
@@ -166,6 +192,60 @@ class ReelsViewModelTest {
         }
     }
 
+    /**
+     * The viewer's stored choice of sound, in memory. [stored] null is a file
+     * that has not answered yet: the read is still on its way.
+     */
+    private class FakeSoundStore(initial: Boolean? = false) : ReelsSoundStore {
+        val stored = MutableStateFlow(initial)
+        val writes = mutableListOf<Boolean>()
+
+        override val soundOn: Flow<Boolean> = stored.filterNotNull()
+
+        override suspend fun setSoundOn(on: Boolean) {
+            writes += on
+            stored.value = on
+        }
+    }
+
+    /** Answers "use this sound" with a sound or a refusal, and counts the asks. */
+    private class FakeSoundsApi(
+        private val sound: FeedSoundDto? = FeedSoundDto(id = "s-made", title = "Original sound - Ada", artist = "Ada"),
+        private val refusal: String? = null,
+    ) : SoundsApi {
+        val useRequests = mutableListOf<String>()
+
+        override suspend fun useSound(postId: String): ApiEnvelope<UseSoundDto> {
+            useRequests += postId
+            if (refusal != null) {
+                return ApiEnvelope(error = ApiErrorBody(code = refusal, message = "not the words shown"))
+            }
+            return ApiEnvelope(data = UseSoundDto(sound = sound))
+        }
+
+        override suspend fun reelsBySound(soundId: String, limit: Int, cursor: String?): ApiEnvelope<SoundReelsDto> =
+            error("unused")
+
+        override suspend fun sound(soundId: String): ApiEnvelope<SoundRowDto> = error("unused")
+    }
+
+    private class RecordingRecorder : AnalyticsRecorder {
+        val events = mutableListOf<AnalyticsEvent>()
+
+        override fun record(event: AnalyticsEvent?): Job? {
+            if (event != null) events += event
+            return null
+        }
+
+        override suspend fun recordNow(event: AnalyticsEvent?) {
+            record(event)
+        }
+
+        override fun recordEngagement(type: String, session: WatchSession) = Unit
+        override fun recordNegativeSignal(type: String, session: WatchSession, reason: NegativeSignalReason) = Unit
+        override fun flush() = Unit
+    }
+
     private class Harness(
         val api: RecordingApi = RecordingApi(),
         val tracker: ReelPublishTracker = ReelPublishTracker(),
@@ -173,6 +253,10 @@ class ReelsViewModelTest {
         val graph: RecordingGraphApi = RecordingGraphApi(),
         val channels: RecordingChannelApi = RecordingChannelApi(),
         val entry: ReelsEntry = ReelsEntry(),
+        val sounds: FakeSoundsApi = FakeSoundsApi(),
+        val soundEntry: SoundEntry = SoundEntry(),
+        val soundStore: FakeSoundStore = FakeSoundStore(),
+        val watch: VideoWatchTracker = VideoWatchTracker.disabled(),
     )
 
     private fun viewModel(h: Harness = Harness()) = ReelsViewModel(
@@ -185,8 +269,11 @@ class ReelsViewModelTest {
         follows = followGraph(h.graph),
         subscriptions = subscriptionGraph(h.channels),
         reelsEntry = h.entry,
-        watchTracker = VideoWatchTracker.disabled(),
+        watchTracker = h.watch,
         analytics = NoOpAnalyticsRecorder,
+        sounds = SoundsRepository(h.sounds, ErrorMapper(json)) { it },
+        soundEntry = h.soundEntry,
+        soundStore = h.soundStore,
         hidden = HiddenPosts(),
     )
 
@@ -455,33 +542,335 @@ class ReelsViewModelTest {
         }
     }
 
+    // ── Sound: muted until the viewer says otherwise, and then kept ─────
+    //
+    // founder, 2026-09-30: reels open MUTED, like the web. Once the viewer
+    // turns the sound on it STAYS on — across reels, across leaving and
+    // re-entering Reels, and across app restarts — until they mute again:
+    // "Once user makes it on on the sound keep it on." These replace the two
+    // tests that pinned the 2026-09-05 decision ("reels start unmuted and the
+    // choice survives toggling", "leaving the screen keeps a mute" — a mute
+    // held for the session only).
+
     /**
-     * Reels open with sound ON (founder, 2026-09-05): the feed is the silent
-     * preview, Reels is where the sound is. Mute is held in the ViewModel,
-     * not per player — a per-player flag resets the moment the pool recycles
-     * that instance, so a mute would silently come undone after four swipes.
+     * Held in the ViewModel, not per player — a per-player flag resets the
+     * moment the pool recycles that instance, so the choice would silently
+     * come undone after four swipes.
      */
     @Test
-    fun `reels start unmuted and the choice survives toggling`() {
-        val vm = viewModel()
-        assertThat(vm.muted.value).isFalse()
+    fun `reels open muted for a viewer who never chose`() {
+        val h = Harness()
 
-        vm.toggleMuted()
+        val vm = viewModel(h)
+
         assertThat(vm.muted.value).isTrue()
-
-        vm.toggleMuted()
-        assertThat(vm.muted.value).isFalse()
+        assertThat(vm.soundChoiceRead.value).isTrue()
+        // Reading the choice is not making one: nothing is written back.
+        assertThat(h.soundStore.writes).isEmpty()
     }
 
-    /** Leaving the screen resets the mode and the pause, never the sound: a mute is for the session. */
     @Test
-    fun `leaving the screen keeps a mute`() {
-        val vm = viewModel()
+    fun `the rule is muted unless the sound was turned on, and an unread choice is muted`() {
+        assertThat(reelsMuted(soundOn = null)).isTrue()
+        assertThat(reelsMuted(soundOn = false)).isTrue()
+        assertThat(reelsMuted(soundOn = true)).isFalse()
+    }
+
+    @Test
+    fun `turning the sound on is stored`() {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.toggleMuted()
+
+        assertThat(vm.muted.value).isFalse()
+        assertThat(h.soundStore.writes).containsExactly(true)
+        assertThat(h.soundStore.stored.value).isTrue()
+    }
+
+    /** The restart: a ViewModel that has never seen the first one reads what it left. */
+    @Test
+    fun `a new ViewModel reads the choice back as on`() {
+        val store = FakeSoundStore()
+        viewModel(Harness(soundStore = store)).toggleMuted()
+
+        val next = viewModel(Harness(soundStore = store))
+
+        assertThat(next.muted.value).isFalse()
+        assertThat(next.soundChoiceRead.value).isTrue()
+    }
+
+    @Test
+    fun `muting again is stored too, and a new ViewModel opens muted`() {
+        val store = FakeSoundStore(initial = true)
+        val vm = viewModel(Harness(soundStore = store))
+        assertThat(vm.muted.value).isFalse()
+
+        vm.toggleMuted()
+
+        assertThat(vm.muted.value).isTrue()
+        assertThat(store.writes).containsExactly(false)
+        assertThat(viewModel(Harness(soundStore = store)).muted.value).isTrue()
+    }
+
+    @Test
+    fun `the choice survives every toggle, each one stored`() {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.toggleMuted()
+        vm.toggleMuted()
+        vm.toggleMuted()
+
+        assertThat(vm.muted.value).isFalse()
+        assertThat(h.soundStore.writes).containsExactly(true, false, true).inOrder()
+    }
+
+    /** Leaving the screen resets the mode and the pause, never the sound. */
+    @Test
+    fun `leaving the screen keeps the sound on`() {
+        val h = Harness()
+        val vm = viewModel(h)
         vm.toggleMuted()
 
         vm.resetView()
 
+        assertThat(vm.muted.value).isFalse()
+        assertThat(h.soundStore.stored.value).isTrue()
+    }
+
+    /**
+     * The first reel waits for the stored choice: a viewer who chose sound
+     * must never hear a muted first reel flip on. Until the file answers the
+     * reel is muted AND held; when it answers "on", it starts with sound.
+     */
+    @Test
+    fun `until the stored choice is read reels stay muted and the first reel is held`() {
+        val store = FakeSoundStore(initial = null)
+        val vm = viewModel(Harness(soundStore = store))
+
         assertThat(vm.muted.value).isTrue()
+        assertThat(vm.soundChoiceRead.value).isFalse()
+        assertThat(reelMayPlay(paused = vm.paused.value, soundChoiceRead = vm.soundChoiceRead.value)).isFalse()
+
+        store.stored.value = true
+
+        assertThat(vm.muted.value).isFalse()
+        assertThat(vm.soundChoiceRead.value).isTrue()
+        assertThat(reelMayPlay(paused = vm.paused.value, soundChoiceRead = vm.soundChoiceRead.value)).isTrue()
+    }
+
+    @Test
+    fun `a reel may play only when it is not paused and the choice of sound is known`() {
+        assertThat(reelMayPlay(paused = false, soundChoiceRead = true)).isTrue()
+        assertThat(reelMayPlay(paused = true, soundChoiceRead = true)).isFalse()
+        assertThat(reelMayPlay(paused = false, soundChoiceRead = false)).isFalse()
+        assertThat(reelMayPlay(paused = true, soundChoiceRead = false)).isFalse()
+    }
+
+    /** A tap that beats the read is the newer choice: the file's older answer must not undo it. */
+    @Test
+    fun `a tap before the stored choice is read stands, and is what is stored`() {
+        val store = FakeSoundStore(initial = null)
+        val vm = viewModel(Harness(soundStore = store))
+
+        vm.toggleMuted()
+
+        assertThat(vm.muted.value).isFalse()
+        assertThat(vm.soundChoiceRead.value).isTrue()
+        assertThat(store.writes).containsExactly(true)
+    }
+
+    // ── Analytics says what was true ────────────────────────────────────
+
+    private fun uuid() = java.util.UUID.randomUUID().toString()
+
+    private fun playing() = WatchProbe(
+        playheadMs = 900L,
+        isPlaying = true,
+        isBuffering = false,
+        renderedFirstFrame = true,
+    )
+
+    private fun watchable() = item(video().copy(durationMs = 20_000L)).copy(
+        id = uuid(),
+        author = FeedAuthor(id = uuid(), displayName = "Ada"),
+    )
+
+    /**
+     * `play_start` used to say `is_muted: false` whatever the speaker said,
+     * and never a position. It now carries the mute the view started under
+     * and the pager's page, 1-based.
+     */
+    @Test
+    fun `a view reports the real mute state and the page it sat on`() = runTest {
+        val recorder = RecordingRecorder()
+        val watch = VideoWatchTracker(recorder, backgroundScope, StandardTestDispatcher(testScheduler))
+        val vm = viewModel(Harness(watch = watch))
+
+        vm.onReelShown(watchable(), probe = { playing() }, page = 2)
+        advanceTimeBy(1_100)
+
+        val start = recorder.events.single { it.type == AnalyticsEventType.PLAY_START }
+        assertThat(start.payload.getValue("is_muted").jsonPrimitive.boolean).isTrue()
+        assertThat(start.payload.getValue("position").jsonPrimitive.int).isEqualTo(3)
+    }
+
+    @Test
+    fun `a view started with the sound on reports it un-muted`() = runTest {
+        val recorder = RecordingRecorder()
+        val watch = VideoWatchTracker(recorder, backgroundScope, StandardTestDispatcher(testScheduler))
+        val vm = viewModel(Harness(watch = watch, soundStore = FakeSoundStore(initial = true)))
+
+        vm.onReelShown(watchable(), probe = { playing() }, page = 0)
+        advanceTimeBy(1_100)
+
+        val start = recorder.events.single { it.type == AnalyticsEventType.PLAY_START }
+        assertThat(start.payload.getValue("is_muted").jsonPrimitive.boolean).isFalse()
+        assertThat(start.payload.getValue("position").jsonPrimitive.int).isEqualTo(1)
+    }
+
+    @Test
+    fun `the position is the page counted from one, and no page is no position`() {
+        assertThat(reelPosition(0)).isEqualTo(1)
+        assertThat(reelPosition(7)).isEqualTo(8)
+        assertThat(reelPosition(null)).isNull()
+        assertThat(reelPosition(-1)).isNull()
+    }
+
+    // ── Use this sound ──────────────────────────────────────────────────
+
+    private val added = ReelSound(
+        id = "s-added",
+        title = "Original sound - Asha",
+        artist = "Asha",
+        startMs = 1_500L,
+        durationMs = 28_400L,
+        useCount = 3,
+        sourcePostId = "p0",
+        creatorUserId = "u0",
+    )
+
+    /** A reel that already plays an added sound offers THAT sound: the viewer hears it, the server is not asked. */
+    @Test
+    fun `use this sound on a reel that plays one goes to create with it, without asking the server`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.onUseSound(item(video()).copy(sound = added), SoundIntent.CREATE)
+        advanceUntilIdle()
+
+        assertThat(h.sounds.useRequests).isEmpty()
+        assertThat(vm.soundDestination.value).isEqualTo(SoundDestination.Create)
+        // The chosen sound starts at 0 in the new reel, wherever it started in this one.
+        assertThat(h.soundEntry.chosen.value).isEqualTo(
+            ChosenSound(id = "s-added", title = "Original sound - Asha", artist = "Asha", durationMs = 28_400L),
+        )
+    }
+
+    @Test
+    fun `the sound line of a reel that plays one opens that sound's page and chooses nothing`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.onUseSound(item(video()).copy(sound = added), SoundIntent.PAGE)
+        advanceUntilIdle()
+
+        assertThat(h.sounds.useRequests).isEmpty()
+        assertThat(vm.soundDestination.value).isEqualTo(SoundDestination.Page("s-added"))
+        assertThat(h.soundEntry.chosen.value).isNull()
+    }
+
+    @Test
+    fun `use this sound on a reel's own audio asks the server for its sound first`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.onUseSound(item(video()), SoundIntent.CREATE)
+        advanceUntilIdle()
+
+        assertThat(h.sounds.useRequests).containsExactly("p")
+        assertThat(vm.soundDestination.value).isEqualTo(SoundDestination.Create)
+        assertThat(h.soundEntry.chosen.value?.id).isEqualTo("s-made")
+        assertThat(vm.soundMessage.value).isNull()
+    }
+
+    @Test
+    fun `original sound's line makes the sound and then opens its page`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.onUseSound(item(video()), SoundIntent.PAGE)
+        advanceUntilIdle()
+
+        assertThat(h.sounds.useRequests).containsExactly("p")
+        assertThat(vm.soundDestination.value).isEqualTo(SoundDestination.Page("s-made"))
+        assertThat(h.soundEntry.chosen.value).isNull()
+    }
+
+    @Test
+    fun `a refusal is one line, by the server's code, and goes nowhere`() = runTest {
+        val cases = mapOf(
+            "SOUND_REUSE_NOT_ALLOWED" to "The creator has turned off reuse for this reel.",
+            "NOT_READY" to "This reel is still processing. Try again in a moment.",
+            "TOO_LONG" to "Only reels up to 5 minutes can be used as a sound.",
+            "NO_AUDIO" to "This reel has no sound to use.",
+            "NOT_FOUND" to "This reel is no longer available.",
+            "RATE_LIMITED" to "That is a lot of sounds in one hour. Try again later.",
+            "SOUND_UNAVAILABLE" to "Please try again.",
+        )
+        for ((code, line) in cases) {
+            val h = Harness(sounds = FakeSoundsApi(refusal = code))
+            val vm = viewModel(h)
+
+            vm.onUseSound(item(video()), SoundIntent.CREATE)
+            advanceUntilIdle()
+
+            assertThat(vm.soundMessage.value?.text).isEqualTo(line)
+            assertThat(vm.soundDestination.value).isNull()
+            assertThat(h.soundEntry.chosen.value).isNull()
+
+            vm.dismissSoundMessage()
+            assertThat(vm.soundMessage.value).isNull()
+        }
+    }
+
+    /** The row is not drawn for these; a call that arrives anyway does nothing. */
+    @Test
+    fun `a reel whose sound is not offered is not asked for`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.onUseSound(item(video()).copy(soundReuseAllowed = false), SoundIntent.CREATE)
+        vm.onUseSound(item(video()).copy(isProcessing = true), SoundIntent.CREATE)
+        advanceUntilIdle()
+
+        assertThat(h.sounds.useRequests).isEmpty()
+        assertThat(vm.soundDestination.value).isNull()
+    }
+
+    /** The author may always reuse their own reel's audio, whatever they set for others. */
+    @Test
+    fun `the viewer's own reel is offered even when reuse is turned off`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+        val own = item(video()).copy(soundReuseAllowed = false, author = FeedAuthor(id = "me", displayName = "Me"))
+
+        vm.onUseSound(own, SoundIntent.CREATE)
+        advanceUntilIdle()
+
+        assertThat(h.sounds.useRequests).containsExactly("p")
+        assertThat(vm.soundDestination.value).isEqualTo(SoundDestination.Create)
+    }
+
+    @Test
+    fun `a destination is taken once`() = runTest {
+        val vm = viewModel()
+        vm.onUseSound(item(video()).copy(sound = added), SoundIntent.PAGE)
+
+        vm.onSoundDestinationTaken()
+
+        assertThat(vm.soundDestination.value).isNull()
     }
 
     // ── The entry from a feed ───────────────────────────────────────────

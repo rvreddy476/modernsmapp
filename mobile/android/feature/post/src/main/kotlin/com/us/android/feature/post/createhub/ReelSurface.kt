@@ -32,9 +32,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,9 +62,13 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import com.us.android.core.designsystem.component.UsPillButton
@@ -71,7 +78,11 @@ import com.us.android.core.feed.data.ChannelGate
 import com.us.android.core.feed.data.channelGate
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.feed.ui.schedule.ScheduleSheet
+import com.us.android.core.feed.ui.sound.SoundPreviewButton
+import com.us.android.core.feed.ui.sound.SoundPreviewViewModel
+import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.publish.PublishKind
+import com.us.android.core.media.sound.SoundPreview
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.usSwitchColors
 import com.us.android.feature.post.createhub.ReelPublishViewModel.Phase
@@ -85,6 +96,7 @@ import com.us.android.feature.post.createhub.studio.StudioActions
 import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
 import com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
+import kotlin.math.roundToInt
 
 /**
  * REEL and VIDEO — pick a video, then the TikTok-shaped form.
@@ -115,6 +127,15 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
  * licence invalid, SDK failed, or still initialising when the pick happens
  * — is the Media3 studio exactly as before.
  *
+ * A reel may be made with another reel's SOUND (original sounds,
+ * 2026-09-30): "Use this sound" in Reels or on a sound's page leaves it in
+ * `SoundEntry`, the ViewModel takes it, and the form shows a Sound section —
+ * the sound with Remove, a preview button that plays it alone, and two
+ * sliders, "Original audio" and "Sound" — only while a sound is chosen. The
+ * preview is the shared [SoundPreviewButton] on a [SoundPreviewViewModel] of
+ * this screen's own. Banuba's music features stay off: the sound is never
+ * mixed into the video.
+ *
  * Post hands the publish to WorkManager and LEAVES onto the viewer's own
  * profile, whose grid shows the posting video first with its ring; several
  * may be pending at once. There is no published callback here because
@@ -128,10 +149,12 @@ internal fun ReelSurface(
     viewModel: ReelPublishViewModel = hiltViewModel(),
     studio: ReelStudioViewModel = hiltViewModel(),
     banuba: BanubaGateViewModel = hiltViewModel(),
+    preview: SoundPreviewViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val studioState by studio.state.collectAsStateWithLifecycle()
     val long = state.kind == PublishKind.LONG
+    SoundPreviewFollowsForm(preview = preview, state = state)
 
     // A reel goes through an editor first; a long video is picked as is.
     val editing = rememberReelEditing(long = long, viewModel = viewModel, studio = studio, banuba = banuba)
@@ -171,6 +194,7 @@ internal fun ReelSurface(
         else -> ReelForm(
             state = state,
             viewModel = viewModel,
+            preview = preview,
             onClose = onClose,
             onChangeVideo = {
                 viewModel.clearVideo()
@@ -333,6 +357,7 @@ private enum class ReelSheet { None, Audience, Category, Location, People, Sched
 private fun ReelForm(
     state: ReelPublishViewModel.ReelUiState,
     viewModel: ReelPublishViewModel,
+    preview: SoundPreviewViewModel,
     onClose: () -> Unit,
     onChangeVideo: () -> Unit,
 ) {
@@ -340,6 +365,7 @@ private fun ReelForm(
     val editable = !state.isBusy
     val long = state.kind == PublishKind.LONG
     val noun = if (long) "video" else "reel"
+    val previewState by preview.state.collectAsStateWithLifecycle()
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -377,6 +403,22 @@ private fun ReelForm(
                 )
                 GateNotice(gate = state.gate, enabled = editable, onSwitchToLong = viewModel::switchToLong)
                 Spacer(Modifier.height(UsTheme.spacing.xxl))
+                state.sound?.takeIf { state.showsSound }?.let { sound ->
+                    SoundSection(
+                        sound = sound,
+                        preview = previewState,
+                        originalLevel = state.originalAudioVolume,
+                        overlayLevel = state.overlayAudioVolume,
+                        enabled = editable,
+                        actions = SoundSectionActions(
+                            onTogglePreview = { preview.player.toggle(sound.id) },
+                            onRemove = viewModel::removeSound,
+                            onOriginalLevel = viewModel::onOriginalVolumeChanged,
+                            onOverlayLevel = viewModel::onOverlayVolumeChanged,
+                        ),
+                    )
+                    Spacer(Modifier.height(UsTheme.spacing.xxl))
+                }
                 HashtagsField(
                     hashtags = state.hashtags,
                     input = state.hashtagInput,
@@ -923,6 +965,191 @@ private fun ReelSwitchRow(
     }
 }
 
+// ── Sound (original sounds, 2026-09-30) ─────────────────────────────────
+
+/** What the Sound section can ask for. */
+private class SoundSectionActions(
+    val onTogglePreview: () -> Unit,
+    val onRemove: () -> Unit,
+    val onOriginalLevel: (Float) -> Unit,
+    val onOverlayLevel: (Float) -> Unit,
+)
+
+/**
+ * "Sound": the chosen sound with a preview button and Remove, then the two
+ * sliders — "Original audio", the reel's own audio under the sound, and
+ * "Sound", the sound itself. Drawn only while a sound is chosen. Material's
+ * slider, coloured from the tokens: ember for what is set, the subtle border
+ * for the rest of the track.
+ */
+@Composable
+private fun SoundSection(
+    sound: ChosenSound,
+    preview: SoundPreview,
+    originalLevel: Float,
+    overlayLevel: Float,
+    enabled: Boolean,
+    actions: SoundSectionActions,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "Sound",
+            style = MaterialTheme.typography.labelLarge,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.padding(bottom = UsTheme.spacing.m),
+        )
+        GlassCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = ROW_PADDING_H, vertical = ROW_PADDING_V)
+                    .testTag("reel-sound"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+            ) {
+                SoundPreviewButton(
+                    preview = preview,
+                    onClick = actions.onTogglePreview,
+                    enabled = enabled,
+                    size = SOUND_PREVIEW_BUTTON,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = sound.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = UsTheme.extended.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("reel-sound-title"),
+                    )
+                    if (sound.artist.isNotBlank()) {
+                        Text(
+                            text = sound.artist,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = UsTheme.extended.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                TextAction(
+                    label = "Remove",
+                    enabled = enabled,
+                    onClick = actions.onRemove,
+                    testTag = "reel-sound-remove",
+                )
+            }
+            if (preview == SoundPreview.FAILED) {
+                Text(
+                    text = "This sound couldn't be played. Tap play to try again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.statusDanger,
+                    modifier = Modifier.padding(start = ROW_PADDING_H, end = ROW_PADDING_H, bottom = UsTheme.spacing.m),
+                )
+            }
+            RowDivider()
+            LevelRow(
+                title = "Original audio",
+                level = originalLevel,
+                enabled = enabled,
+                onLevel = actions.onOriginalLevel,
+                testTag = "reel-sound-original",
+            )
+            LevelRow(
+                title = "Sound",
+                level = overlayLevel,
+                enabled = enabled,
+                onLevel = actions.onOverlayLevel,
+                testTag = "reel-sound-overlay",
+            )
+        }
+    }
+}
+
+/** One level: its name, its value as a percentage, and the slider under them. */
+@Composable
+private fun LevelRow(
+    title: String,
+    level: Float,
+    enabled: Boolean,
+    onLevel: (Float) -> Unit,
+    testTag: String,
+) {
+    val percent = (level * PERCENT).roundToInt()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = ROW_PADDING_H, vertical = UsTheme.spacing.s),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "$percent%",
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+        Slider(
+            value = level,
+            onValueChange = onLevel,
+            valueRange = 0f..ReelPublishViewModel.FULL_LEVEL,
+            enabled = enabled,
+            colors = SliderDefaults.colors(
+                thumbColor = UsTheme.extended.accentSolid,
+                activeTrackColor = UsTheme.extended.accentSolid,
+                inactiveTrackColor = UsTheme.extended.borderMedium,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "$title, $percent%" }
+                .testTag(testTag),
+        )
+    }
+}
+
+/**
+ * The preview follows the form: it plays at the "Sound" slider's level, is
+ * forgotten when the sound is removed, and stops when the surface leaves the
+ * foreground or the composition.
+ */
+@Composable
+private fun SoundPreviewFollowsForm(preview: SoundPreviewViewModel, state: ReelPublishViewModel.ReelUiState) {
+    val soundId = state.sound?.takeIf { state.showsSound }?.id
+    LaunchedEffect(preview, state.overlayAudioVolume) { preview.player.setVolume(state.overlayAudioVolume.toDouble()) }
+    LaunchedEffect(preview, soundId) { if (soundId == null) preview.player.stop() }
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner, preview) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) preview.player.pause()
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose {
+            owner.lifecycle.removeObserver(observer)
+            preview.player.pause()
+        }
+    }
+}
+
+@Preview
+@Composable
+private fun SoundSectionPreview() {
+    UsTheme {
+        SoundSection(
+            sound = ChosenSound(id = "s1", title = "Original sound - Asha", artist = "Asha", durationMs = 28_400L),
+            preview = SoundPreview.PAUSED,
+            originalLevel = 0.2f,
+            overlayLevel = 0.8f,
+            enabled = true,
+            actions = SoundSectionActions({}, {}, {}, {}),
+        )
+    }
+}
+
 // ── Title (long video) ──────────────────────────────────────────────────
 
 /**
@@ -1100,6 +1327,8 @@ private const val PRESS_ALPHA = 0.6f
 private const val SWITCH_SCALE = 0.8f
 
 private val HAIRLINE = 1.dp
+private val SOUND_PREVIEW_BUTTON = 40.dp
+private const val PERCENT = 100
 private val PREVIEW_WIDTH = 96.dp
 private val PREVIEW_HEIGHT = 170.dp
 private val PREVIEW_GLYPH = 22.dp

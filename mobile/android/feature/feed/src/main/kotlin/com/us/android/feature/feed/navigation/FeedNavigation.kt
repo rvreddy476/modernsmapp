@@ -12,6 +12,7 @@ import com.us.android.feature.feed.ui.FeedScreen
 import com.us.android.feature.feed.ui.FriendsFeedScreen
 import com.us.android.feature.feed.ui.HashtagPostsScreen
 import com.us.android.feature.feed.ui.reels.ReelsScreen
+import com.us.android.feature.feed.ui.reels.sound.SoundPageScreen
 import kotlinx.serialization.Serializable
 
 /** The Home tab root. */
@@ -127,12 +128,59 @@ fun NavGraphBuilder.reelsScreen(
     onOpenAuthor: (userId: String) -> Unit,
     /** The header's search glyph over the video; `:app` decides it opens Explore. */
     onOpenSearch: () -> Unit,
+    /** A hashtag chip under a reel; `:app` pushes [HashtagPostsRoute] for it. */
+    onOpenHashtag: (tag: String) -> Unit,
+    /** A reel's sound line; `:app` pushes [SoundRoute] for it. */
+    onOpenSound: (soundId: String) -> Unit,
+    /**
+     * "Use this sound". Reels has already left the sound in `SoundEntry`
+     * (`:core:media`); `:app` opens the reel create flow, which takes it when
+     * it starts. Required, not defaulted: a row that does nothing must not
+     * ship by omission.
+     */
+    onCreateWithSound: () -> Unit,
 ) {
     composable<ReelsRoute> {
         ReelsScreen(
             pool = pool,
             onOpenAuthor = onOpenAuthor,
             onOpenSearch = onOpenSearch,
+            onOpenHashtag = onOpenHashtag,
+            onOpenSound = onOpenSound,
+            onCreateWithSound = onCreateWithSound,
         )
     }
 }
+
+/**
+ * One sound's page (original sounds, 2026-09-30), pushed from a reel's sound
+ * line. [soundId] is the sound's id, exactly as `GET v1/posts/by-sound/{id}`
+ * takes it; the ViewModel reads it from the saved state under the same name.
+ */
+@Serializable
+data class SoundRoute(val soundId: String)
+
+/**
+ * Registers a sound's page — a pushed screen with a back arrow, never a tab.
+ *
+ * [onOpenReels] is the tab switch a tapped tile asks for: the page has left
+ * the reel's id in `ReelsEntry` by then, exactly as the feeds do.
+ * [onCreateWithSound] is "Use this sound": the sound is already in
+ * `SoundEntry`, and `:app` opens the reel create flow.
+ */
+fun NavGraphBuilder.soundScreen(
+    onBack: () -> Unit,
+    onOpenReels: () -> Unit,
+    onCreateWithSound: () -> Unit,
+) {
+    composable<SoundRoute> {
+        SoundPageScreen(
+            onBack = onBack,
+            onOpenReels = onOpenReels,
+            onCreateWithSound = onCreateWithSound,
+        )
+    }
+}
+
+/** Type-safe navigation to one sound's page. */
+fun NavController.navigateToSound(soundId: String) = navigate(SoundRoute(soundId))

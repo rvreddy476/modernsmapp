@@ -90,6 +90,15 @@ data class UsExtendedColors(
     val brandNavy: Color,
     /** The raised inline-panel surface (`#071D33` dark, `#EEF3F9` light). */
     val bgRaised: Color,
+    /**
+     * Text and glyphs drawn OVER media, on its scrim: a reel's title, its
+     * hashtags and its sound line (2026-09-30). White in both themes — what is
+     * under them is the video and the scrim, never the theme's surface, so
+     * they must not invert with the text ramp, which is ink on the light
+     * theme. [onMediaMuted] is the quieter step: the same white at 70%.
+     */
+    val onMedia: Color,
+    val onMediaMuted: Color,
     /** The Create sheet's per-type circle gradients. See [UsCreateColors]. */
     val create: UsCreateColors,
     /** The Explore launcher's per-app tile gradients. See [UsLauncherColors]. */
@@ -262,6 +271,8 @@ internal val DarkExtendedColors = UsExtendedColors(
     accentDeep = UsColorTokens.AccentRed,
     brandNavy = UsColorTokens.BrandNavy,
     bgRaised = UsColorTokens.BgTertiary,
+    onMedia = UsColorTokens.OnMedia,
+    onMediaMuted = UsColorTokens.OnMediaMuted,
     create = UsCreateColors(
         text = EmberSwatch,
         photo = createSwatch(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),

@@ -114,7 +114,9 @@ import com.us.android.feature.feed.navigation.feedScreen
 import com.us.android.feature.feed.navigation.friendsFeedScreen
 import com.us.android.feature.feed.navigation.hashtagPostsScreen
 import com.us.android.feature.feed.navigation.navigateToHashtagPosts
+import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.reelsScreen
+import com.us.android.feature.feed.navigation.soundScreen
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
 import com.us.android.feature.live.navigation.navigateToLiveHub
@@ -123,6 +125,7 @@ import com.us.android.feature.notifications.navigation.navigateToNotifications
 import com.us.android.feature.notifications.navigation.notificationsScreen
 import com.us.android.feature.post.createhub.CreateScope
 import com.us.android.feature.post.createhub.CreateSheet
+import com.us.android.feature.post.createhub.CreateSurface
 import com.us.android.feature.post.navigation.ComposerRoute
 import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
@@ -908,10 +911,27 @@ private fun NavGraphBuilder.tabDestinations(
     // The header floats over the video (founder, 2026-09-05): the hamburger
     // opens the reel's More sheet inside the screen; search opens the search
     // page scoped to Reels — people and reels.
+    //
+    // Original sounds (2026-09-30): a hashtag chip pushes that tag's posts, a
+    // reel's sound line pushes the sound's page, and "Use this sound" opens
+    // the reel create flow — the sound itself is already in SoundEntry
+    // (:core:media), which the form takes when it starts, because the Create
+    // route carries one token and features must not depend on each other.
+    val onCreateWithSound = { navController.navigateToCreate(CreateSurface.Reel) }
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
         onOpenSearch = { navController.navigateToSearch(SearchOrigin.REELS) },
+        onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
+        onOpenSound = { soundId -> navController.navigateToSound(soundId) },
+        onCreateWithSound = onCreateWithSound,
+    )
+    // A sound's page, pushed over Reels. A tile opens its reel in the Reels
+    // TAB (the page has left the id in ReelsEntry, as the feeds do).
+    soundScreen(
+        onBack = { navController.popBackStack() },
+        onOpenReels = onOpenReels,
+        onCreateWithSound = onCreateWithSound,
     )
     exploreDestinations(navController, launcher)
 

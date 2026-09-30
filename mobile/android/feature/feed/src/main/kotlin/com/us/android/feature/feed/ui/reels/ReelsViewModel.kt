@@ -14,19 +14,24 @@ import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.datastore.ReelsSoundStore
+import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.SoundsRepository
 import com.us.android.core.feed.data.SubscriptionGraph
 import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.playbackFor
+import com.us.android.core.feed.data.soundRefusalMessage
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ReelsEntry
+import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
@@ -37,8 +42,11 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.ReelSound
+import com.us.android.core.model.canUseSound
 import com.us.android.core.ui.UsReelQuality
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +54,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -174,10 +183,34 @@ fun entryPage(postId: String, headId: String?, rankedIds: List<String>): Int? {
     return index + if (headId != null) 1 else 0
 }
 
+/**
+ * Whether Reels is silent, from the viewer's stored choice of sound.
+ *
+ * founder, 2026-09-30: reels open MUTED, like the web, and sound is on only
+ * once the viewer has turned it on. A choice that has not been read yet
+ * (null) is muted too: a reel may start a beat late, never loud.
+ */
+fun reelsMuted(soundOn: Boolean?): Boolean = soundOn != true
+
+/**
+ * Whether the settled reel may start. Not while the viewer holds it paused,
+ * and not before the viewer's choice of sound is known: the first reel waits
+ * for it, so someone who chose sound never hears a muted reel flip on
+ * (founder, 2026-09-30).
+ */
+fun reelMayPlay(paused: Boolean, soundChoiceRead: Boolean): Boolean = !paused && soundChoiceRead
+
+/**
+ * A pager page as the rank analytics reports: 1-based, so the first reel is
+ * position 1. Null when the page is not known, or is not a page at all.
+ */
+fun reelPosition(page: Int?): Int? = page?.takeIf { it >= 0 }?.plus(1)
+
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
-// indirection, not clarity.
-@Suppress("LongParameterList")
+// indirection, not clarity. One function per thing the screen can ask, as
+// the reel publish ViewModel has: the count is the surface's, not a smell.
+@Suppress("LongParameterList", "TooManyFunctions")
 class ReelsViewModel @Inject constructor(
     private val repository: FeedRepository,
     private val urlResolver: MediaUrlResolver,
@@ -190,6 +223,9 @@ class ReelsViewModel @Inject constructor(
     private val reelsEntry: ReelsEntry,
     private val watchTracker: VideoWatchTracker,
     private val analytics: AnalyticsRecorder,
+    private val sounds: SoundsRepository,
+    private val soundEntry: SoundEntry,
+    private val soundStore: ReelsSoundStore,
     hidden: HiddenPosts,
 ) : ViewModel() {
 
@@ -355,20 +391,54 @@ class ReelsViewModel @Inject constructor(
         _entryTarget.value = null
     }
 
-    private val _muted = MutableStateFlow(false)
+    private val _muted = MutableStateFlow(reelsMuted(soundOn = null))
 
     /**
-     * Reels open with SOUND ON (founder, 2026-09-05) — from the tab and
-     * from a feed tap alike; the feed is the silent preview, Reels is where
-     * the sound is. The rail's speaker still mutes, and the choice is held
-     * for the session: here rather than per-player so it survives page
-     * changes and player recycling — a per-player flag resets the moment
-     * the pool reclaims one.
+     * Whether Reels is silent.
+     *
+     * founder, 2026-09-30: reels open MUTED, like the web. Once the viewer
+     * turns the sound on it STAYS on — across reels, across leaving and
+     * re-entering Reels, and across app restarts — until they mute again:
+     * "Once user makes it on on the sound keep it on." The choice is kept in
+     * [ReelsSoundStore] and drives BOTH players together, the video and its
+     * added sound. It replaces the 2026-09-05 decision (sound on when Reels
+     * opens, a mute kept for the session only).
+     *
+     * Held here rather than per-player so it survives page changes and
+     * player recycling — a per-player flag resets the moment the pool
+     * reclaims one. Until the stored choice has been read this is muted; see
+     * [soundChoiceRead].
      */
     val muted: StateFlow<Boolean> = _muted.asStateFlow()
 
+    private val _soundChoiceRead = MutableStateFlow(false)
+
+    /**
+     * Whether the viewer's choice is known: read from the store, or made by
+     * a tap that beat the read. The screen holds the first reel until it is,
+     * so a viewer who chose sound never hears a muted first reel flip on
+     * (founder, 2026-09-30); see [reelMayPlay].
+     */
+    val soundChoiceRead: StateFlow<Boolean> = _soundChoiceRead.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            val stored = soundStore.soundOn.first()
+            // A tap that beat the read is the newer choice, and it stands.
+            if (!_soundChoiceRead.value) choose(soundOn = stored)
+        }
+    }
+
+    /** The rail's speaker: the other state, at once, and kept for the next reel and the next launch. */
     fun toggleMuted() {
-        _muted.value = !_muted.value
+        val soundOn = _muted.value
+        choose(soundOn)
+        viewModelScope.launch { soundStore.setSoundOn(soundOn) }
+    }
+
+    private fun choose(soundOn: Boolean) {
+        _muted.value = reelsMuted(soundOn)
+        _soundChoiceRead.value = true
     }
 
     private val _mode = MutableStateFlow(ReelsMode.NORMAL)
@@ -480,6 +550,65 @@ class ReelsViewModel @Inject constructor(
         shares.recordExternalShare(postId)
     }
 
+    // ── Sounds ──────────────────────────────────────────────────────────
+
+    private val _soundDestination = MutableStateFlow<SoundDestination?>(null)
+
+    /**
+     * Where "use this sound" has decided to go, until the screen has gone
+     * there: the reel create flow, or the sound's page. The screen navigates
+     * and calls [onSoundDestinationTaken]; it is null the rest of the time.
+     */
+    val soundDestination: StateFlow<SoundDestination?> = _soundDestination.asStateFlow()
+
+    private val _soundMessage = MutableStateFlow<UsMessage?>(null)
+
+    /** Why "use this sound" was refused, in one line, by the server's code. */
+    val soundMessage: StateFlow<UsMessage?> = _soundMessage.asStateFlow()
+
+    private var soundRequest: Job? = null
+
+    /**
+     * "Use this sound" (original sounds, 2026-09-30), from the More sheet's
+     * row ([SoundIntent.CREATE]) or the reel's sound line
+     * ([SoundIntent.PAGE]).
+     *
+     * A reel that already plays an added sound offers that sound and the
+     * server is not asked. One that plays its own audio has its sound made
+     * on first use, and a refusal is shown in one line. One request at a
+     * time: a second tap while the first is on the wire is the same wish.
+     */
+    fun onUseSound(item: FeedItem, intent: SoundIntent) {
+        if (!item.canUseSound(item.isOwnedBy(ownUserId))) return
+        when (val step = nextSoundStep(item)) {
+            is SoundStep.Open -> openSound(step.sound, intent)
+            is SoundStep.Resolve -> {
+                if (soundRequest?.isActive == true) return
+                soundRequest = viewModelScope.launch {
+                    when (val result = sounds.useSound(step.postId)) {
+                        is AppResult.Success -> openSound(result.data, intent)
+                        is AppResult.Failure -> _soundMessage.value = UsMessage(result.error.soundRefusalMessage())
+                    }
+                }
+            }
+        }
+    }
+
+    private fun openSound(sound: ReelSound, intent: SoundIntent) {
+        // The create flow is another feature: the sound waits for it in the holder.
+        if (intent == SoundIntent.CREATE) soundEntry.choose(sound.toChosenSound())
+        _soundDestination.value = soundDestination(intent, sound)
+    }
+
+    /** The screen has gone where [soundDestination] said. */
+    fun onSoundDestinationTaken() {
+        _soundDestination.value = null
+    }
+
+    fun dismissSoundMessage() {
+        _soundMessage.value = null
+    }
+
     // ── Follow / Subscribe ──────────────────────────────────────────────
 
     /** Author id → the viewer's edge; the overlay offers Follow only when [offersFollow] says so. */
@@ -522,13 +651,13 @@ class ReelsViewModel @Inject constructor(
      * carries a channel, so a reel without one never asks the channel
      * routes for an answer that would be 404.
      */
-    fun onReelShown(item: FeedItem, probe: (suspend () -> WatchProbe)? = null) {
+    fun onReelShown(item: FeedItem, probe: (suspend () -> WatchProbe)? = null, page: Int? = null) {
         _paused.value = false
         viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
         (reelRelationship(item) as? ReelRelationship.Subscribe)?.let { subscribe ->
             viewModelScope.launch { subscriptions.ensureKnown(listOf(subscribe.ref)) }
         }
-        startWatchAnalytics(item, probe)
+        startWatchAnalytics(item, probe, page)
     }
 
     /**
@@ -542,8 +671,12 @@ class ReelsViewModel @Inject constructor(
      * [probe] is null in tests and wherever the pager has no player for the
      * page yet (a reel still transcoding). Without one there is nothing to
      * measure, so no view is opened rather than one that would report zero.
+     *
+     * The view says what was true when it started (2026-09-30): whether the
+     * reel was muted — it used to report `false` whatever the speaker said —
+     * and where in the pager it sat, as [reelPosition].
      */
-    private fun startWatchAnalytics(item: FeedItem, probe: (suspend () -> WatchProbe)?) {
+    private fun startWatchAnalytics(item: FeedItem, probe: (suspend () -> WatchProbe)?, page: Int?) {
         if (probe == null) return
         watchSession?.takeIf { it.contentId != item.id }
             ?.let { watchTracker.endView(it.contentId, PlayEndReason.SWIPE_NEXT) }
@@ -560,8 +693,9 @@ class ReelsViewModel @Inject constructor(
             // pager owns it — `tap` describes a play button, which reels has
             // none of.
             startMethod = PlayStartMethod.AUTOPLAY,
-            isMuted = false,
+            isMuted = muted.value,
             isAutoplay = true,
+            position = reelPosition(page),
             probe = probe,
         )
     }

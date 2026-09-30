@@ -162,7 +162,10 @@ object UsIcons {
         circle(10f, 18f, 3f)
     }
 
-    /** Muted speaker — the rail's state after the viewer mutes. Reels open with sound ON (founder, 2026-09-05). */
+    /**
+     * Muted speaker — the rail's state while Reels is silent, which is how it
+     * opens until the viewer turns the sound on (founder, 2026-09-30).
+     */
     val SoundOff: ImageVector = stroked("SoundOff") {
         speaker()
         moveTo(16.4f, 9.6f)
@@ -837,6 +840,17 @@ object UsIcons {
         "M4 15h16",
         "M10 3 8 21",
         "M16 3l-2 18",
+    )
+
+    /**
+     * Lucide `music` — the note on a reel's sound line, and wherever a sound
+     * is named (original sounds, 2026-09-30).
+     */
+    val Music: ImageVector = lucideStroked(
+        "Music",
+        "M9 18V5l12-2v13",
+        "M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+        "M21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
     )
 
     /** Lucide `at-sign` — the MENTIONS field. */

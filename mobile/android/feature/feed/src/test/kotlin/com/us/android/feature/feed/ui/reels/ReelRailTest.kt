@@ -11,6 +11,8 @@ import org.junit.Test
  *
  *  - a count is the label where there is one, the control's name where
  *    there is not — "8.8K" over "Like", never "0";
+ *  - share and save carry their counts too, when the row sends them
+ *    (2026-09-30), and a count the row never gave is never invented;
  *  - `hide_share` removes Share, `no_comments` removes Comment, and nothing
  *    the author sets touches Like or Save;
  *  - there is no More on the rail: it moved to the header's hamburger
@@ -25,7 +27,9 @@ class ReelRailTest {
         likes: Int = 0,
         comments: Int = 0,
         saved: Boolean = false,
-    ) = railControls(controls, likes, comments, saved)
+        shares: Int? = null,
+        saves: Int? = null,
+    ) = railControls(controls, likes, comments, saved, shares, saves)
 
     @Test
     fun `the rail is like, comment, share, save with their names when there is nothing to count`() {
@@ -58,6 +62,35 @@ class ReelRailTest {
     fun `save says whether it is done`() {
         assertThat(rail(saved = false).first { it.kind == RailKind.SAVE }.label).isEqualTo("Save")
         assertThat(rail(saved = true).first { it.kind == RailKind.SAVE }.label).isEqualTo("Saved")
+    }
+
+    @Test
+    fun `share and save carry their compact counts when the row sends them`() {
+        val labels = rail(shares = 1_200, saves = 45, saved = true).associate { it.kind to it.label }
+
+        assertThat(labels[RailKind.SHARE]).isEqualTo("1.2K")
+        assertThat(labels[RailKind.SAVE]).isEqualTo("45")
+    }
+
+    @Test
+    fun `a share or save count of zero, or none at all, falls back to the control's name`() {
+        val zero = rail(shares = 0, saves = 0).associate { it.kind to it.label }
+        assertThat(zero[RailKind.SHARE]).isEqualTo("Share")
+        assertThat(zero[RailKind.SAVE]).isEqualTo("Save")
+
+        val absent = rail(saved = true).associate { it.kind to it.label }
+        assertThat(absent[RailKind.SHARE]).isEqualTo("Share")
+        assertThat(absent[RailKind.SAVE]).isEqualTo("Saved")
+    }
+
+    @Test
+    fun `this session's save is layered on the row's count, and a count never given stays absent`() {
+        assertThat(layeredSaves(10, serverSaved = false, saved = true)).isEqualTo(11)
+        assertThat(layeredSaves(10, serverSaved = true, saved = false)).isEqualTo(9)
+        assertThat(layeredSaves(10, serverSaved = true, saved = true)).isEqualTo(10)
+        assertThat(layeredSaves(10, serverSaved = false, saved = false)).isEqualTo(10)
+        assertThat(layeredSaves(0, serverSaved = true, saved = false)).isEqualTo(0)
+        assertThat(layeredSaves(null, serverSaved = false, saved = true)).isNull()
     }
 
     @Test

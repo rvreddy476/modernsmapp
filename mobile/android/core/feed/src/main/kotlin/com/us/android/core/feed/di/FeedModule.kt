@@ -4,6 +4,7 @@ import com.us.android.core.feed.data.ChannelApi
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedItemHydrator
 import com.us.android.core.feed.data.HashtagPostHydrator
+import com.us.android.core.feed.data.SoundsApi
 import com.us.android.core.feed.data.VideoFeedApi
 import dagger.Module
 import dagger.Provides
@@ -28,6 +29,10 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideChannelApi(retrofit: Retrofit): ChannelApi = retrofit.create(ChannelApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideSoundsApi(retrofit: Retrofit): SoundsApi = retrofit.create(SoundsApi::class.java)
 
     /** The real hydrator behind the seam; tests bind the identity instead. */
     @Provides

@@ -178,6 +178,26 @@ data class CreatePostRequest(
      * then; a value it refuses comes back as a 400 in its own words.
      */
     @SerialName("publish_at") val publishAt: String? = null,
+
+    // ── An added sound (original sounds, 2026-09-30; contract 2.4) ─────
+    //
+    // A reel made with another reel's sound. Nullable with a null default,
+    // like every reel field above: a post without a sound sends none of the
+    // four, and is byte-identical to the request before they existed. The
+    // sound is never mixed into the video — the reel is created with the
+    // sound's id and a start offset, and the player plays both in step.
+
+    /** The sound's id. Omitted when the reel plays only its own audio. */
+    @SerialName("audio_track_id") val audioTrackId: String? = null,
+
+    /** Where in the sound playback starts; 0, as there is no offset picker. Sent with the id. */
+    @SerialName("audio_start_ms") val audioStartMs: Long? = null,
+
+    /** The creator's level for the reel's own audio under the sound, 0..1. Sent with the id. */
+    @SerialName("original_audio_volume") val originalAudioVolume: Double? = null,
+
+    /** The creator's level for the sound, 0..1. Sent with the id. */
+    @SerialName("overlay_audio_volume") val overlayAudioVolume: Double? = null,
 )
 
 /**
@@ -200,6 +220,12 @@ data class CreatePollRequest(
  * Every field is explicitly encoded, including the `false` ones. That is the
  * entire point: `notify_subscribers = false` omitted from the wire is not
  * "false", it is "unspecified", and unspecified means the legacy `true`.
+ *
+ * The default is the ordinary composer post's policy. A reel and a long
+ * video send `notify_subscribers = true` (2026-09-30): notification-service
+ * drops the fan-out when it is false, and the web sends no policy at all and
+ * gets the server's default, which notifies — so a video posted from Android
+ * had never reached a subscriber.
  */
 @Serializable
 data class DistributionRequest(
