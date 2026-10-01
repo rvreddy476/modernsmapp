@@ -2303,8 +2303,10 @@ services:
       # Going live is a closed pilot until a moderation owner is named:
       # POST create/start answer 403 LIVE_NOT_ENABLED for anyone not listed,
       # and an empty list admits nobody. Dev default: the founder's account
-      # and the call_a / call_b test accounts (identity auth.users ids).
-      LIVE_PILOT_USER_IDS: ${LIVE_PILOT_USER_IDS:-7cd6ea3a-9c80-4f20-806f-5d08de0f914b,2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}
+      # and the call_a / call_b test accounts (identity auth.users ids). The
+      # founder has two accounts (rvreddy47621@ and reddyraghuvaran1991@);
+      # both are listed.
+      LIVE_PILOT_USER_IDS: ${LIVE_PILOT_USER_IDS:-7cd6ea3a-9c80-4f20-806f-5d08de0f914b,526f4796-c877-4aac-88de-69efa650f8c4,2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}
       # Host gone while live → reconnecting for this long, then ended
       # (host_lost). Starting with no host track for this long → failed.
       LIVE_RECONNECT_GRACE: ${LIVE_RECONNECT_GRACE:-60s}
