@@ -51,6 +51,12 @@ func GetCollapseKey(eventType, targetID, recipientID string) string {
 	case "creator_uploaded_video", "creator_uploaded_flick":
 		return fmt.Sprintf("channel:%s:upload", targetID)
 
+	// "Creator is live" collapses per stream: a redelivered notice replaces
+	// itself, and two different streams never replace each other. targetID
+	// is the stream id.
+	case "creator_went_live":
+		return fmt.Sprintf("live:%s", targetID)
+
 	// Urgent channel alerts NEVER collapse (always show individually).
 	case "channel.urgent.info", "channel.urgent.warning", "channel.urgent.critical":
 		return "" // no collapse

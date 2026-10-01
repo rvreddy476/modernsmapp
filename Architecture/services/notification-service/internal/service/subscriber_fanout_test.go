@@ -43,11 +43,31 @@ type fakeStore struct {
 	delivered map[uuid.UUID]bool
 	cursors   []uuid.UUID
 	deltas    []int64
+	// Live jobs: every reminder-cursor write and every enqueued job.
+	reminderAdvances []reminderAdvance
+	enqueued         []postgres.FanoutJob
+}
+
+type reminderAdvance struct {
+	cursor string
+	delta  int64
+	done   bool
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{delivered: map[uuid.UUID]bool{}} }
 
-func (s *fakeStore) EnqueueFanoutJob(context.Context, *postgres.FanoutJob) error { return nil }
+func (s *fakeStore) EnqueueFanoutJob(_ context.Context, j *postgres.FanoutJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enqueued = append(s.enqueued, *j)
+	return nil
+}
+func (s *fakeStore) AdvanceFanoutReminders(_ context.Context, _ uuid.UUID, cursor string, delta int64, done bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reminderAdvances = append(s.reminderAdvances, reminderAdvance{cursor, delta, done})
+	return nil
+}
 func (s *fakeStore) ClaimFanoutJobs(context.Context, time.Duration, int) ([]postgres.FanoutJob, error) {
 	return nil, nil
 }

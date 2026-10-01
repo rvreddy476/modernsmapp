@@ -27,19 +27,52 @@ type FanoutJob struct {
 	// jobs enqueued from events that predate the fields.
 	Title       string
 	ChannelName string
+	// Phase and ReminderCursor (migration 011) exist for "creator is live"
+	// jobs, which page two recipient groups: the stream's reminder holders
+	// first, then the channel's subscribers. Upload jobs are always
+	// FanoutPhaseSubscribers and never touch ReminderCursor. For a live job
+	// PostID holds the STREAM id and ChannelID may be uuid.Nil (a creator
+	// with no channel has reminder holders only).
+	Phase          string
+	ReminderCursor string
 }
 
+// Fan-out phases (subscriber_fanout_jobs.phase).
+const (
+	FanoutPhaseReminders   = "reminders"
+	FanoutPhaseSubscribers = "subscribers"
+)
+
 // EnqueueFanoutJob records a fan-out durably. Idempotent on post_id: a
-// duplicate PostCreated delivery does not create a second job.
+// duplicate PostCreated (or live.stream.started) delivery does not create a
+// second job. An empty Phase is the upload default, 'subscribers'.
 func (s *Store) EnqueueFanoutJob(ctx context.Context, j *FanoutJob) error {
+	phase := j.Phase
+	if phase == "" {
+		phase = FanoutPhaseSubscribers
+	}
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO subscriber_fanout_jobs
 			(post_id, channel_id, author_id, content_type, deep_link,
-			 notif_type, visibility, post_created_at, title, channel_name)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 notif_type, visibility, post_created_at, title, channel_name, phase)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (post_id) DO NOTHING`,
 		j.PostID, j.ChannelID, j.AuthorID, j.ContentType, j.DeepLink,
-		j.NotifType, j.Visibility, j.PostCreatedAt, j.Title, j.ChannelName)
+		j.NotifType, j.Visibility, j.PostCreatedAt, j.Title, j.ChannelName, phase)
+	return err
+}
+
+// AdvanceFanoutReminders persists progress through a live job's reminder
+// holders. `cursor` is live-service-v2's opaque next_after token. When
+// `done` is set the reminder pages are exhausted and the job moves on to
+// the subscriber phase, so a retry never re-walks the reminders.
+func (s *Store) AdvanceFanoutReminders(ctx context.Context, postID uuid.UUID, cursor string, deliveredDelta int64, done bool) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE subscriber_fanout_jobs
+		SET reminder_cursor = $2, delivered = delivered + $3,
+		    phase = CASE WHEN $4 THEN 'subscribers' ELSE phase END,
+		    claimed_at = NOW(), updated_at = NOW()
+		WHERE post_id = $1`, postID, cursor, deliveredDelta, done)
 	return err
 }
 
@@ -63,7 +96,8 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		FROM claimable WHERE j.post_id = claimable.post_id
 		RETURNING j.post_id, j.channel_id, j.author_id, j.content_type,
 		          j.deep_link, j.notif_type, j.visibility, j.post_created_at,
-		          j.cursor, j.delivered, j.attempts, j.title, j.channel_name`,
+		          j.cursor, j.delivered, j.attempts, j.title, j.channel_name,
+		          j.phase, j.reminder_cursor`,
 		time.Now().Add(-staleAfter), limit)
 	if err != nil {
 		return nil, err
@@ -75,7 +109,8 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		var j FanoutJob
 		if err := rows.Scan(&j.PostID, &j.ChannelID, &j.AuthorID, &j.ContentType,
 			&j.DeepLink, &j.NotifType, &j.Visibility, &j.PostCreatedAt,
-			&j.Cursor, &j.Delivered, &j.Attempts, &j.Title, &j.ChannelName); err != nil {
+			&j.Cursor, &j.Delivered, &j.Attempts, &j.Title, &j.ChannelName,
+			&j.Phase, &j.ReminderCursor); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, j)

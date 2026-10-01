@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/notification-service/internal/events"
 	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/http"
+	"github.com/atpost/notification-service/internal/livestream"
 	"github.com/atpost/notification-service/internal/purge"
 	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/service"
@@ -243,7 +244,9 @@ func main() {
 		notifSvc,
 		kafkaDialer,
 	)
-	// graph-service client — follower fan-out for live-started events.
+	// graph-service client. Its URL also serves the fan-out's per-recipient
+	// block/follow checks below. (live-started no longer fans out to
+	// followers; see the reminder source further down.)
 	graphURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
 	consumer.WithGraph(graph.New(graphURL, internalKey))
 	slog.Info("graph client attached", "graph_url", graphURL)
@@ -266,6 +269,12 @@ func main() {
 	// blocks, followers-only access, deletion, and moderation state. The
 	// same post-service base URL also serves the channel-name fallback.
 	fanout.SetEligibilityDeps(graphURL, postURL, internalKey)
+	// "Creator is live" rides the same jobs: live.stream.started tells the
+	// stream's reminder holders (paged from live-service-v2's internal
+	// route) and then the channel's subscribers. Never every follower.
+	liveV2URL := env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117")
+	fanout.SetReminderSource(livestream.New(liveV2URL, internalKey))
+	slog.Info("live reminder source attached", "live_v2_service_url", liveV2URL)
 	consumer.WithSubscriberFanout(fanout)
 	fanout.StartWorker(ctx)
 	slog.Info("subscriber fan-out worker started", "subscribers_service_url", subsURL)

@@ -134,8 +134,8 @@ type RenderOverride struct {
 type UploadNotification struct {
 	RecipientID uuid.UUID
 	AuthorID    uuid.UUID
-	NotifType   string // creator_uploaded_video | creator_uploaded_flick
-	PostID      uuid.UUID
+	NotifType   string // creator_uploaded_video | creator_uploaded_flick | creator_went_live
+	PostID      uuid.UUID // the stream id for creator_went_live
 	ChannelID   uuid.UUID
 	ChannelName string
 	Title       string
@@ -192,8 +192,21 @@ func (s *Service) CreateUploadNotification(ctx context.Context, n UploadNotifica
 		return nil
 	}
 	decision := s.resolveGeneralDelivery(ctx, n.RecipientID, n.NotifType)
+	entityType, render := fanoutDelivery(n)
 	return s.deliverWithDecision(ctx, decision, n.RecipientID, n.AuthorID, n.NotifType,
-		"post", n.PostID, n.DeepLink, n.CreatedAt, n.Identity, renderUpload(n))
+		entityType, n.PostID, n.DeepLink, n.CreatedAt, n.Identity, render)
+}
+
+// fanoutDelivery picks the inbox entity type and the push copy for one
+// fan-out recipient. An upload is post/{postID} with "{channel} uploaded:
+// {title}"; a "creator is live" notice rides the same job machinery with
+// the STREAM id in PostID, so it is live_stream/{streamID} with "{creator}
+// is live: {title}" and a per-stream collapse key (live_fanout.go).
+func fanoutDelivery(n UploadNotification) (string, RenderOverride) {
+	if n.NotifType == LiveNotifType {
+		return liveEntityType, renderLive(n)
+	}
+	return "post", renderUpload(n)
 }
 
 // recipientSuppressed is the account-control gate shared by every

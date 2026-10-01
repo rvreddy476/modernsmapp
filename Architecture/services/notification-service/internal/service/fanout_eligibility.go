@@ -65,17 +65,29 @@ func (f *SubscriberFanout) eligible(ctx context.Context, job *postgres.FanoutJob
 		return true, nil
 	}
 
-	state, err := f.postStateFor(ctx, job)
-	if err != nil {
-		return false, err
-	}
-	// Deleted or no longer approved before delivery ⇒ terminal skip.
-	if !state.exists || !state.approved {
-		return false, nil
-	}
-	// Visibility may have narrowed after enqueue.
-	if state.visibility == "private" || state.visibility == "unlisted" {
-		return false, nil
+	// A "creator is live" job has no post behind it: PostID is the stream
+	// id, which post-service would answer 404 for and so mark every
+	// recipient ineligible. Its audience is the visibility captured from
+	// the event; the block and follow checks below still run per recipient.
+	visibility := job.Visibility
+	if job.NotifType == LiveNotifType {
+		if !LiveVisibilityNotifies(visibility) {
+			return false, nil
+		}
+	} else {
+		state, err := f.postStateFor(ctx, job)
+		if err != nil {
+			return false, err
+		}
+		// Deleted or no longer approved before delivery ⇒ terminal skip.
+		if !state.exists || !state.approved {
+			return false, nil
+		}
+		// Visibility may have narrowed after enqueue.
+		if state.visibility == "private" || state.visibility == "unlisted" {
+			return false, nil
+		}
+		visibility = state.visibility
 	}
 
 	// One graph round-trip yields both the block state and the follow
@@ -96,7 +108,7 @@ func (f *SubscriberFanout) eligible(ctx context.Context, job *postgres.FanoutJob
 	}
 
 	// Audience checks: never send a deep link the recipient cannot open.
-	switch state.visibility {
+	switch visibility {
 	case "followers":
 		if !rel.Follows {
 			return false, nil

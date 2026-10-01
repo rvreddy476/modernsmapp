@@ -54,6 +54,7 @@ type fanoutStore interface {
 	EnqueueFanoutJob(ctx context.Context, j *postgres.FanoutJob) error
 	ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, limit int) ([]postgres.FanoutJob, error)
 	AdvanceFanoutCursor(ctx context.Context, postID, cursor uuid.UUID, deliveredDelta int64) error
+	AdvanceFanoutReminders(ctx context.Context, postID uuid.UUID, cursor string, deliveredDelta int64, done bool) error
 	CompleteFanoutJob(ctx context.Context, postID uuid.UUID) error
 	ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
 	FailFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
@@ -73,6 +74,11 @@ type SubscriberFanout struct {
 	svc  uploadNotifier
 	pg   fanoutStore
 	subs subscriberSource
+	// reminders and names serve "creator is live" jobs only
+	// (live_fanout.go): the stream's reminder holders, and the creator's
+	// profile name when they have no channel name. Both optional.
+	reminders reminderSource
+	names     creatorNamer
 
 	// Per-recipient eligibility (Codex P1-8) and its short-lived
 	// per-job post-state cache.
@@ -98,6 +104,7 @@ func NewSubscriberFanout(svc *Service, pg *postgres.Store, subs *subscribers.Cli
 	f := &SubscriberFanout{}
 	if svc != nil {
 		f.svc = svc
+		f.names = svc
 	}
 	if pg != nil {
 		f.pg = pg
@@ -129,6 +136,11 @@ type EnqueueParams struct {
 	// name once per job and falls back to neutral copy for the title.
 	Title       string
 	ChannelName string
+	// Phase is empty for uploads (subscribers only). A "creator is live"
+	// job sets postgres.FanoutPhaseReminders so the stream's reminder
+	// holders are paged before the channel's subscribers; PostID is then
+	// the stream id and ChannelID may be uuid.Nil.
+	Phase string
 }
 
 // Enqueue records the fan-out durably. Called synchronously from the
@@ -148,6 +160,7 @@ func (f *SubscriberFanout) Enqueue(ctx context.Context, p EnqueueParams) error {
 		PostCreatedAt: p.CreatedAt,
 		Title:         p.Title,
 		ChannelName:   p.ChannelName,
+		Phase:         p.Phase,
 	})
 }
 
@@ -226,6 +239,33 @@ func (f *SubscriberFanout) processJob(ctx context.Context, job *postgres.FanoutJ
 	// for the whole job, never one per recipient.
 	if job.ChannelName == "" {
 		job.ChannelName = f.channelNameFor(ctx, job)
+	}
+
+	if job.NotifType == LiveNotifType {
+		// "Is live" has a shelf life: a job that surfaces long after the
+		// stream started (broker backlog, a reclaimed crash) is finished
+		// without telling anyone.
+		if liveJobStale(job, time.Now()) {
+			slog.Info("fanout: live job past its notify window; nobody notified",
+				"stream_id", job.PostID, "started_at", job.PostCreatedAt)
+			return nil
+		}
+		if job.ChannelName == "" {
+			job.ChannelName = f.liveCreatorName(ctx, job)
+		}
+		// Reminder holders first. Once exhausted the phase is persisted as
+		// 'subscribers', so a retry of the walk below never re-pages them.
+		if job.Phase == postgres.FanoutPhaseReminders {
+			if err := f.drainReminders(ctx, job); err != nil {
+				return err
+			}
+		}
+	}
+
+	// No channel ⇒ no subscribers to walk (a live job for a creator
+	// without a channel has reminder holders only). Never followers.
+	if job.ChannelID == uuid.Nil {
+		return nil
 	}
 
 	after := job.Cursor

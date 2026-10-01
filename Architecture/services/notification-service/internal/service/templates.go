@@ -70,16 +70,18 @@ var Templates = map[string]NotificationTemplate{
 		CanAggregate: true, AggregateWindow: 15 * time.Minute,
 	},
 
-	// LIVE — follower fan-out when a creator goes live (events/consumer.go
-	// "creator_went_live"). Never aggregated: each stream is its own moment.
+	// LIVE — a creator goes live. "creator_went_live" is told to the
+	// stream's reminder holders and the channel's subscribers through the
+	// durable fan-out job (service/live_fanout.go), never to every
+	// follower. Never aggregated: each stream is its own moment.
 	"live.started": {
 		EventType: "live.started", TitleTemplate: "{actor} is LIVE now",
 		BodyTemplate: "Tap to watch before it ends",
 		Icon:         "live", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 	"creator_went_live": {
-		EventType: "creator_went_live", TitleTemplate: "{actor} is LIVE now",
-		BodyTemplate: "Tap to watch before it ends",
+		EventType: "creator_went_live", TitleTemplate: "{creator} is live: {title}",
+		BodyTemplate: "Tap to watch live",
 		Icon:         "live", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 

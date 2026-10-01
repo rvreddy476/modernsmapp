@@ -1,0 +1,24 @@
+-- Migration 011: "creator is live" rides the subscriber fan-out job table.
+--
+-- Live in PostTube and Reels (2 Oct 2026). When a stream goes live the people
+-- told are (1) everyone who set a reminder on it and (2) the creator's channel
+-- subscribers with the bell on -- never the whole follower list. Both groups
+-- are walked by the SAME durable job as an upload (migration 004): the row is
+-- keyed on the stream id in post_id, and subscriber_fanout_delivered keeps one
+-- notification per (stream, user), which is also what de-duplicates a person
+-- who is in both groups.
+--
+-- phase            which group the job is paging. Upload jobs only ever have
+--                  'subscribers' (the default, so every existing row and the
+--                  upload path are unchanged). A live job starts in
+--                  'reminders' and moves to 'subscribers' once the reminder
+--                  pages are exhausted.
+-- reminder_cursor  the opaque `next_after` token of live-service-v2's
+--                  internal reminders route. Separate from `cursor` (a
+--                  subscriber user id) so the two walks cannot corrupt each
+--                  other on a retry.
+--
+-- No preference columns: push_live / inapp_live have existed, default TRUE,
+-- since migration 005.
+ALTER TABLE subscriber_fanout_jobs ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT 'subscribers';
+ALTER TABLE subscriber_fanout_jobs ADD COLUMN IF NOT EXISTS reminder_cursor TEXT NOT NULL DEFAULT '';
