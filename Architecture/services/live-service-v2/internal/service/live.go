@@ -129,6 +129,12 @@ type Store interface {
 	WebhookSeen(ctx context.Context, eventID string) (bool, error)
 	MarkWebhook(ctx context.Context, eventID, event string) error
 	PruneWebhookEvents(ctx context.Context, keep time.Duration) error
+	// The video a recording became (recording_post.go).
+	ClaimDuePostLookups(ctx context.Context, limit int, lease time.Duration) ([]postgres.PostLookup, error)
+	ClaimPostLookup(ctx context.Context, streamID uuid.UUID, minGap time.Duration) (postgres.PostLookup, bool, error)
+	SetRecordingPost(ctx context.Context, streamID, postID uuid.UUID) (stored bool, err error)
+	RetryPostLookup(ctx context.Context, streamID uuid.UUID, retryIn time.Duration) error
+	StopPostLookup(ctx context.Context, streamID uuid.UUID, state string) error
 
 	InsertChatMessage(ctx context.Context, streamID, userID uuid.UUID, text string) (*postgres.ChatMessage, error)
 	ListRecentChatMessages(ctx context.Context, streamID uuid.UUID, limit int) ([]*postgres.ChatMessage, error)
@@ -190,6 +196,9 @@ type Service struct {
 	// media imports egress recordings into media-service; nil leaves the
 	// import jobs pending (vod_ready never goes out without a media id).
 	media MediaImporter
+	// posts answers which video a recording became; nil leaves
+	// recording_post_id unset (recording_post.go).
+	posts RecordingPostSource
 
 	// Public base URL we expose recordings at (e.g. https://media.cdn/live-recordings).
 	// If empty we fall back to the S3 endpoint + bucket path.
@@ -235,6 +244,9 @@ type Config struct {
 
 	// Media imports egress recordings (MEDIA_SERVICE_URL); nil = not configured.
 	Media MediaImporter
+	// RecordingPosts finds the video a recording became (POST_SERVICE_URL);
+	// nil = not configured, recording_post_id stays unset.
+	RecordingPosts RecordingPostSource
 
 	// Profiles hydrates creator and supporter cards (PROFILE_SERVICE_URL),
 	// Categories validates a stream's category (POST_SERVICE_URL), Following
@@ -284,6 +296,7 @@ func New(store Store, lk livekit.Client, graph GraphClient, rdb *redis.Client, c
 		pilot:                  pilot,
 		limits:                 lim,
 		media:                  cfg.Media,
+		posts:                  cfg.RecordingPosts,
 		profiles:               cfg.Profiles,
 		categories:             cfg.Categories,
 		following:              cfg.Following,
@@ -703,6 +716,9 @@ func (s *Service) GetStream(ctx context.Context, streamID, viewerID uuid.UUID) (
 	if err := s.canSee(ctx, st, viewerID); err != nil {
 		return nil, err
 	}
+	// An ended stream whose recording has no video id yet: one bounded
+	// lookup (the sweeper does the rest). A failure changes nothing.
+	st = s.resolveRecordingPostOnRead(ctx, st)
 	// The detail row always carries reminder_count, and reminder_set for a
 	// signed-in caller: the waiting page shows "Notify me" and how many
 	// asked, and the answer does not change shape when the stream starts.

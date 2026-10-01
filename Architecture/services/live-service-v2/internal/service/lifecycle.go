@@ -425,6 +425,7 @@ func (s *Service) Sweep(ctx context.Context) error {
 	s.reconcile(ctx)
 	s.sweepIngresses(ctx)
 	s.RunImports(ctx)
+	s.ResolveRecordingPosts(ctx)
 	if err := s.store.PruneWebhookEvents(ctx, webhookIDRetention); err != nil {
 		slog.Warn("live-v2 sweeper: prune webhook ids", "err", err)
 	}

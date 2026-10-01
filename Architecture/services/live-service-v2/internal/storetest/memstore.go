@@ -44,6 +44,9 @@ type MemStore struct {
 	ImportDue     map[uuid.UUID]time.Time
 	ImportCreated map[uuid.UUID]time.Time
 	ViewerEvents  int
+	// PostLookups is the recording post lookup of each done import
+	// (recording_post.go).
+	PostLookups map[uuid.UUID]*PostLookupRow
 
 	// Live surfaces (surfaces.go).
 	Reminders map[uuid.UUID]map[uuid.UUID]bool

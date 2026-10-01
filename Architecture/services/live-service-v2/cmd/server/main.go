@@ -163,6 +163,12 @@ func main() {
 	} else {
 		slog.Warn("live-v2: GRAPH_SERVICE_URL or POST_SERVICE_URL not set — the Following filter lists nothing")
 	}
+	// The video a recording became: post-service makes it from vod_ready and
+	// reports nothing back, so the sweeper asks and stores recording_post_id.
+	var recordingPosts service.RecordingPostSource
+	if c := service.NewHTTPRecordingPosts(postURL, internalKey); c != nil {
+		recordingPosts = c
+	}
 
 	// Founding creator badge: a stream on air for at least
 	// LIVE_FOUNDING_MIN_LIVE (default 5m) that started before
@@ -188,6 +194,7 @@ func main() {
 		ReconnectGrace:         envDuration("LIVE_RECONNECT_GRACE", service.DefaultReconnectGrace),
 		EncoderStartTimeout:    envDuration("LIVE_ENCODER_START_TIMEOUT", service.DefaultEncoderStartTimeout),
 		Media:                  media,
+		RecordingPosts:         recordingPosts,
 		Profiles:               profiles,
 		Categories:             categories,
 		Following:              following,

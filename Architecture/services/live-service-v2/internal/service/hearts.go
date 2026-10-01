@@ -15,6 +15,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -206,12 +207,16 @@ type SupporterRow struct {
 // list's gate (visibility, blocks, stream ban; a signed-out reader passes on
 // a public stream) and works after the stream ended. The host, banned
 // viewers and anyone with neither a heart nor a message are not listed.
+//
+// A signed-in viewer is not shown a supporter they blocked or who blocked
+// them (dropBlockedSupporters); the rows left are ranked 1..n. A signed-out
+// viewer has no blocks and sees the list as ranked.
 func (s *Service) ListSupporters(ctx context.Context, streamID, viewerID uuid.UUID, limit int) ([]SupporterRow, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > supportersMax {
+		limit = supportersMax
 	}
 	st, err := s.store.GetByID(ctx, streamID)
 	if err != nil {
@@ -220,9 +225,21 @@ func (s *Service) ListSupporters(ctx context.Context, streamID, viewerID uuid.UU
 	if err := s.authorizeViewer(ctx, st, viewerID); err != nil {
 		return nil, err
 	}
-	rows, err := s.store.ListSupporters(ctx, streamID, limit)
+	// A signed-in viewer's page is read with room to spare, so dropping a
+	// blocked supporter does not leave it short while others rank below.
+	fetch := limit
+	if viewerID != uuid.Nil {
+		if fetch = 2 * limit; fetch > supportersMax {
+			fetch = supportersMax
+		}
+	}
+	rows, err := s.store.ListSupporters(ctx, streamID, fetch)
 	if err != nil {
 		return nil, err
+	}
+	rows = s.dropBlockedSupporters(ctx, viewerID, rows)
+	if len(rows) > limit {
+		rows = rows[:limit]
 	}
 	ids := make([]uuid.UUID, len(rows))
 	for i, r := range rows {
@@ -234,6 +251,59 @@ func (s *Service) ListSupporters(ctx context.Context, streamID, viewerID uuid.UU
 		out = append(out, SupporterRow{User: cards[r.UserID], Hearts: r.Hearts, Messages: r.Messages, Rank: i + 1})
 	}
 	return out, nil
+}
+
+// supportersMax is the most rows one supporters read returns (the store's
+// own limit), so also the most block checks one request makes.
+const supportersMax = 50
+
+// dropBlockedSupporters removes every supporter with a block between them
+// and the viewer, in either direction (Relationship.Blocked is graph's
+// blocked || blocked_by). The viewer's own row needs no check. Fail closed:
+// a supporter whose relationship is unknown — the lookup failed, or the
+// answer has no entry for them — is dropped rather than shown.
+//
+// One batch call when the graph client can; otherwise one cached lookup per
+// supporter (relationshipCached), at most supportersMax of them.
+func (s *Service) dropBlockedSupporters(ctx context.Context, viewerID uuid.UUID, rows []postgres.Supporter) []postgres.Supporter {
+	if viewerID == uuid.Nil || len(rows) == 0 {
+		return rows
+	}
+	others := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		if r.UserID != viewerID {
+			others = append(others, r.UserID)
+		}
+	}
+	if len(others) == 0 {
+		return rows
+	}
+	clear := make(map[uuid.UUID]bool, len(others)) // true: known not blocked
+	if batch, ok := s.graph.(batchGraph); ok {
+		rels, err := batch.Relationships(ctx, viewerID, others)
+		if err != nil {
+			slog.Warn("live-v2: supporters block lookup failed; other supporters are left out of this list", "err", err)
+		}
+		for id, rel := range rels {
+			clear[id] = err == nil && !rel.Blocked
+		}
+	} else {
+		for _, id := range others {
+			rel, err := s.relationshipCached(ctx, viewerID, id)
+			if err != nil {
+				slog.Warn("live-v2: supporters block lookup failed; the supporter is left out of this list", "err", err)
+				continue
+			}
+			clear[id] = !rel.Blocked
+		}
+	}
+	kept := make([]postgres.Supporter, 0, len(rows))
+	for _, r := range rows {
+		if r.UserID == viewerID || clear[r.UserID] {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }
 
 // --- limiter and tally: Redis ---
