@@ -4,8 +4,10 @@ import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -13,10 +15,17 @@ import retrofit2.http.Query
  * live-service-v2 endpoints, through the gateway at `/v1/livestream`.
  *
  * The lifecycle is the server's, not ours: create reserves a room, start
- * makes it live and returns the LiveKit publisher credentials, end closes
- * it. Watching is a viewer token plus the same server URL. Every field is
- * defaulted so a server-side addition cannot break decoding.
+ * returns the LiveKit publisher credentials and puts the stream in
+ * `starting`, and only the host's first published track makes it `live`
+ * (live-fix contract, 2026-10-01). Watching is a viewer token plus the same
+ * server URL. Every response field is defaulted so a server-side addition
+ * cannot break decoding.
+ *
+ * Moderation routes (remove, ban, moderators, report) answer with whatever
+ * body the server chooses, or none: they return [Unit] so Retrofit discards
+ * the body and a 204 and a 200 both succeed (see `noContentApiCall`).
  */
+@Suppress("TooManyFunctions") // one function per live-service-v2 route
 interface LiveApi {
 
     @POST("v1/livestream/streams")
@@ -42,6 +51,25 @@ interface LiveApi {
 
     @GET("v1/livestream/streams/{id}/chat")
     suspend fun listChat(@Path("id") id: String, @Query("limit") limit: Int = 50): ApiEnvelope<List<LiveChatMessageDto>>
+
+    /** Host, stream moderators or admin: hides the message for everyone (`chat.removed`). */
+    @DELETE("v1/livestream/streams/{id}/chat/{messageId}")
+    suspend fun removeChatMessage(@Path("id") id: String, @Path("messageId") messageId: String)
+
+    /** Host or moderators: the user can no longer chat in, or join, this stream. */
+    @POST("v1/livestream/streams/{id}/bans")
+    suspend fun banUser(@Path("id") id: String, @Body body: BanUserRequest)
+
+    @DELETE("v1/livestream/streams/{id}/bans/{userId}")
+    suspend fun unbanUser(@Path("id") id: String, @Path("userId") userId: String)
+
+    /** Host only. The WHOLE set, at most [MAX_STREAM_MODERATORS]; an empty list clears it. */
+    @PUT("v1/livestream/streams/{id}/moderators")
+    suspend fun setModerators(@Path("id") id: String, @Body body: SetModeratorsRequest)
+
+    /** Any viewer. One report per reporter per target; the server rate-limits. */
+    @POST("v1/livestream/streams/{id}/reports")
+    suspend fun report(@Path("id") id: String, @Body body: LiveReportRequest)
 }
 
 @Serializable
@@ -57,9 +85,22 @@ data class LiveStreamDto(
     @SerialName("livekit_room") val livekitRoom: String = "",
     val title: String = "",
     val description: String = "",
+    /** scheduled | starting | live | reconnecting | ended | failed. Read through [liveStatusOf]. */
     val status: String = "",
     val visibility: String = "",
+    /** Current viewers, the host EXCLUDED by the server. Never derived on the client. */
+    @SerialName("viewer_count") val viewerCount: Int = 0,
+    /** The true maximum of [viewerCount] over the stream. */
     @SerialName("viewer_peak") val viewerPeak: Int = 0,
+    /** Why an ended or failed stream stopped. Read through [endedReasonOf]. */
+    @SerialName("ended_reason") val endedReason: String = "",
+    @SerialName("status_changed_at") val statusChangedAt: String = "",
+    /**
+     * Present (possibly empty) ONLY when the reader is the host or one of the
+     * stream's moderators; absent for everyone else. Its presence is how a
+     * viewer learns they may moderate this chat.
+     */
+    @SerialName("moderator_user_ids") val moderatorUserIds: List<String>? = null,
     @SerialName("started_at") val startedAt: String = "",
     @SerialName("created_at") val createdAt: String = "",
 )
@@ -92,4 +133,28 @@ data class LiveChatMessageDto(
     val text: String = "",
     @SerialName("is_pinned") val isPinned: Boolean = false,
     @SerialName("created_at") val createdAt: String = "",
+)
+
+/** `reason` is omitted when the host gave none. */
+@Serializable
+data class BanUserRequest(
+    @SerialName("user_id") val userId: String,
+    val reason: String? = null,
+)
+
+@Serializable
+data class SetModeratorsRequest(
+    @SerialName("user_ids") val userIds: List<String>,
+)
+
+/**
+ * `reason` is a [LiveReportReason.wire]. `message_id` is present only when a
+ * chat message is reported (absent = the stream itself); `note` only when
+ * the viewer wrote one.
+ */
+@Serializable
+data class LiveReportRequest(
+    val reason: String,
+    @SerialName("message_id") val messageId: String? = null,
+    val note: String? = null,
 )

@@ -1,13 +1,17 @@
 package com.us.android.feature.live.ui
 
 import android.Manifest
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,7 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,17 +37,34 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsMessageType
+import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
+import com.us.android.core.ui.UsErrorState
+import com.us.android.core.ui.UsLoadingState
+import com.us.android.feature.live.data.EndedReason
+import com.us.android.feature.live.data.LiveChatMessageDto
+import com.us.android.feature.live.data.LiveStatus
 import com.us.android.feature.live.data.LiveStreamDto
+import com.us.android.feature.live.data.hostMessageActions
+import com.us.android.feature.live.data.liveStatusOf
+import com.us.android.feature.live.data.showsLiveBadge
+import com.us.android.feature.live.data.showsViewerCount
+import com.us.android.feature.live.data.viewerMessageActions
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.VideoTrack
 import livekit.org.webrtc.SurfaceViewRenderer
@@ -53,7 +73,8 @@ import livekit.org.webrtc.SurfaceViewRenderer
  * LIVE — the hub, the broadcaster surface, and the viewer surface.
  *
  * All three deliberately run DARK in both themes: live video is a media
- * surface, same rule as reels and calls.
+ * surface, same rule as reels and calls. Each screen sets the dark theme
+ * itself so every token (and every house state view) reads on the black.
  */
 @Composable
 fun LiveHubScreen(
@@ -64,54 +85,36 @@ fun LiveHubScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .testTag("live-hub"),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
+    UsTheme(darkTheme = true) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.m),
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim)
+                .testTag("live-hub"),
         ) {
-            IconButton(onClick = onClose) {
-                Icon(UsIcons.Close, contentDescription = "Close", tint = Color.White)
+            LiveTopBar(title = "Live", onClose = onClose) {
+                UsButton(
+                    text = "Go live",
+                    onClick = onGoLive,
+                    modifier = Modifier.testTag("live-go-live"),
+                )
             }
-            Text(
-                "Live",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = Color.White,
-                modifier = Modifier.weight(1f),
-            )
-            Button(
-                onClick = onGoLive,
-                modifier = Modifier.testTag("live-go-live"),
-            ) { Text("Go live") }
-        }
 
-        when {
-            state.loading -> Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator() }
+            when {
+                state.loading -> UsLoadingState()
+                state.error != null -> UsErrorState(message = state.error.orEmpty(), onRetry = viewModel::refresh)
+                state.streams.isEmpty() -> UsEmptyState(
+                    title = "Nobody is live right now",
+                    detail = "Go live and be the first.",
+                )
 
-            state.streams.isEmpty() -> UsEmptyState(
-                title = "Nobody is live right now",
-                detail = "Go live and be the first.",
-            )
-
-            else -> LazyColumn(
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = UsTheme.spacing.xl,
-                    vertical = UsTheme.spacing.m,
-                ),
-                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-            ) {
-                items(state.streams, key = { it.id }) { stream ->
-                    LiveNowRow(stream = stream, onClick = { onWatch(stream.id) })
+                else -> LazyColumn(
+                    contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.m),
+                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+                ) {
+                    items(state.streams, key = { it.id }) { stream ->
+                        LiveNowRow(stream = stream, onClick = { onWatch(stream.id) })
+                    }
                 }
             }
         }
@@ -128,31 +131,123 @@ private fun LiveNowRow(stream: LiveStreamDto, onClick: () -> Unit) {
             .clip(RoundedCornerShape(UsTheme.radii.large))
             .background(UsTheme.extended.bgCardSolid)
             .clickable(onClick = onClick)
-            .padding(UsTheme.spacing.xl),
+            .padding(UsTheme.spacing.xl)
+            .testTag("live-now-row"),
     ) {
-        LivePill()
+        val status = liveStatusOf(stream.status)
+        LiveStatusPill(status = status)
         Text(
             stream.title,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
+            color = UsTheme.extended.textPrimary,
             modifier = Modifier.weight(1f),
         )
+        if (showsViewerCount(status)) {
+            Text(
+                viewerCountLabel(stream.viewerCount),
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textMuted,
+            )
+        }
     }
 }
 
+/** The shared top bar: close, a title, and whatever the screen puts on the right. */
 @Composable
-private fun LivePill() {
+private fun LiveTopBar(
+    title: String,
+    onClose: () -> Unit,
+    trailing: @Composable () -> Unit = {},
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s),
+    ) {
+        IconButton(onClick = onClose, modifier = Modifier.testTag("live-close")) {
+            Icon(UsIcons.Close, contentDescription = "Close", tint = UsTheme.extended.onMedia)
+        }
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.onMedia,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+        trailing()
+    }
+}
+
+/**
+ * The status badge. Red only for the server's `live`; amber while
+ * reconnecting; quiet for everything else; nothing for an unknown status.
+ */
+@Composable
+fun LiveStatusPill(status: LiveStatus, modifier: Modifier = Modifier) {
+    val label = statusPillLabel(status) ?: return
+    val fill = when {
+        showsLiveBadge(status) -> UsTheme.extended.liveRed
+        status == LiveStatus.Reconnecting -> UsTheme.extended.statusWarning
+        else -> UsTheme.extended.bgRaised
+    }
     Text(
-        "LIVE",
+        label,
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.ExtraBold,
-        color = Color.White,
-        modifier = Modifier
+        color = UsTheme.extended.onMedia,
+        modifier = modifier
             .clip(RoundedCornerShape(UsTheme.radii.small))
-            .background(UsTheme.extended.liveRed)
-            .padding(horizontal = UsTheme.spacing.s, vertical = UsTheme.spacing.xs),
+            .background(fill)
+            .padding(horizontal = UsTheme.spacing.s, vertical = UsTheme.spacing.xs)
+            .testTag("live-status-pill"),
     )
+}
+
+/** "12 watching", from the server's count (the host is not in it). */
+@Composable
+fun ViewerCountLabel(count: Int, modifier: Modifier = Modifier) {
+    Text(
+        viewerCountLabel(count),
+        style = MaterialTheme.typography.labelMedium,
+        color = UsTheme.extended.onMediaMuted,
+        modifier = modifier.testTag("live-viewer-count"),
+    )
+}
+
+/** Title and one line over the media surface for every state that is not "on air with a picture". */
+@Composable
+fun StatusBanner(copy: StatusCopy, modifier: Modifier = Modifier, busy: Boolean = false) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier
+            .fillMaxSize()
+            .padding(UsTheme.spacing.pageHorizontal)
+            .testTag("live-status-banner"),
+    ) {
+        if (busy) {
+            CircularProgressIndicator(color = UsTheme.extended.onMedia)
+            Spacer(Modifier.height(UsTheme.spacing.l))
+        }
+        Text(
+            copy.title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.onMedia,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(UsTheme.spacing.s))
+        Text(
+            copy.detail,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.onMediaMuted,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 // ── Broadcasting ────────────────────────────────────────────────────────
@@ -164,57 +259,121 @@ fun GoLiveScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var permissionsGranted by remember { mutableStateOf(false) }
+    var confirmEnd by remember { mutableStateOf(false) }
+    var toolsOpen by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<LiveChatMessageDto?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants -> permissionsGranted = grants.values.all { it } }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .testTag("go-live"),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
+    // On air, leaving asks first: a stray back press must not end a broadcast.
+    val requestClose: () -> Unit = {
+        if (state.isOnAir) {
+            confirmEnd = true
+        } else {
+            onClose()
+        }
+    }
+    BackHandler(enabled = state.isOnAir) { confirmEnd = true }
+
+    UsTheme(darkTheme = true) {
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.m),
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim)
+                .testTag("go-live"),
         ) {
-            IconButton(onClick = {
-                if (state.phase == GoLiveViewModel.Phase.Live) viewModel.onEndStream()
-                onClose()
-            }) {
-                Icon(UsIcons.Close, contentDescription = "Close", tint = Color.White)
+            Column(modifier = Modifier.fillMaxSize()) {
+                LiveTopBar(title = "Go live", onClose = requestClose) {
+                    state.status?.let { status ->
+                        if (showsViewerCount(status)) ViewerCountLabel(state.viewerCount)
+                        LiveStatusPill(status)
+                    }
+                    if (state.isOnAir) {
+                        IconButton(onClick = { toolsOpen = true }, modifier = Modifier.testTag("live-host-tools")) {
+                            Icon(UsIcons.Sliders, contentDescription = "Moderation", tint = UsTheme.extended.onMedia)
+                        }
+                    }
+                }
+                GoLivePhase(
+                    state = state,
+                    permissionsGranted = permissionsGranted,
+                    viewModel = viewModel,
+                    onRequestPermissions = {
+                        permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+                    },
+                    onSelectMessage = { selected = it },
+                    onEnd = { confirmEnd = true },
+                )
             }
-            Text(
-                "Go live",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = Color.White,
-                modifier = Modifier.weight(1f),
+            UsMessageHost(
+                message = state.notice?.let { UsMessage(it, UsMessageType.Info) },
+                onDismiss = viewModel::onNoticeShown,
             )
-            if (state.phase == GoLiveViewModel.Phase.Live) LivePill()
         }
 
-        GoLivePhase(
+        if (confirmEnd) {
+            EndStreamDialog(
+                onConfirm = {
+                    confirmEnd = false
+                    viewModel.onEndStream()
+                },
+                onDismiss = { confirmEnd = false },
+            )
+        }
+        HostSheets(
             state = state,
-            permissionsGranted = permissionsGranted,
             viewModel = viewModel,
-            onRequestPermissions = {
-                permissionLauncher.launch(
-                    arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO),
-                )
-            },
+            selected = selected,
+            onClearSelected = { selected = null },
+            toolsOpen = toolsOpen,
+            onCloseTools = { toolsOpen = false },
         )
     }
 }
 
+/** The host's per-message menu and the moderators-and-bans sheet. */
+@Suppress("LongParameterList")
+@Composable
+private fun HostSheets(
+    state: GoLiveViewModel.UiState,
+    viewModel: GoLiveViewModel,
+    selected: LiveChatMessageDto?,
+    onClearSelected: () -> Unit,
+    toolsOpen: Boolean,
+    onCloseTools: () -> Unit,
+) {
+    selected?.let { message ->
+        HostMessageSheet(
+            message = message,
+            actions = hostMessageActions(message, state.hostId, state.moderators, state.banned),
+            onAction = { action ->
+                onClearSelected()
+                viewModel.onHostAction(message, action)
+            },
+            onDismiss = onClearSelected,
+        )
+    }
+    if (toolsOpen) {
+        HostToolsSheet(
+            moderators = state.moderators,
+            banned = state.banned,
+            onRemoveModerator = viewModel::onRemoveModerator,
+            onUnban = viewModel::onUnban,
+            onDismiss = onCloseTools,
+        )
+    }
+}
+
+@Suppress("LongParameterList")
 @Composable
 private fun GoLivePhase(
     state: GoLiveViewModel.UiState,
     permissionsGranted: Boolean,
     viewModel: GoLiveViewModel,
     onRequestPermissions: () -> Unit,
+    onSelectMessage: (LiveChatMessageDto) -> Unit,
+    onEnd: () -> Unit,
 ) {
     when (val phase = state.phase) {
         GoLiveViewModel.Phase.Setup -> GoLiveSetup(
@@ -226,46 +385,90 @@ private fun GoLivePhase(
             onGoLive = viewModel::onGoLive,
         )
 
-        GoLiveViewModel.Phase.Connecting -> Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) { CircularProgressIndicator() }
+        GoLiveViewModel.Phase.Preparing -> StatusBanner(
+            copy = StatusCopy("Starting…", "Setting up your stream."),
+            busy = true,
+        )
 
-        GoLiveViewModel.Phase.Live -> Column(modifier = Modifier.fillMaxSize()) {
-            VideoSurface(
-                room = viewModel.room,
-                track = viewModel.localVideoTrack(),
+        is GoLiveViewModel.Phase.OnAir -> Column(modifier = Modifier.fillMaxSize()) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
+            ) {
+                key(state.videoVersion) {
+                    VideoSurface(
+                        room = viewModel.room,
+                        track = viewModel.localVideoTrack(),
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                hostStatusCopy(phase.status, EndedReason.Unknown)?.let { copy ->
+                    StatusBanner(
+                        copy = copy,
+                        busy = true,
+                        modifier = Modifier.background(UsTheme.extended.glassBg),
+                    )
+                }
+            }
+            ChatList(
+                messages = state.chat.messages,
+                onMessageClick = onSelectMessage,
+                onMessageLongClick = onSelectMessage,
+                hint = "Tap a message to moderate it.",
             )
-            Button(
-                onClick = viewModel::onEndStream,
+            UsSecondaryButton(
+                text = "End stream",
+                onClick = onEnd,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(UsTheme.spacing.xl)
                     .testTag("end-live"),
-            ) { Text("End stream") }
-        }
-
-        is GoLiveViewModel.Phase.Failure -> Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(UsTheme.spacing.xl),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                phase.message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
             )
         }
 
-        GoLiveViewModel.Phase.Ended -> UsEmptyState(
-            title = "Stream ended",
-            detail = "Your broadcast has finished.",
+        is GoLiveViewModel.Phase.Over -> {
+            val copy = hostStatusCopy(phase.status, phase.reason) ?: return
+            StatusBanner(
+                copy = if (phase.unconfirmed) {
+                    copy.copy(detail = "We couldn't confirm the end with the server. Viewers will see it end shortly.")
+                } else {
+                    copy
+                },
+            )
+        }
+
+        is GoLiveViewModel.Phase.Refused -> RefusalView(
+            refusal = phase.refusal,
+            onTryAgain = viewModel::onTryAgain,
         )
+    }
+}
+
+@Composable
+private fun RefusalView(refusal: GoLiveRefusal, onTryAgain: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(UsTheme.spacing.pageHorizontal)
+            .testTag("live-refusal"),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            refusal.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.onMedia,
+            textAlign = TextAlign.Center,
+        )
+        if (refusal.canRetry) {
+            Spacer(Modifier.height(UsTheme.spacing.xxl))
+            UsSecondaryButton(
+                text = "Try again",
+                onClick = onTryAgain,
+                modifier = Modifier.testTag("live-refusal-retry"),
+            )
+        }
     }
 }
 
@@ -284,32 +487,33 @@ private fun GoLiveSetup(
             .padding(UsTheme.spacing.xl),
         verticalArrangement = Arrangement.Center,
     ) {
-        OutlinedTextField(
+        UsTextField(
             value = title,
             onValueChange = onTitleChanged,
-            label = { Text("What's your stream about?") },
-            singleLine = true,
+            label = "What's your stream about?",
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("live-title"),
         )
         Spacer(Modifier.height(UsTheme.spacing.l))
         if (!permissionsGranted) {
-            Button(
+            UsSecondaryButton(
+                text = "Allow camera and microphone",
                 onClick = onRequestPermissions,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("live-permissions"),
-            ) { Text("Allow camera and microphone") }
+            )
             Spacer(Modifier.height(UsTheme.spacing.m))
         }
-        Button(
+        UsButton(
+            text = "Go live",
             onClick = onGoLive,
             enabled = canGoLive,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("live-start"),
-        ) { Text("Go live") }
+        )
     }
 }
 
@@ -322,51 +526,83 @@ fun LiveWatchScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .imePadding()
-            .testTag("live-watch"),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s),
-        ) {
-            IconButton(onClick = onClose) {
-                Icon(UsIcons.Close, contentDescription = "Close", tint = Color.White)
-            }
-            Text(
-                state.title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color.White,
-                modifier = Modifier.weight(1f),
-            )
-            LivePill()
-        }
-
+    UsTheme(darkTheme = true) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim)
+                .imePadding()
+                .testTag("live-watch"),
         ) {
-            when {
-                state.error != null -> UsEmptyState(
-                    title = "Couldn't join",
-                    detail = state.error.orEmpty(),
-                )
-                state.ended -> UsEmptyState(
-                    title = "Stream ended",
-                    detail = "This broadcast has finished.",
-                )
-                state.connecting -> Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
-                else -> key(state.videoVersion) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                LiveTopBar(title = state.title, onClose = onClose) {
+                    if (showsViewerCount(state.status)) ViewerCountLabel(state.viewerCount)
+                    LiveStatusPill(state.status)
+                    IconButton(onClick = viewModel::onReportStream, modifier = Modifier.testTag("live-report-stream")) {
+                        Icon(UsIcons.Flag, contentDescription = "Report stream", tint = UsTheme.extended.onMedia)
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                ) {
+                    WatchStage(state = state, viewModel = viewModel)
+                }
+                if (!state.loading && state.joinError == null) {
+                    ChatList(
+                        messages = state.chat.messages,
+                        onMessageClick = null,
+                        onMessageLongClick = viewModel::onMessageLongPress,
+                        hint = if (state.canModerate) {
+                            "Press and hold a message to moderate it."
+                        } else {
+                            "Press and hold a message to report it."
+                        },
+                    )
+                }
+                if (state.canChat) {
+                    ChatComposer(
+                        draft = state.draft,
+                        onDraftChanged = viewModel::onDraftChanged,
+                        onSend = viewModel::onSendChat,
+                    )
+                }
+            }
+            UsMessageHost(
+                message = state.notice?.let { UsMessage(it, UsMessageType.Error) },
+                onDismiss = viewModel::onNoticeShown,
+            )
+        }
+
+        state.selected?.let { message ->
+            ViewerMessageSheet(
+                message = message,
+                actions = viewerMessageActions(message, state.hostId, state.canModerate),
+                onAction = { action -> viewModel.onViewerAction(message, action) },
+                onDismiss = viewModel::onDismissMessage,
+            )
+        }
+        state.reportTarget?.let { target ->
+            LiveReportSheet(
+                aboutMessage = target is LiveWatchViewModel.ReportTarget.Message,
+                report = state.report,
+                onSubmit = viewModel::onSubmitReport,
+                onDismiss = viewModel::onDismissReport,
+            )
+        }
+    }
+}
+
+/** The picture, or the truthful sentence about why there is none. */
+@Composable
+private fun BoxScope.WatchStage(state: LiveWatchViewModel.UiState, viewModel: LiveWatchViewModel) {
+    when {
+        state.joinError != null -> UsErrorState(message = state.joinError, onRetry = viewModel::onRetry)
+        state.loading -> UsLoadingState(label = "Joining")
+        else -> {
+            if (state.hasVideo && !state.status.isOver) {
+                key(state.videoVersion) {
                     VideoSurface(
                         room = viewModel.room,
                         track = viewModel.remoteVideo,
@@ -374,56 +610,95 @@ fun LiveWatchScreen(
                     )
                 }
             }
+            val copy = viewerStatusCopy(state.status, state.endedReason)
+            when {
+                copy != null -> StatusBanner(
+                    copy = copy,
+                    busy = !state.status.isOver,
+                    modifier = if (state.hasVideo) Modifier.background(UsTheme.extended.glassBg) else Modifier,
+                )
+                !state.hasVideo -> UsLoadingState(
+                    label = "Waiting for video",
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
         }
+    }
+}
 
-        WatchChatPanel(
-            state = state,
-            onDraftChanged = viewModel::onDraftChanged,
-            onSend = viewModel::onSendChat,
+/**
+ * The chat, newest at the bottom. `GET …/chat` is newest first, which is
+ * exactly what a reversed layout wants at index 0 — no re-reversing.
+ */
+@Composable
+private fun ChatList(
+    messages: List<LiveChatMessageDto>,
+    onMessageClick: ((LiveChatMessageDto) -> Unit)?,
+    onMessageLongClick: (LiveChatMessageDto) -> Unit,
+    hint: String,
+) {
+    if (messages.isEmpty()) {
+        Text(
+            "No messages yet.",
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.onMediaMuted,
+            modifier = Modifier.padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.s),
         )
+        return
+    }
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(CHAT_HEIGHT)
+            .testTag("live-chat"),
+        contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.s),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        reverseLayout = true,
+    ) {
+        items(messages, key = { it.id }) { message ->
+            ChatRow(
+                message = message,
+                onClick = onMessageClick?.let { { it(message) } },
+                onLongClick = { onMessageLongClick(message) },
+            )
+        }
+        item(key = "hint") {
+            Text(hint, style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.onMediaMuted)
+        }
     }
 }
 
 @Composable
-private fun WatchChatPanel(
-    state: LiveWatchViewModel.UiState,
-    onDraftChanged: (String) -> Unit,
-    onSend: () -> Unit,
-) {
-    LazyColumn(
+private fun ChatRow(message: LiveChatMessageDto, onClick: (() -> Unit)?, onLongClick: () -> Unit) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(CHAT_HEIGHT),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            horizontal = UsTheme.spacing.xl,
-            vertical = UsTheme.spacing.s,
-        ),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-        reverseLayout = true,
+            .combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick)
+            .testTag("live-chat-row"),
     ) {
-        items(state.chat.asReversed(), key = { it.id }) { message ->
-            Text(
-                message.text,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White,
-            )
-        }
+        Text(
+            shortUserLabel(message.userId),
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.onMediaMuted,
+        )
+        Text(message.text, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.onMedia)
     }
+}
 
+@Composable
+private fun ChatComposer(draft: String, onDraftChanged: (String) -> Unit, onSend: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(
-                horizontal = UsTheme.spacing.xl,
-                vertical = UsTheme.spacing.m,
-            ),
+            .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.m),
     ) {
         OutlinedTextField(
-            value = state.draft,
+            value = draft,
             onValueChange = onDraftChanged,
-            placeholder = { Text("Say something…") },
+            placeholder = { Text("Say something…", style = MaterialTheme.typography.bodyMedium) },
+            textStyle = MaterialTheme.typography.bodyMedium,
             singleLine = true,
             modifier = Modifier
                 .weight(1f)
@@ -433,7 +708,7 @@ private fun WatchChatPanel(
             onClick = onSend,
             modifier = Modifier.testTag("live-chat-send"),
         ) {
-            Icon(UsIcons.Send, contentDescription = "Send", tint = Color.White)
+            Icon(UsIcons.Send, contentDescription = "Send", tint = UsTheme.extended.onMedia)
         }
     }
 }
@@ -450,7 +725,7 @@ private fun WatchChatPanel(
 @Composable
 private fun VideoSurface(room: Room?, track: VideoTrack?, modifier: Modifier = Modifier) {
     if (room == null || track == null) {
-        Box(modifier = modifier.background(Color.Black))
+        Box(modifier = modifier.background(MaterialTheme.colorScheme.scrim))
         return
     }
     AndroidView(
@@ -469,3 +744,73 @@ private fun VideoSurface(room: Room?, track: VideoTrack?, modifier: Modifier = M
 }
 
 private val CHAT_HEIGHT = 160.dp
+
+// ── Previews ────────────────────────────────────────────────────────────
+
+@Preview
+@Composable
+private fun LiveStatusPillPreview() {
+    UsTheme(darkTheme = true) {
+        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+            LiveStatus.entries.forEach { LiveStatusPill(it) }
+        }
+    }
+}
+
+@Preview
+@Composable
+private fun LiveTopBarPreview() {
+    UsTheme(darkTheme = true) {
+        Box(Modifier.background(MaterialTheme.colorScheme.scrim)) {
+            LiveTopBar(title = "Weekend build", onClose = {}) {
+                ViewerCountLabel(count = 12)
+                LiveStatusPill(LiveStatus.Live)
+            }
+        }
+    }
+}
+
+@Preview
+@Composable
+private fun ViewerCountLabelPreview() {
+    UsTheme(darkTheme = true) { ViewerCountLabel(count = 1_240) }
+}
+
+@Preview
+@Composable
+private fun StatusBannerPreview() {
+    UsTheme(darkTheme = true) {
+        Box(Modifier.background(MaterialTheme.colorScheme.scrim)) {
+            viewerStatusCopy(LiveStatus.Reconnecting, EndedReason.Unknown)?.let { StatusBanner(it, busy = true) }
+        }
+    }
+}
+
+@Preview
+@Composable
+private fun RefusalViewPreview() {
+    UsTheme(darkTheme = true) {
+        Box(Modifier.background(MaterialTheme.colorScheme.scrim)) {
+            RefusalView(refusal = GoLiveRefusal(LIVE_PILOT_COPY, canRetry = false), onTryAgain = {})
+        }
+    }
+}
+
+@Preview
+@Composable
+private fun ChatListPreview() {
+    UsTheme(darkTheme = true) {
+        Column(Modifier.background(MaterialTheme.colorScheme.scrim)) {
+            ChatList(
+                messages = listOf(
+                    LiveChatMessageDto(id = "2", userId = "aa11bb22", text = "newest"),
+                    LiveChatMessageDto(id = "1", userId = "cc33dd44", text = "older"),
+                ),
+                onMessageClick = null,
+                onMessageLongClick = {},
+                hint = "Press and hold a message to report it.",
+            )
+            ChatComposer(draft = "", onDraftChanged = {}, onSend = {})
+        }
+    }
+}
