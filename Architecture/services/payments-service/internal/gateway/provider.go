@@ -204,6 +204,36 @@ type RefundLister interface {
 	FetchPaymentRefunds(ctx context.Context, providerPaymentID string) ([]ProviderRefund, error)
 }
 
+// OfferOrderCreator is the optional interface an adapter implements when its
+// provider can restrict an order to named offers (Razorpay Offers: the Create
+// Order request's `offers` array — razorpay.com/docs/payments/offers/standard-integration/).
+// The order's amount is NOT changed by offers; only which offers checkout may
+// apply. An empty list must produce exactly the request CreateOrder makes.
+type OfferOrderCreator interface {
+	CreateOrderWithOffers(ctx context.Context, amount Money, idempotencyKey string, meta map[string]string, providerOfferIDs []string) (ProviderOrder, error)
+}
+
+// PaymentOffers is one payment as the provider reports it with its applied
+// offers expanded.
+type PaymentOffers struct {
+	Payment ProviderPaymentState
+	// PaidAt is the payment's own creation time as the provider states it
+	// (Razorpay `created_at`); zero when absent.
+	PaidAt time.Time
+	// OfferIDs are the provider offer ids applied to this payment, from the
+	// expanded `offers` collection and, when the provider sends one, the
+	// payment's `offer_id`.
+	OfferIDs []string
+}
+
+// OfferFetcher is the optional interface an adapter implements when it can
+// say which offers a payment used (Razorpay: GET /payments/{id}?expand[]=offers
+// — razorpay.com/docs/api/payments/fetch-payment-expanded-offers/). It is a
+// server-initiated provider fetch, never a client claim.
+type OfferFetcher interface {
+	FetchPaymentWithOffers(ctx context.Context, providerPaymentID string) (PaymentOffers, error)
+}
+
 // Sentinel errors so callers branch on capability rather than string match.
 var (
 	ErrCaptureNotSupported = errorString("gateway: provider auto-captures; manual capture is not available")

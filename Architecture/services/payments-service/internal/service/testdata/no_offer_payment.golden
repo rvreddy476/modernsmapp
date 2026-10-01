@@ -1,0 +1,32 @@
+## razorpay create order request
+{"amount":118000,"currency":"INR","receipt":"<idem>"}
+## razorpay refund requests
+{"amount":30000}
+{"amount":88000}
+## outbox events
+payment.initiated <payer> {"payload": {"id": "<intent>", "amount": 1180, "method": "card", "status": "pending", "currency": "INR", "payee_id": "<payee>", "payer_id": "<payer>", "created_at": "<ts>", "updated_at": "<ts>", "amount_minor": 118000, "owner_domain": "commerce-service", "provider_ref": "<order>", "reference_id": "<reference>", "application_id": "mstore", "reference_type": "order", "idempotency_key": "<idem>", "refunded_amount_minor": 0}, "event_id": "<uuid>", "trace_id": "", "event_type": "payment.initiated", "occurred_at": "<ts>", "actor_user_id": "<payer>"}
+payment.succeeded <reference> {"payload": {"id": "<intent>", "amount": 1180, "method": "card", "status": "succeeded", "currency": "INR", "payee_id": "<payee>", "payer_id": "<payer>", "created_at": "<ts>", "updated_at": "<ts>", "amount_minor": 118000, "provider_ref": "<order>", "reference_id": "<reference>", "application_id": "mstore", "reference_type": "order", "idempotency_key": "<idem>", "refunded_amount_minor": 0}, "event_id": "<uuid>", "trace_id": "", "event_type": "payment.succeeded", "occurred_at": "<ts>", "actor_user_id": "<payer>"}
+payment.refund_pending <intent> {"payload": {"reason": "golden", "intent_id": "<intent>", "command_id": "<uuid>", "amount_minor": 30000, "application_id": "mstore"}, "event_id": "<uuid>", "trace_id": "", "event_type": "payment.refund_pending", "occurred_at": "<ts>", "actor_user_id": "commerce-service"}
+payment.refunded <intent> {"payload": {"id": "<intent>", "status": "partially_refunded", "provider": "razorpay", "intent_id": "<intent>", "amount_minor": 30000, "reference_id": "<reference>", "application_id": "mstore", "reference_type": "order", "provider_refund_id": "<refund_0>"}, "event_id": "<uuid>", "trace_id": "", "event_type": "payment.refunded", "occurred_at": "<ts>"}
+payment.refund_pending <intent> {"payload": {"reason": "golden", "intent_id": "<intent>", "command_id": "<uuid>", "amount_minor": 88000, "application_id": "mstore"}, "event_id": "<uuid>", "trace_id": "", "event_type": "payment.refund_pending", "occurred_at": "<ts>", "actor_user_id": "commerce-service"}
+payment.refunded <intent> {"payload": {"id": "<intent>", "status": "refunded", "provider": "razorpay", "intent_id": "<intent>", "amount_minor": 88000, "reference_id": "<reference>", "application_id": "mstore", "reference_type": "order", "provider_refund_id": "<refund_1>"}, "event_id": "<uuid>", "trace_id": "", "event_type": "payment.refunded", "occurred_at": "<ts>"}
+## payment_intents
+{"id":"<intent>","payer_id":"<payer>","payee_id":"<payee>","reference_type":"order","reference_id":"<reference>","amount":1180.00,"currency":"INR","method":"card","status":"refunded","provider_ref":"<order>","upi_intent_url":null,"metadata":{},"idempotency_key":"<idem>","created_at":"<ts>","updated_at":"<ts>","refunded_amount_minor":118000,"amount_minor":118000,"provider":"razorpay","provider_order_id":"<order>","provider_payment_id":"pay_<payment>","owner_domain":"commerce-service","refund_reserved_minor":0,"application_id":"mstore","channel":null}
+## payment_audit_log
+{"intent_id":"<intent>","event":"initiated","old_status":null,"new_status":"pending","actor_id":"<payer>","metadata":null,"created_at":"<ts>"}
+{"intent_id":"<intent>","event":"provider_webhook","old_status":"pending","new_status":"succeeded","actor_id":null,"metadata":{"event_id": "evt_cap_pay_<payment>", "provider": "razorpay"},"created_at":"<ts>"}
+{"intent_id":"<intent>","event":"refund_command_created","old_status":"succeeded","new_status":"succeeded","actor_id":null,"metadata":{"command_id": "<uuid>", "amount_minor": 30000, "requested_by": "commerce-service"},"created_at":"<ts>"}
+{"intent_id":"<intent>","event":"refund_settled","old_status":null,"new_status":"partially_refunded","actor_id":null,"metadata":{"provider": "razorpay", "amount_minor": 30000, "provider_refund_id": "<refund_0>"},"created_at":"<ts>"}
+{"intent_id":"<intent>","event":"refund_command_created","old_status":"partially_refunded","new_status":"partially_refunded","actor_id":null,"metadata":{"command_id": "<uuid>", "amount_minor": 88000, "requested_by": "commerce-service"},"created_at":"<ts>"}
+{"intent_id":"<intent>","event":"refund_settled","old_status":null,"new_status":"refunded","actor_id":null,"metadata":{"provider": "razorpay", "amount_minor": 88000, "provider_refund_id": "<refund_1>"},"created_at":"<ts>"}
+## provider_events
+{"provider":"razorpay","event_id":"evt_cap_pay_<payment>","event_type":"payment.captured","provider_order_id":"<order>","provider_payment_id":"pay_<payment>"}
+{"provider":"razorpay","event_id":"evt_paid_pay_<payment>","event_type":"order.paid","provider_order_id":"<order>","provider_payment_id":"pay_<payment>"}
+{"provider":"razorpay","event_id":"evt_rfnd_<refund_0>","event_type":"refund.processed","provider_order_id":null,"provider_payment_id":"pay_<payment>"}
+{"provider":"razorpay","event_id":"evt_rfnd_<refund_1>","event_type":"refund.processed","provider_order_id":null,"provider_payment_id":"pay_<payment>"}
+## refund_commands
+{"intent_id":"<intent>","amount_minor":30000,"currency":"INR","reason":"golden","provider_idempotency_key":"<idem>-refund-0","status":"succeeded","provider":"razorpay","provider_refund_id":"<refund_0>","attempts":0,"last_error":null,"requested_by":"commerce-service","failure_code":null,"resolution":null,"resolution_note":null,"resolved_by":null,"application_id":"mstore"}
+{"intent_id":"<intent>","amount_minor":88000,"currency":"INR","reason":"golden","provider_idempotency_key":"<idem>-refund-1","status":"succeeded","provider":"razorpay","provider_refund_id":"<refund_1>","attempts":0,"last_error":null,"requested_by":"commerce-service","failure_code":null,"resolution":null,"resolution_note":null,"resolved_by":null,"application_id":"mstore"}
+## provider_refunds_applied
+{"provider":"razorpay","provider_refund_id":"<refund_0>","command_id":null,"intent_id":"<intent>","amount_minor":30000,"application_id":"mstore"}
+{"provider":"razorpay","provider_refund_id":"<refund_1>","command_id":null,"intent_id":"<intent>","amount_minor":88000,"application_id":"mstore"}

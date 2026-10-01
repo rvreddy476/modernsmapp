@@ -108,6 +108,20 @@ func (g *RazorpayProvider) Capabilities() Capabilities {
 }
 
 func (g *RazorpayProvider) CreateOrder(ctx context.Context, amount Money, idempotencyKey string, meta map[string]string) (ProviderOrder, error) {
+	return g.createOrder(ctx, amount, idempotencyKey, meta, nil)
+}
+
+// CreateOrderWithOffers opens an order on which checkout may apply ONLY the
+// named offers: the Create Order request's `offers` array
+// (razorpay.com/docs/payments/offers/standard-integration/, "Limited Offers").
+// The order amount is the full amount; with an instant offer the PAYMENT is
+// captured at the discounted amount. An empty list sends exactly the request
+// CreateOrder sends — no `offers` key at all.
+func (g *RazorpayProvider) CreateOrderWithOffers(ctx context.Context, amount Money, idempotencyKey string, meta map[string]string, providerOfferIDs []string) (ProviderOrder, error) {
+	return g.createOrder(ctx, amount, idempotencyKey, meta, providerOfferIDs)
+}
+
+func (g *RazorpayProvider) createOrder(ctx context.Context, amount Money, idempotencyKey string, meta map[string]string, providerOfferIDs []string) (ProviderOrder, error) {
 	if idempotencyKey == "" {
 		return ProviderOrder{}, fmt.Errorf("razorpay: idempotency key is required")
 	}
@@ -126,6 +140,9 @@ func (g *RazorpayProvider) CreateOrder(ctx context.Context, amount Money, idempo
 			notes[k] = v
 		}
 		body["notes"] = notes
+	}
+	if len(providerOfferIDs) > 0 {
+		body["offers"] = append([]string(nil), providerOfferIDs...)
 	}
 	var out struct {
 		ID       string `json:"id"`
@@ -323,6 +340,46 @@ func (g *RazorpayProvider) FetchPayment(ctx context.Context, providerPaymentID s
 		return ProviderPaymentState{}, err
 	}
 	return out.normalize(), nil
+}
+
+// FetchPaymentWithOffers is GET /v1/payments/{payment_id}?expand[]=offers
+// (razorpay.com/docs/api/payments/fetch-payment-expanded-offers/): the payment
+// with `offers` expanded into a collection `{entity, count, items:[{id}]}`.
+//
+// Razorpay's payment.captured webhook payload documents no offer field, so
+// this server-initiated fetch is where the applied offer comes from. A payment
+// `offer_id`, which the payments entity does not document, is read too when
+// present; it adds nothing a collection would not, and the matching rule
+// refuses more than one distinct offer.
+func (g *RazorpayProvider) FetchPaymentWithOffers(ctx context.Context, providerPaymentID string) (PaymentOffers, error) {
+	var out struct {
+		razorpayPayment
+		OfferID string `json:"offer_id"`
+		Offers  struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		} `json:"offers"`
+	}
+	if err := g.do(ctx, http.MethodGet, "/payments/"+url.PathEscape(providerPaymentID)+"?expand[]=offers", nil, nil, &out); err != nil {
+		return PaymentOffers{}, err
+	}
+	res := PaymentOffers{Payment: out.razorpayPayment.normalize()}
+	if out.CreatedAt > 0 {
+		res.PaidAt = time.Unix(out.CreatedAt, 0).UTC()
+	}
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id = strings.TrimSpace(id); id != "" && !seen[id] {
+			seen[id] = true
+			res.OfferIDs = append(res.OfferIDs, id)
+		}
+	}
+	for _, it := range out.Offers.Items {
+		add(it.ID)
+	}
+	add(out.OfferID)
+	return res, nil
 }
 
 // FetchOrderPayments lists the payment attempts on an order:
@@ -580,3 +637,5 @@ func (g *RazorpayGateway) InitiateRefundIdempotent(ctx context.Context, paymentI
 
 var _ Provider = (*RazorpayProvider)(nil)
 var _ IdempotentRefunder = (*RazorpayGateway)(nil)
+var _ OfferOrderCreator = (*RazorpayProvider)(nil)
+var _ OfferFetcher = (*RazorpayProvider)(nil)

@@ -160,6 +160,13 @@ type WebhookEffect struct {
 	// `payment.succeeded`.
 	AmountMinor int64
 	Currency    string
+
+	// Offer is the provider's own account of the offers applied to a capture
+	// LOWER than the intent (migration 014), fetched server-side. Nil for every
+	// other event, and then nothing below differs from before offers existed.
+	// When set, a capture that fails the exact-money check is accepted only
+	// if gateway.MatchOfferCapture accepts it.
+	Offer *OfferEvidence
 }
 
 // ApplyWebhookAtomically records the provider event, applies the status
@@ -306,6 +313,7 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 	// A `succeeded` transition with no amount on the event is refused for
 	// the same reason: an amount that cannot be compared has not been
 	// verified, and "we could not check" must never resolve to "paid".
+	var offer *gateway.OfferMatch
 	if e.NewStatus == "succeeded" {
 		// C3-LB-1: the same policy the service, the reconciler and the
 		// recovery paths use — applied here, inside the transaction, where
@@ -324,7 +332,25 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 			Provider:       gateway.Money{Minor: e.AmountMinor, Currency: e.Currency},
 			Expected:       gateway.Money{Minor: intent.AmountMinor(), Currency: intent.Currency},
 		}); err != nil {
-			return nil, fmt.Errorf("%w: %s", ErrWebhookAmountMismatch, err)
+			mismatch := fmt.Errorf("%w: %s", ErrWebhookAmountMismatch, err)
+			if e.Offer == nil {
+				// Exactly as before bank offers existed. A LOWER capture in the
+				// intent's currency is additionally marked, without changing
+				// the error's text or identity, so the service knows an offer
+				// might explain it and can fetch the provider's evidence.
+				if e.AmountMinor > 0 && e.AmountMinor < intent.AmountMinor() &&
+					strings.TrimSpace(e.Currency) != "" &&
+					strings.EqualFold(strings.TrimSpace(e.Currency), strings.TrimSpace(intent.Currency)) {
+					return nil, captureBelowIntent{err: mismatch}
+				}
+				return nil, mismatch
+			}
+			// Migration 014 — the ONE exception, decided by the ONE rule.
+			m, mErr := matchOfferCaptureTx(ctx, tx, &intent, e)
+			if mErr != nil {
+				return nil, fmt.Errorf("%w: %s (offer refused: %w)", ErrWebhookAmountMismatch, err, mErr)
+			}
+			offer = &m
 		}
 	}
 
@@ -344,6 +370,11 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		[]byte(fmt.Sprintf(`{"provider":%q,"event_id":%q}`, e.Provider, e.EventID))); err != nil {
 		return nil, err
 	}
+	if offer != nil {
+		if err := recordOfferCaptureTx(ctx, tx, &intent, e, *offer); err != nil {
+			return nil, err
+		}
+	}
 
 	// ProviderRef stays the PSP ORDER id — the payment id is recorded in
 	// its own column. Conflating the two is what let a cross-order replay
@@ -359,7 +390,18 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 	}
 	if domainEvent != "" {
 		payer := intent.PayerID.String()
-		if err := enqueueOutboxTx(ctx, tx, domainEvent, intent.ReferenceID.String(), &payer, intent); err != nil {
+		var payload any = intent
+		if offer != nil {
+			payload = offerSucceededPayload{
+				PaymentIntent:      &intent,
+				CapturedMinor:      e.AmountMinor,
+				OfferID:            offer.Terms.OfferID,
+				OfferTitle:         offer.Terms.Title,
+				OfferDiscountMinor: offer.DiscountMinor,
+				OfferFundedBy:      offer.Terms.FundedBy,
+			}
+		}
+		if err := enqueueOutboxTx(ctx, tx, domainEvent, intent.ReferenceID.String(), &payer, payload); err != nil {
 			return nil, fmt.Errorf("payments: enqueue %s: %w", domainEvent, err)
 		}
 	}
@@ -459,19 +501,33 @@ type RefundCommand struct {
 	SettledAt              *time.Time
 	// ApplicationID is copied from the intent when the command is created.
 	ApplicationID string
+	// ProviderAmountMinor is set only on a refund of a bank-offer payment
+	// (migration 014): the money sent to the provider, which is less than
+	// AmountMinor (the ORDER VALUE the caller asked to refund) because the
+	// customer paid less than the order value. Nil everywhere else.
+	ProviderAmountMinor *int64
+}
+
+// ProviderAmount is what the provider is asked to refund: the prorated money
+// for an offer payment, the command's amount for every other payment.
+func (c RefundCommand) ProviderAmount() int64 {
+	if c.ProviderAmountMinor != nil {
+		return *c.ProviderAmountMinor
+	}
+	return c.AmountMinor
 }
 
 // refundCommandColumns is the SELECT/RETURNING list scanRefundCommand reads.
 const refundCommandColumns = `id, intent_id, amount_minor, currency, COALESCE(reason,''),
 	provider_idempotency_key, status, provider, COALESCE(provider_refund_id,''),
 	attempts, COALESCE(last_error,''), next_attempt_at, requested_by, created_at, settled_at,
-	COALESCE(application_id,'')`
+	COALESCE(application_id,''), provider_amount_minor`
 
 func scanRefundCommand(row pgx.Row, c *RefundCommand) error {
 	return row.Scan(&c.ID, &c.IntentID, &c.AmountMinor, &c.Currency, &c.Reason,
 		&c.ProviderIdempotencyKey, &c.Status, &c.Provider, &c.ProviderRefundID,
 		&c.Attempts, &c.LastError, &c.NextAttemptAt, &c.RequestedBy, &c.CreatedAt, &c.SettledAt,
-		&c.ApplicationID)
+		&c.ApplicationID, &c.ProviderAmountMinor)
 }
 
 // CreateRefundCommand durably reserves a refund BEFORE any provider call.
@@ -529,14 +585,16 @@ func (s *Store) CreateRefundCommand(
 		amount, refunded, reserved        int64
 		domain, provider, providerOrderID string
 		method, intentApp                 string
+		capturedMinor, refundedCaptured   *int64
 	)
 	err = tx.QueryRow(ctx,
 		`SELECT status, COALESCE(amount_minor,0), COALESCE(refunded_amount_minor,0),
 		        COALESCE(refund_reserved_minor,0), COALESCE(owner_domain,''),
 		        COALESCE(provider,'razorpay'), COALESCE(provider_order_id, COALESCE(provider_ref,'')),
-		        method, COALESCE(application_id,'')
+		        method, COALESCE(application_id,''), captured_minor, refunded_captured_minor
 		   FROM payments.payment_intents WHERE id = $1 FOR UPDATE`,
-		intentID).Scan(&status, &amount, &refunded, &reserved, &domain, &provider, &providerOrderID, &method, &intentApp)
+		intentID).Scan(&status, &amount, &refunded, &reserved, &domain, &provider, &providerOrderID, &method, &intentApp,
+		&capturedMinor, &refundedCaptured)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, ErrIntentNotFound
@@ -583,6 +641,20 @@ func (s *Store) CreateRefundCommand(
 		return nil, false, ErrRefundExceedsRemaining
 	}
 
+	// Migration 014: a bank-offer payment captured LESS than the order value.
+	// The caller still names the refund in order value (the cap above is in
+	// order value, unchanged); the provider is sent the money, prorated and
+	// never more than is left of the capture.
+	var providerAmount *int64
+	if capturedMinor != nil {
+		money, err := offerRefundMoneyTx(ctx, tx, intentID, amount, *capturedMinor, refundedCaptured,
+			refunded+reserved, amountMinor)
+		if err != nil {
+			return nil, false, err
+		}
+		providerAmount = &money
+	}
+
 	cmd := &RefundCommand{
 		ID:                     uuid.New(),
 		IntentID:               intentID,
@@ -596,15 +668,28 @@ func (s *Store) CreateRefundCommand(
 		NextAttemptAt:          time.Now(),
 		CreatedAt:              time.Now(),
 		ApplicationID:          intentApp,
+		ProviderAmountMinor:    providerAmount,
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO payments.refund_commands
-		    (id, intent_id, amount_minor, currency, reason, provider_idempotency_key,
-		     status, provider, requested_by, next_attempt_at, application_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,NOW(),$9)`,
-		cmd.ID, cmd.IntentID, cmd.AmountMinor, cmd.Currency, cmd.Reason,
-		cmd.ProviderIdempotencyKey, cmd.Provider, cmd.RequestedBy, cmd.ApplicationID); err != nil {
-		return nil, false, err
+	if providerAmount == nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO payments.refund_commands
+			    (id, intent_id, amount_minor, currency, reason, provider_idempotency_key,
+			     status, provider, requested_by, next_attempt_at, application_id)
+			 VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,NOW(),$9)`,
+			cmd.ID, cmd.IntentID, cmd.AmountMinor, cmd.Currency, cmd.Reason,
+			cmd.ProviderIdempotencyKey, cmd.Provider, cmd.RequestedBy, cmd.ApplicationID); err != nil {
+			return nil, false, err
+		}
+	} else {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO payments.refund_commands
+			    (id, intent_id, amount_minor, currency, reason, provider_idempotency_key,
+			     status, provider, requested_by, next_attempt_at, application_id, provider_amount_minor)
+			 VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,NOW(),$9,$10)`,
+			cmd.ID, cmd.IntentID, cmd.AmountMinor, cmd.Currency, cmd.Reason,
+			cmd.ProviderIdempotencyKey, cmd.Provider, cmd.RequestedBy, cmd.ApplicationID, *providerAmount); err != nil {
+			return nil, false, err
+		}
 	}
 
 	if _, err := tx.Exec(ctx,
@@ -627,13 +712,19 @@ func (s *Store) CreateRefundCommand(
 	// Tell the domain a refund is now owed. `refund_pending` is a promise
 	// the reconciliation worker is accountable for; it is NOT "refunded".
 	payer := requestedBy
-	if err := enqueueOutboxTx(ctx, tx, EventPaymentRefundPending, intentID.String(), &payer, map[string]any{
+	pending := map[string]any{
 		"intent_id":      intentID,
 		"command_id":     cmd.ID,
 		"amount_minor":   amountMinor,
 		"reason":         reason,
 		"application_id": intentApp,
-	}); err != nil {
+	}
+	if providerAmount != nil {
+		// Offer payment: amount_minor stays the order value the caller asked
+		// for; this is the money that will actually go back.
+		pending["amount_returned_minor"] = *providerAmount
+	}
+	if err := enqueueOutboxTx(ctx, tx, EventPaymentRefundPending, intentID.String(), &payer, pending); err != nil {
 		return nil, false, err
 	}
 
@@ -888,11 +979,14 @@ func applyProviderRefundTx(
 
 	var amount, refunded, reserved int64
 	var intentCurrency, refType, refID, appID string
+	var capturedMinor, refundedCaptured *int64
 	if err := tx.QueryRow(ctx,
 		`SELECT COALESCE(amount_minor,0), COALESCE(refunded_amount_minor,0), COALESCE(refund_reserved_minor,0),
-		        currency, COALESCE(reference_type,''), COALESCE(reference_id::text,''), COALESCE(application_id,'')
+		        currency, COALESCE(reference_type,''), COALESCE(reference_id::text,''), COALESCE(application_id,''),
+		        captured_minor, refunded_captured_minor
 		   FROM payments.payment_intents WHERE id = $1 FOR UPDATE`, intentID).
-		Scan(&amount, &refunded, &reserved, &intentCurrency, &refType, &refID, &appID); err != nil {
+		Scan(&amount, &refunded, &reserved, &intentCurrency, &refType, &refID, &appID,
+			&capturedMinor, &refundedCaptured); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, "", ErrIntentNotFound
 		}
@@ -923,6 +1017,23 @@ func applyProviderRefundTx(
 		return false, "", fmt.Errorf(
 			"%w: refund %s is in %q, intent %s is in %q",
 			ErrWebhookAmountMismatch, providerRefundID, eventCurrency, intentID, intentCurrency)
+	}
+
+	if capturedMinor != nil {
+		// Migration 014: a bank-offer payment. The provider refunded MONEY,
+		// which is less than the order value it stands for; both are credited,
+		// each against its own cap (offers.go). Every other payment continues
+		// below, exactly as before.
+		var returned int64
+		if refundedCaptured != nil {
+			returned = *refundedCaptured
+		}
+		return applyOfferProviderRefundTx(ctx, tx, offerRefundApply{
+			provider: provider, providerRefundID: providerRefundID, intentID: intentID,
+			money: amountMinor, amount: amount, refunded: refunded, reserved: reserved,
+			captured: *capturedMinor, refundedCaptured: returned,
+			refType: refType, refID: refID, appID: appID,
+		})
 	}
 
 	newRefunded := refunded + amountMinor

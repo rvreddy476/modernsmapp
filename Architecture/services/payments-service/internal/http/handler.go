@@ -112,6 +112,9 @@ type Handler struct {
 	pendingAge time.Duration
 	// stubSession — see WithStubSession.
 	stubSession bool
+	// offers serves the bank-offer registry (offers.go); nil leaves it
+	// unregistered.
+	offers OffersService
 }
 
 func New(svc Service) *Handler {
@@ -236,6 +239,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 		internal.GET("/applications/:applicationId", h.requireOp(servicetoken.OpIntentRead), h.GetApplication)
 		internal.PUT("/applications/:applicationId", h.refuseLegacyKeyInProduction(OpApplicationAdmin), h.requireOp(OpApplicationAdmin), h.PutApplication)
 		internal.GET("/applications/:applicationId/transactions", h.requireOp(servicetoken.OpIntentRead), h.ListApplicationTransactions)
+
+		// Bank offers (migration 014): what commerce may show a buyer.
+		if h.offers != nil {
+			internal.GET("/offers", h.requireOp(OpOffersRead), h.ListApplicableOffers)
+		}
 
 		// A1: PATCH /intents/:id/status is REMOVED and must never return.
 		// It let a caller assert `succeeded` with no PSP proof and no

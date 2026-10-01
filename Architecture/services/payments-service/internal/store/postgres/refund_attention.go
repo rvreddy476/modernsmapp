@@ -356,12 +356,13 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 		status, currency, resolution, note, resolvedBy string
 		amount                                         int64
 		resolvedAt                                     *time.Time
+		providerAmount                                 *int64
 	)
 	err = tx.QueryRow(ctx,
 		`SELECT status, amount_minor, currency, COALESCE(resolution,''), COALESCE(resolution_note,''),
-		        COALESCE(resolved_by,''), resolved_at
+		        COALESCE(resolved_by,''), resolved_at, provider_amount_minor
 		   FROM payments.refund_commands WHERE id = $1 AND intent_id = $2 FOR UPDATE`,
-		in.CommandID, intentID).Scan(&status, &amount, &currency, &resolution, &note, &resolvedBy, &resolvedAt)
+		in.CommandID, intentID).Scan(&status, &amount, &currency, &resolution, &note, &resolvedBy, &resolvedAt, &providerAmount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrRefundCommandNotFound
 	}
@@ -446,7 +447,7 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 			  WHERE id = $1`, intentID, newRefunded, release, newIntentStatus); err != nil {
 			return nil, err
 		}
-		if err := enqueueOutboxTx(ctx, tx, events.EventPaymentRefunded, intentID.String(), nil, map[string]any{
+		refunded := map[string]any{
 			"id":                 intentID,
 			"intent_id":          intentID,
 			"provider":           provider,
@@ -460,7 +461,30 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 			// manual: no provider refund exists. The money was returned outside
 			// the provider integration and an operator recorded it.
 			"manual": true,
-		}); err != nil {
+		}
+		if providerAmount != nil {
+			// A bank-offer payment (migration 014): the operator returned the
+			// command's prorated money, never more than is left of the capture.
+			tag, err := tx.Exec(ctx,
+				`UPDATE payments.payment_intents
+				    SET refunded_captured_minor = COALESCE(refunded_captured_minor,0) + $2
+				  WHERE id = $1 AND captured_minor IS NOT NULL
+				    AND COALESCE(refunded_captured_minor,0) + $2 <= captured_minor`, intentID, *providerAmount)
+			if err != nil {
+				return nil, err
+			}
+			if tag.RowsAffected() != 1 {
+				return nil, fmt.Errorf("%w: returning %d would exceed what intent %s captured",
+					ErrManualRefundRefused, *providerAmount, intentID)
+			}
+			if _, err := tx.Exec(ctx,
+				`UPDATE payments.provider_refunds_applied SET amount_minor = $4, order_value_minor = $3
+				  WHERE provider = $1 AND provider_refund_id = $2`, manualRefundProvider, manualID, amount, *providerAmount); err != nil {
+				return nil, err
+			}
+			refunded["amount_returned_minor"] = *providerAmount
+		}
+		if err := enqueueOutboxTx(ctx, tx, events.EventPaymentRefunded, intentID.String(), nil, refunded); err != nil {
 			return nil, fmt.Errorf("payments: enqueue manual %s: %w", events.EventPaymentRefunded, err)
 		}
 		out.RefundEventEmitted = true

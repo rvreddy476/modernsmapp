@@ -199,7 +199,11 @@ func main() {
 	// config.Resolve above; 15m when unset).
 	svc := service.New(store, gw).WithProvider(provider).
 		WithStubSettlement(cfg.Mode == config.ModeStub).
-		WithFailedAttemptWindow(cfg.FailedAttemptWindow)
+		WithFailedAttemptWindow(cfg.FailedAttemptWindow).
+		// Bank offers (migration 014): PAYMENTS_OFFERS_ENABLED=true only;
+		// absent is off, and then nothing about matching changes.
+		WithOffers(cfg.OffersEnabled)
+	slog.Info("payments: bank offers (Razorpay Offers)", "enabled", cfg.OffersEnabled)
 
 	// A2: build the caller allowlist. Each calling service has its OWN
 	// public key and its OWN permitted operations and reference types, so
@@ -259,7 +263,10 @@ func main() {
 		// above is wired from.
 		WithStubSession(cfg.Mode == config.ModeStub).
 		WithCallerApplications(callerApps).
-		WithAdmin(svc, time.Duration(envInt("PAYMENTS_PENDING_AGE_SEC", 600))*time.Second)
+		WithAdmin(svc, time.Duration(envInt("PAYMENTS_PENDING_AGE_SEC", 600))*time.Second).
+		// The offer registry: commerce's read (payments:offers.read) and the
+		// admin console's manage family (payments:offers.manage).
+		WithOffers(svc)
 	if verifier != nil {
 		handler.WithServiceAuth(verifier)
 	}

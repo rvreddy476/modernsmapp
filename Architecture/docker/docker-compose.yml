@@ -1614,7 +1614,7 @@ services:
       SERVICE_CALLERS: ${SERVICE_CALLERS:-}
       SERVICE_CALLER_COMMERCE_SERVICE_KID: ${SERVICE_CALLER_COMMERCE_SERVICE_KID:-c1}
       SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY: ${SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY:-}
-      SERVICE_CALLER_COMMERCE_SERVICE_OPS: ${SERVICE_CALLER_COMMERCE_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
+      SERVICE_CALLER_COMMERCE_SERVICE_OPS: ${SERVICE_CALLER_COMMERCE_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create,payments:offers.read}
       SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: ${SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES:-order}
       # The applications (products) commerce may open payments for (migration 010).
       SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: ${SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS:-mstore}
@@ -1639,7 +1639,7 @@ services:
       # admin-service and ADMIN_SERVICE_TOKEN_PUBKEY is set.
       SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
-      SERVICE_CALLER_ADMIN_SERVICE_OPS: payments:stats.read,payments:refunds.read,payments:refund.issue,payments:intents.read,payments:reconciliation.read,payments:applications.read,payments:applications.manage,payments:audit.read
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: payments:stats.read,payments:refunds.read,payments:refund.issue,payments:intents.read,payments:reconciliation.read,payments:applications.read,payments:applications.manage,payments:audit.read,payments:offers.manage
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
       # Razorpay credentials — omit to use StubGateway in dev.
@@ -1650,6 +1650,9 @@ services:
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
       PAYMENTS_ALLOW_STUB: ${PAYMENTS_ALLOW_STUB:-true}
+      # Bank offers through Razorpay Offers (migration 014). Dev only: absent
+      # means off, and nothing sets it in the deploy values files.
+      PAYMENTS_OFFERS_ENABLED: "true"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8102:8102"
@@ -1780,7 +1783,7 @@ services:
       SERVICE_CALLERS: ${COMMERCE_SERVICE_CALLERS:-}
       SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
-      SERVICE_CALLER_ADMIN_SERVICE_OPS: commerce:stats.read,commerce:sellers.read,commerce:seller.approve,commerce:seller.suspend,commerce:products.moderate,commerce:kyc.verify,commerce:payouts.read,commerce:cod.settle,commerce:catalogue.edit,commerce:banners.edit,commerce:jobs.read,commerce:compliance.read,commerce:compliance.sweep
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: commerce:stats.read,commerce:sellers.read,commerce:seller.approve,commerce:seller.suspend,commerce:products.moderate,commerce:kyc.verify,commerce:payouts.read,commerce:cod.settle,commerce:catalogue.edit,commerce:banners.edit,commerce:jobs.read,commerce:compliance.read,commerce:compliance.sweep,commerce:coupons.manage
     ports:
       - "8109:8109"
     depends_on:

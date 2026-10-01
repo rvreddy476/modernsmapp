@@ -47,6 +47,12 @@ type Config struct {
 	// does the reconciler finalise the intent FAILED and publish
 	// payment.failed. PAYMENTS_FAILED_ATTEMPT_WINDOW, a Go duration.
 	FailedAttemptWindow time.Duration
+
+	// OffersEnabled is PAYMENTS_OFFERS_ENABLED=true: bank offers through
+	// Razorpay Offers (migration 014). Absent, or any other value, is OFF: no
+	// provider order carries offers and every capture is matched exactly as
+	// before offers existed.
+	OffersEnabled bool
 }
 
 // DefaultFailedAttemptWindow applies when PAYMENTS_FAILED_ATTEMPT_WINDOW is
@@ -99,6 +105,7 @@ func Resolve(getenv func(string) string) (Config, error) {
 		InternalKey:         getenv("INTERNAL_SERVICE_KEY"),
 		Production:          getenv("ENV") == "prod",
 		FailedAttemptWindow: DefaultFailedAttemptWindow,
+		OffersEnabled:       strings.TrimSpace(getenv("PAYMENTS_OFFERS_ENABLED")) == "true",
 	}
 	if cfg.Production && strings.TrimSpace(getenv("SERVICE_CALLERS")) == "" {
 		return Config{}, ErrServiceCallersRequired

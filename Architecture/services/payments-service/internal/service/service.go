@@ -47,6 +47,29 @@ type Service struct {
 	// attempts (or none) stays pending for a retry before the reconciler
 	// finalises it FAILED. Zero means config.DefaultFailedAttemptWindow.
 	failedAttemptWindow time.Duration
+	// offersEnabled is PAYMENTS_OFFERS_ENABLED (bank offers, migration 014).
+	// Off — the default, and the state whenever the variable is absent — the
+	// service attaches no offers to a provider order and never fetches offer
+	// evidence, so every capture is matched exactly as before offers existed.
+	offersEnabled bool
+	// now is the clock for offer applicability; nil means time.Now.
+	now func() time.Time
+}
+
+// WithOffers switches bank offers on or off (config.Config.OffersEnabled).
+func (s *Service) WithOffers(enabled bool) *Service {
+	s.offersEnabled = enabled
+	return s
+}
+
+// OffersEnabled reports PAYMENTS_OFFERS_ENABLED as boot resolved it.
+func (s *Service) OffersEnabled() bool { return s.offersEnabled }
+
+func (s *Service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // WithStubSettlement lets VerifyIntent settle an intent, and must be wired
@@ -281,7 +304,7 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 		// PSP collapses this into the order it may already have created.
 		if res.Intent.ProviderRef == "" && s.canOpenProviderOrder() {
 			if ref, attachErr := s.attachProviderOrder(ctx, res.Intent.ID, amountMinor,
-				orDefault(in.Currency, "INR"), in.IdempotencyKey); attachErr != nil {
+				orDefault(in.Currency, "INR"), in.IdempotencyKey, in.ApplicationID); attachErr != nil {
 				return nil, attachErr
 			} else {
 				res.Intent.ProviderRef = ref
@@ -292,7 +315,7 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 
 	if s.canOpenProviderOrder() {
 		ref, attachErr := s.attachProviderOrder(ctx, res.Intent.ID, amountMinor,
-			orDefault(in.Currency, "INR"), in.IdempotencyKey)
+			orDefault(in.Currency, "INR"), in.IdempotencyKey, in.ApplicationID)
 		if attachErr != nil {
 			// The intent stays `pending` with no provider reference. That is
 			// a recoverable state the reconciler owns; it is emphatically
@@ -345,9 +368,9 @@ func (s *Service) attachProviderOrder(
 	ctx context.Context,
 	intentID uuid.UUID,
 	amountMinor int64,
-	currency, idempotencyKey string,
+	currency, idempotencyKey, applicationID string,
 ) (string, error) {
-	providerOrderID, err := s.createOrRecoverProviderOrder(ctx, intentID, amountMinor, currency, idempotencyKey)
+	providerOrderID, err := s.createOrRecoverProviderOrder(ctx, intentID, amountMinor, currency, idempotencyKey, applicationID)
 	if err != nil {
 		return "", err
 	}
@@ -384,12 +407,24 @@ func (s *Service) createOrRecoverProviderOrder(
 	ctx context.Context,
 	intentID uuid.UUID,
 	amountMinor int64,
-	currency, idempotencyKey string,
+	currency, idempotencyKey, applicationID string,
 ) (string, error) {
 	if s.provider != nil {
-		order, err := s.provider.CreateOrder(ctx,
-			gateway.Money{Minor: amountMinor, Currency: currency},
-			idempotencyKey, nil)
+		var (
+			order gateway.ProviderOrder
+			err   error
+		)
+		if offers := s.orderOffers(ctx, intentID, applicationID, amountMinor); len(offers) > 0 {
+			// Bank offers (migration 014): the same order — same amount, same
+			// key — with checkout restricted to OUR active, applicable offers.
+			order, err = s.provider.(gateway.OfferOrderCreator).CreateOrderWithOffers(ctx,
+				gateway.Money{Minor: amountMinor, Currency: currency},
+				idempotencyKey, nil, offers)
+		} else {
+			order, err = s.provider.CreateOrder(ctx,
+				gateway.Money{Minor: amountMinor, Currency: currency},
+				idempotencyKey, nil)
+		}
 		if err == nil {
 			// R4-LB-1 / A1. The ORDINARY success path is a money path too.
 			//

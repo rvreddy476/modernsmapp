@@ -97,7 +97,7 @@ func (s *Service) ApplyWebhook(ctx context.Context, in WebhookInput) error {
 	// that used to sit below this call, after the commit, is gone — by then
 	// the terminal status and the `payment.succeeded` outbox row already
 	// existed, and commerce acts on that event.
-	_, err := s.store.ApplyWebhookAtomically(ctx, postgres.WebhookEffect{
+	effect := postgres.WebhookEffect{
 		Provider:          in.Provider,
 		EventID:           in.EventID,
 		EventType:         in.EventType,
@@ -106,7 +106,31 @@ func (s *Service) ApplyWebhook(ctx context.Context, in WebhookInput) error {
 		NewStatus:         newStatus,
 		AmountMinor:       in.AmountMinor,
 		Currency:          in.Currency,
-	})
+	}
+	_, err := s.store.ApplyWebhookAtomically(ctx, effect)
+	if errors.Is(err, postgres.ErrCaptureBelowIntent) && s.offersEnabled {
+		// Bank offers (migration 014). The capture is LOWER than the intent, in
+		// its currency, and the transaction above rolled back in full. Razorpay
+		// documents no offer field on the payment webhook, so ask it — server
+		// side — which offers this payment used, and apply again with that
+		// evidence. The one rule decides inside the transaction; a refusal, or
+		// evidence we cannot get, leaves the ORIGINAL mismatch error and its
+		// handling below exactly as they were.
+		ev, evErr := s.offerEvidence(ctx, in.ProviderOrderID, in.ProviderPaymentID,
+			gateway.Money{Minor: in.AmountMinor, Currency: in.Currency})
+		if evErr != nil {
+			slog.Warn("payments: a lower capture could not be checked against a bank offer",
+				"event_id", in.EventID, "provider_payment_id", in.ProviderPaymentID, "error", evErr)
+		} else {
+			effect.Offer = ev
+			_, err = s.store.ApplyWebhookAtomically(ctx, effect)
+			if err == nil {
+				slog.Info("payments: lower capture accepted through a registered bank offer",
+					"event_id", in.EventID, "provider_order_id", in.ProviderOrderID,
+					"provider_payment_id", in.ProviderPaymentID, "captured_minor", in.AmountMinor)
+			}
+		}
+	}
 	switch {
 	case errors.Is(err, postgres.ErrDuplicateEvent):
 		return ErrWebhookDuplicate
@@ -315,7 +339,7 @@ func (s *Service) attemptRefund(ctx context.Context, c postgres.RefundCommand) {
 	// ORIGINAL refund instead of making a second one. The key is the
 	// command's own, unchanged across attempts.
 	res, err := s.provider.Refund(ctx, paymentID,
-		gateway.Money{Minor: c.AmountMinor, Currency: c.Currency}, c.ProviderIdempotencyKey)
+		gateway.Money{Minor: c.ProviderAmount(), Currency: c.Currency}, c.ProviderIdempotencyKey)
 	if err != nil {
 		if gateway.ClassifyRefundError(err) == gateway.RefundAlreadyRefunded {
 			s.settleAlreadyRefunded(ctx, c, intent, providerOrder, paymentID)
@@ -446,7 +470,7 @@ func (s *Service) settleAlreadyRefunded(ctx context.Context, c postgres.RefundCo
 	for _, r := range refunds {
 		currency := strings.TrimSpace(r.Amount.Currency)
 		if r.State != gateway.StateRefunded || r.ProviderRefundID == "" || bound[r.ProviderRefundID] ||
-			r.Amount.Minor != c.AmountMinor || currency == "" ||
+			r.Amount.Minor != c.ProviderAmount() || currency == "" ||
 			!strings.EqualFold(currency, strings.TrimSpace(intent.Currency)) {
 			continue
 		}
@@ -455,7 +479,7 @@ func (s *Service) settleAlreadyRefunded(ctx context.Context, c postgres.RefundCo
 	if len(matched) != 1 {
 		s.parkRefund(ctx, c, RefundFailAlreadyRefundedUnmatched, fmt.Sprintf(
 			"provider reports payment %s fully refunded, but %d of its %d refund(s) are processed, unclaimed and match this command's %d %s; settle it by hand",
-			paymentID, len(matched), len(refunds), c.AmountMinor, intent.Currency))
+			paymentID, len(matched), len(refunds), c.ProviderAmount(), intent.Currency))
 		return
 	}
 	r := matched[0]
@@ -550,7 +574,7 @@ func (s *Service) attemptStubRefund(ctx context.Context, c postgres.RefundComman
 				"and nothing may be sent to one; settle it out of band")
 		return
 	}
-	res, err := stub.InitiateRefund(ctx, intent.ProviderRef, c.AmountMinor)
+	res, err := stub.InitiateRefund(ctx, intent.ProviderRef, c.ProviderAmount())
 	if err != nil {
 		s.refundAttemptFailed(ctx, c, "placing the stub refund", err)
 		return
@@ -595,7 +619,7 @@ func (s *Service) attemptStubRefund(ctx context.Context, c postgres.RefundComman
 			EventType:        "refund.processed",
 			ProviderOrderID:  providerOrderID,
 			ProviderRefundID: res.ID,
-			AmountMinor:      c.AmountMinor,
+			AmountMinor:      c.ProviderAmount(),
 			Currency:         intent.Currency,
 		}); err != nil && !errors.Is(err, ErrWebhookDuplicate) {
 			slog.Error("payments: stub refund settlement failed; the command stays submitted",
@@ -734,7 +758,12 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 		}
 		s.recon.clearFailures(intent.ID)
 
-		p, newStatus := reconcileOutcome(intent, providerRef, payments)
+		// Bank offers (migration 014): the provider's evidence for each
+		// capture LOWER than the intent, fetched exactly as the webhook path
+		// fetches it. Empty when offers are off, and then nothing below
+		// differs from before.
+		offerEv := s.reconcileOfferEvidence(ctx, intent, providerRef, payments)
+		p, newStatus := reconcileOutcome(intent, providerRef, payments, offerEv)
 		if newStatus == "" {
 			// A payment still in flight or authorized, or a capture that does
 			// not verify (alarmed inside reconcileOutcome). Not a failure.
@@ -787,9 +816,21 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 			NewStatus:         newStatus,
 			AmountMinor:       p.Amount.Minor,
 			Currency:          p.Amount.Currency,
+			// Nil unless this is a lower capture with provider evidence; the
+			// store's one rule then decides, as it does for the webhook.
+			Offer: offerEv[p.ProviderPaymentID],
 		})
 		switch {
 		case errors.Is(err, postgres.ErrDuplicateEvent):
+			continue
+		case err != nil && offerEv[p.ProviderPaymentID] != nil && errors.Is(err, postgres.ErrWebhookAmountMismatch):
+			// Only reachable with bank offers on: the lower capture's offer
+			// did not satisfy the rule. Same alarm as any refused tuple.
+			slog.Error("payments: RECONCILIATION REFUSED — a lower capture does not satisfy the bank-offer rule",
+				"intent_id", intent.ID, "provider_payment_id", p.ProviderPaymentID,
+				"intent_minor", intent.AmountMinor(), "provider_minor", p.Amount.Minor, "error", err)
+			s.recon.backOff(intent.ID, now, "payments: reconcile apply failed", err,
+				"provider_order_id", providerRef)
 			continue
 		case err != nil:
 			s.recon.backOff(intent.ID, now, "payments: reconcile apply failed", err,
@@ -818,7 +859,13 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 // the state machine allows, so the caller applies it only once the order has
 // been quiet for the failed-attempt window. An attempt still in flight or
 // authorized may yet capture, so any such attempt keeps the intent pending.
-func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, payments []gateway.ProviderPaymentState) (gateway.ProviderPaymentState, string) {
+//
+// offerEv (migration 014) holds provider offer evidence for captures LOWER
+// than the intent. Such a capture is never chosen over one that verifies
+// exactly; when none verifies, the oldest with evidence is returned as the
+// succeeded candidate, and the store's one offer rule accepts or refuses it
+// inside the transaction. With offerEv empty this is the function it was.
+func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, payments []gateway.ProviderPaymentState, offerEv map[string]*postgres.OfferEvidence) (gateway.ProviderPaymentState, string) {
 	var (
 		captured   []gateway.ProviderPaymentState
 		lastFailed gateway.ProviderPaymentState
@@ -848,6 +895,12 @@ func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, pay
 		// verify is not a capture we may act on, and every one of these is a
 		// refusal rather than a defaulted value.
 		if err := verifyProviderTuple(intent, p); err != nil {
+			if offerEv[p.ProviderPaymentID] != nil {
+				slog.Info("payments: a lower capture carries bank-offer evidence; the offer rule decides it",
+					"intent_id", intent.ID, "intent_minor", intent.AmountMinor(),
+					"provider_minor", p.Amount.Minor, "provider_payment_id", p.ProviderPaymentID)
+				continue
+			}
 			slog.Error("payments: RECONCILIATION REFUSED — provider tuple does not verify",
 				"intent_id", intent.ID,
 				"intent_minor", intent.AmountMinor(), "intent_currency", intent.Currency,
@@ -857,6 +910,11 @@ func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, pay
 			continue
 		}
 		return p, "succeeded"
+	}
+	for _, p := range captured {
+		if offerEv[p.ProviderPaymentID] != nil {
+			return p, "succeeded"
+		}
 	}
 	if len(captured) > 0 {
 		// Money was captured but none of it verifies. That is an alarm, never

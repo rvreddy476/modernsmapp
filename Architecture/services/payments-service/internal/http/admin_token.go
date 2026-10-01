@@ -71,7 +71,7 @@ const (
 // payments. Deployment registers admin-service with exactly these OPS.
 var AdminPermissions = []string{
 	PermStatsRead, PermRefundsRead, PermRefundIssue, PermIntentsRead, PermReconciliationRead,
-	PermApplicationsRead, PermApplicationsManage, PermAuditRead,
+	PermApplicationsRead, PermApplicationsManage, PermAuditRead, PermOffersManage,
 }
 
 // Error codes for the admin token path.
@@ -217,4 +217,8 @@ func (h *Handler) registerAdminRoutes(r *gin.Engine) {
 
 	g.GET("/audit/payments", h.requireAdminToken(PermAuditRead), h.AdminPaymentAudit)
 	g.GET("/audit/applications", h.requireAdminToken(PermAuditRead), h.AdminApplicationAudit)
+
+	if h.offers != nil {
+		h.registerOfferAdminRoutes(g)
+	}
 }
