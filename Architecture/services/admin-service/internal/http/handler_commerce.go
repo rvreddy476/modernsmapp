@@ -38,6 +38,7 @@ const (
 	permJobsRead          = "commerce:jobs.read"
 	permComplianceRead    = "commerce:compliance.read"
 	permComplianceSweep   = "commerce:compliance.sweep"
+	permCouponsManage     = "commerce:coupons.manage"
 )
 
 // Commerce operations that run through two-person approval.
@@ -59,6 +60,13 @@ const (
 	opProductReject         = "product.reject"
 	opProductRequestChanges = "product.request_changes"
 	opPayoutsPending        = "payouts.pending"
+)
+
+// Coupon operations (MStore → Coupons). Forwarded as sent.
+const (
+	opCouponsList  = "coupons.list"
+	opCouponCreate = "coupon.create"
+	opCouponUpdate = "coupon.update"
 )
 
 // CommerceRoutes is the MStore route table under /v1/admin/commerce (the
@@ -97,6 +105,15 @@ var CommerceRoutes = []productRoute{
 	{method: http.MethodGet, path: "/jobs/dead-letter", operation: "jobs.dead_letter", permission: permJobsRead},
 	{method: http.MethodGet, path: "/compliance-gaps", operation: "compliance_gaps.list", permission: permComplianceRead},
 	{method: http.MethodPost, path: "/compliance-gaps/sweep", operation: "compliance_gaps.sweep", permission: permComplianceSweep},
+
+	// Coupons: platform coupons (create / edit; deactivate is PATCH) and the
+	// read-only seller list, all from commerce's /internal/admin/coupons. The
+	// list answer is passed through unchanged, including its
+	// meta.platform_coupons_enabled (COMMERCE_PLATFORM_COUPONS_ENABLED), which
+	// the console's "switched off" banner reads.
+	{method: http.MethodGet, path: "/coupons", operation: opCouponsList, permission: permCouponsManage},
+	{method: http.MethodPost, path: "/coupons", operation: opCouponCreate, permission: permCouponsManage, stepUp: true},
+	{method: http.MethodPatch, path: "/coupons/:couponId", operation: opCouponUpdate, permission: permCouponsManage, stepUp: true, targetType: "coupon"},
 }
 
 // RegisterCommerceRoutes adds the MStore admin routes under /v1/admin/commerce.
@@ -107,6 +124,7 @@ var CommerceRoutes = []productRoute{
 //	KYC document view (bytes)      commerce:kyc.verify, step-up, audited before streaming
 //	pending payouts                commerce:payouts.read, step-up
 //	COD remittance settle          commerce:cod.settle, step-up, two-person
+//	coupon create / edit           commerce:coupons.manage, step-up
 //	attribute-schema publish       commerce:catalogue.edit, step-up (catalogue)
 func (h *Handler) RegisterCommerceRoutes(r *gin.Engine) {
 	p := h.commerceProduct()

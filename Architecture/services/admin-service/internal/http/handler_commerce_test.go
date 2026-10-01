@@ -23,8 +23,8 @@ func commerceCase(rt productRoute) string {
 
 func TestCommerceRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(CommerceRoutes) != 25 {
-		t.Fatalf("CommerceRoutes has %d entries, want 25", len(CommerceRoutes))
+	if len(CommerceRoutes) != 28 {
+		t.Fatalf("CommerceRoutes has %d entries, want 28", len(CommerceRoutes))
 	}
 	kycStubAnyDocument(rg)
 	for _, rt := range CommerceRoutes {
@@ -57,7 +57,7 @@ func TestCommerceRoutes_StepUpAndTwoPerson(t *testing.T) {
 	}
 	want := map[string]bool{
 		opSellerSuspend: true, opSellerUnsuspend: true, opSellerKYCVerify: true, opPayoutsPending: true, opCODSettle: true,
-		opSellerKYCDocumentView: true,
+		opSellerKYCDocumentView: true, opCouponCreate: true, opCouponUpdate: true,
 	}
 	for _, rt := range CommerceRoutes {
 		if rt.stepUp != want[rt.operation] {

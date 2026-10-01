@@ -33,7 +33,7 @@ const (
 var commerceAll = []string{
 	permCommerceStatsRead, permSellersRead, permSellerApprove, permSellerSuspend, permProductsModerate,
 	permKYCVerify, permPayoutsRead, permCODSettle, permCatalogueEdit, permBannersEdit,
-	permJobsRead, permComplianceRead, permComplianceSweep,
+	permJobsRead, permComplianceRead, permComplianceSweep, permCouponsManage,
 }
 
 // fakePerms is identity's permission route.

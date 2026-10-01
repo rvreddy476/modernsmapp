@@ -43,7 +43,7 @@ var (
 	}
 	payAll = []string{
 		permPayStatsRead, permPayRefundsRead, permPayRefundIssue, permPayIntentsRead, permPayReconciliationRead,
-		permPayApplicationsRead, permPayApplicationsManage, permPayAuditRead,
+		permPayApplicationsRead, permPayApplicationsManage, permPayAuditRead, permPayOffersManage,
 	}
 	// Content apps: post-service's AdminPermissions (Social and Tube in one
 	// list), user-service's pages, qa-service's, and the three chat services'.

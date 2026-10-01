@@ -27,6 +27,7 @@ const (
 	permPayApplicationsRead   = "payments:applications.read"
 	permPayApplicationsManage = "payments:applications.manage"
 	permPayAuditRead          = "payments:audit.read"
+	permPayOffersManage       = "payments:offers.manage"
 )
 
 const (
@@ -92,12 +93,36 @@ var PaymentsRoutes = []productRoute{
 	{method: http.MethodGet, path: "/audit/applications", operation: "payments.audit.applications", permission: permPayAuditRead},
 }
 
+// Bank-offer registry operations (Money → Bank offers).
+const (
+	opPayOffersList  = "payments.offers.list"
+	opPayOfferCreate = "payments.offer.create"
+	opPayOfferUpdate = "payments.offer.update"
+)
+
+// PaymentsOfferRoutes is the bank-offer registry (Razorpay Offers) under
+// /v1/admin/payments/offers, forwarded as sent to payments'
+// /v1/payments/internal/admin/offers. Deactivating is PATCH active=false.
+//
+// NOT confinable, unlike PaymentsRoutes: an offer names its application in
+// its own body, and payments does not narrow these routes by application_id,
+// so an app-scoped admin's confinement could not be enforced. Only a holder
+// of payments:offers.manage itself (platform-wide or payments-app grant)
+// reaches them.
+var PaymentsOfferRoutes = []productRoute{
+	{method: http.MethodGet, path: "/offers", operation: opPayOffersList, permission: permPayOffersManage},
+	{method: http.MethodPost, path: "/offers", operation: opPayOfferCreate, permission: permPayOffersManage, stepUp: true},
+	{method: http.MethodPatch, path: "/offers/:offerId", operation: opPayOfferUpdate, permission: permPayOffersManage, stepUp: true, targetType: "payment_offer"},
+}
+
 // RegisterPaymentsRoutes adds the Payments dashboard under /v1/admin/payments.
 //
-//	step-up      refund resolve (every resolution), application registry PATCH
+//	step-up      refund resolve (every resolution), application registry PATCH,
+//	             bank offer create / edit
 //	two-person   refund resolve as refunded_manually or written_off, always
 //	             (no amount threshold); test_data moves no money
-//	confinement  every route: see paymentsScopeFor
+//	confinement  every PaymentsRoutes route: see paymentsScopeFor; the bank
+//	             offer routes are not confinable
 func (h *Handler) RegisterPaymentsRoutes(r *gin.Engine) {
 	p := product{app: paymentsAuditApp, label: "Payments", prefix: "/v1/admin/payments", client: h.payments}
 
@@ -129,6 +154,7 @@ func (h *Handler) RegisterPaymentsRoutes(r *gin.Engine) {
 		return approvals.Result{Data: resp.Body, Status: resp.Status, Err: err}
 	})
 	h.registerProduct(r, p, routes, special)
+	h.registerProduct(r, p, PaymentsOfferRoutes, nil)
 }
 
 // paymentsScope is who the admin is on payments for this request.
