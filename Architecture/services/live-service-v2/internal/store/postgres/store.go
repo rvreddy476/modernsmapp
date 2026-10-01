@@ -40,6 +40,18 @@ type LiveStream struct {
 	RecordingURL             *string   `json:"recording_url,omitempty"`
 	RecordingDurationSeconds *int      `json:"recording_duration_seconds,omitempty"`
 	EgressID                 *string   `json:"-"`
+	// Source is where the host's media comes from: 'device' (the browser or
+	// phone camera) or 'encoder' (OBS / an encoder / a camera through a
+	// LiveKit ingress).
+	Source string `json:"source"`
+	// HasIngress is filled only for the host and the stream's moderators
+	// (service layer); absent for everyone else.
+	HasIngress *bool `json:"has_ingress,omitempty"`
+	// IngressID is the LiveKit ingress issued for the stream (nil = none).
+	// EncoderIdentity is the participant identity it publishes as. Neither is
+	// on the wire, and the stream key is not stored at all.
+	IngressID       *string `json:"-"`
+	EncoderIdentity *string `json:"-"`
 	CreatedAt                time.Time `json:"created_at"`
 	UpdatedAt                time.Time `json:"updated_at"`
 }
@@ -79,6 +91,9 @@ func scanStreamExtra(row pgx.Row, extra ...any) (*LiveStream, error) {
 		&s.RecordingURL,
 		&s.RecordingDurationSeconds,
 		&s.EgressID,
+		&s.Source,
+		&s.IngressID,
+		&s.EncoderIdentity,
 		&s.CreatedAt,
 		&s.UpdatedAt,
 	}, extra...)...)
@@ -96,6 +111,7 @@ const selectColumns = `
     status, visibility, scheduled_at, started_at, ended_at,
     viewer_peak, viewer_count, ended_reason, status_changed_at,
     recording_url, recording_duration_seconds, egress_id,
+    source, ingress_id, encoder_identity,
     created_at, updated_at`
 
 type CreateStreamParams struct {
@@ -106,15 +122,27 @@ type CreateStreamParams struct {
 	CoverMediaID  *uuid.UUID
 	Visibility    string
 	ScheduledAt   *time.Time
+	// Source is SourceDevice or SourceEncoder; empty means SourceDevice.
+	Source string
 }
+
+// Stream sources.
+const (
+	SourceDevice  = "device"
+	SourceEncoder = "encoder"
+)
 
 func (s *Store) CreateStream(ctx context.Context, p CreateStreamParams) (*LiveStream, error) {
 	const q = `
         INSERT INTO live_streams
             (creator_user_id, livekit_room, title, description, cover_media_id,
-             visibility, scheduled_at, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled')
+             visibility, scheduled_at, status, source)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', $8)
         RETURNING ` + selectColumns
+	source := p.Source
+	if source == "" {
+		source = SourceDevice
+	}
 	return scanStream(s.db.QueryRow(ctx, q,
 		p.CreatorUserID,
 		p.LiveKitRoom,
@@ -123,6 +151,7 @@ func (s *Store) CreateStream(ctx context.Context, p CreateStreamParams) (*LiveSt
 		p.CoverMediaID,
 		p.Visibility,
 		p.ScheduledAt,
+		source,
 	))
 }
 

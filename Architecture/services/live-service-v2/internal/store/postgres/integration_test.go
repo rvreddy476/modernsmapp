@@ -165,7 +165,7 @@ func TestIntegrationTimeoutsUseTheDatabaseClock(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE live_streams SET status_changed_at = NOW() - interval '121 seconds' WHERE id = $1`, old.ID); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := s.ListDueForTimeout(ctx, 120*time.Second, 60*time.Second, 1000)
+	ids, err := s.ListDueForTimeout(ctx, 120*time.Second, 600*time.Second, 60*time.Second, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

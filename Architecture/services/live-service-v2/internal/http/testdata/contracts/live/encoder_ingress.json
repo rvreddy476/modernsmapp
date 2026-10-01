@@ -1,0 +1,7 @@
+{
+  "data": {
+    "server_url": "rtmps://example.rtmp.livekit.cloud/x",
+    "stream_key": "sk_FAKE_fixture_key_0001",
+    "ingress_id": "IN_fixture"
+  }
+}

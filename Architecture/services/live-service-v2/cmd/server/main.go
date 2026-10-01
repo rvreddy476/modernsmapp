@@ -151,6 +151,7 @@ func main() {
 		PilotUserIDs:           pilot,
 		StartTimeout:           envDuration("LIVE_START_TIMEOUT", service.DefaultStartTimeout),
 		ReconnectGrace:         envDuration("LIVE_RECONNECT_GRACE", service.DefaultReconnectGrace),
+		EncoderStartTimeout:    envDuration("LIVE_ENCODER_START_TIMEOUT", service.DefaultEncoderStartTimeout),
 		Media:                  media,
 	})
 	// Timeouts by the database clock, LiveKit reconcile, recording imports.

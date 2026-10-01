@@ -206,6 +206,71 @@ func (s *Store) SetEgressID(ctx context.Context, id uuid.UUID, egressID string) 
 	return err
 }
 
+// SetIngress records the LiveKit ingress issued for an encoder stream and
+// the participant identity it publishes as. It stores only when the stream
+// is an encoder stream with no ingress yet that has not ended; stored=false
+// means another request won, or the stream ended, and the caller must delete
+// the ingress it created.
+func (s *Store) SetIngress(ctx context.Context, id uuid.UUID, ingressID, encoderIdentity string) (stored bool, err error) {
+	if ingressID == "" || encoderIdentity == "" {
+		return false, errors.New("ingress id and encoder identity are required")
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE live_streams
+		SET ingress_id = $2, encoder_identity = $3, updated_at = NOW()
+		WHERE id = $1 AND source = 'encoder' AND ingress_id IS NULL
+		  AND status <> 'ended'`, id, ingressID, encoderIdentity)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ClearIngress forgets the stream's ingress once LiveKit deleted it. Only
+// the named ingress is cleared, so a newer one issued meanwhile stays.
+// encoder_identity is kept (see migration 004).
+func (s *Store) ClearIngress(ctx context.Context, id uuid.UUID, ingressID string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE live_streams SET ingress_id = NULL, updated_at = NOW() WHERE id = $1 AND ingress_id = $2`,
+		id, ingressID)
+	return err
+}
+
+// StreamIngress names one stream's ingress.
+type StreamIngress struct {
+	StreamID  uuid.UUID
+	IngressID string
+}
+
+// ListEndedWithIngress returns the streams whose ingress the sweeper should
+// delete: ended streams that still carry one (its deletion at the end of
+// the stream failed), and streams that have been 'failed' for longer than
+// failedKeep by the database clock. A failed start keeps its ingress for
+// the next attempt, but not for ever: an abandoned one would hold a working
+// key and a LiveKit ingress indefinitely.
+func (s *Store) ListEndedWithIngress(ctx context.Context, failedKeep time.Duration, limit int) ([]StreamIngress, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, ingress_id FROM live_streams
+		WHERE ingress_id IS NOT NULL
+		  AND (status = 'ended'
+		       OR (status = 'failed' AND status_changed_at < NOW() - make_interval(secs => $2)))
+		ORDER BY status_changed_at
+		LIMIT $1`, limit, failedKeep.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StreamIngress
+	for rows.Next() {
+		var si StreamIngress
+		if err := rows.Scan(&si.StreamID, &si.IngressID); err != nil {
+			return nil, err
+		}
+		out = append(out, si)
+	}
+	return out, rows.Err()
+}
+
 // RecordingImport is one live_recording_imports job.
 type RecordingImport struct {
 	StreamID         uuid.UUID
@@ -380,15 +445,17 @@ func truncate(s string, n int) string {
 }
 
 // ListDueForTimeout returns streams whose current status outlived its
-// limit by the DATABASE clock: 'starting' older than startTimeout,
-// 'reconnecting' older than grace. The transition re-checks under lock.
-func (s *Store) ListDueForTimeout(ctx context.Context, startTimeout, grace time.Duration, limit int) ([]uuid.UUID, error) {
+// limit by the DATABASE clock: 'starting' older than startTimeout (an
+// 'encoder' stream: encoderStartTimeout), 'reconnecting' older than grace.
+// The transition re-checks under lock.
+func (s *Store) ListDueForTimeout(ctx context.Context, startTimeout, encoderStartTimeout, grace time.Duration, limit int) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id FROM live_streams
-		WHERE (status = 'starting' AND status_changed_at < NOW() - make_interval(secs => $1))
+		WHERE (status = 'starting' AND status_changed_at < NOW() - make_interval(
+		           secs => CASE WHEN source = 'encoder' THEN $4::float8 ELSE $1::float8 END))
 		   OR (status = 'reconnecting' AND status_changed_at < NOW() - make_interval(secs => $2))
 		ORDER BY status_changed_at
-		LIMIT $3`, startTimeout.Seconds(), grace.Seconds(), limit)
+		LIMIT $3`, startTimeout.Seconds(), grace.Seconds(), limit, encoderStartTimeout.Seconds())
 	if err != nil {
 		return nil, err
 	}

@@ -56,6 +56,16 @@ type Client interface {
 	// ListParticipants returns the room's participants. ErrRoomNotFound
 	// when LiveKit says the room does not exist.
 	ListParticipants(ctx context.Context, room string) ([]Participant, error)
+
+	// CreateRTMPIngress issues an RTMP ingress that publishes into room as
+	// req.Identity (ingress.go).
+	CreateRTMPIngress(ctx context.Context, req IngressRequest) (*Ingress, error)
+	// GetIngress reads an ingress back, stream key included. nil, nil when
+	// LiveKit no longer has it.
+	GetIngress(ctx context.Context, ingressID string) (*Ingress, error)
+	// DeleteIngress deletes an ingress; one that no longer exists is not an
+	// error.
+	DeleteIngress(ctx context.Context, ingressID string) error
 }
 
 // Participant is the slice of LiveKit's ParticipantInfo the sweeper reads.
@@ -291,6 +301,12 @@ func (c *httpClient) twirpCallRoom(ctx context.Context, path, room string, body 
 	if room != "" {
 		grant["room"] = room
 	}
+	return c.twirpCallGrant(ctx, path, grant, body, resp)
+}
+
+// twirpCallGrant POSTs body to path with an admin token carrying exactly
+// grant as its video claim.
+func (c *httpClient) twirpCallGrant(ctx context.Context, path string, grant map[string]any, body any, resp any) error {
 	adminToken, err := c.signAccessToken("live-service-v2", 10*time.Minute, grant)
 	if err != nil {
 		return err

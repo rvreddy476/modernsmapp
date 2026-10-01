@@ -85,6 +85,7 @@ func (m *MemStore) AddStreamStatus(creator uuid.UUID, status string) *postgres.L
 		// Like Postgres rows created before 2 Oct 2026: the room name carries
 		// an id that is NOT the stream id. Webhooks must resolve by room.
 		LiveKitRoom: "stream_" + uuid.NewString(), Title: "t", StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
+		Source: postgres.SourceDevice,
 	}
 	if status == postgres.StatusLive || status == postgres.StatusReconnecting {
 		st.StartedAt = &now
@@ -118,6 +119,14 @@ func (m *MemStore) CreateStream(_ context.Context, p postgres.CreateStreamParams
 		ID: uuid.New(), CreatorUserID: p.CreatorUserID, LiveKitRoom: p.LiveKitRoom, Title: p.Title,
 		Description: p.Description, CoverMediaID: p.CoverMediaID, Status: postgres.StatusScheduled,
 		Visibility: p.Visibility, ScheduledAt: p.ScheduledAt, StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
+		Source: p.Source,
+	}
+	switch st.Source {
+	case "":
+		st.Source = postgres.SourceDevice
+	case postgres.SourceDevice, postgres.SourceEncoder:
+	default:
+		return nil, errors.New("live_streams_source_check") // the CHECK constraint
 	}
 	m.Streams[st.ID] = st
 	return clone(st), nil
@@ -374,16 +383,66 @@ func (m *MemStore) ApplyPresence(_ context.Context, streamID, userID uuid.UUID, 
 	return clone(st), n != old, nil
 }
 
-func (m *MemStore) ListDueForTimeout(_ context.Context, startTimeout, grace time.Duration, limit int) ([]uuid.UUID, error) {
+func (m *MemStore) ListDueForTimeout(_ context.Context, startTimeout, encoderStartTimeout, grace time.Duration, limit int) ([]uuid.UUID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.Now()
 	var out []uuid.UUID
 	for id, st := range m.Streams {
 		age := now.Sub(st.StatusChangedAt)
-		if (st.Status == postgres.StatusStarting && age > startTimeout) ||
+		start := startTimeout
+		if st.Source == postgres.SourceEncoder {
+			start = encoderStartTimeout
+		}
+		if (st.Status == postgres.StatusStarting && age > start) ||
 			(st.Status == postgres.StatusReconnecting && age > grace) {
 			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// SetIngress mirrors postgres.Store.SetIngress: an encoder stream without an
+// ingress that has not ended.
+func (m *MemStore) SetIngress(_ context.Context, id uuid.UUID, ingressID, encoderIdentity string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ingressID == "" || encoderIdentity == "" {
+		return false, errors.New("ingress id and encoder identity are required")
+	}
+	st, ok := m.Streams[id]
+	if !ok || st.Source != postgres.SourceEncoder || st.IngressID != nil || st.Status == postgres.StatusEnded {
+		return false, nil
+	}
+	ing, ident := ingressID, encoderIdentity
+	st.IngressID, st.EncoderIdentity = &ing, &ident
+	st.UpdatedAt = m.Now()
+	return true, nil
+}
+
+// ClearIngress mirrors postgres.Store.ClearIngress: only the named ingress,
+// and the encoder identity stays.
+func (m *MemStore) ClearIngress(_ context.Context, id uuid.UUID, ingressID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if st, ok := m.Streams[id]; ok && st.IngressID != nil && *st.IngressID == ingressID {
+		st.IngressID = nil
+		st.UpdatedAt = m.Now()
+	}
+	return nil
+}
+
+// ListEndedWithIngress mirrors postgres.Store.ListEndedWithIngress.
+func (m *MemStore) ListEndedWithIngress(_ context.Context, failedKeep time.Duration, limit int) ([]postgres.StreamIngress, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.Now()
+	var out []postgres.StreamIngress
+	for id, st := range m.Streams {
+		due := st.Status == postgres.StatusEnded ||
+			(st.Status == postgres.StatusFailed && now.Sub(st.StatusChangedAt) > failedKeep)
+		if due && st.IngressID != nil && len(out) < limit {
+			out = append(out, postgres.StreamIngress{StreamID: id, IngressID: *st.IngressID})
 		}
 	}
 	return out, nil

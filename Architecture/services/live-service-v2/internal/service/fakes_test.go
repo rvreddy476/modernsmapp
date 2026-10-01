@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -37,6 +39,15 @@ type recLiveKit struct {
 	egressStops  []string
 	rooms        map[string][]livekit.Participant
 	listErr      error
+
+	// Ingress: what LiveKit holds, what was asked of it, and its failures.
+	ingresses        map[string]*livekit.Ingress
+	ingressCreates   []livekit.IngressRequest
+	ingressDeletes   []string
+	ingressSeq       int
+	ingressErr       error // create and read fail
+	ingressDeleteErr error
+	onIngressCreate  func(*livekit.Ingress) // runs after a create, unlocked
 }
 
 func newRecLiveKit() *recLiveKit { return &recLiveKit{rooms: map[string][]livekit.Participant{}} }
@@ -79,6 +90,69 @@ func (r *recLiveKit) StopEgress(_ context.Context, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.egressStops = append(r.egressStops, id)
+	return nil
+}
+
+// fakeLiveKit has no ingress service.
+func (fakeLiveKit) CreateRTMPIngress(context.Context, livekit.IngressRequest) (*livekit.Ingress, error) {
+	return nil, errors.New("no ingress service")
+}
+func (fakeLiveKit) GetIngress(context.Context, string) (*livekit.Ingress, error) { return nil, nil }
+func (fakeLiveKit) DeleteIngress(context.Context, string) error                  { return nil }
+
+// testKeyMarker is in every stream key recLiveKit issues, so a test can look
+// for a leaked key in anything it can read.
+const testKeyMarker = "sk_SECRET_"
+
+// CreateRTMPIngress issues ING_<n> with a key carrying testKeyMarker.
+func (r *recLiveKit) CreateRTMPIngress(_ context.Context, req livekit.IngressRequest) (*livekit.Ingress, error) {
+	r.mu.Lock()
+	if r.ingressErr != nil {
+		defer r.mu.Unlock()
+		return nil, r.ingressErr
+	}
+	r.ingressSeq++
+	ing := &livekit.Ingress{
+		ID:        fmt.Sprintf("ING_%d", r.ingressSeq),
+		URL:       "rtmps://ingress.test/x",
+		StreamKey: fmt.Sprintf("%s%d", testKeyMarker, r.ingressSeq),
+	}
+	if r.ingresses == nil {
+		r.ingresses = map[string]*livekit.Ingress{}
+	}
+	r.ingresses[ing.ID] = ing
+	r.ingressCreates = append(r.ingressCreates, req)
+	hook := r.onIngressCreate
+	r.mu.Unlock()
+	if hook != nil {
+		hook(ing)
+	}
+	cp := *ing
+	return &cp, nil
+}
+
+func (r *recLiveKit) GetIngress(_ context.Context, id string) (*livekit.Ingress, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ingressErr != nil {
+		return nil, r.ingressErr
+	}
+	ing, ok := r.ingresses[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *ing
+	return &cp, nil
+}
+
+func (r *recLiveKit) DeleteIngress(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ingressDeleteErr != nil {
+		return r.ingressDeleteErr
+	}
+	delete(r.ingresses, id)
+	r.ingressDeletes = append(r.ingressDeletes, id)
 	return nil
 }
 

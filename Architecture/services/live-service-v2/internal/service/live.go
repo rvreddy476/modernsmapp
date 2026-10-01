@@ -111,7 +111,11 @@ type Store interface {
 	RetryImport(ctx context.Context, streamID uuid.UUID, mediaID *uuid.UUID, processingStatus, msg string, retryIn time.Duration) error
 	TerminateImport(ctx context.Context, streamID uuid.UUID, mediaID *uuid.UUID, processingStatus, msg string) error
 	ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, present bool) (*postgres.LiveStream, bool, error)
-	ListDueForTimeout(ctx context.Context, startTimeout, grace time.Duration, limit int) ([]uuid.UUID, error)
+	ListDueForTimeout(ctx context.Context, startTimeout, encoderStartTimeout, grace time.Duration, limit int) ([]uuid.UUID, error)
+	// Encoder streams (ingress.go).
+	SetIngress(ctx context.Context, id uuid.UUID, ingressID, encoderIdentity string) (stored bool, err error)
+	ClearIngress(ctx context.Context, id uuid.UUID, ingressID string) error
+	ListEndedWithIngress(ctx context.Context, failedKeep time.Duration, limit int) ([]postgres.StreamIngress, error)
 	ListByStatuses(ctx context.Context, statuses []string, limit int) ([]*postgres.AdminStream, error)
 	WebhookSeen(ctx context.Context, eventID string) (bool, error)
 	MarkWebhook(ctx context.Context, eventID, event string) error
@@ -194,6 +198,9 @@ type Config struct {
 	// (LIVE_RECONNECT_GRACE, default 60s); zero takes the default.
 	StartTimeout   time.Duration
 	ReconnectGrace time.Duration
+	// EncoderStartTimeout (LIVE_ENCODER_START_TIMEOUT, default 10m) replaces
+	// StartTimeout for encoder streams; zero takes the default.
+	EncoderStartTimeout time.Duration
 
 	// Media imports egress recordings (MEDIA_SERVICE_URL); nil = not configured.
 	Media MediaImporter
@@ -212,9 +219,12 @@ func New(store Store, lk livekit.Client, graph GraphClient, rdb *redis.Client, c
 			pilot[id] = true
 		}
 	}
-	lim := Limits{StartTimeout: cfg.StartTimeout, ReconnectGrace: cfg.ReconnectGrace}
+	lim := Limits{StartTimeout: cfg.StartTimeout, ReconnectGrace: cfg.ReconnectGrace, EncoderStartTimeout: cfg.EncoderStartTimeout}
 	if lim.StartTimeout <= 0 {
 		lim.StartTimeout = DefaultStartTimeout
+	}
+	if lim.EncoderStartTimeout <= 0 {
+		lim.EncoderStartTimeout = DefaultEncoderStartTimeout
 	}
 	if lim.ReconnectGrace <= 0 {
 		lim.ReconnectGrace = DefaultReconnectGrace
@@ -279,6 +289,8 @@ type CreateStreamParams struct {
 	Visibility   string
 	CoverMediaID *uuid.UUID
 	ScheduledAt  *time.Time
+	// Source is "device" (default) or "encoder".
+	Source string
 }
 
 // CreateStream inserts a scheduled row and reserves a LiveKit room name.
@@ -298,9 +310,13 @@ func (s *Service) CreateStream(ctx context.Context, creatorID uuid.UUID, p Creat
 	if vis == visibilityPaid {
 		return nil, ErrPaidVisibility // existing paid rows stay as they are
 	}
+	source := normalizeSource(p.Source)
+	if source == "" {
+		return nil, ErrInvalidSource
+	}
 	streamID := uuid.New()
 	room := "stream_" + streamID.String()
-	return s.store.CreateStream(ctx, postgres.CreateStreamParams{
+	st, err := s.store.CreateStream(ctx, postgres.CreateStreamParams{
 		CreatorUserID: creatorID,
 		LiveKitRoom:   room,
 		Title:         strings.TrimSpace(p.Title),
@@ -308,16 +324,25 @@ func (s *Service) CreateStream(ctx context.Context, creatorID uuid.UUID, p Creat
 		CoverMediaID:  p.CoverMediaID,
 		Visibility:    vis,
 		ScheduledAt:   p.ScheduledAt,
+		Source:        source,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return withHasIngress(st), nil
 }
 
 // StartStreamResult is what we hand back to the broadcaster client. The
 // browser uses these to open a LiveKit publisher connection.
 type StartStreamResult struct {
-	Stream         *postgres.LiveStream `json:"stream"`
-	PublisherToken string               `json:"publisher_token"`
-	Room           string               `json:"room"`
-	ServerURL      string               `json:"server_url"`
+	Stream *postgres.LiveStream `json:"stream"`
+	// PublisherToken is empty for an encoder stream: its media comes through
+	// the ingress, and the host's own connection only watches.
+	PublisherToken string `json:"publisher_token"`
+	Room           string `json:"room"`
+	ServerURL      string `json:"server_url"`
+	// Source repeats stream.source ("device" | "encoder").
+	Source string `json:"source"`
 }
 
 // StartStream creates the LiveKit room and moves the stream to 'starting'.
@@ -346,16 +371,23 @@ func (s *Service) StartStream(ctx context.Context, streamID, creatorID uuid.UUID
 	if err != nil {
 		return nil, err
 	}
+	out := &StartStreamResult{
+		Stream:    withHasIngress(res.Next),
+		Room:      res.Next.LiveKitRoom,
+		ServerURL: s.livekit.ServerURL(),
+		Source:    res.Next.Source,
+	}
+	// An encoder stream gets no publisher token: nothing but the ingress may
+	// publish into its room.
+	if res.Next.Source == SourceEncoder {
+		return out, nil
+	}
 	token, err := s.livekit.IssuePublisherToken(ctx, res.Next.LiveKitRoom, creatorID.String(), publisherTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("livekit publisher token: %w", err)
 	}
-	return &StartStreamResult{
-		Stream:         res.Next,
-		PublisherToken: token,
-		Room:           res.Next.LiveKitRoom,
-		ServerURL:      s.livekit.ServerURL(),
-	}, nil
+	out.PublisherToken = token
+	return out, nil
 }
 
 // EndStream is the host's own end: ended with ended_reason host_ended. The
@@ -373,7 +405,11 @@ func (s *Service) EndStream(ctx context.Context, streamID, creatorID uuid.UUID) 
 	if err != nil {
 		return nil, err
 	}
-	return res.Next, nil
+	// Read again: the transition's side effects delete the ingress.
+	if after, err := s.store.GetByID(ctx, streamID); err == nil {
+		return withHasIngress(after), nil
+	}
+	return withHasIngress(res.Next), nil
 }
 
 // IssueViewerTokenResult is returned to viewers joining a stream.
@@ -631,10 +667,10 @@ func (s *Service) decorateModerators(ctx context.Context, viewerID uuid.UUID, ro
 		if !member {
 			continue
 		}
-		cp := *st
+		cp := withHasIngress(st)
 		ml := append([]uuid.UUID{}, list...)
 		cp.ModeratorUserIDs = &ml
-		out[i] = &cp
+		out[i] = cp
 	}
 	return out
 }

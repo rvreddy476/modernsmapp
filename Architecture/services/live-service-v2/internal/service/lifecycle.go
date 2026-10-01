@@ -48,10 +48,12 @@ const (
 	ReasonNoMedia      = "no_media"
 )
 
-// Limits are the two timeouts the sweeper applies.
+// Limits are the timeouts the sweeper applies. EncoderStartTimeout stands in
+// for StartTimeout on an encoder stream (decide, ingress.go).
 type Limits struct {
-	StartTimeout   time.Duration
-	ReconnectGrace time.Duration
+	StartTimeout        time.Duration
+	ReconnectGrace      time.Duration
+	EncoderStartTimeout time.Duration
 }
 
 const (
@@ -160,7 +162,7 @@ func lifecycleEvents(ctx context.Context) postgres.EventsFunc {
 func (s *Service) transition(ctx context.Context, id uuid.UUID, trig Trigger, audit *postgres.AuditEntry) (*postgres.TransitionResult, error) {
 	lim := s.limits
 	res, err := s.store.ApplyTransition(ctx, id, func(cur *postgres.LiveStream, age time.Duration) (postgres.Decision, bool) {
-		return Next(cur.Status, trig, age, lim)
+		return decide(cur, trig, age, lim)
 	}, lifecycleEvents(ctx), audit)
 	switch {
 	case errors.Is(err, postgres.ErrNotFound):
@@ -202,6 +204,11 @@ func (s *Service) afterTransition(ctx context.Context, res *postgres.TransitionR
 			if err := s.livekit.DeleteRoom(ctx, next.LiveKitRoom); err != nil {
 				slog.Warn("live-v2: close room", "stream_id", next.ID, "err", err)
 			}
+		}
+		// The stream key stops working when the stream ends. A failed start
+		// keeps it: "Try again" must not make the host paste a new key.
+		if next.Status == stEnded && next.IngressID != nil && *next.IngressID != "" {
+			s.dropIngress(ctx, next.ID, *next.IngressID)
 		}
 	}
 	s.publish(ctx, next.ID, EventStatusChanged, statusPayload(next))
@@ -289,22 +296,30 @@ func (s *Service) applyWebhook(ctx context.Context, ev WebhookEvent) error {
 		return err
 	}
 	streamID := st.ID
-	isHost := ev.ParticipantIdentity != "" && ev.ParticipantIdentity == st.CreatorUserID.String()
+	// The host is the creator's own connection or the stream's encoder
+	// (ingress.go); neither is a viewer. The media identity — the creator on
+	// a device stream, the encoder on an encoder stream — is the one whose
+	// tracks and departure drive live / reconnecting.
+	isHost := isHostIdentity(st, ev.ParticipantIdentity)
+	isMedia := isMediaIdentity(st, ev.ParticipantIdentity)
 
 	var trig Trigger
 	switch ev.Event {
 	case "track_published":
-		if isHost {
+		if isMedia {
 			trig = TrigHostTrack
 		}
 	case "track_unpublished":
-		if isHost && len(remainingTracks(ev.ParticipantTrackSIDs, ev.TrackSID)) == 0 {
+		if isMedia && len(remainingTracks(ev.ParticipantTrackSIDs, ev.TrackSID)) == 0 {
 			trig = TrigHostLost
 		}
 	case "participant_left", "participant_connection_aborted":
-		if isHost {
+		switch {
+		case isMedia:
 			trig = TrigHostLost
-		} else {
+		case isHost:
+			// The creator stopped watching their own encoder stream.
+		default:
 			return s.applyPresence(ctx, st, ev.ParticipantIdentity, false)
 		}
 	case "participant_joined":
@@ -398,7 +413,7 @@ const webhookIDRetention = 24 * time.Hour
 // prunes old webhook ids. Safe to run on every replica at once: each change
 // is a locked transition that re-checks its condition.
 func (s *Service) Sweep(ctx context.Context) error {
-	ids, err := s.store.ListDueForTimeout(ctx, s.limits.StartTimeout, s.limits.ReconnectGrace, 200)
+	ids, err := s.store.ListDueForTimeout(ctx, s.limits.StartTimeout, s.limits.EncoderStartTimeout, s.limits.ReconnectGrace, 200)
 	if err != nil {
 		return err
 	}
@@ -408,6 +423,7 @@ func (s *Service) Sweep(ctx context.Context) error {
 		}
 	}
 	s.reconcile(ctx)
+	s.sweepIngresses(ctx)
 	s.RunImports(ctx)
 	if err := s.store.PruneWebhookEvents(ctx, webhookIDRetention); err != nil {
 		slog.Warn("live-v2 sweeper: prune webhook ids", "err", err)
@@ -439,7 +455,7 @@ func (s *Service) reconcile(ctx context.Context) {
 		}
 		hostPublishing := false
 		for _, p := range parts {
-			if p.Identity == st.CreatorUserID.String() && len(p.Tracks) > 0 {
+			if isMediaIdentity(st, p.Identity) && len(p.Tracks) > 0 {
 				hostPublishing = true
 			}
 		}

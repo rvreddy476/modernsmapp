@@ -83,6 +83,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/streams/:id", h.GetStream)
 	v1.GET("/streams/:id/viewer-token", h.IssueViewerToken)
 	v1.GET("/streams", h.ListLiveNow)
+	// Going live from streaming software or a camera (ingress_routes.go).
+	v1.POST("/streams/:id/ingress", h.CreateIngress)
+	v1.DELETE("/streams/:id/ingress", h.DeleteIngress)
 	// Phase 2 chat overlay. POST appends + fans out via Redis pub/sub;
 	// GET returns the last N for replay-on-load. The ws-gateway
 	// subscribe_live_stream message handles the live-tail subscription.
@@ -122,6 +125,8 @@ type createStreamRequest struct {
 	Visibility   string     `json:"visibility"`
 	CoverMediaID *uuid.UUID `json:"cover_media_id"`
 	ScheduledAt  *time.Time `json:"scheduled_at"`
+	// Source is "device" (default) or "encoder"; anything else is a 422.
+	Source string `json:"source"`
 }
 
 // --- handlers ---
@@ -142,6 +147,7 @@ func (h *Handler) CreateStream(c *gin.Context) {
 		Visibility:   req.Visibility,
 		CoverMediaID: req.CoverMediaID,
 		ScheduledAt:  req.ScheduledAt,
+		Source:       req.Source,
 	})
 	if err != nil {
 		writeServiceErr(c, err)
@@ -311,8 +317,11 @@ func writeServiceErr(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrInvalidStatusFilter):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidVisibility), errors.Is(err, service.ErrPaidVisibility),
-		errors.Is(err, service.ErrInvalidTitle):
+		errors.Is(err, service.ErrInvalidTitle), errors.Is(err, service.ErrInvalidSource),
+		errors.Is(err, service.ErrNotEncoderStream):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil)
+	case errors.Is(err, service.ErrIngressUnavailable):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "INGRESS_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, service.ErrLiveNotEnabled):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIVE_NOT_ENABLED", err.Error(), nil)
 	case errors.Is(err, service.ErrLiveBanned):

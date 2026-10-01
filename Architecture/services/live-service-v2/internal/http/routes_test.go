@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,6 +45,13 @@ func (stubLK) RemoveParticipant(context.Context, string, string) error         {
 func (stubLK) ListParticipants(context.Context, string) ([]livekit.Participant, error) {
 	return nil, livekit.ErrRoomNotFound
 }
+
+// stubLK has no ingress service (ingress_routes_test.go has one that does).
+func (stubLK) CreateRTMPIngress(context.Context, livekit.IngressRequest) (*livekit.Ingress, error) {
+	return nil, errors.New("no ingress service")
+}
+func (stubLK) GetIngress(context.Context, string) (*livekit.Ingress, error) { return nil, nil }
+func (stubLK) DeleteIngress(context.Context, string) error                  { return nil }
 
 const rigKey = "rig-internal-key"
 
