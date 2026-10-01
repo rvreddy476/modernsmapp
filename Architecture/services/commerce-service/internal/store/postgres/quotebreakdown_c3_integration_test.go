@@ -27,6 +27,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/atpost/commerce-service/internal/money"
@@ -256,10 +257,10 @@ func TestC3QuoteTakenWithACouponIsRefusedWithout(t *testing.T) {
 	f := newFixture(t, 10, 100000, "18")
 	f.addToCart(1, 100000)
 
-	code := "C3SAVE" + uuid.NewString()[:6]
-	mustExec(t, `INSERT INTO coupons (id, code, discount_type, discount_value, discount_basis_points,
+	code := "C3SAVE" + strings.ToUpper(uuid.NewString()[:6])
+	mustExec(t, `INSERT INTO coupons (id, seller_id, code, discount_type, discount_value, discount_basis_points,
 	                 is_active, starts_at, max_uses_per_user, applicable_to)
-	             VALUES (gen_random_uuid(), $1, 'percentage', 10, 1000, TRUE, NOW(), 5, 'all')`, code)
+	             VALUES (gen_random_uuid(), $2, $1, 'percentage', 10, 1000, TRUE, NOW(), 5, 'all')`, code, f.sellerID)
 
 	quoteID, p := f.quotePriced(4000, code, "upi")
 	if p.DiscountMinor <= 0 {
@@ -294,10 +295,10 @@ func TestC3QuotingACouponDoesNotClaimIt(t *testing.T) {
 	f := newFixture(t, 10, 100000, "18")
 	f.addToCart(1, 100000)
 
-	code := "C3ONCE" + uuid.NewString()[:6]
-	mustExec(t, `INSERT INTO coupons (id, code, discount_type, discount_value, discount_value_minor,
+	code := "C3ONCE" + strings.ToUpper(uuid.NewString()[:6])
+	mustExec(t, `INSERT INTO coupons (id, seller_id, code, discount_type, discount_value, discount_value_minor,
 	                 is_active, starts_at, max_uses, uses_count, max_uses_per_user, applicable_to)
-	             VALUES (gen_random_uuid(), $1, 'flat', 50.00, 5000, TRUE, NOW(), 1, 0, 5, 'all')`, code)
+	             VALUES (gen_random_uuid(), $2, $1, 'flat', 50.00, 5000, TRUE, NOW(), 1, 0, 5, 'all')`, code, f.sellerID)
 
 	for i := 0; i < 3; i++ {
 		f.quotePriced(4000, code, "upi")

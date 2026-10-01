@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_IMMUTABLE",
+    "message": "code, discount and scope cannot change after a coupon is created"
+  },
+  "meta": {}
+}
+

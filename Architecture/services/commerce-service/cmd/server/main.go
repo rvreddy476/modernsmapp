@@ -315,6 +315,15 @@ func main() {
 	svc.WithProductAutoApprove(productAutoApprove)
 	slog.Info("product auto-approve", "enabled", productAutoApprove)
 
+	// Platform coupons (migration 038). Founder, 1 Oct 2026: built, and OFF
+	// until the tax adviser confirms GST on a platform-funded discount. Only
+	// the exact value "true" turns them on; absent, empty or anything else is
+	// off, and a platform code then answers 422 COUPON_NOT_AVAILABLE at quote
+	// and checkout. Seller coupons are unaffected.
+	platformCoupons := env("COMMERCE_PLATFORM_COUPONS_ENABLED", "") == "true"
+	svc.WithPlatformCoupons(platformCoupons)
+	slog.Info("platform coupons", "enabled", platformCoupons)
+
 	// KYC validator (Phase 3.2). The stub does format-only checks and tags
 	// every verdict with Source="stub" so admins know they're approving on
 	// incomplete verification. Wire a vendor (Karza/Signzy/Hyperverge)

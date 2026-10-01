@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_USED_UP",
+    "message": "that coupon has been used up"
+  },
+  "meta": {}
+}
+

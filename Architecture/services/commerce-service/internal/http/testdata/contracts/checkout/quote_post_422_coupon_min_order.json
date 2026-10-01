@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "COUPON_MIN_ORDER",
+    "message": "your order is below that coupon's minimum",
+    "details": {
+      "min_order_minor": 500000
+    }
+  },
+  "meta": {}
+}
+

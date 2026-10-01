@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_EXPIRED",
+    "message": "that coupon has expired"
+  },
+  "meta": {}
+}
+

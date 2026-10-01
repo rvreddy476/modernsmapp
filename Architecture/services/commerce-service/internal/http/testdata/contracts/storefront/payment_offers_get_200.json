@@ -1,0 +1,29 @@
+{
+  "data": [
+    {
+      "id": "00000000-0000-4000-8000-0000000c0d01",
+      "title": "10% off with HDFC Bank credit cards",
+      "description": "Instant discount on HDFC Bank credit cards. Minimum order ₹1,000.",
+      "payment_method": "card",
+      "discount_type": "percentage",
+      "discount_value": 1000,
+      "max_discount_minor": 150000,
+      "min_amount_minor": 100000,
+      "ends_at": "2026-12-31T18:29:59Z",
+      "estimated_discount_minor": 12990
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000c0d02",
+      "title": "Flat ₹75 off with ICICI Bank UPI",
+      "description": "",
+      "payment_method": "upi",
+      "discount_type": "flat",
+      "discount_value": 7500,
+      "max_discount_minor": null,
+      "min_amount_minor": 0,
+      "ends_at": null,
+      "estimated_discount_minor": 7500
+    }
+  ]
+}
+

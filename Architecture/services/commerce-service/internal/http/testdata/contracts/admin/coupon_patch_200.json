@@ -1,0 +1,25 @@
+{
+  "data": {
+    "id": "00000000-0000-4000-8000-0000000f0014",
+    "code": "FESTIVE200",
+    "description": "₹200 off orders above ₹1,000",
+    "discount_type": "flat",
+    "discount_value": 20000,
+    "max_discount_minor": null,
+    "min_order_minor": 100000,
+    "max_uses": null,
+    "max_uses_per_user": 1,
+    "uses_count": 0,
+    "applicable_to": "all",
+    "applicable_ids": [],
+    "starts_at": "2026-09-30T10:00:00Z",
+    "expires_at": "2026-11-15T18:29:59Z",
+    "is_public": true,
+    "is_active": false,
+    "funded_by": "platform",
+    "seller_id": null,
+    "created_at": "2026-09-30T10:00:00Z",
+    "updated_at": "2026-09-30T10:00:00Z"
+  }
+}
+

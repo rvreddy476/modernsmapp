@@ -32,7 +32,13 @@
         "min_mrp": 1499,
         "total_stock": 24,
         "seller_name": "Momentum Electronics",
-        "discount_pct": 13
+        "discount_pct": 13,
+        "best_coupon": {
+          "code": "EARBUDS150",
+          "discount_minor": 15000,
+          "price_after_minor": 114900,
+          "title": "₹150 off"
+        }
       }
     ]
   }

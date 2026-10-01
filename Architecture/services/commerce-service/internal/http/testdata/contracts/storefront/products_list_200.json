@@ -27,7 +27,13 @@
         "min_mrp": 599,
         "total_stock": 40,
         "seller_name": "Momentum Electronics",
-        "discount_pct": 17
+        "discount_pct": 17,
+        "best_coupon": {
+          "code": "MOMENTUM10",
+          "discount_minor": 4990,
+          "price_after_minor": 44910,
+          "title": "10% off everything at Momentum Electronics"
+        }
       },
       {
         "id": "00000000-0000-4000-8000-0000000c0100",
@@ -59,7 +65,13 @@
         "min_mrp": 1499,
         "total_stock": 24,
         "seller_name": "Momentum Electronics",
-        "discount_pct": 13
+        "discount_pct": 13,
+        "best_coupon": {
+          "code": "EARBUDS150",
+          "discount_minor": 15000,
+          "price_after_minor": 114900,
+          "title": "₹150 off"
+        }
       },
       {
         "id": "00000000-0000-4000-8000-0000000c0140",
@@ -87,7 +99,13 @@
         "min_mrp": 1899,
         "total_stock": 7,
         "seller_name": "Other Shop",
-        "discount_pct": 16
+        "discount_pct": 16,
+        "best_coupon": {
+          "code": "KETTLE20",
+          "discount_minor": 31980,
+          "price_after_minor": 127920,
+          "title": "20% off"
+        }
       }
     ],
     "limit": 20,

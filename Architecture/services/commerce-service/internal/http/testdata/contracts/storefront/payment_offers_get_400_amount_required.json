@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "INVALID_AMOUNT",
+    "message": "amount_minor is required and must be a positive integer (paise)"
+  },
+  "meta": {}
+}
+

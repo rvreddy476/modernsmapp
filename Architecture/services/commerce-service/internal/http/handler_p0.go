@@ -562,6 +562,12 @@ func writeCommerceError(c *gin.Context, err error) {
 		return
 	}
 
+	// Coupons: the 422 refusals at quote and checkout, and the write errors
+	// of the seller and admin coupon routes (handler_coupons_offers.go).
+	if writeCouponError(c, err) {
+		return
+	}
+
 	// Out of stock carries per-line detail so the cart can grey the right
 	// rows instead of showing a generic failure.
 	var oos *postgres.OutOfStockError
@@ -614,15 +620,16 @@ func writeCommerceError(c *gin.Context, err error) {
 	case errors.Is(err, postgres.ErrMultipleSellers):
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "MULTIPLE_SELLERS",
 			"your cart contains items from more than one seller", nil)
-	case errors.Is(err, postgres.ErrCouponExhausted):
-		api.ErrorWithContext(ctx, w, http.StatusConflict, "COUPON_UNAVAILABLE",
-			"that coupon is no longer available", nil)
-	case errors.Is(err, postgres.ErrCouponNotApplicable):
-		// B9: distinct from exhausted. The coupon is valid and has capacity;
-		// it simply does not apply to these items — which is what the client
-		// needs to tell the customer.
-		api.ErrorWithContext(ctx, w, http.StatusConflict, "COUPON_NOT_APPLICABLE",
-			"that coupon does not apply to the items in your cart", nil)
+	// The coupon refusals (formerly 409 COUPON_UNAVAILABLE / 409
+	// COUPON_NOT_APPLICABLE) are answered above by writeCouponError, as the
+	// coupons contract's 422 codes.
+	case errors.Is(err, service.ErrNoSellerProfile):
+		api.ErrorWithContext(ctx, w, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	case errors.Is(err, postgres.ErrSellerNotApproved):
+		// 409, not 403: the shop is not open yet, a state that resolves
+		// without anybody granting a permission.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "SELLER_NOT_APPROVED",
+			"your shop is still being reviewed", nil)
 	case errors.Is(err, postgres.ErrTaxClassMissing), errors.Is(err, postgres.ErrTaxClassInvalid):
 		// B9: a listing we cannot compute GST for is not sellable. 409 with
 		// its own code so the seller-facing surface can say what to fix

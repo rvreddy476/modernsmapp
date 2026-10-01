@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_INVALID",
+    "message": "that coupon code is not valid"
+  },
+  "meta": {}
+}
+

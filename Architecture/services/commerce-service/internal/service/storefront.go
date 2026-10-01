@@ -271,6 +271,7 @@ func (s *Service) ListFavourites(ctx context.Context, userID uuid.UUID, limit in
 		items = []*postgres.Product{}
 	}
 	s.hydrateProductImages(ctx, items)
+	s.HydrateBestCoupons(ctx, items)
 	// No favourite lookup needed: every row in this list is, by definition,
 	// a favourite. The store sets it.
 	return &FavouritesPage{Items: items, NextCursor: next}, nil
@@ -481,6 +482,8 @@ func (s *Service) hydrateHome(ctx context.Context, viewerID uuid.UUID, page *Hom
 	// longer needed — FavouriteSet takes the ids as an array and the same
 	// product appearing in two sections costs nothing.
 	s.MarkFavourites(ctx, viewerID, all)
+	// And the coupon badge, one query for the page.
+	s.HydrateBestCoupons(ctx, all)
 }
 
 // ─── Commerce as a content authority for media-service ──────────────────

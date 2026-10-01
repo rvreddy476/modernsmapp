@@ -68,7 +68,7 @@ const (
 var AdminPermissions = []string{
 	PermStatsRead, PermSellersRead, PermSellerApprove, PermSellerSuspend, PermProductsModerate,
 	PermKYCVerify, PermPayoutsRead, PermCODSettle, PermCatalogueEdit, PermBannersEdit,
-	PermJobsRead, PermComplianceRead, PermComplianceSweep,
+	PermJobsRead, PermComplianceRead, PermComplianceSweep, PermCouponsManage,
 }
 
 // Error codes for the token path.
@@ -189,6 +189,7 @@ func (h *Handler) requireAdminToken(perm string) gin.HandlerFunc {
 //	GET    /jobs/dead-letter                         commerce:jobs.read
 //	GET    /compliance-gaps                          commerce:compliance.read
 //	POST   /compliance-gaps/sweep                    commerce:compliance.sweep
+//	GET/POST /coupons, PATCH /coupons/:couponId      commerce:coupons.manage
 func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 	g := r.Group(InternalAdminPrefix)
 	gate := h.requireAdminToken
@@ -243,6 +244,10 @@ func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 	g.GET("/jobs/dead-letter", gate(PermJobsRead), h.AdminListDeadLetterJobs)
 	g.GET("/compliance-gaps", gate(PermComplianceRead), h.AdminComplianceGaps)
 	g.POST("/compliance-gaps/sweep", gate(PermComplianceSweep), h.AdminSweepComplianceGaps)
+
+	// Coupons (MStore → Coupons): platform coupons and the read-only list of
+	// seller coupons. commerce:coupons.manage.
+	h.registerAdminCouponRoutes(g)
 }
 
 // AdminGetStats — GET /v1/commerce/internal/admin/stats (admin-service token,

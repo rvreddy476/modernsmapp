@@ -46,6 +46,7 @@ package consumers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -143,7 +144,48 @@ func (c *P0PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelo
 
 // OnSucceeded applies payment.succeeded.
 func (c *P0PaymentsConsumer) OnSucceeded(ctx context.Context, env *events.EventEnvelope, ev paymentevents.Succeeded) error {
-	return c.applyPayment(ctx, env, ev.Payment, c.store.ApplyPaymentSucceeded)
+	offer := SucceededOffer(env)
+	return c.applyPayment(ctx, env, ev.Payment, func(ctx context.Context, e postgres.PaymentEvent) error {
+		e.Offer = offer
+		return c.store.ApplyPaymentSucceeded(ctx, e)
+	})
+}
+
+// succeededOfferKeys are the keys payments-service adds to payment.succeeded
+// for a capture accepted through a registered bank offer (its migration 014).
+// amount_minor stays the order value; these say what the buyer actually paid.
+type succeededOfferKeys struct {
+	CapturedMinor      *int64 `json:"captured_minor"`
+	OfferID            string `json:"offer_id"`
+	OfferTitle         string `json:"offer_title"`
+	OfferDiscountMinor *int64 `json:"offer_discount_minor"`
+	OfferFundedBy      string `json:"offer_funded_by"`
+}
+
+// SucceededOffer reads the bank-offer keys from a payment.succeeded payload,
+// or nil when the payment used no offer. It decodes the payload a second time
+// rather than widening shared/paymentevents, which food-service also reads.
+// A payload whose offer keys do not decode is treated as carrying no offer:
+// the capture check has already decided the payment, and the offer is
+// display.
+func SucceededOffer(env *events.EventEnvelope) *postgres.PaymentOffer {
+	if env == nil || len(env.Payload) == 0 {
+		return nil
+	}
+	var k succeededOfferKeys
+	if err := json.Unmarshal(env.Payload, &k); err != nil {
+		return nil
+	}
+	if k.OfferID == "" || k.CapturedMinor == nil || k.OfferDiscountMinor == nil {
+		return nil
+	}
+	return &postgres.PaymentOffer{
+		OfferID:       k.OfferID,
+		Title:         k.OfferTitle,
+		DiscountMinor: money.Paise(*k.OfferDiscountMinor),
+		FundedBy:      k.OfferFundedBy,
+		CapturedMinor: money.Paise(*k.CapturedMinor),
+	}
 }
 
 // OnFailed applies payment.failed.

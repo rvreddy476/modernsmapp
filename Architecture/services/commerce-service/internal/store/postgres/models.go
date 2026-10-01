@@ -336,6 +336,10 @@ type Product struct {
 	// "Try on" badge on a tile without inventing a second shape.
 	TryOn *ProductTryOn `db:"-" json:"try_on,omitempty"`
 
+	// bestCoupon / bestCouponSet: see SetBestCoupon and MarshalJSON.
+	bestCoupon    *BestCoupon
+	bestCouponSet bool
+
 	SourceImageURL *string `db:"source_image_url" json:"source_image_url,omitempty"`
 	// RetailerName is `sellers.store_name` — the shop the listing belongs to.
 	//
@@ -468,12 +472,35 @@ type SellerVariantRow struct {
 // to remember to fill.
 func (p Product) MarshalJSON() ([]byte, error) {
 	type alias Product // sheds this method, so this is not infinite recursion
+	// best_coupon is present ONLY on the buyer surfaces that hydrate it
+	// (SetBestCoupon) — as the coupon, or as null when none qualifies — and
+	// absent everywhere else (the seller's own catalogue, admin reads), so
+	// those shapes do not change.
+	var best json.RawMessage
+	if p.bestCouponSet {
+		b, err := json.Marshal(p.bestCoupon)
+		if err != nil {
+			return nil, err
+		}
+		best = b
+	}
 	return json.Marshal(struct {
 		alias
-		SellerName  *string `json:"seller_name,omitempty"`
-		DiscountPct *int    `json:"discount_pct,omitempty"`
-	}{alias(p), p.RetailerName, DiscountPct(p.MinPriceMinor, p.MRPMinor)})
+		SellerName  *string         `json:"seller_name,omitempty"`
+		DiscountPct *int            `json:"discount_pct,omitempty"`
+		BestCoupon  json.RawMessage `json:"best_coupon,omitempty"`
+	}{alias(p), p.RetailerName, DiscountPct(p.MinPriceMinor, p.MRPMinor), best})
 }
+
+// SetBestCoupon records the product page's best public seller coupon (nil
+// when none qualifies) and makes best_coupon part of this product's JSON.
+func (p *Product) SetBestCoupon(b *BestCoupon) {
+	p.bestCoupon = b
+	p.bestCouponSet = true
+}
+
+// BestCouponValue is what SetBestCoupon recorded, and whether it was called.
+func (p *Product) BestCouponValue() (*BestCoupon, bool) { return p.bestCoupon, p.bestCouponSet }
 
 // DiscountPct is whole percent off MRP, or nil when there is no discount.
 //

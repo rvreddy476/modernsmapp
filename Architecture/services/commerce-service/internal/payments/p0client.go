@@ -73,23 +73,40 @@ func ApplicationIDFromEnv(getenv func(string) string) string {
 type Client struct {
 	c             *paymentsclient.Client
 	applicationID string
+	// offers authenticates the bank-offer read (offers.go), which the shared
+	// client has no method for. Same credential the shared client chose.
+	offers *offersAuth
 }
 
 func newClient(baseURL, applicationID string, auth paymentsclient.Auth) (*Client, error) {
 	if err := paymentsclient.ValidateApplicationID(applicationID); err != nil {
 		return nil, err
 	}
+	hc := newHTTPClient()
 	c, err := paymentsclient.New(paymentsclient.Config{
 		BaseURL:       baseURL,
 		Service:       serviceName,
 		ReferenceType: servicetoken.RefOrder,
 		Auth:          auth,
-		HTTPClient:    newHTTPClient(),
+		HTTPClient:    hc,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &Client{c: c, applicationID: applicationID}, nil
+	// paymentsclient.New has already refused every credential combination it
+	// would not use, so the same choice here is safe: a signing key when one
+	// was given, otherwise the legacy key it accepted.
+	oa := &offersAuth{baseURL: strings.TrimRight(baseURL, "/"), http: hc}
+	if auth.TokenKey != "" {
+		signer, err := servicetoken.NewSignerFromBase64(serviceName, auth.TokenKID, auth.TokenKey)
+		if err != nil {
+			return nil, fmt.Errorf("payments client: signing key: %w", err)
+		}
+		oa.signer = signer
+	} else {
+		oa.internalKey = auth.InternalKey
+	}
+	return &Client{c: c, applicationID: applicationID, offers: oa}, nil
 }
 
 // NewP0Client builds a client that authenticates with a service token.

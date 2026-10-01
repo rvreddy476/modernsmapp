@@ -153,6 +153,10 @@ type CheckoutParams struct {
 	CouponCode    string
 	PaymentMethod string
 	TermsVersion  string
+	// PlatformCouponsEnabled is COMMERCE_PLATFORM_COUPONS_ENABLED. False (the
+	// default everywhere) refuses a platform-funded code with
+	// ErrCouponNotAvailable before any capacity is claimed.
+	PlatformCouponsEnabled bool
 
 	// ExpectedTotalMinor, when non-zero, is what the client last showed the
 	// customer. A mismatch produces a typed price-changed error rather than
@@ -469,14 +473,18 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 	// ── 8. Claim coupon capacity atomically (LB-16 / M-6) ─────────────
 	var couponID *uuid.UUID
 	discount := money.Zero
+	platformCoupon := false
 	if p.CouponCode != "" {
 		// B9: the priced lines travel in so product/category/variant
 		// applicability can actually be checked against the cart.
-		cid, amt, err := claimCoupon(ctx, tx, p.CouponCode, p.UserID, sellerID, subtotalOf(taxLines), priced)
+		cid, out, err := claimCoupon(ctx, tx, p.CouponCode, p.UserID, sellerID, priced, p.PlatformCouponsEnabled)
 		if err != nil {
 			return nil, err
 		}
-		couponID, discount = cid, amt
+		couponID, discount, platformCoupon = cid, out.Discount, out.Platform
+		// The discount reduces the taxable value of the lines it applies
+		// to, and only those (tax.Line.CouponExcluded).
+		applyCouponEligibility(taxLines, out)
 	}
 
 	// Resolved HERE, from the seller these locked lines belong to, rather
@@ -559,6 +567,17 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 			return nil, ErrIdempotencyConflict
 		}
 		return nil, fmt.Errorf("checkout: insert order: %w", err)
+	}
+
+	// A platform-funded coupon (reachable only while
+	// COMMERCE_PLATFORM_COUPONS_ENABLED is on) is recorded apart from the
+	// seller's money. Its invoice and tax treatment is adviser-pending.
+	if platformCoupon {
+		if _, err := tx.Exec(ctx,
+			`UPDATE orders SET platform_discount_minor = $2 WHERE id = $1`,
+			orderID, computed.OrderDiscount.Int64()); err != nil {
+			return nil, fmt.Errorf("checkout: record platform discount: %w", err)
+		}
 	}
 
 	// Initial history row. The trigger writes subsequent transitions; the
@@ -828,6 +847,21 @@ func lockCartLines(ctx context.Context, tx pgx.Tx, cartID uuid.UUID) ([]cartLine
 // A subquery in the target list is not locked at all, which is why this shape
 // is safe and why any future move of the options must keep it.
 func lockAndPriceLines(ctx context.Context, tx pgx.Tx, lines []cartLine) ([]pricedLine, uuid.UUID, error) {
+	return priceLinesTx(ctx, tx, lines, true)
+}
+
+// priceLinesTx is lockAndPriceLines with the row locks optional. Only the
+// bag's coupon list (CartCoupons) passes lock=false: it is a read a buyer
+// repeats on every visit to the bag, and taking FOR UPDATE on the product
+// rows there would queue it behind — and in front of — every checkout of
+// those products. Its answer is advisory; quote and checkout re-price under
+// the lock. The predicate and the projection are the same text either way.
+func priceLinesTx(ctx context.Context, tx pgx.Tx, lines []cartLine, lock bool) ([]pricedLine, uuid.UUID, error) {
+	lockClause := ""
+	if lock {
+		lockClause = `
+			 FOR UPDATE OF v, p`
+	}
 	out := make([]pricedLine, 0, len(lines))
 	var sellerID uuid.UUID
 
@@ -875,8 +909,7 @@ func lockAndPriceLines(ctx context.Context, tx pgx.Tx, lines []cartLine) ([]pric
 			   -- listing that had reached active + approved. Same rule as
 			   -- productSummaryLive; quote and checkout both price here.
 			   AND sl.status = 'approved'
-			   AND p.visibility = 'public'
-			 FOR UPDATE OF v, p`,
+			   AND p.visibility = 'public'`+lockClause,
 			l.VariantID).Scan(
 			&pl.VariantID, &pl.ProductID, &pl.SellerID, &pl.Title, &pl.SKU,
 			&pl.UnitMinor, &pl.MRPMinor,
@@ -1007,228 +1040,7 @@ func lockInventory(ctx context.Context, tx pgx.Tx, lines []pricedLine) ([]OutOfS
 	return oos, nil
 }
 
-// anyLineMatches reports whether any cart line's chosen id is in the
-// coupon's allowlist. An EMPTY allowlist matches nothing: a coupon scoped to
-// "product" with no products named is misconfigured, and treating that as
-// "all products" is the same silent-discount failure B9 removes.
-func anyLineMatches(lines []pricedLine, allowed []uuid.UUID, pick func(pricedLine) uuid.UUID) bool {
-	if len(allowed) == 0 {
-		return false
-	}
-	set := make(map[uuid.UUID]struct{}, len(allowed))
-	for _, id := range allowed {
-		set[id] = struct{}{}
-	}
-	for _, l := range lines {
-		if _, ok := set[pick(l)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-// anyLineInCategories reports whether any cart line's product sits in one of
-// the coupon's categories. Read inside the caller's transaction, against the
-// products already locked by lockAndPriceLines.
-func anyLineInCategories(ctx context.Context, tx pgx.Tx, lines []pricedLine, allowed []uuid.UUID) (bool, error) {
-	if len(allowed) == 0 {
-		return false, nil
-	}
-	ids := make([]uuid.UUID, 0, len(lines))
-	for _, l := range lines {
-		ids = append(ids, l.ProductID)
-	}
-	var n int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM products
-		  WHERE id = ANY($1) AND category_id = ANY($2)`,
-		ids, allowed).Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-// couponRow is a coupon's terms, read either by CLAIMING capacity (checkout)
-// or by PREVIEWING it (quote).
-//
-// C3-LB-2. The quote must show the buyer the same discount checkout will
-// charge, and the only way to guarantee that is for both to run the same
-// applicability rules and the same arithmetic. Before this split, checkout
-// had the only copy — so the quote could not price a coupon at all, which is
-// part of why the client was left inventing a total.
-type couponRow struct {
-	id             uuid.UUID
-	discType       string
-	valueMinor     *int64
-	basisPoints    *int
-	maxDiscount    *int64
-	minOrder       int64
-	maxUsesPerUser int
-	applicableTo   string
-	applicableIDs  []uuid.UUID
-	couponSeller   *uuid.UUID
-}
-
-// couponColumns is shared so the claim and the preview cannot read different
-// fields and therefore reach different conclusions.
-const couponColumns = `id, discount_type,
-	          discount_value_minor, discount_basis_points, max_discount_amount_minor,
-	          COALESCE(min_order_amount_minor,0), max_uses_per_user,
-	          applicable_to, applicable_ids, seller_id`
-
-// couponLive is the validity predicate: active, started, unexpired, and with
-// capacity remaining. The claim applies it in an UPDATE, the preview in a
-// SELECT — same text, so "valid" means the same thing to both.
-const couponLive = `code = $1
-		   AND is_active = TRUE
-		   AND starts_at <= NOW()
-		   AND (expires_at IS NULL OR expires_at > NOW())
-		   AND (max_uses IS NULL OR uses_count < max_uses)`
-
-func scanCoupon(row pgx.Row) (couponRow, error) {
-	var c couponRow
-	err := row.Scan(&c.id, &c.discType,
-		&c.valueMinor, &c.basisPoints, &c.maxDiscount,
-		&c.minOrder, &c.maxUsesPerUser,
-		&c.applicableTo, &c.applicableIDs, &c.couponSeller)
-	return c, err
-}
-
-// evaluateCoupon applies every rule that decides IF and BY HOW MUCH a coupon
-// discounts this cart. It performs no writes, so the quote and the checkout
-// can both call it and are guaranteed to agree.
-func evaluateCoupon(
-	ctx context.Context,
-	tx pgx.Tx,
-	c couponRow,
-	userID, sellerID uuid.UUID,
-	subtotal money.Paise,
-	lines []pricedLine,
-) (money.Paise, error) {
-	// Per-user cap, counted under the caller's transaction.
-	var used int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM coupon_usages WHERE coupon_id = $1 AND user_id = $2`,
-		c.id, userID).Scan(&used); err != nil {
-		return 0, err
-	}
-	if used >= c.maxUsesPerUser {
-		return 0, ErrCouponExhausted
-	}
-	if subtotal < money.Paise(c.minOrder) {
-		return 0, ErrCouponExhausted
-	}
-
-	// ── Applicability (B9) ────────────────────────────────────────────
-	//
-	// The query has always SELECTed `applicable_to` and `applicable_ids`,
-	// and only the `seller` case was ever enforced. A product- or
-	// category-scoped coupon therefore discounted any cart it was typed
-	// into: an unauthorised discount on every affected order, funded by the
-	// platform.
-	//
-	// The switch is exhaustive and its default REFUSES. A scope this code
-	// does not understand must not be silently treated as "applies to
-	// everything" — that is the failure mode being removed, and a new scope
-	// added to the schema later would otherwise inherit it.
-	switch c.applicableTo {
-	case "all", "":
-		// Unrestricted.
-	case "seller":
-		if c.couponSeller == nil || *c.couponSeller != sellerID {
-			return 0, ErrCouponNotApplicable
-		}
-	case "product":
-		if !anyLineMatches(lines, c.applicableIDs, func(l pricedLine) uuid.UUID { return l.ProductID }) {
-			return 0, ErrCouponNotApplicable
-		}
-	case "category":
-		ok, err := anyLineInCategories(ctx, tx, lines, c.applicableIDs)
-		if err != nil {
-			return 0, err
-		}
-		if !ok {
-			return 0, ErrCouponNotApplicable
-		}
-	case "variant":
-		if !anyLineMatches(lines, c.applicableIDs, func(l pricedLine) uuid.UUID { return l.VariantID }) {
-			return 0, ErrCouponNotApplicable
-		}
-	default:
-		return 0, fmt.Errorf("%w: unknown applicability scope %q", ErrCouponNotApplicable, c.applicableTo)
-	}
-
-	var discount money.Paise
-	switch c.discType {
-	case "percentage":
-		if c.basisPoints == nil {
-			return 0, ErrCouponExhausted
-		}
-		discount = money.Paise(int64(subtotal) * int64(*c.basisPoints) / 10000)
-		if c.maxDiscount != nil && discount > money.Paise(*c.maxDiscount) {
-			discount = money.Paise(*c.maxDiscount)
-		}
-	case "flat":
-		if c.valueMinor == nil {
-			return 0, ErrCouponExhausted
-		}
-		discount = money.Paise(*c.valueMinor)
-	default:
-		// free_shipping / buy_x_get_y are not in the P0 loop.
-		return 0, ErrCouponExhausted
-	}
-	// A flat coupon larger than the cart must not create a negative order.
-	if discount > subtotal {
-		discount = subtotal
-	}
-	return discount, nil
-}
-
-// claimCoupon takes capacity conditionally, inside the transaction.
-//
-// M-6: caps used to be READ during pricing and INCREMENTED after the order
-// was created, with the increment's error ignored. Fifty concurrent
-// checkouts all passed a one-use coupon because none had committed when the
-// others read.
-func claimCoupon(ctx context.Context, tx pgx.Tx, code string, userID, sellerID uuid.UUID, subtotal money.Paise, lines []pricedLine) (*uuid.UUID, money.Paise, error) {
-	// The conditional UPDATE is the claim: it only succeeds while capacity
-	// remains, and it is atomic with everything else in this transaction.
-	c, err := scanCoupon(tx.QueryRow(ctx, `
-		UPDATE coupons
-		   SET uses_count = uses_count + 1
-		 WHERE `+couponLive+`
-		RETURNING `+couponColumns, code))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, 0, ErrCouponExhausted
-		}
-		return nil, 0, err
-	}
-	discount, err := evaluateCoupon(ctx, tx, c, userID, sellerID, subtotal, lines)
-	if err != nil {
-		return nil, 0, err
-	}
-	return &c.id, discount, nil
-}
-
-// previewCoupon prices a coupon WITHOUT claiming capacity, for the quote.
-//
-// C3-LB-2. It deliberately does not reserve anything: a quote is not a
-// promise, and holding coupon capacity for every buyer who opens a checkout
-// screen would exhaust a one-use code on the first person to look at it.
-// Checkout claims atomically and can still return ErrCouponExhausted, which
-// the client surfaces as a price change rather than a silent charge.
-func previewCoupon(ctx context.Context, tx pgx.Tx, code string, userID, sellerID uuid.UUID, subtotal money.Paise, lines []pricedLine) (money.Paise, error) {
-	c, err := scanCoupon(tx.QueryRow(ctx,
-		`SELECT `+couponColumns+` FROM coupons WHERE `+couponLive, code))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, ErrCouponExhausted
-		}
-		return 0, err
-	}
-	return evaluateCoupon(ctx, tx, c, userID, sellerID, subtotal, lines)
-}
+// Coupon applicability, pricing, claim and preview live in coupons.go.
 
 func subtotalOf(lines []tax.Line) money.Paise {
 	var t money.Paise

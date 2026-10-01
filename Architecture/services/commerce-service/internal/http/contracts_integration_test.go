@@ -56,6 +56,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,7 @@ import (
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/commerce-service/internal/testdsn"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -92,6 +94,22 @@ type contractEnv struct {
 	// replacement, in order of first appearance across the whole run.
 	freshIDs map[string]string
 	knownIDs map[string]bool
+
+	// adminSigner mints admin-service tokens for the admin console routes.
+	adminSigner *servicetoken.Signer
+}
+
+// adminDo calls an admin console route as admin-service would: a token for
+// audience commerce, scoped to the route's one permission, acting for ctAdmin.
+func (e *contractEnv) adminDo(method, path, perm string, body any) *httptest.ResponseRecorder {
+	e.t.Helper()
+	tok, err := e.adminSigner.Mint(AudienceCommerce, "admin-console", []string{perm}, nil, time.Minute,
+		servicetoken.WithActor(ctAdmin.String()))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return e.do(ctReq{method: method, path: path, body: body,
+		headers: map[string]string{ServiceAuthHeader: "Bearer " + tok}})
 }
 
 // ctPaymentsServer is the payments-service the real *payments.Client talks
@@ -173,6 +191,35 @@ func newCtPaymentsServer() *ctPaymentsServer {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": intent})
+	})
+	// Bank offers (payments migration 014): GET /internal/offers answers the
+	// registry's public fields, filtered by amount_minor exactly as
+	// payments-service filters (min_amount_minor <= amount; 0 = unfiltered).
+	mux.HandleFunc("/v1/payments/internal/offers", func(w http.ResponseWriter, r *http.Request) {
+		amount, _ := strconv.ParseInt(r.URL.Query().Get("amount_minor"), 10, 64)
+		ends := "2026-12-31T18:29:59Z"
+		capMinor := int64(150000)
+		all := []map[string]any{
+			{"id": "00000000-0000-4000-8000-0000000c0d01", "title": "10% off with HDFC Bank credit cards",
+				"description":    "Instant discount on HDFC Bank credit cards. Minimum order ₹1,000.",
+				"payment_method": "card", "discount_type": "percentage", "discount_value": 1000,
+				"max_discount_minor": capMinor, "min_amount_minor": int64(100000), "ends_at": ends},
+			{"id": "00000000-0000-4000-8000-0000000c0d02", "title": "Flat ₹75 off with ICICI Bank UPI",
+				"description": "", "payment_method": "upi", "discount_type": "flat", "discount_value": 7500,
+				"max_discount_minor": nil, "min_amount_minor": int64(0), "ends_at": nil},
+			{"id": "00000000-0000-4000-8000-0000000c0d03", "title": "₹2,000 off on orders above ₹50,000",
+				"description": "", "payment_method": "any", "discount_type": "flat", "discount_value": 200000,
+				"max_discount_minor": nil, "min_amount_minor": int64(5000000), "ends_at": nil},
+		}
+		items := []map[string]any{}
+		for _, o := range all {
+			if amount > 0 && o["min_amount_minor"].(int64) > amount {
+				continue
+			}
+			items = append(items, o)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"items": items}})
 	})
 	p.srv = httptest.NewServer(mux)
 	return p
@@ -329,15 +376,36 @@ func newContractEnv(t *testing.T) *contractEnv {
 		// every delivery_estimate / quote fixture would move each day.
 		WithClock(func() time.Time { return ctFixedNow })
 
+	// admin-service's token, for the admin console's routes (coupons). The
+	// registration is the one ServiceCallersFromEnv builds in production.
+	adminPub, adminPriv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	callers := map[string]string{
+		"SERVICE_CALLERS":                     "admin-service",
+		"SERVICE_CALLER_ADMIN_SERVICE_KID":    "ct",
+		"SERVICE_CALLER_ADMIN_SERVICE_PUBKEY": adminPub,
+		"SERVICE_CALLER_ADMIN_SERVICE_OPS":    strings.Join(AdminPermissions, ","),
+	}
+	verifier, err := ServiceCallersFromEnv(func(k string) string { return callers[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminSigner, err := servicetoken.NewSignerFromBase64(IssuerAdminService, "ct", adminPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	r := gin.New()
 	r.Use(FenceMiddlewareWithStubSettlement(true))
-	h := New(svc).WithInternalKey(integrationInternalKey).WithStubSettlement(true)
+	h := New(svc).WithInternalKey(integrationInternalKey).WithStubSettlement(true).WithServiceVerifier(verifier)
 	h.RegisterRoutes(r)
 	h.RegisterP0Routes(r)
 
 	e := &contractEnv{
 		t: t, pool: pool, r: r, svc: svc, payments: pay, runStart: time.Now().UTC(),
-		freshIDs: map[string]string{}, knownIDs: map[string]bool{},
+		freshIDs: map[string]string{}, knownIDs: map[string]bool{}, adminSigner: adminSigner,
 	}
 	e.seed()
 	return e

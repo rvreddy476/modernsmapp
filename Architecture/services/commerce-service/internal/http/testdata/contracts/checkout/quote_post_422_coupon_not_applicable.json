@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_NOT_APPLICABLE",
+    "message": "that coupon does not apply to the items in your bag"
+  },
+  "meta": {}
+}
+

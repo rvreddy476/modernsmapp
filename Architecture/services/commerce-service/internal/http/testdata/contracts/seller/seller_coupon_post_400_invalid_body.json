@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "INVALID_BODY",
+    "message": "code must be 4-20 letters and digits"
+  },
+  "meta": {}
+}
+

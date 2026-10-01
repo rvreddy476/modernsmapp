@@ -264,6 +264,10 @@ type QuotePricingInput struct {
 	CouponCode       string
 	SellerState      string
 	DestinationState string
+	// PlatformCouponsEnabled — see CheckoutParams. The quote refuses a
+	// platform code exactly as checkout does, so neither can price one the
+	// other would refuse.
+	PlatformCouponsEnabled bool
 }
 
 // PriceCartForQuote computes what checkout WILL charge, without charging it.
@@ -327,13 +331,14 @@ func (s *Store) PriceCartForQuote(ctx context.Context, in QuotePricingInput) (*Q
 
 	discount := money.Zero
 	if in.CouponCode != "" {
-		d, cErr := previewCoupon(ctx, tx, in.CouponCode, in.UserID, sellerID, subtotal, priced)
+		out, cErr := previewCoupon(ctx, tx, in.CouponCode, in.UserID, sellerID, priced, in.PlatformCouponsEnabled)
 		if cErr != nil {
 			// Surfaced, not swallowed. A quote that silently drops an
 			// unusable coupon shows a total the buyer did not ask for.
 			return nil, cErr
 		}
-		discount = d
+		discount = out.Discount
+		applyCouponEligibility(taxLines, out)
 	}
 
 	// Same refusal as checkout: a quote that guesses the tax shows the buyer

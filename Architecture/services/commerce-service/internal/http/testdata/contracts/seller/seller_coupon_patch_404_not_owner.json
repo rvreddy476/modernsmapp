@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_NOT_FOUND",
+    "message": "coupon not found"
+  },
+  "meta": {}
+}
+

@@ -52,6 +52,35 @@ type PaymentEvent struct {
 	Currency    string
 	PayerID     uuid.UUID
 	ProviderRef string
+
+	// Offer is what payment.succeeded says a bank offer did (payments-service
+	// migration 014): set only on an offer capture. AmountMinor above is
+	// still the ORDER VALUE and is what the capture check compares; the offer
+	// is recorded for display and never changes that rule.
+	Offer *PaymentOffer
+}
+
+// PaymentOffer is a bank offer applied at payment, as payment.succeeded
+// carries it.
+type PaymentOffer struct {
+	OfferID       string
+	Title         string
+	DiscountMinor money.Paise
+	FundedBy      string
+	CapturedMinor money.Paise
+}
+
+// consistentWith reports whether the offer's figures add up to the order
+// value: captured + discount == amount, both positive. payments-service
+// guarantees this; commerce records nothing it cannot reconcile.
+func (o *PaymentOffer) consistentWith(amount money.Paise) bool {
+	if o == nil {
+		return false
+	}
+	if _, err := uuid.Parse(o.OfferID); err != nil {
+		return false
+	}
+	return o.DiscountMinor > 0 && o.CapturedMinor > 0 && o.CapturedMinor.Add(o.DiscountMinor) == amount
 }
 
 // ApplyPaymentSucceeded records the event, verifies the full tuple, marks the
@@ -159,6 +188,14 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 		paymentevents.AllowUnstated,
 	); err != nil {
 		return fmt.Errorf("%w: %v", ErrAmountMismatch, err)
+	}
+
+	// The bank offer, recorded in this same transaction — after the capture
+	// check, which it does not take part in. Only figures that reconcile to
+	// the order value are written; anything else is logged and left
+	// unrecorded, and the payment applies exactly as before.
+	if err := recordPaymentOfferTx(ctx, tx, e.OrderID, totalMinor, e.Offer); err != nil {
+		return err
 	}
 
 	// Already paid — idempotent, and the inbox row above already made this

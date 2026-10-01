@@ -1769,6 +1769,7 @@ services:
       # Dev only: a complete listing from an APPROVED shop is approved on
       # submit (moderation log actor system:auto_approve). No values file sets it.
       COMMERCE_PRODUCT_AUTO_APPROVE: ${COMMERCE_PRODUCT_AUTO_APPROVE:-true}
+      COMMERCE_PLATFORM_COUPONS_ENABLED: "false"
       SHIPROCKET_EMAIL: ${SHIPROCKET_EMAIL:-}
       SHIPROCKET_PASSWORD: ${SHIPROCKET_PASSWORD:-}
       SHIPROCKET_WEBHOOK_TOKEN: ${SHIPROCKET_WEBHOOK_TOKEN:-}

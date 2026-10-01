@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SELLER_NOT_APPROVED",
+    "message": "your shop is still being reviewed"
+  },
+  "meta": {}
+}
+

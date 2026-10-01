@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SELLER_COUPON_READ_ONLY",
+    "message": "a seller's coupon is managed by the seller; the console lists it read-only"
+  },
+  "meta": {}
+}
+

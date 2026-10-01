@@ -230,6 +230,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Engagement: delivery date, like/dislike, share, helpful votes ──
 	h.RegisterEngagementRoutes(v1)
+
+	// ── Coupons and bank offers (migration 038) ──
+	h.RegisterCouponOfferRoutes(v1)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────

@@ -1,0 +1,79 @@
+{
+  "data": [
+    {
+      "id": "00000000-0000-4000-8000-0000000c0504",
+      "code": "BIGSPEND",
+      "description": null,
+      "discount_type": "flat",
+      "discount_value": 30000,
+      "max_discount_minor": null,
+      "min_order_minor": 500000,
+      "max_uses": null,
+      "max_uses_per_user": 1,
+      "uses_count": 0,
+      "applicable_to": "all",
+      "applicable_ids": [],
+      "starts_at": "2026-09-01T00:00:00Z",
+      "expires_at": null,
+      "is_public": true,
+      "is_active": true,
+      "funded_by": "seller",
+      "seller_id": "00000000-0000-4000-8000-0000000c0010",
+      "created_at": "2026-09-20T10:06:00Z",
+      "updated_at": "2026-09-20T10:06:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000c0502",
+      "code": "EARBUDS150",
+      "description": null,
+      "discount_type": "flat",
+      "discount_value": 15000,
+      "max_discount_minor": null,
+      "min_order_minor": 0,
+      "max_uses": null,
+      "max_uses_per_user": 1,
+      "uses_count": 0,
+      "applicable_to": "product",
+      "applicable_ids": [
+        "00000000-0000-4000-8000-0000000c0100"
+      ],
+      "starts_at": "2026-09-01T00:00:00Z",
+      "expires_at": null,
+      "is_public": true,
+      "is_active": true,
+      "funded_by": "seller",
+      "seller_id": "00000000-0000-4000-8000-0000000c0010",
+      "created_at": "2026-09-20T10:08:00Z",
+      "updated_at": "2026-09-20T10:08:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000c0505",
+      "code": "EXPIRED5",
+      "description": null,
+      "discount_type": "percentage",
+      "discount_value": 500,
+      "max_discount_minor": null,
+      "min_order_minor": 0,
+      "max_uses": null,
+      "max_uses_per_user": 1,
+      "uses_count": 0,
+      "applicable_to": "all",
+      "applicable_ids": [],
+      "starts_at": "2026-09-01T00:00:00Z",
+      "expires_at": "2026-09-15T18:29:59Z",
+      "is_public": true,
+      "is_active": true,
+      "funded_by": "seller",
+      "seller_id": "00000000-0000-4000-8000-0000000c0010",
+      "created_at": "2026-09-20T10:05:00Z",
+      "updated_at": "2026-09-20T10:05:00Z"
+    }
+  ],
+  "meta": {
+    "platform_coupons_enabled": false,
+    "total": 9,
+    "limit": 3,
+    "offset": 0
+  }
+}
+

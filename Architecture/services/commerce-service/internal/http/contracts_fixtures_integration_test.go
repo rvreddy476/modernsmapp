@@ -86,6 +86,21 @@ var (
 	ctMedia2   = uuid.MustParse("00000000-0000-4000-8000-0000000d0002")
 	ctMediaNew = uuid.MustParse("00000000-0000-4000-8000-0000000d0003")
 	ctMediaKYC = uuid.MustParse("00000000-0000-4000-8000-0000000d0004")
+
+	// Coupons (migration 038) and the admin who manages them.
+	ctAdmin       = uuid.MustParse("00000000-0000-4000-8000-0000000c0006")
+	ctCpnPct      = uuid.MustParse("00000000-0000-4000-8000-0000000c0501") // MOMENTUM10: 10%, cap ₹200, public
+	ctCpnEarbuds  = uuid.MustParse("00000000-0000-4000-8000-0000000c0502") // EARBUDS150: ₹150 off P1 only
+	ctCpnSecret   = uuid.MustParse("00000000-0000-4000-8000-0000000c0503") // VIPSECRET: not public
+	ctCpnBigSpend = uuid.MustParse("00000000-0000-4000-8000-0000000c0504") // BIGSPEND: minimum ₹5,000
+	ctCpnExpired  = uuid.MustParse("00000000-0000-4000-8000-0000000c0505") // EXPIRED5
+	ctCpnUsedUp   = uuid.MustParse("00000000-0000-4000-8000-0000000c0506") // USEDUP: 1 of 1 used
+	ctCpnOther    = uuid.MustParse("00000000-0000-4000-8000-0000000c0507") // KETTLE20: the other shop's
+	ctCpnPlatform = uuid.MustParse("00000000-0000-4000-8000-0000000c0508") // MSTORE50: platform-funded
+	ctCpnLastUse  = uuid.MustParse("00000000-0000-4000-8000-0000000c0509") // ONEUSELEFT: 0 of 1 used
+	ctOOffer      = uuid.MustParse("00000000-0000-4000-8000-0000000c0250") // paid with a coupon and a bank offer
+	ctIOffer      = uuid.MustParse("00000000-0000-4000-8000-0000000c0251")
+	ctBankOffer   = uuid.MustParse("00000000-0000-4000-8000-0000000c0d01")
 )
 
 // ─── The seed ────────────────────────────────────────────────────────────
@@ -103,6 +118,9 @@ func (e *contractEnv) seed() {
 		ctOConfirmed, ctIConfirmed, ctODelivered, ctShipment, ctInvoice, ctIDelivered, ctIDelivered2,
 		ctOFailed, ctIFailed, ctORefund, ctIRefund, ctOPending, ctIPending, ctReview, ctCart,
 		ctTax0, ctTax5, ctTax12, ctTax18, ctTax28, ctMedia1, ctMedia2, ctMediaNew, ctMediaKYC,
+		ctAdmin, ctCpnPct, ctCpnEarbuds, ctCpnSecret, ctCpnBigSpend, ctCpnExpired, ctCpnUsedUp, ctCpnOther,
+		ctCpnPlatform, ctCpnLastUse, ctOOffer, ctIOffer, ctBankOffer,
+		uuid.MustParse("00000000-0000-4000-8000-0000000c0d02"), uuid.MustParse("00000000-0000-4000-8000-0000000c0d03"),
 	} {
 		e.knownIDs[id.String()] = true
 	}
@@ -311,6 +329,88 @@ func (e *contractEnv) seed() {
 	        VALUES ($1,$2,$3,1,'checkout','2026-09-14T10:20:00Z','2026-09-14T10:00:00Z')`, ctV1, ctOPending, ctBuyer)
 	e.exec(`UPDATE inventory_items SET reserved_qty = 1 WHERE variant_id = $1`, ctV1)
 
+	// ── Coupons (migration 038) ──────────────────────────────────────────
+	// Fixed ids, codes and timestamps. created_at descends in seed order so
+	// the seller's list (newest first) is stable.
+	coupon := func(id uuid.UUID, seller *uuid.UUID, code, desc, typ string, bps, value, maxDisc, minOrder *int64,
+		maxUses *int, uses int, scope string, ids []uuid.UUID, expires string, public bool, created string) {
+		var bpsV, valV *int64
+		legacy := 0.0
+		if typ == "percentage" {
+			bpsV, legacy = bps, float64(*bps)/100
+		} else {
+			valV, legacy = value, float64(*value)/100
+		}
+		var exp any
+		if expires != "" {
+			exp = expires
+		}
+		var d any
+		if desc != "" {
+			d = desc
+		}
+		if ids == nil {
+			ids = []uuid.UUID{}
+		}
+		minO := int64(0)
+		if minOrder != nil {
+			minO = *minOrder
+		}
+		e.exec(`INSERT INTO coupons (id, seller_id, code, description, discount_type, discount_value,
+		           discount_basis_points, discount_value_minor, max_discount_amount_minor, min_order_amount_minor,
+		           max_uses, uses_count, max_uses_per_user, applicable_to, applicable_ids, is_active, is_public,
+		           starts_at, expires_at, created_at, updated_at)
+		        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13,$14,TRUE,$15,
+		           '2026-09-01T00:00:00Z',$16::timestamptz,$17::timestamptz,$17::timestamptz)`,
+			id, seller, code, d, typ, legacy, bpsV, valV, maxDisc, minO, maxUses, uses, scope, ids, public, exp, created)
+	}
+	i64 := func(v int64) *int64 { return &v }
+	one := 1
+	coupon(ctCpnPct, &ctSeller, "MOMENTUM10", "10% off everything at Momentum Electronics", "percentage",
+		i64(1000), nil, i64(20000), nil, nil, 0, "all", nil, "2027-03-31T18:29:59Z", true, "2026-09-20T10:09:00Z")
+	coupon(ctCpnEarbuds, &ctSeller, "EARBUDS150", "", "flat", nil, i64(15000), nil, nil, nil, 0,
+		"product", []uuid.UUID{ctP1}, "", true, "2026-09-20T10:08:00Z")
+	coupon(ctCpnSecret, &ctSeller, "VIPSECRET", "For our loyal customers", "flat", nil, i64(50000), nil, nil, nil, 0,
+		"all", nil, "", false, "2026-09-20T10:07:00Z")
+	coupon(ctCpnBigSpend, &ctSeller, "BIGSPEND", "", "flat", nil, i64(30000), nil, i64(500000), nil, 0,
+		"all", nil, "", true, "2026-09-20T10:06:00Z")
+	coupon(ctCpnExpired, &ctSeller, "EXPIRED5", "", "percentage", i64(500), nil, nil, nil, nil, 0,
+		"all", nil, "2026-09-15T18:29:59Z", true, "2026-09-20T10:05:00Z")
+	coupon(ctCpnUsedUp, &ctSeller, "USEDUP", "", "flat", nil, i64(1000), nil, nil, &one, 1,
+		"all", nil, "", true, "2026-09-20T10:04:00Z")
+	coupon(ctCpnLastUse, &ctSeller, "ONEUSELEFT", "", "flat", nil, i64(2000), nil, nil, &one, 0,
+		"all", nil, "", true, "2026-09-20T10:03:00Z")
+	coupon(ctCpnOther, &ctOtherSeller, "KETTLE20", "", "percentage", i64(2000), nil, nil, nil, nil, 0,
+		"all", nil, "", true, "2026-09-20T10:02:00Z")
+	coupon(ctCpnPlatform, nil, "MSTORE50", "₹50 off your first MStore order", "flat", nil, i64(5000), nil, nil, nil, 0,
+		"all", nil, "", true, "2026-09-20T10:01:00Z")
+
+	// A paid order that carried a coupon AND a bank offer: ₹1,299 − ₹129.90
+	// (MOMENTUM10) + ₹49 shipping = ₹1,218.10, of which the buyer paid
+	// ₹1,096.29 after a 10% HDFC bank offer of ₹121.81. GST is on the
+	// coupon-discounted value; the bank offer does not touch it.
+	e.exec(`INSERT INTO orders (id,customer_user_id,order_number,subtotal,shipping_charges,tax_amount,final_amount,coupon_discount,
+	           subtotal_minor,shipping_charges_minor,tax_amount_minor,final_amount_minor,coupon_code,coupon_discount_minor,
+	           payment_method,payment_status,status,delivery_address_id,delivery_address_snapshot,
+	           place_of_supply_state,cgst_minor,sgst_minor,igst_minor,
+	           offer_id,offer_title,offer_discount_minor,offer_funded_by,captured_minor,created_at,updated_at)
+	        VALUES ($1,$2,'ORD-2026-009999',1299.00,49.00,185.82,1218.10,129.90,
+	           129900,4900,18582,121810,'MOMENTUM10',12990,
+	           'card','paid','confirmed',$3,$4::jsonb,
+	           'KA',9291,9291,0,
+	           $5,'10% off with HDFC Bank credit cards',12181,'bank',109629,
+	           '2026-09-09T10:00:00Z','2026-09-09T10:01:00Z')`,
+		ctOOffer, ctBuyer, ctBuyerAddr, snapshot, ctBankOffer)
+	e.exec(`INSERT INTO order_items (id,order_id,product_id,variant_id,seller_id,product_title,variant_details,sku,quantity,
+	           unit_mrp,unit_price,tax_amount,final_price,unit_mrp_minor,unit_price_minor,tax_amount_minor,final_price_minor,
+	           allocated_discount_minor,allocated_shipping_minor,net_inclusive_minor,taxable_minor,
+	           cgst_minor,sgst_minor,igst_minor,tax_rate_bp,status,tax_class_id,hsn_code,created_at)
+	        VALUES ($1,$2,$3,$4,$5,'Momentum Wireless Earbuds','{"option_1_name":"Colour","option_1_value":"Black"}','MOM-EB-BLK',1,
+	           1499.00,1299.00,185.82,1218.10,149900,129900,18582,121810,
+	           12990,4900,121810,103228,
+	           9291,9291,0,1800,'confirmed',$6,'8518','2026-09-09T10:00:00Z')`,
+		ctIOffer, ctOOffer, ctP1, ctV1, ctSeller, ctTax18)
+
 	// Fresh orders continue the seeded series.
 	e.exec(`ALTER SEQUENCE order_number_seq RESTART WITH 10006`)
 }
@@ -323,6 +423,8 @@ func (e *contractEnv) fixtures() []ctFixture {
 		quoteTotal int64
 		freshOrder string
 		freshProd  string
+		// The coupons the seller and the admin console create.
+		freshCoupon, freshPlatformCoupon string
 		// The stub intent opened on the seeded payment_pending order.
 		stubIntentID, stubProviderRef string
 	)
@@ -425,6 +527,14 @@ func (e *contractEnv) fixtures() []ctFixture {
 		{name: "storefront/favourite_post_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.post("/v1/commerce/favourites", ctBuyer, map[string]any{"product_id": ctP2.String()})
 		}},
+		// Bank offers for the product page: payments' registry, filtered by
+		// the amount, each with what it would save on it.
+		{name: "storefront/payment_offers_get_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/payment-offers?amount_minor=129900", uuid.Nil)
+		}},
+		{name: "storefront/payment_offers_get_400_amount_required", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/payment-offers", uuid.Nil)
+		}},
 
 		// ── bag ────────────────────────────────────────────────────────
 		{name: "bag/cart_get_200_empty", run: func(e *contractEnv) *httptest.ResponseRecorder {
@@ -435,6 +545,16 @@ func (e *contractEnv) fixtures() []ctFixture {
 		}},
 		{name: "bag/cart_get_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.get("/v1/commerce/cart", ctBuyer)
+		}},
+		// The bag's coupons: P1 ×2 and P2 (P3 is paused and skipped), so
+		// MOMENTUM10 hits its ₹200 cap, EARBUDS150 applies to P1 only, and
+		// BIGSPEND explains its ₹5,000 minimum. Secret, expired, used-up,
+		// other-shop and platform coupons are not listed.
+		{name: "bag/cart_coupons_get_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/cart/coupons", ctBuyer)
+		}},
+		{name: "bag/cart_coupons_get_401_unauthenticated", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/cart/coupons", uuid.Nil)
 		}},
 		{name: "bag/cart_item_post_409_multiple_sellers", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.post("/v1/commerce/cart/items", ctBuyer, map[string]any{"variant_id": ctV5.String(), "quantity": 1})
@@ -470,6 +590,11 @@ func (e *contractEnv) fixtures() []ctFixture {
 		}},
 		{name: "orders/order_get_200_payment_failed", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.get("/v1/commerce/orders/"+ctOFailed.String(), ctBuyer)
+		}},
+		// A coupon (in discount_minor, coupon_code) and a bank offer
+		// (payment_offer, amount_paid_minor) on one paid order.
+		{name: "orders/order_get_200_bank_offer", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/orders/"+ctOOffer.String(), ctBuyer)
 		}},
 		{name: "orders/order_items_get_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.get("/v1/commerce/orders/"+ctOConfirmed.String()+"/items", ctBuyer)
@@ -563,6 +688,49 @@ func (e *contractEnv) fixtures() []ctFixture {
 			})
 		}},
 		{name: "checkout/quote_post_200", run: quote},
+		// ── coupons at the quote (bag: P1 ×2 = ₹2,598) ──────────────────
+		// Typed lower-case to show the code is normalised; 10% is ₹259.80,
+		// capped at ₹200.
+		{name: "checkout/quote_post_200_coupon", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return quoteWithCoupon(e, "momentum10")
+		}},
+		{name: "checkout/quote_post_422_coupon_invalid", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return quoteWithCoupon(e, "NOSUCHCODE")
+		}},
+		{name: "checkout/quote_post_422_coupon_expired", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return quoteWithCoupon(e, "EXPIRED5")
+		}},
+		{name: "checkout/quote_post_422_coupon_min_order", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return quoteWithCoupon(e, "BIGSPEND")
+		}},
+		{name: "checkout/quote_post_422_coupon_used_up", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return quoteWithCoupon(e, "USEDUP")
+		}},
+		{name: "checkout/quote_post_422_coupon_not_applicable", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return quoteWithCoupon(e, "KETTLE20")
+		}},
+		{name: "checkout/quote_post_422_coupon_not_available", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return quoteWithCoupon(e, "MSTORE50")
+		}},
+		// The claim at checkout answers the same 422 vocabulary: the last use
+		// of ONEUSELEFT is taken between this buyer's quote and checkout.
+		{name: "checkout/checkout_v2_post_422_coupon_used_up", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			w := quoteWithCoupon(e, "ONEUSELEFT")
+			var env struct {
+				Data struct {
+					QuoteID    string `json:"quote_id"`
+					TotalMinor int64  `json:"total_minor"`
+				} `json:"data"`
+			}
+			_ = json.Unmarshal(w.Body.Bytes(), &env)
+			e.exec(`UPDATE coupons SET uses_count = 1 WHERE id = $1`, ctCpnLastUse)
+			return e.do(ctReq{method: http.MethodPost, path: "/v1/commerce/v2/orders/checkout", user: ctBuyer,
+				headers: map[string]string{"Idempotency-Key": "contract-checkout-coupon"},
+				body: map[string]any{
+					"address_id": ctBuyerAddr.String(), "quote_id": env.Data.QuoteID, "payment_method": "upi",
+					"coupon_code": "ONEUSELEFT", "expected_total_minor": env.Data.TotalMinor,
+				}})
+		}},
 		{name: "checkout/checkout_v2_post_400_missing_idempotency_key", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return checkout(e, "", quoteTotal)
 		}},
@@ -678,5 +846,112 @@ func (e *contractEnv) fixtures() []ctFixture {
 		{name: "seller/seller_order_ship_post_201", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.post("/v1/commerce/seller/orders/"+ctOConfirmed.String()+"/ship", ctSellerUser, map[string]any{})
 		}},
+
+		// ── seller coupons ─────────────────────────────────────────────
+		{name: "seller/seller_coupons_get_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/seller/coupons", ctSellerUser)
+		}},
+		{name: "seller/seller_coupons_get_409_not_approved", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/seller/coupons", ctDraftUser)
+		}},
+		{name: "seller/seller_coupon_post_201", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			w := e.post("/v1/commerce/seller/coupons", ctSellerUser, map[string]any{
+				"code": "newyear 25", "description": "25% off the canvas cap", "discount_type": "percentage",
+				"discount_value": 2500, "max_discount_minor": 10000, "min_order_minor": 40000,
+				"max_uses": 500, "max_uses_per_user": 1, "applicable_to": "product",
+				"applicable_ids": []string{ctP2.String()}, "expires_at": "2027-01-15T18:29:59Z", "is_public": true,
+			})
+			var env struct {
+				Data struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			_ = json.Unmarshal(w.Body.Bytes(), &env)
+			freshCoupon = env.Data.ID
+			return w
+		}},
+		{name: "seller/seller_coupon_post_409_code_taken", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/coupons", ctSellerUser, map[string]any{
+				"code": "momentum10", "discount_type": "flat", "discount_value": 1000,
+			})
+		}},
+		{name: "seller/seller_coupon_post_422_product_not_owned", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/coupons", ctSellerUser, map[string]any{
+				"code": "KETTLEGRAB", "discount_type": "flat", "discount_value": 1000,
+				"applicable_to": "product", "applicable_ids": []string{ctP5.String()},
+			})
+		}},
+		{name: "seller/seller_coupon_post_400_invalid_body", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/coupons", ctSellerUser, map[string]any{
+				"code": "AB!", "discount_type": "flat", "discount_value": 1000,
+			})
+		}},
+		{name: "seller/seller_coupon_patch_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/seller/coupons/" + freshCoupon,
+				user: ctSellerUser, body: map[string]any{"description": "25% off the canvas cap, this winter", "max_uses": 100}})
+		}},
+		// An explicit null CLEARS: no total limit, no end date.
+		{name: "seller/seller_coupon_patch_200_clear", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/seller/coupons/" + freshCoupon,
+				user: ctSellerUser, body: map[string]any{"max_uses": nil, "expires_at": nil}})
+		}},
+		{name: "seller/seller_coupon_patch_422_immutable", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/seller/coupons/" + freshCoupon,
+				user: ctSellerUser, body: map[string]any{"discount_value": 3000}})
+		}},
+		{name: "seller/seller_coupon_patch_404_not_owner", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/seller/coupons/" + ctCpnPct.String(),
+				user: ctOtherSellerU, body: map[string]any{"is_active": false}})
+		}},
+
+		// ── admin console: coupons (admin-service token) ───────────────
+		{name: "admin/coupons_get_200_platform", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.adminDo(http.MethodGet, "/v1/commerce/internal/admin/coupons?funded_by=platform&limit=100", PermCouponsManage, nil)
+		}},
+		{name: "admin/coupons_get_200_seller", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.adminDo(http.MethodGet, "/v1/commerce/internal/admin/coupons?funded_by=seller&limit=3", PermCouponsManage, nil)
+		}},
+		{name: "admin/coupons_get_400_invalid_filter", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.adminDo(http.MethodGet, "/v1/commerce/internal/admin/coupons?funded_by=bank", PermCouponsManage, nil)
+		}},
+		{name: "admin/coupons_get_403_permission", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.adminDo(http.MethodGet, "/v1/commerce/internal/admin/coupons", PermStatsRead, nil)
+		}},
+		{name: "admin/coupon_post_201", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			w := e.adminDo(http.MethodPost, "/v1/commerce/internal/admin/coupons", PermCouponsManage, map[string]any{
+				"code": "FESTIVE200", "description": "₹200 off orders above ₹1,000", "discount_type": "flat",
+				"discount_value": 20000, "min_order_minor": 100000, "max_uses_per_user": 1, "applicable_to": "all",
+				"expires_at": "2026-11-15T18:29:59Z", "is_public": true, "is_active": true, "reason": "Diwali campaign",
+			})
+			var env struct {
+				Data struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			_ = json.Unmarshal(w.Body.Bytes(), &env)
+			freshPlatformCoupon = env.Data.ID
+			return w
+		}},
+		{name: "admin/coupon_post_409_code_taken", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.adminDo(http.MethodPost, "/v1/commerce/internal/admin/coupons", PermCouponsManage, map[string]any{
+				"code": "MSTORE50", "discount_type": "flat", "discount_value": 5000,
+			})
+		}},
+		{name: "admin/coupon_patch_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.adminDo(http.MethodPatch, "/v1/commerce/internal/admin/coupons/"+freshPlatformCoupon, PermCouponsManage,
+				map[string]any{"is_active": false, "reason": "campaign paused"})
+		}},
+		{name: "admin/coupon_patch_403_seller_read_only", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.adminDo(http.MethodPatch, "/v1/commerce/internal/admin/coupons/"+ctCpnPct.String(), PermCouponsManage,
+				map[string]any{"is_active": false})
+		}},
 	}
+}
+
+// quoteWithCoupon takes a quote for the buyer's bag with a coupon code, as
+// the checkout screen does after "Apply".
+func quoteWithCoupon(e *contractEnv, code string) *httptest.ResponseRecorder {
+	return e.post("/v1/commerce/checkout/quote", ctBuyer, map[string]any{
+		"address_id": ctBuyerAddr.String(), "payment_method": "upi", "coupon_code": code,
+	})
 }

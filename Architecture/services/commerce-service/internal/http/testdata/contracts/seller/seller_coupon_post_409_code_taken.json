@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_CODE_TAKEN",
+    "message": "that coupon code already exists"
+  },
+  "meta": {}
+}
+

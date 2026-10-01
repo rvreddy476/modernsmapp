@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "COUPON_NOT_AVAILABLE",
+    "message": "that coupon is not available"
+  },
+  "meta": {}
+}
+

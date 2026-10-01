@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "missing or invalid X-User-Id header"
+  },
+  "meta": {}
+}
+

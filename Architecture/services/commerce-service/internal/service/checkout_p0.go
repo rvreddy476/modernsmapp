@@ -69,6 +69,9 @@ type QuoteResult struct {
 
 	SubtotalMinor money.Paise `json:"subtotal_minor"`
 	DiscountMinor money.Paise `json:"discount_minor"`
+	// CouponCode is the code the discount came from, as stored (upper-case),
+	// or absent. The client sends it back unchanged to checkout.
+	CouponCode    string      `json:"coupon_code,omitempty"`
 	ShippingMinor money.Paise `json:"shipping_minor"`
 	TaxMinor      money.Paise `json:"tax_minor"`
 	TotalMinor    money.Paise `json:"total_minor"`
@@ -96,6 +99,9 @@ type QuoteResult struct {
 // set, so a change to any of them invalidates it rather than silently
 // charging yesterday's price for today's delivery.
 func (s *Service) PrepareQuote(ctx context.Context, in QuoteInputP0) (*QuoteResult, error) {
+	// One spelling of a code everywhere: the quote binds it, checkout
+	// compares it, the coupons table stores it upper-cased.
+	in.CouponCode = postgres.NormalizeCouponCode(in.CouponCode)
 	meta, err := s.store.CartMetaForQuote(ctx, in.UserID)
 	if err != nil {
 		return nil, err
@@ -165,12 +171,13 @@ func (s *Service) PrepareQuote(ctx context.Context, in QuoteInputP0) (*QuoteResu
 		return nil, err
 	}
 	pricing, err := s.store.PriceCartForQuote(ctx, postgres.QuotePricingInput{
-		UserID:           in.UserID,
-		CartID:           meta.CartID,
-		ShippingMinor:    money.Paise(res.ShippingChargeMinor),
-		CouponCode:       in.CouponCode,
-		SellerState:      sellerState,
-		DestinationState: addr.State,
+		UserID:                 in.UserID,
+		CartID:                 meta.CartID,
+		ShippingMinor:          money.Paise(res.ShippingChargeMinor),
+		CouponCode:             in.CouponCode,
+		SellerState:            sellerState,
+		DestinationState:       addr.State,
+		PlatformCouponsEnabled: s.platformCoupons,
 	})
 	if err != nil {
 		return nil, err
@@ -205,6 +212,7 @@ func (s *Service) PrepareQuote(ctx context.Context, in QuoteInputP0) (*QuoteResu
 		DeliverBy:     deliverBy,
 		MaxDays:       maxDays,
 		QuoteID:       q.ID,
+		CouponCode:    in.CouponCode,
 		SubtotalMinor: pricing.SubtotalMinor,
 		DiscountMinor: pricing.DiscountMinor,
 		ShippingMinor: pricing.ShippingMinor,
@@ -256,6 +264,7 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 	if strings.TrimSpace(in.IdempotencyKey) == "" {
 		return nil, fmt.Errorf("commerce: Idempotency-Key is required for checkout")
 	}
+	in.CouponCode = postgres.NormalizeCouponCode(in.CouponCode)
 	// C3-LB-3: the launch vocabulary, refused here as well as at the edge, in
 	// the store and by the database CHECK.
 	//
@@ -328,18 +337,19 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 		// The quote's binding, from the address as DECRYPTED, plus the
 		// fingerprint of the exact row that was decrypted (see
 		// postgres.AddressRow.ContentFingerprint).
-		AddressHash:        postgres.HashAddress(addr.AddressLine1, addr.AddressLine2, addr.City, addr.State, addr.PostalCode),
-		AddressFingerprint: addrRow.ContentFingerprint(),
-		CouponCode:         in.CouponCode,
-		PaymentMethod:      in.PaymentMethod,
-		TermsVersion:       in.TermsVersion,
-		ExpectedTotalMinor: in.ExpectedTotalMinor,
-		AddressSnapshot:    snapshot,
-		SealedSnapshot:     sealed,
-		SnapshotKeyVer:     keyVer,
-		DestinationState:   addr.State,
-		DestinationPin:     addr.PostalCode,
-		ActorType:          "customer",
+		AddressHash:            postgres.HashAddress(addr.AddressLine1, addr.AddressLine2, addr.City, addr.State, addr.PostalCode),
+		AddressFingerprint:     addrRow.ContentFingerprint(),
+		CouponCode:             in.CouponCode,
+		PaymentMethod:          in.PaymentMethod,
+		TermsVersion:           in.TermsVersion,
+		ExpectedTotalMinor:     in.ExpectedTotalMinor,
+		PlatformCouponsEnabled: s.platformCoupons,
+		AddressSnapshot:        snapshot,
+		SealedSnapshot:         sealed,
+		SnapshotKeyVer:         keyVer,
+		DestinationState:       addr.State,
+		DestinationPin:         addr.PostalCode,
+		ActorType:              "customer",
 	})
 	if err != nil {
 		return nil, err

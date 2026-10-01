@@ -61,6 +61,11 @@ type Line struct {
 	GrossInclusive money.Paise
 	LineDiscount   money.Paise
 	Rate           RateBP
+	// CouponExcluded keeps this line out of the ORDER discount's allocation
+	// (a coupon scoped to other products in the cart). It still carries its
+	// share of shipping. The zero value — every line eligible — is the
+	// behaviour every caller had before the field existed.
+	CouponExcluded bool
 }
 
 // LineTax is the computed, storable tax breakdown for one line. Every field
@@ -156,7 +161,12 @@ func Compute(in Input) (*Order, error) {
 	// A line discounted to zero draws no share of the coupon and no share
 	// of shipping, which is the intuitive reading and keeps weights >= 0.
 	weights := make([]money.Paise, len(in.Lines))
-	var totalWeight, grossSum, lineDiscSum money.Paise
+	// discWeights is weights with the coupon-excluded lines at zero: the
+	// order discount reduces the taxable value of the lines it applies to
+	// and no other (a product-scoped coupon must not lower the GST on an
+	// unrelated line in the same bag).
+	discWeights := make([]money.Paise, len(in.Lines))
+	var totalWeight, eligibleWeight, grossSum, lineDiscSum money.Paise
 	for i, l := range in.Lines {
 		if err := money.MustNonNegative("line_gross", l.GrossInclusive); err != nil {
 			return nil, err
@@ -173,15 +183,19 @@ func Compute(in Input) (*Order, error) {
 		w := l.GrossInclusive.Sub(l.LineDiscount)
 		weights[i] = w
 		totalWeight = totalWeight.Add(w)
+		if !l.CouponExcluded {
+			discWeights[i] = w
+			eligibleWeight = eligibleWeight.Add(w)
+		}
 		grossSum = grossSum.Add(l.GrossInclusive)
 		lineDiscSum = lineDiscSum.Add(l.LineDiscount)
 	}
 
-	if in.OrderDiscount > totalWeight {
-		return nil, fmt.Errorf("tax: order discount %s exceeds eligible subtotal %s", in.OrderDiscount, totalWeight)
+	if in.OrderDiscount > eligibleWeight {
+		return nil, fmt.Errorf("tax: order discount %s exceeds eligible subtotal %s", in.OrderDiscount, eligibleWeight)
 	}
 
-	discAlloc, err := Allocate(in.OrderDiscount, weights)
+	discAlloc, err := Allocate(in.OrderDiscount, discWeights)
 	if err != nil {
 		return nil, fmt.Errorf("tax: allocate discount: %w", err)
 	}

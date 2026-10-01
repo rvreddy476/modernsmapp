@@ -144,6 +144,13 @@ type Service struct {
 	// eta caches carrier serviceability answers for the delivery estimate
 	// (engagement.go). Never consulted by the quote, which prices money.
 	eta etaCache
+
+	// platformCoupons is COMMERCE_PLATFORM_COUPONS_ENABLED (coupons_offers.go).
+	platformCoupons bool
+	// offers reads payments-service's bank-offer registry; offerCache holds
+	// its answer for paymentOffersTTL. Set by WithPayments.
+	offers     offersReader
+	offerCache offerCache
 }
 
 // WithClock pins the clock the delivery estimate computes "today" from.
@@ -613,6 +620,7 @@ func (s *Service) GetProduct(ctx context.Context, productID uuid.UUID) (*postgre
 	}
 	go s.adjustProductViewCount(context.Background(), productID)
 	s.hydrateProductImages(ctx, []*postgres.Product{p})
+	s.HydrateBestCoupons(ctx, []*postgres.Product{p})
 	return p, variants, nil
 }
 
@@ -629,6 +637,7 @@ func (s *Service) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, li
 	// through ListMyProducts, which resolves the seller from the caller.
 	products, _, err := s.store.ListSellerProducts(ctx, sellerID, "", true, limit, offset)
 	s.hydrateProductImages(ctx, products)
+	s.HydrateBestCoupons(ctx, products)
 	return products, err
 }
 
@@ -678,6 +687,7 @@ func (s *Service) ListMyProducts(ctx context.Context, actorUserID uuid.UUID, sta
 func (s *Service) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*postgres.Product, int, error) {
 	products, total, err := s.store.ListProducts(ctx, categoryID, query, limit, offset)
 	s.hydrateProductImages(ctx, products)
+	s.HydrateBestCoupons(ctx, products)
 	return products, total, err
 }
 
@@ -704,6 +714,7 @@ func (s *Service) ListProductsFiltered(ctx context.Context, f postgres.ProductFi
 		items = []*postgres.Product{}
 	}
 	s.hydrateProductImages(ctx, items)
+	s.HydrateBestCoupons(ctx, items)
 	return &ListProductsFilteredResult{Items: items, NextCursor: next}, nil
 }
 
@@ -1174,6 +1185,19 @@ type OrderDetail struct {
 	TotalMinor    money.Paise `json:"total_minor"`
 	Currency      string      `json:"currency"`
 
+	// CouponCode is the coupon the discount came from, when one was applied.
+	// DiscountMinor above includes its discount.
+	CouponCode *string `json:"coupon_code,omitempty"`
+
+	// PaymentOffer is the bank offer applied at payment (payments-service's
+	// Razorpay Offers), or null. It does not change the order's value:
+	// TotalMinor is still what the order cost, and AmountPaidMinor is what
+	// the buyer actually paid through the bank's offer.
+	PaymentOffer *OrderPaymentOfferView `json:"payment_offer"`
+	// AmountPaidMinor is the money captured: TotalMinor less any bank offer,
+	// once the order is paid; null before then.
+	AmountPaidMinor *int64 `json:"amount_paid_minor"`
+
 	PaymentMethod *string `json:"payment_method,omitempty"`
 	PaymentStatus string  `json:"payment_status"`
 	Status        string  `json:"status"`
@@ -1265,26 +1289,36 @@ func (s *Service) GetOrderDetail(ctx context.Context, orderID, userID uuid.UUID)
 		})
 	}
 
+	// DiscountMinor counts the coupon: checkout writes it to
+	// coupon_discount_minor, so subtotal − discount + shipping = total only
+	// when both are counted.
 	out := &OrderDetail{
-		ID:             order.ID,
-		OrderNumber:    order.OrderNumber,
-		SubtotalMinor:  money.Paise(order.SubtotalMinorValue()),
-		DiscountMinor:  money.Paise(order.DiscountMinorValue()),
-		ShippingMinor:  money.Paise(order.ShippingMinorValue()),
-		TaxMinor:       money.Paise(order.TaxMinorValue()),
-		TotalMinor:     money.Paise(order.TotalMinor()),
-		Currency:       coalesceStr(order.CurrencyCode, "INR"),
-		PaymentMethod:  order.PaymentMethod,
-		PaymentStatus:  order.PaymentStatus,
-		Status:         order.Status,
+		ID:              order.ID,
+		OrderNumber:     order.OrderNumber,
+		SubtotalMinor:   money.Paise(order.SubtotalMinorValue()),
+		DiscountMinor:   money.Paise(order.DiscountMinorValue() + order.CouponDiscountMinor),
+		ShippingMinor:   money.Paise(order.ShippingMinorValue()),
+		TaxMinor:        money.Paise(order.TaxMinorValue()),
+		TotalMinor:      money.Paise(order.TotalMinor()),
+		Currency:        coalesceStr(order.CurrencyCode, "INR"),
+		CouponCode:      order.CouponCode,
+		PaymentMethod:   order.PaymentMethod,
+		PaymentStatus:   order.PaymentStatus,
+		Status:          order.Status,
 		Items:           lines,
 		CanCancel:       postgres.CustomerCanCancel(order.Status),
 		CanRetryPayment: CanRetryPayment(order, userID),
 		CreatedAt:       order.CreatedAt,
-		CreatedAtEpoch: order.CreatedAt.Unix(),
+		CreatedAtEpoch:  order.CreatedAt.Unix(),
 	}
 
 	out.DeliveryAddress = s.openOrderAddress(ctx, order)
+
+	offer, err := s.store.GetOrderPaymentOffer(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	out.PaymentOffer, out.AmountPaidMinor = paymentOfferView(order, offer)
 
 	// The first shipment that actually has a tracking URL. Multi-seller
 	// orders can hold several; the buyer's screen shows one link and

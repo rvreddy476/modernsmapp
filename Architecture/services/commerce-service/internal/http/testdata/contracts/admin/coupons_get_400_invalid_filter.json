@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "INVALID_FILTER",
+    "message": "funded_by must be seller or platform"
+  },
+  "meta": {}
+}
+

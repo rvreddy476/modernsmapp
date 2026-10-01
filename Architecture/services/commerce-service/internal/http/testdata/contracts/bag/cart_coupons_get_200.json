@@ -1,0 +1,64 @@
+{
+  "data": {
+    "subtotal_minor": 309700,
+    "items": [
+      {
+        "code": "MOMENTUM10",
+        "title": "10% off everything at Momentum Electronics",
+        "description": "10% off everything at Momentum Electronics",
+        "discount_type": "percentage",
+        "discount_value": 1000,
+        "max_discount_minor": 20000,
+        "min_order_minor": 0,
+        "expires_at": "2027-03-31T18:29:59Z",
+        "funded_by": "seller",
+        "applicable": true,
+        "discount_minor": 20000,
+        "reason": null
+      },
+      {
+        "code": "EARBUDS150",
+        "title": "₹150 off",
+        "description": null,
+        "discount_type": "flat",
+        "discount_value": 15000,
+        "max_discount_minor": null,
+        "min_order_minor": 0,
+        "expires_at": null,
+        "funded_by": "seller",
+        "applicable": true,
+        "discount_minor": 15000,
+        "reason": null
+      },
+      {
+        "code": "ONEUSELEFT",
+        "title": "₹20 off",
+        "description": null,
+        "discount_type": "flat",
+        "discount_value": 2000,
+        "max_discount_minor": null,
+        "min_order_minor": 0,
+        "expires_at": null,
+        "funded_by": "seller",
+        "applicable": true,
+        "discount_minor": 2000,
+        "reason": null
+      },
+      {
+        "code": "BIGSPEND",
+        "title": "₹300 off",
+        "description": null,
+        "discount_type": "flat",
+        "discount_value": 30000,
+        "max_discount_minor": null,
+        "min_order_minor": 500000,
+        "expires_at": null,
+        "funded_by": "seller",
+        "applicable": false,
+        "discount_minor": 0,
+        "reason": "COUPON_MIN_ORDER"
+      }
+    ]
+  }
+}
+

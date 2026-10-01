@@ -53,6 +53,8 @@ func (s *Service) WithPayments(c *payments.Client) *Service {
 	// interface field would make `s.payments == nil` false.
 	if c != nil {
 		s.payments = c
+		// The same client serves the bank-offer list (payments:offers.read).
+		s.offers = c
 	}
 	return s
 }
@@ -635,6 +637,14 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 	}
 	if order.CouponCode != nil {
 		inv.CouponCode = *order.CouponCode
+	}
+	// A bank offer (Razorpay Offers) is a NOTE on the invoice, never a tax
+	// line: the invoice stays on the full order value. Adviser to confirm.
+	if offer, err := s.store.GetOrderPaymentOffer(ctx, orderID); err == nil {
+		inv.Notes = invoiceBankOfferNote(offer)
+	} else {
+		slog.Warn("invoice: the order's bank offer could not be read; issued without its note",
+			"order_id", orderID, "error", err)
 	}
 	// The PAN is carried on the party but not rendered (shared/invoice prints
 	// only the GSTIN), so a seller whose PAN cannot be opened still gets an

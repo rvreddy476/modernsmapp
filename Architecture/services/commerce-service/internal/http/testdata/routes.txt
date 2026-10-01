@@ -17,6 +17,7 @@ GET /v1/commerce/addresses
 GET /v1/commerce/affiliate/:linkId
 GET /v1/commerce/cart
 GET /v1/commerce/cart/coupon-preview
+GET /v1/commerce/cart/coupons
 GET /v1/commerce/categories
 GET /v1/commerce/categories/:categoryId/attribute-schema
 GET /v1/commerce/dashboard
@@ -30,6 +31,7 @@ GET /v1/commerce/internal/admin/attribute-schema
 GET /v1/commerce/internal/admin/banners
 GET /v1/commerce/internal/admin/categories/:categoryId/attributes
 GET /v1/commerce/internal/admin/compliance-gaps
+GET /v1/commerce/internal/admin/coupons
 GET /v1/commerce/internal/admin/jobs/dead-letter
 GET /v1/commerce/internal/admin/payouts/pending
 GET /v1/commerce/internal/admin/products/:productId/submissions
@@ -72,6 +74,7 @@ GET /v1/commerce/organizations/:orgId/members
 GET /v1/commerce/organizations/:orgId/orders
 GET /v1/commerce/organizations/:orgId/orders/pending-approval
 GET /v1/commerce/organizations/me
+GET /v1/commerce/payment-offers
 GET /v1/commerce/payout/preview
 GET /v1/commerce/products
 GET /v1/commerce/products/:productId
@@ -91,6 +94,7 @@ GET /v1/commerce/seller/bulk-import
 GET /v1/commerce/seller/bulk-import/:jobId
 GET /v1/commerce/seller/bulk-import/:jobId/errors.csv
 GET /v1/commerce/seller/cod-remittances
+GET /v1/commerce/seller/coupons
 GET /v1/commerce/seller/earnings
 GET /v1/commerce/seller/earnings.csv
 GET /v1/commerce/seller/fulfillment
@@ -112,12 +116,14 @@ PATCH /v1/commerce/cart/items/by-variant/:variantId
 PATCH /v1/commerce/internal/admin/attribute-definitions/:defId
 PATCH /v1/commerce/internal/admin/attribute-definitions/:defId/enum-values/:valueId
 PATCH /v1/commerce/internal/admin/categories/:categoryId
+PATCH /v1/commerce/internal/admin/coupons/:couponId
 PATCH /v1/commerce/internal/attribute-definitions/:defId
 PATCH /v1/commerce/internal/attribute-definitions/:defId/enum-values/:valueId
 PATCH /v1/commerce/internal/categories/:categoryId
 PATCH /v1/commerce/organizations/:orgId
 PATCH /v1/commerce/organizations/:orgId/members/:userId
 PATCH /v1/commerce/products/:productId
+PATCH /v1/commerce/seller/coupons/:couponId
 PATCH /v1/commerce/seller/variants/:variantId/stock
 PATCH /v1/commerce/variants/:variantId
 POST /v1/commerce/addresses
@@ -132,6 +138,7 @@ POST /v1/commerce/internal/admin/banners
 POST /v1/commerce/internal/admin/categories
 POST /v1/commerce/internal/admin/cod-remittances/:remittanceId/settle
 POST /v1/commerce/internal/admin/compliance-gaps/sweep
+POST /v1/commerce/internal/admin/coupons
 POST /v1/commerce/internal/admin/products/:productId/approve
 POST /v1/commerce/internal/admin/products/:productId/reject
 POST /v1/commerce/internal/admin/products/:productId/request-changes
@@ -187,6 +194,7 @@ POST /v1/commerce/rfqs/:rfqId/reject
 POST /v1/commerce/seller/bulk-import/:jobId/execute
 POST /v1/commerce/seller/bulk-import/:jobId/upload-complete
 POST /v1/commerce/seller/bulk-import/presigned-url
+POST /v1/commerce/seller/coupons
 POST /v1/commerce/seller/orders/:orderId/cancel
 POST /v1/commerce/seller/orders/:orderId/pack
 POST /v1/commerce/seller/orders/:orderId/ship
