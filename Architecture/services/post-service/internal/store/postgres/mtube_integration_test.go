@@ -189,6 +189,28 @@ func TestMTubeLiveVODPostIsIdempotentPerStream(t *testing.T) {
 	if err != nil || got == nil || got.ID != first.ID {
 		t.Fatalf("GetPostByLiveStream: %v %v", got, err)
 	}
+
+	// The internal by-live-stream lookup (live-service-v2's
+	// recording_post_id): the same post while it lives, flagged once it is
+	// soft-deleted (GetPostByLiveStream stops seeing it), nil for a stream
+	// with no post.
+	ref, err := r.store.GetLiveStreamPostRef(ctx, stream)
+	if err != nil || ref == nil || ref.PostID != first.ID || ref.Visibility != "unlisted" || ref.Deleted {
+		t.Fatalf("GetLiveStreamPostRef: %+v %v", ref, err)
+	}
+	if none, err := r.store.GetLiveStreamPostRef(ctx, uuid.New()); err != nil || none != nil {
+		t.Fatalf("a stream with no post: %+v %v", none, err)
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE posts SET deleted_at = now() WHERE id = $1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	ref, err = r.store.GetLiveStreamPostRef(ctx, stream)
+	if err != nil || ref == nil || ref.PostID != first.ID || !ref.Deleted {
+		t.Fatalf("GetLiveStreamPostRef after the delete: %+v %v", ref, err)
+	}
+	if gone, err := r.store.GetPostByLiveStream(ctx, stream); err != nil || gone != nil {
+		t.Fatalf("GetPostByLiveStream after the delete: %v %v", gone, err)
+	}
 }
 
 // ── C. channel branding ─────────────────────────────────────────────────────

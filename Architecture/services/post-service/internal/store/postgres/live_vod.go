@@ -39,6 +39,33 @@ func (s *Store) GetPostByLiveStream(ctx context.Context, streamID uuid.UUID) (*P
 	return p, nil
 }
 
+// LiveStreamPostRef is what live-service-v2 needs to link an ended stream to
+// its recording post.
+type LiveStreamPostRef struct {
+	PostID     uuid.UUID
+	Visibility string
+	// Deleted: the post is soft-deleted (deleted_at set). The caller must not
+	// offer it.
+	Deleted bool
+}
+
+// GetLiveStreamPostRef returns the post made for a stream — deleted or not,
+// which is why it is not GetPostByLiveStream — or nil when there is none.
+// uq_posts_live_stream allows at most one row per stream.
+func (s *Store) GetLiveStreamPostRef(ctx context.Context, streamID uuid.UUID) (*LiveStreamPostRef, error) {
+	var ref LiveStreamPostRef
+	err := s.db.QueryRow(ctx,
+		`SELECT id, visibility, deleted_at IS NOT NULL FROM posts WHERE live_stream_id = $1`, streamID).
+		Scan(&ref.PostID, &ref.Visibility, &ref.Deleted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ref, nil
+}
+
 // FindMediaByStorageKeySuffix resolves a recording URL to the media asset
 // media-service registered for it: the asset whose storage_key ends with
 // the URL's object key. Returns uuid.Nil when none matches.

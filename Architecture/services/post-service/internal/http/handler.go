@@ -199,6 +199,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// ws-gateway asks this before admitting a socket to the post:<id> room.
 	r.GET("/v1/internal/posts/:id/visibility", h.PostVisibility)
 	r.GET("/v1/internal/posts/by-media/:mediaId", h.PostsByMediaInternal) // search-service has_subtitles fan-out (posts_by_media_internal.go)
+	// live-service-v2 asks which video a recording became (post_by_live_stream_internal.go).
+	r.GET("/v1/internal/posts/by-live-stream/:streamId", h.PostByLiveStreamInternal)
 
 	// Tube channels (channels_handler.go): one per account, gate for long videos.
 	h.registerChannelRoutes(r)
