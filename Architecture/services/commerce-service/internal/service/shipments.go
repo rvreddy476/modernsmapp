@@ -624,16 +624,11 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 		}
 	}
 
-	// Build invoice. Each line picks tax % from its product's tax_class_id,
-	// falling back to 18% GST (9/9 split intrastate, 18% IGST interstate).
-	const defaultCGST, defaultSGST, defaultIGST = 9, 9, 18
 	inv := invoice.Invoice{
-		Date:            time.Now(),
-		OrderNumber:     order.OrderNumber,
-		OrderDate:       order.CreatedAt,
-		Currency:        order.CurrencyCode,
-		ShippingCharges: order.ShippingCharges,
-		CouponDiscount:  order.CouponDiscount,
+		Date:        time.Now(),
+		OrderNumber: order.OrderNumber,
+		OrderDate:   order.CreatedAt,
+		Currency:    order.CurrencyCode,
 	}
 	if order.CouponCode != nil {
 		inv.CouponCode = *order.CouponCode
@@ -657,29 +652,54 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 	inv.Seller = sellerParty(seller, sellerPANValue)
 	inv.Buyer = invoice.Party{Name: shipTo.Line1, Address: shipTo}
 	inv.ShipTo = shipTo
-	// Cache tax classes to avoid a query per line item.
-	taxCache := map[uuid.UUID]*postgres.TaxClass{}
-	for _, it := range items {
-		cgst, sgst, igst := float64(defaultCGST), float64(defaultSGST), float64(defaultIGST)
-		if product, err := s.store.GetProductByID(ctx, it.ProductID); err == nil && product != nil && product.TaxClassID != nil {
-			tc, hit := taxCache[*product.TaxClassID]
-			if !hit {
-				tc, _ = s.store.GetTaxClass(ctx, *product.TaxClassID)
-				taxCache[*product.TaxClassID] = tc
-			}
-			if tc != nil {
-				cgst, sgst, igst = tc.CGSTPercentage, tc.SGSTPercentage, tc.IGSTPercentage
-			}
-		}
-		inv.Items = append(inv.Items, invoice.LineItem{
-			Title: it.ProductTitle, SKU: it.SKU,
-			Quantity: it.Quantity, UnitPrice: it.UnitPrice,
-			Discount: it.DiscountAmount, Taxable: it.FinalPrice,
-			CGSTPct: cgst, SGSTPct: sgst, IGSTPct: igst,
-		})
+
+	// The money. An order written by the P0 checkout stored, in paise, every
+	// line's taxable value and GST split and the order's totals; the invoice
+	// prints exactly those (invoiceFromStoredMoney). It used to read the
+	// NUMERIC rupee columns, which that checkout writes as 0.00, and so
+	// issued every invoice since at ₹0.
+	stored, err := s.store.GetOrderInvoiceMoney(ctx, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("get order money: %w", err)
 	}
-	inv.ApplyGST()
-	inv.ComputeTotals()
+	if stored.HasStoredSplit() {
+		if err := invoiceFromStoredMoney(&inv, stored); err != nil {
+			slog.Error("invoice: refused for an order whose stored money does not reconcile",
+				"order_id", orderID, "error", err)
+			return nil, err
+		}
+	} else {
+		// An order with no stored split (the RFQ conversion still writes
+		// rupee columns through CreateOrder): unchanged legacy path. Each
+		// line picks tax % from its product's tax_class_id, falling back to
+		// 18% GST (9/9 split intrastate, 18% IGST interstate).
+		const defaultCGST, defaultSGST, defaultIGST = 9, 9, 18
+		inv.ShippingCharges = order.ShippingCharges
+		inv.CouponDiscount = order.CouponDiscount
+		// Cache tax classes to avoid a query per line item.
+		taxCache := map[uuid.UUID]*postgres.TaxClass{}
+		for _, it := range items {
+			cgst, sgst, igst := float64(defaultCGST), float64(defaultSGST), float64(defaultIGST)
+			if product, err := s.store.GetProductByID(ctx, it.ProductID); err == nil && product != nil && product.TaxClassID != nil {
+				tc, hit := taxCache[*product.TaxClassID]
+				if !hit {
+					tc, _ = s.store.GetTaxClass(ctx, *product.TaxClassID)
+					taxCache[*product.TaxClassID] = tc
+				}
+				if tc != nil {
+					cgst, sgst, igst = tc.CGSTPercentage, tc.SGSTPercentage, tc.IGSTPercentage
+				}
+			}
+			inv.Items = append(inv.Items, invoice.LineItem{
+				Title: it.ProductTitle, SKU: it.SKU,
+				Quantity: it.Quantity, UnitPrice: it.UnitPrice,
+				Discount: it.DiscountAmount, Taxable: it.FinalPrice,
+				CGSTPct: cgst, SGSTPct: sgst, IGSTPct: igst,
+			})
+		}
+		inv.ApplyGST()
+		inv.ComputeTotals()
+	}
 
 	// Allocate invoice number from sequence.
 	fy := invoice.FinancialYear(inv.Date)

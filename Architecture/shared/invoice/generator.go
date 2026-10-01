@@ -34,6 +34,18 @@ type Invoice struct {
 	GrandTotal    float64
 	Currency      string // "INR"
 	Notes         string
+
+	// TaxInclusive marks an invoice whose prices already contain GST and
+	// whose per-line taxable value and GST split were fixed by the issuer
+	// when the order was charged (commerce's P0 checkout stores them per
+	// line, in paise). The caller fills every amount; ApplyGST and
+	// ComputeTotals leave such an invoice untouched, because recomputing tax
+	// from a percentage can round differently from what was charged. The
+	// renderer then reads Subtotal as the GST-inclusive item value,
+	// CouponDiscount and ShippingCharges as already inside the line values,
+	// and TotalTaxable + the GST totals as the split of GrandTotal.
+	TaxInclusive bool
+	TotalTaxable float64
 }
 
 type Party struct {
@@ -69,6 +81,11 @@ type LineItem struct {
 	SGSTAmount   float64
 	IGSTAmount   float64
 	LineTotal    float64
+
+	// Shipping is this line's share of the delivery charge (TaxInclusive
+	// invoices only): the issuer taxes delivery at the line's own rate, so
+	// it is inside Taxable and LineTotal, and the row shows it to reconcile.
+	Shipping float64
 }
 
 // ── Numbering ──────────────────────────────────────────────────────────────
@@ -90,8 +107,12 @@ func NumberFor(t time.Time, sequence int64) string {
 // ── Computation ────────────────────────────────────────────────────────────
 
 // ApplyGST fills CGST/SGST/IGST amounts on each line based on state match.
-// Call after LineItem.Taxable is populated.
+// Call after LineItem.Taxable is populated. A TaxInclusive invoice already
+// carries the GST the order charged and is left exactly as supplied.
 func (inv *Invoice) ApplyGST() {
+	if inv.TaxInclusive {
+		return
+	}
 	inv.IsInterstate = inv.Seller.Address.State != inv.ShipTo.State
 	inv.TotalCGST, inv.TotalSGST, inv.TotalIGST = 0, 0, 0
 	for i := range inv.Items {
@@ -115,8 +136,12 @@ func (inv *Invoice) ApplyGST() {
 	inv.TotalIGST = round2(inv.TotalIGST)
 }
 
-// ComputeTotals fills Subtotal and GrandTotal from line items.
+// ComputeTotals fills Subtotal and GrandTotal from line items. A
+// TaxInclusive invoice carries its stored totals and is left as supplied.
 func (inv *Invoice) ComputeTotals() {
+	if inv.TaxInclusive {
+		return
+	}
 	inv.Subtotal = 0
 	for _, it := range inv.Items {
 		inv.Subtotal += it.Taxable
@@ -217,7 +242,12 @@ const htmlInvoiceTemplate = `<!DOCTYPE html>
 
 <table>
   <thead><tr>
+    {{if .TaxInclusive}}
+    <th>#</th><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate (incl. GST)</th>
+    <th class="num">Discount</th><th class="num">Delivery</th><th class="num">Taxable value</th>
+    {{else}}
     <th>#</th><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th>
+    {{end}}
     {{if .IsInterstate}}<th class="num">IGST</th>{{else}}<th class="num">CGST</th><th class="num">SGST</th>{{end}}
     <th class="num">Total</th>
   </tr></thead>
@@ -229,6 +259,11 @@ const htmlInvoiceTemplate = `<!DOCTYPE html>
     <td>{{.HSN}}</td>
     <td class="num">{{.Quantity}}</td>
     <td class="num">₹{{money .UnitPrice}}</td>
+    {{if $.TaxInclusive}}
+      <td class="num">₹{{money .Discount}}</td>
+      <td class="num">₹{{money .Shipping}}</td>
+      <td class="num">₹{{money .Taxable}}</td>
+    {{end}}
     {{if $.IsInterstate}}
       <td class="num">{{money .IGSTPct}}%<br/>₹{{money .IGSTAmount}}</td>
     {{else}}
@@ -242,6 +277,19 @@ const htmlInvoiceTemplate = `<!DOCTYPE html>
 </table>
 
 <table class="totals">
+{{if .TaxInclusive}}
+  <tr><td>Items (incl. GST)</td><td class="num">₹{{money .Subtotal}}</td></tr>
+  {{if gt .CouponDiscount 0.0}}<tr><td>Discount{{if .CouponCode}} ({{.CouponCode}}){{end}}</td><td class="num">−₹{{money .CouponDiscount}}</td></tr>{{end}}
+  {{if gt .ShippingCharges 0.0}}<tr><td>Delivery (incl. GST)</td><td class="num">₹{{money .ShippingCharges}}</td></tr>{{end}}
+  <tr class="grand"><td>Grand Total</td><td class="num">₹{{money .GrandTotal}}</td></tr>
+  <tr><td>Taxable value</td><td class="num">₹{{money .TotalTaxable}}</td></tr>
+  {{if .IsInterstate}}
+    <tr><td>IGST</td><td class="num">₹{{money .TotalIGST}}</td></tr>
+  {{else}}
+    <tr><td>CGST</td><td class="num">₹{{money .TotalCGST}}</td></tr>
+    <tr><td>SGST</td><td class="num">₹{{money .TotalSGST}}</td></tr>
+  {{end}}
+{{else}}
   <tr><td>Subtotal (Taxable)</td><td class="num">₹{{money .Subtotal}}</td></tr>
   {{if .IsInterstate}}
     <tr><td>IGST</td><td class="num">₹{{money .TotalIGST}}</td></tr>
@@ -252,6 +300,7 @@ const htmlInvoiceTemplate = `<!DOCTYPE html>
   {{if gt .ShippingCharges 0.0}}<tr><td>Shipping</td><td class="num">₹{{money .ShippingCharges}}</td></tr>{{end}}
   {{if gt .CouponDiscount 0.0}}<tr><td>Coupon ({{.CouponCode}})</td><td class="num">−₹{{money .CouponDiscount}}</td></tr>{{end}}
   <tr class="grand"><td>Grand Total</td><td class="num">₹{{money .GrandTotal}}</td></tr>
+{{end}}
 </table>
 
 <div class="terms">
