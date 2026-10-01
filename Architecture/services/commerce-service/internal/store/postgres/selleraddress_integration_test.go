@@ -35,8 +35,8 @@ func sealedFor(t *testing.T, line1 string) SealedAddressWrite {
 func newSeller(t *testing.T) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
-	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	             VALUES ($1,$2,'Pickup Store',$3,'pickup@example.test','KA')`,
+	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	             VALUES ($1,$2,'Pickup Store',$3,'pickup@example.test','KA','approved')`,
 		id, uuid.New(), "pickup-"+id.String()[:8])
 	return id
 }

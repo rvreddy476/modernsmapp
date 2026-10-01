@@ -53,6 +53,8 @@ func TestProductLifecycleVisible(t *testing.T) {
 			l := ProductLifecycle{
 				Status:            tc.status,
 				ApprovalStatus:    tc.approval,
+				Visibility:        "public",
+				SellerStatus:      "approved",
 				SellerStoreStatus: "active",
 			}
 			if got := l.Visible(); got != tc.want {
@@ -88,6 +90,8 @@ func TestProductLifecycleVisibleFollowsTheSeller(t *testing.T) {
 			l := ProductLifecycle{
 				Status:            "active",
 				ApprovalStatus:    "approved",
+				Visibility:        "public",
+				SellerStatus:      "approved",
 				SellerStoreStatus: tc.storeStatus,
 			}
 			if got := l.Visible(); got != tc.want {
@@ -95,6 +99,54 @@ func TestProductLifecycleVisibleFollowsTheSeller(t *testing.T) {
 					tc.storeStatus, got, tc.want, tc.why)
 			}
 		})
+	}
+}
+
+// Only an APPROVED seller's listings are visible (founder, 1 Oct 2026).
+//
+// store_status defaults to 'active' on every new seller row, so before this
+// axis existed a seller who had not even submitted — or one an admin rejected,
+// which leaves store_status alone — was "open for business" as far as the
+// rule could tell. Every value of sellers.status's CHECK is listed.
+func TestProductLifecycleVisibleRequiresAnApprovedSeller(t *testing.T) {
+	cases := []struct {
+		status string
+		want   bool
+	}{
+		{"approved", true},
+		{"draft", false},
+		{"submitted", false},
+		{"under_review", false},
+		{"changes_required", false},
+		{"rejected", false},
+		{"suspended", false},
+		{"disabled", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			l := ProductLifecycle{
+				Status: "active", ApprovalStatus: "approved", Visibility: "public",
+				SellerStatus: tc.status, SellerStoreStatus: "active",
+			}
+			if got := l.Visible(); got != tc.want {
+				t.Fatalf("seller status=%q with store_status='active': Visible()=%v, want %v", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+// Only a PUBLIC listing is visible: 'private' and 'password' are in the
+// offer's vocabulary and neither means "every shopper".
+func TestProductLifecycleVisibleRequiresPublicVisibility(t *testing.T) {
+	for _, vis := range []string{"public", "private", "password", ""} {
+		l := ProductLifecycle{
+			Status: "active", ApprovalStatus: "approved", Visibility: vis,
+			SellerStatus: "approved", SellerStoreStatus: "active",
+		}
+		if got, want := l.Visible(), vis == "public"; got != want {
+			t.Fatalf("visibility=%q: Visible()=%v, want %v", vis, got, want)
+		}
 	}
 }
 
@@ -109,10 +161,13 @@ func TestVisibilityRuleMatchesTheStorefrontPredicate(t *testing.T) {
 	//
 	// The seller clause is an EXISTS rather than a predicate on a joined
 	// alias because not every caller of productSummaryLive joins sellers.
-	// Visible() carries the same condition as SellerStoreStatus == "active".
+	// Visible() carries the same conditions as Visibility == "public",
+	// SellerStatus == "approved" and SellerStoreStatus == "active".
 	const want = `po.status = 'active' AND po.approval_status = 'approved'
+	AND po.visibility = 'public'
 	AND EXISTS (SELECT 1 FROM sellers live_sl
 	             WHERE live_sl.id = po.seller_id
+	               AND live_sl.status = 'approved'
 	               AND live_sl.store_status = 'active')`
 	if productSummaryLive != want {
 		t.Fatalf("productSummaryLive changed to %q.\n"+

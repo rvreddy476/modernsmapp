@@ -178,6 +178,7 @@ func (h *Handler) requireAdminToken(perm string) gin.HandlerFunc {
 //	POST   /sellers/:sellerId/approve|reject|request-changes   commerce:seller.approve
 //	POST   /sellers/:sellerId/suspend|unsuspend      commerce:seller.suspend
 //	POST   /sellers/:sellerId/kyc/verify             commerce:kyc.verify
+//	GET    /sellers/:sellerId/documents[/:documentId/image]   commerce:kyc.verify
 //	GET    /products/queue, /products/:productId/submissions   commerce:products.moderate
 //	POST   /products/:productId/approve|reject|request-changes commerce:products.moderate
 //	GET    /payouts/pending                          commerce:payouts.read
@@ -202,6 +203,12 @@ func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 	g.POST("/sellers/:sellerId/suspend", gate(PermSellerSuspend), h.AdminSuspendSeller)
 	g.POST("/sellers/:sellerId/unsuspend", gate(PermSellerSuspend), h.AdminUnsuspendSeller)
 	g.POST("/sellers/:sellerId/kyc/verify", gate(PermKYCVerify), h.AdminVerifySellerKYC)
+	// The reviewer SEES the documents (view-only, in the console): the list
+	// carries no media id, number or URL, and the image is bytes read by
+	// commerce from this seller's own row. Token family only, on purpose —
+	// see handler_seller_documents.go.
+	g.GET("/sellers/:sellerId/documents", gate(PermKYCVerify), h.AdminListSellerDocuments)
+	g.GET("/sellers/:sellerId/documents/:documentId/image", gate(PermKYCVerify), h.AdminSellerDocumentImage)
 
 	g.GET("/products/queue", gate(PermProductsModerate), h.AdminListProductQueue)
 	g.GET("/products/:productId/submissions", gate(PermProductsModerate), h.AdminProductSubmissions)

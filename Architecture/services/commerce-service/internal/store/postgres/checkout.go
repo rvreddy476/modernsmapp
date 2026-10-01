@@ -869,6 +869,13 @@ func lockAndPriceLines(ctx context.Context, tx pgx.Tx, lines []cartLine) ([]pric
 			   -- the product-status check has always had, and the same
 			   -- answer: one order, not a storefront.
 			   AND sl.store_status = 'active'
+			   -- And APPROVED (2026-10-01). store_status defaults to 'active'
+			   -- on a new seller row, so without this a seller in draft,
+			   -- under review or rejected could be quoted and paid for a
+			   -- listing that had reached active + approved. Same rule as
+			   -- productSummaryLive; quote and checkout both price here.
+			   AND sl.status = 'approved'
+			   AND p.visibility = 'public'
 			 FOR UPDATE OF v, p`,
 			l.VariantID).Scan(
 			&pl.VariantID, &pl.ProductID, &pl.SellerID, &pl.Title, &pl.SKU,

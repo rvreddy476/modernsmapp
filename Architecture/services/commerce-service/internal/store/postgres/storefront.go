@@ -157,9 +157,25 @@ const productSummaryFrom = `
 // 'active' specifically, not "not suspended": inactive and banned are also
 // not open for business, and a new store_status value should have to be
 // added here deliberately rather than defaulting into visibility.
+//
+// AND THE SELLER MUST BE APPROVED (founder, 1 Oct 2026: "only approved
+// sellers show in the retail"). store_status alone was not enough, because
+// it DEFAULTS to 'active' on a brand-new seller row: a seller still in
+// draft, submitted, under_review or changes_required — or one an admin
+// rejected, which leaves store_status untouched — had store_status 'active',
+// so any listing of theirs that reached active + approved was on the
+// storefront. sellers.status = 'approved' is the review outcome; both must
+// hold. Again an allowlist of one value, so a status added later stays
+// hidden until someone decides otherwise.
+//
+// po.visibility = 'public' because 'private' and 'password' exist in the
+// vocabulary and neither means "show to every shopper". No route writes it
+// today, which is why this costs nothing and is still worth saying.
 const productSummaryLive = `po.status = 'active' AND po.approval_status = 'approved'
+	AND po.visibility = 'public'
 	AND EXISTS (SELECT 1 FROM sellers live_sl
 	             WHERE live_sl.id = po.seller_id
+	               AND live_sl.status = 'approved'
 	               AND live_sl.store_status = 'active')`
 
 // scanProductSummary reads one row of productSummaryColumns, in order.
@@ -637,11 +653,23 @@ type Banner struct {
 
 // LiveBanners returns the banners a shopper should see right now: switched
 // on, and inside their scheduling window.
+//
+// A PRODUCT banner is shown only while its product is live by
+// productSummaryLive. A banner is a link, and a home-screen card that opens a
+// 404 — or worse, the listing of a seller who has been suspended or was never
+// approved — is that seller back on every shopper's home screen. The banner
+// row is left alone (it comes back if the seller is approved or reinstated);
+// it is the shopper's view that skips it. The text comparison is on purpose:
+// target_id is TEXT, and casting it would be evaluated for search banners too.
 func (s *Store) LiveBanners(ctx context.Context, limit int) ([]*Banner, error) {
 	return s.queryBanners(ctx, `
 		WHERE active = TRUE
 		  AND (starts_at IS NULL OR starts_at <= NOW())
 		  AND (ends_at   IS NULL OR ends_at   >  NOW())
+		  AND (target_type <> 'product' OR EXISTS (
+		        SELECT 1 `+productsLiveFrom+`
+		         WHERE p.id::text = lower(btrim(commerce_banners.target_id))
+		           AND `+productSummaryLive+`))
 		ORDER BY position ASC, created_at ASC
 		LIMIT $1`, limit)
 }
@@ -715,10 +743,15 @@ func (s *Store) VisibleProductMediaIDs(ctx context.Context, viewerID uuid.UUID, 
 	if len(mediaIDs) == 0 {
 		return out, nil
 	}
+	// "Live" is productSummaryLive — the storefront's own rule, seller clause
+	// included. This asked only whether the OFFER was active and approved, so
+	// the photographs of a suspended, rejected or never-approved seller's
+	// listing stayed public to anyone holding the media id after the listing
+	// itself had left every buyer surface.
 	rows, err := s.db.Query(ctx, `
 		WITH asked(media_id) AS (SELECT unnest($1::uuid[])),
 		referenced AS (
-			SELECT a.media_id, po.status, po.approval_status, sl.user_id AS seller_user_id
+			SELECT a.media_id, (`+productSummaryLive+`) AS live, sl.user_id AS seller_user_id
 			FROM asked a
 			JOIN products p ON (
 				    p.primary_image_media_id = a.media_id
@@ -730,7 +763,7 @@ func (s *Store) VisibleProductMediaIDs(ctx context.Context, viewerID uuid.UUID, 
 			JOIN sellers sl ON sl.id = po.seller_id
 		)
 		SELECT DISTINCT media_id FROM referenced
-		WHERE (status = 'active' AND approval_status = 'approved')
+		WHERE live
 		   OR ($2::uuid IS NOT NULL AND seller_user_id = $2::uuid)`,
 		mediaIDs, nullableUUID(viewerID))
 	if err != nil {

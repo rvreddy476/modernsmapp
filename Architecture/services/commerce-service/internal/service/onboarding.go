@@ -255,6 +255,9 @@ func (s *Service) AdminApproveSeller(ctx context.Context, sellerID, actorID uuid
 		payload["business_page_id"] = *sel.BusinessPageID
 	}
 	s.publish(ctx, events.EventSellerApproved, payload)
+	// Every listing of this seller may have just become visible: tell search,
+	// one event per product (buyervisibility.go).
+	s.publishSellerCatalogueVisibility(ctx, sellerID)
 	return nil
 }
 
@@ -263,11 +266,18 @@ func (s *Service) AdminRejectSeller(ctx context.Context, sellerID, actorID uuid.
 		return err
 	}
 	s.publish(ctx, events.EventSellerRejected, map[string]any{"seller_id": sellerID, "reason": reason})
+	s.publishSellerCatalogueVisibility(ctx, sellerID)
 	return nil
 }
 
 func (s *Service) AdminRequestSellerChanges(ctx context.Context, sellerID, actorID uuid.UUID, changes, notes string) error {
-	return s.store.RequestSellerChanges(ctx, sellerID, actorID, changes, notes)
+	if err := s.store.RequestSellerChanges(ctx, sellerID, actorID, changes, notes); err != nil {
+		return err
+	}
+	// A seller sent back for changes is no longer approved, so their listings
+	// leave the storefront; search has to hear it too.
+	s.publishSellerCatalogueVisibility(ctx, sellerID)
+	return nil
 }
 
 // AdminListPendingPayouts returns one row per seller with outstanding COD
@@ -386,6 +396,9 @@ func (s *Service) AdminSuspendSeller(ctx context.Context, sellerID, actorID uuid
 		return err
 	}
 	s.publish(ctx, events.EventSellerSuspended, map[string]any{"seller_id": sellerID, "reason": reason})
+	// search-service listens for product visibility, not seller events, so a
+	// suspension left every listing in the index until now.
+	s.publishSellerCatalogueVisibility(ctx, sellerID)
 	return nil
 }
 
@@ -400,6 +413,7 @@ func (s *Service) AdminUnsuspendSeller(ctx context.Context, sellerID, actorID uu
 		return err
 	}
 	s.publish(ctx, events.EventSellerApproved, map[string]any{"seller_id": sellerID})
+	s.publishSellerCatalogueVisibility(ctx, sellerID)
 	return nil
 }
 

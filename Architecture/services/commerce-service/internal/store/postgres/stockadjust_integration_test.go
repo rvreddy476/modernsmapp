@@ -30,8 +30,8 @@ func newStockFixture(t *testing.T, total, reserved int) stockFixture {
 	t.Helper()
 	f := stockFixture{sellerID: uuid.New(), variantID: uuid.New(), actorID: uuid.New()}
 	productID := uuid.New()
-	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	             VALUES ($1,$2,'Stock Store',$3,'stock@example.test','KA')`,
+	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	             VALUES ($1,$2,'Stock Store',$3,'stock@example.test','KA','approved')`,
 		f.sellerID, f.actorID, "stock-"+f.sellerID.String()[:8])
 	mustExec(t, `INSERT INTO products
 	               (id,seller_id,title,slug,status,approval_status,return_policy_type)

@@ -80,6 +80,13 @@ func (h *Handler) GetProductPreview(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Live listings for everyone (the tag composer tags other shops'
+	// products); an unpublished one only for the seller who owns it. This
+	// returned title, price and image of ANY product id to anyone, which made
+	// it a side door around every storefront rule.
+	if !h.productReadable(c, id) {
+		return
+	}
 	preview, err := h.svc.GetProductPreview(c.Request.Context(), id)
 	if err != nil {
 		handleErr(c, err)

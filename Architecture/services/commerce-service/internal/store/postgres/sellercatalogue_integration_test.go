@@ -29,8 +29,8 @@ type catalogueFixture struct {
 func newCatalogueFixture(t *testing.T) catalogueFixture {
 	t.Helper()
 	f := catalogueFixture{sellerID: uuid.New(), titles: map[string]uuid.UUID{}}
-	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	             VALUES ($1,$2,'Catalogue Store',$3,'cat@example.test','KA')`,
+	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	             VALUES ($1,$2,'Catalogue Store',$3,'cat@example.test','KA','approved')`,
 		f.sellerID, uuid.New(), "cat-"+f.sellerID.String()[:8])
 
 	rows := []struct{ title, status, approval string }{

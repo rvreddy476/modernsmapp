@@ -206,6 +206,8 @@ var adminRoutePerms = map[string]string{
 	"POST " + InternalAdminPrefix + "/sellers/:sellerId/suspend":                          PermSellerSuspend,
 	"POST " + InternalAdminPrefix + "/sellers/:sellerId/unsuspend":                        PermSellerSuspend,
 	"POST " + InternalAdminPrefix + "/sellers/:sellerId/kyc/verify":                       PermKYCVerify,
+	"GET " + InternalAdminPrefix + "/sellers/:sellerId/documents":                         PermKYCVerify,
+	"GET " + InternalAdminPrefix + "/sellers/:sellerId/documents/:documentId/image":       PermKYCVerify,
 	"GET " + InternalAdminPrefix + "/products/queue":                                      PermProductsModerate,
 	"GET " + InternalAdminPrefix + "/products/:productId/submissions":                     PermProductsModerate,
 	"POST " + InternalAdminPrefix + "/products/:productId/approve":                        PermProductsModerate,
@@ -240,7 +242,7 @@ var adminRoutePerms = map[string]string{
 func fillParams(path string) string {
 	id := uuid.NewString()
 	return strings.NewReplacer(":sellerId", id, ":productId", id, ":remittanceId", id, ":defId", id,
-		":valueId", id, ":categoryId", id, ":bannerId", id).Replace(path)
+		":valueId", id, ":categoryId", id, ":bannerId", id, ":documentId", id).Replace(path)
 }
 
 // Every route in the family is declared with its permission, and a token

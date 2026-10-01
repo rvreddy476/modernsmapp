@@ -33,6 +33,8 @@ GET /v1/commerce/internal/admin/payouts/pending
 GET /v1/commerce/internal/admin/products/:productId/submissions
 GET /v1/commerce/internal/admin/products/queue
 GET /v1/commerce/internal/admin/sellers/:sellerId
+GET /v1/commerce/internal/admin/sellers/:sellerId/documents
+GET /v1/commerce/internal/admin/sellers/:sellerId/documents/:documentId/image
 GET /v1/commerce/internal/admin/sellers/queue
 GET /v1/commerce/internal/admin/stats
 GET /v1/commerce/internal/attribute-definitions

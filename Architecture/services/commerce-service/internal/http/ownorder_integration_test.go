@@ -97,8 +97,8 @@ func seedOwnOrder(t *testing.T, unitMinor, shippingMinor, taxMinor int64) ownOrd
 		}
 	}
 
-	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	      VALUES ($1,$2,'Own Order Store',$3,'own@example.test','KA')`,
+	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	      VALUES ($1,$2,'Own Order Store',$3,'own@example.test','KA','approved')`,
 		f.sellerID, f.sellerUserID, "own-"+f.sellerID.String()[:8])
 	exec(`INSERT INTO seller_addresses (seller_id,address_type,contact_name,phone,
 	         address_line_1,city,state,postal_code,is_default)

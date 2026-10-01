@@ -363,20 +363,30 @@ func (s *Store) CartSellerID(ctx context.Context, userID uuid.UUID) (uuid.UUID, 
 // moderation queue was advisory. This is the add-to-cart guard; the
 // authoritative re-check happens inside the checkout transaction, because a
 // product can be rejected in between.
+//
+// `live` is productSummaryLive, the storefront's rule, so add-to-cart refuses
+// exactly what the storefront hides. Until 2026-10-01 this read only the
+// product's two columns and never the seller: a suspended seller's listing,
+// reached by a saved link, still went into the cart, and so did one from a
+// seller who had never been approved.
 func (s *Store) ProductSaleEligibility(ctx context.Context, variantID uuid.UUID) (sellerID uuid.UUID, ok bool, err error) {
 	var pStatus, pApproval, vStatus string
+	var live bool
 	err = s.db.QueryRow(ctx, `
-		SELECT p.seller_id, p.status, p.approval_status, v.status
+		SELECT p.seller_id, p.status, p.approval_status, v.status,
+		       EXISTS (SELECT 1 FROM product_offers po
+		                WHERE po.product_id = p.id
+		                  AND `+productSummaryLive+`) AS live
 		  FROM product_variants v
 		  JOIN products p ON p.id = v.product_id
-		 WHERE v.id = $1`, variantID).Scan(&sellerID, &pStatus, &pApproval, &vStatus)
+		 WHERE v.id = $1`, variantID).Scan(&sellerID, &pStatus, &pApproval, &vStatus, &live)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return uuid.Nil, false, ErrProductUnavailable
 		}
 		return uuid.Nil, false, err
 	}
-	return sellerID, pStatus == "active" && pApproval == "approved" && vStatus == "active", nil
+	return sellerID, live && pStatus == "active" && pApproval == "approved" && vStatus == "active", nil
 }
 
 // UnpublishedOutboxCount feeds the outbox-backlog gauge.

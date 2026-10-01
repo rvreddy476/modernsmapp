@@ -231,14 +231,18 @@ func (s *Service) ProductMedia(ctx context.Context, productID uuid.UUID) ([]Prod
 // hearting something a seller has withdrawn would put a dead card in the
 // shopper's list forever.
 func (s *Service) AddFavourite(ctx context.Context, userID, productID uuid.UUID) error {
-	p, err := s.store.GetProductByID(ctx, productID)
+	// The storefront's own rule, seller included. This compared the product's
+	// two columns and never the seller, so a shopper could heart a suspended
+	// or never-approved seller's listing by id. No owner exemption: a heart
+	// is a buyer's act.
+	visible, _, err := s.store.ProductBuyerVisibility(ctx, productID)
 	if err != nil {
-		if errors.Is(err, postgres.ErrProductNotFound) {
+		if isProductNotFound(err) {
 			return ErrProductNotFound
 		}
 		return err
 	}
-	if p.Status != "active" || p.ApprovalStatus != "approved" {
+	if !visible {
 		return ErrProductNotFound
 	}
 	return s.store.AddFavourite(ctx, userID, productID)

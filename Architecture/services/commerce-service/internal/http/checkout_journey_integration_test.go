@@ -125,8 +125,8 @@ func seedJourney(t *testing.T, stock int, unitMinor int64) journeyFixture {
 			t.Fatalf("seed: %v\nSQL: %s", err, sql)
 		}
 	}
-	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	      VALUES ($1,$2,'Journey Store',$3,'j@example.test','KA')`,
+	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	      VALUES ($1,$2,'Journey Store',$3,'j@example.test','KA','approved')`,
 		sellerID, uuid.New(), "journey-"+sellerID.String()[:8])
 	exec(`INSERT INTO seller_addresses (seller_id,address_type,contact_name,phone,
 	         address_line_1,city,state,postal_code,is_default)

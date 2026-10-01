@@ -258,8 +258,8 @@ func TestAttributeImpactCountsWhatANarrowingEditWouldBreak(t *testing.T) {
 	}
 
 	sellerID, userID := uuid.New(), uuid.New()
-	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	             VALUES ($1,$2,'Impact Store',$3,'impact@example.test','KA')`,
+	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	             VALUES ($1,$2,'Impact Store',$3,'impact@example.test','KA','approved')`,
 		sellerID, userID, "impact-"+sellerID.String()[:8])
 	t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM sellers WHERE id=$1`, sellerID) })
 

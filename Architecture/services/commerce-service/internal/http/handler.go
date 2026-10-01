@@ -274,6 +274,20 @@ func handleErr(c *gin.Context, err error) {
 	writeCommerceError(c, err)
 }
 
+// productReadable gates every single-product read a shopper can reach
+// (detail, gallery, specifications, variants, reviews, preview): a product
+// that is not live by the storefront's rule — including any product of a
+// seller who is not approved — answers 404 PRODUCT_NOT_FOUND, exactly as an
+// id that does not exist. The seller who owns it still reads it, because the
+// listing editor uses these same routes. See service/buyervisibility.go.
+func (h *Handler) productReadable(c *gin.Context, productID uuid.UUID) bool {
+	if err := h.svc.RequireProductReadable(c.Request.Context(), productID, optionalUserID(c)); err != nil {
+		handleErr(c, err)
+		return false
+	}
+	return true
+}
+
 // ─── Catalog handlers ────────────────────────────────────────────
 
 // ListCategories GET /v1/commerce/categories — the strip above the grid.
@@ -327,6 +341,9 @@ func (h *Handler) ListCategories(c *gin.Context) {
 func (h *Handler) GetProduct(c *gin.Context) {
 	id, ok := parseUUID(c, "productId")
 	if !ok {
+		return
+	}
+	if !h.productReadable(c, id) {
 		return
 	}
 	p, variants, err := h.svc.GetProduct(c.Request.Context(), id)
@@ -679,6 +696,9 @@ func (h *Handler) ListProductMedia(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.productReadable(c, productID) {
+		return
+	}
 	out, err := h.svc.ProductMedia(c.Request.Context(), productID)
 	if err != nil {
 		handleErr(c, err)
@@ -737,6 +757,9 @@ func (h *Handler) GetProductAttributes(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.productReadable(c, productID) {
+		return
+	}
 	out, err := h.svc.GetProductAttributes(c.Request.Context(), productID)
 	if err != nil {
 		handleErr(c, err)
@@ -755,6 +778,9 @@ func (h *Handler) ListProductVariants(c *gin.Context) {
 	productID, err := uuid.Parse(c.Param("productId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PRODUCT_ID", err.Error(), nil)
+		return
+	}
+	if !h.productReadable(c, productID) {
 		return
 	}
 	variants, err := h.svc.ListProductVariants(c.Request.Context(), productID)
@@ -963,6 +989,12 @@ func (h *Handler) GetPriceTiers(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// The ladder is a price of a product; it is readable exactly when the
+	// product is (handler.go productReadable).
+	if err := h.svc.RequireVariantReadable(c.Request.Context(), variantID, optionalUserID(c)); err != nil {
+		handleErr(c, err)
+		return
+	}
 	out, err := h.svc.GetPriceTiers(c.Request.Context(), variantID)
 	if err != nil {
 		handleErr(c, err)
@@ -974,6 +1006,9 @@ func (h *Handler) GetPriceTiers(c *gin.Context) {
 func (h *Handler) GetProductReviews(c *gin.Context) {
 	id, ok := parseUUID(c, "productId")
 	if !ok {
+		return
+	}
+	if !h.productReadable(c, id) {
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))

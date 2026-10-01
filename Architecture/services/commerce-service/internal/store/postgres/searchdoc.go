@@ -83,6 +83,13 @@ type ProductLifecycle struct {
 	ApprovalStatus string    `json:"approval_status"`
 	// SellerStoreStatus is sellers.store_status for SellerID.
 	SellerStoreStatus string `json:"seller_store_status"`
+	// SellerStatus is sellers.status — the review outcome — and Visibility is
+	// the offer's visibility. Both joined on 2026-10-01 with the matching
+	// clauses in productSummaryLive: only an APPROVED seller's PUBLIC listing
+	// is visible, and store_status alone defaults to 'active' on a seller who
+	// has not even submitted.
+	SellerStatus string `json:"seller_status"`
+	Visibility   string `json:"visibility"`
 }
 
 // Visible reports whether buyers can see this listing.
@@ -102,6 +109,8 @@ type ProductLifecycle struct {
 func (l ProductLifecycle) Visible() bool {
 	return l.Status == "active" &&
 		l.ApprovalStatus == "approved" &&
+		l.Visibility == "public" &&
+		l.SellerStatus == "approved" &&
 		l.SellerStoreStatus == "active"
 }
 
@@ -118,12 +127,12 @@ func (s *Store) GetProductLifecycle(ctx context.Context, productID uuid.UUID) (*
 	var l ProductLifecycle
 	err := s.db.QueryRow(ctx,
 		`SELECT p.id, po.seller_id, po.status, po.approval_status,
-		        COALESCE(sl.store_status, '') `+
+		        COALESCE(sl.store_status, ''), COALESCE(sl.status, ''), po.visibility `+
 			productsLiveFrom+`
 			 JOIN sellers sl ON sl.id = po.seller_id
 			 WHERE p.id = $1`,
 		productID).Scan(&l.ProductID, &l.SellerID, &l.Status, &l.ApprovalStatus,
-		&l.SellerStoreStatus)
+		&l.SellerStoreStatus, &l.SellerStatus, &l.Visibility)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProductNotFound
 	}
@@ -215,6 +224,7 @@ type SearchDoc struct {
 // unmigrated row and would index a paid product as free.
 const searchDocColumns = `
 	p.id, po.seller_id, sl.store_name, COALESCE(sl.store_status, ''),
+	COALESCE(sl.status, ''), po.visibility,
 	po.status, po.approval_status,
 	p.title, p.description, p.short_description, p.brand_name, p.condition,
 	p.product_type, p.slug,
@@ -265,9 +275,10 @@ func scanSearchDoc(row rowScanner) (*SearchDoc, error) {
 	var attrs []byte
 	var description, shortDescription, brandName, condition, productType *string
 	var storeName, categoryName, sourceImageURL *string
-	var sellerStoreStatus string
+	var sellerStoreStatus, sellerStatus, visibility string
 	if err := row.Scan(
 		&d.ProductID, &d.SellerID, &storeName, &sellerStoreStatus,
+		&sellerStatus, &visibility,
 		&d.Status, &d.ApprovalStatus,
 		&d.Title, &description, &shortDescription, &brandName, &condition,
 		&productType, &d.Slug,
@@ -299,6 +310,8 @@ func scanSearchDoc(row rowScanner) (*SearchDoc, error) {
 		Status:            d.Status,
 		ApprovalStatus:    d.ApprovalStatus,
 		SellerStoreStatus: sellerStoreStatus,
+		SellerStatus:      sellerStatus,
+		Visibility:        visibility,
 	}.Visible()
 
 	// An empty doc is `{}`, never nil: a consumer that has to distinguish

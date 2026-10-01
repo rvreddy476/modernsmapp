@@ -64,8 +64,8 @@ func newDetailFixture(t *testing.T) *detailFixture {
 
 	exec(`INSERT INTO product_categories (id,parent_id,name,slug,display_order,is_active)
 	      VALUES ($1,NULL,'Detail Cat',$2,1,TRUE)`, f.category, "detail-cat-"+tag)
-	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	      VALUES ($1,$2,'Detail Store',$3,'seller@example.test','KA')`, f.seller, uuid.New(), "detail-store-"+tag)
+	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	      VALUES ($1,$2,'Detail Store',$3,'seller@example.test','KA','approved')`, f.seller, uuid.New(), "detail-store-"+tag)
 	exec(`INSERT INTO products (id,seller_id,category_id,title,slug,status,approval_status)
 	      VALUES ($1,$2,$3,'Detail Product',$4,'active','approved')`,
 		f.product, f.seller, f.category, "detail-product-"+tag)

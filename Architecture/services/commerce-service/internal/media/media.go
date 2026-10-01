@@ -56,6 +56,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/shared/servicetoken"
 	"github.com/google/uuid"
 )
 
@@ -99,6 +100,11 @@ type Client struct {
 	baseURL     string
 	internalKey string
 	http        *http.Client
+	// bytesHTTP carries the KYC image read, which moves up to 15 MB and so
+	// gets a longer timeout than the 3 s JSON calls (imagebytes.go).
+	bytesHTTP *http.Client
+	// signer, when set, adds a commerce service token to the image read.
+	signer *servicetoken.Signer
 }
 
 // DefaultTimeout bounds the verification call.
@@ -119,6 +125,7 @@ func New(baseURL, internalKey string) *Client {
 		baseURL:     baseURL,
 		internalKey: internalKey,
 		http:        &http.Client{Timeout: DefaultTimeout},
+		bytesHTTP:   &http.Client{Timeout: ImageFetchTimeout},
 	}
 }
 

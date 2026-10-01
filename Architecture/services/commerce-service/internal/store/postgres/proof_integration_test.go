@@ -90,8 +90,8 @@ func newFixture(t *testing.T, stock int, unitMinor int64, taxPct string) *fixtur
 		}
 	}
 
-	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	      VALUES ($1,$2,'Test Store',$3,'seller@example.test','KA')`,
+	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	      VALUES ($1,$2,'Test Store',$3,'seller@example.test','KA','approved')`,
 		f.sellerID, sellerUser, "store-"+f.sellerID.String()[:8])
 
 	exec(`INSERT INTO seller_addresses (seller_id,address_type,contact_name,phone,

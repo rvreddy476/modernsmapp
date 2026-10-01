@@ -177,6 +177,18 @@ func main() {
 	// not start.
 	mediaURL := env("MEDIA_SERVICE_URL", "http://media-service:8087")
 	mediaClient := media.New(mediaURL, internalKey)
+	// The KYC image read (admin console, view-only) also presents a commerce
+	// service token when commerce has a signing key, so media-service can
+	// restrict GET /v1/media/internal/:id/image-bytes to commerce-service by
+	// a signed issuer rather than by the shared key alone. A key that does
+	// not parse is a deployment error, but not one worth refusing to start
+	// over: the internal key still authenticates the call, and the line below
+	// says the token is missing.
+	if signer, sErr := media.ServiceTokenSigner(os.Getenv("COMMERCE_SERVICE_TOKEN_KID"), os.Getenv("COMMERCE_SERVICE_TOKEN_KEY")); sErr != nil {
+		slog.Warn("commerce: media service token not configured; the KYC image read carries the internal key only", "error", sErr)
+	} else if signer != nil {
+		mediaClient.WithServiceToken(signer)
+	}
 	switch classifyPIIEnvironment(os.Getenv("ENV")) {
 	case piiEnvManaged:
 		if mediaClient == nil {

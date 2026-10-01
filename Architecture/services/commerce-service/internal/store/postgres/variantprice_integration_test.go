@@ -40,8 +40,8 @@ func pricedVariant(t *testing.T, mrp, selling float64) uuid.UUID {
 	store := New(testPool)
 
 	sellerID, productID := uuid.New(), uuid.New()
-	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	             VALUES ($1,$2,'Price Store',$3,'price@example.test','KA')`,
+	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	             VALUES ($1,$2,'Price Store',$3,'price@example.test','KA','approved')`,
 		sellerID, uuid.New(), "price-"+sellerID.String()[:8])
 	mustExec(t, `INSERT INTO products (id,seller_id,title,slug,status,approval_status,return_policy_type)
 	             VALUES ($1,$2,'Priced Product',$3,'active','approved','7_days')`,

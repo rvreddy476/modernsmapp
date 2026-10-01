@@ -48,8 +48,8 @@ func newValueFixture(t *testing.T) *valueFixture {
 
 	mustExec(t, `INSERT INTO product_categories (id,parent_id,name,slug,display_order,is_active)
 	             VALUES ($1,NULL,'Value Cat',$2,1,TRUE)`, f.category, "value-cat-"+tag)
-	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state)
-	             VALUES ($1,$2,'Value Store',$3,'seller@example.test','KA')`,
+	mustExec(t, `INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
+	             VALUES ($1,$2,'Value Store',$3,'seller@example.test','KA','approved')`,
 		f.seller, uuid.New(), "value-store-"+tag)
 	mustExec(t, `INSERT INTO products (id,seller_id,category_id,title,slug,status,approval_status)
 	             VALUES ($1,$2,$3,'Value Product',$4,'active','approved')`,
