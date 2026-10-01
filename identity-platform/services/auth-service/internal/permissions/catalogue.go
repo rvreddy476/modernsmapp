@@ -43,6 +43,7 @@ const (
 	AppTube         = "tube"
 	AppQA           = "qa"
 	AppChat         = "chat"
+	AppLive         = "live"
 	AppRider        = "rider"
 	AppTrustSafety  = "trust_safety"
 	AppPlatform     = "platform"
@@ -54,7 +55,7 @@ const AllAppsAuditRead = "*:audit.read"
 // apps is the canonical order. The auth.user_roles app CHECK lists exactly these.
 var apps = []string{
 	AppDating, AppFood, AppCommerce, AppMonetization, AppPayments, AppWallet,
-	AppSocial, AppTube, AppQA, AppChat, AppRider, AppTrustSafety, AppPlatform,
+	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppTrustSafety, AppPlatform,
 }
 
 // confinedPayments is the payments view of ONE product application, held under
@@ -296,6 +297,19 @@ var catalogue = map[string][]entry{
 		// groups.moderate: no service checks it today.
 		p("groups.moderate", mod),
 		p("audit.read", audr),
+	},
+	// Live (live-service-v2): moderators watch streams and act on reports and
+	// chat. Stopping a stream and the platform live ban are account actions,
+	// like pages.suspend and dating users.ban: admin only (both step-up at the
+	// BFF). No money and no reads for support. Mirrors admin-service
+	// adminauth.catalogue AppLive.
+	AppLive: {
+		p("streams.read", mod),
+		p("streams.stop"),
+		p("reports.read", mod),
+		p("reports.act", mod),
+		p("chat.moderate", mod),
+		p("users.ban"),
 	},
 	// Mopedu dashboard (rider-service admin_token.go AdminPermissions).
 	// Moderator holds the partner and ride queues and safety triage, never

@@ -138,6 +138,12 @@ func TestForTable(t *testing.T) {
 			has: []string{"chat:stats.read", "chat:reports.read", "chat:reports.act", "chat:channels.moderate"}, noOther: true},
 		{name: "chat support reads only", role: roles.Support, app: AppChat,
 			has: []string{"chat:stats.read", "chat:reports.read"}, hasNot: []string{"chat:reports.act", "chat:channels.moderate"}, noOther: true},
+		// Live (live-service-v2): moderators triage, admin stops and bans.
+		{name: "live moderator triages, never stops or bans", role: roles.Moderator, app: AppLive,
+			has:    []string{"live:streams.read", "live:reports.read", "live:reports.act", "live:chat.moderate"},
+			hasNot: []string{"live:streams.stop", "live:users.ban"}, noOther: true},
+		{name: "live admin holds the console permissions", role: roles.Admin, app: AppLive,
+			has: []string{"live:streams.read", "live:streams.stop", "live:reports.read", "live:reports.act", "live:chat.moderate", "live:users.ban"}, noOther: true},
 		// Admin console Wave 2 — the Mopedu dashboard.
 		{name: "rider moderator triages, sees no money or suspensions", role: roles.Moderator, app: AppRider,
 			has: []string{"rider:partners.read", "rider:rides.read", "rider:incidents.read", "rider:incidents.act", "rider:ratings.moderate", "rider:complaints.act"},
@@ -282,6 +288,13 @@ var consolePermissionHolders = map[string][]string{
 	"chat:reports.read":       {roles.Moderator, roles.Support},
 	"chat:reports.act":        {roles.Moderator},
 	"chat:channels.moderate":  {roles.Moderator},
+	// Live: live-service-v2 AdminPermissions, the whole list.
+	"live:streams.read":  {roles.Moderator},
+	"live:streams.stop":  nil,
+	"live:reports.read":  {roles.Moderator},
+	"live:reports.act":   {roles.Moderator},
+	"live:chat.moderate": {roles.Moderator},
+	"live:users.ban":     nil,
 	// Mopedu dashboard: rider-service AdminPermissions, the whole list.
 	"rider:stats.read":       {roles.Finance, roles.Support},
 	"rider:partners.read":    {roles.Moderator, roles.Support},
@@ -353,9 +366,11 @@ func TestModeratorNeverHoldsMoneyOrReview(t *testing.T) {
 		"rider:stats.read", "rider:reports.read", "rider:payments.read", "rider:payments.settle", "rider:payments.reject",
 		"rider:partners.suspend", "rider:partners.approve", "rider:rides.cancel", "rider:incidents.reveal",
 		"rider:vehicles.review", "rider:documents.review", "rider:kyc.reveal", "rider:cities.manage", "rider:fares.manage",
+		// Live: stopping a stream and the live ban are admin actions.
+		"live:streams.stop", "live:users.ban",
 	}
 	scopes := [][]string{mustFor(t, roles.Moderator, "")}
-	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety, AppSocial, AppRider} {
+	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety, AppSocial, AppRider, AppLive} {
 		scopes = append(scopes, mustFor(t, roles.Moderator, app))
 	}
 	for _, perms := range scopes {
