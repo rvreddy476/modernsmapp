@@ -325,7 +325,8 @@ services:
       ADMIN_SERVICE_URL: http://admin-service:8096
       PROFILE_SERVICE_URL: http://identity-profile:8098
       PAYMENTS_SERVICE_URL: http://payments-service:8102
-      LIVE_SERVICE_URL: http://live-service:8103
+      # /v1/live (v1, MediaMTX) is retired: the gateway answers it 410
+      # LIVE_V1_RETIRED and proxies nothing, so LIVE_SERVICE_URL is gone.
       LIVE_V2_SERVICE_URL: http://live-service-v2:8117
       MEMORIES_SERVICE_URL: http://memories-service:8104
       CHANNEL_SERVICE_URL: http://channel-service:8106
@@ -908,10 +909,16 @@ services:
       # media must know commerce's public key — the same one payments-service
       # verifies — and may grant it this one scope only. A media-specific
       # caller list on purpose: the generic SERVICE_CALLERS is payments'.
-      SERVICE_CALLERS: ${MEDIA_SERVICE_CALLERS:-commerce-service}
+      SERVICE_CALLERS: ${MEDIA_SERVICE_CALLERS:-commerce-service,live-service-v2}
       SERVICE_CALLER_COMMERCE_SERVICE_KID: ${SERVICE_CALLER_COMMERCE_SERVICE_KID:-c1}
       SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY: ${SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY:-}
       SERVICE_CALLER_COMMERCE_SERVICE_OPS: media:image-bytes.read
+      # Live recordings (1 Oct 2026): live-service-v2 signs its call to
+      # POST /v1/media/internal/recordings/import; this one scope only.
+      SERVICE_CALLER_LIVE_SERVICE_V2_KID: ${LIVE_SERVICE_TOKEN_KID:-l1}
+      SERVICE_CALLER_LIVE_SERVICE_V2_PUBKEY: ${LIVE_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_LIVE_SERVICE_V2_OPS: media:recording.import
+      MEDIA_LIVE_RECORDINGS_BUCKET: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
       # Lane D5: internal blink liveness + face comparison for dating selfie
       # verification (POST /internal/v1/media/faces/liveness and /compare).
       # The mock is refused unless ENV is local/dev. Unmarked media counts as
@@ -1284,6 +1291,11 @@ services:
       # post-service confirms the viewer may see the post (postrooms.go).
       WS_POST_ROOMS_ENABLED: "true"
       POST_SERVICE_URL: http://post-service:8084
+      # Live rooms (live:stream:<id>): admitted only after live-service-v2's
+      # internal viewer route says yes (visibility, blocks, bans) — liverooms.go.
+      # The scoped-rooms gate stays off; this is its own owner-checked path.
+      ENABLE_LIVE_ROOMS: "true"
+      LIVE_V2_SERVICE_URL: http://live-service-v2:8117
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8093:8093"
@@ -1575,6 +1587,10 @@ services:
       # Mopedu (rider-service), same token contract; rider registers
       # admin-service through RIDER_SERVICE_CALLERS below.
       RIDER_SERVICE_URL: http://rider-service:8116
+      # Live moderation (live-service-v2, audience "live"), same token
+      # contract; live-service-v2 registers admin-service through
+      # LIVE_SERVICE_CALLERS below.
+      LIVE_V2_SERVICE_URL: http://live-service-v2:8117
       # Access page (Wave 1, B4): role management through identity-auth's
       # token-only /v1/auth/internal/admin/* family, same token contract
       # (audience "identity"), at the URL the permission lookups already use.
@@ -2125,6 +2141,25 @@ services:
   # 7882/udp is the port-muxed RTP path; both are what an emulator (via
   # 10.0.2.2) or a LAN phone actually streams over. The Cloudflare tunnel
   # cannot carry this traffic — live media is LAN/emulator-only in dev.
+  #
+  # NOTE: .env may point live-service-v2 at LiveKit Cloud (LIVEKIT_URL=wss://
+  # ...livekit.cloud). Then this SFU, its webhook block and livekit-egress are
+  # idle: Cloud webhooks are set in the Cloud project and Cloud egress cannot
+  # reach minio:9000. See docs/runbooks/live-production-readiness.md.
+  #
+  # redis: the stack's redis, so livekit-egress (which only talks to the
+  # server over the redis psrpc bus) can take egress requests.
+  # webhook: room/participant/track/egress events to live-service-v2, signed
+  # by LiveKit as a JWT in `Authorization` (HS256 with this key's secret,
+  # iss = api_key, sha256 = base64(sha256(body))). The key must be one of
+  # `keys`. Verified against livekit/livekit v1.8.4 pkg/config (WebHookConfig
+  # api_key/urls; redis address/username/password/db) and protocol webhook.
+  #
+  # livekit-media network: every ICE candidate this server advertises is the
+  # node IP (10.0.2.2 by default, the emulator's route to the host), which no
+  # container can reach. Giving the SFU that same address on a private bridge
+  # lets livekit-egress subscribe to the media. With LIVEKIT_NODE_IP set to a
+  # LAN IP, egress reaches the published ports through the host instead.
   livekit:
     image: livekit/livekit-server:v1.8
     command: --bind 0.0.0.0 --node-ip ${LIVEKIT_NODE_IP:-10.0.2.2}
@@ -2137,10 +2172,98 @@ services:
           use_external_ip: false
         keys:
           ${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret0000000000000000000000000}
+        redis:
+          address: redis:6379
+          username: "${REDIS_USERNAME:-}"
+          password: "${REDIS_PASSWORD:-}"
+          db: ${REDIS_DB:-0}
+        webhook:
+          api_key: ${LIVEKIT_API_KEY:-devkey}
+          urls:
+            - http://live-service-v2:8117/v1/livestream/webhooks/livekit
     ports:
       - "7880:7880"
       - "7881:7881"
       - "7882:7882/udp"
+    networks:
+      default:
+      livekit-media:
+        ipv4_address: 10.0.2.2
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Recording: LiveKit Egress (room composite → one MP4 per stream) uploads to
+  # the stack's MinIO. live-service-v2 sends the S3 target on every request;
+  # `storage` below is only the default. Egress v1.9.0 is the release built on
+  # the same psrpc line (v0.6.1) as livekit-server v1.8.4 — keep the two
+  # paired when either moves. Chrome runs unsandboxed (the v1.9 default), so
+  # no SYS_ADMIN. cpu_cost is lowered for dev: the default room-composite cost
+  # exceeds this container's CPU limit and every request would be refused.
+  livekit-egress:
+    image: livekit/egress:v1.9.0
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${LIVEKIT_API_KEY:-devkey}
+        api_secret: ${LIVEKIT_API_SECRET:-devsecret0000000000000000000000000}
+        ws_url: ws://livekit:7880
+        insecure: true
+        health_port: 9090
+        logging:
+          level: info
+        redis:
+          address: redis:6379
+          username: "${REDIS_USERNAME:-}"
+          password: "${REDIS_PASSWORD:-}"
+          db: ${REDIS_DB:-0}
+        cpu_cost:
+          room_composite_cpu_cost: 1.0
+          audio_room_composite_cpu_cost: 0.5
+          web_cpu_cost: 1.0
+          track_composite_cpu_cost: 1.0
+          track_cpu_cost: 0.5
+        storage:
+          s3:
+            access_key: "${MINIO_ACCESS_KEY:-minio}"
+            secret: "${MINIO_SECRET_KEY:-local_dev_minio_password_change_me}"
+            region: us-east-1
+            endpoint: http://minio:9000
+            bucket: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
+            force_path_style: true
+    networks:
+      default:
+      livekit-media:
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+      live-recordings-bucket:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # One-shot: the recordings bucket egress writes to (nothing else creates
+  # it). Uses the mc client already inside the minio image; idempotent.
+  live-recordings-bucket:
+    image: minio/minio:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null && mc mb --ignore-existing "local/$$LIVE_BUCKET"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local_dev_minio_password_change_me}
+      LIVE_BUCKET: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
 
   live-service-v2:
     build:
@@ -2161,12 +2284,48 @@ services:
       LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-ws://10.0.2.2:7880}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecret0000000000000000000000000}
-      LIVEKIT_WEBHOOK_SECRET: ${LIVEKIT_WEBHOOK_SECRET:-}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      # No LIVEKIT_WEBHOOK_SECRET: the webhook is verified the way LiveKit
+      # signs it, a JWT checked with LIVEKIT_API_KEY / LIVEKIT_API_SECRET, and
+      # it is refused outright when those are unset.
+      #
+      # Egress S3 target, sent on every StartRoomCompositeEgress. The endpoint
+      # needs its scheme (egress hands it to the S3 SDK as a URL); the keys are
+      # the stack's MinIO dev credentials (they were blank, so any recording
+      # upload was refused).
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: *minio_access_key
+      MINIO_SECRET_KEY: *minio_secret_key
       MINIO_BUCKET_LIVE_RECORDINGS: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
-      LIVE_RECORDING_PUBLIC_BASE_URL: ${LIVE_RECORDING_PUBLIC_BASE_URL:-http://localhost:9001}
+      # Blank = endpoint/bucket/key (http://minio:9000/live-recordings/<key>).
+      # The old default, http://localhost:9001, was the MinIO console port
+      # without the bucket, so every recording URL was wrong.
+      LIVE_RECORDING_PUBLIC_BASE_URL: ${LIVE_RECORDING_PUBLIC_BASE_URL:-}
+      # Going live is a closed pilot until a moderation owner is named:
+      # POST create/start answer 403 LIVE_NOT_ENABLED for anyone not listed,
+      # and an empty list admits nobody. Dev default: the founder's account
+      # and the call_a / call_b test accounts (identity auth.users ids).
+      LIVE_PILOT_USER_IDS: ${LIVE_PILOT_USER_IDS:-7cd6ea3a-9c80-4f20-806f-5d08de0f914b,2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}
+      # Host gone while live → reconnecting for this long, then ended
+      # (host_lost). Starting with no host track for this long → failed.
+      LIVE_RECONNECT_GRACE: ${LIVE_RECONNECT_GRACE:-60s}
+      LIVE_START_TIMEOUT: ${LIVE_START_TIMEOUT:-120s}
+      # Admin console: /v1/livestream/internal/admin/* admits only
+      # admin-service tokens (audience "live") scoped to the one permission
+      # admin-service checked, naming the admin. OPS is live-service-v2's
+      # admin permissions. A distinct .env name, because SERVICE_CALLERS in
+      # .env is payments'. Blank = no tokens accepted.
+      SERVICE_CALLERS: ${LIVE_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: live:streams.read,live:streams.stop,live:reports.read,live:reports.act,live:chat.moderate,live:users.ban
+      # Recordings: egress MP4 → media-service import (polled until ready)
+      # → vod_ready. media requires the token outside local/dev.
+      MEDIA_SERVICE_URL: http://media-service:8087
+      LIVE_SERVICE_TOKEN_KID: ${LIVE_SERVICE_TOKEN_KID:-l1}
+      LIVE_SERVICE_TOKEN_PRIVKEY: ${LIVE_SERVICE_TOKEN_PRIVKEY:-}
+      # Where LiveKit egress uploads. LiveKit Cloud cannot reach minio:9000,
+      # so with a Cloud project set this to the public MinIO host.
+      LIVE_EGRESS_S3_ENDPOINT: ${LIVE_EGRESS_S3_ENDPOINT:-}
     ports:
       - "8119:8117"
     depends_on:
@@ -2510,3 +2669,12 @@ volumes:
   pgdata:
   miniodata:
   scylladata:
+
+networks:
+  # A private bridge whose 10.0.2.2 is the LiveKit SFU, so livekit-egress can
+  # reach the ICE candidates the SFU advertises with the emulator node IP
+  # (see the livekit service). Nothing else joins it.
+  livekit-media:
+    ipam:
+      config:
+        - subnet: 10.0.2.0/24

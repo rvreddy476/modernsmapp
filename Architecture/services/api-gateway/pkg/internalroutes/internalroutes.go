@@ -329,8 +329,8 @@ var StampPolicy = map[string]bool{
 	// suggestion-service: engine-wide RequireInternalKey.
 	"/v1/suggestions": true,
 
-	// live-service (engine-wide) and live-service-v2 (/v1/livestream group).
-	"/v1/live":       true,
+	// live-service-v2 (/v1/livestream group). `/v1/live` (v1) is retired:
+	// the gateway answers it 410 and proxies nothing.
 	"/v1/livestream": true,
 
 	// memories, channel, community, qa, dating, food, rider: engine-wide or

@@ -305,6 +305,9 @@ func newCoreHandler(routes []route, promHandler http.Handler, reviewerPublicEnab
 			promHandler.ServeHTTP(w, r)
 			return
 		}
+		if serveLiveV1Retired(w, r) {
+			return
+		}
 		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
 			return
 		}
@@ -535,11 +538,12 @@ func routeDefinitions() []routeDef {
 		// The PSP webhook arrives on its own ingress, authenticated by
 		// signature. pkg/routepolicy enforces this absence at boot so the
 		// route cannot be reintroduced quietly.
-		// Live / Memories services
-		{"/v1/live", env("LIVE_SERVICE_URL", "http://live-service:8103")},
-		// Live-v2 (LiveKit browser-native broadcast) — separate prefix to
-		// avoid colliding with v1 RTMP/OBS routes that own /v1/live.
+		// Live: `/v1/live` (v1, MediaMTX via live-service) is RETIRED
+		// (1 Oct 2026) and has no route here — serveLiveV1Retired answers
+		// 410 LIVE_V1_RETIRED before route matching. Do not re-add it; the
+		// only live stack is v2 (LiveKit) on `/v1/livestream`.
 		{"/v1/livestream", env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117")},
+		// Memories service
 		{"/v1/memories", env("MEMORIES_SERVICE_URL", "http://memories-service:8104")},
 		// Broadcast Channels / Communities (GCC Phase 4)
 		{"/v1/broadcast-channels", env("CHANNEL_SERVICE_URL", "http://channel-service:8106")},
@@ -559,6 +563,24 @@ func routeDefinitions() []routeDef {
 		// Commerce service (full e-commerce rebuild)
 		{"/v1/commerce", env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")},
 	}
+}
+
+// liveV1Prefix is the retired v1 live API (MediaMTX RTMP/OBS through
+// live-service). Clients moved to v2 (LiveKit) on /v1/livestream.
+const liveV1Prefix = "/v1/live"
+
+// serveLiveV1Retired answers every request under `/v1/live` with 410 Gone
+// and LIVE_V1_RETIRED, so an old client learns the API is gone for good
+// instead of reaching the unused v1 stack or getting a generic 404. Matching
+// is on the segment boundary: `/v1/livestream` (v2) is never caught.
+func serveLiveV1Retired(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != liveV1Prefix && !strings.HasPrefix(r.URL.Path, liveV1Prefix+"/") {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusGone)
+	_, _ = w.Write([]byte(`{"error":{"code":"LIVE_V1_RETIRED","message":"This live API is retired; use /v1/livestream"}}`))
+	return true
 }
 
 func serveReviewerLaunchGate(w http.ResponseWriter, r *http.Request, enabled bool) bool {
