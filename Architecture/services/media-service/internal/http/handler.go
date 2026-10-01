@@ -62,6 +62,13 @@ type Handler struct {
 	// that route (local/dev only, decided in main).
 	imageBytesVerifier  serviceTokenVerifier
 	imageBytesLegacyKey bool
+	// recordings backs POST /v1/media/internal/recordings/import
+	// (recording_import_handler.go); nil leaves the route unregistered.
+	// recordingsVerifier / recordingsLegacyKey are its caller check, the
+	// same shape as image-bytes but for live-service-v2.
+	recordings          recordingImportService
+	recordingsVerifier  serviceTokenVerifier
+	recordingsLegacyKey bool
 }
 
 func New(svc *service.Service) *Handler {
@@ -167,6 +174,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// bytes of a ready image, for commerce-service only
 			// (image_bytes_handler.go). Never a URL.
 			internal.GET(ImageBytesRoute, refuseGatewayIdentity(), h.requireImageBytesCaller(), h.GetImageBytes)
+			// Live recordings (2026-10-01): live-service-v2 registers a
+			// finished stream's egress MP4 as the host's video
+			// (recording_import_handler.go).
+			if h.recordings != nil {
+				internal.POST(RecordingImportRoute, refuseGatewayIdentity(), h.requireRecordingImportCaller(), h.ImportRecording)
+			}
 		}
 	} else {
 		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — the internal orphan-delete route is NOT registered; draft-media reclamation is disabled")

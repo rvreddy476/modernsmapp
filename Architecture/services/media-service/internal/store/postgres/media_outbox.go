@@ -44,6 +44,33 @@ func (s *MediaAssetStore) QueueTranscode(ctx context.Context, media *MediaAsset)
 	if err := tx.QueryRow(ctx, `SELECT media_generation FROM media_assets WHERE id = $1 FOR UPDATE`, media.ID).Scan(&generation); err != nil {
 		return fmt.Errorf("queue transcode: lock media %s: %w", media.ID, err)
 	}
+	if err := insertTranscodeRequestTx(ctx, tx, media, generation); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE media_assets
+		   SET processing_status = 'processing', updated_at = NOW()
+		 WHERE id = $1
+		   AND processing_status IN ('uploaded','processing')
+	`, media.ID)
+	if err != nil {
+		return fmt.Errorf("mark media processing: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("queue transcode: media %s is not in an uploadable state", media.ID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit queue transcode: %w", err)
+	}
+	return nil
+}
+
+// insertTranscodeRequestTx writes the media.transcode.requested outbox row
+// for media at generation, inside the caller's transaction. Shared by
+// QueueTranscode (confirm) and CreateImportedVideo (recording import) so
+// both enqueue exactly the request the worker and relay already handle.
+func insertTranscodeRequestTx(ctx context.Context, tx pgx.Tx, media *MediaAsset, generation int64) error {
 	payload, err := json.Marshal(TranscodeRequestPayload{
 		MediaTranscodeRequestedPayload: sharedevents.MediaTranscodeRequestedPayload{
 			MediaAssetID: media.ID.String(),
@@ -65,22 +92,6 @@ func (s *MediaAssetStore) QueueTranscode(ctx context.Context, media *MediaAsset)
 		ON CONFLICT (media_asset_id, event_type) DO NOTHING
 	`, eventID, media.ID, sharedevents.MediaTranscodeRequested, media.UploaderID, payload); err != nil {
 		return fmt.Errorf("insert transcode request outbox: %w", err)
-	}
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE media_assets
-		   SET processing_status = 'processing', updated_at = NOW()
-		 WHERE id = $1
-		   AND processing_status IN ('uploaded','processing')
-	`, media.ID)
-	if err != nil {
-		return fmt.Errorf("mark media processing: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("queue transcode: media %s is not in an uploadable state", media.ID)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit queue transcode: %w", err)
 	}
 	return nil
 }

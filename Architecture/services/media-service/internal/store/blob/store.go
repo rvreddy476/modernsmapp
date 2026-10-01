@@ -308,6 +308,75 @@ func (s *Store) Bucket() string {
 	return s.bucket
 }
 
+// ── Reads from another bucket (live recording import, 1 Oct 2026) ──────
+//
+// The three methods below are the only ones that name a bucket other than
+// this store's own, and they exist for one caller:
+// service.RecordingImporter, which has already checked srcBucket against
+// its configured allow-list. None of them writes to or deletes from the
+// source bucket.
+
+// ErrObjectChanged means a server-side copy was refused because the source
+// object no longer has the ETag the caller validated.
+var ErrObjectChanged = errors.New("blob: source object changed since it was validated")
+
+// StatObjectIn is StatObject on srcBucket.
+func (s *Store) StatObjectIn(ctx context.Context, srcBucket, objectKey string) (ObjectInfo, error) {
+	info, err := s.client.StatObject(ctx, srcBucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		return ObjectInfo{}, normalizeObjectError(objectKey, err)
+	}
+	return ObjectInfo{Size: info.Size, ContentType: info.ContentType, ETag: info.ETag}, nil
+}
+
+// ReadObjectRangeIn is ReadObjectRange on srcBucket.
+func (s *Store) ReadObjectRangeIn(ctx context.Context, srcBucket, objectKey string, start, end int64) ([]byte, error) {
+	if start < 0 || end < start {
+		return nil, fmt.Errorf("blob: invalid byte range %d-%d", start, end)
+	}
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return nil, fmt.Errorf("blob: set range for %s: %w", objectKey, err)
+	}
+	obj, err := s.client.GetObject(ctx, srcBucket, objectKey, opts)
+	if err != nil {
+		return nil, normalizeObjectError(objectKey, err)
+	}
+	defer obj.Close()
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		return nil, normalizeObjectError(objectKey, err)
+	}
+	return data, nil
+}
+
+// CopyObjectFrom copies srcBucket/srcKey into this store's bucket at dstKey
+// entirely on the object store (S3 CopyObject; no bytes pass through this
+// process). srcETag, when set, is a precondition: a source replaced after
+// it was validated is refused with ErrObjectChanged rather than copied.
+// The destination gets only contentType as metadata; nothing of the
+// source's metadata is carried over. A single CopyObject is bounded at
+// 5 GiB, above any size the importer accepts.
+//
+// The answer is a fresh stat of the DESTINATION (size and ETag as stored),
+// because CopyObject's own response carries no size.
+func (s *Store) CopyObjectFrom(ctx context.Context, srcBucket, srcKey, srcETag, dstKey, contentType string) (ObjectInfo, error) {
+	src := minio.CopySrcOptions{Bucket: srcBucket, Object: srcKey, MatchETag: srcETag}
+	dst := minio.CopyDestOptions{
+		Bucket:          s.bucket,
+		Object:          dstKey,
+		ReplaceMetadata: true,
+		UserMetadata:    map[string]string{"Content-Type": contentType},
+	}
+	if _, err := s.client.CopyObject(ctx, dst, src); err != nil {
+		if minio.ToErrorResponse(err).Code == "PreconditionFailed" {
+			return ObjectInfo{}, fmt.Errorf("%w: %s", ErrObjectChanged, srcKey)
+		}
+		return ObjectInfo{}, normalizeObjectError(srcKey, err)
+	}
+	return s.StatObject(ctx, dstKey)
+}
+
 // MultipartPart is one finished part of a multipart upload.
 type MultipartPart struct {
 	PartNumber int

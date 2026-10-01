@@ -292,6 +292,27 @@ func main() {
 		slog.Warn("media-service: SERVICE_CALLERS not set and not local/dev — /v1/media/internal/:mediaId/image-bytes refuses every caller until commerce-service is registered")
 	}
 
+	// Live recordings (2026-10-01): POST /v1/media/internal/recordings/import
+	// copies a finished stream's egress MP4 from the recordings bucket
+	// (MEDIA_LIVE_RECORDINGS_BUCKET, default live-recordings) into this
+	// service's layout and queues its transcode. Caller live-service-v2: a
+	// service token with media:recording.import from SERVICE_CALLERS, or the
+	// bare internal key on local/dev only. A bad policy refuses to start.
+	recordingCfg, err := service.RecordingImportConfigFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("media-service: refusing to start: invalid recording import configuration", "error", err)
+		os.Exit(1)
+	}
+	recordingImporter, err := service.NewRecordingImporterFor(pgStore, blobStore, recordingCfg)
+	if err != nil {
+		slog.Error("media-service: refusing to start: recording import", "error", err)
+		os.Exit(1)
+	}
+	mediaHandler.WithRecordingImport(recordingImporter, imageBytesCallers, imageBytesLegacyKey)
+	if imageBytesCallers == nil && !imageBytesLegacyKey {
+		slog.Warn("media-service: SERVICE_CALLERS not set and not local/dev — /v1/media/internal/recordings/import refuses every caller until live-service-v2 is registered")
+	}
+
 	// Dating plan lane D5: internal face comparison for selfie verification
 	// (POST /internal/v1/media/faces/compare). Off unless
 	// MEDIA_FACE_COMPARE_ENABLED=true; when on, boot refuses without a real
