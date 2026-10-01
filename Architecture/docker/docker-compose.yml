@@ -903,6 +903,15 @@ services:
       # Lifetime of the signed dating photo URLs (30-300 seconds).
       MEDIA_DATING_PHOTO_URL_TTL_SECONDS: ${MEDIA_DATING_PHOTO_URL_TTL_SECONDS:-120}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Seller KYC documents (1 Oct 2026): commerce-service signs its call to
+      # GET /v1/media/internal/:mediaId/image-bytes with its service token, so
+      # media must know commerce's public key — the same one payments-service
+      # verifies — and may grant it this one scope only. A media-specific
+      # caller list on purpose: the generic SERVICE_CALLERS is payments'.
+      SERVICE_CALLERS: ${MEDIA_SERVICE_CALLERS:-commerce-service}
+      SERVICE_CALLER_COMMERCE_SERVICE_KID: ${SERVICE_CALLER_COMMERCE_SERVICE_KID:-c1}
+      SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY: ${SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY:-}
+      SERVICE_CALLER_COMMERCE_SERVICE_OPS: media:image-bytes.read
       # Lane D5: internal blink liveness + face comparison for dating selfie
       # verification (POST /internal/v1/media/faces/liveness and /compare).
       # The mock is refused unless ENV is local/dev. Unmarked media counts as

@@ -53,6 +53,15 @@ type Handler struct {
 	// (sound_handler.go); nil means the service. An interface so the ensure
 	// path can be driven without PostgreSQL or ffmpeg.
 	sounds soundService
+	// imageBytes backs GET /v1/media/internal/:mediaId/image-bytes
+	// (image_bytes_handler.go); nil means the service's reader. An interface
+	// so a test can stand fake stores behind the real reader.
+	imageBytes imageBytesService
+	// imageBytesVerifier verifies commerce-service tokens on image-bytes; nil
+	// accepts no token. imageBytesLegacyKey admits the bare internal key on
+	// that route (local/dev only, decided in main).
+	imageBytesVerifier  serviceTokenVerifier
+	imageBytesLegacyKey bool
 }
 
 func New(svc *service.Service) *Handler {
@@ -154,6 +163,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// fingerprint job of a ready video. No URLs, no user ids.
 			internal.POST("/:mediaId/fingerprint", h.EnqueueFingerprint)
 			internal.GET("/:mediaId/fingerprint", h.GetFingerprintStatus)
+			// Seller KYC documents, view-only (2026-10-01): the metadata-free
+			// bytes of a ready image, for commerce-service only
+			// (image_bytes_handler.go). Never a URL.
+			internal.GET(ImageBytesRoute, refuseGatewayIdentity(), h.requireImageBytesCaller(), h.GetImageBytes)
 		}
 	} else {
 		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — the internal orphan-delete route is NOT registered; draft-media reclamation is disabled")

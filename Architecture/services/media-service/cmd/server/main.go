@@ -277,6 +277,21 @@ func main() {
 	}
 	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey)
 
+	// Seller KYC documents, view-only (2026-10-01): GET
+	// /v1/media/internal/:mediaId/image-bytes answers commerce-service only.
+	// Its service token is verified against SERVICE_CALLERS (audience
+	// "media"); the bare internal key is accepted on local/dev only.
+	imageBytesCallers, err := mediaHttp.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("media-service: refusing to start: invalid SERVICE_CALLERS", "error", err)
+		os.Exit(1)
+	}
+	imageBytesLegacyKey := processing.IsLocalDevEnv(os.Getenv)
+	mediaHandler.WithImageBytesAuth(imageBytesCallers, imageBytesLegacyKey)
+	if imageBytesCallers == nil && !imageBytesLegacyKey {
+		slog.Warn("media-service: SERVICE_CALLERS not set and not local/dev — /v1/media/internal/:mediaId/image-bytes refuses every caller until commerce-service is registered")
+	}
+
 	// Dating plan lane D5: internal face comparison for selfie verification
 	// (POST /internal/v1/media/faces/compare). Off unless
 	// MEDIA_FACE_COMPARE_ENABLED=true; when on, boot refuses without a real
