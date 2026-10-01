@@ -188,3 +188,17 @@ func TestParseLiveKitWebhookProtojsonAndSnake(t *testing.T) {
 		t.Fatalf("track_published: %+v %v", ev, err)
 	}
 }
+
+func TestUnverifiedIssuerIsDiagnosticOnly(t *testing.T) {
+	body := []byte(`{"event":"room_started","id":"EV_diag"}`)
+	tok := signLiveKit(t, "APIother", "some-other-secret", body, time.Now(), nil)
+	if got := unverifiedIssuer(tok); got != "APIother" {
+		t.Fatalf("unverifiedIssuer = %q, want APIother", got)
+	}
+	if got := unverifiedIssuer("not-a-jwt"); got != "" {
+		t.Fatalf("unverifiedIssuer(garbage) = %q, want empty", got)
+	}
+	if got := keyPrefix("APIabcdef"); got != "APIab" {
+		t.Fatalf("keyPrefix = %q", got)
+	}
+}

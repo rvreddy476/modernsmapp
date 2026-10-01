@@ -136,6 +136,37 @@ func VerifyLiveKitWebhook(authHeader string, body []byte, apiKey, apiSecret stri
 	return nil
 }
 
+// unverifiedIssuer reads the iss claim of a webhook token WITHOUT verifying
+// it. Diagnostics only: it lets a refusal say whether LiveKit signed with a
+// different API key than LIVEKIT_API_KEY (the usual cause of a bad
+// signature). Never used for a decision.
+func unverifiedIssuer(authz string) string {
+	parts := strings.Split(strings.TrimSpace(authz), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	cb, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+	}
+	if json.Unmarshal(cb, &claims) != nil {
+		return ""
+	}
+	return claims.Iss
+}
+
+// keyPrefix keeps the first five characters of an API key id (a public
+// identifier, not the secret) so two keys can be told apart in a log.
+func keyPrefix(id string) string {
+	if len(id) > 5 {
+		return id[:5]
+	}
+	return id
+}
+
 // OnLiveKitWebhook verifies, parses and applies one LiveKit event.
 // 401 on any verification failure; 400 on a verified but unparseable body;
 // 500 when applying failed (LiveKit retries); 200 otherwise.
@@ -151,7 +182,9 @@ func (h *Handler) OnLiveKitWebhook(c *gin.Context) {
 		now = h.clock
 	}
 	if err := VerifyLiveKitWebhook(c.GetHeader("Authorization"), body, h.webhookKey, h.webhookSecret, now()); err != nil {
-		slog.WarnContext(ctx, "live-v2 webhook refused", "reason", err.Error())
+		iss := unverifiedIssuer(c.GetHeader("Authorization"))
+		slog.WarnContext(ctx, "live-v2 webhook refused", "reason", err.Error(),
+			"iss_matches_key", iss != "" && iss == h.webhookKey, "iss_prefix", keyPrefix(iss))
 		api.ErrorWithContext(ctx, c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid webhook signature", nil)
 		return
 	}
