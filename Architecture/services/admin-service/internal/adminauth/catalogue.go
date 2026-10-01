@@ -45,6 +45,7 @@ const (
 	AppTube         = "tube"
 	AppQA           = "qa"
 	AppChat         = "chat"
+	AppLive         = "live"
 	AppRider        = "rider"
 	AppTrustSafety  = "trust_safety"
 	AppPlatform     = "platform"
@@ -97,7 +98,7 @@ var adminRoles = []RoleInfo{
 
 var apps = []string{
 	AppDating, AppFood, AppCommerce, AppMonetization, AppPayments, AppWallet,
-	AppSocial, AppTube, AppQA, AppChat, AppRider, AppTrustSafety, AppPlatform,
+	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppTrustSafety, AppPlatform,
 }
 
 // entry is one permission of an app and the roles that hold it besides the
@@ -287,6 +288,17 @@ var catalogue = map[string][]entry{
 		p("channels.moderate", mod),
 		p("groups.moderate", mod),
 		p("audit.read", audr),
+	},
+	// Live (live-service-v2): moderators watch streams and act on reports and
+	// chat; stopping a stream and the platform live ban stay with admin and
+	// superadmin (both step-up at the BFF).
+	AppLive: {
+		p("streams.read", mod),
+		p("streams.stop"),
+		p("reports.read", mod),
+		p("reports.act", mod),
+		p("chat.moderate", mod),
+		p("users.ban"),
 	},
 	AppRider: {
 		p("stats.read", fin, sup),

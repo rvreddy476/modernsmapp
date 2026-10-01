@@ -329,7 +329,7 @@ func TestAccessCatalogue_FromTheMirror(t *testing.T) {
 	}
 	cat := env.Data
 	if !strings.Contains(cat.Source, "mirror") || len(cat.Roles) != 7 || cat.Roles[0].Role != adminauth.RoleSuperadmin || !cat.Roles[0].PlatformOnly ||
-		cat.Roles[1].PlatformOnly || len(cat.Apps) != 13 || cat.Apps[12] != adminauth.AppPlatform {
+		cat.Roles[1].PlatformOnly || len(cat.Apps) != 14 || cat.Apps[13] != adminauth.AppPlatform {
 		t.Fatalf("catalogue %+v", cat)
 	}
 	if got := cat.RolePermissions[adminauth.RoleAuditor]["platform"]; strings.Join(got, ",") != "platform:audit.read,platform:roles.read" {

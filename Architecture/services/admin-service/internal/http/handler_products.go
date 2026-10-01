@@ -222,6 +222,11 @@ func idempotencyKey(c *gin.Context, required bool) (string, bool) {
 	return key, true
 }
 
+// ctxExtraScopes holds permissions a route's Decide verified the admin ALSO
+// holds for this request ([]string); productCall adds them to the token scope.
+// Only a Decide that has checked perms.Has for each may set it.
+const ctxExtraScopes = "admin.extra_scopes"
+
 // productCall runs one product call as the gate's admin with the gate's
 // effective permission as the token scope, and writes the answer.
 func (h *Handler) productCall(c *gin.Context, p product, pr service.ProductRequest, statusOnly bool) {
@@ -232,6 +237,9 @@ func (h *Handler) productCall(c *gin.Context, p product, pr service.ProductReque
 		return
 	}
 	pr.Permission, pr.Actor = req.Permission, actorFrom(c)
+	if v, ok := c.Get(ctxExtraScopes); ok {
+		pr.ExtraScopes, _ = v.([]string)
+	}
 	resp, err := p.client.Do(productContext(c), pr)
 	if err == nil && p.answered != nil && p.answered(c, info, resp) {
 		return

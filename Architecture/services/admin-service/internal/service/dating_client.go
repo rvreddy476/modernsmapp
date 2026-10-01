@@ -126,7 +126,12 @@ type ProductRequest struct {
 	Query      url.Values
 	RawQuery   string // used when Query is empty
 	Permission string
-	Actor      string
+	// ExtraScopes are further permissions the gate ALSO verified the admin
+	// holds for this one request (a live report resolution that bans a user
+	// needs live:users.ban too); they follow Permission in the token's scope
+	// so the product can check them as well. Empty for every other call.
+	ExtraScopes []string
+	Actor       string
 	// Body is JSON-encoded when non-nil; RawBody (already JSON) wins over it.
 	Body    any
 	RawBody []byte
@@ -205,7 +210,14 @@ func (p *ProductClient) newRequest(ctx context.Context, r ProductRequest) (*http
 	if r.Permission == "" {
 		return nil, errors.New("product call without a permission")
 	}
-	tok, err := p.signer.Mint(p.audience, "admin-console", []string{r.Permission}, nil, ProductTokenTTL,
+	scope := []string{r.Permission}
+	for _, s := range r.ExtraScopes {
+		if s == "" || s == r.Permission {
+			continue
+		}
+		scope = append(scope, s)
+	}
+	tok, err := p.signer.Mint(p.audience, "admin-console", scope, nil, ProductTokenTTL,
 		servicetoken.WithActor(id.String()))
 	if err != nil {
 		return nil, fmt.Errorf("mint service token: %w", err)

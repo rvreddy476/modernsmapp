@@ -92,6 +92,8 @@ type Handler struct {
 	community *service.ProductClient
 	// Mopedu: rider-service.
 	rider *service.ProductClient
+	// Live moderation: live-service-v2.
+	live *service.ProductClient
 	// Access page: identity's admin console family (roles, users, sessions).
 	identity *service.ProductClient
 }
@@ -162,6 +164,12 @@ func (h *Handler) WithRider(rc *service.ProductClient) *Handler {
 	return h
 }
 
+// WithLive installs the live-service-v2 client (live moderation).
+func (h *Handler) WithLive(lc *service.ProductClient) *Handler {
+	h.live = lc
+	return h
+}
+
 // WithIdentity installs the identity console client (the Access page).
 func (h *Handler) WithIdentity(ic *service.ProductClient) *Handler {
 	h.identity = ic
@@ -190,6 +198,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterTubeRoutes(r)
 	h.RegisterQARoutes(r)
 	h.RegisterChatRoutes(r)
+	h.RegisterLiveRoutes(r)
 	h.RegisterRiderRoutes(r)
 	h.RegisterAccessRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {

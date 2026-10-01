@@ -123,7 +123,7 @@ func main() {
 		os.Exit(1)
 	}
 	if tokenSigner == nil {
-		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE (also Monetization, Payments, the content apps and Mopedu)")
+		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE (also Monetization, Payments, the content apps, Mopedu and Live)")
 	}
 	if msg, stale := staleRefundThresholdWarning(os.Getenv); stale {
 		slog.Warn(msg)
@@ -146,6 +146,9 @@ func main() {
 		).
 		// Mopedu: rider-service.
 		WithRider(service.NewRiderClient(env("RIDER_SERVICE_URL", "http://rider-service:8116"), tokenSigner)).
+		// Live moderation: live-service-v2 (audience "live"; it registers
+		// ADMIN_SERVICE_TOKEN_PUBKEY / _KID for admin-service).
+		WithLive(service.NewLiveClient(env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117"), tokenSigner)).
 		// Access page: identity's admin console family, at the same
 		// AUTH_SERVICE_URL the permission lookups use (audience "identity";
 		// identity registers the same public key as ADMIN_SERVICE_TOKEN_PUBKEY).

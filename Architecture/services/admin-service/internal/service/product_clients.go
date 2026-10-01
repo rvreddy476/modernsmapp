@@ -46,6 +46,11 @@ const (
 	RiderAudience    = "rider"
 	RiderAdminPrefix = "/v1/rider/internal/admin"
 
+	// Live (live-service-v2, the LiveKit stack): its token-only admin family,
+	// audience "live" (the identity app the six live:* permissions belong to).
+	LiveAudience    = "live"
+	LiveAdminPrefix = "/v1/livestream/internal/admin"
+
 	// Identity (Wave 1, B4 — the Access page): auth-service's token-only
 	// admin console family (auth-service/internal/http/admin_console.go),
 	// audience "identity". Identity additionally requires a jti and refuses a
@@ -64,6 +69,11 @@ func NewIdentityConsoleClient(baseURL string, signer *servicetoken.Signer) *Prod
 // NewRiderClient builds the client for rider-service (Mopedu).
 func NewRiderClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
 	return newProductClient(baseURL, RiderAdminPrefix, RiderAudience, signer)
+}
+
+// NewLiveClient builds the client for live-service-v2 (live moderation).
+func NewLiveClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, LiveAdminPrefix, LiveAudience, signer)
 }
 
 // NewPostClient builds the client for post-service (Social and Tube).

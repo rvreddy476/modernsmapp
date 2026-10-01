@@ -64,6 +64,8 @@ var (
 	socialAll = append(append([]string{}, postAll[:9]...), pagesAll[1:]...)
 	// identityAll is identity's AdminServicePermissions (the Access page).
 	identityAll = []string{permPlatformRolesRead, permPlatformRolesManage, permPlatformUsersSearch, permPlatformSessionsRevoke, permPlatformAuditRead}
+	// liveAll is live-service-v2's admin permissions.
+	liveAll = []string{permLiveStreamsRead, permLiveStreamsStop, permLiveReportsRead, permLiveReportsAct, permLiveChatModerate, permLiveUsersBan}
 	// riderAll is rider-service's AdminPermissions (Mopedu).
 	riderAll = []string{
 		permRiderStatsRead, permRiderPartnersRead, permRiderPartnersApprove, permRiderPartnersSuspend,
@@ -164,6 +166,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	postURL, pagesURL, qaURL := stub("post", postAll), stub("social", pagesAll), stub("qa", qaAll)
 	channelURL, groupURL, communityURL := stub("chat", channelAll), stub("chat", groupAll), stub("chat", communityAll)
 	riderURL := stub("rider", riderAll)
+	liveURL := stub("live", liveAll)
 	identityURL := stub("identity", identityAll)
 
 	var signer *servicetoken.Signer
@@ -188,6 +191,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 		WithQA(service.NewQAClient(qaURL, signer)).
 		WithChat(service.NewChannelClient(channelURL, signer), service.NewGroupClient(groupURL, signer), service.NewCommunityClient(communityURL, signer)).
 		WithRider(service.NewRiderClient(riderURL, signer)).
+		WithLive(service.NewLiveClient(liveURL, signer)).
 		WithIdentity(service.NewIdentityConsoleClient(identityURL, signer))
 	if err := h.RegisterAllRoutes(rg.r); err != nil {
 		t.Fatalf("route table refused: %v", err)
