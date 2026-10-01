@@ -119,6 +119,17 @@ Identity must ship the `live:*` permissions (superadmin and admin; moderators ge
 - A platform live ban (admin `POST .../admin/users/:userId/live-ban`) blocks going live and chatting everywhere, even for a listed user.
 - To add someone: append the id, then redeploy live-service-v2. Each addition is a decision for the moderation owner. Until one is named, the list holds internal accounts only.
 
+### Founding creator badge cutoff (founder decision, 2 Oct 2026)
+
+The Founding creator badge is earned by a creator's first stream that stays on air for 5 minutes while the founding window is open. The window closes **90 days after going live opens to everyone**. That date does not exist yet, so `LIVE_FOUNDING_CREATOR_UNTIL` stays unset (window open) during the pilot.
+
+On the day going live opens to everyone, in the same change that opens it:
+
+1. Set `LIVE_FOUNDING_CREATOR_UNTIL` to that day plus 90 days, as an RFC3339 time (for example, opening on 2027-01-10 gives `2027-04-10T00:00:00+05:30`), in every environment's live-service-v2 config.
+2. Redeploy live-service-v2. A stream that started before the cutoff still qualifies; one that starts after it does not. Badges already granted are kept.
+
+Do not open going live to everyone without setting this, or the badge stays earnable for ever.
+
 ## 7. Go-live checklist (per environment)
 
 1. LiveKit server and egress are on the same paired versions and share one redis. Server logs show the webhook URL configured; egress logs show it registered with the cluster.
