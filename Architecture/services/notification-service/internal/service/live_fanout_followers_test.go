@@ -383,10 +383,10 @@ func TestLiveFanout_NonAdvancingFollowerTokenEndsTheWalk(t *testing.T) {
 	}
 }
 
-// The 30-minute rule holds inside a long follower walk: once the stream
-// started longer ago than the window, the remaining followers are not
-// told it "is live", and the job finishes rather than retrying.
-func TestLiveFanout_FollowerWalkStopsAtTheNotifyWindow(t *testing.T) {
+// Every follower is reached however long the walk takes (founder, 2 Oct
+// 2026): a walk that is still going hours after the stream started keeps
+// going to the last page.
+func TestLiveFanout_FollowerWalkHasNoTimeLimit(t *testing.T) {
 	job := liveJob(uuid.New(), uuid.Nil)
 	job.Phase = postgres.FanoutPhaseFollowers
 	p1, p2 := ids(2), ids(2)
@@ -395,20 +395,20 @@ func TestLiveFanout_FollowerWalkStopsAtTheNotifyWindow(t *testing.T) {
 		{IDs: p2, NextCursor: "tok-2"},
 		{IDs: ids(2)},
 	}}
-	// The window closes while the second page is being delivered.
+	// Hours pass while the second page is being delivered.
 	fol.onCall = func(n int) {
 		if n == 1 {
-			job.PostCreatedAt = time.Now().Add(-liveNotifyWindow - time.Minute)
+			job.PostCreatedAt = time.Now().Add(-6 * time.Hour)
 		}
 	}
 	store, notifier := newFakeStore(), &fakeNotifier{}
 	f := liveFanoutWithFollowers(notifier, store, &fakeSource{}, &fakeReminders{}, fol)
 
 	if err := f.processJob(context.Background(), job); err != nil {
-		t.Fatalf("a job past its window must complete, not retry: %v", err)
+		t.Fatalf("processJob: %v", err)
 	}
-	if fol.calls != 2 || len(notifier.got) != 4 {
-		t.Fatalf("fetched %d pages and notified %d, want 2 pages / 4 people then stop", fol.calls, len(notifier.got))
+	if fol.calls != 3 || len(notifier.got) != 6 {
+		t.Fatalf("fetched %d pages and notified %d, want all 3 pages / 6 people", fol.calls, len(notifier.got))
 	}
 }
 

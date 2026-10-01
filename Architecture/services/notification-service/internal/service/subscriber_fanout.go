@@ -249,14 +249,8 @@ func (f *SubscriberFanout) processJob(ctx context.Context, job *postgres.FanoutJ
 	}
 
 	if job.NotifType == LiveNotifType {
-		// "Is live" has a shelf life: a job that surfaces long after the
-		// stream started (broker backlog, a reclaimed crash) is finished
-		// without telling anyone.
-		if liveJobStale(job, time.Now()) {
-			slog.Info("fanout: live job past its notify window; nobody notified",
-				"stream_id", job.PostID, "started_at", job.PostCreatedAt)
-			return nil
-		}
+		// No shelf life: a late or resumed live job still notifies everyone
+		// (see live_fanout.go).
 		if job.ChannelName == "" {
 			job.ChannelName = f.liveCreatorName(ctx, job)
 		}

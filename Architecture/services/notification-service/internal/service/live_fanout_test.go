@@ -295,30 +295,21 @@ func TestLiveFanout_SecondRunNotifiesNobodyAgain(t *testing.T) {
 	}
 }
 
-// "Is live" has a shelf life. A job that surfaces after the window is
-// finished without telling anyone; one inside it is delivered.
-func TestLiveFanout_StaleJobNotifiesNobody(t *testing.T) {
+// There is no time limit on a live job (founder, 2 Oct 2026). One that
+// surfaces hours after the stream started — a backlog, a reclaimed crash —
+// still tells everyone.
+func TestLiveFanout_LateJobStillNotifiesEveryone(t *testing.T) {
 	rem := &fakeReminders{pages: []*livestream.Page{{IDs: ids(2)}}}
 	notifier := &fakeNotifier{}
 	f := liveFanoutWith(notifier, newFakeStore(), &fakeSource{}, rem)
 	job := liveJob(uuid.New(), uuid.Nil)
-	job.PostCreatedAt = time.Now().Add(-liveNotifyWindow - time.Minute)
+	job.PostCreatedAt = time.Now().Add(-6 * time.Hour)
 
 	if err := f.processJob(context.Background(), job); err != nil {
-		t.Fatalf("a stale job must complete, not retry: %v", err)
+		t.Fatalf("processJob: %v", err)
 	}
-	if len(notifier.got) != 0 || len(rem.afters) != 0 {
-		t.Fatalf("stale job notified %d and paged %d", len(notifier.got), len(rem.afters))
-	}
-
-	now := time.Now()
-	fresh := &postgres.FanoutJob{NotifType: LiveNotifType, PostCreatedAt: now.Add(-liveNotifyWindow + time.Minute)}
-	if liveJobStale(fresh, now) {
-		t.Fatal("a job inside the window is not stale")
-	}
-	old := &postgres.FanoutJob{NotifType: "creator_uploaded_video", PostCreatedAt: now.Add(-48 * time.Hour)}
-	if liveJobStale(old, now) {
-		t.Fatal("the window applies to live jobs only; an old upload still notifies")
+	if len(notifier.got) != 2 {
+		t.Fatalf("a late job notified %d, want both reminder holders", len(notifier.got))
 	}
 }
 

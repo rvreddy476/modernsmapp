@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/livestream"
@@ -44,11 +43,11 @@ const (
 	// liveNameFallback stands in for the creator's name when neither a
 	// channel name nor a profile display name could be resolved.
 	liveNameFallback = "A creator you follow"
-	// liveNotifyWindow bounds how long after the stream started a job may
-	// still tell people it "is live". A job can sit behind a broker
-	// backlog or be reclaimed after a crash; past this window the stream
-	// has likely ended and the notification would be a lie.
-	liveNotifyWindow = 30 * time.Minute
+	// There is deliberately no time limit on a live job (founder, 2 Oct
+	// 2026: "always reach every follower, remove the 30 minute cutoff").
+	// A job that is late, reclaimed after a crash, or walking a very long
+	// follower list still tells everyone, even if the stream has ended by
+	// then; the watch page says so when they arrive.
 	// followerPageSize is the follower walk's page size: the most
 	// graph-service's cursor listing serves in one page.
 	followerPageSize = graph.FollowerPageMax
@@ -170,14 +169,8 @@ func (f *SubscriberFanout) drainFollowers(ctx context.Context, job *postgres.Fan
 		default:
 		}
 
-		// A long follower list can outlast the notify window. The rest are
-		// not told the stream "is live" after it has likely ended; the job
-		// finishes here, as a job claimed this late would.
-		if liveJobStale(job, time.Now()) {
-			slog.Warn("fanout: live job passed its notify window during the follower walk; remaining followers not notified",
-				"stream_id", job.PostID, "started_at", job.PostCreatedAt, "follower_cursor", cursor)
-			return nil
-		}
+		// No time limit on the walk (founder, 2 Oct 2026: "always reach
+		// every follower"): however long the list, everyone is told.
 
 		page, err := f.followers.FollowerIDs(ctx, job.AuthorID, cursor, followerPageSize)
 		if err != nil {
@@ -211,11 +204,6 @@ func (f *SubscriberFanout) drainFollowers(ctx context.Context, job *postgres.Fan
 			return nil
 		}
 	}
-}
-
-// liveJobStale reports whether a live job is too old to announce.
-func liveJobStale(job *postgres.FanoutJob, now time.Time) bool {
-	return job.NotifType == LiveNotifType && now.Sub(job.PostCreatedAt) > liveNotifyWindow
 }
 
 // liveCreatorName resolves the name for a live job whose creator has no
