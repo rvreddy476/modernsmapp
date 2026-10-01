@@ -95,14 +95,12 @@ func (s *Service) Ban(ctx context.Context, streamID, actorID, targetID uuid.UUID
 	if err != nil {
 		return err
 	}
-	if role == RoleModerator {
-		isMod, err := s.store.IsModerator(ctx, streamID, targetID)
-		if err != nil {
-			return err
-		}
-		if isMod {
-			return ErrNotCreator
-		}
+	targetIsMod, err := s.store.IsModerator(ctx, streamID, targetID)
+	if err != nil {
+		return err
+	}
+	if targetIsMod && role == RoleModerator {
+		return ErrNotCreator
 	}
 	if err := s.store.BanFromStream(ctx, streamID, targetID, actorID, reason); err != nil {
 		return err
@@ -113,6 +111,14 @@ func (s *Service) Ban(ctx context.Context, streamID, actorID, targetID uuid.UUID
 		"user_id":   targetID.String(),
 		"by_role":   role,
 	})
+	if targetIsMod {
+		// The ban dropped a moderator seat: clients re-badge from the new list.
+		if mods, err := s.store.ListModerators(ctx, streamID); err != nil {
+			slog.Warn("live-v2: list moderators after ban", "stream_id", streamID, "err", err)
+		} else {
+			s.publishModerators(ctx, streamID, mods)
+		}
+	}
 	return nil
 }
 
@@ -189,15 +195,21 @@ func (s *Service) SetModerators(ctx context.Context, streamID, hostID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
-	strs := make([]string, len(out))
-	for i, id := range out {
+	s.publishModerators(ctx, streamID, out)
+	return out, nil
+}
+
+// publishModerators sends moderation.moderators with the full user_ids list
+// (PUT /moderators, and a ban that drops a moderator seat).
+func (s *Service) publishModerators(ctx context.Context, streamID uuid.UUID, ids []uuid.UUID) {
+	strs := make([]string, len(ids))
+	for i, id := range ids {
 		strs[i] = id.String()
 	}
 	s.publish(ctx, streamID, EventModerationModerators, map[string]any{
 		"stream_id": streamID.String(),
 		"user_ids":  strs,
 	})
-	return out, nil
 }
 
 // ListModerators returns the moderators to anyone who passes the viewer

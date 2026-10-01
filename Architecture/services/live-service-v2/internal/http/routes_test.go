@@ -103,6 +103,27 @@ func data(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return env.Data
 }
 
+// TestCreatePaidStreamRefused: paid is not a product yet, so create refuses
+// it with 422 VALIDATION_ERROR (any case, any padding) and stores nothing.
+func TestCreatePaidStreamRefused(t *testing.T) {
+	u := newUserRig(t, rigKey)
+	for _, vis := range []string{"paid", " PAID "} {
+		rec := u.call(http.MethodPost, "/v1/livestream/streams", u.pilot, map[string]string{"title": "x", "visibility": vis}, nil)
+		if rec.Code != http.StatusUnprocessableEntity || errCode(rec) != "VALIDATION_ERROR" {
+			t.Fatalf("create %q: %d %s", vis, rec.Code, rec.Body.String())
+		}
+	}
+	if n := len(u.store.Streams); n != 0 {
+		t.Fatalf("a refused paid stream was stored (%d rows)", n)
+	}
+	for _, vis := range []string{"public", "followers"} {
+		rec := u.call(http.MethodPost, "/v1/livestream/streams", u.pilot, map[string]string{"title": "x", "visibility": vis}, nil)
+		if rec.Code != http.StatusCreated || data(t, rec)["visibility"] != vis {
+			t.Fatalf("create %q: %d %s", vis, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 // TestInternalViewerRoute: exactly {"data":{"allowed":bool}}, internal key
 // always required.
 func TestInternalViewerRoute(t *testing.T) {

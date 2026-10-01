@@ -39,7 +39,10 @@ var (
 	ErrNotCreator        = errors.New("only the creator may perform this action")
 	ErrNotFollower       = errors.New("creator restricts this stream to followers")
 	ErrPaidNotSupported  = errors.New("paid streams not yet supported")
-	ErrStreamNotFound    = errors.New("live stream not found")
+	// ErrPaidVisibility refuses creating a paid stream: no viewer passes the
+	// paid gate yet (canSee), so a new paid stream would be dead on arrival.
+	ErrPaidVisibility = errors.New("invalid: paid visibility is not available yet")
+	ErrStreamNotFound = errors.New("live stream not found")
 
 	// Chat moderation (Phase B) sentinels.
 	ErrChatMuted       = errors.New("forbidden: you have been muted in this stream")
@@ -290,6 +293,9 @@ func (s *Service) CreateStream(ctx context.Context, creatorID uuid.UUID, p Creat
 	vis := normalizeVisibility(p.Visibility)
 	if vis == "" {
 		return nil, ErrInvalidVisibility
+	}
+	if vis == visibilityPaid {
+		return nil, ErrPaidVisibility // existing paid rows stay as they are
 	}
 	streamID := uuid.New()
 	room := "stream_" + streamID.String()

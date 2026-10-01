@@ -87,7 +87,7 @@ func (h *Handler) UnbanUser(c *gin.Context) {
 }
 
 // ListBans — GET /v1/livestream/streams/:id/bans (host or moderator).
-// 200 {"data":[{stream_id,user_id,banned_by,reason,banned_at}]}.
+// 200 {"data":[{stream_id,user_id,banned_by,reason,created_at}]}.
 func (h *Handler) ListBans(c *gin.Context) {
 	actorID, ok := requireUserID(c)
 	if !ok {

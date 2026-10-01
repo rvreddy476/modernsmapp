@@ -310,7 +310,8 @@ func writeServiceErr(c *gin.Context, err error) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusPaymentRequired, "PAID_REQUIRED", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidStatusFilter):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-	case errors.Is(err, service.ErrInvalidVisibility), errors.Is(err, service.ErrInvalidTitle):
+	case errors.Is(err, service.ErrInvalidVisibility), errors.Is(err, service.ErrPaidVisibility),
+		errors.Is(err, service.ErrInvalidTitle):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil)
 	case errors.Is(err, service.ErrLiveNotEnabled):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIVE_NOT_ENABLED", err.Error(), nil)

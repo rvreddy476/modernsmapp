@@ -213,6 +213,43 @@ func TestBanRules(t *testing.T) {
 	}
 }
 
+// TestBanModeratorPublishesModerators: a ban that drops a moderator seat also
+// publishes moderation.moderators with the remaining full list; banning a
+// plain viewer does not.
+func TestBanModeratorPublishesModerators(t *testing.T) {
+	host, mod, mod2, viewer := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	r := newRig(host)
+	st := r.store.AddStream(host)
+	if _, err := r.svc.SetModerators(ctx, st.ID, host, []uuid.UUID{mod, mod2}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.ev.ofType(EventModerationModerators)); n != 1 {
+		t.Fatalf("after PUT: moderation.moderators events = %d", n)
+	}
+
+	if err := r.svc.Ban(ctx, st.ID, host, viewer, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.ev.ofType(EventModerationModerators)); n != 1 {
+		t.Fatalf("banning a viewer published moderation.moderators (%d events)", n)
+	}
+
+	if err := r.svc.Ban(ctx, st.ID, host, mod2, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	evs := r.ev.ofType(EventModerationModerators)
+	if len(evs) != 2 {
+		t.Fatalf("banning a moderator: moderation.moderators events = %d", len(evs))
+	}
+	ids, ok := evs[1]["user_ids"].([]any)
+	if !ok || len(ids) != 1 || ids[0] != mod.String() || evs[1]["stream_id"] != st.ID.String() {
+		t.Fatalf("moderators event after ban = %v", evs[1])
+	}
+	if len(r.ev.ofType(EventModerationBan)) != 2 {
+		t.Fatalf("ban events = %d", len(r.ev.ofType(EventModerationBan)))
+	}
+}
+
 // TestModeratorRules.
 func TestModeratorRules(t *testing.T) {
 	host := uuid.New()
