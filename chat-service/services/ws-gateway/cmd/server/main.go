@@ -70,7 +70,10 @@ func main() {
 		EntitlementSecret: cfg.EntitlementSecret,
 		EnablePostRooms:   cfg.PostRoomsEnabled,
 		PostViewer:        httpapi.NewHTTPPostViewAuthorizer(cfg.PostServiceURL, cfg.InternalServiceKey, nil),
+		EnableLiveRooms:   cfg.LiveRoomsEnabled,
+		LiveViewer:        httpapi.NewHTTPLiveViewAuthorizer(cfg.LiveServiceV2URL, cfg.InternalServiceKey, nil),
 	})
+	logger.Info("realtime rooms", "post_rooms", cfg.PostRoomsEnabled, "live_rooms", cfg.LiveRoomsEnabled)
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,

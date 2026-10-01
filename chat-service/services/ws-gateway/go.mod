@@ -3,6 +3,7 @@ module github.com/atpost/chat-ws-gateway
 go 1.24.0
 
 require (
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/atpost/chat-shared v0.0.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
@@ -18,6 +19,7 @@ require (
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/text v0.23.0 // indirect
 )
 

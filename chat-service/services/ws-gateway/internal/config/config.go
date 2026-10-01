@@ -36,6 +36,10 @@ type Config struct {
 	PostRoomsEnabled   bool
 	PostServiceURL     string
 	InternalServiceKey string
+	// Live rooms (live:stream:<id>): owner-checked against live-service-v2's
+	// internal viewer route. Off unless ENABLE_LIVE_ROOMS=true.
+	LiveRoomsEnabled bool
+	LiveServiceV2URL string
 }
 
 func (c *Config) ValidateProduction(production bool) error {
@@ -60,27 +64,29 @@ func Load() *Config {
 	pongWait := getEnvDuration("WS_PONG_WAIT", 60*time.Second)
 	pingPeriod := getEnvDuration("WS_PING_PERIOD", (pongWait*9)/10)
 	return &Config{
-		HTTPPort:          getEnv("HTTP_PORT", "8093"),
-		HTTPReadTimeout:   getEnvDuration("HTTP_READ_TIMEOUT", 15*time.Second),
-		HTTPWriteTimeout:  getEnvDuration("HTTP_WRITE_TIMEOUT", 15*time.Second),
-		HTTPIdleTimeout:   getEnvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
-		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
-		JWTSecret:         getEnv("JWT_SECRET", ""),
-		JWTKID:            getEnv("JWT_KID", "v1"),
-		JWTSecretPrevious: getEnv("JWT_SECRET_PREVIOUS", ""),
-		JWTKIDPrevious:    getEnv("JWT_KID_PREVIOUS", ""),
-		JWTPublicKeyPEM:   getEnv("JWT_PUBLIC_KEY_PEM", ""),
-		JWTRS256KID:       getEnv("JWT_RS256_KID", "rsa-1"),
-		AllowedOrigins:    splitAndClean(getEnv("ALLOWED_ORIGINS", "")),
-		WSAllowQueryToken: getEnvBool("WS_ALLOW_QUERY_TOKEN", true),
-		WSWriteWait:       getEnvDuration("WS_WRITE_WAIT", 10*time.Second),
-		WSPongWait:        pongWait,
-		WSPingPeriod:      pingPeriod,
-		WSMaxMessageSize:  getEnvInt64("WS_MAX_MESSAGE_SIZE", 64*1024),
-		EntitlementSecret: getEnv("CHAT_ENTITLEMENT_SECRET", ""),
+		HTTPPort:           getEnv("HTTP_PORT", "8093"),
+		HTTPReadTimeout:    getEnvDuration("HTTP_READ_TIMEOUT", 15*time.Second),
+		HTTPWriteTimeout:   getEnvDuration("HTTP_WRITE_TIMEOUT", 15*time.Second),
+		HTTPIdleTimeout:    getEnvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
+		JWTSecret:          getEnv("JWT_SECRET", ""),
+		JWTKID:             getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious:  getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:     getEnv("JWT_KID_PREVIOUS", ""),
+		JWTPublicKeyPEM:    getEnv("JWT_PUBLIC_KEY_PEM", ""),
+		JWTRS256KID:        getEnv("JWT_RS256_KID", "rsa-1"),
+		AllowedOrigins:     splitAndClean(getEnv("ALLOWED_ORIGINS", "")),
+		WSAllowQueryToken:  getEnvBool("WS_ALLOW_QUERY_TOKEN", true),
+		WSWriteWait:        getEnvDuration("WS_WRITE_WAIT", 10*time.Second),
+		WSPongWait:         pongWait,
+		WSPingPeriod:       pingPeriod,
+		WSMaxMessageSize:   getEnvInt64("WS_MAX_MESSAGE_SIZE", 64*1024),
+		EntitlementSecret:  getEnv("CHAT_ENTITLEMENT_SECRET", ""),
 		PostRoomsEnabled:   getEnvBool("WS_POST_ROOMS_ENABLED", false),
 		PostServiceURL:     getEnv("POST_SERVICE_URL", "http://post-service:8084"),
 		InternalServiceKey: getEnv("INTERNAL_SERVICE_KEY", ""),
+		LiveRoomsEnabled:   getEnvBool("ENABLE_LIVE_ROOMS", false),
+		LiveServiceV2URL:   getEnv("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117"),
 	}
 }
 

@@ -54,6 +54,21 @@ type ServerOptions struct {
 	EnablePostRooms bool
 	PostViewer      PostViewAuthorizer
 
+	// EnableLiveRooms admits `subscribe_live_stream` — the real-time side
+	// of a live stream — independently of EnableScopedRooms, for the same
+	// reason as post rooms: LiveViewer asks live-service-v2 whether the
+	// viewer may watch the stream (visibility, blocks, bans) before the
+	// socket joins live:stream:<id> (liverooms.go). Both must be set; a nil
+	// LiveViewer refuses every subscribe.
+	EnableLiveRooms bool
+	LiveViewer      LiveViewAuthorizer
+
+	// LiveRoomRecheckInterval is how often the reconcile loop re-asks
+	// LiveViewer for every held live room. Zero means
+	// liveRoomRecheckInterval (30s) — the grant TTL, so a yes is never
+	// relied on for longer than that.
+	LiveRoomRecheckInterval time.Duration
+
 	// SubscriptionReconcileInterval is how often each connection re-checks
 	// its live conversation-room subscriptions against token expiry and the
 	// revocation markers (re-verification P0-4: a lost subscription_revoked
@@ -302,10 +317,13 @@ func (s *Server) serveConnection(
 	outbound := make(chan []byte, 256)
 	subs := newRoomSubscriptions()
 	postGrants := newPostRoomGrants(postRoomGrantTTL)
+	// Live-room grants are per connection, so a reconnect starts empty and
+	// every subscribe on the new socket re-asks live-service-v2.
+	liveGrants := newLiveRoomGrants()
 
-	go s.readLoop(ctx, cancel, conn, pubsub, userID, subs, postGrants)
+	go s.readLoop(ctx, cancel, conn, pubsub, outbound, userID, subs, postGrants, liveGrants)
 	go s.redisLoop(ctx, cancel, pubsub, outbound, userID, subs)
-	go s.reconcileRoomSubscriptions(ctx, pubsub, outbound, userID, subs, postGrants)
+	go s.reconcileRoomSubscriptions(ctx, pubsub, outbound, userID, subs, postGrants, liveGrants)
 	s.writeLoop(ctx, cancel, conn, outbound, userID)
 
 	_ = conn.Close()
@@ -323,7 +341,7 @@ func (s *Server) serveConnection(
 // tick (P-8 e, postrooms.go): those are re-asked of post-service over HTTP,
 // so they get the 5-minute cadence and a per-sweep bound rather than the
 // 30-second Redis sweep.
-func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants *postRoomGrants) {
+func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants) {
 	interval := s.opts.SubscriptionReconcileInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -341,6 +359,13 @@ func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.P
 	}
 	postTicker := time.NewTicker(postInterval)
 	defer postTicker.Stop()
+
+	liveInterval := s.opts.LiveRoomRecheckInterval
+	if liveInterval <= 0 {
+		liveInterval = liveRoomRecheckInterval
+	}
+	liveTicker := time.NewTicker(liveInterval)
+	defer liveTicker.Stop()
 
 	for {
 		select {
@@ -362,6 +387,11 @@ func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.P
 			}
 			evicted := s.recheckPostRooms(ctx, postGrants, userID, time.Now(), postBatch)
 			s.evictPostRooms(ctx, pubsub, outbound, userID, evicted)
+		case <-liveTicker.C:
+			// Not gated on EnableLiveRooms: with the flag off nothing can be
+			// held, and recheckLiveRooms evicts anything that somehow is.
+			evicted := s.recheckLiveRooms(ctx, liveGrants, userID, time.Now(), liveRoomRecheckBatch)
+			s.evictLiveRooms(ctx, pubsub, outbound, userID, evicted)
 		}
 	}
 }
@@ -417,7 +447,7 @@ var roomSignalingTypes = map[string]bool{
 	"call_recording_stopped":   true,
 }
 
-func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, userID uuid.UUID, subs *roomSubscriptions, postGrants *postRoomGrants) {
+func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants) {
 	defer cancel()
 
 	conn.SetReadLimit(s.opts.MaxMessageSize)
@@ -511,6 +541,11 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 		if s.betaRoomGateRejects(msgType) {
 			s.log.Warn("realtime client-selected room frame rejected",
 				"user_id", userID, "type", msgType)
+			if msgType == "subscribe_live_stream" {
+				// Live rooms off: still tell the client, so it falls back to
+				// the HTTP chat list instead of waiting for frames.
+				s.refuseLiveSubscribe(outbound, envelope["stream_id"])
+			}
 			continue
 		}
 
@@ -613,19 +648,16 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			}
 			continue
 		case "subscribe_live_stream":
-			streamID, _ := envelope["stream_id"].(string)
-			if streamID != "" {
-				channel := fmt.Sprintf("live:stream:%s", streamID)
-				if err := pubsub.Subscribe(ctx, channel); err != nil {
-					s.log.Warn("live room subscribe failed", "err", err, "user_id", userID, "stream_id", streamID)
-				}
-			}
+			// Owner-checked by live-service-v2 (liverooms.go); the Redis
+			// Subscribe happens inside handleLiveSubscribe, only on a yes.
+			rawStreamID, _ := envelope["stream_id"].(string)
+			s.handleLiveSubscribe(ctx, pubsub, outbound, liveGrants, userID, rawStreamID, time.Now())
 			continue
 		case "unsubscribe_live_stream":
-			streamID, _ := envelope["stream_id"].(string)
-			if streamID != "" {
-				channel := fmt.Sprintf("live:stream:%s", streamID)
-				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
+			rawStreamID, _ := envelope["stream_id"].(string)
+			if streamID, err := uuid.Parse(rawStreamID); err == nil {
+				liveGrants.revoke(streamID.String())
+				if err := pubsub.Unsubscribe(ctx, liveChannel(streamID.String())); err != nil {
 					s.log.Warn("live room unsubscribe failed", "err", err, "user_id", userID, "stream_id", streamID)
 				}
 			}
@@ -778,6 +810,10 @@ func (s *Server) betaRoomGateRejects(msgType string) bool {
 	// Post rooms are owner-checked on subscribe (mayJoinPostRoom), which is
 	// exactly the condition the beta gate was waiting for.
 	if s.opts.EnablePostRooms && (msgType == "subscribe_post" || msgType == "unsubscribe_post") {
+		return false
+	}
+	// Live rooms likewise: mayJoinLiveRoom asks live-service-v2 first.
+	if s.opts.EnableLiveRooms && (msgType == "subscribe_live_stream" || msgType == "unsubscribe_live_stream") {
 		return false
 	}
 	if directSignalingTypes[msgType] {
