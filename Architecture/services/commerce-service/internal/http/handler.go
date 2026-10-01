@@ -29,10 +29,14 @@ type Handler struct {
 	// verifier admits admin-service tokens on InternalAdminPrefix. nil
 	// refuses every token (see admin_token.go).
 	verifier *servicetoken.Verifier
+	// limits throttles the engagement writes (handler_engagement.go). nil
+	// admits everything, which only a bare &Handler{} in a route-table test
+	// ever is.
+	limits *engagementLimits
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, limits: newEngagementLimits()}
 }
 
 func (h *Handler) WithInternalKey(key string) *Handler {
@@ -223,6 +227,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── The shop front: /home, gallery writes, favourites, banners ──
 	h.RegisterStorefrontRoutes(r, v1)
+
+	// ── Engagement: delivery date, like/dislike, share, helpful votes ──
+	h.RegisterEngagementRoutes(v1)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
@@ -358,6 +365,8 @@ func (h *Handler) GetProduct(c *gin.Context) {
 	// separate call means the hero image arrives after the price, and the
 	// layout jumps. The dedicated route stays for the seller's editor.
 	h.svc.MarkFavourites(c.Request.Context(), optionalUserID(c), []*postgres.Product{p})
+	// The shopper's own like / dislike (signed in only; absent otherwise).
+	h.svc.MarkViewerReaction(c.Request.Context(), optionalUserID(c), p)
 	gallery, err := h.svc.ProductMedia(c.Request.Context(), id)
 	if err != nil {
 		handleErr(c, err)
@@ -1014,7 +1023,10 @@ func (h *Handler) GetProductReviews(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	reviews, total, err := h.svc.GetProductReviews(c.Request.Context(), id, limit, offset)
+	// ?sort=helpful (default: helpful_count desc, then newest) | recent. Each
+	// row carries helpful_count and the caller's own viewer_vote.
+	reviews, total, err := h.svc.ProductReviewRows(c.Request.Context(), id, optionalUserID(c),
+		c.Query("sort"), limit, offset)
 	if err != nil {
 		handleErr(c, err)
 		return

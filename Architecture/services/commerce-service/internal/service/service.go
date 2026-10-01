@@ -136,6 +136,27 @@ type Service struct {
 	monetizationServiceURL string
 	internalServiceKey     string
 	httpClient             *http.Client
+
+	// now is the clock the delivery estimate reads "today" from. nil means
+	// time.Now; tests and the golden fixtures pin it (WithClock). Nothing
+	// that touches money reads it.
+	now func() time.Time
+	// eta caches carrier serviceability answers for the delivery estimate
+	// (engagement.go). Never consulted by the quote, which prices money.
+	eta etaCache
+}
+
+// WithClock pins the clock the delivery estimate computes "today" from.
+func (s *Service) WithClock(now func() time.Time) *Service {
+	s.now = now
+	return s
+}
+
+func (s *Service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // WithMonetizationServiceURL sets the base URL for monetization-service
@@ -2973,8 +2994,8 @@ func (s *Service) CreateReview(ctx context.Context, r *postgres.Review) error {
 	return nil
 }
 
-func (s *Service) GetProductReviews(ctx context.Context, productID uuid.UUID, limit, offset int) ([]*postgres.Review, int, error) {
-	return s.store.GetProductReviews(ctx, productID, limit, offset)
+func (s *Service) GetProductReviews(ctx context.Context, productID uuid.UUID, sort string, limit, offset int) ([]*postgres.Review, int, error) {
+	return s.store.GetProductReviews(ctx, productID, sort, limit, offset)
 }
 
 // ─── Product Media + Attributes (Phase 3.1) ──────────────────

@@ -1,0 +1,13 @@
+{
+  "data": {
+    "pincode": "500081",
+    "serviceable": true,
+    "deliver_by": "2026-10-05",
+    "min_days": 4,
+    "max_days": 5,
+    "dispatch_days": 2,
+    "courier": "stub",
+    "pincode_source": "query"
+  }
+}
+

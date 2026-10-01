@@ -9,7 +9,9 @@ DELETE /v1/commerce/internal/admin/banners/:bannerId
 DELETE /v1/commerce/internal/banners/:bannerId
 DELETE /v1/commerce/organizations/:orgId/members/:userId
 DELETE /v1/commerce/products/:productId/media/:mediaId
+DELETE /v1/commerce/products/:productId/reaction
 DELETE /v1/commerce/products/:productId/try-on
+DELETE /v1/commerce/reviews/:reviewId/vote
 DELETE /v1/commerce/variants/:variantId
 GET /v1/commerce/addresses
 GET /v1/commerce/affiliate/:linkId
@@ -74,6 +76,7 @@ GET /v1/commerce/payout/preview
 GET /v1/commerce/products
 GET /v1/commerce/products/:productId
 GET /v1/commerce/products/:productId/attributes
+GET /v1/commerce/products/:productId/delivery-estimate
 GET /v1/commerce/products/:productId/media
 GET /v1/commerce/products/:productId/preview
 GET /v1/commerce/products/:productId/readiness
@@ -171,6 +174,7 @@ POST /v1/commerce/organizations/invites/:token/accept
 POST /v1/commerce/products
 POST /v1/commerce/products/:productId/media
 POST /v1/commerce/products/:productId/reviews
+POST /v1/commerce/products/:productId/share
 POST /v1/commerce/products/:productId/submit
 POST /v1/commerce/products/:productId/variants
 POST /v1/commerce/returns/:returnId/approve
@@ -203,6 +207,8 @@ PUT /v1/commerce/onboarding/step/payout
 PUT /v1/commerce/onboarding/step/storefront
 PUT /v1/commerce/products/:productId/attributes
 PUT /v1/commerce/products/:productId/media/order
+PUT /v1/commerce/products/:productId/reaction
 PUT /v1/commerce/products/:productId/try-on
+PUT /v1/commerce/reviews/:reviewId/vote
 PUT /v1/commerce/seller/address
 PUT /v1/commerce/variants/:variantId/price-tiers

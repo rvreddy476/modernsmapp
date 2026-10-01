@@ -311,6 +311,14 @@ type Product struct {
 	// as though the shopper had deliberately not liked it.
 	IsFavourite *bool `db:"-" json:"is_favourite,omitempty"`
 
+	// ViewerReaction is the calling shopper's own like / dislike (migration
+	// 037). Set only on the detail read and only for a signed-in caller, so
+	// it is ABSENT for an anonymous one and `null` for a signed-in shopper
+	// who has not reacted. It is the only place a dislike is ever sent: the
+	// founder's rule is that a dislike is private to the person who cast it,
+	// so there is no dislike count on any surface.
+	ViewerReaction *ViewerReaction `db:"-" json:"viewer_reaction,omitempty"`
+
 	// TryOn is the Face AR descriptor, hydrated on the detail read from
 	// `product_try_on`. Nil — and so absent from the JSON — for every
 	// product without one, which is nearly all of them, so the field's
@@ -357,6 +365,13 @@ type Product struct {
 	OrderCount       int        `db:"order_count" json:"order_count,omitempty"`
 	ViewCount        int64      `db:"view_count" json:"view_count,omitempty"`
 	WishlistCount    int        `db:"wishlist_count" json:"wishlist_count,omitempty"`
+	// LikeCount is products.like_count (migration 037): the public number
+	// of LIKES. Read by the detail read and by every product-summary row, so
+	// it is present (zero included) wherever it was read and absent on the
+	// surfaces that never select it. Dislikes are never counted.
+	LikeCount *int64 `db:"like_count" json:"like_count,omitempty"`
+	// ShareCount is products.share_count, on the detail read only.
+	ShareCount *int64 `db:"share_count" json:"share_count,omitempty"`
 	IsFeatured       bool       `db:"is_featured" json:"is_featured,omitempty"`
 	CreatedAt        time.Time  `db:"created_at" json:"created_at,omitempty"`
 	UpdatedAt        time.Time  `db:"updated_at" json:"updated_at,omitempty"`
@@ -828,6 +843,32 @@ type Review struct {
 	SellerResponse     *string    `db:"seller_response" json:"seller_response,omitempty"`
 	SellerRespondedAt  *time.Time `db:"seller_responded_at" json:"seller_responded_at,omitempty"`
 	CreatedAt          time.Time  `db:"created_at" json:"created_at,omitempty"`
+}
+
+// ReviewRow is one row of GET /products/:id/reviews: the review plus the
+// vote fields that list carries and the other review surfaces do not.
+//
+// HelpfulCount shadows the embedded Review's (which is omitempty, so a
+// review nobody had voted on sent no count at all) and is always present.
+// ViewerVote is the caller's own vote — "helpful", "not_helpful", or null
+// (no vote, or not signed in). Only the helpful count is ever public.
+type ReviewRow struct {
+	*Review
+	HelpfulCount int     `json:"helpful_count"`
+	ViewerVote   *string `json:"viewer_vote"`
+}
+
+// ViewerReaction marshals as the reaction kind, or null for none.
+type ViewerReaction struct {
+	Kind string
+}
+
+// MarshalJSON writes "like", "dislike" or null.
+func (v ViewerReaction) MarshalJSON() ([]byte, error) {
+	if v.Kind == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(v.Kind)
 }
 
 // ─── Return Request ──────────────────────────────────────────

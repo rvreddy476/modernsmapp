@@ -240,6 +240,9 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		  -- show it: a listing stamped with an older version is one whose
 		  -- answers were checked against bounds that have since moved.
 		  ,schema_version
+		  -- Migration 037: the public like and share counters. No dislike
+		  -- count exists to select.
+		  ,p.like_count,p.share_count
 		  -- The shop's name comes from the OFFER's seller, for the same
 		  -- reason po.seller_id above does.
 		  ,(SELECT store_name FROM sellers WHERE id=po.seller_id)
@@ -261,6 +264,7 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		&p.MetaTitle, &p.MetaDescription, &p.AvgRating, &p.ReviewCount,
 		&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
 		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt, &p.SourceImageURL, &p.SchemaVersion,
+		&p.LikeCount, &p.ShareCount,
 		&p.RetailerName, &p.CategoryName, &p.CoverMediaID,
 	)
 	// A product id that does not exist is a 404, not an outage. pgx's raw
@@ -1774,7 +1778,25 @@ func (s *Store) CreateReview(ctx context.Context, r *Review) error {
 	return err
 }
 
-func (s *Store) GetProductReviews(ctx context.Context, productID uuid.UUID, limit, offset int) ([]*Review, int, error) {
+// Review list orders for GetProductReviews.
+const (
+	// ReviewSortHelpful: most helpful first (helpful_count, then newest).
+	// The default.
+	ReviewSortHelpful = "helpful"
+	// ReviewSortRecent: newest first.
+	ReviewSortRecent = "recent"
+)
+
+// reviewOrderBy maps a sort to its ORDER BY. id is the last key in both so a
+// page boundary between two equal rows is stable.
+func reviewOrderBy(sort string) string {
+	if sort == ReviewSortRecent {
+		return `created_at DESC, id DESC`
+	}
+	return `helpful_count DESC, created_at DESC, id DESC`
+}
+
+func (s *Store) GetProductReviews(ctx context.Context, productID uuid.UUID, sort string, limit, offset int) ([]*Review, int, error) {
 	var total int
 	_ = s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM reviews
@@ -1787,7 +1809,7 @@ func (s *Store) GetProductReviews(ctx context.Context, productID uuid.UUID, limi
 		COALESCE(moderation_status,'approved'),seller_response,seller_responded_at,created_at
 		FROM reviews WHERE product_id=$1 AND is_published=TRUE
 		  AND COALESCE(moderation_status,'approved') <> 'rejected'
-		ORDER BY helpful_count DESC, created_at DESC LIMIT $2 OFFSET $3`, productID, limit, offset)
+		ORDER BY `+reviewOrderBy(sort)+` LIMIT $2 OFFSET $3`, productID, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}

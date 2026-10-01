@@ -105,7 +105,10 @@ const productSummaryColumns = `
 	v.id                                                        AS default_variant_id,
 	v.min_selling_price, v.min_mrp, v.min_price_minor, v.mrp_minor,
 	COALESCE(s.total_stock, 0)                                  AS total_stock,
-	(COALESCE(s.total_stock, 0) > 0)                            AS in_stock`
+	(COALESCE(s.total_stock, 0) > 0)                            AS in_stock,
+	-- Migration 037: the public like count on every tile. Dislikes are never
+	-- counted, so there is nothing else to select.
+	p.like_count`
 
 // productSummaryFrom supplies every alias productSummaryColumns reads.
 //
@@ -187,7 +190,7 @@ func scanProductSummary(rows pgx.Rows) (*Product, error) {
 		&p.PrimaryImageMediaID, &p.SourceImageURL, &p.RetailerName, &p.CategoryName,
 		&p.CoverMediaID,
 		&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.MinPriceMinor, &p.MRPMinor,
-		&p.TotalStock, &p.InStock,
+		&p.TotalStock, &p.InStock, &p.LikeCount,
 	); err != nil {
 		return nil, err
 	}
@@ -401,7 +404,7 @@ func (s *Store) ListFavourites(ctx context.Context, userID uuid.UUID, limit int,
 			&p.PrimaryImageMediaID, &p.SourceImageURL, &p.RetailerName, &p.CategoryName,
 			&p.CoverMediaID,
 			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.MinPriceMinor, &p.MRPMinor,
-			&p.TotalStock, &p.InStock, &favAt); err != nil {
+			&p.TotalStock, &p.InStock, &p.LikeCount, &favAt); err != nil {
 			return nil, "", err
 		}
 		fav := true

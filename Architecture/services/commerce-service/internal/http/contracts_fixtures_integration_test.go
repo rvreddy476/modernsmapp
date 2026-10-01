@@ -207,6 +207,11 @@ func (e *contractEnv) seed() {
 	e.exec(`INSERT INTO product_attributes (product_id,name,value,unit,sort_order) VALUES
 	        ($1,'Battery life','24','hours',0), ($1,'Bluetooth','5.3',NULL,1), ($1,'Water resistance','IPX4',NULL,2)`, ctP1)
 	e.exec(`UPDATE products SET avg_rating = 4.5, review_count = 1, order_count = 3 WHERE id = $1`, ctP1)
+	// Migration 037: one like and one dislike from two other shoppers. The
+	// counter shows the like only — a dislike is counted nowhere.
+	e.exec(`INSERT INTO product_reactions (product_id,user_id,kind,created_at) VALUES
+	        ($1,$2,'like','2026-09-07T09:00:00Z'), ($1,$3,'dislike','2026-09-07T09:05:00Z')`, ctP1, ctStranger, ctOtherSellerU)
+	e.exec(`UPDATE products SET like_count = 1 WHERE id = $1`, ctP1)
 
 	// ── Buyer ────────────────────────────────────────────────────────────
 	e.exec(`INSERT INTO customer_addresses (id,user_id,label,contact_name,phone,address_line_1,address_line_2,landmark,city,state,postal_code,
@@ -283,6 +288,10 @@ func (e *contractEnv) seed() {
 	e.exec(`INSERT INTO reviews (id,product_id,seller_id,order_item_id,reviewer_id,rating,title,body,is_verified_purchase,created_at,updated_at)
 	        VALUES ($1,$2,$3,$4,$5,5,'Great sound','Battery lasts all day.',TRUE,'2026-09-15T10:00:00Z','2026-09-15T10:00:00Z')`,
 		ctReview, ctP1, ctSeller, ctIDelivered2, ctBuyer)
+	// One helpful vote already on it, from another shopper.
+	e.exec(`INSERT INTO review_votes (review_id,user_id,is_helpful,created_at) VALUES ($1,$2,TRUE,'2026-09-16T10:00:00Z')`,
+		ctReview, ctOtherSellerU)
+	e.exec(`UPDATE reviews SET helpful_count = 1 WHERE id = $1`, ctReview)
 	e.exec(`INSERT INTO order_status_history (order_id,from_status,to_status,actor_type,notes,created_at) VALUES
 	        ($1,NULL,'payment_pending','customer','checkout','2026-09-11T10:00:00Z'),
 	        ($1,'payment_pending','confirmed','system','payment.succeeded','2026-09-11T10:01:00Z'),
@@ -362,6 +371,32 @@ func (e *contractEnv) fixtures() []ctFixture {
 		}},
 		{name: "storefront/product_get_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.get("/v1/commerce/products/"+ctP1.String(), ctBuyer)
+		}},
+		// Engagement (shop-engagement contract §1, §2, §4). The clock is
+		// pinned to Wed 30 Sep 2026 15:30 IST; the seller saved no SLA
+		// (2 dispatch days: Thu, Fri) and the courier answers 3 days.
+		{name: "storefront/delivery_estimate_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/products/"+ctP1.String()+"/delivery-estimate?pincode=500081", uuid.Nil)
+		}},
+		{name: "storefront/delivery_estimate_200_not_serviceable", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/products/"+ctP1.String()+"/delivery-estimate?pincode=999999", uuid.Nil)
+		}},
+		{name: "storefront/delivery_estimate_400_pincode_required", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/products/"+ctP1.String()+"/delivery-estimate", uuid.Nil)
+		}},
+		{name: "storefront/product_reaction_put_200_like", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/products/" + ctP1.String() + "/reaction",
+				user: ctBuyer, body: map[string]any{"kind": "like"}})
+		}},
+		{name: "storefront/product_reaction_put_200_dislike", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/products/" + ctP1.String() + "/reaction",
+				user: ctBuyer, body: map[string]any{"kind": "dislike"}})
+		}},
+		{name: "storefront/product_reaction_delete_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodDelete, path: "/v1/commerce/products/" + ctP1.String() + "/reaction", user: ctBuyer})
+		}},
+		{name: "storefront/product_share_post_204", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/products/"+ctP1.String()+"/share", uuid.Nil, map[string]any{"channel": "whatsapp"})
 		}},
 		{name: "storefront/product_get_404", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.get("/v1/commerce/products/"+ctUnknownProduct.String(), ctBuyer)
@@ -501,6 +536,16 @@ func (e *contractEnv) fixtures() []ctFixture {
 			return e.post("/v1/commerce/products/"+ctP1.String()+"/reviews", ctBuyer, map[string]any{
 				"seller_id": ctSeller.String(), "order_item_id": ctIConfirmed.String(), "rating": 3,
 			})
+		}},
+		// Helpful votes (contract §3): another shopper marks the seeded
+		// review helpful; its author may not vote on it.
+		{name: "reviews/review_vote_put_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/reviews/" + ctReview.String() + "/vote",
+				user: ctStranger, body: map[string]any{"vote": "helpful"}})
+		}},
+		{name: "reviews/review_vote_put_403_own", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/reviews/" + ctReview.String() + "/vote",
+				user: ctBuyer, body: map[string]any{"vote": "helpful"}})
 		}},
 
 		// ── checkout chain ─────────────────────────────────────────────

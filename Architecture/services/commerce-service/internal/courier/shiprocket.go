@@ -453,6 +453,11 @@ func (c *ShiprocketCourier) CheckServiceability(ctx context.Context, req Service
 	chargeMinor := int64(rate*100 + 0.5)
 
 	days := parseShiprocketDays(chosen.EstimatedDays)
+	if days == 0 {
+		// estimated_delivery_days is sometimes blank while `etd` carries the
+		// carrier's date; the transit time is the days from today to it.
+		days = daysUntilETD(chosen.EstimatedDeliveryDays, time.Now())
+	}
 	result := &ServiceabilityResult{
 		Serviceable:         true,
 		CODSupported:        chosen.IsCODAvailable == 1,
@@ -482,6 +487,37 @@ func parseShiprocketDays(s string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+// shiprocketIST is the zone Shiprocket's `etd` dates are written in.
+var shiprocketIST = time.FixedZone("IST", 5*3600+30*60)
+
+// etdLayouts are the shapes Shiprocket has sent `etd` in.
+var etdLayouts = []string{"Jan 02, 2006", "Jan 2, 2006", "2006-01-02 15:04:05", "2006-01-02"}
+
+// daysUntilETD turns an `etd` date into calendar days from now (IST), or 0
+// when it is blank, unparseable or not in the future — 0 is "unknown", never
+// same-day.
+func daysUntilETD(etd string, now time.Time) int {
+	etd = strings.TrimSpace(etd)
+	if etd == "" {
+		return 0
+	}
+	local := now.In(shiprocketIST)
+	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, shiprocketIST)
+	for _, layout := range etdLayouts {
+		t, err := time.ParseInLocation(layout, etd, shiprocketIST)
+		if err != nil {
+			continue
+		}
+		day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, shiprocketIST)
+		n := int(day.Sub(today).Hours()/24 + 0.5)
+		if n <= 0 {
+			return 0
+		}
+		return n
+	}
+	return 0
 }
 
 // dimensionOrDefault substitutes a small-parcel side for a dimension a

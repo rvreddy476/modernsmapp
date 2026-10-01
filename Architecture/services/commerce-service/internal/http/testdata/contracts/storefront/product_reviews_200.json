@@ -12,7 +12,9 @@
         "body": "Battery lasts all day.",
         "is_verified_purchase": true,
         "moderation_status": "approved",
-        "created_at": "2026-09-15T10:00:00Z"
+        "created_at": "2026-09-15T10:00:00Z",
+        "helpful_count": 1,
+        "viewer_vote": null
       }
     ],
     "total": 1

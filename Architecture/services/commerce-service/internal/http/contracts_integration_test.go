@@ -324,7 +324,10 @@ func newContractEnv(t *testing.T) *contractEnv {
 		WithPayments(payClient).
 		WithMedia(media.New(mediaSrv.URL, "contract-internal-key")).
 		WithAllowStubGateway(true).
-		WithProductAutoApprove(true)
+		WithProductAutoApprove(true).
+		// The delivery date is "today" + dispatch + transit: pinned, or
+		// every delivery_estimate / quote fixture would move each day.
+		WithClock(func() time.Time { return ctFixedNow })
 
 	r := gin.New()
 	r.Use(FenceMiddlewareWithStubSettlement(true))

@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "CANNOT_VOTE_OWN_REVIEW",
+    "message": "you cannot vote on your own review"
+  },
+  "meta": {}
+}
+

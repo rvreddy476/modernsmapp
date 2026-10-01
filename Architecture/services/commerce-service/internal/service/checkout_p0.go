@@ -78,6 +78,13 @@ type QuoteResult struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 	Serviceable bool      `json:"serviceable"`
 	Reason      string    `json:"reason,omitempty"`
+
+	// DeliverBy / MaxDays are the delivery promise (engagement.go,
+	// ComputeDeliveryWindow), from the SAME carrier answer the shipping
+	// charge came from. Additive and informational: nothing in the total
+	// reads them, and a quote without them is still a valid quote.
+	DeliverBy string `json:"deliver_by,omitempty"`
+	MaxDays   int    `json:"max_days,omitempty"`
 }
 
 // PrepareQuote calls the courier and persists the result.
@@ -193,7 +200,10 @@ func (s *Service) PrepareQuote(ctx context.Context, in QuoteInputP0) (*QuoteResu
 	if err != nil {
 		return nil, err
 	}
+	deliverBy, maxDays := s.quoteDeliveryWindow(ctx, meta.SellerID, res.EstimatedDays)
 	return &QuoteResult{
+		DeliverBy:     deliverBy,
+		MaxDays:       maxDays,
 		QuoteID:       q.ID,
 		SubtotalMinor: pricing.SubtotalMinor,
 		DiscountMinor: pricing.DiscountMinor,
