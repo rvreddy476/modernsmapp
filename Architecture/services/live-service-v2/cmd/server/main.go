@@ -9,7 +9,6 @@ import (
 	"time"
 
 	dbschema "github.com/atpost/live-service-v2/database"
-	v2events "github.com/atpost/live-service-v2/internal/events"
 	v2http "github.com/atpost/live-service-v2/internal/http"
 	"github.com/atpost/live-service-v2/internal/livekit"
 	"github.com/atpost/live-service-v2/internal/purge"
@@ -20,6 +19,7 @@ import (
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -37,19 +37,21 @@ func main() {
 
 	graphURL := env("GRAPH_SERVICE_URL", "")
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
-	egressSecret := os.Getenv("LIVEKIT_WEBHOOK_SECRET")
+	mediaURL := os.Getenv("MEDIA_SERVICE_URL")
 
+	s3Endpoint := env("MINIO_ENDPOINT", "http://minio:9000")
 	lkCfg := livekit.Config{
-		APIKey:      os.Getenv("LIVEKIT_API_KEY"),
-		APISecret:   os.Getenv("LIVEKIT_API_SECRET"),
-		URL:         env("LIVEKIT_URL", "ws://livekit:7880"),
-		PublicURL:   env("LIVEKIT_PUBLIC_URL", ""),
-		S3Endpoint:  env("MINIO_ENDPOINT", "http://minio:9000"),
-		S3AccessKey: os.Getenv("MINIO_ACCESS_KEY"),
-		S3SecretKey: os.Getenv("MINIO_SECRET_KEY"),
-		S3Bucket:    env("MINIO_BUCKET_LIVE_RECORDINGS", "live-recordings"),
-		S3Region:    env("MINIO_REGION", "us-east-1"),
-		S3UseSSL:    envBool("MINIO_USE_SSL", false),
+		APIKey:           os.Getenv("LIVEKIT_API_KEY"),
+		APISecret:        os.Getenv("LIVEKIT_API_SECRET"),
+		URL:              env("LIVEKIT_URL", "ws://livekit:7880"),
+		PublicURL:        env("LIVEKIT_PUBLIC_URL", ""),
+		S3Endpoint:       s3Endpoint,
+		EgressS3Endpoint: env("LIVE_EGRESS_S3_ENDPOINT", s3Endpoint),
+		S3AccessKey:      os.Getenv("MINIO_ACCESS_KEY"),
+		S3SecretKey:      os.Getenv("MINIO_SECRET_KEY"),
+		S3Bucket:         env("MINIO_BUCKET_LIVE_RECORDINGS", "live-recordings"),
+		S3Region:         env("MINIO_REGION", "us-east-1"),
+		S3UseSSL:         envBool("MINIO_USE_SSL", false),
 	}
 
 	ctx := context.Background()
@@ -98,19 +100,61 @@ func main() {
 		slog.Error("kafka dialer", "error", err)
 		os.Exit(1)
 	}
-	producer := v2events.NewProducer(kafkaBrokers, kafkaTopic, kafkaDialer)
-	defer producer.Close()
+	// Lifecycle events (live.stream.started|ended|vod_ready) are enqueued in
+	// live_v2.outbox_events in the same transaction as the status change;
+	// this publisher drains them to Kafka (commerce-service's pattern).
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	defer bgCancel()
+	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		DBSchema:     "live_v2",
+		KafkaBrokers: strings.Join(kafkaBrokers, ","),
+		DefaultTopic: kafkaTopic,
+	})
+	go outboxPublisher.Run(bgCtx)
+	slog.Info("live-v2 outbox publisher started", "topic", kafkaTopic)
 
 	// --- LiveKit + graph clients ---
 	lk := livekit.New(lkCfg)
 	graph := service.NewHTTPGraphClient(graphURL, internalKey)
 
+	// Who may go live: LIVE_PILOT_USER_IDS. Empty = nobody (fail closed).
+	pilot, badPilot := service.ParsePilotUserIDs(os.Getenv("LIVE_PILOT_USER_IDS"))
+	if len(badPilot) > 0 {
+		slog.Warn("live-v2: LIVE_PILOT_USER_IDS has invalid entries; ignored", "count", len(badPilot))
+	}
+	if len(pilot) == 0 {
+		slog.Warn("live-v2: LIVE_PILOT_USER_IDS is empty — nobody can go live (LIVE_NOT_ENABLED)")
+	}
+	// media-service recording import: internal key plus, when configured, a
+	// live-service-v2 service token (required by media-service outside
+	// local/dev).
+	importSigner, err := service.ImportSignerFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("live-v2: LIVE_SERVICE_TOKEN_KID/PRIVKEY invalid", "error", err)
+		os.Exit(1)
+	}
+	if importSigner == nil {
+		slog.Warn("live-v2: LIVE_SERVICE_TOKEN_KID/PRIVKEY not set — recording imports carry no service token (accepted on local/dev only)")
+	}
+	var media service.MediaImporter
+	if imp := service.NewHTTPMediaImporter(mediaURL, internalKey, importSigner); imp != nil {
+		media = imp
+	} else {
+		slog.Warn("live-v2: MEDIA_SERVICE_URL not set — recordings are kept but never imported, so no vod_ready is emitted")
+	}
+
 	store := pgstore.New(dbPool)
-	svc := service.New(store, lk, graph, producer, rdb, service.Config{
+	svc := service.New(store, lk, graph, rdb, service.Config{
 		RecordingPublicBaseURL: env("LIVE_RECORDING_PUBLIC_BASE_URL", ""),
 		S3Bucket:               lkCfg.S3Bucket,
 		S3Endpoint:             lkCfg.S3Endpoint,
+		PilotUserIDs:           pilot,
+		StartTimeout:           envDuration("LIVE_START_TIMEOUT", service.DefaultStartTimeout),
+		ReconnectGrace:         envDuration("LIVE_RECONNECT_GRACE", service.DefaultReconnectGrace),
+		Media:                  media,
 	})
+	// Timeouts by the database clock, LiveKit reconcile, recording imports.
+	go svc.RunSweeper(bgCtx, service.SweepInterval)
 
 	// Account control (auth-service 30-day deletion): end the creator's live
 	// streams on user.deactivated / user.deletion_scheduled, and on
@@ -131,10 +175,22 @@ func main() {
 	} else {
 		slog.Warn("live-v2: INTERNAL_SERVICE_KEY not set — every v1 endpoint is unauthenticated. Do not run this configuration in production.")
 	}
-	if egressSecret != "" {
-		handler.WithEgressSecret(egressSecret)
+	// LiveKit signs webhooks with the API key/secret (webhook.api_key in
+	// livekit.yaml). Unset = every webhook is refused, never accepted.
+	handler.WithWebhookCredentials(lkCfg.APIKey, lkCfg.APISecret)
+	if lkCfg.APIKey == "" || lkCfg.APISecret == "" {
+		slog.Warn("live-v2: LIVEKIT_API_KEY/SECRET not set — every LiveKit webhook is refused")
+	}
+	adminVerifier, err := v2http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("live-v2: SERVICE_CALLERS invalid", "error", err)
+		os.Exit(1)
+	}
+	if adminVerifier != nil {
+		handler.WithServiceVerifier(adminVerifier)
+		slog.Info("live-v2: admin token family enabled", "callers", adminVerifier.Callers())
 	} else {
-		slog.Warn("live-v2: LIVEKIT_WEBHOOK_SECRET not set — egress webhook will accept any payload")
+		slog.Warn("live-v2: SERVICE_CALLERS not set — /v1/livestream/internal/admin answers 401")
 	}
 
 	// --- Prometheus + health ---
@@ -160,7 +216,7 @@ func main() {
 		Port:            port,
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
-			_ = producer.Close()
+			bgCancel()
 			dbPool.Close()
 			rdb.Close()
 		},
@@ -187,4 +243,21 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return b
+}
+
+// envDuration reads a Go duration ("60s", "2m") or a bare number of
+// seconds; anything unparseable or non-positive falls back.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	slog.Warn("live-v2: invalid duration; using the default", "key", key, "default", fallback.String())
+	return fallback
 }

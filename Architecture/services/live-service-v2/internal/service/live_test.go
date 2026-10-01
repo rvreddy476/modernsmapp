@@ -30,16 +30,23 @@ func (fakeLiveKit) StartEgressToS3(_ context.Context, _, _ string) (string, erro
 func (fakeLiveKit) StopEgress(_ context.Context, _ string) error { return nil }
 func (fakeLiveKit) ServerURL() string                            { return "ws://test" }
 
-// fakeGraph implements service.GraphClient. The test sets `follows` per
-// (viewer, creator) and reports it back.
+// fakeGraph implements service.GraphClient. The test sets `follows` and
+// `blocked` per (viewer, creator) and reports them back; err fails every
+// call.
 type fakeGraph struct {
 	follows map[string]bool
+	blocked map[string]bool
+	err     error
 	calls   int
 }
 
-func (g *fakeGraph) IsFollowing(_ context.Context, viewerID, creatorID uuid.UUID) (bool, error) {
+func (g *fakeGraph) Relationship(_ context.Context, viewerID, creatorID uuid.UUID) (Relationship, error) {
 	g.calls++
-	return g.follows[viewerID.String()+":"+creatorID.String()], nil
+	if g.err != nil {
+		return Relationship{}, g.err
+	}
+	k := viewerID.String() + ":" + creatorID.String()
+	return Relationship{Follows: g.follows[k], Blocked: g.blocked[k]}, nil
 }
 
 // Compile-time guards.
@@ -136,16 +143,14 @@ func TestNormalizeVisibility(t *testing.T) {
 	}
 }
 
-// newTestService wires a Service that uses a fake LiveKit client, a
-// nil store/producer/redis (paths we don't exercise here), and the
-// supplied graph fake. Service does not touch nil store/producer for
-// the authorizeViewer code path.
+// newTestService wires a Service that uses a fake LiveKit client, an
+// empty in-memory store (authorizeViewer reads stream bans), no redis,
+// and the supplied graph fake.
 func newTestService(graph GraphClient) *Service {
 	return &Service{
-		store:    nil, // not used by authorizeViewer
-		livekit:  fakeLiveKit{},
-		graph:    graph,
-		producer: nil,
-		redis:    nil,
+		store:   newMemStore(),
+		livekit: fakeLiveKit{},
+		graph:   graph,
+		redis:   nil,
 	}
 }

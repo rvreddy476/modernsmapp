@@ -1,18 +1,19 @@
 // Package http exposes the live-service-v2 REST surface. All v1
 // endpoints sit behind the shared X-Internal-Service-Key middleware —
-// every client goes through api-gateway. The single exception is
-// /v1/livestream/egress/webhook, which is invoked directly by the LiveKit
-// Egress service and authenticated by an HMAC-signed payload.
+// every client goes through api-gateway. The exceptions:
+//
+//   - POST /v1/livestream/webhooks/livekit — called by LiveKit itself and
+//     authenticated by LiveKit's webhook JWT (webhook.go);
+//   - /v1/livestream/internal/admin/* — admin-service tokens only
+//     (admin_token.go, admin_routes.go);
+//   - GET /v1/livestream/internal/streams/:id/viewer — the ws-gateway's
+//     viewer check, which ALWAYS requires the internal key (refused when
+//     none is configured).
 package http
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+	"crypto/subtle"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,12 +25,18 @@ import (
 	"github.com/atpost/live-service-v2/internal/service"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 )
 
 type Handler struct {
-	svc             *service.Service
-	internalKey     string
-	egressSecret    string // HMAC secret used to verify LiveKit Egress webhooks
+	svc         *service.Service
+	internalKey string
+	// webhookKey/webhookSecret verify LiveKit webhooks (the LiveKit API key
+	// and secret). Either empty = every webhook is refused.
+	webhookKey    string
+	webhookSecret string
+	verifier      *servicetoken.Verifier
+	clock         func() time.Time // nil = time.Now (tests pin it)
 }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
@@ -39,16 +46,32 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 	return h
 }
 
-func (h *Handler) WithEgressSecret(secret string) *Handler {
-	h.egressSecret = secret
+// WithWebhookCredentials sets the LiveKit API key/secret webhooks are
+// verified with.
+func (h *Handler) WithWebhookCredentials(apiKey, apiSecret string) *Handler {
+	h.webhookKey, h.webhookSecret = apiKey, apiSecret
 	return h
 }
 
+// requireInternalKeyStrict refuses every request unless the internal key is
+// configured AND presented.
+func (h *Handler) requireInternalKeyStrict(c *gin.Context) {
+	got := c.GetHeader("X-Internal-Service-Key")
+	if h.internalKey == "" || subtle.ConstantTimeCompare([]byte(got), []byte(h.internalKey)) != 1 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal key required", nil)
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	// Webhook is intentionally registered OUTSIDE the internal-key
-	// group: LiveKit signs with HMAC instead of carrying our internal
-	// service key. The handler verifies the signature in-line.
-	r.POST("/v1/livestream/egress/webhook", h.OnEgressWebhook)
+	// Outside the internal-key group: LiveKit signs its own JWT.
+	r.POST(WebhookPath, h.OnLiveKitWebhook)
+	// ws-gateway viewer check (internal key, never optional).
+	r.GET("/v1/livestream/internal/streams/:id/viewer", h.requireInternalKeyStrict, h.InternalStreamViewer)
+	// Admin family: admin-service tokens only.
+	h.registerAdminTokenRoutes(r)
 
 	v1 := r.Group("/v1/livestream")
 	if h.internalKey != "" {
@@ -80,6 +103,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/streams/:id/chat/pin", h.PinMessage)
 	v1.DELETE("/streams/:id/chat/pin", h.UnpinMessage)
 	v1.GET("/streams/:id/chat/pinned", h.GetPinnedMessage)
+	// Moderation v2 (1 Oct 2026): remove (host, moderators), bans (host,
+	// moderators), moderators (host sets, viewers read), reports (viewers).
+	v1.DELETE("/streams/:id/chat/:messageId", h.RemoveChatMessage)
+	v1.POST("/streams/:id/bans", h.BanUser)
+	v1.DELETE("/streams/:id/bans/:userId", h.UnbanUser)
+	v1.GET("/streams/:id/bans", h.ListBans)
+	v1.PUT("/streams/:id/moderators", h.SetModerators)
+	v1.GET("/streams/:id/moderators", h.ListModerators)
+	v1.POST("/streams/:id/reports", h.ReportStream)
 }
 
 // --- request / response bodies ---
@@ -144,11 +176,14 @@ func (h *Handler) EndStream(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.EndStream(c.Request.Context(), streamID, creatorID); err != nil {
+	st, err := h.svc.EndStream(c.Request.Context(), streamID, creatorID)
+	if err != nil {
 		writeServiceErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ended"}, nil)
+	// The stream row: data.status is "ended" (or "failed" when it never
+	// went live and had already failed), data.ended_reason says why.
+	api.JSON(c.Writer, http.StatusOK, st, nil)
 }
 
 func (h *Handler) GetStream(c *gin.Context) {
@@ -235,107 +270,6 @@ func (h *Handler) listStreamsByStatus(c *gin.Context, status string) {
 	api.JSON(c.Writer, http.StatusOK, res.Streams, meta)
 }
 
-// LiveKit Egress webhook payload — we read only the fields we care
-// about (event, file URL, duration) and ignore the rest.
-//
-// Egress webhook payload (relevant fields):
-//
-//	{
-//	  "event":  "egress_ended" | "participant_joined" | "participant_left",
-//	  "egress_info": { "room_name": "stream_<uuid>", "file": { "location": "...", "duration": ms } },
-//	  "participant": { "identity": "<viewer-uuid>" },
-//	  "room": { "name": "stream_<uuid>" }
-//	}
-type egressWebhookPayload struct {
-	Event      string `json:"event"`
-	EgressInfo *struct {
-		EgressID string `json:"egress_id"`
-		RoomName string `json:"room_name"`
-		File     *struct {
-			Location string `json:"location"`
-			Duration int64  `json:"duration"` // nanoseconds per LiveKit spec
-		} `json:"file"`
-	} `json:"egress_info"`
-	Room *struct {
-		Name string `json:"name"`
-	} `json:"room"`
-	Participant *struct {
-		Identity string `json:"identity"`
-	} `json:"participant"`
-}
-
-// OnEgressWebhook handles three LiveKit webhook event types:
-//
-//   - egress_ended       — VOD ready; persist URL + duration, fire vod_ready
-//   - participant_joined — bump the Redis hot-counter for the stream
-//   - participant_left   — decrement the counter
-//
-// Verifies the LiveKit-signed body via HMAC if h.egressSecret is set.
-func (h *Handler) OnEgressWebhook(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	if h.egressSecret != "" {
-		sig := c.GetHeader("X-LiveKit-Signature")
-		if !verifyHMAC(body, sig, h.egressSecret) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid signature", nil)
-			return
-		}
-	}
-	var p egressWebhookPayload
-	if err := json.Unmarshal(body, &p); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	switch p.Event {
-	case "egress_ended":
-		if p.EgressInfo == nil {
-			c.Status(http.StatusOK)
-			return
-		}
-		streamID, ok := streamIDFromRoom(p.EgressInfo.RoomName)
-		if !ok {
-			c.Status(http.StatusOK)
-			return
-		}
-		recordingURL := ""
-		durationSec := 0
-		if p.EgressInfo.File != nil {
-			recordingURL = p.EgressInfo.File.Location
-			// LiveKit reports duration in nanoseconds.
-			durationSec = int(p.EgressInfo.File.Duration / 1_000_000_000)
-		}
-		if err := h.svc.OnEgressFinished(c.Request.Context(), streamID, recordingURL, durationSec); err != nil {
-			slog.Warn("live-v2 egress webhook: persist failed", "stream_id", streamID, "err", err)
-		}
-	case "participant_joined", "participant_left":
-		if p.Room == nil || p.Participant == nil {
-			c.Status(http.StatusOK)
-			return
-		}
-		streamID, ok := streamIDFromRoom(p.Room.Name)
-		if !ok {
-			c.Status(http.StatusOK)
-			return
-		}
-		userID, err := uuid.Parse(p.Participant.Identity)
-		if err != nil {
-			c.Status(http.StatusOK)
-			return
-		}
-		evt := "join"
-		if p.Event == "participant_left" {
-			evt = "leave"
-		}
-		if err := h.svc.RecordParticipantEvent(c.Request.Context(), streamID, userID, evt); err != nil {
-			slog.Warn("live-v2 participant webhook: persist failed", "stream_id", streamID, "err", err)
-		}
-	}
-	c.Status(http.StatusOK)
-}
-
 // --- helpers ---
 
 func requireUserID(c *gin.Context) (uuid.UUID, bool) {
@@ -378,32 +312,38 @@ func writeServiceErr(c *gin.Context, err error) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidVisibility), errors.Is(err, service.ErrInvalidTitle):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil)
+	case errors.Is(err, service.ErrLiveNotEnabled):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIVE_NOT_ENABLED", err.Error(), nil)
+	case errors.Is(err, service.ErrLiveBanned):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIVE_BANNED", err.Error(), nil)
+	case errors.Is(err, service.ErrBannedFromStream):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "BANNED_FROM_STREAM", err.Error(), nil)
+	case errors.Is(err, service.ErrViewerBlocked):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrAuthorityUnavailable):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "AUTHORITY_UNAVAILABLE", err.Error(), nil)
+	case errors.Is(err, service.ErrStateConflict):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "STREAM_STATE_CONFLICT", err.Error(), nil)
+	case errors.Is(err, service.ErrStreamNotLive):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "STREAM_NOT_LIVE", err.Error(), nil)
+	case errors.Is(err, service.ErrNotModerator):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	case errors.Is(err, service.ErrTooManyModerators), errors.Is(err, service.ErrInvalidTarget),
+		errors.Is(err, service.ErrInvalidReportReason), errors.Is(err, service.ErrInvalidNote),
+		errors.Is(err, service.ErrReasonRequired), errors.Is(err, service.ErrInvalidAction):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil)
+	case errors.Is(err, service.ErrAlreadyReported):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_REPORTED", err.Error(), nil)
+	case errors.Is(err, service.ErrReportRateLimited):
+		c.Header("Retry-After", "3600")
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+	case errors.Is(err, service.ErrReportNotFound), errors.Is(err, service.ErrMessageNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrReportResolved):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REPORT_ALREADY_RESOLVED", err.Error(), nil)
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}
-}
-
-// streamIDFromRoom unpacks "stream_<uuid>" → uuid.
-func streamIDFromRoom(room string) (uuid.UUID, bool) {
-	const prefix = "stream_"
-	if len(room) <= len(prefix) || room[:len(prefix)] != prefix {
-		return uuid.Nil, false
-	}
-	id, err := uuid.Parse(room[len(prefix):])
-	if err != nil {
-		return uuid.Nil, false
-	}
-	return id, true
-}
-
-func verifyHMAC(body []byte, sig, secret string) bool {
-	if sig == "" {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(sig), []byte(expected))
 }
 
 // --- chat ---
@@ -445,12 +385,16 @@ func (h *Handler) SendChat(c *gin.Context) {
 		case strings.HasPrefix(emsg, "rate_limited"):
 			c.Header("Retry-After", "60")
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", emsg, nil)
-			return
-		case strings.HasPrefix(emsg, "invalid"):
+		case strings.HasPrefix(emsg, "invalid:"):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", emsg, nil)
-			return
+		case errors.Is(err, service.ErrBannedFromStream):
+			// The web's chat composer reads CHAT_BANNED (elsewhere the same
+			// ban is BANNED_FROM_STREAM).
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "CHAT_BANNED", err.Error(), nil)
+		default:
+			// Viewer gate, live ban, stream state, or an internal error.
+			writeServiceErr(c, err)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", emsg, nil)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": msg})
@@ -471,9 +415,11 @@ func (h *Handler) ListChat(c *gin.Context) {
 			limit = v
 		}
 	}
-	items, err := h.svc.ListChat(c.Request.Context(), streamID, limit)
+	// Same viewer gate as sending; a signed-out reader passes only on a
+	// public stream.
+	items, err := h.svc.ListChat(c.Request.Context(), streamID, optionalUserID(c), limit)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeServiceErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "count": len(items)}})

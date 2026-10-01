@@ -11,10 +11,19 @@ import (
 )
 
 // GraphClient is the surface live-service-v2 needs from graph-service:
-// a single read — does `viewer` follow `creator`. Wrapping it in an
-// interface lets the unit tests substitute a fake.
+// one read — the viewer's relationship to the creator (follows, and a
+// block in EITHER direction). Wrapping it in an interface lets the unit
+// tests substitute a fake.
 type GraphClient interface {
-	IsFollowing(ctx context.Context, viewerID, creatorID uuid.UUID) (bool, error)
+	Relationship(ctx context.Context, viewerID, creatorID uuid.UUID) (Relationship, error)
+}
+
+// Relationship is what the live gate needs to know about viewer -> creator.
+type Relationship struct {
+	Follows bool
+	// Blocked: either side blocked the other (graph's blocked || blocked_by;
+	// every block rule on the platform is symmetric).
+	Blocked bool
 }
 
 // HTTPGraphClient calls graph-service's relationship-batch endpoint with
@@ -34,12 +43,13 @@ func NewHTTPGraphClient(baseURL, internalKey string) *HTTPGraphClient {
 	}
 }
 
-// IsFollowing returns true iff viewer follows creator. On a nil receiver
-// or unconfigured base URL, returns (false, nil) — the caller treats
-// this as "deny" for followers-only streams.
-func (c *HTTPGraphClient) IsFollowing(ctx context.Context, viewerID, creatorID uuid.UUID) (bool, error) {
+// Relationship returns the viewer's relationship to the creator. An
+// unconfigured client, a transport error, a non-2xx or an answer without the
+// creator's entry is an ERROR: the caller cannot rule out a block, so it
+// refuses (fail closed).
+func (c *HTTPGraphClient) Relationship(ctx context.Context, viewerID, creatorID uuid.UUID) (Relationship, error) {
 	if c == nil || c.baseURL == "" {
-		return false, nil
+		return Relationship{}, fmt.Errorf("graph client not configured")
 	}
 	body := map[string]any{
 		"viewer_id":  viewerID.String(),
@@ -47,13 +57,13 @@ func (c *HTTPGraphClient) IsFollowing(ctx context.Context, viewerID, creatorID u
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
-		return false, err
+		return Relationship{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v1/graph/relationships/batch",
 		jsonReader(buf))
 	if err != nil {
-		return false, err
+		return Relationship{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.internalKey != "" {
@@ -61,23 +71,25 @@ func (c *HTTPGraphClient) IsFollowing(ctx context.Context, viewerID, creatorID u
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("graph relationships/batch: %w", err)
+		return Relationship{}, fmt.Errorf("graph relationships/batch: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return false, fmt.Errorf("graph relationships/batch: status %d", resp.StatusCode)
+		return Relationship{}, fmt.Errorf("graph relationships/batch: status %d", resp.StatusCode)
 	}
 	// graph-service returns a raw map[uuid]Relationship at the top
 	// level, not wrapped in the api envelope (see handler.go:1126).
 	var out map[string]struct {
-		Follows bool `json:"follows"`
+		Follows   bool `json:"follows"`
+		Blocked   bool `json:"blocked"`
+		BlockedBy bool `json:"blocked_by"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return false, err
+		return Relationship{}, err
 	}
 	rel, ok := out[creatorID.String()]
 	if !ok {
-		return false, nil
+		return Relationship{}, fmt.Errorf("graph relationships/batch: no entry for the creator")
 	}
-	return rel.Follows, nil
+	return Relationship{Follows: rel.Follows, Blocked: rel.Blocked || rel.BlockedBy}, nil
 }

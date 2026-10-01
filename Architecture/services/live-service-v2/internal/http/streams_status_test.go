@@ -58,18 +58,18 @@ func fixtureStreams() (live, scheduled []*postgres.LiveStream) {
 	live = []*postgres.LiveStream{{
 		ID: uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), CreatorUserID: fxCreator, LiveKitRoom: "stream_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		Title: "Friday build, live", Status: "live", Visibility: "public", StartedAt: &started, ViewerPeak: 42,
-		CreatedAt: fxStreamTime.Add(-time.Hour), UpdatedAt: started,
+		CreatedAt: fxStreamTime.Add(-time.Hour), UpdatedAt: started, StatusChangedAt: started,
 	}}
 	scheduled = []*postgres.LiveStream{
 		{
 			ID: uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), CreatorUserID: fxCreator, LiveKitRoom: "stream_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 			Title: "Kafka AMA", Description: "Bring questions", CoverMediaID: &fxCover, Status: "scheduled", Visibility: "public",
-			ScheduledAt: &soon, CreatedAt: fxStreamTime.Add(-48 * time.Hour), UpdatedAt: fxStreamTime.Add(-48 * time.Hour),
+			ScheduledAt: &soon, CreatedAt: fxStreamTime.Add(-48 * time.Hour), UpdatedAt: fxStreamTime.Add(-48 * time.Hour), StatusChangedAt: fxStreamTime.Add(-48 * time.Hour),
 		},
 		{
 			ID: uuid.MustParse("cccccccc-cccc-4ccc-8ccc-cccccccccccc"), CreatorUserID: fxCreator, LiveKitRoom: "stream_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 			Title: "Weekend build", Status: "scheduled", Visibility: "public",
-			ScheduledAt: &tomorrow, CreatedAt: fxStreamTime.Add(-24 * time.Hour), UpdatedAt: fxStreamTime.Add(-24 * time.Hour),
+			ScheduledAt: &tomorrow, CreatedAt: fxStreamTime.Add(-24 * time.Hour), UpdatedAt: fxStreamTime.Add(-24 * time.Hour), StatusChangedAt: fxStreamTime.Add(-24 * time.Hour),
 		},
 	}
 	return live, scheduled
@@ -81,7 +81,7 @@ func serveStreams(t *testing.T, query string) (*httptest.ResponseRecorder, *stat
 	live, scheduled := fixtureStreams()
 	store := &statusStore{live: live, scheduled: scheduled, calls: map[string]int{}}
 	r := gin.New()
-	New(service.New(store, nil, nil, nil, nil, service.Config{})).RegisterRoutes(r)
+	New(service.New(store, nil, nil, nil, service.Config{})).RegisterRoutes(r)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/livestream/streams"+query, nil))
 	return w, store

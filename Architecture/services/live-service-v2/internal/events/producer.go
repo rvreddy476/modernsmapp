@@ -1,115 +1,115 @@
-// Package events publishes live-service-v2 lifecycle events to the
-// shared social.events.v1 Kafka topic.
+// Package events builds live-service-v2's lifecycle events for the
+// transactional outbox (live_v2.outbox_events). They used to be written to
+// Kafka fire-and-forget from the request path, so a broker blip lost them;
+// now each is enqueued in the SAME transaction as the status change that
+// implies it and shared/outbox.Publisher drains the table to the
+// social.events.v1 topic (commerce-service's pattern, migration 005).
 //
-// TODO: notification-service consumer pending
-//
-// notification-service does not yet subscribe to live.stream.started — when
-// it does (planned in the v2 frontend sprint), the payload shape and
-// actor partition key emitted here are the contract it must consume. The
-// service publishes to the existing social.events.v1 topic so no new
-// topic provisioning is required.
+// Payloads are the shared contract (shared/events Live*Payload); the ended
+// payload additionally carries ended_reason, which consumers decoding the
+// shared struct ignore. The partition key is the creator id (order per
+// creator), as before.
 package events
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
-	"github.com/atpost/shared/events"
+	sharedevents "github.com/atpost/shared/events"
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
+
+	"github.com/atpost/live-service-v2/internal/store/postgres"
 )
 
-type Producer struct {
-	writer *kafka.Writer
+// liveStreamEndedPayload is the shared LiveStreamEndedPayload plus
+// ended_reason.
+type liveStreamEndedPayload struct {
+	sharedevents.LiveStreamEndedPayload
+	EndedReason string `json:"ended_reason,omitempty"`
 }
 
-func NewProducer(brokers []string, topic string, dialer *kafka.Dialer) *Producer {
-	return &Producer{
-		writer: kafka.NewWriter(kafka.WriterConfig{
-			Brokers:  brokers,
-			Topic:    topic,
-			Balancer: &kafka.LeastBytes{},
-			Dialer:   dialer,
-		}),
+// StreamStarted is live.stream.started for a stream that just went live.
+func StreamStarted(ctx context.Context, st *postgres.LiveStream) (postgres.OutboxEvent, error) {
+	startedAt := time.Now().UTC()
+	if st.StartedAt != nil {
+		startedAt = *st.StartedAt
 	}
-}
-
-func (p *Producer) Close() error {
-	if p == nil || p.writer == nil {
-		return nil
-	}
-	return p.writer.Close()
-}
-
-// PublishStreamStarted emits live.stream.started. Partition key is the
-// creatorID per the platform's recent Kafka-partition-key convention:
-// every event whose downstream consumers shard by actor uses the actor
-// as the key so order is preserved per-creator.
-func (p *Producer) PublishStreamStarted(ctx context.Context, streamID, creatorID uuid.UUID, title, visibility string, startedAt time.Time) error {
-	payload := events.LiveStreamStartedPayload{
-		StreamID:   streamID.String(),
-		CreatorID:  creatorID.String(),
-		Title:      title,
-		Visibility: visibility,
+	return envelope(ctx, sharedevents.LiveStreamStarted, st, "started:"+st.ID.String(), sharedevents.LiveStreamStartedPayload{
+		StreamID:   st.ID.String(),
+		CreatorID:  st.CreatorUserID.String(),
+		Title:      st.Title,
+		Visibility: st.Visibility,
 		StartedAt:  startedAt,
-	}
-	return p.publish(ctx, events.LiveStreamStarted, creatorID, payload)
+	})
 }
 
-func (p *Producer) PublishStreamEnded(ctx context.Context, streamID, creatorID uuid.UUID, endedAt time.Time, peak int) error {
-	payload := events.LiveStreamEndedPayload{
-		StreamID:   streamID.String(),
-		CreatorID:  creatorID.String(),
-		EndedAt:    endedAt,
-		ViewerPeak: peak,
+// StreamEnded is live.stream.ended for a stream that was live and ended.
+func StreamEnded(ctx context.Context, st *postgres.LiveStream) (postgres.OutboxEvent, error) {
+	endedAt := time.Now().UTC()
+	if st.EndedAt != nil {
+		endedAt = *st.EndedAt
 	}
-	return p.publish(ctx, events.LiveStreamEnded, creatorID, payload)
+	reason := ""
+	if st.EndedReason != nil {
+		reason = *st.EndedReason
+	}
+	return envelope(ctx, sharedevents.LiveStreamEnded, st, "ended:"+st.ID.String(), liveStreamEndedPayload{
+		LiveStreamEndedPayload: sharedevents.LiveStreamEndedPayload{
+			StreamID:   st.ID.String(),
+			CreatorID:  st.CreatorUserID.String(),
+			EndedAt:    endedAt,
+			ViewerPeak: st.ViewerPeak,
+		},
+		EndedReason: reason,
+	})
 }
 
-func (p *Producer) PublishVODReady(ctx context.Context, streamID, creatorID uuid.UUID, recordingURL string, durationSec int) error {
-	payload := events.LiveStreamVODReadyPayload{
-		StreamID:     streamID.String(),
-		CreatorID:    creatorID.String(),
-		RecordingURL: recordingURL,
-		DurationSec:  durationSec,
-	}
-	return p.publish(ctx, events.LiveStreamVODReady, creatorID, payload)
+// liveStreamVODReadyPayload is the shared payload plus the two extensions
+// post-service's consumer reads (post-service internal/consumers/live_vod.go
+// LiveVODEvent): media_asset_id, which resolveRecordingMedia takes first,
+// and the stream title.
+type liveStreamVODReadyPayload struct {
+	sharedevents.LiveStreamVODReadyPayload
+	MediaAssetID string `json:"media_asset_id"`
+	Title        string `json:"title,omitempty"`
 }
 
-// publish builds the standard EventEnvelope and writes it on a 5s
-// detached context so request cancellation cannot drop the event. Errors
-// are logged at WARN and not surfaced; the publish path is best-effort
-// (consumers tolerate at-least-once via dedup).
-func (p *Producer) publish(ctx context.Context, eventType string, actorID uuid.UUID, payload any) error {
-	if p == nil || p.writer == nil {
-		return nil
+// VODReady is live.stream.vod_ready once the recording is a registered
+// media asset. mediaID is required: post-service skips a VOD it cannot
+// resolve to a media asset, so an event without one would be lost work.
+func VODReady(ctx context.Context, st *postgres.LiveStream, recordingURL string, durationSec int, mediaID uuid.UUID) (postgres.OutboxEvent, error) {
+	if mediaID == uuid.Nil {
+		return postgres.OutboxEvent{}, fmt.Errorf("vod_ready without a media id")
 	}
+	return envelope(ctx, sharedevents.LiveStreamVODReady, st, "vod_ready:"+st.ID.String(), liveStreamVODReadyPayload{
+		LiveStreamVODReadyPayload: sharedevents.LiveStreamVODReadyPayload{
+			StreamID:     st.ID.String(),
+			CreatorID:    st.CreatorUserID.String(),
+			RecordingURL: recordingURL,
+			DurationSec:  durationSec,
+		},
+		MediaAssetID: mediaID.String(),
+		Title:        st.Title,
+	})
+}
+
+func envelope(ctx context.Context, eventType string, st *postgres.LiveStream, idemKey string, payload any) (postgres.OutboxEvent, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+		return postgres.OutboxEvent{}, fmt.Errorf("marshal %s payload: %w", eventType, err)
 	}
-	actorStr := actorID.String()
-	envelope := events.NewEnvelope(ctx, eventType, &actorStr, payloadBytes)
-	envelopeBytes, err := json.Marshal(envelope)
+	actor := st.CreatorUserID.String()
+	env := sharedevents.NewEnvelope(ctx, eventType, &actor, payloadBytes)
+	envBytes, err := json.Marshal(env)
 	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
+		return postgres.OutboxEvent{}, fmt.Errorf("marshal %s envelope: %w", eventType, err)
 	}
-	msg := kafka.Message{
-		Key:   []byte(actorStr),
-		Value: envelopeBytes,
-	}
-	go func() {
-		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := p.writer.WriteMessages(writeCtx, msg); err != nil {
-			slog.Warn("live-v2: async Kafka publish failed",
-				"event_type", eventType,
-				"event_id", envelope.EventID,
-				"err", err)
-		}
-	}()
-	return nil
+	return postgres.OutboxEvent{
+		EventType:      eventType,
+		PartitionKey:   actor,
+		IdempotencyKey: "live." + idemKey,
+		Payload:        envBytes,
+	}, nil
 }

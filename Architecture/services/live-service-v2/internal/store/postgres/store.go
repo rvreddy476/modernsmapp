@@ -14,23 +14,34 @@ import (
 
 // LiveStream mirrors the live_streams row. Pointers cover NULLable cols.
 type LiveStream struct {
-	ID                       uuid.UUID  `json:"id"`
-	CreatorUserID            uuid.UUID  `json:"creator_user_id"`
-	LiveKitRoom              string     `json:"livekit_room"`
-	Title                    string     `json:"title"`
-	Description              string     `json:"description"`
-	CoverMediaID             *uuid.UUID `json:"cover_media_id,omitempty"`
-	Status                   string     `json:"status"`
-	Visibility               string     `json:"visibility"`
-	ScheduledAt              *time.Time `json:"scheduled_at,omitempty"`
-	StartedAt                *time.Time `json:"started_at,omitempty"`
-	EndedAt                  *time.Time `json:"ended_at,omitempty"`
-	ViewerPeak               int        `json:"viewer_peak"`
-	RecordingURL             *string    `json:"recording_url,omitempty"`
-	RecordingDurationSeconds *int       `json:"recording_duration_seconds,omitempty"`
-	EgressID                 *string    `json:"-"`
-	CreatedAt                time.Time  `json:"created_at"`
-	UpdatedAt                time.Time  `json:"updated_at"`
+	ID            uuid.UUID  `json:"id"`
+	CreatorUserID uuid.UUID  `json:"creator_user_id"`
+	LiveKitRoom   string     `json:"livekit_room"`
+	Title         string     `json:"title"`
+	Description   string     `json:"description"`
+	CoverMediaID  *uuid.UUID `json:"cover_media_id,omitempty"`
+	Status        string     `json:"status"`
+	Visibility    string     `json:"visibility"`
+	ScheduledAt   *time.Time `json:"scheduled_at,omitempty"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	EndedAt       *time.Time `json:"ended_at,omitempty"`
+	ViewerPeak    int        `json:"viewer_peak"`
+	// ViewerCount is the current number of viewers in the LiveKit room,
+	// from participant webhooks, never counting the host.
+	ViewerCount int `json:"viewer_count"`
+	// EndedReason is set on ended/failed: host_ended | host_lost |
+	// room_finished | admin_stopped | no_media. null otherwise.
+	EndedReason *string `json:"ended_reason"`
+	// ModeratorUserIDs is filled only for the host and the stream's
+	// moderators (service layer); absent for everyone else.
+	ModeratorUserIDs *[]uuid.UUID `json:"moderator_user_ids,omitempty"`
+	// StatusChangedAt is when the current status began (database clock).
+	StatusChangedAt          time.Time `json:"status_changed_at"`
+	RecordingURL             *string   `json:"recording_url,omitempty"`
+	RecordingDurationSeconds *int      `json:"recording_duration_seconds,omitempty"`
+	EgressID                 *string   `json:"-"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 var ErrNotFound = errors.New("live stream not found")
@@ -42,8 +53,14 @@ type Store struct {
 func New(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
 func scanStream(row pgx.Row) (*LiveStream, error) {
+	return scanStreamExtra(row)
+}
+
+// scanStreamExtra scans selectColumns followed by extra destinations (a
+// computed column appended after selectColumns).
+func scanStreamExtra(row pgx.Row, extra ...any) (*LiveStream, error) {
 	var s LiveStream
-	err := row.Scan(
+	err := row.Scan(append([]any{
 		&s.ID,
 		&s.CreatorUserID,
 		&s.LiveKitRoom,
@@ -56,12 +73,15 @@ func scanStream(row pgx.Row) (*LiveStream, error) {
 		&s.StartedAt,
 		&s.EndedAt,
 		&s.ViewerPeak,
+		&s.ViewerCount,
+		&s.EndedReason,
+		&s.StatusChangedAt,
 		&s.RecordingURL,
 		&s.RecordingDurationSeconds,
 		&s.EgressID,
 		&s.CreatedAt,
 		&s.UpdatedAt,
-	)
+	}, extra...)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -74,7 +94,8 @@ func scanStream(row pgx.Row) (*LiveStream, error) {
 const selectColumns = `
     id, creator_user_id, livekit_room, title, description, cover_media_id,
     status, visibility, scheduled_at, started_at, ended_at,
-    viewer_peak, recording_url, recording_duration_seconds, egress_id,
+    viewer_peak, viewer_count, ended_reason, status_changed_at,
+    recording_url, recording_duration_seconds, egress_id,
     created_at, updated_at`
 
 type CreateStreamParams struct {
@@ -110,57 +131,9 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*LiveStream, error) 
 	return scanStream(s.db.QueryRow(ctx, q, id))
 }
 
-// MarkLive flips status to 'live' and stamps started_at. Idempotent: if
-// the row is already live, started_at is preserved.
-func (s *Store) MarkLive(ctx context.Context, id uuid.UUID, egressID string) (*LiveStream, error) {
-	const q = `
-        UPDATE live_streams
-        SET status = 'live',
-            started_at = COALESCE(started_at, NOW()),
-            egress_id = COALESCE(NULLIF($2, ''), egress_id),
-            updated_at = NOW()
-        WHERE id = $1
-          AND status IN ('scheduled', 'live')
-        RETURNING ` + selectColumns
-	row := s.db.QueryRow(ctx, q, id, egressID)
-	st, err := scanStream(row)
-	if errors.Is(err, ErrNotFound) {
-		return nil, fmt.Errorf("stream is not in a startable state")
-	}
-	return st, err
-}
-
-// MarkEnded flips status to 'ended' and stamps ended_at. peakViewers
-// is materialised from the Redis hot counter by the caller.
-func (s *Store) MarkEnded(ctx context.Context, id uuid.UUID, peakViewers int) (*LiveStream, error) {
-	const q = `
-        UPDATE live_streams
-        SET status = 'ended',
-            ended_at = COALESCE(ended_at, NOW()),
-            viewer_peak = GREATEST(viewer_peak, $2),
-            updated_at = NOW()
-        WHERE id = $1
-          AND status = 'live'
-        RETURNING ` + selectColumns
-	row := s.db.QueryRow(ctx, q, id, peakViewers)
-	st, err := scanStream(row)
-	if errors.Is(err, ErrNotFound) {
-		return nil, fmt.Errorf("stream is not currently live")
-	}
-	return st, err
-}
-
-// SetRecording is called from the Egress webhook once the file lands.
-func (s *Store) SetRecording(ctx context.Context, id uuid.UUID, url string, durationSec int) (*LiveStream, error) {
-	const q = `
-        UPDATE live_streams
-        SET recording_url = $2,
-            recording_duration_seconds = $3,
-            updated_at = NOW()
-        WHERE id = $1
-        RETURNING ` + selectColumns
-	return scanStream(s.db.QueryRow(ctx, q, id, url, durationSec))
-}
+// Status changes (start, live, reconnecting, ended, failed), the recording
+// pointer and their outbox events are in lifecycle.go: every one of them is
+// a locked read-decide-write in one transaction.
 
 type ListLiveParams struct {
 	Limit         int
@@ -184,7 +157,7 @@ func (s *Store) ListLive(ctx context.Context, p ListLiveParams) ([]*LiveStream, 
 		const q = `
             SELECT ` + selectColumns + `
             FROM live_streams
-            WHERE status = 'live'
+            WHERE status IN ('live', 'reconnecting')
               AND (started_at, id) < ($1, $2)
             ORDER BY started_at DESC, id DESC
             LIMIT $3`
@@ -193,7 +166,7 @@ func (s *Store) ListLive(ctx context.Context, p ListLiveParams) ([]*LiveStream, 
 		const q = `
             SELECT ` + selectColumns + `
             FROM live_streams
-            WHERE status = 'live'
+            WHERE status IN ('live', 'reconnecting')
             ORDER BY started_at DESC NULLS LAST, id DESC
             LIMIT $1`
 		rows, err = s.db.Query(ctx, q, limit)
@@ -291,6 +264,9 @@ type ChatMessage struct {
 	IsPinned  bool       `json:"is_pinned"`
 	PinnedAt  *time.Time `json:"pinned_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
+	// RemovedAt is set once a host, moderator or admin removed the message.
+	// Viewer reads never return removed rows, so it is not on the wire.
+	RemovedAt *time.Time `json:"-"`
 }
 
 // InsertChatMessage persists a message + returns the generated id +
@@ -318,7 +294,7 @@ func (s *Store) ListRecentChatMessages(ctx context.Context, streamID uuid.UUID, 
 	const q = `
         SELECT id, stream_id, user_id, text, is_pinned, pinned_at, created_at
         FROM live_chat_messages
-        WHERE stream_id = $1
+        WHERE stream_id = $1 AND removed_at IS NULL
         ORDER BY created_at DESC
         LIMIT $2`
 	rows, err := s.db.Query(ctx, q, streamID, limit)
@@ -486,7 +462,7 @@ func (s *Store) PinMessage(ctx context.Context, streamID, messageID uuid.UUID) e
 	tag, err := tx.Exec(ctx, `
         UPDATE live_chat_messages
         SET is_pinned = TRUE, pinned_at = NOW()
-        WHERE id = $1 AND stream_id = $2`, messageID, streamID)
+        WHERE id = $1 AND stream_id = $2 AND removed_at IS NULL`, messageID, streamID)
 	if err != nil {
 		return err
 	}
@@ -514,7 +490,7 @@ func (s *Store) GetPinnedMessage(ctx context.Context, streamID uuid.UUID) (*Chat
 	const q = `
         SELECT id, stream_id, user_id, text, is_pinned, pinned_at, created_at
         FROM live_chat_messages
-        WHERE stream_id = $1 AND is_pinned = TRUE
+        WHERE stream_id = $1 AND is_pinned = TRUE AND removed_at IS NULL
         ORDER BY pinned_at DESC
         LIMIT 1`
 	row := s.db.QueryRow(ctx, q, streamID)
