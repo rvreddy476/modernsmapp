@@ -595,111 +595,11 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 		return nil, fmt.Errorf("order not eligible for invoice (payment_status=%s)", order.PaymentStatus)
 	}
 
-	items, err := s.store.GetOrderItems(ctx, orderID)
+	draft, err := s.draftInvoice(ctx, orderID, order, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("get order items: %w", err)
+		return nil, err
 	}
-	sellerID := items[0].SellerID
-	seller, err := s.store.GetSellerByID(ctx, sellerID)
-	if err != nil {
-		return nil, fmt.Errorf("get seller: %w", err)
-	}
-
-	var shipTo invoice.Address
-	if order.DeliveryAddressID != nil {
-		if row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID); err == nil {
-			// Opened for the same reason as the shipment drop address. A
-			// failure is logged and the ship-to left blank, as a failed lookup
-			// always was — but no longer silently.
-			if addr, openErr := s.openAddressRow(ctx, row); openErr == nil {
-				shipTo = invoice.Address{
-					Line1: addr.AddressLine1, Line2: addr.AddressLine2,
-					City: addr.City, State: addr.State,
-					Postal: addr.PostalCode, Country: addr.Country,
-				}
-			} else {
-				slog.Error("invoice: the delivery address could not be opened",
-					"order_id", order.ID, "error", openErr)
-			}
-		}
-	}
-
-	inv := invoice.Invoice{
-		Date:        time.Now(),
-		OrderNumber: order.OrderNumber,
-		OrderDate:   order.CreatedAt,
-		Currency:    order.CurrencyCode,
-	}
-	if order.CouponCode != nil {
-		inv.CouponCode = *order.CouponCode
-	}
-	// A bank offer (Razorpay Offers) is a NOTE on the invoice, never a tax
-	// line: the invoice stays on the full order value. Adviser to confirm.
-	if offer, err := s.store.GetOrderPaymentOffer(ctx, orderID); err == nil {
-		inv.Notes = invoiceBankOfferNote(offer)
-	} else {
-		slog.Warn("invoice: the order's bank offer could not be read; issued without its note",
-			"order_id", orderID, "error", err)
-	}
-	// The PAN is carried on the party but not rendered (shared/invoice prints
-	// only the GSTIN), so a seller whose PAN cannot be opened still gets an
-	// invoice — the failure is logged, never the value.
-	sellerPANValue, panErr := s.sellerPAN(ctx, seller)
-	if panErr != nil {
-		slog.Error("commerce: seller PAN could not be opened for the invoice party",
-			"seller_id", seller.ID, "error", panErr)
-	}
-	inv.Seller = sellerParty(seller, sellerPANValue)
-	inv.Buyer = invoice.Party{Name: shipTo.Line1, Address: shipTo}
-	inv.ShipTo = shipTo
-
-	// The money. An order written by the P0 checkout stored, in paise, every
-	// line's taxable value and GST split and the order's totals; the invoice
-	// prints exactly those (invoiceFromStoredMoney). It used to read the
-	// NUMERIC rupee columns, which that checkout writes as 0.00, and so
-	// issued every invoice since at ₹0.
-	stored, err := s.store.GetOrderInvoiceMoney(ctx, orderID)
-	if err != nil {
-		return nil, fmt.Errorf("get order money: %w", err)
-	}
-	if stored.HasStoredSplit() {
-		if err := invoiceFromStoredMoney(&inv, stored); err != nil {
-			slog.Error("invoice: refused for an order whose stored money does not reconcile",
-				"order_id", orderID, "error", err)
-			return nil, err
-		}
-	} else {
-		// An order with no stored split (the RFQ conversion still writes
-		// rupee columns through CreateOrder): unchanged legacy path. Each
-		// line picks tax % from its product's tax_class_id, falling back to
-		// 18% GST (9/9 split intrastate, 18% IGST interstate).
-		const defaultCGST, defaultSGST, defaultIGST = 9, 9, 18
-		inv.ShippingCharges = order.ShippingCharges
-		inv.CouponDiscount = order.CouponDiscount
-		// Cache tax classes to avoid a query per line item.
-		taxCache := map[uuid.UUID]*postgres.TaxClass{}
-		for _, it := range items {
-			cgst, sgst, igst := float64(defaultCGST), float64(defaultSGST), float64(defaultIGST)
-			if product, err := s.store.GetProductByID(ctx, it.ProductID); err == nil && product != nil && product.TaxClassID != nil {
-				tc, hit := taxCache[*product.TaxClassID]
-				if !hit {
-					tc, _ = s.store.GetTaxClass(ctx, *product.TaxClassID)
-					taxCache[*product.TaxClassID] = tc
-				}
-				if tc != nil {
-					cgst, sgst, igst = tc.CGSTPercentage, tc.SGSTPercentage, tc.IGSTPercentage
-				}
-			}
-			inv.Items = append(inv.Items, invoice.LineItem{
-				Title: it.ProductTitle, SKU: it.SKU,
-				Quantity: it.Quantity, UnitPrice: it.UnitPrice,
-				Discount: it.DiscountAmount, Taxable: it.FinalPrice,
-				CGSTPct: cgst, SGSTPct: sgst, IGSTPct: igst,
-			})
-		}
-		inv.ApplyGST()
-		inv.ComputeTotals()
-	}
+	inv, sellerID := draft.inv, draft.sellerID
 
 	// Allocate invoice number from sequence.
 	fy := invoice.FinancialYear(inv.Date)
@@ -764,6 +664,150 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 		"buyer_email":    buyerEmail,
 	})
 	return rec, nil
+}
+
+// invoiceDraft is an order's invoice before it has a number: parties, notes
+// and money.
+type invoiceDraft struct {
+	inv      invoice.Invoice
+	sellerID uuid.UUID
+	// storedSplit reports that the money came from the order's stored paise
+	// (invoiceFromStoredMoney) rather than the legacy rupee path; stored is
+	// that money.
+	storedSplit bool
+	stored      *postgres.OrderInvoiceMoney
+	// shipToErr is set when the order names a delivery address that could
+	// not be read or opened; the invoice then carries a blank ship-to.
+	// IssueInvoice logs it and issues anyway, as it always has; an in-place
+	// correction refuses instead (invoice_reissue.go), since rewriting a
+	// document must not lose what it said.
+	shipToErr error
+}
+
+// draftInvoice builds the invoice for an order, dated `date`, without
+// numbering, rendering or storing it. IssueInvoice and the in-place
+// correction of the ₹0 invoices (invoice_reissue.go) share it, so a
+// corrected invoice is the document IssueInvoice issues today.
+//
+// An order whose stored money does not reconcile is refused with
+// errInvoiceMoneyUnreconciled.
+func (s *Service) draftInvoice(ctx context.Context, orderID uuid.UUID, order *postgres.Order, date time.Time) (*invoiceDraft, error) {
+	items, err := s.store.GetOrderItems(ctx, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("get order items: %w", err)
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("get order items: order %s has none", orderID)
+	}
+	sellerID := items[0].SellerID
+	seller, err := s.store.GetSellerByID(ctx, sellerID)
+	if err != nil {
+		return nil, fmt.Errorf("get seller: %w", err)
+	}
+	draft := &invoiceDraft{sellerID: sellerID}
+
+	var shipTo invoice.Address
+	if order.DeliveryAddressID != nil {
+		if row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID); err == nil {
+			// Opened for the same reason as the shipment drop address. A
+			// failure is logged and the ship-to left blank, as a failed lookup
+			// always was — but no longer silently.
+			if addr, openErr := s.openAddressRow(ctx, row); openErr == nil {
+				shipTo = invoice.Address{
+					Line1: addr.AddressLine1, Line2: addr.AddressLine2,
+					City: addr.City, State: addr.State,
+					Postal: addr.PostalCode, Country: addr.Country,
+				}
+			} else {
+				draft.shipToErr = openErr
+				slog.Error("invoice: the delivery address could not be opened",
+					"order_id", order.ID, "error", openErr)
+			}
+		} else {
+			draft.shipToErr = fmt.Errorf("read delivery address: %w", err)
+		}
+	}
+
+	inv := invoice.Invoice{
+		Date:        date,
+		OrderNumber: order.OrderNumber,
+		OrderDate:   order.CreatedAt,
+		Currency:    order.CurrencyCode,
+	}
+	if order.CouponCode != nil {
+		inv.CouponCode = *order.CouponCode
+	}
+	// A bank offer (Razorpay Offers) is a NOTE on the invoice, never a tax
+	// line: the invoice stays on the full order value. Adviser to confirm.
+	if offer, err := s.store.GetOrderPaymentOffer(ctx, orderID); err == nil {
+		inv.Notes = invoiceBankOfferNote(offer)
+	} else {
+		slog.Warn("invoice: the order's bank offer could not be read; issued without its note",
+			"order_id", orderID, "error", err)
+	}
+	// The PAN is carried on the party but not rendered (shared/invoice prints
+	// only the GSTIN), so a seller whose PAN cannot be opened still gets an
+	// invoice — the failure is logged, never the value.
+	sellerPANValue, panErr := s.sellerPAN(ctx, seller)
+	if panErr != nil {
+		slog.Error("commerce: seller PAN could not be opened for the invoice party",
+			"seller_id", seller.ID, "error", panErr)
+	}
+	inv.Seller = sellerParty(seller, sellerPANValue)
+	inv.Buyer = invoice.Party{Name: shipTo.Line1, Address: shipTo}
+	inv.ShipTo = shipTo
+
+	// The money. An order written by the P0 checkout stored, in paise, every
+	// line's taxable value and GST split and the order's totals; the invoice
+	// prints exactly those (invoiceFromStoredMoney). It used to read the
+	// NUMERIC rupee columns, which that checkout writes as 0.00, and so
+	// issued every invoice since at ₹0.
+	stored, err := s.store.GetOrderInvoiceMoney(ctx, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("get order money: %w", err)
+	}
+	draft.stored = stored
+	draft.storedSplit = stored.HasStoredSplit()
+	if draft.storedSplit {
+		if err := invoiceFromStoredMoney(&inv, stored); err != nil {
+			slog.Error("invoice: refused for an order whose stored money does not reconcile",
+				"order_id", orderID, "error", err)
+			return nil, err
+		}
+	} else {
+		// An order with no stored split (the RFQ conversion still writes
+		// rupee columns through CreateOrder): unchanged legacy path. Each
+		// line picks tax % from its product's tax_class_id, falling back to
+		// 18% GST (9/9 split intrastate, 18% IGST interstate).
+		const defaultCGST, defaultSGST, defaultIGST = 9, 9, 18
+		inv.ShippingCharges = order.ShippingCharges
+		inv.CouponDiscount = order.CouponDiscount
+		// Cache tax classes to avoid a query per line item.
+		taxCache := map[uuid.UUID]*postgres.TaxClass{}
+		for _, it := range items {
+			cgst, sgst, igst := float64(defaultCGST), float64(defaultSGST), float64(defaultIGST)
+			if product, err := s.store.GetProductByID(ctx, it.ProductID); err == nil && product != nil && product.TaxClassID != nil {
+				tc, hit := taxCache[*product.TaxClassID]
+				if !hit {
+					tc, _ = s.store.GetTaxClass(ctx, *product.TaxClassID)
+					taxCache[*product.TaxClassID] = tc
+				}
+				if tc != nil {
+					cgst, sgst, igst = tc.CGSTPercentage, tc.SGSTPercentage, tc.IGSTPercentage
+				}
+			}
+			inv.Items = append(inv.Items, invoice.LineItem{
+				Title: it.ProductTitle, SKU: it.SKU,
+				Quantity: it.Quantity, UnitPrice: it.UnitPrice,
+				Discount: it.DiscountAmount, Taxable: it.FinalPrice,
+				CGSTPct: cgst, SGSTPct: sgst, IGSTPct: igst,
+			})
+		}
+		inv.ApplyGST()
+		inv.ComputeTotals()
+	}
+	draft.inv = inv
+	return draft, nil
 }
 
 // GetInvoiceDownloadURL returns a presigned URL for the invoice.
