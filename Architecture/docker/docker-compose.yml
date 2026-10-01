@@ -2265,6 +2265,23 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # DEV ONLY. The tunnel's media-dev.cleestudio.com rule points here, not at
+  # MinIO directly: Cloudflare rewrites Accept-Encoding, which breaks the
+  # signature on LiveKit Cloud's recording uploads (AWS SDK v2 signs that
+  # header). minio-edge restores it for signed S3 requests only; see
+  # tools/minio-edge/main.go. Loopback only — the tunnel runs on this host.
+  minio-edge:
+    build:
+      context: ../tools/minio-edge
+    environment:
+      MINIO_EDGE_UPSTREAM: http://minio:9000
+    ports:
+      - "127.0.0.1:9002:9002"
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
   live-service-v2:
     build:
       context: ..
