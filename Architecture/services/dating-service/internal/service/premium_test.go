@@ -91,7 +91,7 @@ func TestPremium_HandleWebhook_PaymentCaptured(t *testing.T) {
 	}
 
 	// 2) build a webhook body referencing the order id.
-	body := buildPaymentCapturedBody(t, "evt_test_001", resp.RazorpayOrderID)
+	body := buildPaymentCapturedBody(t, testEventID("evt_test"), resp.RazorpayOrderID)
 	sig := mock.SignPayload(body)
 	res, err := svc.HandleWebhook(context.Background(), sig, body)
 	if err != nil {
@@ -119,8 +119,11 @@ func TestPremium_HandleWebhook_Idempotent(t *testing.T) {
 	svc, _, mock, cleanup := newPremiumSvcForTest(t)
 	defer cleanup()
 	user := uuid.New()
-	resp, _ := svc.Checkout(context.Background(), user, CheckoutRequest{PlanID: "monthly_399"})
-	body := buildPaymentCapturedBody(t, "evt_idem_001", resp.RazorpayOrderID)
+	resp, err := svc.Checkout(context.Background(), user, CheckoutRequest{PlanID: "monthly_399"})
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	body := buildPaymentCapturedBody(t, testEventID("evt_idem"), resp.RazorpayOrderID)
 	sig := mock.SignPayload(body)
 
 	first, err := svc.HandleWebhook(context.Background(), sig, body)
@@ -159,7 +162,7 @@ func TestPremium_HandleWebhook_BoostOneTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("checkout: %v", err)
 	}
-	body := buildPaymentCapturedBody(t, "evt_boost_001", resp.RazorpayOrderID)
+	body := buildPaymentCapturedBody(t, testEventID("evt_boost"), resp.RazorpayOrderID)
 	sig := mock.SignPayload(body)
 	if _, err := svc.HandleWebhook(context.Background(), sig, body); err != nil {
 		t.Fatalf("webhook: %v", err)
@@ -172,8 +175,11 @@ func TestPremium_CancelSubscription(t *testing.T) {
 	user := uuid.New()
 
 	// upgrade.
-	resp, _ := svc.Checkout(context.Background(), user, CheckoutRequest{PlanID: "monthly_399"})
-	body := buildPaymentCapturedBody(t, "evt_cancel_001", resp.RazorpayOrderID)
+	resp, err := svc.Checkout(context.Background(), user, CheckoutRequest{PlanID: "monthly_399"})
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	body := buildPaymentCapturedBody(t, testEventID("evt_cancel"), resp.RazorpayOrderID)
 	sig := mock.SignPayload(body)
 	if _, err := svc.HandleWebhook(context.Background(), sig, body); err != nil {
 		t.Fatalf("webhook: %v", err)
@@ -214,6 +220,13 @@ func TestPremium_NotConfigured(t *testing.T) {
 	}
 	// Sanity: nothing panics.
 	_ = errors.New("noop")
+}
+
+// testEventID returns a webhook event id unique across runs. razorpay_event_id
+// is the UNIQUE idempotency key, so a fixed id would make the first delivery
+// look like a replay on a reused test database.
+func testEventID(prefix string) string {
+	return prefix + "_" + uuid.NewString()[:8]
 }
 
 // buildPaymentCapturedBody assembles a webhook envelope.

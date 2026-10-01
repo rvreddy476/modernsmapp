@@ -4,7 +4,7 @@
 //   - HTTPClient — production: hits api.razorpay.com with the configured
 //     RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET, verifies webhook signatures using
 //     RAZORPAY_WEBHOOK_SECRET (HMAC-SHA256).
-//   - MockClient — tests: returns deterministic order ids and a Verify hook.
+//   - MockClient — tests: returns run-unique order ids and a Verify hook.
 //
 // Selection happens in main.go via env RAZORPAY_MODE=mock|http (default mock
 // — production must explicitly opt in to http, mirroring the DigiLocker
@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -230,16 +231,22 @@ func NewMockClient() *MockClient {
 // KeyID exposes the mock key id.
 func (m *MockClient) KeyID() string { return m.keyIDValue }
 
-// CreateOrder returns a deterministic order id.
+// CreateOrder returns an order id that is unique across processes: the
+// per-client counter alone restarts at 000001 every run and collides with
+// intents left in a reused test database (razorpay_order_id is UNIQUE).
 func (m *MockClient) CreateOrder(ctx context.Context, amountPaise int64, receipt string, notes map[string]string) (*Order, error) {
 	if amountPaise <= 0 {
 		return nil, fmt.Errorf("invalid: amount must be positive")
+	}
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return nil, fmt.Errorf("mock order id: %w", err)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.orderCounter++
 	return &Order{
-		ID:        fmt.Sprintf("order_mock_%06d", m.orderCounter),
+		ID:        fmt.Sprintf("order_mock_%06d_%s", m.orderCounter, hex.EncodeToString(suffix[:])),
 		Amount:    amountPaise,
 		Currency:  "INR",
 		Receipt:   receipt,

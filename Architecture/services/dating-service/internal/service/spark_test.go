@@ -55,13 +55,14 @@ func newSvcForTest(t *testing.T) (*Service, *store.Store, func()) {
 	return svc, st, func() { pool.Close() }
 }
 
+// seedProfile creates a profile that is allowed to take interactive
+// actions. An intent-only row stays at profile_status='draft' with a NULL
+// birth_date, which the adult gate (ErrUnderage) and the onboarding gate
+// both reject — so every spark / match / safety test built on this helper
+// needs the adult + active scaffolding that seedAdultProfile applies.
 func seedProfile(t *testing.T, st *store.Store, id uuid.UUID) {
 	t.Helper()
-	intent := "casual"
-	_, err := st.UpsertProfile(context.Background(), id, store.UpsertProfileParams{Intent: &intent})
-	if err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	seedAdultProfile(t, st, id)
 }
 
 func TestSparkService_CreateSpark_HappyPath(t *testing.T) {
@@ -140,9 +141,17 @@ func TestSparkService_MatchSagaCompensatesOnFailure(t *testing.T) {
 	if matchID != nil {
 		t.Fatalf("expected nil match id when saga fails")
 	}
-	// And no match record should remain (compensation).
-	if _, err := st.GetMatchByUsers(context.Background(), a, b); err == nil {
-		t.Fatalf("expected match to be compensated; found one")
+	// P0-9: no compensation delete — the match stays pending (status
+	// 'matched', NULL conversation_id) for SagaReconciler to retry.
+	m, err := st.GetMatchByUsers(context.Background(), a, b)
+	if err != nil {
+		t.Fatalf("pending match must survive for the reconciler: %v", err)
+	}
+	if m.ConversationID != nil {
+		t.Fatalf("conversation_id must stay NULL, got %v", m.ConversationID)
+	}
+	if m.Status != "matched" {
+		t.Fatalf("status = %s, want matched", m.Status)
 	}
 }
 

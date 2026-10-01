@@ -65,8 +65,19 @@ func TestFormMatch_CompensatesOnFailure(t *testing.T) {
 	if _, err := svc.FormMatch(context.Background(), a, b, nil); err == nil {
 		t.Fatalf("expected error from saga failure")
 	}
-	if _, err := st.GetMatchByUsers(context.Background(), a, b); err == nil {
-		t.Fatalf("compensation didn't delete the match")
+	// P0-9: the pending row is deliberately KEPT (status 'matched' with a
+	// NULL conversation_id) so SagaReconciler can retry the chat-side
+	// handshake — hard-deleting here lost matches whenever chat-service
+	// was briefly down. The reconciler claims exactly that shape.
+	m, err := st.GetMatchByUsers(context.Background(), a, b)
+	if err != nil {
+		t.Fatalf("pending match must survive for the reconciler: %v", err)
+	}
+	if m.ConversationID != nil {
+		t.Fatalf("conversation_id must stay NULL, got %v", m.ConversationID)
+	}
+	if m.Status != "matched" {
+		t.Fatalf("status = %s, want matched", m.Status)
 	}
 }
 
