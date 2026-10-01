@@ -98,6 +98,9 @@ type productsRig struct {
 	// respondHit is respond with the verified token in hand, for stubs that
 	// judge the scope the way the product does (post-service's kind check).
 	respondHit map[string]func(w http.ResponseWriter, r *http.Request, hit productHit)
+	// respondTemplate answers any path matching a gin template ("METHOD
+	// /prefix/:id/x"), for routes whose ids the shared cases fill at random.
+	respondTemplate map[string]func(w http.ResponseWriter, r *http.Request)
 }
 
 func newProductsRig(t *testing.T, withKey bool) *productsRig {
@@ -109,7 +112,8 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	rg := &productsRig{
 		rec: &fakeRecorder{}, perms: &fakePerms{byUser: map[string]adminauth.Permissions{}},
 		holders: &fakeHolders{}, store: newMemStore(), respond: map[string]func(http.ResponseWriter, *http.Request){},
-		respondHit: map[string]func(http.ResponseWriter, *http.Request, productHit){},
+		respondHit:      map[string]func(http.ResponseWriter, *http.Request, productHit){},
+		respondTemplate: map[string]func(http.ResponseWriter, *http.Request){},
 	}
 	stub := func(aud string, perms []string) string {
 		v := servicetoken.NewVerifier(aud)
@@ -129,6 +133,13 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 			rg.hits = append(rg.hits, hit)
 			custom := rg.respond[r.Method+" "+r.URL.Path]
 			customHit := rg.respondHit[r.Method+" "+r.URL.Path]
+			if custom == nil {
+				for k, fn := range rg.respondTemplate {
+					if m, tpl, _ := strings.Cut(k, " "); m == r.Method && pathMatches(tpl, r.URL.Path) {
+						custom = fn
+					}
+				}
+			}
 			rg.mu.Unlock()
 			if verr != nil {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -225,6 +236,13 @@ func (rg *productsRig) on(method, path string, fn func(w http.ResponseWriter, r 
 	rg.mu.Lock()
 	defer rg.mu.Unlock()
 	rg.respond[method+" "+path] = fn
+}
+
+// onTemplate answers every path matching a gin template (exact on() wins).
+func (rg *productsRig) onTemplate(method, template string, fn func(w http.ResponseWriter, r *http.Request)) {
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
+	rg.respondTemplate[method+" "+template] = fn
 }
 
 // onHit is on with the verified token: the stub can refuse a scope the way

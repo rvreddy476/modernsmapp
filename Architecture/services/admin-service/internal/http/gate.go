@@ -229,6 +229,9 @@ type auditInfo struct {
 	outcome    string // overrides the status-derived outcome
 	statusCode *int   // overrides the response status (0 = downstream never answered)
 	payload    map[string]any
+	// recorded is set once recordNow has written the row, so the gate writes
+	// no second one when the handler returns.
+	recorded bool
 }
 
 func (a *auditInfo) set(key string, v any) {
@@ -426,10 +429,34 @@ func (g *Gate) deny(c *gin.Context, info *auditInfo, status int, code, message s
 // record appends the request's one audit row. A lost row cannot undo what
 // already happened, so it is logged loudly instead.
 func (g *Gate) record(c *gin.Context, info *auditInfo) {
+	if info.recorded {
+		return
+	}
 	status := c.Writer.Status()
 	if info.statusCode != nil {
 		status = *info.statusCode
 	}
+	_ = g.write(c, info, status)
+}
+
+// recordNow writes the request's one audit row BEFORE the handler answers,
+// as status: a response that releases data while it streams (a seller's KYC
+// document) must be on the trail before its first byte leaves, so a stream
+// that breaks part-way is still recorded. The gate then writes no second row.
+// An error means no row was written and the caller must not release the data;
+// the gate will still record the request's refusal when the handler returns.
+func (g *Gate) recordNow(c *gin.Context, info *auditInfo, status int) error {
+	if info.recorded {
+		return nil
+	}
+	if err := g.write(c, info, status); err != nil {
+		return err
+	}
+	info.recorded = true
+	return nil
+}
+
+func (g *Gate) write(c *gin.Context, info *auditInfo, status int) error {
 	outcome := info.outcome
 	if outcome == "" {
 		outcome = postgres.AuditOutcomeFailure
@@ -452,12 +479,14 @@ func (g *Gate) record(c *gin.Context, info *auditInfo) {
 	// Detached from the request context: a client hanging up must not cost the row.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Second)
 	defer cancel()
-	if err := g.audit.RecordAdminWrite(ctx, entry); err != nil {
+	err := g.audit.RecordAdminWrite(ctx, entry)
+	if err != nil {
 		slog.ErrorContext(ctx, "admin audit write failed", "error", err,
 			"actor", entry.Actor, "app", entry.App, "operation", entry.Operation,
 			"target_type", entry.TargetType, "target_id", entry.TargetID,
 			"request_id", entry.RequestID, "outcome", entry.Outcome, "status_code", entry.StatusCode)
 	}
+	return err
 }
 
 // VerifyExecutors refuses a two-person route whose operation has no executor:

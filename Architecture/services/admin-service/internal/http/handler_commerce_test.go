@@ -23,10 +23,16 @@ func commerceCase(rt productRoute) string {
 
 func TestCommerceRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(CommerceRoutes) != 23 {
-		t.Fatalf("CommerceRoutes has %d entries, want 23", len(CommerceRoutes))
+	if len(CommerceRoutes) != 25 {
+		t.Fatalf("CommerceRoutes has %d entries, want 25", len(CommerceRoutes))
 	}
+	kycStubAnyDocument(rg)
 	for _, rt := range CommerceRoutes {
+		if rt.operation == opSellerKYCDocumentView {
+			// Two commerce calls per view (list, then image); its permission,
+			// token and audit row are checked in handler_commerce_kyc_test.go.
+			continue
+		}
 		t.Run(rt.operation+" "+rt.method+" "+rt.path, func(t *testing.T) {
 			routeTableCase(t, rg, commercePrefix, service.CommerceAdminPrefix, "commerce", "commerce", commerceAll, rt, commerceCase(rt))
 		})
@@ -45,10 +51,14 @@ func TestCommerceRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 
 func TestCommerceRoutes_StepUpAndTwoPerson(t *testing.T) {
 	rg := newProductsRig(t, true)
+	kycStubAnyDocument(rg)
 	for _, rt := range CommerceRoutes {
 		stepUpCase(t, rg, commercePrefix, commerceAll, rt, commerceCase(rt), rt.stepUp)
 	}
-	want := map[string]bool{opSellerSuspend: true, opSellerUnsuspend: true, opSellerKYCVerify: true, opPayoutsPending: true, opCODSettle: true}
+	want := map[string]bool{
+		opSellerSuspend: true, opSellerUnsuspend: true, opSellerKYCVerify: true, opPayoutsPending: true, opCODSettle: true,
+		opSellerKYCDocumentView: true,
+	}
 	for _, rt := range CommerceRoutes {
 		if rt.stepUp != want[rt.operation] {
 			t.Fatalf("%s step-up = %v, want %v", rt.operation, rt.stepUp, want[rt.operation])

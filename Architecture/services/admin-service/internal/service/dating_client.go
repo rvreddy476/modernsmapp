@@ -80,21 +80,27 @@ type ProductClient struct {
 	audience   string
 	signer     *servicetoken.Signer
 	httpClient *http.Client
+	// streamClient serves Stream: the same no-redirect rule with a longer
+	// deadline, since its timeout also bounds copying the body to the browser.
+	streamClient *http.Client
 }
 
+// StreamTimeout bounds one streamed product answer end to end, including the
+// copy to the browser.
+const StreamTimeout = 60 * time.Second
+
 func newProductClient(baseURL, prefix, audience string, signer *servicetoken.Signer) *ProductClient {
+	// A redirect is never followed server-side: a presigned object-store URL is
+	// handed back to the console (ProductResponse.Location), and the token is
+	// never replayed to another host.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &ProductClient{
-		baseURL:  strings.TrimRight(baseURL, "/"),
-		prefix:   prefix,
-		audience: audience,
-		signer:   signer,
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-			// A redirect is never followed server-side: a presigned object-store
-			// URL is handed back to the console (ProductResponse.Location), and
-			// the token is never replayed to another host.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		prefix:       prefix,
+		audience:     audience,
+		signer:       signer,
+		httpClient:   &http.Client{Timeout: 15 * time.Second, CheckRedirect: noRedirect},
+		streamClient: &http.Client{Timeout: StreamTimeout, CheckRedirect: noRedirect},
 	}
 }
 
@@ -145,53 +151,9 @@ func (p *ProductClient) Call(ctx context.Context, method, path string, query url
 
 // Do performs one admin operation.
 func (p *ProductClient) Do(ctx context.Context, r ProductRequest) (ProductResponse, error) {
-	if p == nil || p.signer == nil {
-		return ProductResponse{}, ErrProductUnavailable
-	}
-	id, err := uuid.Parse(r.Actor)
-	if err != nil || id == uuid.Nil {
-		return ProductResponse{}, ErrActorRequired
-	}
-	if r.Permission == "" {
-		return ProductResponse{}, errors.New("product call without a permission")
-	}
-	tok, err := p.signer.Mint(p.audience, "admin-console", []string{r.Permission}, nil, ProductTokenTTL,
-		servicetoken.WithActor(id.String()))
+	req, err := p.newRequest(ctx, r)
 	if err != nil {
-		return ProductResponse{}, fmt.Errorf("mint service token: %w", err)
-	}
-
-	target := p.baseURL + p.prefix + r.Path
-	if len(r.Query) > 0 {
-		target += "?" + r.Query.Encode()
-	} else if r.RawQuery != "" {
-		target += "?" + r.RawQuery
-	}
-	var rd io.Reader
-	hasBody := false
-	switch {
-	case r.RawBody != nil:
-		rd, hasBody = bytes.NewReader(r.RawBody), true
-	case r.Body != nil:
-		b, err := json.Marshal(r.Body)
-		if err != nil {
-			return ProductResponse{}, fmt.Errorf("marshal: %w", err)
-		}
-		rd, hasBody = bytes.NewReader(b), true
-	}
-	req, err := http.NewRequestWithContext(ctx, r.Method, target, rd)
-	if err != nil {
-		return ProductResponse{}, fmt.Errorf("new request: %w", err)
-	}
-	if hasBody {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set(ServiceAuthHeader, "Bearer "+tok)
-	if r.IdempotencyKey != "" {
-		req.Header.Set(IdempotencyKeyHeader, r.IdempotencyKey)
-	}
-	if rid := trace.RequestIDFrom(ctx); rid != "" {
-		req.Header.Set(trace.HeaderRequestID, rid)
+		return ProductResponse{}, err
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -212,4 +174,74 @@ func (p *ProductClient) Do(ctx context.Context, r ProductRequest) (ProductRespon
 		return out, fmt.Errorf("read %s response: %w", p.audience, err)
 	}
 	return out, nil
+}
+
+// Stream performs one admin call whose answer is NOT read into memory: the
+// caller owns resp.Body and must close it. A redirect comes back as the
+// response, never followed. Do's 8 MB read cap does not apply; the caller
+// bounds what it copies.
+func (p *ProductClient) Stream(ctx context.Context, r ProductRequest) (*http.Response, error) {
+	req, err := p.newRequest(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s admin call: %w", p.audience, err)
+	}
+	return resp, nil
+}
+
+// newRequest builds one signed admin request: the token's audience is the
+// product, its one scope r.Permission, its act the acting admin.
+func (p *ProductClient) newRequest(ctx context.Context, r ProductRequest) (*http.Request, error) {
+	if p == nil || p.signer == nil {
+		return nil, ErrProductUnavailable
+	}
+	id, err := uuid.Parse(r.Actor)
+	if err != nil || id == uuid.Nil {
+		return nil, ErrActorRequired
+	}
+	if r.Permission == "" {
+		return nil, errors.New("product call without a permission")
+	}
+	tok, err := p.signer.Mint(p.audience, "admin-console", []string{r.Permission}, nil, ProductTokenTTL,
+		servicetoken.WithActor(id.String()))
+	if err != nil {
+		return nil, fmt.Errorf("mint service token: %w", err)
+	}
+
+	target := p.baseURL + p.prefix + r.Path
+	if len(r.Query) > 0 {
+		target += "?" + r.Query.Encode()
+	} else if r.RawQuery != "" {
+		target += "?" + r.RawQuery
+	}
+	var rd io.Reader
+	hasBody := false
+	switch {
+	case r.RawBody != nil:
+		rd, hasBody = bytes.NewReader(r.RawBody), true
+	case r.Body != nil:
+		b, err := json.Marshal(r.Body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal: %w", err)
+		}
+		rd, hasBody = bytes.NewReader(b), true
+	}
+	req, err := http.NewRequestWithContext(ctx, r.Method, target, rd)
+	if err != nil {
+		return nil, fmt.Errorf("new request: %w", err)
+	}
+	if hasBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set(ServiceAuthHeader, "Bearer "+tok)
+	if r.IdempotencyKey != "" {
+		req.Header.Set(IdempotencyKeyHeader, r.IdempotencyKey)
+	}
+	if rid := trace.RequestIDFrom(ctx); rid != "" {
+		req.Header.Set(trace.HeaderRequestID, rid)
+	}
+	return req, nil
 }

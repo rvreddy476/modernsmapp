@@ -75,6 +75,11 @@ var CommerceRoutes = []productRoute{
 	{method: http.MethodPost, path: "/sellers/:sellerId/suspend", operation: opSellerSuspend, permission: permSellerSuspend, stepUp: true, targetType: "seller"},
 	{method: http.MethodPost, path: "/sellers/:sellerId/unsuspend", operation: opSellerUnsuspend, permission: permSellerSuspend, stepUp: true, targetType: "seller"},
 	{method: http.MethodPost, path: "/sellers/:sellerId/kyc/verify", operation: opSellerKYCVerify, permission: permKYCVerify, stepUp: true, targetType: "seller"},
+	// KYC documents, view-only (handler_commerce_kyc.go): the list is an
+	// ordinary audited read; each view is step-up and audited before a byte
+	// of the image leaves.
+	{method: http.MethodGet, path: "/sellers/:sellerId/documents", operation: opSellerKYCDocuments, permission: permKYCVerify, targetType: "seller"},
+	{method: http.MethodGet, path: "/sellers/:sellerId/documents/:documentId/view", operation: opSellerKYCDocumentView, permission: permKYCVerify, stepUp: true, targetType: "seller"},
 
 	{method: http.MethodGet, path: "/products/queue", operation: opProductsQueue, permission: permProductsModerate},
 	{method: http.MethodGet, path: "/products/:productId/submissions", operation: "product.submissions", permission: permProductsModerate, targetType: "product"},
@@ -98,6 +103,8 @@ var CommerceRoutes = []productRoute{
 //
 //	seller suspend / unsuspend     commerce:seller.suspend, step-up
 //	KYC verify                     commerce:kyc.verify, step-up
+//	KYC document list              commerce:kyc.verify
+//	KYC document view (bytes)      commerce:kyc.verify, step-up, audited before streaming
 //	pending payouts                commerce:payouts.read, step-up
 //	COD remittance settle          commerce:cod.settle, step-up, two-person
 //	attribute-schema publish       commerce:catalogue.edit, step-up (catalogue)
@@ -168,6 +175,8 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine) {
 		opProductApprove:        action("productId", "/products/", "/approve", true, notes),
 		opProductReject:         action("productId", "/products/", "/reject", true, func(r adminCommerceActionReq) any { return adminActionPayload{Reason: r.Reason} }),
 		opProductRequestChanges: action("productId", "/products/", "/request-changes", false, changesNotes),
+		opSellerKYCDocuments:    h.listSellerKYCDocuments(p),
+		opSellerKYCDocumentView: h.viewSellerKYCDocument(p),
 		opPayoutsPending: func(c *gin.Context) {
 			q := url.Values{"limit": {strconv.Itoa(queryInt(c, "limit", 100))}}
 			h.productCall(c, p, service.ProductRequest{Method: http.MethodGet, Path: "/payouts/pending", Query: q}, false)
