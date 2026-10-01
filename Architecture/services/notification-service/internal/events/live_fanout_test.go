@@ -14,14 +14,15 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-// fakeLiveFanout is the upload recorder plus the two audience probes.
+// fakeLiveFanout is the upload recorder plus the three audience probes.
 type fakeLiveFanout struct {
 	fakeFanout
-	reminders, subscribers bool
-	remErr, subErr         error
-	probedStream           uuid.UUID
-	probedChannel          uuid.UUID
-	resolvedFor            uuid.UUID
+	reminders, subscribers, followers bool
+	remErr, subErr, folErr            error
+	probedStream                      uuid.UUID
+	probedChannel                     uuid.UUID
+	probedCreator                     uuid.UUID
+	resolvedFor                       uuid.UUID
 }
 
 func (f *fakeLiveFanout) ResolveChannel(_ context.Context, owner uuid.UUID) uuid.UUID {
@@ -43,6 +44,11 @@ func (f *fakeLiveFanout) HasSubscribers(_ context.Context, channel uuid.UUID) (b
 	return f.subscribers, f.subErr
 }
 
+func (f *fakeLiveFanout) HasFollowers(_ context.Context, creator uuid.UUID) (bool, error) {
+	f.probedCreator = creator
+	return f.followers, f.folErr
+}
+
 // Which streams become a job, and what the job says.
 func TestEnqueueLiveFanout_Gating(t *testing.T) {
 	streamID, creatorID, channelID := uuid.New(), uuid.New(), uuid.New()
@@ -62,8 +68,10 @@ func TestEnqueueLiveFanout_Gating(t *testing.T) {
 		channel     uuid.UUID
 		reminders   bool
 		subscribers bool
+		followers   bool
 		remErr      error
 		subErr      error
+		folErr      error
 		wantJob     bool
 		wantLink    string
 		wantChannel uuid.UUID
@@ -80,8 +88,14 @@ func TestEnqueueLiveFanout_Gating(t *testing.T) {
 			channel: channelID, reminders: true, subscribers: true},
 		{name: "visibility missing", mutate: func(e *sharedevents.LiveStreamStartedPayload) { e.Visibility = "" },
 			channel: channelID, reminders: true, subscribers: true},
-		{name: "no reminders and no subscribers", channel: channelID},
-		{name: "no reminders, no channel at all"},
+		{name: "no reminders, no subscribers, no followers", channel: channelID},
+		{name: "nobody at all and no channel"},
+		{name: "followers only", channel: channelID, followers: true,
+			wantJob: true, wantLink: wide, wantChannel: channelID},
+		{name: "followers only, creator has no channel", followers: true,
+			wantJob: true, wantLink: wide, wantChannel: uuid.Nil},
+		{name: "follower probe failed: enqueue so the worker retries", channel: channelID,
+			folErr: errors.New("graph-service down"), wantJob: true, wantLink: wide, wantChannel: channelID},
 		{name: "reminders only, creator has no channel", reminders: true,
 			wantJob: true, wantLink: wide, wantChannel: uuid.Nil},
 		{name: "subscribers only", channel: channelID, subscribers: true,
@@ -110,7 +124,8 @@ func TestEnqueueLiveFanout_Gating(t *testing.T) {
 			}
 			f := &fakeLiveFanout{
 				fakeFanout: fakeFanout{channel: c.channel},
-				reminders:  c.reminders, subscribers: c.subscribers, remErr: c.remErr, subErr: c.subErr,
+				reminders:  c.reminders, subscribers: c.subscribers, followers: c.followers,
+				remErr: c.remErr, subErr: c.subErr, folErr: c.folErr,
 			}
 			consumer := &Consumer{fanout: f}
 			if err := consumer.enqueueLiveFanout(context.Background(), e); err != nil {
@@ -131,8 +146,9 @@ func TestEnqueueLiveFanout_Gating(t *testing.T) {
 			if p.PostID != streamID || p.AuthorID != creatorID || p.ChannelID != c.wantChannel {
 				t.Fatalf("ids: %+v", p)
 			}
-			if f.resolvedFor != creatorID || f.probedStream != streamID || f.probedChannel != c.wantChannel {
-				t.Fatalf("lookups: channel for %s, reminders of %s, subscribers of %s", f.resolvedFor, f.probedStream, f.probedChannel)
+			if f.resolvedFor != creatorID || f.probedStream != streamID || f.probedChannel != c.wantChannel || f.probedCreator != creatorID {
+				t.Fatalf("lookups: channel for %s, reminders of %s, subscribers of %s, followers of %s",
+					f.resolvedFor, f.probedStream, f.probedChannel, f.probedCreator)
 			}
 			if p.NotifType != "creator_went_live" || p.ContentType != service.LiveContentType {
 				t.Fatalf("type = %q/%q", p.NotifType, p.ContentType)
@@ -167,7 +183,7 @@ func TestEnqueueLiveFanout_ZeroStartedAtIsNow(t *testing.T) {
 }
 
 // A consumer with no fan-out attached must be a silent no-op (and must not
-// fall back to followers: there is no follower path left to fall back to).
+// reach for followers some other way: the durable job is the only path).
 func TestEnqueueLiveFanout_NoPipelineIsNoop(t *testing.T) {
 	c := &Consumer{}
 	err := c.enqueueLiveFanout(context.Background(), sharedevents.LiveStreamStartedPayload{

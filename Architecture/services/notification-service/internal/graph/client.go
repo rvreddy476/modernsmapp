@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
@@ -115,4 +117,88 @@ func (c *Client) GetFilteredConnectionRequestSenders(ctx context.Context, receiv
 		}
 	}
 	return out, nil
+}
+
+// FollowerPageMax is the largest page graph-service's cursor listing will
+// serve. Its store answers a limit above 100 with a page of 20 rather than
+// an error, so asking for more would quietly shrink every page; FollowerIDs
+// clamps to this instead.
+const FollowerPageMax = 100
+
+// FollowerPage is one keyset page of a user's followers. NextCursor is
+// graph-service's own token ("" when the listing is exhausted) and is
+// passed back verbatim: this client never interprets it.
+type FollowerPage struct {
+	IDs        []uuid.UUID
+	NextCursor string
+}
+
+// FollowerIDs fetches one page of the users who follow `userID` over the
+// cursor variant of GET /v1/graph/followers/{id} (paginate=cursor). Unlike
+// the offset variant GetFollowers uses, which graph-service refuses past
+// offset 10,000, the cursor walk has no depth limit, so a durable fan-out
+// can page a follower list of any size to exhaustion. `cursor` is empty
+// for the first page.
+//
+// No X-User-Id is sent: the listing is the internal view, not one viewer's.
+// graph-service leaves hidden (suspended or deactivated) accounts out.
+//
+// Unlike GetFollowers this is NOT quiet on a nil or unconfigured client,
+// and any non-200 is an error: an empty page ends the follower walk for
+// good, so "could not ask" must stay retryable.
+func (c *Client) FollowerIDs(ctx context.Context, userID uuid.UUID, cursor string, limit int) (*FollowerPage, error) {
+	if c == nil || c.baseURL == "" {
+		return nil, fmt.Errorf("graph followers: client not configured")
+	}
+	if limit <= 0 || limit > FollowerPageMax {
+		limit = FollowerPageMax
+	}
+	q := url.Values{}
+	q.Set("paginate", "cursor")
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	target := fmt.Sprintf("%s/v1/graph/followers/%s?%s", c.baseURL, userID, q.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.internalKey != "" {
+		req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("graph followers: status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	// Envelope: {"data": {"items": ["uuid", ...], "next_cursor": "..."}}.
+	// Items is a pointer so a body of another shape (the offset variant's
+	// bare array, an error envelope with a 200) is an error, not "nobody".
+	var env struct {
+		Data *struct {
+			Items      *[]string `json:"items"`
+			NextCursor string    `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("graph followers decode: %w", err)
+	}
+	if env.Data == nil || env.Data.Items == nil {
+		return nil, fmt.Errorf("graph followers: response carries no items list")
+	}
+	page := &FollowerPage{NextCursor: env.Data.NextCursor}
+	for _, raw := range *env.Data.Items {
+		if id, err := uuid.Parse(raw); err == nil {
+			page.IDs = append(page.IDs, id)
+		}
+	}
+	return page, nil
 }

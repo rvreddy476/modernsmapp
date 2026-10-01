@@ -47,7 +47,7 @@ type friendReqEntry struct {
 type Consumer struct {
 	reader  *kafka.Reader
 	service *service.Service
-	graph   *graph.Client // optional — no reader since live-started stopped fanning out to followers (live_fanout.go)
+	graph   *graph.Client // optional — filtered connection-request lookups; live follower fan-out goes through the durable job (live_fanout.go)
 	// fanout is the durable subscriber upload pipeline (Module 1 P0-3).
 	fanout subscriberFanout
 	// datingSafety pages responders and trusted contacts for dating panics
@@ -424,9 +424,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 
 	case events.LiveStreamStarted:
 		// live-v2: record a durable "creator is live" fan-out job for the
-		// stream's reminder holders and the channel's subscribers
-		// (live_fanout.go). It used to push every follower from an
-		// untracked goroutine; followers are no longer told.
+		// stream's reminder holders, the channel's subscribers and the
+		// creator's followers (live_fanout.go). It used to push the first
+		// 5,000 followers from an untracked goroutine; the job walks them
+		// all, resumably.
 		var e events.LiveStreamStartedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return err

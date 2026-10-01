@@ -46,12 +46,22 @@ type fakeStore struct {
 	// Live jobs: every reminder-cursor write and every enqueued job.
 	reminderAdvances []reminderAdvance
 	enqueued         []postgres.FanoutJob
+	// Follower phase: hand-overs into it, every follower-cursor write, and
+	// the order the three walks persisted in ("r", "s", "f").
+	followerBegins   int
+	followerAdvances []followerAdvance
+	order            []string
 }
 
 type reminderAdvance struct {
 	cursor string
 	delta  int64
 	done   bool
+}
+
+type followerAdvance struct {
+	cursor string
+	delta  int64
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{delivered: map[uuid.UUID]bool{}} }
@@ -66,6 +76,20 @@ func (s *fakeStore) AdvanceFanoutReminders(_ context.Context, _ uuid.UUID, curso
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reminderAdvances = append(s.reminderAdvances, reminderAdvance{cursor, delta, done})
+	s.order = append(s.order, "r")
+	return nil
+}
+func (s *fakeStore) BeginFanoutFollowers(context.Context, uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.followerBegins++
+	return nil
+}
+func (s *fakeStore) AdvanceFanoutFollowers(_ context.Context, _ uuid.UUID, cursor string, delta int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.followerAdvances = append(s.followerAdvances, followerAdvance{cursor, delta})
+	s.order = append(s.order, "f")
 	return nil
 }
 func (s *fakeStore) ClaimFanoutJobs(context.Context, time.Duration, int) ([]postgres.FanoutJob, error) {
@@ -76,6 +100,7 @@ func (s *fakeStore) AdvanceFanoutCursor(_ context.Context, _ uuid.UUID, cursor u
 	defer s.mu.Unlock()
 	s.cursors = append(s.cursors, cursor)
 	s.deltas = append(s.deltas, delta)
+	s.order = append(s.order, "s")
 	return nil
 }
 func (s *fakeStore) CompleteFanoutJob(context.Context, uuid.UUID) error        { return nil }

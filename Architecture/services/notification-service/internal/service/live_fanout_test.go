@@ -118,8 +118,9 @@ func TestLiveFanout_RemindersThenSubscribers_DedupedAndCreatorExcluded(t *testin
 	if n := len(store.reminderAdvances); n != 1 || !store.reminderAdvances[0].done || store.reminderAdvances[0].delta != 2 {
 		t.Fatalf("reminder advances = %+v, want one {delta 2, done}", store.reminderAdvances)
 	}
-	if job.Phase != postgres.FanoutPhaseSubscribers {
-		t.Fatalf("phase = %q after the reminders drained", job.Phase)
+	// ...and the subscriber walk handed over to the follower phase, once.
+	if job.Phase != postgres.FanoutPhaseFollowers || store.followerBegins != 1 {
+		t.Fatalf("phase = %q, follower hand-overs = %d after reminders and subscribers drained", job.Phase, store.followerBegins)
 	}
 	// Subscribers: `both` was already told, so only one new delivery.
 	if len(store.deltas) != 1 || store.deltas[0] != 1 {

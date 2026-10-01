@@ -245,10 +245,11 @@ func main() {
 		kafkaDialer,
 	)
 	// graph-service client. Its URL also serves the fan-out's per-recipient
-	// block/follow checks below. (live-started no longer fans out to
-	// followers; see the reminder source further down.)
+	// block/follow checks below, and the client pages the creator's
+	// followers for the last phase of a "creator is live" job.
 	graphURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
-	consumer.WithGraph(graph.New(graphURL, internalKey))
+	graphClient := graph.New(graphURL, internalKey)
+	consumer.WithGraph(graphClient)
 	slog.Info("graph client attached", "graph_url", graphURL)
 
 	// Module 1 P0-3: durable subscriber fan-out for uploads. Requires the
@@ -271,10 +272,13 @@ func main() {
 	fanout.SetEligibilityDeps(graphURL, postURL, internalKey)
 	// "Creator is live" rides the same jobs: live.stream.started tells the
 	// stream's reminder holders (paged from live-service-v2's internal
-	// route) and then the channel's subscribers. Never every follower.
+	// route), then the channel's subscribers, then every follower of the
+	// creator (graph-service's keyset follower listing, no recipient cap).
 	liveV2URL := env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117")
 	fanout.SetReminderSource(livestream.New(liveV2URL, internalKey))
 	slog.Info("live reminder source attached", "live_v2_service_url", liveV2URL)
+	fanout.SetFollowerSource(graphClient)
+	slog.Info("live follower source attached", "graph_url", graphURL)
 	consumer.WithSubscriberFanout(fanout)
 	fanout.StartWorker(ctx)
 	slog.Info("subscriber fan-out worker started", "subscribers_service_url", subsURL)

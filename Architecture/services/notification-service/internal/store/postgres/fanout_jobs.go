@@ -28,19 +28,26 @@ type FanoutJob struct {
 	Title       string
 	ChannelName string
 	// Phase and ReminderCursor (migration 011) exist for "creator is live"
-	// jobs, which page two recipient groups: the stream's reminder holders
-	// first, then the channel's subscribers. Upload jobs are always
-	// FanoutPhaseSubscribers and never touch ReminderCursor. For a live job
-	// PostID holds the STREAM id and ChannelID may be uuid.Nil (a creator
-	// with no channel has reminder holders only).
+	// jobs, which page three recipient groups: the stream's reminder holders
+	// first, then the channel's subscribers, then the creator's followers.
+	// Upload jobs are always FanoutPhaseSubscribers and never touch
+	// ReminderCursor. For a live job PostID holds the STREAM id and
+	// ChannelID may be uuid.Nil (a creator with no channel has reminder
+	// holders and followers only).
 	Phase          string
 	ReminderCursor string
+	// FollowerCursor (migration 012) is graph-service's opaque next_cursor
+	// token for the third and last phase of a live job, the creator's
+	// followers. Upload jobs never touch it.
+	FollowerCursor string
 }
 
-// Fan-out phases (subscriber_fanout_jobs.phase).
+// Fan-out phases (subscriber_fanout_jobs.phase). A live job walks them in
+// this order; an upload job is only ever FanoutPhaseSubscribers.
 const (
 	FanoutPhaseReminders   = "reminders"
 	FanoutPhaseSubscribers = "subscribers"
+	FanoutPhaseFollowers   = "followers"
 )
 
 // EnqueueFanoutJob records a fan-out durably. Idempotent on post_id: a
@@ -76,6 +83,33 @@ func (s *Store) AdvanceFanoutReminders(ctx context.Context, postID uuid.UUID, cu
 	return err
 }
 
+// BeginFanoutFollowers moves a live job into its last phase, the creator's
+// followers, once the subscriber pages are exhausted (or there is no
+// channel to page). After this a retry re-walks neither the reminder
+// holders nor the subscribers. It touches no cursor, so a duplicate call
+// cannot disturb a follower walk in progress.
+func (s *Store) BeginFanoutFollowers(ctx context.Context, postID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE subscriber_fanout_jobs
+		SET phase = 'followers', claimed_at = NOW(), updated_at = NOW()
+		WHERE post_id = $1`, postID)
+	return err
+}
+
+// AdvanceFanoutFollowers persists progress through a live job's followers.
+// `cursor` is graph-service's opaque next_cursor token for the page to
+// fetch next; it is written back unchanged when a recipient in the page
+// failed, which pins the walk there for the retry. The reminder and
+// subscriber cursors are untouched.
+func (s *Store) AdvanceFanoutFollowers(ctx context.Context, postID uuid.UUID, cursor string, deliveredDelta int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE subscriber_fanout_jobs
+		SET follower_cursor = $2, delivered = delivered + $3,
+		    claimed_at = NOW(), updated_at = NOW()
+		WHERE post_id = $1`, postID, cursor, deliveredDelta)
+	return err
+}
+
 // ClaimFanoutJobs claims up to limit jobs for this worker. Uses
 // FOR UPDATE SKIP LOCKED so multiple replicas never process the same
 // job; jobs stuck in 'running' past staleAfter are reclaimed (dead
@@ -97,7 +131,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		RETURNING j.post_id, j.channel_id, j.author_id, j.content_type,
 		          j.deep_link, j.notif_type, j.visibility, j.post_created_at,
 		          j.cursor, j.delivered, j.attempts, j.title, j.channel_name,
-		          j.phase, j.reminder_cursor`,
+		          j.phase, j.reminder_cursor, j.follower_cursor`,
 		time.Now().Add(-staleAfter), limit)
 	if err != nil {
 		return nil, err
@@ -110,7 +144,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		if err := rows.Scan(&j.PostID, &j.ChannelID, &j.AuthorID, &j.ContentType,
 			&j.DeepLink, &j.NotifType, &j.Visibility, &j.PostCreatedAt,
 			&j.Cursor, &j.Delivered, &j.Attempts, &j.Title, &j.ChannelName,
-			&j.Phase, &j.ReminderCursor); err != nil {
+			&j.Phase, &j.ReminderCursor, &j.FollowerCursor); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, j)

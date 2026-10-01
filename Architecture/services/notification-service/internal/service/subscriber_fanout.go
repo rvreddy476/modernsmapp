@@ -55,6 +55,8 @@ type fanoutStore interface {
 	ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, limit int) ([]postgres.FanoutJob, error)
 	AdvanceFanoutCursor(ctx context.Context, postID, cursor uuid.UUID, deliveredDelta int64) error
 	AdvanceFanoutReminders(ctx context.Context, postID uuid.UUID, cursor string, deliveredDelta int64, done bool) error
+	BeginFanoutFollowers(ctx context.Context, postID uuid.UUID) error
+	AdvanceFanoutFollowers(ctx context.Context, postID uuid.UUID, cursor string, deliveredDelta int64) error
 	CompleteFanoutJob(ctx context.Context, postID uuid.UUID) error
 	ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
 	FailFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
@@ -79,6 +81,9 @@ type SubscriberFanout struct {
 	// profile name when they have no channel name. Both optional.
 	reminders reminderSource
 	names     creatorNamer
+	// followers pages the creator's followers for the last phase of a live
+	// job (live_fanout.go). Optional; upload jobs never use it.
+	followers followerSource
 
 	// Per-recipient eligibility (Codex P1-8) and its short-lived
 	// per-job post-state cache.
@@ -233,7 +238,9 @@ func (f *SubscriberFanout) drainOnce(ctx context.Context) error {
 }
 
 // processJob pages subscribers from the cursor to exhaustion, delivering
-// notifications and advancing the cursor after each page.
+// notifications and advancing the cursor after each page. A "creator is
+// live" job walks three groups in order, each resumable from its own
+// cursor: reminder holders, subscribers, then the creator's followers.
 func (f *SubscriberFanout) processJob(ctx context.Context, job *postgres.FanoutJob) error {
 	// Render input missing from the event (older producer): one lookup
 	// for the whole job, never one per recipient.
@@ -262,12 +269,37 @@ func (f *SubscriberFanout) processJob(ctx context.Context, job *postgres.FanoutJ
 		}
 	}
 
-	// No channel ⇒ no subscribers to walk (a live job for a creator
-	// without a channel has reminder holders only). Never followers.
-	if job.ChannelID == uuid.Nil {
-		return nil
+	// Subscribers: the whole of an upload job, the middle phase of a live
+	// one. A live job already in its follower phase has finished them.
+	// No channel ⇒ no subscribers to walk.
+	live := job.NotifType == LiveNotifType
+	if !live || job.Phase != postgres.FanoutPhaseFollowers {
+		if job.ChannelID != uuid.Nil {
+			if err := f.drainSubscribers(ctx, job); err != nil {
+				return err
+			}
+		}
 	}
 
+	// Followers are told about a live stream only. An upload job ends
+	// here whatever its row says: uploads never fall back to followers.
+	if !live {
+		return nil
+	}
+	if job.Phase != postgres.FanoutPhaseFollowers {
+		// Persisted before the first follower page so a retry re-walks
+		// neither the reminder holders nor the subscribers.
+		if err := f.pg.BeginFanoutFollowers(ctx, job.PostID); err != nil {
+			return fmt.Errorf("begin follower phase: %w", err)
+		}
+		job.Phase = postgres.FanoutPhaseFollowers
+	}
+	return f.drainFollowers(ctx, job)
+}
+
+// drainSubscribers pages the channel's notify-eligible subscribers from
+// the stored cursor to exhaustion.
+func (f *SubscriberFanout) drainSubscribers(ctx context.Context, job *postgres.FanoutJob) error {
 	after := job.Cursor
 	for {
 		select {

@@ -1,0 +1,23 @@
+-- Migration 012: "creator is live" also tells the creator's followers.
+--
+-- Founder decision, 2 Oct 2026: restore notifying all followers when someone
+-- goes live. Migration 011 made the live job durable but told only reminder
+-- holders and bell-on channel subscribers. Followers come back as a THIRD
+-- phase of the same job, after those two:
+--
+--   reminders -> subscribers -> followers
+--
+-- `phase` (migration 011, free text) gains the value 'followers'. Upload
+-- jobs never reach it.
+--
+-- follower_cursor  graph-service's opaque `next_cursor` token for the keyset
+--                  listing GET /v1/graph/followers/{id}?paginate=cursor,
+--                  persisted after every page so a crash resumes the walk
+--                  instead of restarting it. A column of its own, like
+--                  reminder_cursor: `cursor` is a subscriber user id (UUID)
+--                  and cannot hold the token, and separate columns mean one
+--                  walk's retry can never corrupt another's position.
+--
+-- subscriber_fanout_delivered is unchanged and still keeps one notification
+-- per (stream, user) across all three phases.
+ALTER TABLE subscriber_fanout_jobs ADD COLUMN IF NOT EXISTS follower_cursor TEXT NOT NULL DEFAULT '';

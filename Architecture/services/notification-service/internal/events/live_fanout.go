@@ -15,14 +15,16 @@ import (
 // 2026). live.stream.started used to push every follower from an untracked
 // goroutine capped at 5,000; it now records one durable fan-out job, the
 // same job an upload records, and the worker tells the stream's reminder
-// holders and the channel's subscribers (service/live_fanout.go).
+// holders, the channel's subscribers and then every follower of the
+// creator, uncapped (service/live_fanout.go).
 
-// liveFanout is the extra surface a live job needs from the pipeline: two
-// cheap "is anyone there?" probes so a stream nobody is waiting for does
-// not leave a job row behind.
+// liveFanout is the extra surface a live job needs from the pipeline:
+// three cheap "is anyone there?" probes so a stream nobody is waiting for
+// does not leave a job row behind.
 type liveFanout interface {
 	HasReminders(ctx context.Context, streamID uuid.UUID) (bool, error)
 	HasSubscribers(ctx context.Context, channelID uuid.UUID) (bool, error)
+	HasFollowers(ctx context.Context, creatorID uuid.UUID) (bool, error)
 }
 
 // enqueueLiveFanout persists the fan-out job for a stream that just went
@@ -32,11 +34,11 @@ type liveFanout interface {
 // Gates applied here:
 //   - visibility: only public and followers streams are announced. Paid,
 //     private and anything unrecognised stay silent.
-//   - audience: no reminder holders AND no channel subscribers ⇒ no job.
-//     A probe that fails counts as "maybe": the job is recorded and the
-//     worker, which retries, finds out. Never the follower list.
+//   - audience: no reminder holders, no channel subscribers AND no
+//     followers ⇒ no job. A probe that fails counts as "maybe": the job is
+//     recorded and the worker, which retries, finds out.
 //
-// The creator is excluded and a person in both groups is told once at
+// The creator is excluded and a person in several groups is told once at
 // delivery (the per-(stream, user) delivered marker), not here.
 func (c *Consumer) enqueueLiveFanout(ctx context.Context, e sharedevents.LiveStreamStartedPayload) error {
 	if c.fanout == nil {
@@ -61,7 +63,8 @@ func (c *Consumer) enqueueLiveFanout(ctx context.Context, e sharedevents.LiveStr
 		return nil
 	}
 
-	// uuid.Nil when the creator has no channel: reminder holders only.
+	// uuid.Nil when the creator has no channel: reminder holders, then
+	// followers; the subscriber phase is skipped.
 	channelID := c.fanout.ResolveChannel(ctx, creatorID)
 
 	if probe, ok := c.fanout.(liveFanout); ok {
@@ -75,7 +78,12 @@ func (c *Consumer) enqueueLiveFanout(ctx context.Context, e sharedevents.LiveStr
 			slog.Warn("live fanout: subscriber probe failed; enqueueing so the worker retries",
 				"stream_id", streamID, "error", serr)
 		}
-		if rerr == nil && serr == nil && !hasReminders && !hasSubscribers {
+		hasFollowers, ferr := probe.HasFollowers(ctx, creatorID)
+		if ferr != nil {
+			slog.Warn("live fanout: follower probe failed; enqueueing so the worker retries",
+				"stream_id", streamID, "error", ferr)
+		}
+		if rerr == nil && serr == nil && ferr == nil && !hasReminders && !hasSubscribers && !hasFollowers {
 			slog.Debug("live fanout: nobody to notify", "stream_id", streamID, "creator_id", creatorID)
 			return nil
 		}
