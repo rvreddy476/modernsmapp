@@ -275,17 +275,20 @@ func (s *Service) applyWebhook(ctx context.Context, ev WebhookEvent) error {
 	if ev.Event == "egress_ended" && ev.Egress != nil && ev.Egress.RoomName != "" {
 		room = ev.Egress.RoomName
 	}
-	streamID, ok := StreamIDFromRoom(room)
-	if !ok {
+	if _, ok := StreamIDFromRoom(room); !ok {
 		return nil // not one of ours
 	}
-	st, err := s.store.GetByID(ctx, streamID)
+	// By room name, never by the id inside it: older rows' room names carry
+	// an id that is not the stream's (see postgres.GetByRoom).
+	st, err := s.store.GetByRoom(ctx, room)
 	if errors.Is(err, postgres.ErrNotFound) {
+		slog.Warn("live-v2: webhook for an unknown room", "event", ev.Event, "room", room)
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	streamID := st.ID
 	isHost := ev.ParticipantIdentity != "" && ev.ParticipantIdentity == st.CreatorUserID.String()
 
 	var trig Trigger

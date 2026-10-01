@@ -82,7 +82,9 @@ func (m *MemStore) AddStreamStatus(creator uuid.UUID, status string) *postgres.L
 	id := uuid.New()
 	st := &postgres.LiveStream{
 		ID: id, CreatorUserID: creator, Status: status, Visibility: "public",
-		LiveKitRoom: "stream_" + id.String(), Title: "t", StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
+		// Like Postgres rows created before 2 Oct 2026: the room name carries
+		// an id that is NOT the stream id. Webhooks must resolve by room.
+		LiveKitRoom: "stream_" + uuid.NewString(), Title: "t", StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	if status == postgres.StatusLive || status == postgres.StatusReconnecting {
 		st.StartedAt = &now
@@ -117,7 +119,6 @@ func (m *MemStore) CreateStream(_ context.Context, p postgres.CreateStreamParams
 		Description: p.Description, CoverMediaID: p.CoverMediaID, Status: postgres.StatusScheduled,
 		Visibility: p.Visibility, ScheduledAt: p.ScheduledAt, StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
-	st.LiveKitRoom = "stream_" + st.ID.String()
 	m.Streams[st.ID] = st
 	return clone(st), nil
 }
@@ -817,4 +818,16 @@ func (m *MemStore) AdminResolveReport(_ context.Context, reportID uuid.UUID, act
 	m.Audits = append(m.Audits, audit)
 	cp := *rep
 	return &cp, nil
+}
+
+// GetByRoom mirrors postgres.Store.GetByRoom (livekit_room is unique).
+func (m *MemStore) GetByRoom(_ context.Context, room string) (*postgres.LiveStream, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, st := range m.Streams {
+		if st.LiveKitRoom == room {
+			return clone(st), nil
+		}
+	}
+	return nil, postgres.ErrNotFound
 }

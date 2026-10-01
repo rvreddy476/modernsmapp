@@ -98,6 +98,7 @@ const (
 type Store interface {
 	CreateStream(ctx context.Context, p postgres.CreateStreamParams) (*postgres.LiveStream, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*postgres.LiveStream, error)
+	GetByRoom(ctx context.Context, room string) (*postgres.LiveStream, error)
 	ListLive(ctx context.Context, p postgres.ListLiveParams) ([]*postgres.LiveStream, error)
 	ListScheduled(ctx context.Context, p postgres.ListScheduledParams) ([]*postgres.LiveStream, error)
 

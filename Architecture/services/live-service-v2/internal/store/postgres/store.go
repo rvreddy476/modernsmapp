@@ -131,6 +131,15 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*LiveStream, error) 
 	return scanStream(s.db.QueryRow(ctx, q, id))
 }
 
+// GetByRoom finds a stream by its LiveKit room name (livekit_room is
+// UNIQUE). Webhooks name the room, not the stream, and the room name is NOT
+// "stream_<id>" for rows created before 2 Oct 2026: the id was assigned by
+// the database, not the one the name was built from.
+func (s *Store) GetByRoom(ctx context.Context, room string) (*LiveStream, error) {
+	const q = `SELECT ` + selectColumns + ` FROM live_streams WHERE livekit_room = $1`
+	return scanStream(s.db.QueryRow(ctx, q, room))
+}
+
 // Status changes (start, live, reconnecting, ended, failed), the recording
 // pointer and their outbox events are in lifecycle.go: every one of them is
 // a locked read-decide-write in one transaction.
