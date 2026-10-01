@@ -70,6 +70,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST(WebhookPath, h.OnLiveKitWebhook)
 	// ws-gateway viewer check (internal key, never optional).
 	r.GET("/v1/livestream/internal/streams/:id/viewer", h.requireInternalKeyStrict, h.InternalStreamViewer)
+	// notification-service's read of who to remind (internal key, never optional).
+	r.GET("/v1/livestream/internal/streams/:id/reminders", h.requireInternalKeyStrict, h.InternalStreamReminders)
 	// Admin family: admin-service tokens only.
 	h.registerAdminTokenRoutes(r)
 
@@ -115,6 +117,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.PUT("/streams/:id/moderators", h.SetModerators)
 	v1.GET("/streams/:id/moderators", h.ListModerators)
 	v1.POST("/streams/:id/reports", h.ReportStream)
+	// Live surfaces, hearts, supporters, badges (2 Oct 2026).
+	h.registerSurfaceRoutes(v1)
 }
 
 // --- request / response bodies ---
@@ -127,6 +131,10 @@ type createStreamRequest struct {
 	ScheduledAt  *time.Time `json:"scheduled_at"`
 	// Source is "device" (default) or "encoder"; anything else is a 422.
 	Source string `json:"source"`
+	// Orientation is "landscape" (default) or "portrait"; anything else is a
+	// 422. Category is a slug of GET /v1/posts/categories, or empty.
+	Orientation string `json:"orientation"`
+	Category    string `json:"category"`
 }
 
 // --- handlers ---
@@ -148,6 +156,8 @@ func (h *Handler) CreateStream(c *gin.Context) {
 		CoverMediaID: req.CoverMediaID,
 		ScheduledAt:  req.ScheduledAt,
 		Source:       req.Source,
+		Orientation:  req.Orientation,
+		Category:     req.Category,
 	})
 	if err != nil {
 		writeServiceErr(c, err)
@@ -234,14 +244,9 @@ func (h *Handler) ListLiveNow(c *gin.Context) {
 		return
 	}
 	viewerID := optionalUserID(c)
-	limit := 20
-	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			limit = n
-		}
-	}
-	cursor := c.Query("cursor")
-	res, err := h.svc.ListLiveNow(c.Request.Context(), viewerID, limit, cursor)
+	// Live surfaces (2 Oct 2026): ?orientation= &category= &following=true
+	// &sort=viewers|recent (default viewers). See surfaces_routes.go.
+	res, err := h.svc.DiscoverLive(c.Request.Context(), viewerID, discoverParams(c))
 	if err != nil {
 		writeServiceErr(c, err)
 		return
@@ -314,8 +319,18 @@ func writeServiceErr(c *gin.Context, err error) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_FOLLOWER", err.Error(), nil)
 	case errors.Is(err, service.ErrPaidNotSupported):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusPaymentRequired, "PAID_REQUIRED", err.Error(), nil)
-	case errors.Is(err, service.ErrInvalidStatusFilter):
+	case errors.Is(err, service.ErrInvalidStatusFilter), errors.Is(err, service.ErrInvalidUserStreamsStatus):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidCategory):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "INVALID_CATEGORY", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidOrientation), errors.Is(err, service.ErrInvalidSort),
+		errors.Is(err, service.ErrInvalidHeartCount):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil)
+	case errors.Is(err, service.ErrHeartsRateLimited):
+		c.Header("Retry-After", "10")
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+	case errors.Is(err, service.ErrBadgeNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidVisibility), errors.Is(err, service.ErrPaidVisibility),
 		errors.Is(err, service.ErrInvalidTitle), errors.Is(err, service.ErrInvalidSource),
 		errors.Is(err, service.ErrNotEncoderStream):

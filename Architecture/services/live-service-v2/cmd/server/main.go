@@ -143,7 +143,42 @@ func main() {
 		slog.Warn("live-v2: MEDIA_SERVICE_URL not set — recordings are kept but never imported, so no vod_ready is emitted")
 	}
 
+	// Live surfaces (2 Oct 2026): creator cards from identity-profile,
+	// categories and channel subscriptions from post-service. Each degrades
+	// on its own when unreachable (cards carry the user id only; a category
+	// is accepted only if seen before; the Following filter lists nothing).
+	profileURL := env("PROFILE_SERVICE_URL", "http://identity-profile:8098")
+	postURL := env("POST_SERVICE_URL", "http://post-service:8084")
+	var profiles service.ProfileSource
+	if c := service.NewHTTPProfiles(profileURL, internalKey); c != nil {
+		profiles = c
+	}
+	var categories service.CategorySource
+	if c := service.NewHTTPCategories(postURL, internalKey); c != nil {
+		categories = c
+	}
+	var following service.FollowingSource
+	if c := service.NewHTTPFollowing(graphURL, postURL, internalKey); c != nil {
+		following = c
+	} else {
+		slog.Warn("live-v2: GRAPH_SERVICE_URL or POST_SERVICE_URL not set — the Following filter lists nothing")
+	}
+
+	// Founding creator badge: a stream on air for at least
+	// LIVE_FOUNDING_MIN_LIVE (default 5m) that started before
+	// LIVE_FOUNDING_CREATOR_UNTIL (RFC3339; unset = the window is open).
+	// An unparseable window refuses to boot rather than staying open.
+	foundingUntil, err := service.ParseFoundingUntil(os.Getenv("LIVE_FOUNDING_CREATOR_UNTIL"))
+	if err != nil {
+		slog.Error("live-v2: founding creator window invalid", "error", err)
+		os.Exit(1)
+	}
+
 	store := pgstore.New(dbPool)
+	store.SetFoundingRule(pgstore.FoundingRule{
+		MinLive: envDuration("LIVE_FOUNDING_MIN_LIVE", pgstore.DefaultFoundingMinLive),
+		Until:   foundingUntil,
+	})
 	svc := service.New(store, lk, graph, rdb, service.Config{
 		RecordingPublicBaseURL: env("LIVE_RECORDING_PUBLIC_BASE_URL", ""),
 		S3Bucket:               lkCfg.S3Bucket,
@@ -153,6 +188,9 @@ func main() {
 		ReconnectGrace:         envDuration("LIVE_RECONNECT_GRACE", service.DefaultReconnectGrace),
 		EncoderStartTimeout:    envDuration("LIVE_ENCODER_START_TIMEOUT", service.DefaultEncoderStartTimeout),
 		Media:                  media,
+		Profiles:               profiles,
+		Categories:             categories,
+		Following:              following,
 	})
 	// Timeouts by the database clock, LiveKit reconcile, recording imports.
 	go svc.RunSweeper(bgCtx, service.SweepInterval)

@@ -57,18 +57,18 @@ func fixtureStreams() (live, scheduled []*postgres.LiveStream) {
 	tomorrow := fxStreamTime.Add(26 * time.Hour)
 	live = []*postgres.LiveStream{{
 		ID: uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), CreatorUserID: fxCreator, LiveKitRoom: "stream_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-		Title: "Friday build, live", Status: "live", Visibility: "public", Source: "device", StartedAt: &started, ViewerPeak: 42,
+		Title: "Friday build, live", Status: "live", Visibility: "public", Source: "device", Orientation: "landscape", StartedAt: &started, ViewerPeak: 42,
 		CreatedAt: fxStreamTime.Add(-time.Hour), UpdatedAt: started, StatusChangedAt: started,
 	}}
 	scheduled = []*postgres.LiveStream{
 		{
 			ID: uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), CreatorUserID: fxCreator, LiveKitRoom: "stream_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-			Title: "Kafka AMA", Description: "Bring questions", CoverMediaID: &fxCover, Status: "scheduled", Visibility: "public", Source: "device",
+			Title: "Kafka AMA", Description: "Bring questions", CoverMediaID: &fxCover, Status: "scheduled", Visibility: "public", Source: "device", Orientation: "landscape",
 			ScheduledAt: &soon, CreatedAt: fxStreamTime.Add(-48 * time.Hour), UpdatedAt: fxStreamTime.Add(-48 * time.Hour), StatusChangedAt: fxStreamTime.Add(-48 * time.Hour),
 		},
 		{
 			ID: uuid.MustParse("cccccccc-cccc-4ccc-8ccc-cccccccccccc"), CreatorUserID: fxCreator, LiveKitRoom: "stream_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-			Title: "Weekend build", Status: "scheduled", Visibility: "public", Source: "device",
+			Title: "Weekend build", Status: "scheduled", Visibility: "public", Source: "device", Orientation: "landscape",
 			ScheduledAt: &tomorrow, CreatedAt: fxStreamTime.Add(-24 * time.Hour), UpdatedAt: fxStreamTime.Add(-24 * time.Hour), StatusChangedAt: fxStreamTime.Add(-24 * time.Hour),
 		},
 	}

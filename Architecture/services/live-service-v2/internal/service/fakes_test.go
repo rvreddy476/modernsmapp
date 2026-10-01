@@ -163,6 +163,11 @@ func (f *listingStore) ModeratorsFor(context.Context, []uuid.UUID) (map[uuid.UUI
 	return map[uuid.UUID][]uuid.UUID{}, nil
 }
 
+// ...and no creator badges (every listed row gets its host card).
+func (f *listingStore) BadgesFor(context.Context, []uuid.UUID) (map[uuid.UUID][]string, error) {
+	return map[uuid.UUID][]string{}, nil
+}
+
 // recEvents records published room events; allowAll disables throttling.
 type recEvents struct {
 	mu       sync.Mutex

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -69,6 +70,14 @@ var (
 	ErrReportResolved       = errors.New("report already resolved")
 	ErrReasonRequired       = errors.New("invalid: reason is required (1-500 characters)")
 	ErrInvalidAction        = errors.New("invalid: action is not possible for this report")
+
+	// Live surfaces (2 Oct 2026).
+	ErrInvalidOrientation = errors.New("invalid: orientation must be landscape or portrait")
+	ErrInvalidCategory    = errors.New("invalid: category is not one of the supported categories")
+	ErrInvalidSort        = errors.New("invalid: sort must be viewers or recent")
+	ErrInvalidHeartCount  = errors.New("invalid: count must be between 1 and 20")
+	ErrHeartsRateLimited  = errors.New("rate_limited: too many hearts; slow down")
+	ErrBadgeNotFound      = errors.New("badge not found")
 )
 
 const (
@@ -156,6 +165,18 @@ type Store interface {
 	CreateReport(ctx context.Context, r postgres.NewReport, maxPerWindow int, window time.Duration) (*postgres.Report, error)
 	ListReports(ctx context.Context, status string, limit int) ([]*postgres.Report, error)
 	AdminResolveReport(ctx context.Context, reportID uuid.UUID, act postgres.ResolveAction, check func(*postgres.Report) error, audit postgres.AuditEntry) (*postgres.Report, error)
+
+	// Live surfaces (store/postgres/surfaces.go).
+	ListPast(ctx context.Context, p postgres.ListPastParams) ([]*postgres.LiveStream, error)
+	UpdateScheduled(ctx context.Context, id uuid.UUID, p postgres.StreamPatch) (*postgres.LiveStream, error)
+	SetReminder(ctx context.Context, streamID, userID uuid.UUID, set bool) (int, error)
+	ReminderStats(ctx context.Context, streamIDs []uuid.UUID, viewerID uuid.UUID) (map[uuid.UUID]postgres.ReminderStat, error)
+	ListReminderUserIDs(ctx context.Context, streamID, after uuid.UUID, limit int) ([]uuid.UUID, error)
+	AddHearts(ctx context.Context, streamID, userID uuid.UUID, n, perUserCap int) (postgres.HeartResult, error)
+	ListSupporters(ctx context.Context, streamID uuid.UUID, limit int) ([]postgres.Supporter, error)
+	BadgesFor(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID][]string, error)
+	ListBadges(ctx context.Context, userID uuid.UUID) ([]postgres.Badge, error)
+	AdminRevokeBadge(ctx context.Context, userID uuid.UUID, badge, reason string, audit postgres.AuditEntry) (bool, error)
 }
 
 // Service is the live-service-v2 business layer.
@@ -183,6 +204,16 @@ type Service struct {
 	// now is the clock the upcoming-streams listing measures "future"
 	// against; nil means time.Now. A field so tests can pin it.
 	now func() time.Time
+
+	// Live surfaces (surfaces.go, hearts.go): what is read from other
+	// services, each optional, and the heart counters.
+	profiles   ProfileSource   // nil: user cards carry the user id only
+	categories CategorySource  // nil: only the empty category is accepted
+	following  FollowingSource // nil: the Following filter lists nothing
+	cards      cardCache
+	catalog    categoryCache
+	hearts     *heartState // built on first use (heartState())
+	heartsOnce sync.Once
 }
 
 // Config carries the service's settings.
@@ -204,6 +235,14 @@ type Config struct {
 
 	// Media imports egress recordings (MEDIA_SERVICE_URL); nil = not configured.
 	Media MediaImporter
+
+	// Profiles hydrates creator and supporter cards (PROFILE_SERVICE_URL),
+	// Categories validates a stream's category (POST_SERVICE_URL), Following
+	// answers the Following filter (GRAPH_SERVICE_URL + POST_SERVICE_URL).
+	// Each may be nil; see the Service fields for what that means.
+	Profiles   ProfileSource
+	Categories CategorySource
+	Following  FollowingSource
 }
 
 // Default timeouts.
@@ -233,7 +272,7 @@ func New(store Store, lk livekit.Client, graph GraphClient, rdb *redis.Client, c
 	if rdb != nil {
 		rt = NewRedisRoomEvents(rdb)
 	}
-	return &Service{
+	s := &Service{
 		store:                  store,
 		livekit:                lk,
 		graph:                  graph,
@@ -245,7 +284,20 @@ func New(store Store, lk livekit.Client, graph GraphClient, rdb *redis.Client, c
 		pilot:                  pilot,
 		limits:                 lim,
 		media:                  cfg.Media,
+		profiles:               cfg.Profiles,
+		categories:             cfg.Categories,
+		following:              cfg.Following,
 	}
+	s.heartsOnce.Do(func() { s.hearts = newHeartState(rdb, s.clock) })
+	return s
+}
+
+// clock is the service's time source (s.now when a test pinned it).
+func (s *Service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // ParsePilotUserIDs parses LIVE_PILOT_USER_IDS (comma-separated uuids).
@@ -291,6 +343,10 @@ type CreateStreamParams struct {
 	ScheduledAt  *time.Time
 	// Source is "device" (default) or "encoder".
 	Source string
+	// Orientation is "landscape" (default) or "portrait". Category is a
+	// slug of post-service's taxonomy, or empty.
+	Orientation string
+	Category    string
 }
 
 // CreateStream inserts a scheduled row and reserves a LiveKit room name.
@@ -314,6 +370,14 @@ func (s *Service) CreateStream(ctx context.Context, creatorID uuid.UUID, p Creat
 	if source == "" {
 		return nil, ErrInvalidSource
 	}
+	orientation := normalizeOrientation(p.Orientation)
+	if orientation == "" {
+		return nil, ErrInvalidOrientation
+	}
+	category, err := s.validCategory(ctx, p.Category)
+	if err != nil {
+		return nil, err
+	}
 	streamID := uuid.New()
 	room := "stream_" + streamID.String()
 	st, err := s.store.CreateStream(ctx, postgres.CreateStreamParams{
@@ -325,11 +389,13 @@ func (s *Service) CreateStream(ctx context.Context, creatorID uuid.UUID, p Creat
 		Visibility:    vis,
 		ScheduledAt:   p.ScheduledAt,
 		Source:        source,
+		Orientation:   orientation,
+		Category:      category,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return withHasIngress(st), nil
+	return s.withCreator(ctx, withHasIngress(st)), nil
 }
 
 // StartStreamResult is what we hand back to the broadcaster client. The
@@ -372,7 +438,7 @@ func (s *Service) StartStream(ctx context.Context, streamID, creatorID uuid.UUID
 		return nil, err
 	}
 	out := &StartStreamResult{
-		Stream:    withHasIngress(res.Next),
+		Stream:    s.withCreator(ctx, withHasIngress(res.Next)),
 		Room:      res.Next.LiveKitRoom,
 		ServerURL: s.livekit.ServerURL(),
 		Source:    res.Next.Source,
@@ -406,10 +472,12 @@ func (s *Service) EndStream(ctx context.Context, streamID, creatorID uuid.UUID) 
 		return nil, err
 	}
 	// Read again: the transition's side effects delete the ingress.
+	// The creator card is read after the transition committed, so a founding
+	// creator badge this end earned is already on it.
 	if after, err := s.store.GetByID(ctx, streamID); err == nil {
-		return withHasIngress(after), nil
+		return s.withCreator(ctx, withHasIngress(after)), nil
 	}
-	return withHasIngress(res.Next), nil
+	return s.withCreator(ctx, withHasIngress(res.Next)), nil
 }
 
 // IssueViewerTokenResult is returned to viewers joining a stream.
@@ -489,7 +557,7 @@ func (s *Service) ListLiveNow(ctx context.Context, viewerID uuid.UUID, limit int
 		}
 		out = append(out, st)
 	}
-	out = s.decorateModerators(ctx, viewerID, out)
+	out = s.decorate(ctx, viewerID, out)
 	res := &ListLiveResult{Streams: out}
 	if len(out) == limit && out[len(out)-1].StartedAt != nil {
 		last := out[len(out)-1]
@@ -570,7 +638,7 @@ func (s *Service) ListScheduled(ctx context.Context, viewerID uuid.UUID, limit i
 		}
 		out = append(out, st)
 	}
-	out = s.decorateModerators(ctx, viewerID, out)
+	out = s.decorate(ctx, viewerID, out)
 	res := &ListLiveResult{Streams: out}
 	// More may follow when the page filled, or when the store handed back a
 	// full batch the filter thinned: resume after the last row READ, so a
@@ -635,7 +703,11 @@ func (s *Service) GetStream(ctx context.Context, streamID, viewerID uuid.UUID) (
 	if err := s.canSee(ctx, st, viewerID); err != nil {
 		return nil, err
 	}
-	return s.decorateModerators(ctx, viewerID, []*postgres.LiveStream{st})[0], nil
+	// The detail row always carries reminder_count, and reminder_set for a
+	// signed-in caller: the waiting page shows "Notify me" and how many
+	// asked, and the answer does not change shape when the stream starts.
+	rows := s.withReminders(ctx, viewerID, s.decorate(ctx, viewerID, []*postgres.LiveStream{st}))
+	return rows[0], nil
 }
 
 // decorateModerators sets moderator_user_ids on the rows whose host or
@@ -714,6 +786,14 @@ func (s *Service) MayWatch(ctx context.Context, streamID, viewerID uuid.UUID) (b
 // either direction between viewer and host. viewerID may be uuid.Nil for
 // unauthenticated readers (only public passes then).
 func (s *Service) canSee(ctx context.Context, st *postgres.LiveStream, viewerID uuid.UUID) error {
+	return canSeeBy(st, viewerID, func(creatorID uuid.UUID) (Relationship, error) {
+		return s.relationshipCached(ctx, viewerID, creatorID)
+	})
+}
+
+// canSeeBy is canSee's rule over any source of the viewer's relationship to
+// a creator (one cached call, or a batch read once for a whole list).
+func canSeeBy(st *postgres.LiveStream, viewerID uuid.UUID, relationship func(creatorID uuid.UUID) (Relationship, error)) error {
 	switch st.Visibility {
 	case visibilityPublic, visibilityFollowers:
 	case visibilityPaid:
@@ -730,7 +810,7 @@ func (s *Service) canSee(ctx context.Context, st *postgres.LiveStream, viewerID 
 		}
 		return ErrNotFollower
 	}
-	rel, err := s.relationshipCached(ctx, viewerID, st.CreatorUserID)
+	rel, err := relationship(st.CreatorUserID)
 	if err != nil {
 		return ErrAuthorityUnavailable
 	}

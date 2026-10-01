@@ -42,7 +42,22 @@ func StreamStarted(ctx context.Context, st *postgres.LiveStream) (postgres.Outbo
 		Title:      st.Title,
 		Visibility: st.Visibility,
 		StartedAt:  startedAt,
+		// Live surfaces (2 Oct 2026). Who asked to be reminded is NOT in the
+		// event: notification-service pages it from
+		// GET /v1/livestream/internal/streams/:id/reminders.
+		Orientation:   orientationOrDefault(st.Orientation),
+		Category:      st.Category,
+		CreatorUserID: st.CreatorUserID.String(),
 	})
+}
+
+// orientationOrDefault never leaves the event's orientation empty: a row
+// built without one (a test, an older reader) is a landscape stream.
+func orientationOrDefault(o string) string {
+	if o == "" {
+		return postgres.OrientationLandscape
+	}
+	return o
 }
 
 // StreamEnded is live.stream.ended for a stream that was live and ended.

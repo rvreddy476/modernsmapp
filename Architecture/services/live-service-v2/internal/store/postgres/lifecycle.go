@@ -90,7 +90,7 @@ func (s *Store) ApplyTransition(ctx context.Context, id uuid.UUID, decide Transi
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	res, err := applyTransitionTx(ctx, tx, id, decide, events, audit)
+	res, err := applyTransitionTx(ctx, tx, id, decide, events, audit, s.foundingRule())
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (s *Store) ApplyTransition(ctx context.Context, id uuid.UUID, decide Transi
 	return res, nil
 }
 
-func applyTransitionTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, decide TransitionFunc, events EventsFunc, audit *AuditEntry) (*TransitionResult, error) {
+func applyTransitionTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, decide TransitionFunc, events EventsFunc, audit *AuditEntry, founding FoundingRule) (*TransitionResult, error) {
 	var ageSec float64
 	prev, err := scanStreamExtra(tx.QueryRow(ctx,
 		`SELECT `+selectColumns+`, EXTRACT(EPOCH FROM (NOW() - status_changed_at))::float8
@@ -146,6 +146,13 @@ func applyTransitionTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, decide Tran
 	}
 	if IsTerminal(d.To) {
 		if _, err := tx.Exec(ctx, `DELETE FROM live_stream_presence WHERE stream_id = $1`, id); err != nil {
+			return nil, err
+		}
+	}
+	// The founding creator badge is earned in the transaction that ends the
+	// stream, whoever ended it (the host, LiveKit, an admin or the sweeper).
+	if founding.Qualifies(next) {
+		if err := grantFoundingBadge(ctx, tx, next); err != nil {
 			return nil, err
 		}
 	}

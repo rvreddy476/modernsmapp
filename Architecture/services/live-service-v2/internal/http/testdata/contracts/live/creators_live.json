@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "creator": {
+        "user_id": "22222222-2222-4222-8222-222222222222",
+        "name": "Asha Rao",
+        "handle": "asha",
+        "avatar_url": "/v1/media/77777777-7777-4777-8777-777777777777/serve/avatar",
+        "badges": [
+          "founding_creator"
+        ]
+      },
+      "stream_id": "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1",
+      "viewer_count": 128,
+      "orientation": "landscape"
+    },
+    {
+      "creator": {
+        "user_id": "33333333-3333-4333-8333-333333333333"
+      },
+      "stream_id": "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2",
+      "viewer_count": 40,
+      "orientation": "portrait"
+    }
+  ]
+}

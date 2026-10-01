@@ -12,6 +12,7 @@ package http
 //	POST   /v1/livestream/internal/admin/users/:userId/live-ban {reason}               live:users.ban
 //	DELETE /v1/livestream/internal/admin/users/:userId/live-ban {reason?}              live:users.ban
 //	GET    /v1/livestream/internal/admin/bans?limit=&offset=                           live:users.ban
+//	DELETE /v1/livestream/internal/admin/users/:userId/badges/founding_creator {reason} live:users.ban
 
 import (
 	"errors"
@@ -37,6 +38,8 @@ func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 	g.POST("/users/:userId/live-ban", gate(PermUsersBan), h.AdminLiveBan)
 	g.DELETE("/users/:userId/live-ban", gate(PermUsersBan), h.AdminLiveUnban)
 	g.GET("/bans", gate(PermUsersBan), h.AdminListLiveBans)
+	// Founding creator badge (surfaces_routes.go): revoke, audited.
+	g.DELETE("/users/:userId/badges/:badge", gate(PermUsersBan), h.AdminRevokeBadge)
 }
 
 type adminReasonBody struct {

@@ -1,0 +1,37 @@
+{
+  "data": [
+    {
+      "id": "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3",
+      "creator_user_id": "22222222-2222-4222-8222-222222222222",
+      "livekit_room": "stream_92255c35-0416-5675-9665-2c9d6e01b6ee",
+      "title": "New year special",
+      "description": "Countdown stream",
+      "cover_media_id": "55555555-5555-4555-8555-555555555555",
+      "status": "scheduled",
+      "visibility": "public",
+      "scheduled_at": "2099-01-01T18:30:00Z",
+      "viewer_peak": 0,
+      "viewer_count": 0,
+      "ended_reason": null,
+      "status_changed_at": "2026-10-02T09:00:00Z",
+      "source": "device",
+      "orientation": "landscape",
+      "category": "music",
+      "heart_count": 0,
+      "creator": {
+        "user_id": "22222222-2222-4222-8222-222222222222",
+        "name": "Asha Rao",
+        "handle": "asha",
+        "avatar_url": "/v1/media/77777777-7777-4777-8777-777777777777/serve/avatar",
+        "badges": [
+          "founding_creator"
+        ]
+      },
+      "reminder_set": true,
+      "reminder_count": 2,
+      "created_at": "2026-10-02T08:00:00Z",
+      "updated_at": "2026-10-02T09:00:00Z"
+    }
+  ],
+  "meta": {}
+}

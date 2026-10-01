@@ -45,6 +45,14 @@ type MemStore struct {
 	ImportCreated map[uuid.UUID]time.Time
 	ViewerEvents  int
 
+	// Live surfaces (surfaces.go).
+	Reminders map[uuid.UUID]map[uuid.UUID]bool
+	Hearts    map[uuid.UUID]map[uuid.UUID]*HeartRow
+	Badges    map[uuid.UUID]*BadgeRow
+	// Founding is the founding creator badge rule ApplyTransition grants by
+	// (postgres.Store.SetFoundingRule).
+	Founding postgres.FoundingRule
+
 	// FailOutbox makes every outbox enqueue fail (the transaction rolls back).
 	FailOutbox bool
 }
@@ -66,6 +74,9 @@ func New() *MemStore {
 		Imports:       map[uuid.UUID]*postgres.RecordingImport{},
 		ImportDue:     map[uuid.UUID]time.Time{},
 		ImportCreated: map[uuid.UUID]time.Time{},
+		Reminders:     map[uuid.UUID]map[uuid.UUID]bool{},
+		Hearts:        map[uuid.UUID]map[uuid.UUID]*HeartRow{},
+		Badges:        map[uuid.UUID]*BadgeRow{},
 	}
 }
 
@@ -85,7 +96,7 @@ func (m *MemStore) AddStreamStatus(creator uuid.UUID, status string) *postgres.L
 		// Like Postgres rows created before 2 Oct 2026: the room name carries
 		// an id that is NOT the stream id. Webhooks must resolve by room.
 		LiveKitRoom: "stream_" + uuid.NewString(), Title: "t", StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
-		Source: postgres.SourceDevice,
+		Source: postgres.SourceDevice, Orientation: postgres.OrientationLandscape,
 	}
 	if status == postgres.StatusLive || status == postgres.StatusReconnecting {
 		st.StartedAt = &now
@@ -119,7 +130,7 @@ func (m *MemStore) CreateStream(_ context.Context, p postgres.CreateStreamParams
 		ID: uuid.New(), CreatorUserID: p.CreatorUserID, LiveKitRoom: p.LiveKitRoom, Title: p.Title,
 		Description: p.Description, CoverMediaID: p.CoverMediaID, Status: postgres.StatusScheduled,
 		Visibility: p.Visibility, ScheduledAt: p.ScheduledAt, StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
-		Source: p.Source,
+		Source: p.Source, Orientation: p.Orientation, Category: p.Category,
 	}
 	switch st.Source {
 	case "":
@@ -127,6 +138,13 @@ func (m *MemStore) CreateStream(_ context.Context, p postgres.CreateStreamParams
 	case postgres.SourceDevice, postgres.SourceEncoder:
 	default:
 		return nil, errors.New("live_streams_source_check") // the CHECK constraint
+	}
+	switch st.Orientation {
+	case "":
+		st.Orientation = postgres.OrientationLandscape
+	case postgres.OrientationLandscape, postgres.OrientationPortrait:
+	default:
+		return nil, errors.New("live_streams_orientation_check") // the CHECK constraint
 	}
 	m.Streams[st.ID] = st
 	return clone(st), nil
@@ -145,21 +163,13 @@ func (m *MemStore) GetByID(_ context.Context, id uuid.UUID) (*postgres.LiveStrea
 func (m *MemStore) ListLive(_ context.Context, p postgres.ListLiveParams) ([]*postgres.LiveStream, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []*postgres.LiveStream
-	for _, st := range m.Streams {
-		if st.Status == postgres.StatusLive || st.Status == postgres.StatusReconnecting {
-			out = append(out, clone(st))
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() > out[j].ID.String() })
-	if p.Limit > 0 && len(out) > p.Limit {
-		out = out[:p.Limit]
-	}
-	return out, nil
+	return m.listLiveLocked(p), nil
 }
 
-func (m *MemStore) ListScheduled(_ context.Context, _ postgres.ListScheduledParams) ([]*postgres.LiveStream, error) {
-	return nil, nil
+func (m *MemStore) ListScheduled(_ context.Context, p postgres.ListScheduledParams) ([]*postgres.LiveStream, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.listScheduledLocked(p), nil
 }
 
 // --- lifecycle ---
@@ -219,6 +229,9 @@ func (m *MemStore) ApplyTransition(_ context.Context, id uuid.UUID, decide postg
 	m.Streams[id] = next
 	if postgres.IsTerminal(d.To) {
 		delete(m.Presence, id)
+	}
+	if m.Founding.Qualifies(next) {
+		m.grantFoundingLocked(next)
 	}
 	m.enqueue(evs...)
 	if audit != nil {

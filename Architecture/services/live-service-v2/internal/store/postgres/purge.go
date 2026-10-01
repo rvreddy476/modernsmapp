@@ -17,8 +17,20 @@ func (s *Store) SetUserHidden(ctx context.Context, userID uuid.UUID, hidden bool
 	if !hidden {
 		return nil
 	}
-	_, err := s.db.Exec(ctx, endLiveSQL, userID)
-	return err
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, endLiveSQL, userID); err != nil {
+		return err
+	}
+	// A stream ended this way can earn the founding creator badge like any
+	// other end (same transaction).
+	if err := grantFoundingBadgeForUser(ctx, tx, userID, s.foundingRule()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // endLiveSQL ends every on-air stream of the user (the account owner's own
@@ -52,6 +64,11 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		{"live_reports", `DELETE FROM live_reports WHERE reporter_id = $1 OR target_user_id = $1 OR stream_id IN (` + mine + `)`},
 		{"live_platform_bans", `DELETE FROM live_platform_bans WHERE user_id = $1`},
 		{"live_recording_imports", `DELETE FROM live_recording_imports WHERE stream_id IN (` + mine + `)`},
+		{"live_stream_reminders", `DELETE FROM live_stream_reminders WHERE user_id = $1 OR stream_id IN (` + mine + `)`},
+		// A purged viewer's hearts go; the stream's heart_count total (which
+		// names nobody) stays.
+		{"live_stream_hearts", `DELETE FROM live_stream_hearts WHERE user_id = $1 OR stream_id IN (` + mine + `)`},
+		{"live_creator_badges", `DELETE FROM live_creator_badges WHERE user_id = $1`},
 		// live_admin_audit is append-only (a trigger refuses DELETE): the
 		// admin record of actions taken is retained.
 		{"live_streams", `DELETE FROM live_streams WHERE creator_user_id = $1`},

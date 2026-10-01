@@ -1318,6 +1318,16 @@ type LiveStreamStartedPayload struct {
 	Title      string    `json:"title"`
 	Visibility string    `json:"visibility"` // public | followers | paid
 	StartedAt  time.Time `json:"started_at"`
+
+	// Added 2 Oct 2026 (live surfaces). Additive: an event written before
+	// these existed decodes with them empty, and a consumer must treat an
+	// empty Orientation as "landscape" and an empty CreatorUserID as
+	// CreatorID. Who asked to be reminded is deliberately NOT in the event:
+	// the list is unbounded, so a consumer pages it from live-service-v2's
+	// internal route GET /v1/livestream/internal/streams/:id/reminders.
+	Orientation   string `json:"orientation,omitempty"`     // landscape | portrait
+	Category      string `json:"category,omitempty"`        // post-service taxonomy slug, or empty
+	CreatorUserID string `json:"creator_user_id,omitempty"` // same value as CreatorID
 }
 
 type LiveStreamEndedPayload struct {

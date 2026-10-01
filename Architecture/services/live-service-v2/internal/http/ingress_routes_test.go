@@ -324,7 +324,8 @@ func TestEncoderContract(t *testing.T) {
 	u.store.Streams[fxEncoderStream] = &postgres.LiveStream{
 		ID: fxEncoderStream, CreatorUserID: u.pilot, LiveKitRoom: fxEncoderRoom,
 		Title: "Launch day, from OBS", Description: "Streaming software", Status: postgres.StatusScheduled,
-		Visibility: "public", Source: postgres.SourceEncoder, StatusChangedAt: at, CreatedAt: at, UpdatedAt: at,
+		Visibility: "public", Source: postgres.SourceEncoder, Orientation: postgres.OrientationLandscape,
+		StatusChangedAt: at, CreatedAt: at, UpdatedAt: at,
 	}
 	base := "/v1/livestream/streams/" + fxEncoderStream.String()
 

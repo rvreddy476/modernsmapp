@@ -52,6 +52,22 @@ type LiveStream struct {
 	// on the wire, and the stream key is not stored at all.
 	IngressID       *string `json:"-"`
 	EncoderIdentity *string `json:"-"`
+	// Orientation is 'landscape' (PostTube) or 'portrait' (the Reels Live
+	// tab). Category is a slug of post-service's video taxonomy, "" = none.
+	Orientation string `json:"orientation"`
+	Category    string `json:"category"`
+	// HeartCount is the total of free hearts sent on the stream.
+	HeartCount int64 `json:"heart_count"`
+	// RecordingPostID is the video post the recording became (nil until
+	// post-service reports it; see migration 005).
+	RecordingPostID *uuid.UUID `json:"recording_post_id,omitempty"`
+	// Creator is the host card (service layer): user_id always; name, handle
+	// and avatar_url when the profile lookup answered.
+	Creator *UserCard `json:"creator,omitempty"`
+	// ReminderSet / ReminderCount are filled on upcoming rows (service
+	// layer): the count for everyone, reminder_set for a signed-in caller.
+	ReminderSet   *bool `json:"reminder_set,omitempty"`
+	ReminderCount *int  `json:"reminder_count,omitempty"`
 	CreatedAt                time.Time `json:"created_at"`
 	UpdatedAt                time.Time `json:"updated_at"`
 }
@@ -60,6 +76,8 @@ var ErrNotFound = errors.New("live stream not found")
 
 type Store struct {
 	db *pgxpool.Pool
+	// founding decides the founding creator badge (surfaces.go).
+	founding FoundingRule
 }
 
 func New(db *pgxpool.Pool) *Store { return &Store{db: db} }
@@ -94,6 +112,10 @@ func scanStreamExtra(row pgx.Row, extra ...any) (*LiveStream, error) {
 		&s.Source,
 		&s.IngressID,
 		&s.EncoderIdentity,
+		&s.Orientation,
+		&s.Category,
+		&s.HeartCount,
+		&s.RecordingPostID,
 		&s.CreatedAt,
 		&s.UpdatedAt,
 	}, extra...)...)
@@ -112,6 +134,7 @@ const selectColumns = `
     viewer_peak, viewer_count, ended_reason, status_changed_at,
     recording_url, recording_duration_seconds, egress_id,
     source, ingress_id, encoder_identity,
+    orientation, category, heart_count, recording_post_id,
     created_at, updated_at`
 
 type CreateStreamParams struct {
@@ -124,7 +147,17 @@ type CreateStreamParams struct {
 	ScheduledAt   *time.Time
 	// Source is SourceDevice or SourceEncoder; empty means SourceDevice.
 	Source string
+	// Orientation is OrientationLandscape or OrientationPortrait; empty
+	// means OrientationLandscape. Category is "" or a taxonomy slug.
+	Orientation string
+	Category    string
 }
+
+// Stream orientations.
+const (
+	OrientationLandscape = "landscape"
+	OrientationPortrait  = "portrait"
+)
 
 // Stream sources.
 const (
@@ -136,12 +169,16 @@ func (s *Store) CreateStream(ctx context.Context, p CreateStreamParams) (*LiveSt
 	const q = `
         INSERT INTO live_streams
             (creator_user_id, livekit_room, title, description, cover_media_id,
-             visibility, scheduled_at, status, source)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', $8)
+             visibility, scheduled_at, status, source, orientation, category)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', $8, $9, $10)
         RETURNING ` + selectColumns
 	source := p.Source
 	if source == "" {
 		source = SourceDevice
+	}
+	orientation := p.Orientation
+	if orientation == "" {
+		orientation = OrientationLandscape
 	}
 	return scanStream(s.db.QueryRow(ctx, q,
 		p.CreatorUserID,
@@ -152,6 +189,8 @@ func (s *Store) CreateStream(ctx context.Context, p CreateStreamParams) (*LiveSt
 		p.Visibility,
 		p.ScheduledAt,
 		source,
+		orientation,
+		p.Category,
 	))
 }
 
@@ -177,51 +216,43 @@ type ListLiveParams struct {
 	Limit         int
 	StartedBefore *time.Time
 	IDBefore      *uuid.UUID
+	// Sort is SortRecent (the zero value) or SortViewers. With SortViewers
+	// the keyset is (viewer_count, started_at, id) and ViewersBefore carries
+	// its first part.
+	Sort          string
+	ViewersBefore *int
+	Filter        StreamFilter
 }
 
-// ListLive returns streams currently in status='live', ordered by
-// started_at DESC. Cursor pagination uses (started_at, id) as the
-// keyset; if either StartedBefore/IDBefore is nil we return the head.
+// ListLive returns streams on air (status live or reconnecting), newest
+// first or most-watched first. Cursor pagination uses the order's keyset;
+// without a complete cursor it returns the head.
 func (s *Store) ListLive(ctx context.Context, p ListLiveParams) ([]*LiveStream, error) {
 	limit := p.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 || limit > 500 {
 		limit = 20
 	}
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	if p.StartedBefore != nil && p.IDBefore != nil {
-		const q = `
-            SELECT ` + selectColumns + `
-            FROM live_streams
-            WHERE status IN ('live', 'reconnecting')
-              AND (started_at, id) < ($1, $2)
-            ORDER BY started_at DESC, id DESC
-            LIMIT $3`
-		rows, err = s.db.Query(ctx, q, *p.StartedBefore, *p.IDBefore, limit)
-	} else {
-		const q = `
-            SELECT ` + selectColumns + `
-            FROM live_streams
-            WHERE status IN ('live', 'reconnecting')
-            ORDER BY started_at DESC NULLS LAST, id DESC
-            LIMIT $1`
-		rows, err = s.db.Query(ctx, q, limit)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]*LiveStream, 0, limit)
-	for rows.Next() {
-		st, err := scanStream(rows)
-		if err != nil {
-			return nil, err
+	conds := []string{"status IN ('live', 'reconnecting')"}
+	var args []any
+	conds, args = p.Filter.where(conds, args)
+	order := "started_at DESC NULLS LAST, id DESC"
+	hasCursor := p.StartedBefore != nil && p.IDBefore != nil
+	if p.Sort == SortViewers {
+		order = "viewer_count DESC, started_at DESC NULLS LAST, id DESC"
+		if hasCursor && p.ViewersBefore != nil {
+			args = append(args, *p.ViewersBefore, *p.StartedBefore, *p.IDBefore)
+			n := len(args)
+			conds = append(conds, fmt.Sprintf("(viewer_count, started_at, id) < ($%d, $%d, $%d)", n-2, n-1, n))
 		}
-		out = append(out, st)
+	} else if hasCursor {
+		args = append(args, *p.StartedBefore, *p.IDBefore)
+		n := len(args)
+		conds = append(conds, fmt.Sprintf("(started_at, id) < ($%d, $%d)", n-1, n))
 	}
-	return out, rows.Err()
+	args = append(args, limit)
+	q := `SELECT ` + selectColumns + ` FROM live_streams WHERE ` + strings.Join(conds, " AND ") +
+		` ORDER BY ` + order + fmt.Sprintf(" LIMIT $%d", len(args))
+	return s.queryStreams(ctx, q, args...)
 }
 
 type ListScheduledParams struct {
@@ -230,6 +261,11 @@ type ListScheduledParams struct {
 	Now            time.Time
 	ScheduledAfter *time.Time
 	IDAfter        *uuid.UUID
+	Filter         StreamFilter
+	// Unstarted lists EVERY 'scheduled' stream instead (Now is ignored):
+	// overdue ones and ones with no scheduled_at too, soonest first with the
+	// timeless ones last. A creator's own list (surfaces.go).
+	Unstarted bool
 }
 
 // ListScheduled returns upcoming streams — status='scheduled' with a
@@ -242,43 +278,21 @@ func (s *Store) ListScheduled(ctx context.Context, p ListScheduledParams) ([]*Li
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	var (
-		rows pgx.Rows
-		err  error
-	)
+	if p.Unstarted {
+		return s.listUnstarted(ctx, p, limit)
+	}
+	conds := []string{"status = 'scheduled'", "scheduled_at > $1"}
+	args := []any{p.Now}
+	conds, args = p.Filter.where(conds, args)
 	if p.ScheduledAfter != nil && p.IDAfter != nil {
-		const q = `
-            SELECT ` + selectColumns + `
-            FROM live_streams
-            WHERE status = 'scheduled'
-              AND scheduled_at > $1
-              AND (scheduled_at, id) > ($2, $3)
-            ORDER BY scheduled_at ASC, id ASC
-            LIMIT $4`
-		rows, err = s.db.Query(ctx, q, p.Now, *p.ScheduledAfter, *p.IDAfter, limit)
-	} else {
-		const q = `
-            SELECT ` + selectColumns + `
-            FROM live_streams
-            WHERE status = 'scheduled'
-              AND scheduled_at > $1
-            ORDER BY scheduled_at ASC, id ASC
-            LIMIT $2`
-		rows, err = s.db.Query(ctx, q, p.Now, limit)
+		args = append(args, *p.ScheduledAfter, *p.IDAfter)
+		n := len(args)
+		conds = append(conds, fmt.Sprintf("(scheduled_at, id) > ($%d, $%d)", n-1, n))
 	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]*LiveStream, 0, limit)
-	for rows.Next() {
-		st, err := scanStream(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, st)
-	}
-	return out, rows.Err()
+	args = append(args, limit)
+	q := `SELECT ` + selectColumns + ` FROM live_streams WHERE ` + strings.Join(conds, " AND ") +
+		fmt.Sprintf(" ORDER BY scheduled_at ASC, id ASC LIMIT $%d", len(args))
+	return s.queryStreams(ctx, q, args...)
 }
 
 // RecordViewerEvent inserts a join/leave row for analytics. Best-effort:
