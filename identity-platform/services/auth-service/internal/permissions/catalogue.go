@@ -179,6 +179,10 @@ var catalogue = map[string][]entry{
 		p("refund.issue", fin),
 		p("catalogue.edit"),
 		p("banners.edit"),
+		// coupons.manage: create, edit and deactivate MStore coupons
+		// (commerce-service admin coupons). Merchandising, like banners.edit and
+		// food coupons.manage: admin only, never finance.
+		p("coupons.manage"),
 		p("jobs.read"),
 		p("compliance.read"),
 		p("compliance.sweep"),
@@ -222,6 +226,9 @@ var catalogue = map[string][]entry{
 		// disputes.act and payouts.approve: no payments admin route checks them today.
 		p("disputes.act", fin),
 		p("payouts.approve", fin),
+		// offers.manage: create, edit and deactivate bank and payment-method
+		// offers (payments-service). Money policy, like refund.issue: finance.
+		p("offers.manage", fin),
 		p("applications.manage"),
 		p("audit.read", audr),
 	},
