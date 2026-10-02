@@ -134,6 +134,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Mechanic M2 — undo the caller's last pass (one step, never a
 		// spark). 404 MECHANIC_NOT_ENABLED while DATING_REWIND_ENABLED is off.
 		dating.POST("/pulse/rewind", fpMW, h.RewindLastPass)
+		// Mechanic M10 — every daily allowance the caller has; a mechanic
+		// whose flag is off is absent.
+		dating.GET("/allowances", h.GetAllowances)
 
 		// Sprint 3 — Sparks
 		dating.POST("/sparks", fpMW, h.CreateSpark)
@@ -425,8 +428,16 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		return
 	}
 	if errors.Is(err, store.ErrSparkRateLimited) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SPARK_RATE_LIMITED", "spark limit reached; try again later",
-			map[string]any{"limit": service.DefaultSparkDailyLimit, "window_hours": int(store.SparkQuotaWindow.Hours())})
+		details := map[string]any{"limit": service.DefaultSparkDailyLimit, "window_hours": int(store.SparkQuotaWindow.Hours())}
+		// M10: the reset time, when the service knows it.
+		var sparkLimited *service.SparkLimitError
+		if errors.As(err, &sparkLimited) {
+			details["limit"] = sparkLimited.Limit
+			if sparkLimited.ResetsAt != nil {
+				details["resets_at"] = sparkLimited.ResetsAt.Format(time.RFC3339)
+			}
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SPARK_RATE_LIMITED", "spark limit reached; try again later", details)
 		return
 	}
 	// Pulse mechanics: a route whose flag is off, and the rewind refusals.

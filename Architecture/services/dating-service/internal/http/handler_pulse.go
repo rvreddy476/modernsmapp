@@ -146,6 +146,24 @@ func (h *Handler) RewindLastPass(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
 }
 
+// GetAllowances — GET /v1/dating/allowances
+//
+// Mechanic M10: the caller's sparks, deck, rewind and Super Spark
+// allowances (daily_limit, remaining_today, resets_at; "unlimited" for an
+// allowance a pass lifts). A mechanic whose flag is off is absent.
+func (h *Handler) GetAllowances(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.Allowances(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
 // parseQueryInt is a forgiving helper — falls back to fallback on any parse
 // problem instead of erroring.
 func parseQueryInt(c *gin.Context, key string, fallback int) int {

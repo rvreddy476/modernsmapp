@@ -206,6 +206,9 @@ func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		if errors.Is(err, store.ErrSuperSparkLimited) {
 			return nil, nil, s.superSparkLimitError(ctx, fromUserID, opts.SuperDailyLimit)
 		}
+		if errors.Is(err, store.ErrSparkRateLimited) {
+			return nil, nil, s.sparkLimitError(ctx, fromUserID, opts.Limit)
+		}
 		return nil, nil, err
 	}
 	if liftsDecline {

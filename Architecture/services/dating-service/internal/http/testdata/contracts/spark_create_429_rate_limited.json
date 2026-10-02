@@ -4,6 +4,7 @@
     "message": "spark limit reached; try again later",
     "details": {
       "limit": 50,
+      "resets_at": "<timestamp>",
       "window_hours": 24
     }
   },

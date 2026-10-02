@@ -264,6 +264,21 @@ func (s *Store) CreateSparkWithOptions(ctx context.Context, fromUserID, toUserID
 	return sp, nil
 }
 
+// SparkUsage returns how many new sparks the user sent inside
+// SparkQuotaWindow and when the oldest of them was (nil when none).
+func (s *Store) SparkUsage(ctx context.Context, userID uuid.UUID) (int, *time.Time, error) {
+	var used int
+	var oldest *time.Time
+	err := s.db.QueryRow(ctx, `
+        SELECT COUNT(*)::int, min(sent_at) FROM dating_spark_ledger
+        WHERE from_user_id = $1 AND sent_at > $2`,
+		userID, time.Now().Add(-SparkQuotaWindow)).Scan(&used, &oldest)
+	if err != nil {
+		return 0, nil, fmt.Errorf("spark usage: %w", err)
+	}
+	return used, oldest, nil
+}
+
 // GetSpark returns a single spark by id.
 func (s *Store) GetSpark(ctx context.Context, id uuid.UUID) (*Spark, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+sparkSelectCols+` FROM dating_sparks WHERE id = $1`, id)
