@@ -31,6 +31,7 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.dating.profile.ProfileOptionsUi
 import com.us.android.feature.dating.profile.rememberProfileOptions
+import com.us.android.feature.dating.travel.VisitingMark
 import com.us.android.feature.dating.ui.DatingPhoto
 import com.us.android.feature.dating.ui.LabelChips
 import com.us.android.feature.dating.ui.DatingScreen
@@ -227,6 +228,8 @@ fun PersonScreen(
                     )
                     if (s.person.verified) Pill("Verified", Tone.Positive)
                 }
+                // Mechanic M8: on a trip; the city below is the one they are visiting.
+                s.person.visiting?.let { VisitingMark(it) }
                 // The same line the deck card carries, so the person view is no
                 // thinner than the card it came from. Every part is optional and
                 // an absent one contributes no separator.

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "MECHANIC_NOT_ENABLED",
+    "message": "this feature is not available"
+  },
+  "meta": {}
+}

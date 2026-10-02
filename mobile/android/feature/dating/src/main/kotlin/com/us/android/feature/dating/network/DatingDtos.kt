@@ -59,6 +59,11 @@ data class DatingPersonDto(
     @SerialName("last_active_bucket") val lastActiveBucket: String? = null,
     @SerialName("last_active_label") val lastActiveLabel: String? = null,
     /**
+     * Mechanic M8: they are on a trip, and [city] and [distanceBucket] are the
+     * destination's. Omitted when false.
+     */
+    val travelling: Boolean = false,
+    /**
      * The pre-match "enough to decide" block, present only where the viewer is
      * deciding about this person: `GET /people/:userId` and an incoming spark.
      * The match list, trusted contacts and the location shares stay compact —
@@ -506,6 +511,11 @@ data class PulseProfileDto(
     @SerialName("trust_tier") val trustTier: String = "",
     @SerialName("last_active_bucket") val lastActiveBucket: String? = null,
     @SerialName("last_active_label") val lastActiveLabel: String? = null,
+    /**
+     * Mechanic M8: on a trip; [city] and [distanceBucket] are the destination's.
+     * Omitted when false. Their home location is never sent.
+     */
+    val travelling: Boolean = false,
     /** The pre-match detail block: the deck is where someone decides to spark. */
     val detail: ProfileDetailDto? = null,
 )
@@ -529,8 +539,76 @@ data class ExplainDto(
 @Serializable
 data class ExplainReasonDto(val kind: String = "", val detail: String = "")
 
+/**
+ * [source] names the surface the pass came from (mechanic M7): null is the
+ * deck, and is left out of the body, so a deck pass is unchanged on the wire.
+ */
 @Serializable
-data class PassRequest(val reason: String? = null)
+data class PassRequest(val reason: String? = null, val source: String? = null)
+
+/**
+ * Where a spark or a pass was made (mechanic M7). Only a deck action spends a
+ * deck card; the deck is the server's default, so [wire] is null for it and the
+ * field stays out of the body. An unknown value is `400 INVALID_SOURCE`.
+ */
+enum class ActionSource(val wire: String?) {
+    DECK(null),
+    PICKS("picks"),
+    LIKED_YOU("liked_you"),
+    PROFILE("profile"),
+}
+
+// ── Daily picks (mechanic M7; fixtures picks_get_*) ────────────────────────
+
+/**
+ * `GET /picks` — NOT the envelope, the deck's own `{data, meta}` shape: up to
+ * ten cards in the deck's card shape, the same all day, refreshed at local
+ * midnight.
+ */
+@Serializable
+data class PicksDto(
+    val data: List<PulseCardDto> = emptyList(),
+    val meta: PicksMetaDto? = null,
+)
+
+@Serializable
+data class PicksMetaDto(
+    /** The viewer's local date, YYYY-MM-DD. */
+    val date: String = "",
+    /** The IANA zone the day was cut in: the one sent, or the server's default. */
+    val timezone: String = "",
+    /** RFC 3339: the next local midnight, when a new set is chosen. */
+    @SerialName("resets_at") val resetsAt: String? = null,
+    val size: Int = 0,
+)
+
+// ── Travel mode (mechanic M8; fixtures travel_*) ───────────────────────────
+
+/** `GET`, `PUT` and `DELETE /travel` all answer this. */
+@Serializable
+data class TravelDto(
+    /** The trip in effect; omitted when there is none. */
+    val active: TravelTripDto? = null,
+    /** The caller holds a pass and may start a trip. Omitted when false. */
+    val available: Boolean = false,
+    val cities: List<TravelCityDto> = emptyList(),
+    /** The longest trip in days. 0 = the server did not say. */
+    @SerialName("max_days") val maxDays: Int = 0,
+)
+
+@Serializable
+data class TravelTripDto(
+    val city: TravelCityDto = TravelCityDto(),
+    @SerialName("starts_at") val startsAt: String = "",
+    @SerialName("ends_at") val endsAt: String = "",
+)
+
+@Serializable
+data class TravelCityDto(val code: String = "", val label: String = "")
+
+/** `PUT /travel`: a city code from [TravelDto.cities] and 1 to `max_days` days. */
+@Serializable
+data class TravelRequest(val city: String, val days: Int)
 
 @Serializable
 data class PassDto(
@@ -602,6 +680,8 @@ data class SparkRequest(
     val note: String? = null,
     /** True sends a Super Spark (mechanic M3). Null is left out of the body, so an ordinary spark is unchanged. */
     @SerialName("super") val superSpark: Boolean? = null,
+    /** Mechanic M7: the surface, from [ActionSource.wire]. Null (the deck) is left out of the body. */
+    val source: String? = null,
 )
 
 @Serializable

@@ -1,0 +1,96 @@
+{
+  "data": {
+    "available": false,
+    "cities": [
+      {
+        "code": "ahmedabad",
+        "label": "Ahmedabad"
+      },
+      {
+        "code": "bengaluru",
+        "label": "Bengaluru"
+      },
+      {
+        "code": "chandigarh",
+        "label": "Chandigarh"
+      },
+      {
+        "code": "chennai",
+        "label": "Chennai"
+      },
+      {
+        "code": "delhi",
+        "label": "Delhi"
+      },
+      {
+        "code": "dubai",
+        "label": "Dubai"
+      },
+      {
+        "code": "goa",
+        "label": "Goa"
+      },
+      {
+        "code": "hyderabad",
+        "label": "Hyderabad"
+      },
+      {
+        "code": "indore",
+        "label": "Indore"
+      },
+      {
+        "code": "jaipur",
+        "label": "Jaipur"
+      },
+      {
+        "code": "kochi",
+        "label": "Kochi"
+      },
+      {
+        "code": "kolkata",
+        "label": "Kolkata"
+      },
+      {
+        "code": "london",
+        "label": "London"
+      },
+      {
+        "code": "lucknow",
+        "label": "Lucknow"
+      },
+      {
+        "code": "mumbai",
+        "label": "Mumbai"
+      },
+      {
+        "code": "mysuru",
+        "label": "Mysuru"
+      },
+      {
+        "code": "new_york",
+        "label": "New York"
+      },
+      {
+        "code": "pune",
+        "label": "Pune"
+      },
+      {
+        "code": "singapore",
+        "label": "Singapore"
+      },
+      {
+        "code": "sydney",
+        "label": "Sydney"
+      },
+      {
+        "code": "toronto",
+        "label": "Toronto"
+      },
+      {
+        "code": "visakhapatnam",
+        "label": "Visakhapatnam"
+      }
+    ],
+    "max_days": 7
+  }
+}

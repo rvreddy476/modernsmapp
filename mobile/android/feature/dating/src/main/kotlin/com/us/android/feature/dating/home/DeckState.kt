@@ -4,6 +4,7 @@ import com.us.android.feature.dating.network.AllowanceDto
 import com.us.android.feature.dating.network.PulseMetaDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
 import com.us.android.feature.dating.network.SuperSparkAllowanceDto
+import com.us.android.feature.dating.travel.TripUi
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -72,6 +73,10 @@ data class DeckUi(
     val rewindable: String? = null,
     /** Set by `REWIND_LIMIT_REACHED`; the out-of-undos pane shows until dismissed. */
     val rewindLimit: SparkLimitUi? = null,
+    /** Mechanic M8 is on: the top bar offers Travel. False until `GET /travel` answers. */
+    val travelEnabled: Boolean = false,
+    /** The viewer's own trip in effect: the deck says whose city it is showing. */
+    val trip: TripUi? = null,
 ) {
     /** The server is counting cards for this viewer. */
     val metered: Boolean get() = dailyLimit > 0

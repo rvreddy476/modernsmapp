@@ -84,12 +84,32 @@ object DatingCopy {
             "TOO_MANY_LANGUAGE" -> tooMany(error, json, "languages")
             "INVALID_HEIGHT" -> height(error, json)
             "INVALID_LIFESTYLE" -> "That choice isn't available any more. Pick another one."
+            // Mechanic M7 — daily picks. The app retries a refused zone without
+            // one, so these reach a person only if that fails too.
+            "INVALID_TIMEZONE" -> "Your phone's time zone wasn't recognised. Try again later."
+            "INVALID_SOURCE" -> GENERIC
+            // Mechanic M8 — travel.
+            "TRAVEL_REQUIRES_PASS" -> TRAVEL_REQUIRES_PASS
+            "INVALID_CITY" -> "That city isn't on the list any more. Pick another one."
+            "INVALID_TRAVEL_DAYS" -> travelDays(error, json)
             else -> GENERIC
         }
     }
 
     /** `403 FILTERS_REQUIRE_PASS`: a pass filter was set without a pass. */
     const val FILTERS_REQUIRE_PASS = "These filters come with a Premium pass."
+
+    /** `403 TRAVEL_REQUIRES_PASS`: a trip was started without a pass. */
+    const val TRAVEL_REQUIRES_PASS = "Travel comes with a Premium pass."
+
+    private fun travelDays(error: DatingError, json: Json?): String {
+        val range = json?.let { error.detailsAs(it, RangeDetailsDto.serializer()) }
+        return if (range != null && range.min > 0 && range.max > 0) {
+            "Trips run from ${range.min} to ${range.max} days."
+        } else {
+            "That trip length isn't one we can set."
+        }
+    }
 
     private fun tooMany(error: DatingError, json: Json?, what: String): String {
         val max = json?.let { error.detailsAs(it, FieldRefusalDetailsDto.serializer()) }?.max?.takeIf { it > 0 }

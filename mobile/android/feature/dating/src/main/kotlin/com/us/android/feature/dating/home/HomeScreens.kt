@@ -40,6 +40,7 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.ReportSheet
+import com.us.android.feature.dating.travel.TravelCopy
 import com.us.android.feature.dating.ui.ConfirmDialog
 import com.us.android.feature.dating.ui.DatingCard
 import com.us.android.feature.dating.ui.DatingPhoto
@@ -50,11 +51,23 @@ import com.us.android.feature.dating.ui.Pill
 import com.us.android.feature.dating.ui.Tone
 import com.us.android.feature.dating.ui.listPadding
 
-enum class HomeTab(val label: String) { PULSE("Pulse"), SPARKS("Sparks"), MATCHES("Matches") }
+enum class HomeTab(val label: String) { PULSE("Pulse"), PICKS(PicksCopy.TAB), SPARKS("Sparks"), MATCHES("Matches") }
 
 /**
- * Dating home once the profile is active: Pulse, who sparked you (the
- * "liked you" grid, mechanic M4, in [LikedYouGrid]) and matches.
+ * The tabs drawn: Picks (mechanic M7) only while the server offers them, so a
+ * switched-off mechanic leaves no empty tab behind.
+ */
+internal fun visibleTabs(picks: Boolean): List<HomeTab> = HomeTab.entries.filter { it != HomeTab.PICKS || picks }
+
+/**
+ * Dating home once the profile is active: Pulse, today's picks (mechanic M7,
+ * in [PicksTab]), who sparked you (the "liked you" grid, mechanic M4, in
+ * [LikedYouGrid]) and matches.
+ *
+ * Picks are a tab of their own rather than a strip above the deck: they are a
+ * fixed set for the day that is browsed and scrolled, while the deck is one
+ * card at a time under a drag gesture. Sharing a screen would cost the deck
+ * its height and put a scroll on top of a swipe.
  *
  * A new match — from the deck or from a spark sent back — takes the whole
  * screen (see [MatchCelebrationScreen]) until it is answered. It is state on
@@ -73,22 +86,33 @@ fun DatingHomeScreen(
     onOpenPremium: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenFilters: () -> Unit = {},
+    onOpenTravel: () -> Unit = {},
     pulse: PulseViewModel = hiltViewModel(),
+    picks: PicksViewModel = hiltViewModel(),
     sparks: LikedYouViewModel = hiltViewModel(),
     matches: MatchesViewModel = hiltViewModel(),
 ) {
-    var tab by rememberSaveable { mutableStateOf(initialTab) }
+    var chosen by rememberSaveable { mutableStateOf(initialTab) }
+    val picksVisible by picks.visible.collectAsStateWithLifecycle()
+    val tabs = visibleTabs(picksVisible)
+    // Picks switched off while chosen: back to the deck.
+    val tab = chosen.takeIf { it in tabs } ?: HomeTab.PULSE
+    val deck by pulse.deck.collectAsStateWithLifecycle()
     val pulseMessage by pulse.message.collectAsStateWithLifecycle()
+    val picksMessage by picks.message.collectAsStateWithLifecycle()
     val sparksMessage by sparks.message.collectAsStateWithLifecycle()
     val pulseMatch by pulse.celebration.collectAsStateWithLifecycle()
+    val picksMatch by picks.celebration.collectAsStateWithLifecycle()
     val sparksMatch by sparks.celebration.collectAsStateWithLifecycle()
     val pulseHello by pulse.hello.collectAsStateWithLifecycle()
+    val picksHello by picks.hello.collectAsStateWithLifecycle()
     val sparksHello by sparks.hello.collectAsStateWithLifecycle()
 
     // "Say hello": the chat when the match has one, the match itself until it does.
-    LaunchedEffect(pulseHello, sparksHello) {
-        val target = pulseHello ?: sparksHello ?: return@LaunchedEffect
+    LaunchedEffect(pulseHello, picksHello, sparksHello) {
+        val target = pulseHello ?: picksHello ?: sparksHello ?: return@LaunchedEffect
         pulse.helloHandled()
+        picks.helloHandled()
         sparks.helloHandled()
         when (target) {
             is HelloTarget.Chat -> onOpenChat(target.conversationId, target.title)
@@ -96,13 +120,29 @@ fun DatingHomeScreen(
         }
     }
 
-    val celebration = pulseMatch ?: sparksMatch
+    val celebration = pulseMatch ?: picksMatch ?: sparksMatch
     if (celebration != null) {
-        val fromPulse = pulseMatch != null
+        val from = when {
+            pulseMatch != null -> HomeTab.PULSE
+            picksMatch != null -> HomeTab.PICKS
+            else -> HomeTab.SPARKS
+        }
         MatchCelebrationScreen(
             match = celebration,
-            onSayHello = { if (fromPulse) pulse.sayHello() else sparks.sayHello() },
-            onKeepBrowsing = { if (fromPulse) pulse.dismissCelebration() else sparks.dismissCelebration() },
+            onSayHello = {
+                when (from) {
+                    HomeTab.PULSE -> pulse.sayHello()
+                    HomeTab.PICKS -> picks.sayHello()
+                    else -> sparks.sayHello()
+                }
+            },
+            onKeepBrowsing = {
+                when (from) {
+                    HomeTab.PULSE -> pulse.dismissCelebration()
+                    HomeTab.PICKS -> picks.dismissCelebration()
+                    else -> sparks.dismissCelebration()
+                }
+            },
         )
         return
     }
@@ -110,9 +150,25 @@ fun DatingHomeScreen(
     DatingScreen(
         title = "Dating",
         onBack = onBack,
-        message = if (tab == HomeTab.SPARKS) sparksMessage else pulseMessage,
-        onDismissMessage = { if (tab == HomeTab.SPARKS) sparks.dismissMessage() else pulse.dismissMessage() },
+        message = when (tab) {
+            HomeTab.SPARKS -> sparksMessage
+            HomeTab.PICKS -> picksMessage
+            else -> pulseMessage
+        },
+        onDismissMessage = {
+            when (tab) {
+                HomeTab.SPARKS -> sparks.dismissMessage()
+                HomeTab.PICKS -> picks.dismissMessage()
+                else -> pulse.dismissMessage()
+            }
+        },
         actions = {
+            // Mechanic M8: travel changes both the deck and the picks, so it sits on both.
+            if (deck.travelEnabled && (tab == HomeTab.PULSE || tab == HomeTab.PICKS)) {
+                IconButton(onClick = onOpenTravel) {
+                    Icon(UsIcons.MapPin, contentDescription = TravelCopy.ENTRY, tint = UsTheme.extended.textPrimary)
+                }
+            }
             // Mechanic M6: the deck's filters, drawn on the deck only.
             if (tab == HomeTab.PULSE) {
                 IconButton(onClick = onOpenFilters) { Icon(UsIcons.Sliders, contentDescription = "Filters", tint = UsTheme.extended.textPrimary) }
@@ -124,17 +180,18 @@ fun DatingHomeScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(top = padding.calculateTopPadding())) {
             TabRow(
-                selectedTabIndex = tab.ordinal,
+                selectedTabIndex = tabs.indexOf(tab).coerceAtLeast(0),
                 containerColor = UsTheme.extended.bgCanvas,
                 contentColor = UsTheme.extended.textPrimary,
             ) {
-                HomeTab.entries.forEach { entry ->
-                    Tab(selected = tab == entry, onClick = { tab = entry }, text = { Text(entry.label) })
+                tabs.forEach { entry ->
+                    Tab(selected = tab == entry, onClick = { chosen = entry }, text = { Text(entry.label, maxLines = 1) })
                 }
             }
             Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
                 when (tab) {
-                    HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson, onOpenPremium)
+                    HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson, onOpenPremium, onOpenTravel)
+                    HomeTab.PICKS -> PicksTab(picks)
                     HomeTab.SPARKS -> LikedYouGrid(sparks, onOpenPerson, onOpenPremium)
                     HomeTab.MATCHES -> MatchesList(matches, onOpenMatch)
                 }

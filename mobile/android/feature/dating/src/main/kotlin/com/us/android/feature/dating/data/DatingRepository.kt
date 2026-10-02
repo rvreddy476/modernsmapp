@@ -1,7 +1,11 @@
 package com.us.android.feature.dating.data
 
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.feature.dating.network.ActionSource
 import com.us.android.feature.dating.network.AllowancesDto
+import com.us.android.feature.dating.network.PicksDto
+import com.us.android.feature.dating.network.TravelDto
+import com.us.android.feature.dating.network.TravelRequest
 import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
@@ -166,7 +170,9 @@ class DatingRepository @Inject constructor(
 
     suspend fun explain(userId: String): DatingResult<ExplainDto> = call { api.explain(userId) }
 
-    suspend fun pass(candidateId: String): DatingResult<PassDto> = call { api.pass(candidateId, PassRequest()) }
+    /** A pass; [source] other than the deck spends no deck card (mechanic M7). */
+    suspend fun pass(candidateId: String, source: ActionSource = ActionSource.DECK): DatingResult<PassDto> =
+        call { api.pass(candidateId, PassRequest(source = source.wire)) }
 
     /** Undoes the caller's most recent pass (mechanic M2). */
     suspend fun rewind(): DatingResult<RewindDto> = call { api.rewind() }
@@ -174,8 +180,31 @@ class DatingRepository @Inject constructor(
     /** Every daily allowance (mechanic M10). An absent mechanic is switched off on the server. */
     suspend fun allowances(): DatingResult<AllowancesDto> = call { api.allowances() }
 
-    /** A spark on [toUserId]'s primary photo; [superSpark] sends it as a Super Spark (mechanic M3). */
-    suspend fun spark(toUserId: String, note: String? = null, superSpark: Boolean = false): DatingResult<SparkCreatedDto> =
+    /** Today's picks (mechanic M7) in [tz], an IANA zone; null lets the server pick its default. */
+    suspend fun picks(tz: String?): DatingResult<PicksDto> =
+        datingRawCall(json) { api.picks(tz?.trim()?.takeIf { it.isNotEmpty() }) }
+
+    /** The caller's trip, the cities and whether they may travel (mechanic M8). */
+    suspend fun travel(): DatingResult<TravelDto> = call { api.travel() }
+
+    /** Starts (or replaces) the caller's trip: a city code and 1 to `max_days` days. */
+    suspend fun startTravel(city: String, days: Int): DatingResult<TravelDto> =
+        call { api.startTravel(TravelRequest(city = city, days = days)) }
+
+    /** Ends the caller's trip. */
+    suspend fun endTravel(): DatingResult<TravelDto> = call { api.endTravel() }
+
+    /**
+     * A spark on [toUserId]'s primary photo; [superSpark] sends it as a Super
+     * Spark (mechanic M3). [source] other than the deck spends no deck card
+     * (mechanic M7); the deck itself is left out of the body.
+     */
+    suspend fun spark(
+        toUserId: String,
+        note: String? = null,
+        superSpark: Boolean = false,
+        source: ActionSource = ActionSource.DECK,
+    ): DatingResult<SparkCreatedDto> =
         call {
             api.spark(
                 SparkRequest(
@@ -184,6 +213,7 @@ class DatingRepository @Inject constructor(
                     targetRef = PRIMARY_PHOTO_REF,
                     note = note?.trim()?.takeIf { it.isNotEmpty() },
                     superSpark = true.takeIf { superSpark },
+                    source = source.wire,
                 ),
             )
         }

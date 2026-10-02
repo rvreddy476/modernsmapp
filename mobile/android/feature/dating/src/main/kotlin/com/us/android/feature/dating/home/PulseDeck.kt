@@ -72,6 +72,8 @@ import com.us.android.feature.dating.profile.ProfileOptionsUi
 import com.us.android.feature.dating.profile.rememberProfileOptions
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.ReportSheet
+import com.us.android.feature.dating.travel.TripBanner
+import com.us.android.feature.dating.travel.VisitingMark
 import com.us.android.feature.dating.ui.ConfirmDialog
 import com.us.android.feature.dating.ui.DatingPhoto
 import com.us.android.feature.dating.ui.LabelChips
@@ -105,10 +107,30 @@ import java.time.ZoneId
  * card flies out, and comes back if the server refuses.
  */
 
-/** The Pulse tab. [onOpenPremium] is where a spent undo or Super Spark allowance leads. */
+/**
+ * The Pulse tab. [onOpenPremium] is where a spent undo or Super Spark allowance
+ * leads; [onOpenTravel] is where the trip banner (mechanic M8) leads.
+ */
+@Composable
+internal fun PulseDeck(
+    viewModel: PulseViewModel,
+    onOpenPerson: (userId: String) -> Unit,
+    onOpenPremium: () -> Unit,
+    onOpenTravel: () -> Unit = {},
+) {
+    val deck by viewModel.deck.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize()) {
+        // While travelling, the deck says whose city it is showing.
+        deck.trip?.let { TripBanner(it, onClick = onOpenTravel, modifier = Modifier.padding(top = UsTheme.spacing.m)) }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            DeckBody(viewModel, onOpenPerson, onOpenPremium)
+        }
+    }
+}
+
 @Suppress("LongMethod")
 @Composable
-internal fun PulseDeck(viewModel: PulseViewModel, onOpenPerson: (userId: String) -> Unit, onOpenPremium: () -> Unit) {
+private fun DeckBody(viewModel: PulseViewModel, onOpenPerson: (userId: String) -> Unit, onOpenPremium: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val deck by viewModel.deck.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -460,7 +482,7 @@ private fun SwipeCard(
         add(CustomAccessibilityAction("Save for later") { onStash(); true })
         add(CustomAccessibilityAction("View profile") { onOpen(); true })
     }
-    val summary = listOfNotNull("${card.name}, ${card.age}", card.city.takeIf { it.isNotBlank() }, card.distance).joinToString(". ")
+    val summary = listOfNotNull("${card.name}, ${card.age}", card.visiting, card.city.takeIf { it.isNotBlank() }, card.distance).joinToString(". ")
 
     Box(
         modifier = Modifier
@@ -563,7 +585,7 @@ private fun DragHint(text: String, icon: ImageVector, color: Color, alpha: () ->
  */
 @Suppress("LongParameterList", "LongMethod")
 @Composable
-private fun CardFace(
+internal fun CardFace(
     card: CardUi,
     photoUrl: String?,
     modifier: Modifier = Modifier,
@@ -627,6 +649,8 @@ private fun CardFace(
                 )
                 if (card.verified) Pill("Verified", Tone.Positive)
             }
+            // Mechanic M8: on a trip, so the city below is where they are visiting.
+            card.visiting?.let { VisitingMark(it) }
             val place = listOfNotNull(card.city.takeIf { it.isNotBlank() }, card.distance).joinToString(" · ")
             if (place.isNotBlank()) Text(place, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary)
             card.lastActive?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted) }
@@ -672,7 +696,7 @@ internal fun CardUi.glanceInterests(options: ProfileOptionsUi?): List<String> {
 }
 
 /** The gallery, primary first, or the single card photo; a null entry is the placeholder. */
-private fun CardUi.photos(): List<String?> =
+internal fun CardUi.photos(): List<String?> =
     detail?.gallery?.map { it.url }?.takeIf { it.isNotEmpty() } ?: listOf(photoUrl)
 
 /** Off the screen on the side the action belongs to, keeping the other axis where the drag left it. */

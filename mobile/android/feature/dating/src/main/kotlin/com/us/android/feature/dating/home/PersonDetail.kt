@@ -14,6 +14,7 @@ import com.us.android.feature.dating.network.ProfileDetailDto
 import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.photos.PhotoRules
 import com.us.android.feature.dating.profile.ProfileBasicsCodes
+import com.us.android.feature.dating.travel.visitingLabel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -122,6 +123,8 @@ data class PersonUi(
     val photoUrl: String?,
     val photoId: String?,
     val detail: PersonDetailUi?,
+    /** Mechanic M8: "Visiting Hyderabad" while they are on a trip, else null. */
+    val visiting: String? = null,
 )
 
 sealed interface PersonState {
@@ -177,5 +180,6 @@ class PersonViewModel @Inject constructor(
         photoUrl = urls.forPerson(this),
         photoId = PhotoRules.photoIdOf(primaryPhotoUrl),
         detail = detail.toUi(urls),
+        visiting = visitingLabel(travelling, city),
     )
 }

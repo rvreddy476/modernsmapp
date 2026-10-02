@@ -82,6 +82,18 @@ class DatingSession @Inject constructor() {
         _filtersVersion.update { it + 1 }
     }
 
+    private val _travelVersion = MutableStateFlow(0)
+
+    /**
+     * Bumped each time a trip starts or ends (mechanic M8). The deck and the
+     * picks are the destination's while a trip is on, so both read afresh.
+     */
+    val travelVersion: StateFlow<Int> = _travelVersion.asStateFlow()
+
+    fun travelChanged() {
+        _travelVersion.update { it + 1 }
+    }
+
     /** The other participant of a match. */
     fun otherOf(userA: String, userB: String): String = if (userA == myUserId) userB else userA
 

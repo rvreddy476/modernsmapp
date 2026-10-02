@@ -35,6 +35,7 @@ import com.us.android.feature.dating.privacy.PrivacyScreen
 import com.us.android.feature.dating.safety.SafetyScreen
 import com.us.android.feature.dating.safety.SharedLocationScreen
 import com.us.android.feature.dating.selfie.SelfieScreen
+import com.us.android.feature.dating.travel.TravelScreen
 import com.us.android.feature.dating.ui.DatingScreen
 import com.us.android.feature.dating.ui.LoadingPane
 import com.us.android.feature.dating.ui.MessagePane
@@ -85,6 +86,10 @@ data object DatingAboutMeRoute
 @Serializable
 data object DatingFiltersRoute
 
+/** Mechanic M8: travel mode, from the Pulse and Picks top bar and the deck's trip banner. */
+@Serializable
+data object DatingTravelRoute
+
 /**
  * Registers Dating.
  *
@@ -115,7 +120,12 @@ fun NavGraphBuilder.datingScreens(
                 onOpenPrompts = { navController.navigate(DatingPromptsRoute) },
                 onOpenAboutMe = { navController.navigate(DatingAboutMeRoute) },
                 onOpenFilters = { navController.navigate(DatingFiltersRoute) },
+                onOpenTravel = { navController.navigate(DatingTravelRoute) },
             )
+        }
+
+        composable<DatingTravelRoute> {
+            TravelScreen(onBack = navController::popBackStack, onOpenPremium = { navController.navigate(DatingPremiumRoute) })
         }
 
         composable<DatingAboutMeRoute> {
@@ -193,6 +203,7 @@ private fun DatingRoot(
     onOpenPrompts: () -> Unit,
     onOpenAboutMe: () -> Unit,
     onOpenFilters: () -> Unit,
+    onOpenTravel: () -> Unit,
     viewModel: DatingRootViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -246,6 +257,7 @@ private fun DatingRoot(
                 onOpenPremium = onOpenPremium,
                 onOpenSettings = onOpenPrivacy,
                 onOpenFilters = onOpenFilters,
+                onOpenTravel = onOpenTravel,
             )
         }
     }

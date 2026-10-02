@@ -1,0 +1,58 @@
+{
+  "data": [
+    {
+      "candidate_id": "<traveller>",
+      "score": 0.57,
+      "match_reasons": [
+        {
+          "kind": "tune",
+          "summary": "Compatible vibes"
+        },
+        {
+          "kind": "intent",
+          "summary": "You both want casual"
+        },
+        {
+          "kind": "proximity",
+          "summary": "Less than 5 km away"
+        }
+      ],
+      "profile": {
+        "user_id": "<traveller>",
+        "first_name": "Asha",
+        "age": 30,
+        "intent": "casual",
+        "city": "Hyderabad",
+        "distance_bucket": "lt_5_km",
+        "distance_label": "\u003c 5 km",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "primary_photo_blurred": false,
+        "tune_summary": {},
+        "trust_tier": "phone",
+        "travelling": true,
+        "detail": {
+          "photos": [
+            {
+              "id": "<uuid>",
+              "url": "/v1/dating/photos/<uuid>/full",
+              "state": "full"
+            }
+          ]
+        }
+      },
+      "echoes": {
+        "top_qa_answer_id": null,
+        "top_reel_id": null,
+        "top_community": null,
+        "recent_post_id": null
+      }
+    }
+  ],
+  "meta": {
+    "generated_at": "<timestamp>",
+    "size": 1,
+    "cohort_gated": false,
+    "daily_limit": 50,
+    "remaining_today": 50
+  }
+}

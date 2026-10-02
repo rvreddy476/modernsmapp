@@ -47,6 +47,9 @@ import com.us.android.feature.dating.network.PanicRequest
 import com.us.android.feature.dating.network.PassDto
 import com.us.android.feature.dating.network.PassRequest
 import com.us.android.feature.dating.network.PauseRequest
+import com.us.android.feature.dating.network.PicksDto
+import com.us.android.feature.dating.network.TravelDto
+import com.us.android.feature.dating.network.TravelRequest
 import com.us.android.feature.dating.network.PreferencesDto
 import com.us.android.feature.dating.network.PreferencesRequest
 import com.us.android.feature.dating.network.PremiumCatalogueDto
@@ -130,6 +133,10 @@ fun <T> fixture(name: String, serializer: KSerializer<T>): T =
 fun <T> refusedWithFixture(status: Int, name: String): Response<ApiEnvelope<T>> =
     Response.error(status, fixtureText(name).toResponseBody(JSON_TYPE))
 
+/** A golden error fixture for a route whose success body is NOT the envelope (`/pulse/today`, `/picks`). */
+fun <T> rawRefusedWithFixture(status: Int, name: String): Response<T> =
+    Response.error(status, fixtureText(name).toResponseBody(JSON_TYPE))
+
 fun <T> offline(): Response<ApiEnvelope<T>> = throw IOException("offline")
 
 fun profile(
@@ -155,17 +162,21 @@ fun card(
     bucket: String? = "lt_5_km",
     label: String? = "< 5 km",
     detail: ProfileDetailDto? = null,
+    city: String = "Hyderabad",
+    travelling: Boolean = false,
+    trustTier: String = "selfie",
 ) = PulseCardDto(
     candidateId = userId,
     profile = PulseProfileDto(
         userId = userId,
         firstName = "Person $userId",
         age = 30,
-        city = "Hyderabad",
+        city = city,
         distanceBucket = bucket,
         distanceLabel = label,
         primaryPhotoUrl = "/v1/dating/photos/photo-$userId/full",
-        trustTier = "selfie",
+        trustTier = trustTier,
+        travelling = travelling,
         detail = detail,
     ),
 )
@@ -200,6 +211,7 @@ fun person(
     lastActiveBucket: String? = null,
     lastActiveLabel: String? = null,
     detail: ProfileDetailDto? = null,
+    travelling: Boolean = false,
 ) = DatingPersonDto(
     userId = userId,
     firstName = name,
@@ -215,6 +227,7 @@ fun person(
     intent = intent,
     lastActiveBucket = lastActiveBucket,
     lastActiveLabel = lastActiveLabel,
+    travelling = travelling,
     detail = detail,
 )
 
@@ -434,9 +447,53 @@ class FakeDatingApi : DatingApi {
         return rewindResponse()
     }
 
+    /** Every pass body, in order, beside [passes]' ids: the source (mechanic M7) lives here. */
+    val passBodies = mutableListOf<PassRequest>()
+
     override suspend fun pass(candidateId: String, body: PassRequest): Response<ApiEnvelope<PassDto>> {
         passes += candidateId
+        passBodies += body
         return passResponse?.invoke(candidateId) ?: ok(PassDto(passed = true, candidateId = candidateId))
+    }
+
+    // ── Mechanic M7: daily picks ────────────────────────────────────────────
+
+    /** Every `GET /picks` zone, in order; null is a read without `tz`. */
+    val picksReads = mutableListOf<String?>()
+
+    /** `GET /picks` by zone. The default is the server's flag OFF, as the golden writes it. */
+    var picksResponse: (tz: String?) -> Response<PicksDto> = { rawRefusedWithFixture(404, "picks_get_404_not_enabled.json") }
+
+    override suspend fun picks(tz: String?): Response<PicksDto> {
+        calls += "picks"
+        picksReads += tz
+        return picksResponse(tz)
+    }
+
+    // ── Mechanic M8: travel ─────────────────────────────────────────────────
+
+    /** `GET /travel`. The default is the server's flag OFF, as the golden writes it. */
+    var travelResponse: () -> Response<ApiEnvelope<TravelDto>> = { refusedWithFixture(404, "travel_get_404_not_enabled.json") }
+    val travelWrites = mutableListOf<TravelRequest>()
+    var travelWriteResponse: (TravelRequest) -> Response<ApiEnvelope<TravelDto>> =
+        { ok(fixture("travel_put_200.json", TravelDto.serializer())) }
+    var travelEndResponse: () -> Response<ApiEnvelope<TravelDto>> =
+        { ok(fixture("travel_get_200.json", TravelDto.serializer()).copy(available = true)) }
+
+    override suspend fun travel(): Response<ApiEnvelope<TravelDto>> {
+        calls += "travel"
+        return travelResponse()
+    }
+
+    override suspend fun startTravel(body: TravelRequest): Response<ApiEnvelope<TravelDto>> {
+        calls += "travel:start"
+        travelWrites += body
+        return travelWriteResponse(body)
+    }
+
+    override suspend fun endTravel(): Response<ApiEnvelope<TravelDto>> {
+        calls += "travel:end"
+        return travelEndResponse()
     }
 
     override suspend fun spark(body: SparkRequest): Response<ApiEnvelope<SparkCreatedDto>> {

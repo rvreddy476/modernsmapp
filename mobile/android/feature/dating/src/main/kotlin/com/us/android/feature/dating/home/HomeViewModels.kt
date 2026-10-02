@@ -25,6 +25,8 @@ import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.photos.PhotoRules
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.SafetyActions
+import com.us.android.feature.dating.travel.TravelRules
+import com.us.android.feature.dating.travel.visitingLabel
 import com.us.android.feature.dating.ui.errorMessage
 import com.us.android.feature.dating.ui.infoMessage
 import com.us.android.feature.dating.ui.successMessage
@@ -56,6 +58,24 @@ data class CardUi(
     val reasons: List<String>,
     /** The pre-match block: the gallery, the bio and the prompt answers you decide on. */
     val detail: PersonDetailUi? = null,
+    /** Mechanic M8: "Visiting Hyderabad" while they are on a trip, else null. */
+    val visiting: String? = null,
+)
+
+/** A deck-shaped card (the deck and the picks share it) in display terms. */
+internal fun PulseCardDto.toCardUi(urls: DatingPhotoUrls): CardUi = CardUi(
+    userId = profile.userId,
+    name = profile.firstName,
+    age = profile.age,
+    city = profile.city,
+    distance = DistanceBucket.labelFor(profile.distanceBucket),
+    lastActive = profile.lastActiveLabel?.takeIf { it.isNotBlank() },
+    verified = profile.trustTier == "selfie" || profile.trustTier == "aadhaar",
+    photoUrl = urls.forViewer(profile.primaryPhotoUrl, matched = false),
+    photoId = PhotoRules.photoIdOf(profile.primaryPhotoUrl),
+    reasons = matchReasons.map { it.summary }.filter { it.isNotBlank() },
+    detail = profile.detail.toUi(urls),
+    visiting = visitingLabel(profile.travelling, profile.city),
 )
 
 sealed interface ListState<out T> {
@@ -247,12 +267,15 @@ class PulseViewModel @Inject constructor(
         // on screen is replaced by a fresh batch. The current value is skipped:
         // this view model has just loaded.
         viewModelScope.launch { session.filtersVersion.drop(1).collect { refresh() } }
+        // Mechanic M8: a trip started or ended — the deck is now another city's.
+        viewModelScope.launch { session.travelVersion.drop(1).collect { refresh() } }
     }
 
     fun refresh() {
         viewModelScope.launch {
             load()
             loadAllowances()
+            loadTravel()
         }
     }
 
@@ -544,19 +567,26 @@ class PulseViewModel @Inject constructor(
         load(refill = true)
     }
 
-    private fun PulseCardDto.toUi(): CardUi = CardUi(
-        userId = profile.userId,
-        name = profile.firstName,
-        age = profile.age,
-        city = profile.city,
-        distance = DistanceBucket.labelFor(profile.distanceBucket),
-        lastActive = profile.lastActiveLabel?.takeIf { it.isNotBlank() },
-        verified = profile.trustTier == "selfie" || profile.trustTier == "aadhaar",
-        photoUrl = urls.forViewer(profile.primaryPhotoUrl, matched = false),
-        photoId = PhotoRules.photoIdOf(profile.primaryPhotoUrl),
-        reasons = matchReasons.map { it.summary }.filter { it.isNotBlank() },
-        detail = profile.detail.toUi(urls),
-    )
+    private fun PulseCardDto.toUi(): CardUi = toCardUi(urls)
+
+    /**
+     * Mechanic M8: whether travel is offered and the trip in effect, for the
+     * top bar's entry and the deck's banner. Off for the session once the
+     * server answers `MECHANIC_NOT_ENABLED`; a failed read changes nothing.
+     */
+    private suspend fun loadTravel() {
+        if (session.isMechanicDisabled(TravelRules.MECHANIC)) {
+            _deck.update { it.copy(travelEnabled = false, trip = null) }
+            return
+        }
+        when (val result = repository.travel()) {
+            is DatingResult.Success -> _deck.update { it.copy(travelEnabled = true, trip = TravelRules.trip(result.value.active)) }
+            is DatingResult.Failure -> if (result.error.code == CODE_MECHANIC_NOT_ENABLED) {
+                session.disableMechanic(TravelRules.MECHANIC)
+                _deck.update { it.copy(travelEnabled = false, trip = null) }
+            }
+        }
+    }
 
     private companion object {
         const val CODE_SPARK_RATE_LIMITED = "SPARK_RATE_LIMITED"
@@ -595,6 +625,8 @@ data class IncomingSparkUi(
     val detail: PersonDetailUi? = null,
     /** A Super Spark: marked on the row. The server already lists these first, and the app keeps its order. */
     val superSpark: Boolean = false,
+    /** Mechanic M8: "Visiting Pune" while they are on a trip, else null. */
+    val visiting: String? = null,
 )
 
 /** Incoming sparks: accept (through the accept route) or decline. */
@@ -733,6 +765,7 @@ internal fun incomingSparkUi(
     note = note?.takeIf { it.isNotBlank() },
     detail = person?.detail.toUi(urls),
     superSpark = superSpark,
+    visiting = visitingLabel(person?.travelling == true, person?.city),
 )
 
 data class MatchUi(

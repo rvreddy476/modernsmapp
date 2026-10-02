@@ -141,6 +141,28 @@ interface DatingApi {
     @GET("v1/dating/allowances")
     suspend fun allowances(): Response<ApiEnvelope<AllowancesDto>>
 
+    /**
+     * Mechanic M7: today's picks. NOT the envelope — the deck's `{data, meta}`.
+     * [tz] is the device's IANA zone; null leaves it out and the server uses
+     * its default. 400 INVALID_TIMEZONE, 404 MECHANIC_NOT_ENABLED.
+     */
+    @GET("v1/dating/picks")
+    suspend fun picks(@Query("tz") tz: String?): Response<PicksDto>
+
+    // Travel (mechanic M8)
+
+    /** The caller's trip, the cities and whether they may travel. 404 MECHANIC_NOT_ENABLED. */
+    @GET("v1/dating/travel")
+    suspend fun travel(): Response<ApiEnvelope<TravelDto>>
+
+    /** 403 TRAVEL_REQUIRES_PASS, 400 INVALID_CITY (details.allowed), 400 INVALID_TRAVEL_DAYS (details.min/max). */
+    @PUT("v1/dating/travel")
+    suspend fun startTravel(@Body body: TravelRequest): Response<ApiEnvelope<TravelDto>>
+
+    /** Ends the trip; answers the same shape as the GET. */
+    @DELETE("v1/dating/travel")
+    suspend fun endTravel(): Response<ApiEnvelope<TravelDto>>
+
     // Sparks
 
     @POST("v1/dating/sparks")

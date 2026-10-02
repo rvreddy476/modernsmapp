@@ -54,6 +54,7 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.dating.profile.rememberProfileOptions
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.ReportSheet
+import com.us.android.feature.dating.travel.VisitingMark
 import com.us.android.feature.dating.ui.ConfirmDialog
 import com.us.android.feature.dating.ui.DatingPhoto
 import com.us.android.feature.dating.ui.LoadingPane
@@ -279,10 +280,20 @@ private fun LockedTile(tile: LikedYouTile.Locked, onClick: () -> Unit) {
 private fun OpenTile(tile: LikedYouTile.Open, onClick: () -> Unit) {
     val spark = tile.spark
     val line = personLine(spark.name, spark.age) ?: "Someone sparked you"
-    val description = if (spark.superSpark) "$line. $SUPER_SPARK_MARK" else line
+    val description = listOfNotNull(line, SUPER_SPARK_MARK.takeIf { spark.superSpark }, spark.visiting).joinToString(". ")
     TileFrame(photoUrl = spark.photoUrl, description = description, onClick = onClick) {
         Box(Modifier.fillMaxSize()) {
             if (spark.superSpark) SuperStar(Modifier.align(Alignment.TopStart).padding(UsTheme.spacing.m))
+            // Mechanic M8: on a trip. Kept clear of the star in the other corner.
+            spark.visiting?.let {
+                VisitingMark(
+                    it,
+                    onPhoto = true,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = UsTheme.spacing.m, end = UsTheme.spacing.m, start = VISITING_START),
+                )
+            }
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -366,6 +377,7 @@ private fun SparkSheet(
                 IconButton(onClick = onReport) { Icon(UsIcons.Flag, contentDescription = "Report", tint = UsTheme.extended.textMuted) }
             }
             if (spark.superSpark) SuperSparkMark()
+            spark.visiting?.let { VisitingMark(it) }
             val about = listOfNotNull(spark.city, spark.intent, spark.distance).joinToString(" · ")
             if (about.isNotBlank()) {
                 Text(about, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
@@ -384,6 +396,7 @@ private fun SparkSheet(
 }
 
 private val WIDE_SCREEN = 600.dp
+private val VISITING_START = 44.dp
 private const val COLUMNS = 2
 private const val WIDE_COLUMNS = 3
 private const val TILE_RATIO = 0.78f

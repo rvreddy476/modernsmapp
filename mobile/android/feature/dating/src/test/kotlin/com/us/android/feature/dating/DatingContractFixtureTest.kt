@@ -13,6 +13,16 @@ import com.us.android.feature.dating.network.FirstMoveSettingsDto
 import com.us.android.feature.dating.network.OpeningAnswerDto
 import com.us.android.feature.dating.home.onto
 import com.us.android.feature.dating.home.toUi
+import com.us.android.feature.dating.home.PicksCopy
+import com.us.android.feature.dating.home.parseInstant
+import com.us.android.feature.dating.home.toCardUi
+import com.us.android.feature.dating.network.PicksDto
+import com.us.android.feature.dating.network.TravelCityDto
+import com.us.android.feature.dating.network.TravelDto
+import com.us.android.feature.dating.travel.TravelCopy
+import com.us.android.feature.dating.travel.TravelRules
+import java.time.Instant
+import java.time.ZoneId
 import com.us.android.feature.dating.network.AllowanceDto
 import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.AllowedDetailsDto
@@ -837,6 +847,90 @@ class DatingContractFixtureTest {
             assertThat(refusedCode(error)).isEqualTo("FILTERS_REQUIRE_PASS")
             assertThat((error as DatingError.Refused).status).isEqualTo(403)
         },
+        // ── Mechanic M7: daily picks ────────────────────────────────────────
+        "picks_get_200.json" to { _, raw ->
+            // NOT the envelope: the deck's {data, meta}, meta carrying the local day.
+            val picks = strict.decodeFromString(PicksDto.serializer(), raw)
+            val card = picks.data.single()
+            assertThat(card.candidateId).isEqualTo("<candidate>")
+            assertThat(card.matchReasons).isEmpty()
+            assertThat(card.profile.firstName).isEqualTo("Asha")
+            assertThat(card.profile.lastActiveLabel).isEqualTo("Active today")
+            assertThat(card.profile.travelling).isFalse()
+            assertThat(card.profile.detail?.photos?.single()?.state).isEqualTo("full")
+            val meta = checkNotNull(picks.meta)
+            assertThat(meta.date).isEqualTo("<date>")
+            assertThat(meta.timezone).isEqualTo("UTC")
+            assertThat(meta.resetsAt).isEqualTo("<timestamp>")
+            assertThat(meta.size).isEqualTo(1)
+            // The card reads exactly as a deck card does, with no travelling marker.
+            val ui = card.toCardUi(photoUrls())
+            assertThat(ui.name).isEqualTo("Asha")
+            assertThat(ui.visiting).isNull()
+            // The golden redacts the time: the header falls back to general words.
+            assertThat(PicksCopy.resetLine(parseInstant(meta.resetsAt), Instant.EPOCH, ZoneId.of("UTC")))
+                .isEqualTo("New picks every day at midnight")
+        },
+        "picks_get_400_invalid_timezone.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_TIMEZONE")
+            assertThat((error as DatingError.Refused).status).isEqualTo(400)
+        },
+        "picks_get_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M8: travel ─────────────────────────────────────────────
+        "travel_get_200.json" to data(TravelDto.serializer()) {
+            // No pass, no trip: `active` omitted, `available` false.
+            assertThat(it.active).isNull()
+            assertThat(it.available).isFalse()
+            assertThat(it.maxDays).isEqualTo(7)
+            assertThat(it.cities).hasSize(22)
+            assertThat(it.cities.first()).isEqualTo(TravelCityDto("ahmedabad", "Ahmedabad"))
+            assertThat(it.cities.first { c -> c.code == "new_york" }.label).isEqualTo("New York")
+            val cities = TravelRules.cities(it.cities)
+            assertThat(cities.map { c -> c.label }).isInOrder(String.CASE_INSENSITIVE_ORDER)
+            assertThat(TravelRules.trip(it.active)).isNull()
+        },
+        "travel_put_200.json" to data(TravelDto.serializer()) {
+            assertThat(it.available).isTrue()
+            val active = checkNotNull(it.active)
+            assertThat(active.city).isEqualTo(TravelCityDto("mumbai", "Mumbai"))
+            assertThat(active.startsAt).isEqualTo("<timestamp>")
+            assertThat(active.endsAt).isEqualTo("<timestamp>")
+            assertThat(it.cities).hasSize(22)
+            val trip = checkNotNull(TravelRules.trip(active))
+            assertThat(trip.cityLabel).isEqualTo("Mumbai")
+            // The golden redacts the times; an unparseable end is simply left off.
+            assertThat(trip.endsAt).isNull()
+            assertThat(TravelCopy.browsingUntil(trip, ZoneId.of("UTC"))).isEqualTo("Browsing Mumbai")
+        },
+        "travel_put_403_requires_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("TRAVEL_REQUIRES_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.TRAVEL_REQUIRES_PASS)
+        },
+        "travel_put_400_invalid_city.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_CITY")
+            val allowed = details(error, AllowedDetailsDto.serializer(), name).allowed
+            assertThat(allowed).hasSize(22)
+            assertThat(allowed).containsAtLeast("mumbai", "new_york", "visakhapatnam")
+        },
+        "travel_get_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "pulse_today_get_200_travelling.json" to { _, raw ->
+            // Someone on a trip in the viewer's deck: `travelling` true, city the destination.
+            val today = strict.decodeFromString(PulseTodayDto.serializer(), raw)
+            val card = today.data.single()
+            assertThat(card.profile.travelling).isTrue()
+            assertThat(card.profile.city).isEqualTo("Hyderabad")
+            assertThat(card.profile.distanceBucket).isEqualTo("lt_5_km")
+            assertThat(today.meta?.dailyLimit).isEqualTo(50)
+            assertThat(card.toCardUi(photoUrls()).visiting).isEqualTo("Visiting Hyderabad")
+        },
         "person_get_200_basics.json" to data(DatingPersonDto.serializer()) {
             val detail = checkNotNull(it.detail)
             assertThat(detail.languages).containsExactly("en", "te").inOrder()
@@ -870,10 +964,16 @@ class DatingContractFixtureTest {
             "pulse_today_get_200_rich_card.json" to 1,
             "pulse_today_get_200_refill.json" to 1,
             "pulse_today_get_200_out_of_cards.json" to 0,
+            "pulse_today_get_200_travelling.json" to 1,
         )
-        parsers.keys.filter { statusOf(it) < 300 && it !in pulse }.forEach { name ->
+        // `/picks` is not the envelope either.
+        val picks = mapOf("picks_get_200.json" to 1)
+        parsers.keys.filter { statusOf(it) < 300 && it !in pulse && it !in picks }.forEach { name ->
             val envelope = production.decodeFromString(ApiEnvelope.serializer(kotlinx.serialization.json.JsonElement.serializer()), fixture(name))
             assertThat(envelope.data).isNotNull()
+        }
+        picks.forEach { (name, cards) ->
+            assertThat(production.decodeFromString(PicksDto.serializer(), fixture(name)).data).hasSize(cards)
         }
         pulse.forEach { (name, cards) ->
             assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture(name)).data).hasSize(cards)
