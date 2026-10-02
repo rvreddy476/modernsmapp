@@ -235,6 +235,20 @@ func (s *Service) recordDeckAction(ctx context.Context, viewerID, candidateID uu
 		slog.Warn("deck ledger write failed", "viewer_id", viewerID, "action", action, "error", err)
 	}
 	s.removeFromCachedDeck(ctx, viewerID, candidateID)
+	s.dropUsedUpBatch(ctx, viewerID)
+}
+
+// dropUsedUpBatch deletes the viewer's cached batch once every card in it has
+// been acted on, so the next fetch computes the next batch at once. Without
+// it a used-up batch would look like a genuinely empty one, which is trusted
+// for emptyDeckRetryAfter. Refilling deck only.
+func (s *Service) dropUsedUpBatch(ctx context.Context, viewerID uuid.UUID) {
+	if !s.mechanics.DeckRefill {
+		return
+	}
+	if cached := s.readPulseCache(ctx, viewerID); cached != nil && len(cached.Data) == 0 {
+		s.InvalidatePulseCache(ctx, viewerID)
+	}
 }
 
 // cacheKey is versioned. v2 (lane D7) cards carry distance and last-active

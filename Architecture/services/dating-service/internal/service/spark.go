@@ -319,6 +319,7 @@ func (s *Service) AcceptSpark(ctx context.Context, sparkID, recipientID uuid.UUI
 	if err == nil && s.mechanics.DeckRefill {
 		// The sender may also be a card in the recipient's cached batch.
 		s.removeFromCachedDeck(ctx, recipientID, sp.FromUserID)
+		s.dropUsedUpBatch(ctx, recipientID)
 	}
 	return out, matchID, err
 }
