@@ -1,6 +1,7 @@
 package com.us.android.feature.dating.data
 
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
@@ -37,6 +38,7 @@ import com.us.android.feature.dating.network.PromptCatalogItemDto
 import com.us.android.feature.dating.network.PulseTodayDto
 import com.us.android.feature.dating.network.ReportRequest
 import com.us.android.feature.dating.network.ReportResultDto
+import com.us.android.feature.dating.network.RewindDto
 import com.us.android.feature.dating.network.SelfieChallengeDto
 import com.us.android.feature.dating.network.SelfieResultDto
 import com.us.android.feature.dating.network.SelfieSubmitRequest
@@ -156,8 +158,14 @@ class DatingRepository @Inject constructor(
 
     suspend fun pass(candidateId: String): DatingResult<PassDto> = call { api.pass(candidateId, PassRequest()) }
 
-    /** A spark on [toUserId]'s primary photo. */
-    suspend fun spark(toUserId: String, note: String? = null): DatingResult<SparkCreatedDto> =
+    /** Undoes the caller's most recent pass (mechanic M2). */
+    suspend fun rewind(): DatingResult<RewindDto> = call { api.rewind() }
+
+    /** Every daily allowance (mechanic M10). An absent mechanic is switched off on the server. */
+    suspend fun allowances(): DatingResult<AllowancesDto> = call { api.allowances() }
+
+    /** A spark on [toUserId]'s primary photo; [superSpark] sends it as a Super Spark (mechanic M3). */
+    suspend fun spark(toUserId: String, note: String? = null, superSpark: Boolean = false): DatingResult<SparkCreatedDto> =
         call {
             api.spark(
                 SparkRequest(
@@ -165,6 +173,7 @@ class DatingRepository @Inject constructor(
                     targetKind = TARGET_PHOTO,
                     targetRef = PRIMARY_PHOTO_REF,
                     note = note?.trim()?.takeIf { it.isNotEmpty() },
+                    superSpark = true.takeIf { superSpark },
                 ),
             )
         }

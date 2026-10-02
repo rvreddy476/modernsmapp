@@ -116,8 +116,8 @@ fun PremiumScreen(
                             } else {
                                 Text("You don't have a pass right now.", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
                             }
-                            if (me.boostBalance > 0) {
-                                Text("Boosts: ${me.boostBalance}", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary)
+                            balancesLine(me.boostBalance, me.superSparkBalance)?.let {
+                                Text(it, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary)
                             }
                         }
                     }
@@ -135,6 +135,9 @@ private fun ProductCard(product: PremiumProductDto, buying: Boolean, enabled: Bo
         Row(verticalAlignment = Alignment.CenterVertically) {
             androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
                 Text(product.name, style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
+                packLabel(product)?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary)
+                }
                 Text(rupees(product.amountMinor, product.currency), style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary)
             }
             UsPillButton(text = "Buy", onClick = onBuy, enabled = enabled, busy = buying)
@@ -149,6 +152,21 @@ private fun ProductCard(product: PremiumProductDto, buying: Boolean, enabled: Bo
         }
     }
 }
+
+/** "5 Super Sparks" for a Super Spark pack; null for anything else, or a pack with no quantity. */
+fun packLabel(product: PremiumProductDto): String? {
+    if (product.kind != KIND_SUPER_SPARK || product.quantity <= 0) return null
+    return if (product.quantity == 1) "1 Super Spark" else "${product.quantity} Super Sparks"
+}
+
+/** "Boosts: 1 · Super Sparks: 3" — each only when there is some; null when there is neither. */
+fun balancesLine(boosts: Int, superSparks: Int): String? =
+    listOfNotNull(
+        "Boosts: $boosts".takeIf { boosts > 0 },
+        "Super Sparks: $superSparks".takeIf { superSparks > 0 },
+    ).joinToString(" · ").ifEmpty { null }
+
+private const val KIND_SUPER_SPARK = "super_spark"
 
 fun featureLabel(feature: String): String = when (feature) {
     "match_extend" -> "Extend matches"

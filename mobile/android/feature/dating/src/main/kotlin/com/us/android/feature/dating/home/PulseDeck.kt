@@ -15,6 +15,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -84,9 +85,11 @@ import java.time.ZoneId
  *
  *   right past the threshold   spark
  *   left past the threshold    pass
- *   up past the threshold      Super Spark — only while the view model says it
- *                              is enabled; until then an upward drag is
- *                              resisted and springs back
+ *   up past the threshold      Super Spark — only while `GET /allowances`
+ *                              names the mechanic; otherwise an upward drag
+ *                              is resisted and springs back
+ *   Undo pass (above the card) takes back the last pass, while that pass is
+ *                              still the last action and the mechanic is on
  *   tap the photo's halves     previous / next photo
  *   tap the name panel         the full profile (bio, prompts, languages)
  *
@@ -99,22 +102,53 @@ import java.time.ZoneId
  * card flies out, and comes back if the server refuses.
  */
 
-/** The Pulse tab. */
+/** The Pulse tab. [onOpenPremium] is where a spent undo or Super Spark allowance leads. */
+@Suppress("LongMethod")
 @Composable
-internal fun PulseDeck(viewModel: PulseViewModel, onOpenPerson: (userId: String) -> Unit) {
+internal fun PulseDeck(viewModel: PulseViewModel, onOpenPerson: (userId: String) -> Unit, onOpenPremium: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val deck by viewModel.deck.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     var reporting by remember { mutableStateOf<CardUi?>(null) }
     var blocking by remember { mutableStateOf<CardUi?>(null) }
 
+    // Shown again — back from Premium, say, where a pack or a pass may have
+    // landed: the allowances are read afresh.
+    LaunchedEffect(Unit) { viewModel.refreshAllowances() }
+
+    // Undo stays reachable when the pass emptied the stack.
+    val undo: @Composable ColumnScope.() -> Unit = {
+        if (deck.canRewind) {
+            UndoControl(deck, enabled = busy == null, onUndo = { viewModel.rewind() }, modifier = Modifier.padding(top = UsTheme.spacing.l))
+        }
+    }
+
     when (val s = state) {
         ListState.Loading -> LoadingPane()
         is ListState.Failed -> MessagePane(title = "Pulse didn't load", body = s.message, primaryLabel = "Try again", onPrimary = viewModel::refresh)
         is ListState.Items -> {
             val sparkLimit = deck.sparkLimit
+            val superSparkLimit = deck.superSparkLimit
+            val rewindLimit = deck.rewindLimit
             when {
                 sparkLimit != null -> OutOfSparksPane(sparkLimit, onDismiss = viewModel::dismissSparkLimit)
+                superSparkLimit != null -> OutOfSuperSparksPane(
+                    limit = superSparkLimit,
+                    packs = deck.superSparkBalance,
+                    onGetMore = {
+                        viewModel.dismissSuperSparkLimit()
+                        onOpenPremium()
+                    },
+                    onDismiss = viewModel::dismissSuperSparkLimit,
+                )
+                rewindLimit != null -> OutOfUndosPane(
+                    limit = rewindLimit,
+                    onPremium = {
+                        viewModel.dismissRewindLimit()
+                        onOpenPremium()
+                    },
+                    onDismiss = viewModel::dismissRewindLimit,
+                )
                 s.items.isNotEmpty() -> DeckStack(
                     items = s.items,
                     deck = deck,
@@ -132,13 +166,14 @@ internal fun PulseDeck(viewModel: PulseViewModel, onOpenPerson: (userId: String)
                     onSecondary = viewModel::refresh,
                 )
                 deck.refilling -> LoadingPane(label = "Finding more people")
-                deck.outOfCards -> OutOfCardsPane(deck, onRefresh = viewModel::refresh)
+                deck.outOfCards -> OutOfCardsPane(deck, onRefresh = viewModel::refresh, extra = undo)
                 else -> MessagePane(
                     title = "You're all caught up",
                     body = "New people show up every day.",
                     icon = UsIcons.Compass,
                     secondaryLabel = "Refresh",
                     onSecondary = viewModel::refresh,
+                    extra = undo,
                 )
             }
         }
@@ -172,7 +207,7 @@ internal fun PulseDeck(viewModel: PulseViewModel, onOpenPerson: (userId: String)
 
 /** The daily allowance is spent. The time is the viewer's own clock; a time already behind us is not shown. */
 @Composable
-private fun OutOfCardsPane(deck: DeckUi, onRefresh: () -> Unit) {
+private fun OutOfCardsPane(deck: DeckUi, onRefresh: () -> Unit, extra: @Composable ColumnScope.() -> Unit) {
     val body = remember(deck) { DeckCopy.outOfCardsBody(deck, Instant.now(), ZoneId.systemDefault()) }
     MessagePane(
         title = DeckCopy.OUT_OF_CARDS_TITLE,
@@ -180,7 +215,64 @@ private fun OutOfCardsPane(deck: DeckUi, onRefresh: () -> Unit) {
         icon = UsIcons.Clock,
         secondaryLabel = "Check again",
         onSecondary = onRefresh,
+        extra = extra,
     )
+}
+
+/** `SUPER_SPARK_LIMIT_REACHED`: the daily allowance and every pack Super Spark are used. A pack is bought in Premium. */
+@Composable
+private fun OutOfSuperSparksPane(limit: SparkLimitUi, packs: Int, onGetMore: () -> Unit, onDismiss: () -> Unit) {
+    val body = remember(limit, packs) { DeckCopy.outOfSuperSparksBody(limit, packs, Instant.now(), ZoneId.systemDefault()) }
+    MessagePane(
+        title = DeckCopy.OUT_OF_SUPER_SPARKS_TITLE,
+        body = body,
+        icon = UsIcons.Star,
+        iconTint = UsTheme.extended.statusWarning,
+        primaryLabel = "Get Super Sparks",
+        onPrimary = onGetMore,
+        secondaryLabel = "Keep browsing",
+        onSecondary = onDismiss,
+    )
+}
+
+/** `REWIND_LIMIT_REACHED`. A pass lifts the limit, so Premium is offered; the deck still works. */
+@Composable
+private fun OutOfUndosPane(limit: SparkLimitUi, onPremium: () -> Unit, onDismiss: () -> Unit) {
+    val body = remember(limit) { DeckCopy.outOfUndosBody(limit, Instant.now(), ZoneId.systemDefault()) }
+    MessagePane(
+        title = DeckCopy.OUT_OF_UNDOS_TITLE,
+        body = body,
+        icon = UsIcons.RotateCcw,
+        primaryLabel = "See Premium",
+        onPrimary = onPremium,
+        secondaryLabel = "Keep browsing",
+        onSecondary = onDismiss,
+    )
+}
+
+/**
+ * Undo the last pass: shown only while [DeckUi.canRewind], with what is left
+ * of the allowance beside it in a quieter voice.
+ */
+@Composable
+private fun UndoControl(deck: DeckUi, enabled: Boolean, onUndo: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(UsTheme.radii.full)
+    val left = DeckCopy.undosLeft(deck)
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .background(UsTheme.extended.bgRaised, shape)
+            .border(1.dp, UsTheme.extended.borderSubtle, shape)
+            .clickable(enabled = enabled, onClickLabel = DeckCopy.UNDO, role = Role.Button, onClick = onUndo)
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
+            .semantics(mergeDescendants = true) { },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+    ) {
+        Icon(UsIcons.RotateCcw, contentDescription = null, tint = UsTheme.extended.textPrimary, modifier = Modifier.size(16.dp))
+        Text(DeckCopy.UNDO, style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.textPrimary)
+        left?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.textMuted) }
+    }
 }
 
 /** `SPARK_RATE_LIMITED`. Passing and saving still work, so the way out is back to the deck. */
@@ -218,14 +310,18 @@ private fun DeckStack(
         modifier = Modifier.fillMaxSize().padding(vertical = UsTheme.spacing.l),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        DeckCopy.cardsLeft(deck)?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.labelMedium,
-                color = UsTheme.extended.textMuted,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
+        val cardsLeft = DeckCopy.cardsLeft(deck)
+        if (cardsLeft != null || deck.canRewind) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (deck.canRewind) UndoControl(deck, enabled = idle, onUndo = { viewModel.rewind() })
+                Text(
+                    text = cardsLeft.orEmpty(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = UsTheme.extended.textMuted,
+                    textAlign = if (deck.canRewind) TextAlign.End else TextAlign.Center,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
         Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { cardSize = it }) {
             if (next != null) {
@@ -277,7 +373,7 @@ private fun DeckStack(
             }
             if (deck.superSparkEnabled) {
                 IconButton(onClick = { viewModel.superSpark(top.userId) }, enabled = idle) {
-                    Icon(UsIcons.Star, contentDescription = SUPER_SPARK, tint = UsTheme.extended.accentSolid)
+                    Icon(UsIcons.Star, contentDescription = SUPER_SPARK, tint = UsTheme.extended.statusWarning)
                 }
             }
             UsButton(
@@ -286,6 +382,15 @@ private fun DeckStack(
                 loading = busy == top.userId && deck.leaving?.exit == DeckExit.SPARK,
                 onClick = { viewModel.spark(top.userId) },
                 modifier = Modifier.weight(1f),
+            )
+        }
+        DeckCopy.superSparksLeft(deck)?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textMuted,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }

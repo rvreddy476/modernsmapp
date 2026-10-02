@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "REWIND_NOTHING_TO_UNDO",
+    "message": "there is no pass to undo"
+  },
+  "meta": {}
+}

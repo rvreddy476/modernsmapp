@@ -12,6 +12,9 @@ import com.us.android.core.payments.PaymentSession
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.location.Coordinates
 import com.us.android.feature.dating.location.CurrentLocationSource
+import com.us.android.feature.dating.network.AllowanceDto
+import com.us.android.feature.dating.network.AllowancesDto
+import com.us.android.feature.dating.network.RewindDto
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
 import com.us.android.feature.dating.network.BlockedPersonDto
@@ -379,6 +382,22 @@ class FakeDatingApi : DatingApi {
     }
 
     override suspend fun explain(targetUserId: String) = ok(ExplainDto())
+
+    /** `GET /allowances`. The default is every mechanic OFF: only sparks, as the server sends with no flags set. */
+    var allowancesResponse: () -> Response<ApiEnvelope<AllowancesDto>> =
+        { ok(AllowancesDto(sparks = AllowanceDto(dailyLimit = 50, remainingToday = 50))) }
+
+    var rewindResponse: () -> Response<ApiEnvelope<RewindDto>> = { refused(409, "REWIND_NOTHING_TO_UNDO") }
+
+    override suspend fun allowances(): Response<ApiEnvelope<AllowancesDto>> {
+        calls += "allowances"
+        return allowancesResponse()
+    }
+
+    override suspend fun rewind(): Response<ApiEnvelope<RewindDto>> {
+        calls += "rewind"
+        return rewindResponse()
+    }
 
     override suspend fun pass(candidateId: String, body: PassRequest): Response<ApiEnvelope<PassDto>> {
         passes += candidateId

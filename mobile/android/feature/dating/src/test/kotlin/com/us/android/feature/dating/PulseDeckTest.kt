@@ -279,7 +279,7 @@ class PulseDeckTest {
     }
 
     @Test
-    fun `Super Spark is off and does nothing`() = runTest {
+    fun `Super Spark is off and does nothing while the allowances do not name it`() = runTest {
         api.pulse = listOf(card("a"))
         val pulse = pulse()
 

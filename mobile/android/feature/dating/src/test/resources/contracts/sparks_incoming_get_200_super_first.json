@@ -1,0 +1,65 @@
+{
+  "data": [
+    {
+      "id": "<uuid>",
+      "from_user_id": "<viewer>",
+      "to_user_id": "<candidate>",
+      "target_kind": "prompt",
+      "target_ref": "m3",
+      "created_at": "<timestamp>",
+      "super": true,
+      "person": {
+        "user_id": "<viewer>",
+        "first_name": "Asha",
+        "age": 30,
+        "primary_photo_id": "<uuid>",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "photo_state": "full",
+        "verified": false,
+        "trust_tier": "phone",
+        "distance_bucket": "lt_5_km",
+        "distance_label": "\u003c 5 km",
+        "city": "Hyderabad",
+        "intent": "casual",
+        "detail": {
+          "photos": [
+            {
+              "id": "<uuid>",
+              "url": "/v1/dating/photos/<uuid>/full",
+              "state": "full"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "<uuid>",
+      "from_user_id": "<other>",
+      "to_user_id": "<candidate>",
+      "target_kind": "prompt",
+      "target_ref": "m3",
+      "created_at": "<timestamp>",
+      "person": {
+        "user_id": "<other>",
+        "first_name": "Asha",
+        "age": 30,
+        "primary_photo_id": "<uuid>",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "photo_state": "full",
+        "verified": false,
+        "trust_tier": "phone",
+        "city": "Hyderabad",
+        "intent": "casual",
+        "detail": {
+          "photos": [
+            {
+              "id": "<uuid>",
+              "url": "/v1/dating/photos/<uuid>/full",
+              "state": "full"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

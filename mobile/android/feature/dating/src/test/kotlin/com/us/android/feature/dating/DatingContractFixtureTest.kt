@@ -4,10 +4,16 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.feature.dating.data.DatingError
+import com.us.android.feature.dating.home.AllowanceUi
 import com.us.android.feature.dating.home.DeckCopy
 import com.us.android.feature.dating.home.DeckUi
 import com.us.android.feature.dating.home.onto
+import com.us.android.feature.dating.home.toUi
+import com.us.android.feature.dating.network.AllowanceDto
+import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.AllowedDetailsDto
+import com.us.android.feature.dating.network.RewindDto
+import com.us.android.feature.dating.premium.packLabel
 import com.us.android.feature.dating.network.AllowedIdsDetailsDto
 import com.us.android.feature.dating.network.OnboardingIncompleteDetailsDto
 import com.us.android.feature.dating.network.RangeDetailsDto
@@ -486,7 +492,79 @@ class DatingContractFixtureTest {
         },
         "spark_create_429_rate_limited.json" to error { error, name ->
             assertThat(refusedCode(error)).isEqualTo("SPARK_RATE_LIMITED")
-            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(50, 24))
+            // resets_at is always sent now; the golden redacts it.
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(50, 24, "<timestamp>"))
+        },
+        // ── Mechanic M3: Super Spark ────────────────────────────────────────
+        "spark_create_post_201_super.json" to data(SparkCreatedDto.serializer()) {
+            val spark = checkNotNull(it.spark)
+            assertThat(spark.superSpark).isTrue()
+            assertThat(it.matched).isFalse()
+            assertThat(it.matchId).isNull()
+        },
+        "spark_create_429_super_limit_reached.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("SUPER_SPARK_LIMIT_REACHED")
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(1, 24, "<timestamp>"))
+        },
+        "sparks_incoming_get_200_super_first.json" to data(listSerializer(SparkDto.serializer())) {
+            // The server sorts Super Sparks first; an ordinary spark omits the key.
+            assertThat(it.map { s -> s.superSpark }).containsExactly(true, false).inOrder()
+            assertThat(it.first().person?.firstName).isEqualTo("Asha")
+            assertThat(it.last().person?.distanceBucket).isNull()
+        },
+        "premium_catalogue_get_200_super_spark.json" to data(PremiumCatalogueDto.serializer()) {
+            assertThat(it.products.map { p -> p.id })
+                .containsExactly("pass_30d", "pass_90d", "pass_365d", "boost", "super_spark_5", "super_spark_15").inOrder()
+            val packs = it.products.filter { p -> p.kind == "super_spark" }
+            assertThat(packs.map { p -> p.quantity }).containsExactly(5, 15).inOrder()
+            assertThat(packs.map { p -> packLabel(p) }).containsExactly("5 Super Sparks", "15 Super Sparks").inOrder()
+            // Everything else omits quantity.
+            assertThat(it.products.filter { p -> p.kind != "super_spark" }.map { p -> p.quantity }.toSet()).containsExactly(0)
+            assertThat(packLabel(it.products.first())).isNull()
+        },
+        // ── Mechanic M2: undo a pass ────────────────────────────────────────
+        "pulse_rewind_post_200.json" to data(RewindDto.serializer()) {
+            assertThat(it.rewound).isTrue()
+            assertThat(it.candidateId).isEqualTo("<candidate>")
+            // The card is the deck's own shape, so it goes back on the stack as is.
+            val card = checkNotNull(it.card)
+            assertThat(card.candidateId).isEqualTo("<candidate>")
+            assertThat(card.profile.firstName).isEqualTo("Asha")
+            assertThat(card.profile.lastActiveLabel).isEqualTo("Active today")
+            assertThat(checkNotNull(card.profile.detail).photos.single().state).isEqualTo("full")
+            // The allowance after the undo: remaining_today omitted means none left.
+            assertThat(it.allowance.dailyLimit).isEqualTo(1)
+            assertThat(it.allowance.remainingToday).isEqualTo(0)
+            assertThat(it.allowance.toUi()).isEqualTo(AllowanceUi(dailyLimit = 1, remaining = 0, resetsAt = null))
+        },
+        "pulse_rewind_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): a refusal, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+        },
+        "pulse_rewind_409_nothing_to_undo.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("REWIND_NOTHING_TO_UNDO")
+        },
+        "pulse_rewind_429_limit_reached.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("REWIND_LIMIT_REACHED")
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(1, 24, "<timestamp>"))
+        },
+        // ── Mechanic M10: allowances ────────────────────────────────────────
+        "allowances_get_200.json" to data(AllowancesDto.serializer()) {
+            assertThat(it.sparks).isEqualTo(AllowanceDto(dailyLimit = 50, remainingToday = 49, resetsAt = "<timestamp>"))
+            assertThat(it.deck?.remainingToday).isEqualTo(23)
+            // Nothing used yet: no resets_at.
+            assertThat(it.rewind).isEqualTo(AllowanceDto(dailyLimit = 1, remainingToday = 1))
+            val superSpark = checkNotNull(it.superSpark)
+            assertThat(superSpark.remainingToday).isEqualTo(1)
+            // purchased_balance is omitted at 0.
+            assertThat(superSpark.purchasedBalance).isEqualTo(0)
+        },
+        "allowances_get_200_mechanics_off.json" to data(AllowancesDto.serializer()) {
+            // Every mechanic flag off: only sparks, and the rest ABSENT.
+            assertThat(it.sparks.remainingToday).isEqualTo(50)
+            assertThat(it.deck).isNull()
+            assertThat(it.rewind).isNull()
+            assertThat(it.superSpark).isNull()
         },
         "spark_create_post_201_matched.json" to data(SparkCreatedDto.serializer()) {
             assertThat(it.matched).isTrue()

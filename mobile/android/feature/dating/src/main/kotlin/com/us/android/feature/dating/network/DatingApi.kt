@@ -119,6 +119,18 @@ interface DatingApi {
     @POST("v1/dating/pulse/{candidateId}/pass")
     suspend fun pass(@Path("candidateId") candidateId: String, @Body body: PassRequest): Response<ApiEnvelope<PassDto>>
 
+    /**
+     * Mechanic M2: undoes the caller's most recent pass, one step, never after a
+     * spark. No body. 409 REWIND_NOTHING_TO_UNDO, 429 REWIND_LIMIT_REACHED,
+     * 404 CANDIDATE_UNAVAILABLE, 404 MECHANIC_NOT_ENABLED.
+     */
+    @POST("v1/dating/pulse/rewind")
+    suspend fun rewind(): Response<ApiEnvelope<RewindDto>>
+
+    /** Mechanic M10: every daily allowance; a mechanic whose flag is off is absent. */
+    @GET("v1/dating/allowances")
+    suspend fun allowances(): Response<ApiEnvelope<AllowancesDto>>
+
     // Sparks
 
     @POST("v1/dating/sparks")

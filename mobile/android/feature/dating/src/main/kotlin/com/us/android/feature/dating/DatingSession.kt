@@ -56,6 +56,19 @@ class DatingSession @Inject constructor() {
 
     fun isRemoved(userId: String?): Boolean = userId != null && userId in _removed.value
 
+    private val disabledMechanics = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * A Pulse mechanic the server answered `MECHANIC_NOT_ENABLED` for. It stays
+     * hidden for the rest of the session even if a later allowances read,
+     * cached somewhere on the way, still names it.
+     */
+    fun disableMechanic(mechanic: String) {
+        disabledMechanics.update { it + mechanic }
+    }
+
+    fun isMechanicDisabled(mechanic: String): Boolean = mechanic in disabledMechanics.value
+
     /** The other participant of a match. */
     fun otherOf(userA: String, userB: String): String = if (userA == myUserId) userB else userA
 
@@ -63,5 +76,6 @@ class DatingSession @Inject constructor() {
     fun clear() {
         _profile.value = null
         _consents.value = null
+        disabledMechanics.value = emptySet()
     }
 }

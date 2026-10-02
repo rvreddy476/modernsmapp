@@ -439,6 +439,59 @@ data class PassDto(
     @SerialName("cooldown_until") val cooldownUntil: String = "",
 )
 
+// ── Pulse mechanics: allowances (M10), undo a pass (M2) ─────────────────────
+
+/**
+ * One daily allowance (`service.Allowance`). Go omits zero values, so every
+ * field defaults: [remainingToday] absent means NONE left, and [unlimited]
+ * true (a pass holder) omits the counts altogether. [resetsAt] is RFC 3339,
+ * absent while nothing in the window is used.
+ */
+@Serializable
+data class AllowanceDto(
+    val unlimited: Boolean = false,
+    @SerialName("daily_limit") val dailyLimit: Int = 0,
+    @SerialName("remaining_today") val remainingToday: Int = 0,
+    @SerialName("resets_at") val resetsAt: String? = null,
+)
+
+/** The Super Spark allowance: the daily one plus what packs bought, which is spent once the daily one is used. */
+@Serializable
+data class SuperSparkAllowanceDto(
+    val unlimited: Boolean = false,
+    @SerialName("daily_limit") val dailyLimit: Int = 0,
+    @SerialName("remaining_today") val remainingToday: Int = 0,
+    @SerialName("resets_at") val resetsAt: String? = null,
+    /** Purchased Super Sparks left. Omitted at 0. */
+    @SerialName("purchased_balance") val purchasedBalance: Int = 0,
+)
+
+/**
+ * `GET /allowances`. A mechanic whose server flag is off is ABSENT (null
+ * here): that is how the app learns whether to offer undo or Super Spark at
+ * all. Sparks are always present.
+ */
+@Serializable
+data class AllowancesDto(
+    val sparks: AllowanceDto = AllowanceDto(),
+    val deck: AllowanceDto? = null,
+    val rewind: AllowanceDto? = null,
+    @SerialName("super_spark") val superSpark: SuperSparkAllowanceDto? = null,
+)
+
+/**
+ * `POST /pulse/rewind`: the last pass is undone. [card] is the person's deck
+ * card again, absent when the server could not build it — the app then
+ * refetches the deck instead.
+ */
+@Serializable
+data class RewindDto(
+    val rewound: Boolean = false,
+    @SerialName("candidate_id") val candidateId: String = "",
+    val card: PulseCardDto? = null,
+    val allowance: AllowanceDto = AllowanceDto(),
+)
+
 // ── Sparks (fixtures: decline 200, create 404/429) ──────────────────────────
 
 @Serializable
@@ -447,6 +500,8 @@ data class SparkRequest(
     @SerialName("target_kind") val targetKind: String,
     @SerialName("target_ref") val targetRef: String,
     val note: String? = null,
+    /** True sends a Super Spark (mechanic M3). Null is left out of the body, so an ordinary spark is unchanged. */
+    @SerialName("super") val superSpark: Boolean? = null,
 )
 
 @Serializable
@@ -458,6 +513,8 @@ data class SparkDto(
     @SerialName("target_ref") val targetRef: String = "",
     val note: String? = null,
     @SerialName("created_at") val createdAt: String = "",
+    /** A Super Spark. Omitted when false; incoming Super Sparks are listed first by the server. */
+    @SerialName("super") val superSpark: Boolean = false,
     /** The SENDER, on `GET /sparks/incoming`. Absent on a spark the app just created. */
     val person: DatingPersonDto? = null,
 )
@@ -722,6 +779,8 @@ data class PremiumProductDto(
     val currency: String = "",
     @SerialName("duration_days") val durationDays: Int? = null,
     val features: List<String> = emptyList(),
+    /** How many Super Sparks a `super_spark` pack adds. Omitted (0) for every other kind. */
+    val quantity: Int = 0,
 )
 
 /** There is deliberately no amount, price or currency: the server refuses them (CLIENT_PRICE_REFUSED). */
@@ -778,6 +837,8 @@ data class PremiumMeDto(
     val pass: PremiumPassDto? = null,
     val entitlements: List<PremiumEntitlementDto> = emptyList(),
     @SerialName("boost_balance") val boostBalance: Int = 0,
+    /** Purchased Super Sparks left. Omitted at 0. */
+    @SerialName("super_spark_balance") val superSparkBalance: Int = 0,
 )
 
 @Serializable
@@ -823,11 +884,15 @@ data class LocationRateLimitDetailsDto(
     @SerialName("window_hours") val windowHours: Int = 0,
 )
 
+/**
+ * `details` of an allowance refusal: `SPARK_RATE_LIMITED`, `REWIND_LIMIT_REACHED`
+ * and `SUPER_SPARK_LIMIT_REACHED` all carry the same three keys.
+ */
 @Serializable
 data class RateLimitDetailsDto(
     val limit: Int = 0,
     @SerialName("window_hours") val windowHours: Int = 0,
-    /** RFC 3339. Not sent yet; preferred over the window when it is. */
+    /** RFC 3339: when the allowance starts to come back. Preferred over the window. */
     @SerialName("resets_at") val resetsAt: String? = null,
 )
 

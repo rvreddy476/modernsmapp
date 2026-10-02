@@ -1,7 +1,9 @@
 package com.us.android.feature.dating.home
 
+import com.us.android.feature.dating.network.AllowanceDto
 import com.us.android.feature.dating.network.PulseMetaDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
+import com.us.android.feature.dating.network.SuperSparkAllowanceDto
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -14,15 +16,35 @@ enum class DeckExit { PASS, SPARK, SUPER_SPARK, STASH }
 /** The one action in flight: [userId]'s card is on its way out, pending the server's answer. */
 data class DeckLeaving(val userId: String, val exit: DeckExit)
 
-/** `SPARK_RATE_LIMITED`, in display terms. A 0 means the server did not say. */
+/**
+ * An allowance refusal in display terms: `SPARK_RATE_LIMITED`,
+ * `REWIND_LIMIT_REACHED` or `SUPER_SPARK_LIMIT_REACHED`, which all carry the
+ * same details. A 0 means the server did not say.
+ */
 data class SparkLimitUi(val limit: Int, val windowHours: Int, val resetsAt: Instant?)
 
 /**
+ * One daily allowance from `GET /allowances`, in display terms. [unlimited]
+ * (a pass holder) carries no counts. Absent, null and 0 all read as none left.
+ */
+data class AllowanceUi(
+    val unlimited: Boolean = false,
+    val dailyLimit: Int = 0,
+    val remaining: Int = 0,
+    val resetsAt: Instant? = null,
+)
+
+/**
  * The deck beyond its cards: the daily allowance (mechanic M1), the action in
- * flight and the mechanic switches.
+ * flight, and the mechanics `GET /allowances` switched on — undoing a pass
+ * (M2) and Super Spark (M3).
  *
  * [dailyLimit] is 0 when the server sent none — its refill flag is off — and
  * then nothing here shows and the deck never refetches on its own.
+ *
+ * [rewind] and [superSpark] are null while their mechanic is off: absent from
+ * the allowances read, not read yet, or refused `MECHANIC_NOT_ENABLED` in this
+ * session. Null means the control is not drawn at all.
  */
 data class DeckUi(
     val dailyLimit: Int = 0,
@@ -34,14 +56,34 @@ data class DeckUi(
     val leaving: DeckLeaving? = null,
     /** Set by a refused spark; the screen shows the out-of-sparks pane until dismissed. */
     val sparkLimit: SparkLimitUi? = null,
-    /** Super Spark is not available yet. A later change flips this; the gesture and button follow. */
-    val superSparkEnabled: Boolean = false,
+    /** The daily Super Spark allowance, or null while the mechanic is off. */
+    val superSpark: AllowanceUi? = null,
+    /** Super Sparks bought in packs, spent once the daily allowance is used. */
+    val superSparkBalance: Int = 0,
+    /** Set by `SUPER_SPARK_LIMIT_REACHED`; the out-of-Super-Sparks pane shows until dismissed. */
+    val superSparkLimit: SparkLimitUi? = null,
+    /** The undo allowance, or null while the mechanic is off. */
+    val rewind: AllowanceUi? = null,
+    /**
+     * Whom the last deck action in this session passed on, while that pass is
+     * still the last action. A spark, a Super Spark or a save clears it, and so
+     * does an undo: the server undoes one step only.
+     */
+    val rewindable: String? = null,
+    /** Set by `REWIND_LIMIT_REACHED`; the out-of-undos pane shows until dismissed. */
+    val rewindLimit: SparkLimitUi? = null,
 ) {
     /** The server is counting cards for this viewer. */
     val metered: Boolean get() = dailyLimit > 0
 
     /** The allowance is spent: no cards until [resetsAt]. */
     val outOfCards: Boolean get() = metered && remaining <= 0
+
+    /** Super Spark is switched on: the button, the upward swipe and the TalkBack action follow this. */
+    val superSparkEnabled: Boolean get() = superSpark != null
+
+    /** The undo control is drawn: the mechanic is on and the last action was a pass the server took. */
+    val canRewind: Boolean get() = rewind != null && rewindable != null
 }
 
 /** The allowance a `GET /pulse/today` meta carried, onto [current]. Absent, null, "" and 0 are all "none". */
@@ -59,6 +101,16 @@ internal fun RateLimitDetailsDto?.toUi(): SparkLimitUi = SparkLimitUi(
     windowHours = this?.windowHours?.coerceAtLeast(0) ?: 0,
     resetsAt = parseInstant(this?.resetsAt),
 )
+
+internal fun AllowanceDto.toUi(): AllowanceUi = AllowanceUi(
+    unlimited = unlimited,
+    dailyLimit = if (unlimited) 0 else dailyLimit.coerceAtLeast(0),
+    remaining = if (unlimited) 0 else remainingToday.coerceAtLeast(0),
+    resetsAt = parseInstant(resetsAt),
+)
+
+internal fun SuperSparkAllowanceDto.toUi(): AllowanceUi =
+    AllowanceDto(unlimited, dailyLimit, remainingToday, resetsAt).toUi()
 
 /** An RFC 3339 timestamp, or null for absent, blank and anything that does not parse. */
 internal fun parseInstant(raw: String?): Instant? {
@@ -99,6 +151,68 @@ object DeckCopy {
         }
         return allowance + again + " You can still pass or save people for later."
     }
+
+    const val UNDO = "Undo pass"
+    const val OUT_OF_UNDOS_TITLE = "No more undos today"
+    const val OUT_OF_SUPER_SPARKS_TITLE = "You've used your Super Sparks"
+
+    /** The quiet line beside the undo control, or null while the mechanic is off. */
+    fun undosLeft(deck: DeckUi): String? {
+        val rewind = deck.rewind ?: return null
+        return when {
+            rewind.unlimited -> "Unlimited undos"
+            rewind.remaining <= 0 -> "No undos left today"
+            else -> "${count(rewind.remaining, "undo", "undos")} left today"
+        }
+    }
+
+    /** "2 Super Sparks left today · 3 from packs", or null while the mechanic is off. */
+    fun superSparksLeft(deck: DeckUi): String? {
+        val daily = deck.superSpark ?: return null
+        val packs = deck.superSparkBalance.coerceAtLeast(0)
+        return when {
+            daily.unlimited -> "Unlimited Super Sparks"
+            daily.remaining > 0 && packs > 0 -> "${count(daily.remaining, SUPER_SPARK, SUPER_SPARKS)} left today · $packs from packs"
+            daily.remaining > 0 -> "${count(daily.remaining, SUPER_SPARK, SUPER_SPARKS)} left today"
+            packs > 0 -> "${count(packs, SUPER_SPARK, SUPER_SPARKS)} from packs"
+            else -> "No Super Sparks left today"
+        }
+    }
+
+    fun outOfUndosBody(limit: SparkLimitUi, now: Instant, zone: ZoneId): String {
+        val allowance = when {
+            limit.limit > 0 && limit.windowHours > 0 -> "You can undo ${count(limit.limit, "pass", "passes")} every ${limit.windowHours} hours. "
+            limit.limit > 0 -> "You can undo ${count(limit.limit, "pass", "passes")} a day. "
+            else -> ""
+        }
+        val back = limit.resetsAt?.let { whenLabel(it, now, zone) }
+        val again = when {
+            back != null -> "You can undo again from $back."
+            limit.windowHours > 0 -> "Undos come back within ${limit.windowHours} hours."
+            else -> "Undos come back soon."
+        }
+        return allowance + again + " With a Premium pass you can undo as often as you like."
+    }
+
+    fun outOfSuperSparksBody(limit: SparkLimitUi, packs: Int, now: Instant, zone: ZoneId): String {
+        val allowance = when {
+            limit.limit > 0 && limit.windowHours > 0 -> "You get ${count(limit.limit, SUPER_SPARK, SUPER_SPARKS)} every ${limit.windowHours} hours. "
+            limit.limit > 0 -> "You get ${count(limit.limit, SUPER_SPARK, SUPER_SPARKS)} a day. "
+            else -> ""
+        }
+        val back = limit.resetsAt?.let { whenLabel(it, now, zone) }
+        val again = when {
+            back != null -> "More arrive from $back."
+            limit.windowHours > 0 -> "More arrive within ${limit.windowHours} hours."
+            else -> "More arrive soon."
+        }
+        return "$allowance$again Super Sparks from packs: ${packs.coerceAtLeast(0)}. A pack adds more straight away."
+    }
+
+    private fun count(n: Int, one: String, many: String): String = if (n == 1) "1 $one" else "$n $many"
+
+    private const val SUPER_SPARK = "Super Spark"
+    private const val SUPER_SPARKS = "Super Sparks"
 
     /**
      * A reset time on the viewer's own clock: "6:30 PM today", "6:30 PM

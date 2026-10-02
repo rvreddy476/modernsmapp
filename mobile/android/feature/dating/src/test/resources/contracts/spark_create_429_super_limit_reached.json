@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "SUPER_SPARK_LIMIT_REACHED",
+    "message": "super spark limit reached; try again later",
+    "details": {
+      "limit": 1,
+      "resets_at": "<timestamp>",
+      "window_hours": 24
+    }
+  },
+  "meta": {}
+}

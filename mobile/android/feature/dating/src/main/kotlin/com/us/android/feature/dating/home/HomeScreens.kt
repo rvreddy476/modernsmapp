@@ -126,7 +126,7 @@ fun DatingHomeScreen(
             }
             Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
                 when (tab) {
-                    HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson)
+                    HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson, onOpenPremium)
                     HomeTab.SPARKS -> SparksList(sparks, onOpenPerson)
                     HomeTab.MATCHES -> MatchesList(matches, onOpenMatch)
                 }
@@ -163,6 +163,7 @@ private fun SparksList(viewModel: SparksViewModel, onOpenPerson: (String) -> Uni
                                     )
                                     if (spark.verified) Pill("Verified", Tone.Positive)
                                 }
+                                if (spark.superSpark) SuperSparkMark()
                                 // One line, the deck's separator: city and intent
                                 // join the distance the row already carried rather
                                 // than adding rows to a row that is already dense.
@@ -209,6 +210,23 @@ private fun SparksList(viewModel: SparksViewModel, onOpenPerson: (String) -> Uni
         )
     }
 }
+
+/** An incoming Super Spark: a star and our own words, in the warm status colour. */
+@Composable
+private fun SuperSparkMark() {
+    val color = UsTheme.extended.statusWarning
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        modifier = Modifier.padding(vertical = UsTheme.spacing.xs),
+    ) {
+        Icon(UsIcons.Star, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
+        Text(SUPER_SPARK_MARK, style = MaterialTheme.typography.labelMedium, color = color)
+    }
+}
+
+/** The incoming-row label for a Super Spark. */
+const val SUPER_SPARK_MARK = "Sent you a Super Spark"
 
 @Composable
 private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Unit) {

@@ -14,9 +14,11 @@ import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.data.code
 import com.us.android.feature.dating.data.detailsAs
 import com.us.android.feature.dating.data.valueOrNull
+import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.PulseCardDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
+import com.us.android.feature.dating.network.RewindDto
 import com.us.android.feature.dating.network.SparkDto
 import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.photos.PhotoRules
@@ -187,6 +189,18 @@ private class RemovableList<Dto>(private val idOf: (Dto) -> String) {
  * the LAST meta said cards remain, the next batch is fetched. Without a
  * `daily_limit` in that meta — the flag is off — nothing is refetched, exactly
  * as before; with none remaining, the screen shows the out-of-cards pane.
+ *
+ * ## Allowances, undo and Super Spark (mechanics M10, M2, M3)
+ *
+ * `GET /allowances` is read with the deck and again after every action that
+ * can change it. A mechanic ABSENT from it is off, and its control is not
+ * drawn: [DeckUi.rewind] and [DeckUi.superSpark] are null. A route that
+ * answers `MECHANIC_NOT_ENABLED` switches its mechanic off for the session.
+ *
+ * Undo is offered only while the last deck action in this session was a pass
+ * the server took ([DeckUi.rewindable]); it puts the server's card back on top,
+ * or refetches the deck when the server sent none. Each allowance refusal has
+ * its own pane, with the reset time the server sent.
  */
 @Suppress("TooManyFunctions")
 @HiltViewModel
@@ -223,7 +237,34 @@ class PulseViewModel @Inject constructor(
     }
 
     fun refresh() {
-        viewModelScope.launch { load() }
+        viewModelScope.launch {
+            load()
+            loadAllowances()
+        }
+    }
+
+    /** Reads every allowance again: after an action, or when the deck is shown again (a purchase may have landed). */
+    fun refreshAllowances() {
+        viewModelScope.launch { loadAllowances() }
+    }
+
+    /** A failed read changes nothing: the last answer stands, and the next action refreshes it. */
+    private suspend fun loadAllowances() {
+        val allowances = repository.allowances().valueOrNull() ?: return
+        _deck.update { it.withAllowances(allowances) }
+    }
+
+    private fun DeckUi.withAllowances(allowances: AllowancesDto): DeckUi {
+        val rewind = allowances.rewind?.takeUnless { session.isMechanicDisabled(MECHANIC_REWIND) }
+        val superSpark = allowances.superSpark?.takeUnless { session.isMechanicDisabled(MECHANIC_SUPER_SPARK) }
+        return copy(
+            rewind = rewind?.toUi(),
+            superSpark = superSpark?.toUi(),
+            superSparkBalance = superSpark?.purchasedBalance?.coerceAtLeast(0) ?: 0,
+            // A mechanic switched off takes its pane with it.
+            rewindLimit = rewindLimit.takeIf { rewind != null },
+            superSparkLimit = superSparkLimit.takeIf { superSpark != null },
+        )
     }
 
     private suspend fun load(refill: Boolean = false) {
@@ -268,12 +309,34 @@ class PulseViewModel @Inject constructor(
         _deck.update { it.copy(sparkLimit = null) }
     }
 
-    fun spark(userId: String, note: String? = null): Boolean = act(userId, DeckExit.SPARK) {
-        when (val result = repository.spark(userId, note)) {
+    fun dismissSuperSparkLimit() {
+        _deck.update { it.copy(superSparkLimit = null) }
+    }
+
+    fun dismissRewindLimit() {
+        _deck.update { it.copy(rewindLimit = null) }
+    }
+
+    fun spark(userId: String, note: String? = null): Boolean =
+        act(userId, DeckExit.SPARK) { sendSpark(userId, note, superSpark = false) }
+
+    /**
+     * A Super Spark (mechanic M3): the button and the upward swipe. Refused
+     * without asking the server while the mechanic is off — absent from the
+     * allowances read — which is also when the screen draws neither.
+     */
+    fun superSpark(userId: String): Boolean {
+        if (!_deck.value.superSparkEnabled || userId.isBlank()) return false
+        return act(userId, DeckExit.SUPER_SPARK) { sendSpark(userId, note = null, superSpark = true) }
+    }
+
+    private suspend fun sendSpark(userId: String, note: String?, superSpark: Boolean) {
+        when (val result = repository.spark(userId, note, superSpark)) {
             is DatingResult.Success -> {
                 // The name and photo come from the card being sparked, which is on screen.
                 val card = list.rows.value?.firstOrNull { it.profile.userId == userId }?.profile
                 acted(userId)
+                _deck.update { if (superSpark) it.spentSuperSpark().copy(rewindable = null) else it.copy(rewindable = null) }
                 val created = result.value
                 if (created.matched && created.matchId != null) {
                     celebrations.show(
@@ -282,34 +345,50 @@ class PulseViewModel @Inject constructor(
                         photoUrl = urls.forViewer(card?.primaryPhotoUrl, matched = false),
                     )
                 } else {
-                    _message.value = successMessage("Spark sent.")
+                    _message.value = successMessage(if (superSpark) "Super Spark sent. You'll be first in their sparks." else "Spark sent.")
                 }
             }
-            is DatingResult.Failure ->
-                if (result.error.code == CODE_SPARK_RATE_LIMITED) {
-                    // Its own pane, not a line: the card comes back and stays.
-                    val details = result.error.detailsAs(repository.json, RateLimitDetailsDto.serializer())
-                    _deck.update { it.copy(sparkLimit = details.toUi()) }
-                } else {
-                    refused(userId, result.error)
-                }
+            is DatingResult.Failure -> sparkRefused(userId, result.error, superSpark)
+        }
+        refreshAllowances()
+    }
+
+    private fun sparkRefused(userId: String, error: DatingError, superSpark: Boolean) {
+        val limit = { error.detailsAs(repository.json, RateLimitDetailsDto.serializer()).toUi() }
+        when {
+            // Each allowance has its own pane, not a line: the card comes back and stays.
+            error.code == CODE_SPARK_RATE_LIMITED -> _deck.update { it.copy(sparkLimit = limit()) }
+            superSpark && error.code == CODE_SUPER_SPARK_LIMIT -> _deck.update {
+                // The daily allowance is used AND no pack Super Spark is left.
+                it.copy(superSparkLimit = limit(), superSpark = it.superSpark?.copy(remaining = 0), superSparkBalance = 0)
+            }
+            superSpark && error.code == CODE_MECHANIC_NOT_ENABLED -> {
+                session.disableMechanic(MECHANIC_SUPER_SPARK)
+                _deck.update { it.copy(superSpark = null, superSparkBalance = 0, superSparkLimit = null) }
+                _message.value = infoMessage("Super Spark isn't available right now.")
+            }
+            else -> refused(userId, error)
         }
     }
 
-    /**
-     * Super Spark. Not available yet: [DeckUi.superSparkEnabled] is false, the
-     * screen shows no button and treats an upward drag as nothing, and this
-     * refuses. The server route arrives with the mechanic itself.
-     */
-    fun superSpark(userId: String): Boolean {
-        if (!_deck.value.superSparkEnabled || userId.isBlank()) return false
-        _message.value = infoMessage("Super Spark isn't available yet.")
-        return false
+    /** One Super Spark spent locally, daily allowance first and then a pack's, until the server's read replaces it. */
+    private fun DeckUi.spentSuperSpark(): DeckUi {
+        val daily = superSpark ?: return this
+        return when {
+            daily.unlimited -> this
+            daily.remaining > 0 -> copy(superSpark = daily.copy(remaining = daily.remaining - 1))
+            else -> copy(superSparkBalance = (superSparkBalance - 1).coerceAtLeast(0))
+        }
     }
 
     fun pass(userId: String): Boolean = act(userId, DeckExit.PASS) {
         when (val result = repository.pass(userId)) {
-            is DatingResult.Success -> acted(userId)
+            is DatingResult.Success -> {
+                acted(userId)
+                // The one action undo can take back, until the next one.
+                _deck.update { it.copy(rewindable = userId) }
+                refreshAllowances()
+            }
             is DatingResult.Failure -> refused(userId, result.error)
         }
     }
@@ -319,9 +398,78 @@ class PulseViewModel @Inject constructor(
             is DatingResult.Success -> {
                 // Saving is not a decision: the server does not count it.
                 list.drop(userId)
+                _deck.update { it.copy(rewindable = null) }
                 _message.value = successMessage("Saved for later.")
             }
             is DatingResult.Failure -> refused(userId, result.error)
+        }
+    }
+
+    /**
+     * Undoes the last pass (mechanic M2). False when nothing was started: the
+     * control is not offered, or another action is in flight.
+     *
+     * The server's card goes back on top; without one the deck is refetched,
+     * and the person comes back with it.
+     */
+    fun rewind(): Boolean {
+        val passed = _deck.value.rewindable
+        if (!_deck.value.canRewind || passed == null || _busy.value != null) return false
+        _busy.value = passed
+        viewModelScope.launch {
+            try {
+                when (val result = repository.rewind()) {
+                    is DatingResult.Success -> restore(result.value)
+                    is DatingResult.Failure -> rewindRefused(result.error)
+                }
+            } finally {
+                _busy.value = null
+            }
+            refreshAllowances()
+        }
+        return true
+    }
+
+    private suspend fun restore(rewound: RewindDto) {
+        _deck.update { current ->
+            current.copy(
+                rewindable = null,
+                // The card left as a pass and keeps that marker; it must not
+                // fly straight back out when it is drawn again.
+                leaving = null,
+                rewind = current.rewind?.let { rewound.allowance.toUi() },
+                // The server gives the card back to today's allowance.
+                remaining = if (current.metered) (current.remaining + 1).coerceAtMost(current.dailyLimit) else current.remaining,
+            )
+        }
+        val card = rewound.card
+        if (card != null) {
+            list.failure.value = null
+            list.rows.update { rows -> listOf(card) + rows.orEmpty().filterNot { it.profile.userId == card.profile.userId } }
+        } else {
+            load()
+        }
+        _message.value = successMessage("Pass undone.")
+    }
+
+    private fun rewindRefused(error: DatingError) {
+        when (error.code) {
+            CODE_REWIND_LIMIT -> {
+                val details = error.detailsAs(repository.json, RateLimitDetailsDto.serializer())
+                // The pass is still there to undo once undos come back or a pass is bought.
+                _deck.update { it.copy(rewindLimit = details.toUi(), rewind = it.rewind?.copy(remaining = 0)) }
+            }
+            CODE_NOTHING_TO_UNDO -> _deck.update { it.copy(rewindable = null) }
+            CODE_MECHANIC_NOT_ENABLED -> {
+                session.disableMechanic(MECHANIC_REWIND)
+                _deck.update { it.copy(rewind = null, rewindable = null, rewindLimit = null) }
+            }
+            CODE_CANDIDATE_UNAVAILABLE -> {
+                // Blocked or gone: there is no one to bring back, and it cost nothing.
+                _deck.update { it.copy(rewindable = null) }
+                _message.value = DatingCopy.message(error)
+            }
+            else -> _message.value = DatingCopy.message(error, repository.json)
         }
     }
 
@@ -346,7 +494,7 @@ class PulseViewModel @Inject constructor(
     }
 
     private fun refused(userId: String, error: DatingError) {
-        if (error.code == "CANDIDATE_UNAVAILABLE") list.drop(userId)
+        if (error.code == CODE_CANDIDATE_UNAVAILABLE) list.drop(userId)
         _message.value = DatingCopy.message(error, repository.json)
     }
 
@@ -399,6 +547,13 @@ class PulseViewModel @Inject constructor(
 
     private companion object {
         const val CODE_SPARK_RATE_LIMITED = "SPARK_RATE_LIMITED"
+        const val CODE_SUPER_SPARK_LIMIT = "SUPER_SPARK_LIMIT_REACHED"
+        const val CODE_REWIND_LIMIT = "REWIND_LIMIT_REACHED"
+        const val CODE_NOTHING_TO_UNDO = "REWIND_NOTHING_TO_UNDO"
+        const val CODE_MECHANIC_NOT_ENABLED = "MECHANIC_NOT_ENABLED"
+        const val CODE_CANDIDATE_UNAVAILABLE = "CANDIDATE_UNAVAILABLE"
+        const val MECHANIC_REWIND = "rewind"
+        const val MECHANIC_SUPER_SPARK = "super_spark"
     }
 }
 
@@ -425,6 +580,8 @@ data class IncomingSparkUi(
     val note: String?,
     /** The same pre-match block the deck shows: a spark is decided on here too. */
     val detail: PersonDetailUi? = null,
+    /** A Super Spark: marked on the row. The server already lists these first, and the app keeps its order. */
+    val superSpark: Boolean = false,
 )
 
 /** Incoming sparks: accept (through the accept route) or decline. */
@@ -538,6 +695,7 @@ class SparksViewModel @Inject constructor(
         photoUrl = urls.forPerson(person),
         note = note?.takeIf { it.isNotBlank() },
         detail = person?.detail.toUi(urls),
+        superSpark = superSpark,
     )
 
     private companion object {

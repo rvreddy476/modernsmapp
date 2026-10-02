@@ -1,0 +1,26 @@
+{
+  "data": {
+    "sparks": {
+      "unlimited": false,
+      "daily_limit": 50,
+      "remaining_today": 49,
+      "resets_at": "<timestamp>"
+    },
+    "deck": {
+      "unlimited": false,
+      "daily_limit": 25,
+      "remaining_today": 23,
+      "resets_at": "<timestamp>"
+    },
+    "rewind": {
+      "unlimited": false,
+      "daily_limit": 1,
+      "remaining_today": 1
+    },
+    "super_spark": {
+      "unlimited": false,
+      "daily_limit": 1,
+      "remaining_today": 1
+    }
+  }
+}

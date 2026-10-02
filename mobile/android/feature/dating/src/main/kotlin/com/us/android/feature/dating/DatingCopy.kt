@@ -36,7 +36,11 @@ object DatingCopy {
             "LOCATION_CHANGE_RATE_LIMITED" -> locationRateLimited(error, json)
             "CANDIDATE_UNAVAILABLE" -> "This person isn't available any more."
             "SPARK_RATE_LIMITED" -> "You've sent a lot of sparks today. Try again tomorrow."
-            "SPARK_NOTE_REFUSED" -> "Notes can't include phone numbers, emails or links."
+            "SUPER_SPARK_LIMIT_REACHED" -> "You've used your Super Sparks for now."
+            "REWIND_LIMIT_REACHED" -> "You've used today's undos."
+            "REWIND_NOTHING_TO_UNDO" -> "There's no pass to undo."
+            "MECHANIC_NOT_ENABLED" -> "That isn't available right now."
+            "SPARK_NOTE_REFUSED" ->"Notes can't include phone numbers, emails or links."
             "EXPLAIN_RATE_LIMITED" -> "Try again later."
             "PROFILE_TRANSITION_NOT_ALLOWED", "PROFILE_STATUS_CONFLICT" -> "Your profile can't do that right now."
             "PHOTO_LIMIT_REACHED" -> "You can have up to 6 photos. Remove one to add another."
