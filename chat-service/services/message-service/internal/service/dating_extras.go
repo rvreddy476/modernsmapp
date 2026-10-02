@@ -70,3 +70,21 @@ func (s *Service) datingReceiptsAllowed(ctx context.Context, conversationID, vie
 	}
 	return ok
 }
+
+type datingTurnsStore interface {
+	DatingTurnsOwed(ctx context.Context, userID uuid.UUID) (int, error)
+}
+
+// DatingTurnsOwed is how many of userID's open dating-match conversations
+// wait on a reply from them (dating mechanic M11). dating-service asks
+// before letting the user send another spark.
+func (s *Service) DatingTurnsOwed(ctx context.Context, userID uuid.UUID) (int, error) {
+	if userID == uuid.Nil {
+		return 0, fmt.Errorf("user id is required")
+	}
+	st, ok := s.convStore.(datingTurnsStore)
+	if !ok {
+		return 0, fmt.Errorf("conversation store cannot count dating turns")
+	}
+	return st.DatingTurnsOwed(ctx, userID)
+}

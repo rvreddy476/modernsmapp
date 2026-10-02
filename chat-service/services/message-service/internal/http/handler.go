@@ -42,6 +42,7 @@ type ChatService interface {
 	SendDatingOpeningAnswer(ctx context.Context, matchID, senderID uuid.UUID, text, idempotencyKey string) (*service.MessageResponse, error)
 	CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error
 	HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error)
+	DatingTurnsOwed(ctx context.Context, userID uuid.UUID) (int, error)
 	ManagedAddGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
 	ManagedRemoveGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
 	ViewerMayAccessChatMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error)
@@ -148,6 +149,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// dating match, so a matched pair may place a live call without becoming
 	// a graph connection. Same gates, same prefix, same reasoning as above.
 	internal.POST("/dating-match/state", h.DatingMatchState)
+	internal.POST("/dating-match/turns", h.DatingTurns)
 	managedGroups := internal.Group("/groups")
 	{
 		managedGroups.POST("/conversations", h.CreateManagedGroupConversation)
@@ -1219,6 +1221,56 @@ func (h *Handler) DatingMatchState(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, datingMatchStateResponse{OpenMatch: open}, nil)
+}
+
+// DatingTurns — POST /internal/v1/chat/dating-match/turns (dating mechanic
+// M11). Service-only, the same three gates as DatingMatchState. Body:
+// {user_id}. Answers how many of the user's open dating-match conversations
+// wait on a reply from them.
+type datingTurnsRequest struct {
+	UserID string `json:"user_id" binding:"required"`
+}
+
+type datingTurnsResponse struct {
+	Owed int `json:"owed"`
+}
+
+func (h *Handler) DatingTurns(c *gin.Context) {
+	if h.internalServiceKey == "" {
+		h.log.Warn("dating turns: INTERNAL_SERVICE_KEY not configured; refusing request",
+			"request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MISCONFIGURED", "internal-only endpoint not configured", nil, nil)
+		return
+	}
+	if carriesUserIdentity(c) {
+		h.log.Warn("dating turns: refused request carrying user identity",
+			"request_id", RequestIDFromContext(c), "ip", c.ClientIP())
+		api.Error(c.Writer, http.StatusForbidden, "USER_CALLER_REFUSED", "service-only endpoint; user requests are not accepted", nil, nil)
+		return
+	}
+	if c.GetHeader("X-Internal-Service-Key") != h.internalServiceKey {
+		h.log.Warn("dating turns: bad or missing internal service key",
+			"request_id", RequestIDFromContext(c), "ip", c.ClientIP())
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		return
+	}
+	var body datingTurnsRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(body.UserID)
+	if err != nil || userID == uuid.Nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_id", nil, nil)
+		return
+	}
+	owed, err := h.svc.DatingTurnsOwed(c.Request.Context(), userID)
+	if err != nil {
+		h.log.Warn("dating turns lookup failed", "err", err, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to count dating turns", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, datingTurnsResponse{Owed: owed}, nil)
 }
 
 func (h *Handler) SetTyping(c *gin.Context) {

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -70,4 +71,29 @@ func (s *ConversationStore) DatingReceiptsAllowed(ctx context.Context, conversat
 		return false, err
 	}
 	return allowed, nil
+}
+
+// DatingTurnsOwed counts userID's open dating-match conversations where the
+// newest message is the other member's — the user owes a reply (dating
+// mechanic M11, the fair-turn limit). Reads the denormalised
+// last_message_sender, which delivery keeps current and the preview repair
+// corrects after a delete.
+func (s *ConversationStore) DatingTurnsOwed(ctx context.Context, userID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM chat.conversations c
+		JOIN chat.conversation_members m
+		  ON m.conversation_id = c.id AND m.user_id = $1 AND m.left_at IS NULL
+		WHERE c.source_app = 'dating'
+		  AND c.closed_at IS NULL
+		  AND c.last_message_sender IS NOT NULL
+		  AND c.last_message_sender <> $1
+		  AND NOT EXISTS (
+		      SELECT 1 FROM chat.conversation_members o
+		      WHERE o.conversation_id = c.id AND o.user_id <> $1 AND o.left_at IS NOT NULL
+		  )`, userID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("dating turns owed: %w", err)
+	}
+	return n, nil
 }
