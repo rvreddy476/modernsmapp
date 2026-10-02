@@ -71,6 +71,8 @@ class ReelSoundPlayer internal constructor(
     private val serveUrl: (soundId: String) -> String?,
     /** Monotonic milliseconds, for the load timeout and the reload rule. */
     private val clock: () -> Long,
+    /** The source of a sound stored with an offline copy ([SoundTrack.stored]): read from the device. */
+    private val storedSourceFor: (Playback) -> MediaSource = { error("no stored sound source") },
 ) {
 
     @Inject
@@ -81,6 +83,7 @@ class ReelSoundPlayer internal constructor(
         sourceFor = { url -> sources.create(Playback.original(url)) },
         serveUrl = { id -> soundServeUrl(config.baseUrl, id) },
         clock = SystemClock::elapsedRealtime,
+        storedSourceFor = sources::create,
     )
 
     private var player: ExoPlayer? = null
@@ -208,8 +211,11 @@ class ReelSoundPlayer internal constructor(
     // ── Loading ─────────────────────────────────────────────────────────
 
     private fun startLoading() {
-        val url = track?.let { serveUrl(it.id) }
-        if (url == null) {
+        // A reel saved offline plays its stored sound; the network is not asked.
+        val source = track?.let { current ->
+            current.stored?.let(storedSourceFor) ?: serveUrl(current.id)?.let(sourceFor)
+        }
+        if (source == null) {
             load = SoundLoad.FAILED
             return
         }
@@ -222,7 +228,7 @@ class ReelSoundPlayer internal constructor(
         loadedAt = null
         seekIssued = false
         sound.playWhenReady = false
-        sound.setMediaSource(sourceFor(url))
+        sound.setMediaSource(source)
         sound.prepare()
     }
 

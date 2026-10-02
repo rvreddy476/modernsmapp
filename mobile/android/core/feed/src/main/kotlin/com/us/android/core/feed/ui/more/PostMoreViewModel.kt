@@ -19,6 +19,10 @@ import com.us.android.core.engagement.data.ReportOutcome
 import com.us.android.core.engagement.data.ReportRepository
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.offline.OfflineLibrary
+import com.us.android.core.feed.offline.OfflineSaveResult
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.SAVES_ON_WIFI
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.profile.data.ProfileRepository
@@ -70,7 +74,44 @@ class PostMoreViewModel @Inject constructor(
     private val hidden: HiddenPosts,
     private val lifecycle: PostLifecycleRepository,
     private val analytics: AnalyticsRecorder,
+    /** Offline copies (2026-10-02): the video rows Save offline, Cancel and Remove, and what each copy is doing. */
+    private val offline: OfflineLibrary,
 ) : ViewModel() {
+
+    /** Where each video's offline copy stands on this device; the sheet's offline row is drawn from it. */
+    val offlineState: StateFlow<OfflineState> = offline.state
+
+    private val _offlineRefusal = MutableStateFlow<String?>(null)
+
+    /** Why the last Save offline was refused, read on the sheet under the rows. */
+    val offlineRefusal: StateFlow<String?> = _offlineRefusal.asStateFlow()
+
+    init {
+        // A copy that went on its own (expired, no longer allowed, a save that failed): one quiet line.
+        viewModelScope.launch { offline.notices.collect { say(it, UsMessageType.Info) } }
+    }
+
+    /**
+     * "Save offline". The sheet stays: the row becomes the save's progress.
+     * A refusal is read on the sheet; a save held for Wi-Fi says so once,
+     * naming where the switch is.
+     */
+    fun saveOffline(item: FeedItem) {
+        _offlineRefusal.value = null
+        viewModelScope.launch {
+            when (val result = offline.save(item)) {
+                OfflineSaveResult.Started -> Unit
+                OfflineSaveResult.WaitingForWifi -> say(SAVES_ON_WIFI, UsMessageType.Info)
+                is OfflineSaveResult.Refused -> _offlineRefusal.value = result.message
+            }
+        }
+    }
+
+    /** "Cancel offline save" and "Remove offline copy": the copy, whole or partial, leaves the device. */
+    fun removeOffline(item: FeedItem) {
+        _offlineRefusal.value = null
+        viewModelScope.launch { offline.remove(item.id) }
+    }
 
     /** Where the sheet was opened from; set by the host, defaulted for safety. */
     private var surface: AnalyticsSurface = AnalyticsSurface.FEED
@@ -117,6 +158,7 @@ class PostMoreViewModel @Inject constructor(
         _report.value = UsPostReportState.Idle
         _delete.value = UsPostDeleteState.Idle
         _dontRecommend.value = UsPostDontRecommendState.Idle
+        _offlineRefusal.value = null
     }
 
     fun dismissMessage() {

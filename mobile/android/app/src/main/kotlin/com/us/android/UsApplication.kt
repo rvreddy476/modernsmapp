@@ -97,6 +97,16 @@ class UsApplication : Application(), Configuration.Provider {
      */
     @Inject lateinit var analyticsLifecycle: com.us.android.core.analytics.AnalyticsAppLifecycle
 
+    /**
+     * Offline copies (2026-10-02): on start, copies that expired while the
+     * app was closed are deleted, a save the process died under is picked
+     * back up, and the server is asked which copies may still be kept.
+     * Lazy, and `start()` returns at once: the index is read off the
+     * cold-start path, and nothing of Media3 is built for a viewer who has
+     * no copies.
+     */
+    @Inject lateinit var offlineCopies: Lazy<com.us.android.core.feed.offline.OfflineCopies>
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
@@ -139,6 +149,8 @@ class UsApplication : Application(), Configuration.Provider {
         // config-change recreation of Application never happens, but the
         // guard is defensive regardless).
         screenTimeGuard.start()
+        // Offline copies: expiry, resume and the recheck. Returns at once.
+        offlineCopies.get().start()
         // setSafe, not setUnsafe: this is a lambda, so the loader — and the
         // OkHttp client behind it — is built on first image request rather
         // than on the cold-start path.

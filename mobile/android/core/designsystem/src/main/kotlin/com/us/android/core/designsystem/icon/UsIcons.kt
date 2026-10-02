@@ -661,6 +661,26 @@ object UsIcons {
     /** Lucide `check` — a chosen option. */
     val Check: ImageVector = lucideStroked("Check", "M20 6 9 17l-5-5")
 
+    /**
+     * Lucide `download`: "Save offline" on a video's More sheet (2026-10-02).
+     * The arrow into a tray reads as "keep this here"; the row never leads to
+     * a file.
+     */
+    val Download: ImageVector = lucideStroked(
+        "Download",
+        "M12 15V3",
+        "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",
+        "m7 10 5 5 5-5",
+    )
+
+    /** Lucide `arrow-down-to-line`: the Offline page, in the menus that open it (2026-10-02). */
+    val ArrowDownToLine: ImageVector = lucideStroked(
+        "ArrowDownToLine",
+        "M12 17V3",
+        "m6 11 6 6 6-6",
+        "M19 21H5",
+    )
+
     // ── The post "more" sheet (2026-09-04) ──────────────────────────────
 
     /** Lucide `link` — copy the post's link. */

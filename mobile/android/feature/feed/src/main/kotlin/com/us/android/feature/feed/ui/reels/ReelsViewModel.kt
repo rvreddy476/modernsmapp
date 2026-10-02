@@ -29,6 +29,13 @@ import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.soundRefusalMessage
 import com.us.android.core.feed.data.videoThumb
+import com.us.android.core.feed.offline.OfflineCopy
+import com.us.android.core.feed.offline.OfflineLibrary
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.playback
+import com.us.android.core.feed.offline.posterModel
+import com.us.android.core.feed.offline.soundTrack
+import com.us.android.core.feed.offline.toFeedItem
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ReelsEntry
@@ -38,6 +45,7 @@ import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.media.publish.playsInReels
+import com.us.android.core.media.sound.SoundTrack
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
@@ -227,6 +235,8 @@ class ReelsViewModel @Inject constructor(
     private val sounds: SoundsRepository,
     private val soundEntry: SoundEntry,
     private val soundStore: ReelsSoundStore,
+    /** Offline copies (2026-10-02): a stored reel plays from the device, and opens with no network. */
+    private val offline: OfflineLibrary,
     hidden: HiddenPosts,
 ) : ViewModel() {
 
@@ -382,7 +392,12 @@ class ReelsViewModel @Inject constructor(
                     _live.value = result.data
                     _entryTarget.value = postId
                 }
-                is AppResult.Failure -> Unit
+                // No network, or the post is gone from the server: a copy kept on this
+                // device still opens, from what was stored with it (2026-10-02).
+                is AppResult.Failure -> offline.playable(postId)?.let { copy ->
+                    _live.value = copy.toFeedItem()
+                    _entryTarget.value = postId
+                }
             }
         }
     }
@@ -513,14 +528,46 @@ class ReelsViewModel @Inject constructor(
      * itself — the server's `playback_url`, a ready asset's `hls_url`, a
      * processing asset's original — is [playbackFor].
      */
-    fun playback(item: FeedItem): Playback? = urlResolver.playbackFor(item)
+    fun playback(item: FeedItem): Playback? =
+        reelPlayback(storedCopy(item.id)?.playback(), urlResolver.playbackFor(item))
+
+    /**
+     * The copy of a reel that plays from the device, or null when it plays
+     * from the network.
+     *
+     * Decided ONCE per reel for this visit ([offlinePinned]): a copy that
+     * finishes saving while its reel is on screen must not swap the source
+     * under a playing reel (the pool re-prepares when a page's playback
+     * changes, and the reel would start again from the top). A copy that is
+     * removed or expires mid-visit is let go at once, and the reel goes back
+     * to the network.
+     */
+    private fun storedCopy(postId: String): OfflineCopy? {
+        val copy = offline.playable(postId)
+        val pinned = offlinePinned.getOrPut(postId) { copy != null }
+        return copy.takeIf { pinned }
+    }
+
+    /** Post id → whether its copy was on the device when the reel was first asked for. Main thread only. */
+    private val offlinePinned = mutableMapOf<String, Boolean>()
+
+    /**
+     * What the sound player is handed for [item]: the reel's added sound,
+     * from the copy stored with it when the reel plays from the device.
+     */
+    fun soundTrack(item: FeedItem): SoundTrack? =
+        reelSoundTrack(item.soundTrack(), storedCopy(item.id)?.soundTrack())
+
+    /** Where each reel's offline copy stands, for the ring while one is being saved. */
+    val offlineState: StateFlow<OfflineState> = offline.state
 
     /**
      * The still frame to show before the first video frame decodes: the
      * cover the author chose when the row carries one (the cover fix,
      * 2026-09-05), else the transcode's own still — the same rule as Tube's.
      */
-    fun posterUrl(item: FeedItem): String? = urlResolver.videoThumb(item).url
+    fun posterUrl(item: FeedItem): String? =
+        urlResolver.videoThumb(item).url ?: offline.playable(item.id)?.posterModel()
 
     // ── Engagement ──────────────────────────────────────────────────────
 

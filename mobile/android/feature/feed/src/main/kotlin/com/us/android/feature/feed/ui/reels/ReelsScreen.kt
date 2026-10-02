@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -109,6 +110,10 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
+import com.us.android.core.feed.offline.OfflineEntry
+import com.us.android.core.feed.offline.OfflinePhase
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.WAITING_FOR_NETWORK
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
@@ -117,7 +122,10 @@ import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.media.sound.ReelSoundPlayer
+import com.us.android.core.media.sound.SoundTrack
 import com.us.android.core.media.sound.appliedVolume
+import com.us.android.core.media.ui.OfflineCopyBadge
+import com.us.android.core.media.ui.OfflineSaveRing
 import com.us.android.core.media.ui.VideoLoadingIndicator
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
@@ -219,6 +227,8 @@ fun ReelsScreen(
     onOpenSound: (soundId: String) -> Unit,
     /** "Use this sound": the sound is already in `SoundEntry`; `:app` opens the reel create flow. */
     onCreateWithSound: () -> Unit,
+    /** "Offline", from the More sheet: `:app` pushes the page of what this device keeps. */
+    onOpenOffline: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     sound: ReelSoundViewModel = hiltViewModel(),
@@ -291,6 +301,7 @@ fun ReelsScreen(
             subscriptionEdges = subscriptionEdges,
             ownUserId = viewModel.ownUserId,
             playbackFor = viewModel::playback,
+            soundTrackFor = viewModel::soundTrack,
             actions = reelActions(
                 viewModel = viewModel,
                 onOpenAuthor = onOpenAuthor,
@@ -305,7 +316,9 @@ fun ReelsScreen(
         ScreenChrome(
             paused = view.paused,
             showHeader = chrome.showHeader,
-            onOpenMenu = { settledReel?.let { moreFor = it } },
+            // With no reel to open the sheet for (the feed did not load, as with no
+            // network), More goes straight to what the device keeps.
+            onOpenMenu = { settledReel?.let { moreFor = it } ?: onOpenOffline() },
             onOpenSearch = onOpenSearch,
         )
         ReelsMessages(viewModel = viewModel, more = more)
@@ -325,6 +338,7 @@ fun ReelsScreen(
             trackHeights = trackHeights,
             onShare = onShare,
             onDismiss = { moreFor = null },
+            onOpenOffline = onOpenOffline,
         )
     }
 }
@@ -344,6 +358,7 @@ private fun ReelMoreSheet(
     trackHeights: List<Int>,
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
+    onOpenOffline: () -> Unit,
 ) {
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
@@ -368,6 +383,7 @@ private fun ReelMoreSheet(
         onClearScreen = viewModel::toggleMode,
         onSelectQuality = viewModel::selectQuality,
         onUseSound = { reel -> viewModel.onUseSound(reel, SoundIntent.CREATE) },
+        onOpenOffline = onOpenOffline,
     )
 }
 
@@ -379,6 +395,7 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
     val paused by viewModel.paused.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
+    val offline by viewModel.offlineState.collectAsStateWithLifecycle()
     return ReelsViewState(
         muted = muted,
         paused = paused,
@@ -386,6 +403,7 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
         quality = quality,
         soundChoiceRead = soundChoiceRead,
         fullMode = mode == ReelsMode.FULL,
+        offline = offline,
     )
 }
 
@@ -585,6 +603,8 @@ internal data class ReelsViewState(
     val soundChoiceRead: Boolean = true,
     /** Full mode is on: Back brings the controls back rather than leaving the tab. */
     val fullMode: Boolean = false,
+    /** Where each reel's offline copy stands on this device (2026-10-02). */
+    val offline: OfflineState = OfflineState(),
 ) {
     /** The settled reel may run: not paused, and the viewer's choice of sound is known. */
     val mayPlay: Boolean get() = reelMayPlay(paused, soundChoiceRead)
@@ -768,6 +788,8 @@ private fun ReelsBody(
     subscriptionEdges: Map<String, ChannelSubscription>,
     ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
+    /** The added sound a reel's page plays, from its stored copy when the reel plays from the device. */
+    soundTrackFor: (FeedItem) -> SoundTrack?,
     actions: ReelActions,
 ) {
     val refresh = items.loadState.refresh
@@ -797,6 +819,7 @@ private fun ReelsBody(
             subscriptionEdges = subscriptionEdges,
             ownUserId = ownUserId,
             playbackFor = playbackFor,
+            soundTrackFor = soundTrackFor,
             actions = actions,
         )
     }
@@ -816,6 +839,8 @@ private fun ReelsPager(
     subscriptionEdges: Map<String, ChannelSubscription>,
     ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
+    /** The added sound a reel's page plays, from its stored copy when the reel plays from the device. */
+    soundTrackFor: (FeedItem) -> SoundTrack?,
     actions: ReelActions,
 ) {
     val pageCount = pagerState.pageCount
@@ -837,7 +862,7 @@ private fun ReelsPager(
         // The added sound serves the settled page and no other. It is
         // attached BEFORE the video is told to play, so the first frame
         // already has the creator's mix; a reel without one lets it go.
-        val track = reel?.soundTrack()
+        val track = reel?.let(soundTrackFor)
         if (player != null && track != null) sound.attach(player, track, reel.soundMix()) else sound.detach()
         reel?.let { actions.onShown(it, player?.let(::watchProbe), current) }
         // The pause is the reel's it was made on, and onShown has cleared
@@ -1082,10 +1107,7 @@ private fun ReelPage(
             // has — so a double-tap is one mode change, not a pause and a
             // mode change.
             .pointerInput(actions) {
-                detectTapGestures(
-                    onTap = { actions.onTogglePause() },
-                    onDoubleTap = { actions.onToggleMode() },
-                )
+                detectTapGestures(onTap = { actions.onTogglePause() }, onDoubleTap = { actions.onToggleMode() })
             },
     ) {
         if (playback != null) {
@@ -1097,6 +1119,7 @@ private fun ReelPage(
                 page = page,
                 polling = settled && !view.paused,
                 view = view,
+                offline = view.offline.copies[item.id],
                 onProgress = { progress = it },
             )
         } else {
@@ -1193,6 +1216,8 @@ private fun ReelVideo(
     page: Int,
     polling: Boolean,
     view: ReelsViewState,
+    /** Where this reel's offline copy stands, for the mark at the top left of the page. */
+    offline: OfflineEntry?,
     onProgress: (Float) -> Unit,
 ) {
     val player = remember(page, playback) { pool.acquire(page, playback) }
@@ -1219,6 +1244,8 @@ private fun ReelVideo(
     // playWhenReady false, and a paused reel shows the play glyph
     // instead. Retry re-prepares the player where it stands.
     VideoLoadingIndicator(player = player, onRetry = player::prepare)
+    // An offline copy says so, and one being saved shows how far it is (2026-10-02).
+    ReelOfflineStatus(playsOffline = playback.kind == PlaybackKind.Offline, entry = offline)
     // The same four-a-second poll is the sound's running clock: a
     // drift too small to hear is left alone, a larger one corrected.
     TrackProgress(player = player, polling = polling) {
@@ -1837,3 +1864,28 @@ private const val PAUSE_GLYPH_FROM = 0.8f
 private val LOADER_SIZE = 48.dp
 private val LOADER_STROKE = 3.dp
 private const val LOADER_TRACK_ALPHA = 0.25f
+
+/**
+ * What a reel's page says about its offline copy (2026-10-02), under the
+ * header at the top left: "Offline copy" while the stored copy is what
+ * plays, the save's ring while one is being made, nothing otherwise. The
+ * same two marks as the long video's watch screen.
+ */
+@Composable
+private fun ReelOfflineStatus(playsOffline: Boolean, entry: OfflineEntry?, modifier: Modifier = Modifier) {
+    val place = modifier
+        .statusBarsPadding()
+        .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP)
+    when {
+        playsOffline -> OfflineCopyBadge(modifier = place)
+        entry == null || entry.phase == OfflinePhase.STORED -> Unit
+        else -> OfflineSaveRing(
+            progress = entry.progress,
+            waiting = WAITING_FOR_NETWORK.takeIf { entry.phase == OfflinePhase.WAITING },
+            modifier = place,
+        )
+    }
+}
+
+/** Clear of the header's two glyphs. */
+private val OFFLINE_STATUS_TOP = 56.dp

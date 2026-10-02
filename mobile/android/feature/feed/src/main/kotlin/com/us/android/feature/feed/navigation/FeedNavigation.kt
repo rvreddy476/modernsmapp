@@ -143,6 +143,11 @@ fun NavGraphBuilder.reelsScreen(
      * ship by omission.
      */
     onCreateWithSound: () -> Unit,
+    /**
+     * "Offline", from a reel's More sheet (2026-10-02): `:app` pushes the page
+     * of what this device keeps. Required for the same reason.
+     */
+    onOpenOffline: () -> Unit,
 ) {
     composable<ReelsRoute> {
         ReelsScreen(
@@ -152,6 +157,7 @@ fun NavGraphBuilder.reelsScreen(
             onOpenHashtag = onOpenHashtag,
             onOpenSound = onOpenSound,
             onCreateWithSound = onCreateWithSound,
+            onOpenOffline = onOpenOffline,
         )
     }
 }

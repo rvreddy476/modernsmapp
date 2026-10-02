@@ -23,6 +23,7 @@ class TubeMenuTest {
             .containsExactly(
                 "Collections",
                 "Notifications",
+                "Offline",
                 "Saved",
                 "Scheduled posts",
                 "Subscriptions",
@@ -71,9 +72,29 @@ class TubeMenuTest {
         }
     }
 
+    /**
+     * 2026-10-02: Offline joined the menu (the count below went from 7 to 8,
+     * deliberately). It is offered whatever is known of the channel, and a
+     * failed channel lookup is exactly the state a phone with no network is
+     * in: the page of what the device keeps must be reachable then.
+     */
+    @Test
+    fun `offline is always offered, with or without a network's answer about the channel`() {
+        val states = listOf(
+            ChannelState.Present(channel),
+            ChannelState.None,
+            ChannelState.Unknown,
+            ChannelState.Failed("offline"),
+        )
+        for (state in states) {
+            assertThat(tubeMenuRows(state)).contains(TubeMenuRow.OFFLINE)
+        }
+        assertThat(TubeMenuRow.OFFLINE.label).isEqualTo("Offline")
+    }
+
     @Test
     fun `every row has a label and none is empty`() {
         TubeMenuRow.entries.forEach { assertThat(it.label).isNotEmpty() }
-        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(7)
+        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(8)
     }
 }

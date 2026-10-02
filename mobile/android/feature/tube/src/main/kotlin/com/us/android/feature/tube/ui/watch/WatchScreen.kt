@@ -40,10 +40,12 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.feed.data.VideoLibraryState
 import com.us.android.core.feed.data.offersSubscribe
+import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.media.PlaybackKind
+import com.us.android.core.media.ui.CaptionsOverlay
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
@@ -79,6 +81,8 @@ import com.us.android.feature.tube.ui.collections.CollectionPickerSheet
 fun WatchScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    /** The More sheet's "Offline": the list of what this device keeps. */
+    onOpenOffline: () -> Unit,
     viewModel: WatchViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
 ) {
@@ -94,6 +98,7 @@ fun WatchScreen(
     val moreMessage by more.message.collectAsStateWithLifecycle()
     val library by viewModel.library.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
+    val offlineState by viewModel.offlineState.collectAsStateWithLifecycle()
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     val sheets = remember { WatchSheets() }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -156,6 +161,7 @@ fun WatchScreen(
             library = library,
             subscriptionEdges = subscriptionEdges,
             subscribeBusy = subscribeBusy,
+            offlineState = offlineState,
             viewModel = viewModel,
             actions = actions,
         )
@@ -177,6 +183,7 @@ fun WatchScreen(
         overlays = overlays,
         followEdges = followEdges,
         onShare = onShare,
+        onOpenOffline = onOpenOffline,
         onBack = onBack,
     )
 }
@@ -209,11 +216,14 @@ private fun WatchSheetsHost(
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
     onShare: (FeedItem) -> Unit,
+    onOpenOffline: () -> Unit,
     onBack: () -> Unit,
 ) {
     val quality by viewModel.quality.collectAsStateWithLifecycle()
     val speed by viewModel.speed.collectAsStateWithLifecycle()
     val autoplayNext by viewModel.autoplayNext.collectAsStateWithLifecycle()
+    val captions by viewModel.captions.collectAsStateWithLifecycle()
+    val captionLanguage by viewModel.captionLanguage.collectAsStateWithLifecycle()
     val trackHeights = rememberVideoHeights(viewModel.player)
     if (sheets.settingsOpen) {
         val playback = (content as? WatchContent.Ready)?.playback
@@ -222,9 +232,12 @@ private fun WatchSheetsHost(
             selectedQuality = quality,
             speed = speed,
             autoplayNext = autoplayNext,
+            captions = captions,
+            captionLanguage = captionLanguage,
             onSelectQuality = viewModel::selectQuality,
             onSelectSpeed = viewModel::selectSpeed,
             onAutoplayNextChange = viewModel::setAutoplayNext,
+            onSelectCaption = viewModel::selectCaption,
             onDismiss = { sheets.settingsOpen = false },
         )
     }
@@ -267,6 +280,7 @@ private fun WatchSheetsHost(
             ),
             // A blocked channel's video is left, as the web leaves it.
             onBlocked = onBack,
+            onOpenOffline = onOpenOffline,
         )
     }
     sheets.collectionFor?.let { postId ->
@@ -290,6 +304,7 @@ private fun WatchBody(
     library: VideoLibraryState,
     subscriptionEdges: Map<String, ChannelSubscription>,
     subscribeBusy: Boolean,
+    offlineState: OfflineState,
     viewModel: WatchViewModel,
     actions: WatchDetailsActions,
 ) {
@@ -330,6 +345,11 @@ private fun WatchBody(
                 .fillMaxSize()
                 .testTag("watch_details"),
         ) {
+            // An offline copy says so, and one being saved shows how far it is (2026-10-02).
+            watchOfflineStatusItem(
+                offlineCopy = (content as? WatchContent.Ready)?.offlineCopy == true,
+                entry = offlineState.copies[item.id],
+            )
             watchDetails(
                 item = item,
                 likes = overlay.likeCountOr(item.counts.likes, item.viewer.hasReacted),
@@ -401,6 +421,8 @@ private fun PlayerOrState(
                     transport = transport,
                     modifier = Modifier.fillMaxSize(),
                 )
+                // The stored caption track the viewer turned on; nothing is drawn while it is off.
+                CaptionsOverlay(player = viewModel.player)
                 if (ended) EndedPoster(thumb = viewModel.thumb(content.item))
                 when {
                     countdown != null -> NextEpisodeCountdown(

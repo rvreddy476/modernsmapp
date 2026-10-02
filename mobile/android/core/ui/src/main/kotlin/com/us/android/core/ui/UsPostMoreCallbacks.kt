@@ -51,4 +51,13 @@ class UsPostMoreCallbacks(
      * reel's sound and opens the reel create flow with it, or says why not.
      */
     val onUseSound: () -> Unit = {},
+    /**
+     * Videos: "Save offline" (2026-10-02). The sheet STAYS: the row turns
+     * into the save's progress, and a refusal is said by the host.
+     */
+    val onSaveOffline: () -> Unit = {},
+    /** Videos: "Cancel offline save" and "Remove offline copy": the copy, whole or partial, leaves the device. */
+    val onRemoveOffline: () -> Unit = {},
+    /** Videos: "Offline". The sheet has already left when this fires; the host opens the list. */
+    val onOpenOffline: () -> Unit = {},
 )

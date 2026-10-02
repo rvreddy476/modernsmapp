@@ -29,9 +29,15 @@ import com.us.android.core.feed.data.VideoLibraryStore
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.videoThumb
+import com.us.android.core.feed.offline.OfflineLibrary
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.playback
+import com.us.android.core.feed.offline.posterModel
+import com.us.android.core.feed.offline.toFeedItem
 import com.us.android.core.media.MediaSources
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
+import com.us.android.core.media.PlaybackCaption
 import com.us.android.core.media.PlayerFactory
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
@@ -64,8 +70,12 @@ import javax.inject.Inject
 sealed interface WatchContent {
     data object Loading : WatchContent
 
-    /** [playback] is null for a video still transcoding with nothing to play yet. */
-    data class Ready(val item: FeedItem, val playback: Playback?) : WatchContent
+    /**
+     * [playback] is null for a video still transcoding with nothing to play
+     * yet. [offlineCopy] says the frame comes off the device (2026-10-02):
+     * the screen then draws the "Offline copy" marker.
+     */
+    data class Ready(val item: FeedItem, val playback: Playback?, val offlineCopy: Boolean = false) : WatchContent
     data class Failed(val message: String) : WatchContent
 }
 
@@ -114,8 +124,9 @@ data class Countdown(val next: SeriesEpisode, val secondsLeft: Int)
  */
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
-// indirection, not clarity.
-@Suppress("LongParameterList")
+// indirection, not clarity. One function per thing the screen can ask, as
+// the Reels ViewModel has: the count is the surface's, not a smell.
+@Suppress("LongParameterList", "TooManyFunctions")
 class WatchViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: FeedRepository,
@@ -135,6 +146,8 @@ class WatchViewModel @Inject constructor(
     /** Like, Dislike, Watch later and Save: the optimistic taps and what is said when one is refused. */
     private val actions: WatchEngagement,
     library: VideoLibraryStore,
+    /** Offline copies (2026-10-02): a stored copy is what plays, and it opens with no network. */
+    private val offline: OfflineLibrary,
     /** Progress reports outlive the screen: the last one is sent as the ViewModel clears. */
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
@@ -296,18 +309,24 @@ class WatchViewModel @Inject constructor(
 
     private suspend fun load(postId: String) {
         _content.value = WatchContent.Loading
+        offline.ensureLoaded()
+        // A copy stored on this device is what plays (2026-10-02), and it
+        // opens from what was kept with it: no round trip, so none can fail.
+        val stored = offline.playable(postId)
         val listed = queue.items.value.firstOrNull { it.id == postId }
-        val item = listed ?: fetch(postId)
+        val kept = if (listed == null) stored?.toFeedItem() else null
+        val item = listed ?: kept ?: fetch(postId)
         if (item == null) {
             player.stop()
             _content.value = WatchContent.Failed("We couldn't load this video.")
             return
         }
-        // A row fetched by id IS the post detail; a list row is refreshed from it.
-        if (listed == null) actions.adopt(item) else launchRefreshViewerState(postId)
+        // A row fetched by id IS the post detail; a list row, and a kept one, is refreshed from it.
+        if (listed == null && kept == null) actions.adopt(item) else launchRefreshViewerState(postId)
         launchLoadSeries(postId)
-        val playback = urlResolver.playbackFor(item)
-        _content.value = WatchContent.Ready(item, playback)
+        val playback = stored?.playback() ?: urlResolver.playbackFor(item)
+        _content.value = WatchContent.Ready(item, playback, offlineCopy = stored != null)
+        offerCaptions(playback)
         launchKnowAuthor(item)
         if (playback == null) {
             player.stop()
@@ -559,6 +578,33 @@ class WatchViewModel @Inject constructor(
         player.setPlaybackSpeed(speed)
     }
 
+    // ── Captions (offline copies, 2026-10-02) ────────────────────────────
+
+    private val _captions = MutableStateFlow<List<PlaybackCaption>>(emptyList())
+
+    /**
+     * The caption tracks stored with the copy that is playing; empty for a
+     * video played from the network, which carries none on Android yet.
+     */
+    val captions: StateFlow<List<PlaybackCaption>> = _captions.asStateFlow()
+
+    private val _captionLanguage = MutableStateFlow<String?>(null)
+
+    /** The caption track the viewer turned on, by language; null is off, which is where it starts. */
+    val captionLanguage: StateFlow<String?> = _captionLanguage.asStateFlow()
+
+    fun selectCaption(language: String?) {
+        _captionLanguage.value = language
+        player.applyCaption(language)
+    }
+
+    /** The video changed: its tracks are offered, and a choice it does not have is let go. */
+    private fun offerCaptions(playback: Playback?) {
+        val tracks = playback?.captions.orEmpty()
+        _captions.value = tracks
+        selectCaption(captionChoice(_captionLanguage.value, tracks.map { it.language }))
+    }
+
     /**
      * The app went behind something: hold the frame, and say where it was.
      * A running countdown is dropped rather than paused: the next episode
@@ -574,8 +620,18 @@ class WatchViewModel @Inject constructor(
         endWatchAnalytics(PlayEndReason.BACKGROUNDED)
     }
 
-    /** What the card draws for an "Up next" row. */
-    fun thumb(item: FeedItem): VideoThumb = urlResolver.videoThumb(item)
+    /**
+     * What the card draws for an "Up next" row. A row rebuilt from an
+     * offline copy carries no delivery; its still is the one stored with it.
+     */
+    fun thumb(item: FeedItem): VideoThumb {
+        val thumb = urlResolver.videoThumb(item)
+        if (thumb.url != null) return thumb
+        return thumb.copy(url = offline.playable(item.id)?.posterModel())
+    }
+
+    /** Where each video's offline copy stands, for the ring while one is being saved. */
+    val offlineState: StateFlow<OfflineState> = offline.state
 
     // ── Engagement ───────────────────────────────────────────────────────
 

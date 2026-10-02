@@ -46,6 +46,9 @@ dependencies {
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
     implementation(projects.core.media)
+    // Offline copies (2026-10-02): UsApplication starts the copy state machine
+    // (expiry, resume, recheck), which lives with the feed data it stores.
+    implementation(projects.core.feed)
     implementation(projects.core.notifications)
     implementation(projects.feature.notifications)
     implementation(projects.core.network)

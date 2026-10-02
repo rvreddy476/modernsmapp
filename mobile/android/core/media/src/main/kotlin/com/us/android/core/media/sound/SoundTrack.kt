@@ -1,5 +1,6 @@
 package com.us.android.core.media.sound
 
+import com.us.android.core.media.Playback
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
@@ -14,6 +15,12 @@ data class SoundTrack(
     val startMs: Long = 0L,
     /** What the server declared; 0 when it did not say, and the player then reads it from the file. */
     val durationMs: Long = 0L,
+    /**
+     * The sound's stored copy, when the reel was saved offline (2026-10-02).
+     * It is then played from the device and the `serve` route is not asked;
+     * null plays the sound from the network, as before.
+     */
+    val stored: Playback? = null,
 )
 
 /** The creator's two levels, 0..1 each: the reel's own audio, and the sound beside it. */

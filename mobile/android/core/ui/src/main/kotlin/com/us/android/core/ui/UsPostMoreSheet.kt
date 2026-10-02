@@ -280,6 +280,10 @@ private class MorePresentation {
             UsPostMoreRow.SHOW_CONTROLS,
             UsPostMoreRow.QUALITY,
             UsPostMoreRow.USE_SOUND,
+            UsPostMoreRow.SAVE_OFFLINE,
+            UsPostMoreRow.CANCEL_OFFLINE,
+            UsPostMoreRow.REMOVE_OFFLINE,
+            UsPostMoreRow.OFFLINE_PAGE,
             -> onReelRow(row, callbacks, leaveThen)
             UsPostMoreRow.SAVE, UsPostMoreRow.UNSAVE -> callbacks.onToggleSave()
             UsPostMoreRow.COPY_LINK -> {
@@ -303,6 +307,10 @@ private class MorePresentation {
      * The reel's rows: Description and Quality unfold in place; Clear screen
      * leaves and then clears; Use this sound leaves and then asks — a refusal
      * is then read over the reel, not under a sheet that is going away.
+     *
+     * And a video's offline rows (2026-10-02): Save offline, Cancel and
+     * Remove STAY on the sheet, where the row turns into the save's progress
+     * or a refusal is read; Offline leaves and then opens the list.
      */
     private fun onReelRow(row: UsPostMoreRow, callbacks: UsPostMoreCallbacks, leaveThen: (() -> Unit) -> Unit) {
         when (row) {
@@ -310,6 +318,9 @@ private class MorePresentation {
             UsPostMoreRow.QUALITY -> qualityOpen = !qualityOpen
             UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS -> leaveThen(callbacks.onClearScreen)
             UsPostMoreRow.USE_SOUND -> leaveThen(callbacks.onUseSound)
+            UsPostMoreRow.SAVE_OFFLINE -> callbacks.onSaveOffline()
+            UsPostMoreRow.CANCEL_OFFLINE, UsPostMoreRow.REMOVE_OFFLINE -> callbacks.onRemoveOffline()
+            UsPostMoreRow.OFFLINE_PAGE -> leaveThen(callbacks.onOpenOffline)
             else -> error("not a reel row: $row")
         }
     }
@@ -330,9 +341,10 @@ private fun MoreMenu(
     val rowsEnabled = !state.busy &&
         delete != UsPostDeleteState.Deleting &&
         dontRecommend != UsPostDontRecommendState.Sending
-    // The one refusal the sheet can be showing: a delete's, or a "don't recommend"'s.
+    // The one refusal the sheet can be showing: a delete's, a "don't recommend"'s, or a Save offline's.
     val refusal = (delete as? UsPostDeleteState.Failed)?.message
         ?: (dontRecommend as? UsPostDontRecommendState.Failed)?.message
+        ?: state.offline?.refusal
     Box(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // One list, already in order: no groups, so no dividers between them.
@@ -422,6 +434,9 @@ private fun MenuRow(
                 UsPostMoreRow.QUALITY -> {
                     { QualityValue(reel = reel, open = ui.qualityOpen) }
                 }
+                UsPostMoreRow.CANCEL_OFFLINE -> {
+                    { OfflineProgressValue(state.offline) }
+                }
                 else -> null
             },
             testTag = "post_more_row:${row.name.lowercase()}",
@@ -443,6 +458,17 @@ private fun MenuRow(
             else -> Unit
         }
     }
+}
+
+/** How far the offline save is, at the right of its row: "42%", or what it is held for. */
+@Composable
+private fun OfflineProgressValue(offline: UsOfflineMoreState?) {
+    Text(
+        text = offlineProgressText(offline),
+        style = MaterialTheme.typography.bodyMedium,
+        color = UsTheme.extended.textMuted,
+        modifier = Modifier.testTag("post_more_offline_progress"),
+    )
 }
 
 /** Report and Delete are red: the two rows that cannot be taken back from the sheet. */
@@ -543,6 +569,10 @@ private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.SHOW_CONTROLS -> UsIcons.Minimize
     UsPostMoreRow.QUALITY -> UsIcons.Sliders
     UsPostMoreRow.USE_SOUND -> UsIcons.Music
+    UsPostMoreRow.SAVE_OFFLINE -> UsIcons.Download
+    UsPostMoreRow.CANCEL_OFFLINE -> UsIcons.Close
+    UsPostMoreRow.REMOVE_OFFLINE -> UsIcons.Trash
+    UsPostMoreRow.OFFLINE_PAGE -> UsIcons.ArrowDownToLine
     else -> null
 }
 
@@ -562,6 +592,10 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.SHOW_CONTROLS,
     UsPostMoreRow.QUALITY,
     UsPostMoreRow.USE_SOUND,
+    UsPostMoreRow.SAVE_OFFLINE,
+    UsPostMoreRow.CANCEL_OFFLINE,
+    UsPostMoreRow.REMOVE_OFFLINE,
+    UsPostMoreRow.OFFLINE_PAGE,
     -> error("a reel row: $this")
     UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK ->
         error("a row about the author: $this")

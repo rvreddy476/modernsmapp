@@ -56,6 +56,8 @@ import javax.inject.Inject
  * 2026-10-02: Collections and Watch later joined (the lists the watch page
  * fills), "Saved videos" became "Saved" (it holds saved reels too), and the
  * rows are drawn in ascending alphabetical order, the rule for every menu.
+ * Offline joined the same day: the page of what this device keeps to watch
+ * with no network, which must be reachable without one.
  */
 enum class TubeMenuRow(val label: String, val icon: ImageVector) {
     YOUR_CHANNEL("Your channel", UsIcons.Tv),
@@ -65,6 +67,9 @@ enum class TubeMenuRow(val label: String, val icon: ImageVector) {
     SCHEDULED("Scheduled posts", UsIcons.Clock),
     SAVED("Saved", UsIcons.BookmarkOutline),
     NOTIFICATIONS("Notifications", UsIcons.Notifications),
+
+    /** What this device keeps to watch with no network (2026-10-02). */
+    OFFLINE("Offline", UsIcons.ArrowDownToLine),
     WATCH_LATER("Watch later", UsIcons.ListVideo),
 }
 
@@ -83,6 +88,7 @@ fun tubeMenuRows(channel: ChannelState): List<TubeMenuRow> = listOf(
     TubeMenuRow.SCHEDULED,
     TubeMenuRow.SAVED,
     TubeMenuRow.NOTIFICATIONS,
+    TubeMenuRow.OFFLINE,
     TubeMenuRow.WATCH_LATER,
 ).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
 
@@ -135,6 +141,7 @@ fun TubeMenuSheet(
             TubeMenuRow.COLLECTIONS -> destinations.onOpenCollections()
             TubeMenuRow.WATCH_LATER -> destinations.onOpenCollection(TubeCollectionRoute.WATCH_LATER)
             TubeMenuRow.NOTIFICATIONS -> destinations.onOpenNotifications()
+            TubeMenuRow.OFFLINE -> destinations.onOpenOffline()
         }
     }
 

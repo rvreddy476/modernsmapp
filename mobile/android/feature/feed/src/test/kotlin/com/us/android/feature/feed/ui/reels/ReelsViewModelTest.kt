@@ -31,6 +31,14 @@ import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedMediaDto
 import com.us.android.core.feed.data.dto.FeedSoundDto
+import com.us.android.core.feed.offline.NoOfflineLibrary
+import com.us.android.core.feed.offline.OfflineCopy
+import com.us.android.core.feed.offline.OfflineKind
+import com.us.android.core.feed.offline.OfflineLibrary
+import com.us.android.core.feed.offline.OfflineSaveResult
+import com.us.android.core.feed.offline.OfflineSound
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.OfflineStream
 import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.PlaybackKind
@@ -63,6 +71,7 @@ import com.us.android.feature.feed.data.subscriptionGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
@@ -259,6 +268,7 @@ class ReelsViewModelTest {
         val soundStore: FakeSoundStore = FakeSoundStore(),
         val watch: VideoWatchTracker = VideoWatchTracker.disabled(),
         val writes: EngagementWrites = AcceptingWrites(),
+        val offline: OfflineLibrary = NoOfflineLibrary,
     )
 
     private fun viewModel(h: Harness = Harness(), store: EngagementStore = EngagementStore(h.writes)) = ReelsViewModel(
@@ -276,6 +286,7 @@ class ReelsViewModelTest {
         sounds = SoundsRepository(h.sounds, ErrorMapper(json)) { it },
         soundEntry = h.soundEntry,
         soundStore = h.soundStore,
+        offline = h.offline,
         hidden = HiddenPosts(),
     )
 
@@ -960,6 +971,145 @@ class ReelsViewModelTest {
         assertThat(vm.entryTarget.value).isNull()
         assertThat(vm.head.value).isNull()
         assertThat(h.entry.requested.value).isNull()
+    }
+
+    // ── Offline copies (2026-10-02) ─────────────────────────────────────
+
+    /** Copies "on this device", scripted: what is playable right now, by post. */
+    private class StoredCopies(vararg copies: OfflineCopy) : OfflineLibrary {
+        val held = copies.associateBy { it.postId }.toMutableMap()
+        override val state = MutableStateFlow(OfflineState(loaded = true))
+        override val notices = MutableSharedFlow<String>()
+        override val wifiOnly = MutableStateFlow(true)
+        override suspend fun setWifiOnly(enabled: Boolean) = Unit
+        override suspend fun ensureLoaded() = Unit
+        override suspend fun save(item: FeedItem): OfflineSaveResult = OfflineSaveResult.Started
+        override suspend fun remove(postId: String) {
+            held -= postId
+        }
+        override suspend fun removeAll() = Unit
+        override suspend fun refresh(force: Boolean) = Unit
+        override fun playable(postId: String): OfflineCopy? = held[postId]
+    }
+
+    private fun storedCopy(postId: String = "p", withSound: Boolean = false) = OfflineCopy(
+        postId = postId,
+        kind = OfflineKind.REEL,
+        title = "Kept reel",
+        channelName = "Ada",
+        durationMs = 28_400L,
+        expiresAtMs = Long.MAX_VALUE,
+        recheckAfterSeconds = 172_800L,
+        grantedAtMs = 0L,
+        lastCheckedAtMs = 0L,
+        stored = true,
+        video = OfflineStream("$postId/video", "http://127.0.0.1:8080/v1/media/m/serve/480p", "video/mp4", 100L),
+        sound = if (withSound) {
+            OfflineSound(
+                stream = OfflineStream("$postId/sound", "http://127.0.0.1:8080/v1/audio/s1/serve", "audio/mp4", 0L),
+                startMs = 1_500L,
+                soundId = "s1",
+            )
+        } else {
+            null
+        },
+    )
+
+    private val addedSound = ReelSound(
+        id = "s1",
+        title = "Monsoon",
+        artist = "Ada",
+        startMs = 1_500L,
+        durationMs = 28_400L,
+        useCount = 0,
+        sourcePostId = null,
+        creatorUserId = null,
+    )
+
+    @Test
+    fun `a reel with a copy on the device plays the copy, not the network`() {
+        val vm = viewModel(Harness(offline = StoredCopies(storedCopy())))
+        val reel = item(video())
+
+        val playback = vm.playback(reel)!!
+
+        assertThat(playback.kind).isEqualTo(PlaybackKind.Offline)
+        assertThat(playback.cacheKey).isEqualTo("p/video")
+    }
+
+    @Test
+    fun `a reel with no copy plays from the network, as before`() {
+        val vm = viewModel(Harness(offline = StoredCopies()))
+        val reel = item(video())
+
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+    }
+
+    /** The pool re-prepares a page whose playback changes; a swap would restart the reel from the top. */
+    @Test
+    fun `a copy that finishes saving mid-visit does not swap the source under the reel`() {
+        val copies = StoredCopies()
+        val vm = viewModel(Harness(offline = copies))
+        val reel = item(video())
+        val before = vm.playback(reel)
+
+        copies.held["p"] = storedCopy()
+
+        assertThat(vm.playback(reel)).isEqualTo(before)
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+    }
+
+    @Test
+    fun `a copy removed mid-visit sends the reel back to the network`() {
+        val copies = StoredCopies(storedCopy())
+        val vm = viewModel(Harness(offline = copies))
+        val reel = item(video())
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Offline)
+
+        copies.held.clear()
+
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+    }
+
+    /** No network, or a post the server no longer serves: the copy kept on the device still opens. */
+    @Test
+    fun `an entry that cannot be fetched opens from the copy kept on the device`() = runTest {
+        val h = Harness(offline = StoredCopies(storedCopy("kept")))
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        h.entry.open("kept")
+
+        vm.resolveEntry(emptyList())
+        advanceUntilIdle()
+
+        val head = vm.head.value as ReelsHead.Live
+        assertThat(head.item.id).isEqualTo("kept")
+        assertThat(head.item.title).isEqualTo("Kept reel")
+        assertThat(vm.entryTarget.value).isEqualTo("kept")
+        assertThat(vm.playback(head.item)!!.kind).isEqualTo(PlaybackKind.Offline)
+    }
+
+    @Test
+    fun `a stored reel's added sound is played from the device, where the row says it starts`() {
+        val vm = viewModel(Harness(offline = StoredCopies(storedCopy(withSound = true))))
+        val reel = item(video()).copy(sound = addedSound)
+
+        val track = vm.soundTrack(reel)!!
+
+        assertThat(track.id).isEqualTo("s1")
+        assertThat(track.startMs).isEqualTo(1_500L)
+        assertThat(track.stored!!.kind).isEqualTo(PlaybackKind.Offline)
+        assertThat(track.stored!!.cacheKey).isEqualTo("p/sound")
+    }
+
+    @Test
+    fun `a sound is played from the network when the reel has no copy, and not at all when the row has none`() {
+        val online = viewModel(Harness(offline = StoredCopies()))
+        val stored = viewModel(Harness(offline = StoredCopies(storedCopy(withSound = true))))
+
+        assertThat(online.soundTrack(item(video()).copy(sound = addedSound))!!.stored).isNull()
+        // The row decides WHETHER a sound plays; the copy only decides where it is read from.
+        assertThat(stored.soundTrack(item(video()))).isNull()
     }
 
     /** An entry that is already the head — tapped twice from the feed — is a scroll to page 0, no fetch. */

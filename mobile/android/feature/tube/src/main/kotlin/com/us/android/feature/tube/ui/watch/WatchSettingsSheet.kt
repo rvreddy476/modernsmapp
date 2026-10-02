@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.PlaybackCaption
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.UsSettingsSwitchRow
 
@@ -60,6 +61,14 @@ fun WatchSettingsSheet(
     onSelectSpeed: (Float) -> Unit,
     onAutoplayNextChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * The caption tracks stored with an offline copy (2026-10-02). Empty for
+     * a video played from the network, and the group is then not drawn.
+     */
+    captions: List<PlaybackCaption> = emptyList(),
+    /** The track that is on, by language; null is off. */
+    captionLanguage: String? = null,
+    onSelectCaption: (String?) -> Unit = {},
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -95,6 +104,24 @@ fun WatchSettingsSheet(
                     onClick = { onSelectSpeed(option) },
                     tag = "watch_speed:${speedLabel(option)}",
                 )
+            }
+            if (captions.isNotEmpty()) {
+                Spacer(Modifier.height(UsTheme.spacing.xl))
+                GroupTitle(icon = UsIcons.FileText, text = "Captions")
+                OptionRow(
+                    label = "Off",
+                    selected = captionLanguage == null,
+                    onClick = { onSelectCaption(null) },
+                    tag = "watch_captions:off",
+                )
+                captions.forEach { caption ->
+                    OptionRow(
+                        label = caption.label,
+                        selected = caption.language == captionLanguage,
+                        onClick = { onSelectCaption(caption.language) },
+                        tag = "watch_captions:${caption.language}",
+                    )
+                }
             }
             Spacer(Modifier.height(UsTheme.spacing.xl))
             GroupTitle(icon = UsIcons.ListVideo, text = "Autoplay")

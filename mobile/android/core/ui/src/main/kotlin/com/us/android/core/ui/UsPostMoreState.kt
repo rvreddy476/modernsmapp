@@ -53,6 +53,13 @@ data class UsPostMoreState(
      * a feed card and on a reel.
      */
     val longVideo: UsLongVideoMoreState? = null,
+    /**
+     * Offline copies (2026-10-02), on a VIDEO's sheet whose host keeps them:
+     * which of Save offline / Cancel / Remove this video offers, and the
+     * "Offline" row that opens the list. Null where the host has no offline
+     * copies to offer (a feed card), and the sheet is then exactly what it was.
+     */
+    val offline: UsOfflineMoreState? = null,
 ) {
     /** Which of the three menus this is. A long video wins over a reel; a sheet is never both. */
     val surface: UsPostMoreSurface
@@ -69,6 +76,40 @@ data class UsPostMoreState(
  * be the same in Reels and in long videos").
  */
 enum class UsPostMoreSurface { POST, REEL, LONG_VIDEO }
+
+/**
+ * What the sheet offers about an offline copy of this video (2026-10-02).
+ *
+ * founder, 2026-10-02: "Keep a copy is not direct download. It should be
+ * like to see offline in the app only." So the row never says "download"
+ * and never leads to a file: it asks the app to keep the video inside
+ * itself, and the Offline page is where it is watched.
+ */
+@Immutable
+data class UsOfflineMoreState(
+    val action: UsOfflineAction,
+    /** While [UsOfflineAction.CANCEL]: how far the save is, 0..1; null while the length is not known. */
+    val progress: Float? = null,
+    /** While [UsOfflineAction.CANCEL]: what the save is held for ("Waiting for Wi-Fi"), in place of a percentage. */
+    val waiting: String? = null,
+    /** Why the last Save offline was refused, shown under the rows; null when there is nothing to say. */
+    val refusal: String? = null,
+)
+
+/** Which offline row a video shows. The host decides; the sheet only draws it. */
+enum class UsOfflineAction {
+    /** Nothing to offer: the creator has not allowed it and the video is not the viewer's own. */
+    NONE,
+
+    /** No copy on this device: "Save offline". */
+    SAVE,
+
+    /** A save is in flight: "Cancel offline save", with its progress at the right. */
+    CANCEL,
+
+    /** A copy is stored: "Remove offline copy". */
+    REMOVE,
+}
 
 /** What the long video's menu needs beyond the post's own state. */
 @Immutable
@@ -200,6 +241,18 @@ enum class UsPostMoreRow(val label: String) {
 
     /** Reels only: make a reel with this reel's sound. */
     USE_SOUND("Use this sound"),
+
+    /** Videos: keep this video inside the app, to watch with no network. Never a file download. */
+    SAVE_OFFLINE("Save offline"),
+
+    /** Videos: [SAVE_OFFLINE]'s face while the save is in flight; the progress sits at the right. */
+    CANCEL_OFFLINE("Cancel offline save"),
+
+    /** Videos: a copy is stored on this device. */
+    REMOVE_OFFLINE("Remove offline copy"),
+
+    /** Videos: the list of what is kept on this device. */
+    OFFLINE_PAGE("Offline"),
     SAVE("Save"),
     UNSAVE("Unsave"),
     COPY_LINK("Copy link"),
@@ -317,6 +370,7 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
     add(UsPostMoreRow.QUALITY)
     if (!shareHidden) add(UsPostMoreRow.SHARE)
     if (reel?.canUseSound == true) add(UsPostMoreRow.USE_SOUND)
+    addAll(offlineRows())
     if (isOwnPost) {
         add(UsPostMoreRow.DELETE)
         return@buildList
@@ -326,6 +380,46 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
     add(UsPostMoreRow.NOT_INTERESTED)
     add(UsPostMoreRow.REPORT)
 }
+
+/**
+ * A video's offline rows (2026-10-02), the same on a reel and a long video,
+ * for the owner and for everyone else:
+ *
+ *  - "Offline", the list of what this device keeps, whenever the host keeps
+ *    offline copies at all: it is how a copy is found again, and it must be
+ *    reachable from a video that cannot itself be saved;
+ *  - ONE of "Save offline", "Cancel offline save" or "Remove offline copy",
+ *    by what the host says of this video ([UsOfflineAction]); none when the
+ *    creator has not allowed it.
+ *
+ * Nothing when the host passed no offline state: the list is then the
+ * eight rows it was.
+ */
+internal fun UsPostMoreState.offlineRows(): List<UsPostMoreRow> {
+    val state = offline ?: return emptyList()
+    return buildList {
+        add(UsPostMoreRow.OFFLINE_PAGE)
+        when (state.action) {
+            UsOfflineAction.SAVE -> add(UsPostMoreRow.SAVE_OFFLINE)
+            UsOfflineAction.CANCEL -> add(UsPostMoreRow.CANCEL_OFFLINE)
+            UsOfflineAction.REMOVE -> add(UsPostMoreRow.REMOVE_OFFLINE)
+            UsOfflineAction.NONE -> Unit
+        }
+    }
+}
+
+/** What sits at the right of "Cancel offline save": what the save waits for, else how far it is. */
+fun offlineProgressText(offline: UsOfflineMoreState?): String {
+    val waiting = offline?.waiting?.takeIf { it.isNotBlank() }
+    val progress = offline?.progress
+    return when {
+        waiting != null -> waiting
+        progress == null -> "Starting"
+        else -> "${(progress.coerceIn(0f, 1f) * PERCENT).toInt()}%"
+    }
+}
+
+private const val PERCENT = 100
 
 /** The creator turned sharing off for this video, whichever surface it is on. */
 private val UsPostMoreState.shareHidden: Boolean

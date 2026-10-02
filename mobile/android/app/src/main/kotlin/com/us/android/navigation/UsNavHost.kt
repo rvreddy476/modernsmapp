@@ -179,6 +179,7 @@ import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeCollection
 import com.us.android.feature.tube.navigation.navigateToTubeCollections
+import com.us.android.feature.tube.navigation.navigateToTubeOffline
 import com.us.android.feature.tube.navigation.navigateToTubeSaved
 import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
@@ -950,6 +951,8 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenSound = { soundId -> navController.navigateToSound(soundId) },
         onCreateWithSound = onCreateWithSound,
+        // The Offline page lives in Tube's graph; a reel's More sheet opens the same one.
+        onOpenOffline = { navController.navigateToTubeOffline() },
     )
     // A sound's page, pushed over Reels. A tile opens its reel in the Reels
     // TAB (the page has left the id in ReelsEntry, as the feeds do).
@@ -993,6 +996,7 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenSaved = { navController.navigateToTubeSaved() },
             onOpenCollections = { navController.navigateToTubeCollections() },
             onOpenCollection = { id -> navController.navigateToTubeCollection(id) },
+            onOpenOffline = { navController.navigateToTubeOffline() },
         ),
     )
 
