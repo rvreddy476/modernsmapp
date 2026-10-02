@@ -27,15 +27,17 @@ const (
 // ChatService call panics through the nil embedded interface.
 type datingMatchStub struct {
 	ChatService
-	mu      sync.Mutex
-	calls   int
-	byMatch map[uuid.UUID]uuid.UUID
+	mu          sync.Mutex
+	calls       int
+	byMatch     map[uuid.UUID]uuid.UUID
+	firstMovers []uuid.UUID
 }
 
-func (s *datingMatchStub) CreateDatingMatchConversation(_ context.Context, userA, userB, matchID uuid.UUID) (*service.ConversationResponse, error) {
+func (s *datingMatchStub) CreateDatingMatchConversation(_ context.Context, userA, userB, matchID uuid.UUID, firstMovers []uuid.UUID) (*service.ConversationResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
+	s.firstMovers = firstMovers
 	if s.byMatch == nil {
 		s.byMatch = map[uuid.UUID]uuid.UUID{}
 	}

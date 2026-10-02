@@ -37,7 +37,8 @@ type ChatService interface {
 	GetPresence(ctx context.Context, requesterID uuid.UUID, userIDs []uuid.UUID) (map[string]bool, error)
 	GetConversationPresence(ctx context.Context, userID, convID uuid.UUID) (*service.ConversationPresence, error)
 	// P0-3 dating-match internal entry points.
-	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*service.ConversationResponse, error)
+	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, firstMovers []uuid.UUID) (*service.ConversationResponse, error)
+	SendDatingOpeningAnswer(ctx context.Context, matchID, senderID uuid.UUID, text, idempotencyKey string) (*service.MessageResponse, error)
 	CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error
 	HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error)
 	ManagedAddGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
@@ -135,6 +136,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// the api-gateway proxies /v1/chat (injecting the internal key on every
 	// request, anonymous ones included) but has no route to /internal/v1/chat.
 	internal.POST("/conversations/dating-match", h.CreateDatingMatchConversation)
+	// Dating mechanic M5: dating-service posts a validated opening answer
+	// (the waiting member's first message) past the first-move gate. Same
+	// gates as the route above.
+	internal.POST("/conversations/dating-match/opening-answer", h.DatingOpeningAnswer)
 	// Open-match probe: graph-service asks whether a pair holds an open
 	// dating match, so a matched pair may place a live call without becoming
 	// a graph connection. Same gates, same prefix, same reasoning as above.
@@ -925,6 +930,17 @@ type createDatingMatchRequest struct {
 	UserA   string `json:"user_a" binding:"required"`
 	UserB   string `json:"user_b" binding:"required"`
 	MatchID string `json:"match_id" binding:"required"`
+	// FirstMoverIDs (dating mechanic M5): who may send the first message.
+	// Absent or empty: anyone.
+	FirstMoverIDs []string `json:"first_mover_ids,omitempty"`
+}
+
+// datingOpeningAnswerRequest is the body of the opening-answer route.
+type datingOpeningAnswerRequest struct {
+	MatchID        string `json:"match_id" binding:"required"`
+	SenderID       string `json:"sender_id" binding:"required"`
+	Text           string `json:"text" binding:"required"`
+	IdempotencyKey string `json:"idempotency_key" binding:"required"`
 }
 
 // userIdentityHeaders mark a request as an end user's. The api-gateway sets
@@ -989,7 +1005,16 @@ func (h *Handler) CreateDatingMatchConversation(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid match_id", nil, nil)
 		return
 	}
-	resp, err := h.svc.CreateDatingMatchConversation(c.Request.Context(), userA, userB, matchID)
+	firstMovers := make([]uuid.UUID, 0, len(body.FirstMoverIDs))
+	for _, raw := range body.FirstMoverIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid first_mover_ids", nil, nil)
+			return
+		}
+		firstMovers = append(firstMovers, id)
+	}
+	resp, err := h.svc.CreateDatingMatchConversation(c.Request.Context(), userA, userB, matchID, firstMovers)
 	if errors.Is(err, store.ErrDatingMatchPairMismatch) {
 		h.log.Warn("dating-match conversation: match_id already bound to a different pair", "match_id", matchID,
 			"request_id", RequestIDFromContext(c))
@@ -1003,6 +1028,62 @@ func (h *Handler) CreateDatingMatchConversation(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// DatingOpeningAnswer — POST /internal/v1/chat/conversations/dating-match/opening-answer
+//
+// Service-only (dating mechanic M5). Body {match_id, sender_id, text,
+// idempotency_key}. Posts the waiting member's opening answer as the first
+// message of a first-move conversation. Refused (409) in every other case:
+// a first mover, a conversation that already has a message, no first-move
+// rule, or a closed match.
+func (h *Handler) DatingOpeningAnswer(c *gin.Context) {
+	if h.internalServiceKey == "" {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MISCONFIGURED", "internal-only endpoint not configured", nil, nil)
+		return
+	}
+	if carriesUserIdentity(c) {
+		h.log.Warn("dating opening answer: refused request carrying user identity",
+			"request_id", RequestIDFromContext(c), "ip", c.ClientIP())
+		api.Error(c.Writer, http.StatusForbidden, "USER_CALLER_REFUSED", "service-only endpoint; user requests are not accepted", nil, nil)
+		return
+	}
+	if c.GetHeader("X-Internal-Service-Key") != h.internalServiceKey {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		return
+	}
+	var body datingOpeningAnswerRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	matchID, err := uuid.Parse(body.MatchID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid match_id", nil, nil)
+		return
+	}
+	senderID, err := uuid.Parse(body.SenderID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid sender_id", nil, nil)
+		return
+	}
+	msg, err := h.svc.SendDatingOpeningAnswer(c.Request.Context(), matchID, senderID, body.Text, body.IdempotencyKey)
+	switch {
+	case errors.Is(err, service.ErrDatingConversationNotFound):
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "no conversation for this match", nil, nil)
+		return
+	case errors.Is(err, service.ErrOpeningAnswerNotAllowed), errors.Is(err, service.ErrMatchClosed):
+		api.Error(c.Writer, http.StatusConflict, "OPENING_ANSWER_NOT_ALLOWED", err.Error(), nil, nil)
+		return
+	case err != nil:
+		if writeMessagingError(c, err) {
+			return
+		}
+		h.log.Warn("dating opening answer failed", "err", err, "match_id", matchID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "could not send the opening answer", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, msg, nil)
 }
 
 // DatingMatchState — POST /internal/v1/chat/dating-match/state
@@ -1278,6 +1359,9 @@ func writeMessagingError(c *gin.Context, err error) bool {
 		return true
 	case errors.Is(err, service.ErrAwaitingRequestAcceptance):
 		api.Error(c.Writer, http.StatusConflict, "AWAITING_REQUEST_ACCEPTANCE", err.Error(), nil, nil)
+		return true
+	case errors.Is(err, service.ErrFirstMovePending):
+		api.Error(c.Writer, http.StatusForbidden, "FIRST_MOVE_PENDING", err.Error(), nil, nil)
 		return true
 	case errors.Is(err, service.ErrRateLimited):
 		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil, nil)

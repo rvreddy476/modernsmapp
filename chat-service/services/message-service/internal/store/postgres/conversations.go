@@ -298,6 +298,10 @@ type ConversationMeta struct {
 	SourceApp string
 	MatchID   *uuid.UUID
 	ClosedAt  *time.Time
+	// FirstMovers (dating mechanic M5): who may send the first message.
+	// Empty: anyone. LastMessageAt nil means no message has landed yet.
+	FirstMovers   []uuid.UUID
+	LastMessageAt *time.Time
 }
 
 // GetConversationMeta returns the source_app + match_id + closed_at for
@@ -307,10 +311,10 @@ type ConversationMeta struct {
 func (s *ConversationStore) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*ConversationMeta, error) {
 	var m ConversationMeta
 	err := s.db.QueryRow(ctx, `
-		SELECT source_app, match_id, closed_at
+		SELECT source_app, match_id, closed_at, COALESCE(dating_first_movers, '{}'), last_message_at
 		FROM chat.conversations
 		WHERE id = $1
-	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt)
+	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt, &m.FirstMovers, &m.LastMessageAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

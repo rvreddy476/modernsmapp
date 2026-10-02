@@ -464,3 +464,8 @@ CREATE TABLE IF NOT EXISTS chat.dating_first_message_notifications (
 CREATE INDEX IF NOT EXISTS idx_dating_first_message_due
     ON chat.dating_first_message_notifications(next_attempt_at)
     WHERE delivered_at IS NULL AND terminal_at IS NULL;
+
+-- ===== 008: dating first move (Dating mechanic M5, 2026-10-02) =====
+-- Who may send the first message in a dating-match conversation. NULL or
+-- empty: anyone. See migrations/008_dating_first_move.sql.
+ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS dating_first_movers UUID[];

@@ -525,16 +525,28 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 //
 // Caller is dating-service (internal-key gated at the handler).
 // P0-3 in dating/PRODUCTION_GAP_ANALYSIS.md.
-func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*ConversationResponse, error) {
+//
+// firstMovers (dating mechanic M5) names who may send the first message;
+// empty leaves the conversation open to both. They must be members of the
+// pair. A retry re-applies them while no message has landed.
+func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, firstMovers []uuid.UUID) (*ConversationResponse, error) {
 	if userA == userB {
 		return nil, errors.New("dating-match conversation requires two distinct users")
 	}
 	if matchID == uuid.Nil {
 		return nil, errors.New("match_id is required")
 	}
+	if err := validateFirstMovers(userA, userB, firstMovers); err != nil {
+		return nil, err
+	}
 	convID, _, err := s.convStore.CreateDatingMatchConversation(ctx, userA, userB, matchID)
 	if err != nil {
 		return nil, err
+	}
+	if len(firstMovers) > 0 {
+		if err := s.setDatingFirstMovers(ctx, convID, firstMovers); err != nil {
+			return nil, err
+		}
 	}
 	return s.getConversationResponse(ctx, convID)
 }
@@ -1043,6 +1055,14 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		// constrained first message until the recipient accepts. This runs
 		// inside the idempotency closure so an idempotent retry returns the
 		// cached response instead of being rejected as a follow-up.
+		// Dating mechanic M5: until the first message lands, only a first
+		// mover may send. Inside the closure so an idempotent retry of an
+		// accepted send returns the cached response. The opening answer
+		// dating-service validated is the one send let through.
+		if firstMoveBlocks(meta, userID) && !firstMoveBypassed(ctx) {
+			return nil, ErrFirstMovePending
+		}
+
 		firstRequestMessage := false
 		conv, err := s.convStore.GetConversation(ctx, conversationID)
 		if err != nil {
