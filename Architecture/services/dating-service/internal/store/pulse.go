@@ -193,6 +193,9 @@ type CandidateQuery struct {
 	// from the deck. Defaults to false so the existing deck shape
 	// is preserved.
 	VerifiedOnly bool
+	// OnlyIDs (mechanic M7) restricts the query to these users: the daily
+	// picks re-checked against every visibility rule.
+	OnlyIDs []uuid.UUID
 	// Mechanic M6 pass filters (0 / empty: not applied). A candidate with no
 	// value for a filtered field is left out.
 	MinHeightCm int
@@ -314,6 +317,10 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 
 	if q.ExcludeActed {
 		where = append(where, `NOT `+actedOnPredicate("$1", "p.user_id"))
+	}
+	if len(q.OnlyIDs) > 0 {
+		args = append(args, q.OnlyIDs)
+		where = append(where, fmt.Sprintf(`p.user_id = ANY($%d::uuid[])`, len(args)))
 	}
 	if q.MinHeightCm > 0 {
 		args = append(args, q.MinHeightCm)

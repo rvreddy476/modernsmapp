@@ -1605,3 +1605,28 @@ ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS drinking_filter TEXT[]  
 ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS smoking_filter  TEXT[]  NOT NULL DEFAULT '{}';
 ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS exercise_filter TEXT[]  NOT NULL DEFAULT '{}';
 ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS diet_filter     TEXT[]  NOT NULL DEFAULT '{}';
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M7 — daily picks (DATING_PICKS_ENABLED).
+--
+-- dating_daily_pick_days: one row per user per local date once that day's
+--   selection is made (also when it found nobody), so it is made once.
+-- dating_daily_picks: the day's picks in order. A snapshot only: every read
+--   re-applies visibility, blocks and actions. Purged with the profile.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_daily_pick_days (
+    user_id    UUID        NOT NULL,
+    pick_date  DATE        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, pick_date)
+);
+CREATE TABLE IF NOT EXISTS dating_daily_picks (
+    user_id      UUID        NOT NULL,
+    pick_date    DATE        NOT NULL,
+    candidate_id UUID        NOT NULL,
+    position     INT         NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, pick_date, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_daily_picks_candidate
+    ON dating_daily_picks(candidate_id);

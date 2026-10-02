@@ -1,0 +1,78 @@
+// Daily picks store — mechanic M7.
+//
+// dating_daily_picks is the day's selection for a user, keyed by the user's
+// local date: chosen once, then served all day in the same order. Rows are
+// a snapshot only; every read re-applies visibility through FetchCandidates
+// (CandidateQuery.OnlyIDs), so a block, a pause or an action since the pick
+// was made takes the person out.
+package store
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// DailyPicks returns the candidate ids picked for userID on day, in order.
+func (s *Store) DailyPicks(ctx context.Context, userID uuid.UUID, day time.Time) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+        SELECT candidate_id FROM dating_daily_picks
+        WHERE user_id = $1 AND pick_date = $2::date
+        ORDER BY position`, userID, day.Format("2006-01-02"))
+	if err != nil {
+		return nil, fmt.Errorf("daily picks: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// HasDailyPicks reports whether the day's selection was already made (an
+// empty selection is recorded too, with a sentinel row, so a day with nobody
+// to pick is not recomputed on every request).
+func (s *Store) HasDailyPicks(ctx context.Context, userID uuid.UUID, day time.Time) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+        SELECT EXISTS (SELECT 1 FROM dating_daily_pick_days WHERE user_id = $1 AND pick_date = $2::date)`,
+		userID, day.Format("2006-01-02")).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("daily pick day: %w", err)
+	}
+	return ok, nil
+}
+
+// SaveDailyPicks records the day's selection, once: a concurrent second
+// selection for the same day is dropped and the first one stands.
+func (s *Store) SaveDailyPicks(ctx context.Context, userID uuid.UUID, day time.Time, picks []uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin picks: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+        INSERT INTO dating_daily_pick_days (user_id, pick_date) VALUES ($1, $2::date)
+        ON CONFLICT DO NOTHING`, userID, day.Format("2006-01-02"))
+	if err != nil {
+		return fmt.Errorf("record pick day: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	for i, id := range picks {
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO dating_daily_picks (user_id, pick_date, candidate_id, position)
+            VALUES ($1, $2::date, $3, $4)`, userID, day.Format("2006-01-02"), id, i+1); err != nil {
+			return fmt.Errorf("record pick: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
+}

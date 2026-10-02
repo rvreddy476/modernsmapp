@@ -109,6 +109,42 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	return sp, matchID, err
 }
 
+// ErrInvalidSource maps to 400 INVALID_SOURCE.
+var ErrInvalidSource = errors.New("invalid: source must be deck, picks, liked_you or profile")
+
+// deckSource reports whether an action's source is the deck (the default),
+// and whether the source is known at all. Only a deck action spends a deck
+// card (mechanic M1); daily picks (M7) and other surfaces do not.
+func deckSource(source string) (isDeck, ok bool) {
+	switch source {
+	case "", "deck":
+		return true, true
+	case "picks", "liked_you", "profile":
+		return false, true
+	}
+	return false, false
+}
+
+// CreateSparkFrom is a spark (or Super Spark) sent from a named surface.
+func (s *Service) CreateSparkFrom(ctx context.Context, source string, super bool, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*store.Spark, *uuid.UUID, error) {
+	isDeck, ok := deckSource(source)
+	if !ok {
+		return nil, nil, ErrInvalidSource
+	}
+	if super && !s.mechanics.SuperSpark {
+		return nil, nil, ErrMechanicDisabled
+	}
+	sp, matchID, err := s.createSpark(ctx, fromUserID, toUserID, targetKind, targetRef, note, super)
+	if err == nil && isDeck {
+		action := store.DeckActionSpark
+		if super {
+			action = store.DeckActionSuperSpark
+		}
+		s.recordDeckAction(ctx, fromUserID, toUserID, action)
+	}
+	return sp, matchID, err
+}
+
 // createSpark is CreateSpark without the deck bookkeeping.
 // super sends it as a Super Spark (super_spark.go), charged with the insert.
 func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, super bool) (*store.Spark, *uuid.UUID, error) {

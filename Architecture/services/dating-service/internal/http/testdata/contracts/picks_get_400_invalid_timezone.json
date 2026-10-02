@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_TIMEZONE",
+    "message": "tz must be an IANA time zone name such as Asia/Kolkata"
+  },
+  "meta": {}
+}

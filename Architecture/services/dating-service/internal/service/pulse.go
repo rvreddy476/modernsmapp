@@ -668,6 +668,16 @@ var ErrPassReasonTooLong = fmt.Errorf("reason must be at most %d characters", Ma
 // from the viewer's cached deck, and FetchCandidates then excludes them for
 // store.PassCooldown. Nothing is emitted: the candidate is never told.
 func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.UUID, reason string) (*PassResult, error) {
+	return s.PassCandidateFrom(ctx, viewerID, candidateID, reason, "")
+}
+
+// PassCandidateFrom is a pass from a named surface; only a deck pass spends a
+// deck card.
+func (s *Service) PassCandidateFrom(ctx context.Context, viewerID, candidateID uuid.UUID, reason, source string) (*PassResult, error) {
+	isDeck, ok := deckSource(source)
+	if !ok {
+		return nil, ErrInvalidSource
+	}
 	if viewerID == uuid.Nil || candidateID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: viewer and candidate ids required")
 	}
@@ -682,7 +692,9 @@ func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.
 		return nil, err
 	}
 	s.removeFromCachedDeck(ctx, viewerID, candidateID)
-	s.recordDeckAction(ctx, viewerID, candidateID, store.DeckActionPass)
+	if isDeck {
+		s.recordDeckAction(ctx, viewerID, candidateID, store.DeckActionPass)
+	}
 	return &PassResult{
 		Passed:        true,
 		CandidateID:   candidateID,

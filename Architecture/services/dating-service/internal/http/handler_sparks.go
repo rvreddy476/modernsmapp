@@ -19,6 +19,9 @@ type createSparkRequest struct {
 	Note       string `json:"note,omitempty"`
 	// Super sends it as a Super Spark (mechanic M3).
 	Super bool `json:"super,omitempty"`
+	// Source names the surface (deck | picks | liked_you | profile); only a
+	// deck spark spends a deck card. Absent: deck.
+	Source string `json:"source,omitempty"`
 }
 
 // CreateSpark — POST /v1/dating/sparks.
@@ -39,11 +42,7 @@ func (h *Handler) CreateSpark(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid to_user_id", nil)
 		return
 	}
-	create := h.svc.CreateSpark
-	if body.Super {
-		create = h.svc.CreateSuperSpark
-	}
-	sp, matchID, err := create(c.Request.Context(), userID, to, body.TargetKind, body.TargetRef, body.Note)
+	sp, matchID, err := h.svc.CreateSparkFrom(c.Request.Context(), body.Source, body.Super, userID, to, body.TargetKind, body.TargetRef, body.Note)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "CREATE_FAILED")
 		return

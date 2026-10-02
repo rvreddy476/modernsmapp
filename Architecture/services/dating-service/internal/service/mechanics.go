@@ -46,6 +46,9 @@ type MechanicsConfig struct {
 	// FiltersV2 (DATING_FILTERS_V2_ENABLED): distance buckets, and the pass
 	// filters (verified only, height, languages, lifestyle basics).
 	FiltersV2 bool
+
+	// Picks (DATING_PICKS_ENABLED): up to ten curated profiles a day.
+	Picks bool
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.

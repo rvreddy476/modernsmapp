@@ -98,6 +98,8 @@ func (h *Handler) ExplainPulseCandidate(c *gin.Context) {
 // passRequest is the optional body of POST /v1/dating/pulse/:candidateId/pass.
 type passRequest struct {
 	Reason string `json:"reason,omitempty"`
+	// Source as on a spark (mechanic M7): only a deck pass spends a card.
+	Source string `json:"source,omitempty"`
 }
 
 // PassCandidate — POST /v1/dating/pulse/:candidateId/pass
@@ -119,7 +121,7 @@ func (h *Handler) PassCandidate(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	resp, err := h.svc.PassCandidate(c.Request.Context(), viewerID, candidateID, body.Reason)
+	resp, err := h.svc.PassCandidateFrom(c.Request.Context(), viewerID, candidateID, body.Reason, body.Source)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "PASS_FAILED")
 		return
@@ -144,6 +146,26 @@ func (h *Handler) RewindLastPass(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// GetDailyPicks — GET /v1/dating/picks?tz=<IANA zone>
+//
+// Mechanic M7: up to ten curated profiles for the viewer's local day,
+// refreshed at local midnight (meta.resets_at). tz defaults to
+// Asia/Kolkata; an unknown zone is 400 INVALID_TIMEZONE.
+func (h *Handler) GetDailyPicks(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.GetDailyPicks(c.Request.Context(), userID, c.Query("tz"))
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	// The deck's {data, meta} envelope: data is the card array, meta the
+	// local date, its zone, when the picks refresh and how many there are.
+	c.JSON(http.StatusOK, resp)
 }
 
 // GetAllowances — GET /v1/dating/allowances

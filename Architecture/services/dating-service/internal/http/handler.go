@@ -139,6 +139,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Mechanic M10 — every daily allowance the caller has; a mechanic
 		// whose flag is off is absent.
 		dating.GET("/allowances", h.GetAllowances)
+		// Mechanic M7 — daily picks, apart from the deck.
+		dating.GET("/picks", fpMW, h.GetDailyPicks)
 		// Mechanic M4 — who sparked the caller, as a grid; locked without a
 		// pass while DATING_LIKED_YOU_GATE_ENABLED is on.
 		dating.GET("/liked-you", fpMW, h.GetLikedYou)
@@ -467,6 +469,16 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
+		return
+	}
+	// Mechanic M7 — daily picks and the action source.
+	if errors.Is(err, service.ErrInvalidTimezone) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TIMEZONE", "tz must be an IANA time zone name such as Asia/Kolkata", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidSource) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SOURCE", "source must be one of deck, picks, liked_you, profile",
+			map[string]any{"allowed": []string{"deck", "picks", "liked_you", "profile"}})
 		return
 	}
 	// Mechanic M6 — filters and the new profile fields.
