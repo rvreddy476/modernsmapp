@@ -24,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,14 +59,14 @@ import java.time.ZoneId
  * The Picks tab (mechanic M7): today's few, as a scrolling list of deck-style
  * cards with Pass and Spark under each.
  *
- * A pick's full profile opens in a sheet built from the card itself: the card
- * already carries the whole pre-match block, and `GET /people/:id` does not
- * serve picks (they are kept apart from the deck), so the profile route would
- * only say "not available".
+ * Tapping a pick opens a sheet built from the card itself: the card already
+ * carries the whole pre-match block, so it opens at once. Its "View full
+ * profile" leads to the person's own screen, which `GET /people/:id` now
+ * serves for one of today's picks too.
  */
 
 @Composable
-internal fun PicksTab(viewModel: PicksViewModel) {
+internal fun PicksTab(viewModel: PicksViewModel, onOpenPerson: (userId: String) -> Unit = {}) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val options = rememberProfileOptions()
@@ -127,6 +128,10 @@ internal fun PicksTab(viewModel: PicksViewModel) {
             onBlock = {
                 openId = null
                 blocking = open
+            },
+            onOpenProfile = {
+                openId = null
+                onOpenPerson(open.userId)
             },
             onDismiss = { openId = null },
         )
@@ -219,6 +224,7 @@ private fun PickSheet(
     onSpark: () -> Unit,
     onReport: () -> Unit,
     onBlock: () -> Unit,
+    onOpenProfile: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -276,6 +282,9 @@ private fun PickSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), modifier = Modifier.padding(top = UsTheme.spacing.m)) {
                 UsSecondaryButton(text = "Pass", enabled = !busy, onClick = onPass, modifier = Modifier.weight(1f))
                 UsButton(text = "Spark", enabled = !busy, loading = busy, onClick = onSpark, modifier = Modifier.weight(1f))
+            }
+            TextButton(onClick = onOpenProfile, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text(PicksCopy.FULL_PROFILE, color = UsTheme.extended.accentSolid)
             }
         }
     }

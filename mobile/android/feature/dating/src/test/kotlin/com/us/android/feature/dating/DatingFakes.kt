@@ -69,6 +69,8 @@ import com.us.android.feature.dating.network.ProfileDetailDto
 import com.us.android.feature.dating.network.PulseCardDto
 import com.us.android.feature.dating.network.PulseProfileDto
 import com.us.android.feature.dating.network.PulseTodayDto
+import com.us.android.feature.dating.network.ReadReceiptsDto
+import com.us.android.feature.dating.network.ReadReceiptsRequest
 import com.us.android.feature.dating.network.RemovedDto
 import com.us.android.feature.dating.network.ReportRequest
 import com.us.android.feature.dating.network.ReportResultDto
@@ -619,6 +621,28 @@ class FakeDatingApi : DatingApi {
         calls += "extend"
         extends += id
         return extendResponse(id)
+    }
+
+    // ── Mechanic M9: read receipts ──────────────────────────────────────────
+
+    /** `GET /read-receipts`. The default is the server's flag OFF, as the golden writes it. */
+    var readReceiptsResponse: () -> Response<ApiEnvelope<ReadReceiptsDto>> =
+        { refusedWithFixture(404, "read_receipts_get_404_not_enabled.json") }
+    val readReceiptsWrites = mutableListOf<ReadReceiptsRequest>()
+
+    /** `PUT /read-receipts`. The default answers as a pass holder's server does. */
+    var readReceiptsWriteResponse: (ReadReceiptsRequest) -> Response<ApiEnvelope<ReadReceiptsDto>> =
+        { ok(ReadReceiptsDto(enabled = it.enabled, active = it.enabled, available = true)) }
+
+    override suspend fun readReceipts(): Response<ApiEnvelope<ReadReceiptsDto>> {
+        calls += "read-receipts"
+        return readReceiptsResponse()
+    }
+
+    override suspend fun updateReadReceipts(body: ReadReceiptsRequest): Response<ApiEnvelope<ReadReceiptsDto>> {
+        calls += "read-receipts:write"
+        readReceiptsWrites += body
+        return readReceiptsWriteResponse(body)
     }
 
     override suspend fun block(body: BlockRequest): Response<ApiEnvelope<BlockedDto>> {

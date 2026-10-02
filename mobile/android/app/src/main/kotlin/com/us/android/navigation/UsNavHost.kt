@@ -735,6 +735,10 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenChat = { conversationId, title -> navController.navigateToChatThread(conversationId, title) },
         onOpenPayment = onOpenDatingPayment,
         onAbandonPayment = onAbandonDatingPayment,
+        // Mechanic M9: the match screen's Voice/Video, the same edge as chat's.
+        onStartCall = { peerUserId, peerName, video, conversationId ->
+            navController.navigateToOutgoingCall(peerUserId, peerName, video, conversationId)
+        },
     )
 
     // Mopedu (2026-09-18): the customer's ride — quote, book, track, OTP, pay,

@@ -1,0 +1,58 @@
+{
+  "data": {
+    "is_premium": true,
+    "pass": {
+      "product": "pass_30d",
+      "active": true,
+      "expires_at": "<timestamp>"
+    },
+    "entitlements": [
+      {
+        "feature": "match_extend",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "daily_boost",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "more_daily_cards",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "unlimited_rewinds",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "more_super_sparks",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "see_who_sparked",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "advanced_filters",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "travel_mode",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "read_receipts",
+        "active": true,
+        "expires_at": "<timestamp>"
+      }
+    ],
+    "boost_balance": 0
+  }
+}

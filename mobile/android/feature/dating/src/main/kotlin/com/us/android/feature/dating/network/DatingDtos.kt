@@ -794,7 +794,32 @@ data class MatchDto(
      * under the first-move rule. Absent means an ordinary match.
      */
     @SerialName("first_move") val firstMove: MatchFirstMoveDto? = null,
+    /**
+     * Mechanic M9, `GET /matches/:id` only: whether the pair may call now
+     * (both have sent a message). ABSENT while the server mechanic is off —
+     * null here, and the match screen then offers no call at all; false is
+     * sent as false.
+     */
+    @SerialName("can_call") val canCall: Boolean? = null,
 )
+
+// ── In-match extras (mechanic M9; fixtures read_receipts_*) ────────────────
+
+/**
+ * `GET`/`PUT /read-receipts`. [enabled] is the person's choice; [active] is
+ * whether it applies now (it needs a pass); [available] is whether they hold
+ * one. Go sends all three, false included; each still defaults.
+ */
+@Serializable
+data class ReadReceiptsDto(
+    val enabled: Boolean = false,
+    val active: Boolean = false,
+    val available: Boolean = false,
+)
+
+/** `PUT /read-receipts`. Turning it on needs a pass (`403 READ_RECEIPTS_REQUIRE_PASS`); off always works. */
+@Serializable
+data class ReadReceiptsRequest(val enabled: Boolean)
 
 /**
  * The caller's view of a first-move match (`service.FirstMoveView`).

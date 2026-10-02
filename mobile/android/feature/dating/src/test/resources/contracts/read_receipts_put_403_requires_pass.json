@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "READ_RECEIPTS_REQUIRE_PASS",
+    "message": "read receipts come with a pass"
+  },
+  "meta": {}
+}

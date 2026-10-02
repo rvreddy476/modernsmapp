@@ -787,6 +787,41 @@ data class MatchUi(
     val expiresAt: String?,
     /** Mechanic M5: set while the match waits for its first message under the rule. */
     val firstMove: FirstMoveUi? = null,
+    /** Mechanic M9: the server's `can_call`; null when it sent none (the mechanic is off). */
+    val canCall: Boolean? = null,
+) {
+    /** What the match screen offers for calls. See [MatchCalls]. */
+    val calls: MatchCalls
+        get() = when (canCall) {
+            null -> MatchCalls.NONE
+            // A call is placed on the match's conversation; without one there is nothing to call on.
+            true -> if (conversationId.isNullOrBlank()) MatchCalls.LOCKED else MatchCalls.OPEN
+            false -> MatchCalls.LOCKED
+        }
+}
+
+/**
+ * Calls on the match screen (mechanic M9).
+ *
+ * NONE: the server sent no `can_call` (its mechanic is off) — the screen
+ * offers nothing, as before; the chat thread has its own call buttons. OPEN:
+ * Voice and Video. LOCKED: one line saying calls open once both have written.
+ */
+enum class MatchCalls { NONE, OPEN, LOCKED }
+
+/** The match screen's words for calls. Our own. */
+object MatchCallCopy {
+    const val VOICE = "Voice call"
+    const val VIDEO = "Video call"
+    const val LOCKED = "Calls open once you've both sent a message."
+}
+
+/** A call the match screen should place once: `:app` maps it to the call screen. */
+data class CallRequest(
+    val peerUserId: String,
+    val peerName: String,
+    val video: Boolean,
+    val conversationId: String,
 )
 
 /** One match row, from the person the SERVER resolved for this viewer. */
@@ -804,6 +839,7 @@ private fun MatchDto.toUi(other: String, urls: DatingPhotoUrls) = MatchUi(
     conversationId = conversationId,
     expiresAt = expiresAt,
     firstMove = firstMove.toUi(),
+    canCall = canCall,
 )
 
 /** The matches list. Closed matches are not shown; blocked people are filtered through the session. */
@@ -862,6 +898,10 @@ data class ChatRequest(val conversationId: String, val title: String)
  * On a first-move match (mechanic M5) the person who writes first opens the
  * chat as usual; the person waiting answers an opening question — which the
  * server posts as the first message — or takes the free 24-hour extend.
+ *
+ * Calls (mechanic M9) follow the server's `can_call` on the match: see
+ * [MatchCalls]. The screen reads the match again each time it is shown, so
+ * coming back from a first message in chat opens them.
  */
 @Suppress("TooManyFunctions")
 @HiltViewModel
@@ -881,6 +921,13 @@ class MatchDetailViewModel @Inject constructor(
 
     private val _chat = MutableStateFlow<ChatRequest?>(null)
     val chat: StateFlow<ChatRequest?> = _chat.asStateFlow()
+
+    /** Mechanic M9: the call the screen hands to `:app` once. */
+    private val _call = MutableStateFlow<CallRequest?>(null)
+    val call: StateFlow<CallRequest?> = _call.asStateFlow()
+
+    /** The first [shown] follows the read `init` already started. */
+    private var shownOnce = false
 
     private val _message = MutableStateFlow<UsMessage?>(null)
     val message: StateFlow<UsMessage?> = _message.asStateFlow()
@@ -908,6 +955,38 @@ class MatchDetailViewModel @Inject constructor(
 
     fun chatOpened() {
         _chat.value = null
+    }
+
+    /**
+     * The screen is shown again — back from the chat, where a first message may
+     * have opened calls. Reads the match again; the first showing does not.
+     */
+    fun shown() {
+        if (!shownOnce) {
+            shownOnce = true
+            return
+        }
+        if (_state.value is MatchDetailState.Loaded) viewModelScope.launch { load() }
+    }
+
+    /**
+     * Voice or video (mechanic M9). Only while the server's `can_call` is true:
+     * the call grant refuses otherwise, and the button is not drawn.
+     */
+    fun startCall(video: Boolean) {
+        val match = (_state.value as? MatchDetailState.Loaded)?.match ?: return
+        val conversationId = match.conversationId?.takeIf { it.isNotBlank() } ?: return
+        if (match.calls != MatchCalls.OPEN) return
+        _call.value = CallRequest(
+            peerUserId = match.otherUserId,
+            peerName = match.name ?: "Match",
+            video = video,
+            conversationId = conversationId,
+        )
+    }
+
+    fun callStarted() {
+        _call.value = null
     }
 
     fun openChat() {

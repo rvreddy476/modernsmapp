@@ -28,6 +28,9 @@ import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.AllowedDetailsDto
 import com.us.android.feature.dating.network.RewindDto
 import com.us.android.feature.dating.premium.packLabel
+import com.us.android.feature.dating.premium.activeFeatureLabels
+import com.us.android.feature.dating.premium.featureLabels
+import com.us.android.feature.dating.network.ReadReceiptsDto
 import com.us.android.feature.dating.network.AllowedIdsDetailsDto
 import com.us.android.feature.dating.network.OnboardingIncompleteDetailsDto
 import com.us.android.feature.dating.network.RangeDetailsDto
@@ -157,6 +160,8 @@ class DatingContractFixtureTest {
             assertThat(person.photoState).isEqualTo("full")
             // Absent unless BOTH sides have a location.
             assertThat(person.distanceBucket).isNull()
+            // Mechanic M9 off: no can_call at all, and the match screen offers no call.
+            assertThat(it.canCall).isNull()
         },
         "matches_get_200.json" to data(listSerializer(MatchDto.serializer())) {
             val match = it.single()
@@ -546,6 +551,74 @@ class DatingContractFixtureTest {
             // Everything else omits quantity.
             assertThat(it.products.filter { p -> p.kind != "super_spark" }.map { p -> p.quantity }.toSet()).containsExactly(0)
             assertThat(packLabel(it.products.first())).isNull()
+            // Mechanic M10: a pass lists what it unlocks for the mechanics that are on (M1 and M3 here).
+            val passes = it.products.filter { p -> p.kind == "pass" }
+            passes.forEach { p ->
+                assertThat(p.features).containsExactly("match_extend", "daily_boost", "more_daily_cards", "more_super_sparks").inOrder()
+            }
+            assertThat(featureLabels(passes.first().features)).containsExactly(
+                "Extend matches", "A daily Boost", "More people on Pulse each day", "More Super Sparks",
+            ).inOrder()
+        },
+        // ── Mechanic M10: what a pass unlocks, every mechanic on ────────────
+        "premium_catalogue_get_200_all_mechanics.json" to data(PremiumCatalogueDto.serializer()) {
+            val passes = it.products.filter { p -> p.kind == "pass" }
+            assertThat(passes.map { p -> p.id }).containsExactly("pass_30d", "pass_90d", "pass_365d").inOrder()
+            passes.forEach { p -> assertThat(p.features).containsExactlyElementsIn(ALL_PASS_FEATURES).inOrder() }
+            // Every code has our own label: none falls through to nothing.
+            assertThat(featureLabels(passes.first().features)).hasSize(ALL_PASS_FEATURES.size)
+            assertThat(featureLabels(passes.first().features)).containsExactly(
+                "Extend matches",
+                "A daily Boost",
+                "More people on Pulse each day",
+                "Undo as many passes as you like",
+                "More Super Sparks",
+                "See who sparked you",
+                "More filters",
+                "Browse another city",
+                "Read receipts",
+            ).inOrder()
+            // Boost and packs list no features.
+            assertThat(it.products.filter { p -> p.kind != "pass" }.flatMap { p -> p.features }).isEmpty()
+        },
+        "premium_me_get_200_all_mechanics.json" to data(PremiumMeDto.serializer()) {
+            assertThat(it.isPremium).isTrue()
+            assertThat(it.pass?.active).isTrue()
+            assertThat(it.entitlements.map { e -> e.feature }).containsExactlyElementsIn(ALL_PASS_FEATURES).inOrder()
+            assertThat(it.entitlements.all { e -> e.active }).isTrue()
+            // boost_balance is sent as 0 here; super_spark_balance is omitted.
+            assertThat(it.boostBalance).isEqualTo(0)
+            assertThat(it.superSparkBalance).isEqualTo(0)
+            assertThat(activeFeatureLabels(it)).hasSize(ALL_PASS_FEATURES.size)
+            assertThat(activeFeatureLabels(it)).contains("Read receipts")
+        },
+        // ── Mechanic M9: in-match extras ────────────────────────────────────
+        "read_receipts_get_200.json" to data(ReadReceiptsDto.serializer()) {
+            // Go sends false values here: no choice made, no pass.
+            assertThat(it).isEqualTo(ReadReceiptsDto(enabled = false, active = false, available = false))
+        },
+        "read_receipts_put_200.json" to data(ReadReceiptsDto.serializer()) {
+            assertThat(it).isEqualTo(ReadReceiptsDto(enabled = true, active = true, available = true))
+        },
+        "read_receipts_put_403_requires_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("READ_RECEIPTS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.READ_RECEIPTS_REQUIRE_PASS)
+        },
+        "read_receipts_get_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "match_get_200_can_call.json" to data(MatchDto.serializer()) {
+            assertThat(it.status).isEqualTo("matched")
+            assertThat(it.conversationId).isEqualTo("<uuid>")
+            assertThat(it.canCall).isTrue()
+            val person = checkNotNull(it.person)
+            assertThat(person.userId).isEqualTo("<other>")
+            assertThat(person.firstName).isEqualTo("Asha")
+            assertThat(person.lastActiveLabel).isEqualTo("Active today")
+            assertThat(it.firstMove).isNull()
         },
         // ── Mechanic M2: undo a pass ────────────────────────────────────────
         "pulse_rewind_post_200.json" to data(RewindDto.serializer()) {
@@ -1027,4 +1100,19 @@ class DatingContractFixtureTest {
     }
 
     private fun <T> listSerializer(element: KSerializer<T>) = kotlinx.serialization.builtins.ListSerializer(element)
+
+    private companion object {
+        /** Every pass feature with every mechanic on, in the server's order (`service.passFeatures`). */
+        val ALL_PASS_FEATURES = listOf(
+            "match_extend",
+            "daily_boost",
+            "more_daily_cards",
+            "unlimited_rewinds",
+            "more_super_sparks",
+            "see_who_sparked",
+            "advanced_filters",
+            "travel_mode",
+            "read_receipts",
+        )
+    }
 }

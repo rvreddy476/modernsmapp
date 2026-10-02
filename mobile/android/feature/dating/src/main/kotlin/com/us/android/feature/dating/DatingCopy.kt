@@ -92,9 +92,14 @@ object DatingCopy {
             "TRAVEL_REQUIRES_PASS" -> TRAVEL_REQUIRES_PASS
             "INVALID_CITY" -> "That city isn't on the list any more. Pick another one."
             "INVALID_TRAVEL_DAYS" -> travelDays(error, json)
+            // Mechanic M9 — in-match extras.
+            "READ_RECEIPTS_REQUIRE_PASS" -> READ_RECEIPTS_REQUIRE_PASS
             else -> GENERIC
         }
     }
+
+    /** `403 READ_RECEIPTS_REQUIRE_PASS`: read receipts were turned on without a pass. */
+    const val READ_RECEIPTS_REQUIRE_PASS = "Read receipts come with a Premium pass."
 
     /** `403 FILTERS_REQUIRE_PASS`: a pass filter was set without a pass. */
     const val FILTERS_REQUIRE_PASS = "These filters come with a Premium pass."

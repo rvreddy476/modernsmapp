@@ -47,6 +47,8 @@ import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PromptAnswerRequest
 import com.us.android.feature.dating.network.PromptCatalogItemDto
 import com.us.android.feature.dating.network.PulseTodayDto
+import com.us.android.feature.dating.network.ReadReceiptsDto
+import com.us.android.feature.dating.network.ReadReceiptsRequest
 import com.us.android.feature.dating.network.ReportRequest
 import com.us.android.feature.dating.network.ReportResultDto
 import com.us.android.feature.dating.network.RewindDto
@@ -262,6 +264,13 @@ class DatingRepository @Inject constructor(
     /** Null fields stay as they are on the server; an empty [questions] removes them all. */
     suspend fun updateFirstMove(enabled: Boolean? = null, questions: List<String>? = null): DatingResult<FirstMoveSettingsDto> =
         call { api.updateFirstMove(FirstMoveRequest(enabled = enabled, questions = questions)) }
+
+    /** The caller's read-receipts setting (mechanic M9). */
+    suspend fun readReceipts(): DatingResult<ReadReceiptsDto> = call { api.readReceipts() }
+
+    /** Turns read receipts on (needs a pass) or off (always allowed). */
+    suspend fun setReadReceipts(enabled: Boolean): DatingResult<ReadReceiptsDto> =
+        call { api.updateReadReceipts(ReadReceiptsRequest(enabled)) }
 
     suspend fun block(userId: String): DatingResult<BlockedDto> = call { api.block(BlockRequest(userId)) }
 

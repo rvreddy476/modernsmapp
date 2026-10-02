@@ -1,7 +1,9 @@
 package com.us.android.feature.dating.home
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -18,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -31,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -191,7 +195,7 @@ fun DatingHomeScreen(
             Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
                 when (tab) {
                     HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson, onOpenPremium, onOpenTravel)
-                    HomeTab.PICKS -> PicksTab(picks)
+                    HomeTab.PICKS -> PicksTab(picks, onOpenPerson)
                     HomeTab.SPARKS -> LikedYouGrid(sparks, onOpenPerson, onOpenPremium)
                     HomeTab.MATCHES -> MatchesList(matches, onOpenMatch)
                 }
@@ -286,16 +290,22 @@ fun matchStatusLabel(status: String): String = when (status) {
     else -> ""
 }
 
-/** One match. [onOpenChat] is `:app`'s edge into chat; the conversation already exists server-side. */
+/**
+ * One match. [onOpenChat] is `:app`'s edge into chat; the conversation already
+ * exists server-side. [onStartCall] is `:app`'s edge into calls (mechanic M9),
+ * offered only while the server says the pair may call.
+ */
 @Composable
 fun MatchDetailScreen(
     onBack: () -> Unit,
     onOpenChat: (conversationId: String, title: String) -> Unit,
     onShareLocation: (recipientId: String) -> Unit,
+    onStartCall: (peerUserId: String, peerName: String, video: Boolean, conversationId: String) -> Unit = { _, _, _, _ -> },
     viewModel: MatchDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
+    val call by viewModel.call.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val firstMoveActions by viewModel.firstMove.collectAsStateWithLifecycle()
     val now by rememberNow()
@@ -318,6 +328,14 @@ fun MatchDetailScreen(
             onOpenChat(it.conversationId, it.title)
         }
     }
+    LaunchedEffect(call) {
+        call?.let {
+            viewModel.callStarted()
+            onStartCall(it.peerUserId, it.peerName, it.video, it.conversationId)
+        }
+    }
+    // Shown again — back from the chat, where a first message may have opened calls.
+    LaunchedEffect(Unit) { viewModel.shown() }
 
     DatingScreen(title = "Match", onBack = onBack, message = message, onDismissMessage = viewModel::dismissMessage) { padding ->
         when (val s = state) {
@@ -361,6 +379,21 @@ fun MatchDetailScreen(
                     move == null -> UsButton(text = "Open chat", onClick = viewModel::openChat, modifier = Modifier.fillMaxWidth())
                     move.youMoveFirst -> YouStartPanel(move, now, onOpenChat = viewModel::openChat)
                     else -> WaitingPanel(name = s.match.name, firstMove = move, actions = firstMoveActions, now = now, on = waitingActions)
+                }
+                // Mechanic M9: calls once you've both written; nothing at all while the server's flag is off.
+                when (s.match.calls) {
+                    MatchCalls.OPEN -> Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                        CallAction(UsIcons.Phone, MatchCallCopy.VOICE, onClick = { viewModel.startCall(video = false) }, modifier = Modifier.weight(1f))
+                        CallAction(UsIcons.Video, MatchCallCopy.VIDEO, onClick = { viewModel.startCall(video = true) }, modifier = Modifier.weight(1f))
+                    }
+                    MatchCalls.LOCKED -> Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+                    ) {
+                        Icon(UsIcons.Phone, contentDescription = null, tint = UsTheme.extended.textDim, modifier = Modifier.size(16.dp))
+                        Text(MatchCallCopy.LOCKED, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                    }
+                    MatchCalls.NONE -> Unit
                 }
                 UsSecondaryButton(text = "Share my live location", onClick = { onShareLocation(s.match.otherUserId) }, modifier = Modifier.fillMaxWidth())
                 UsSecondaryButton(text = "Unmatch", onClick = { confirmUnmatch = true }, modifier = Modifier.fillMaxWidth())
@@ -408,6 +441,25 @@ fun MatchDetailScreen(
                 viewModel.report(it)
             },
             onDismiss = { reporting = false },
+        )
+    }
+}
+
+/** A secondary action with its icon: the outline and colours of [UsSecondaryButton]. */
+@Composable
+private fun CallAction(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.defaultMinSize(minHeight = 48.dp),
+        shape = RoundedCornerShape(UsTheme.radii.full),
+        border = BorderStroke(1.dp, UsTheme.extended.borderMedium),
+    ) {
+        Icon(icon, contentDescription = null, tint = UsTheme.extended.textSecondary, modifier = Modifier.size(18.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = UsTheme.extended.textSecondary,
+            modifier = Modifier.padding(start = UsTheme.spacing.s),
         )
     }
 }

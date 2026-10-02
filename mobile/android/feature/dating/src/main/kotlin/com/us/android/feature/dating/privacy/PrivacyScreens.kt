@@ -343,11 +343,16 @@ fun PrivacyScreen(
     onOpenBlocks: () -> Unit,
     onDeleted: () -> Unit,
     onEditAboutMe: () -> Unit = {},
+    onOpenPremium: () -> Unit = {},
     viewModel: PrivacyViewModel = hiltViewModel(),
     firstMove: FirstMoveSettingsViewModel = hiltViewModel(),
+    readReceipts: ReadReceiptsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val firstMoveState by firstMove.state.collectAsStateWithLifecycle()
+    val receiptsState by readReceipts.state.collectAsStateWithLifecycle()
+    // Shown again — back from Premium, where a pass may have landed.
+    LaunchedEffect(Unit) { readReceipts.shown() }
     val context = LocalContext.current
     var withdraw by remember { mutableStateOf<ConsentType?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -368,9 +373,13 @@ fun PrivacyScreen(
     DatingScreen(
         title = "Privacy and data",
         onBack = onBack,
-        message = state.message ?: firstMoveState.message,
+        message = state.message ?: firstMoveState.message ?: receiptsState.message,
         onDismissMessage = {
-            if (state.message != null) viewModel.dismissMessage() else firstMove.dismissMessage()
+            when {
+                state.message != null -> viewModel.dismissMessage()
+                firstMoveState.message != null -> firstMove.dismissMessage()
+                else -> readReceipts.dismissMessage()
+            }
         },
     ) { padding ->
         if (state.loading) {
@@ -404,6 +413,9 @@ fun PrivacyScreen(
 
             // Mechanic M5: drawn only while the server's flag is on.
             firstMoveSection(firstMoveState, firstMove)
+
+            // Mechanic M9: drawn only while the server's flag is on.
+            readReceiptsSection(receiptsState, readReceipts, onOpenPremium)
 
             item { SectionLabel("Blocked people") }
             item {
@@ -504,6 +516,19 @@ fun PrivacyScreen(
                 withdraw = null
             },
             onDismiss = { withdraw = null },
+        )
+    }
+    if (receiptsState.upsell) {
+        ConfirmDialog(
+            title = ReadReceiptsCopy.UPSELL_TITLE,
+            body = ReadReceiptsCopy.UPSELL_BODY,
+            confirmLabel = ReadReceiptsCopy.SEE_PREMIUM,
+            dismissLabel = ReadReceiptsCopy.NOT_NOW,
+            onConfirm = {
+                readReceipts.dismissUpsell()
+                onOpenPremium()
+            },
+            onDismiss = readReceipts::dismissUpsell,
         )
     }
     if (confirmDelete) {

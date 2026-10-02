@@ -58,6 +58,7 @@ object PicksCopy {
     const val EMPTY_TITLE = "No picks today"
     const val LOAD_FAILED = "Picks didn't load"
     const val SPARK_SENT = "Spark sent."
+    const val FULL_PROFILE = "View full profile"
 
     /** "New picks at 12:00 AM tomorrow"; a time behind us, or none, says when in general terms. */
     fun resetLine(resetsAt: Instant?, now: Instant, zone: ZoneId): String =

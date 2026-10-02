@@ -94,15 +94,17 @@ data object DatingTravelRoute
  * Registers Dating.
  *
  * [onOpenChat] opens a match's conversation in chat — `:app` owns that edge,
- * because features never depend on each other. [onOpenPayment] and
- * [onAbandonPayment] are supplied by `:app`, whose Activity the payment sheet
- * opens onto; this module never names the provider.
+ * because features never depend on each other. [onStartCall] places a call
+ * from the match screen (mechanic M9) the same way, through `:app`.
+ * [onOpenPayment] and [onAbandonPayment] are supplied by `:app`, whose
+ * Activity the payment sheet opens onto; this module never names the provider.
  */
 fun NavGraphBuilder.datingScreens(
     navController: NavController,
     onOpenChat: (conversationId: String, title: String) -> Unit,
     onOpenPayment: (DatingPaymentRequest) -> Unit,
     onAbandonPayment: (DatingPaymentRequest) -> Unit,
+    onStartCall: (peerUserId: String, peerName: String, video: Boolean, conversationId: String) -> Unit = { _, _, _, _ -> },
 ) {
     navigation<DatingGraph>(startDestination = DatingRootRoute()) {
         composable<DatingRootRoute> { entry ->
@@ -141,6 +143,7 @@ fun NavGraphBuilder.datingScreens(
                 onBack = navController::popBackStack,
                 onOpenChat = onOpenChat,
                 onShareLocation = { navController.navigate(DatingSafetyRoute(shareWith = it)) },
+                onStartCall = onStartCall,
             )
         }
 
@@ -181,6 +184,8 @@ fun NavGraphBuilder.datingScreens(
                 // The profile is gone: leave Dating entirely.
                 onDeleted = { navController.popBackStack<DatingGraph>(inclusive = true) },
                 onEditAboutMe = { navController.navigate(DatingAboutMeRoute) },
+                // Mechanic M9: read receipts come with a pass.
+                onOpenPremium = { navController.navigate(DatingPremiumRoute) },
             )
         }
 

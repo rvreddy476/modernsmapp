@@ -2,9 +2,10 @@ package com.us.android.feature.dating.premium
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -13,12 +14,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.dating.DatingCopy
+import com.us.android.feature.dating.network.PremiumMeDto
 import com.us.android.feature.dating.network.PremiumProductDto
 import com.us.android.feature.dating.ui.DatingCard
 import com.us.android.feature.dating.ui.DatingScreen
@@ -113,6 +116,7 @@ fun PremiumScreen(
                                     style = MaterialTheme.typography.titleMedium,
                                     color = UsTheme.extended.textPrimary,
                                 )
+                                FeatureList(activeFeatureLabels(me))
                             } else {
                                 Text("You don't have a pass right now.", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
                             }
@@ -142,13 +146,17 @@ private fun ProductCard(product: PremiumProductDto, buying: Boolean, enabled: Bo
             }
             UsPillButton(text = "Buy", onClick = onBuy, enabled = enabled, busy = buying)
         }
-        if (product.features.isNotEmpty()) {
-            Text(
-                product.features.joinToString(" · ") { featureLabel(it) },
-                style = MaterialTheme.typography.bodySmall,
-                color = UsTheme.extended.textMuted,
-                modifier = Modifier.fillMaxWidth(),
-            )
+        FeatureList(featureLabels(product.features))
+    }
+}
+
+/** One line per thing a pass unlocks, each with a tick. Nothing at all for an empty list. */
+@Composable
+private fun FeatureList(labels: List<String>) {
+    labels.forEach { label ->
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+            Icon(UsIcons.Check, contentDescription = null, tint = UsTheme.extended.accentSolid, modifier = Modifier.size(14.dp))
+            Text(label, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
         }
     }
 }
@@ -168,11 +176,30 @@ fun balancesLine(boosts: Int, superSparks: Int): String? =
 
 private const val KIND_SUPER_SPARK = "super_spark"
 
-fun featureLabel(feature: String): String = when (feature) {
+/**
+ * Our words for what a pass unlocks (mechanic M10). The server lists a
+ * mechanic's feature only while that mechanic is on; a code this table does
+ * not know is null, and is left off the screen rather than shown raw.
+ */
+fun featureLabel(feature: String): String? = when (feature) {
     "match_extend" -> "Extend matches"
     "daily_boost" -> "A daily Boost"
-    else -> feature.replace('_', ' ')
+    "more_daily_cards" -> "More people on Pulse each day"
+    "unlimited_rewinds" -> "Undo as many passes as you like"
+    "more_super_sparks" -> "More Super Sparks"
+    "see_who_sparked" -> "See who sparked you"
+    "advanced_filters" -> "More filters"
+    "travel_mode" -> "Browse another city"
+    "read_receipts" -> "Read receipts"
+    else -> null
 }
+
+/** Every known feature's label, in the server's order, each once; unknown codes are left out. */
+fun featureLabels(features: List<String>): List<String> = features.mapNotNull(::featureLabel).distinct()
+
+/** What the caller's active pass unlocks right now, from `GET /premium/me`. */
+fun activeFeatureLabels(me: PremiumMeDto): List<String> =
+    featureLabels(me.entitlements.filter { it.active }.map { it.feature })
 
 /** The catalogue's amount as rupees: 39900 → "₹399", 4950 → "₹49.50". */
 fun rupees(amountMinor: Long, currency: String = "INR"): String {

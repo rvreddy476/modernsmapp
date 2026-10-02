@@ -113,7 +113,7 @@ interface DatingApi {
 
     // People
 
-    /** The compact card. 404 without a match, a live incoming spark or deck membership. */
+    /** The compact card. 404 without a match, a live incoming spark, deck membership or a pick of today's. */
     @GET("v1/dating/people/{userId}")
     suspend fun person(@Path("userId") userId: String): Response<ApiEnvelope<DatingPersonDto>>
 
@@ -240,6 +240,16 @@ interface DatingApi {
     /** 400 OPENING_QUESTIONS_TOO_MANY / OPENING_QUESTION_INVALID / OPENING_QUESTION_REFUSED. */
     @PUT("v1/dating/first-move")
     suspend fun updateFirstMove(@Body body: FirstMoveRequest): Response<ApiEnvelope<FirstMoveSettingsDto>>
+
+    // In-match extras (mechanic M9)
+
+    /** The caller's read-receipts setting. 404 MECHANIC_NOT_ENABLED while the server flag is off. */
+    @GET("v1/dating/read-receipts")
+    suspend fun readReceipts(): Response<ApiEnvelope<ReadReceiptsDto>>
+
+    /** 403 READ_RECEIPTS_REQUIRE_PASS turning it on without a pass; turning it off always works. */
+    @PUT("v1/dating/read-receipts")
+    suspend fun updateReadReceipts(@Body body: ReadReceiptsRequest): Response<ApiEnvelope<ReadReceiptsDto>>
 
     // Safety
 
