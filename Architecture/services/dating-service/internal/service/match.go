@@ -225,6 +225,27 @@ func (c *httpMessageClient) MatchCallable(ctx context.Context, userA, userB uuid
 	return env.Data.OpenMatch, nil
 }
 
+// DatingTurnsOwed asks chat how many open matches wait on the user's reply
+// (mechanic M11).
+func (c *httpMessageClient) DatingTurnsOwed(ctx context.Context, userID uuid.UUID) (int, error) {
+	raw, status, err := c.postInternal(ctx, "/internal/v1/chat/dating-match/turns", map[string]string{"user_id": userID.String()})
+	if err != nil {
+		return 0, err
+	}
+	if status >= 400 {
+		return 0, fmt.Errorf("chat dating turns: status %d", status)
+	}
+	var env struct {
+		Data struct {
+			Owed int `json:"owed"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return 0, fmt.Errorf("chat dating turns: %w", err)
+	}
+	return env.Data.Owed, nil
+}
+
 // postInternal posts a JSON body to a chat-service internal route.
 func (c *httpMessageClient) postInternal(ctx context.Context, path string, body any) ([]byte, int, error) {
 	buf, err := json.Marshal(body)

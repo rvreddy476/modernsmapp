@@ -233,7 +233,7 @@ func main() {
 		"super_spark_daily_limit_pass", mechanicsCfg.SuperSparkDailyLimitPass,
 		"liked_you_gate", mechanicsCfg.LikedYouGate, "first_move", mechanicsCfg.FirstMove, "filters_v2", mechanicsCfg.FiltersV2,
 		"picks", mechanicsCfg.Picks, "picks_mutual", mechanicsCfg.PicksMutual, "picks_exposure_cap", mechanicsCfg.PicksExposureCap,
-		"dealbreakers", mechanicsCfg.Dealbreakers,
+		"dealbreakers", mechanicsCfg.Dealbreakers, "fair_turn", mechanicsCfg.FairTurn, "fair_turn_limit", mechanicsCfg.FairTurnLimit,
 		"travel", mechanicsCfg.Travel,
 		"read_receipts", mechanicsCfg.ReadReceipts, "call_after_exchange", mechanicsCfg.CallAfterExchange)
 	datingSvc.SetLocationPrivacyConfig(locationCfg)

@@ -67,3 +67,26 @@ func TestHTTPMessageClient_MatchExtras(t *testing.T) {
 		t.Fatalf("state = %+v", got[2])
 	}
 }
+
+// Mechanic M11: the turns count reaches chat's internal route with the
+// internal key and decodes chat's answer.
+func TestHTTPMessageClient_DatingTurnsOwed(t *testing.T) {
+	var path, user string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Internal-Service-Key") != "k" {
+			t.Errorf("%s without the internal key", r.URL.Path)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var b map[string]string
+		_ = json.Unmarshal(raw, &b)
+		path, user = r.URL.Path, b["user_id"]
+		_, _ = w.Write([]byte(`{"data":{"owed":7}}`))
+	}))
+	defer srv.Close()
+	c := &httpMessageClient{baseURL: srv.URL, internalKey: "k", client: &http.Client{Timeout: 2 * time.Second}}
+	u := uuid.New()
+	owed, err := c.DatingTurnsOwed(context.Background(), u)
+	if err != nil || owed != 7 || path != "/internal/v1/chat/dating-match/turns" || user != u.String() {
+		t.Fatalf("owed=%d err=%v path=%s user=%s", owed, err, path, user)
+	}
+}

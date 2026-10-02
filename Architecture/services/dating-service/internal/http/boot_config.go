@@ -447,6 +447,8 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_PICKS_ENABLED                daily picks (M7)
 //	DATING_PICKS_MUTUAL_ENABLED         picks must suit both people, spread out
 //	DATING_PICKS_EXPOSURE_CAP           1-10000, default 30 picks per person a day
+//	DATING_FAIR_TURN_ENABLED            no new sparks while owing replies (M11)
+//	DATING_FAIR_TURN_LIMIT              1-100, default 6 matches waiting on you
 //	DATING_DEALBREAKERS_ENABLED         dealbreakers apply both ways (M12)
 //	DATING_TRAVEL_ENABLED               travel mode (M8)
 //	DATING_READ_RECEIPTS_ENABLED        read receipts for pass holders (M9)
@@ -497,6 +499,12 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 		return cfg, err
 	}
 	if err := envIntIn(getenv, "DATING_PICKS_EXPOSURE_CAP", 1, 10000, &cfg.PicksExposureCap); err != nil {
+		return cfg, err
+	}
+	if cfg.FairTurn, err = envFlag(getenv, "DATING_FAIR_TURN_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_FAIR_TURN_LIMIT", 1, 100, &cfg.FairTurnLimit); err != nil {
 		return cfg, err
 	}
 	if cfg.Dealbreakers, err = envFlag(getenv, "DATING_DEALBREAKERS_ENABLED", def); err != nil {

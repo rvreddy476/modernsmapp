@@ -55,6 +55,11 @@ type MechanicsConfig struct {
 	PicksMutual      bool
 	PicksExposureCap int
 
+	// FairTurn (DATING_FAIR_TURN_ENABLED): no new sparks while the user owes
+	// replies in FairTurnLimit or more open matches (fair_turn.go).
+	FairTurn      bool
+	FairTurnLimit int
+
 	// Dealbreakers (DATING_DEALBREAKERS_ENABLED): preferences marked as
 	// dealbreakers apply both ways (dealbreakers.go).
 	Dealbreakers bool
@@ -83,6 +88,8 @@ func DefaultMechanicsConfig() MechanicsConfig {
 		SuperSparkDailyLimitPass: DefaultSuperSparkDailyLimitPass,
 
 		PicksExposureCap: DefaultPicksExposureCap,
+
+		FairTurnLimit: DefaultFairTurnLimit,
 	}
 }
 
@@ -107,6 +114,9 @@ func (s *Service) SetMechanicsConfig(cfg MechanicsConfig) {
 	}
 	if cfg.PicksExposureCap <= 0 {
 		cfg.PicksExposureCap = d.PicksExposureCap
+	}
+	if cfg.FairTurnLimit <= 0 {
+		cfg.FairTurnLimit = d.FairTurnLimit
 	}
 	s.mechanics = cfg
 	if s.store != nil {

@@ -580,6 +580,12 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKED_YOU_LOCKED", "a pass is needed to see who sparked you", nil)
 		return
 	}
+	var fairTurn *service.FairTurnError
+	if errors.As(err, &fairTurn) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FAIR_TURN_LIMIT", "reply to the matches waiting on you before sending new sparks",
+			map[string]any{"owed": fairTurn.Owed, "limit": fairTurn.Limit})
+		return
+	}
 	var superLimited *service.SuperSparkLimitError
 	if errors.As(err, &superLimited) {
 		details := map[string]any{"limit": superLimited.Limit, "window_hours": int(store.SuperSparkQuotaWindow.Hours())}

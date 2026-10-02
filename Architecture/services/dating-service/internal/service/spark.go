@@ -202,6 +202,11 @@ func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		return nil, nil, err
 	}
 
+	// Mechanic M11: no new sparks while too many matches wait on a reply.
+	if err := s.checkFairTurn(ctx, fromUserID, toUserID); err != nil {
+		return nil, nil, err
+	}
+
 	// Lane D3: the recipient must be an active 18+ profile, and the pair
 	// must not be blocked either way. Both refusals are the same
 	// ErrCandidateUnavailable, so the sender cannot tell a block apart.

@@ -28,6 +28,8 @@ type AllowancesResponse struct {
 	Deck       *Allowance           `json:"deck,omitempty"`
 	Rewind     *Allowance           `json:"rewind,omitempty"`
 	SuperSpark *SuperSparkAllowance `json:"super_spark,omitempty"`
+	// FairTurn (M11): how many matches wait on the caller's reply.
+	FairTurn *FairTurnView `json:"fair_turn,omitempty"`
 }
 
 // SparkLimitError is the spent spark allowance, with when it starts to come
@@ -85,5 +87,6 @@ func (s *Service) Allowances(ctx context.Context, userID uuid.UUID) (*Allowances
 		}
 		out.SuperSpark = &SuperSparkAllowance{Allowance: daily, PurchasedBalance: balance}
 	}
+	out.FairTurn = s.fairTurnView(ctx, userID)
 	return out, nil
 }
