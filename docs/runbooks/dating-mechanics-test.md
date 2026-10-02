@@ -37,12 +37,33 @@ says otherwise. Pilot accounts are **call_a** and **call_b** (see
       DATING_TRAVEL_ENABLED: ${DATING_TRAVEL_ENABLED:-true}
       DATING_READ_RECEIPTS_ENABLED: ${DATING_READ_RECEIPTS_ENABLED:-true}
       DATING_CALL_AFTER_EXCHANGE_ENABLED: ${DATING_CALL_AFTER_EXCHANGE_ENABLED:-true}
+      # Batch 2 (3 Oct 2026)
+      DATING_PICKS_MUTUAL_ENABLED: ${DATING_PICKS_MUTUAL_ENABLED:-true}
+      DATING_FAIR_TURN_ENABLED: ${DATING_FAIR_TURN_ENABLED:-true}
+      DATING_DEALBREAKERS_ENABLED: ${DATING_DEALBREAKERS_ENABLED:-true}
+      DATING_KIND_CHECK_ENABLED: ${DATING_KIND_CHECK_ENABLED:-true}
+      DATING_DATE_CHECKIN_ENABLED: ${DATING_DATE_CHECKIN_ENABLED:-true}
+      DATING_MEDIA_PROMPTS_ENABLED: ${DATING_MEDIA_PROMPTS_ENABLED:-true}
+      DATING_HIDE_KNOWN_ENABLED: ${DATING_HIDE_KNOWN_ENABLED:-true}
+      DATING_SCAM_ALERT_ENABLED: ${DATING_SCAM_ALERT_ENABLED:-true}
+      DATING_SCREEN_PROTECTION_ENABLED: ${DATING_SCREEN_PROTECTION_ENABLED:-true}
+      DATING_PAST_MATCH_REPORT_ENABLED: ${DATING_PAST_MATCH_REPORT_ENABLED:-true}
    ```
+
+   Voice/video prompt answers also need media-service's own flag, in its
+   `environment:` block: `MEDIA_DATING_CLIPS_ENABLED: ${MEDIA_DATING_CLIPS_ENABLED:-true}`.
+   Hide-from-people-I-know needs `GRAPH_SERVICE_URL` on dating-service (the
+   dev compose already sets it).
 
    Limits, all optional: `DATING_DECK_DAILY_LIMIT_FREE` (25),
    `DATING_DECK_DAILY_LIMIT_PASS` (100), `DATING_REWIND_DAILY_LIMIT_FREE` (1),
-   `DATING_SUPER_SPARK_DAILY_LIMIT_FREE` (1), `DATING_SUPER_SPARK_DAILY_LIMIT_PASS` (5).
+   `DATING_SUPER_SPARK_DAILY_LIMIT_FREE` (1), `DATING_SUPER_SPARK_DAILY_LIMIT_PASS` (5),
+   `DATING_PICKS_EXPOSURE_CAP` (30), `DATING_FAIR_TURN_LIMIT` (6).
    A malformed value stops dating-service from starting, by design.
+4. **Deploy order for batch 2:** chat-service, notification-service and
+   media-service before dating-service (fair turn asks chat; scam alerts and
+   check-ins are rendered by notification-service; clips live in
+   media-service).
 
 ## 1. Rebuild the two services
 
@@ -94,6 +115,46 @@ missing from this answer, and the apps hide its controls.
    people there see you as "Visiting <city>" — never your home city.
 9. **Read receipts and calls** — needs a pass for receipts (Settings). The
    match screen shows call buttons only after you have both sent a message.
+
+## 3b. Batch 2 walkthrough (call_a and call_b)
+
+1. **Mutual picks** — set call_b's age range so call_a falls outside it
+   (Filters on call_b). Tomorrow's picks for call_a no longer include call_b.
+   (Picks are made once a day, so this shows the next local day.)
+2. **Dealbreakers** — on call_b, mark the age preference as a dealbreaker.
+   call_a, outside that range, no longer sees call_b in the deck either.
+3. **Fair turn** — with six open matches where the other person wrote last,
+   call_a's deck shows "matches are waiting for your reply" and new sparks
+   are refused. Sparking back someone who sparked you still works.
+4. **Kind-message check** — in a dating chat, type "you are an idiot" and
+   send: the app asks whether to send anyway. On the other phone the message
+   arrives blurred with "Did this bother you?".
+5. **Comment filter** — call_b sparks call_a with the note "you look
+   stupid": in call_a's Liked you / sparks the comment is tucked away. Add a
+   hidden word in Settings → Comment filter and spark again using it.
+6. **After-date check-in** — plan a safe meet between call_a and call_b from
+   the match screen, then (dev only) move it 4 hours into the past and wait
+   up to a minute for the sweeper:
+
+   ```bash
+   docker exec atpost_stack-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d app -c "UPDATE dating_meets SET scheduled_at = now() - interval '"'"'4 hours'"'"' WHERE date_checkin_asked_at IS NULL AND user_id = '"'"'2d598287-eee7-40b4-a7f5-b46b9412e4e7'"'"'"'
+   ```
+
+   Both phones get "How did it go?". Answer "No" to "did you feel safe" and
+   the app offers to report.
+7. **Past matches** — unmatch call_b from call_a, then open Safety: "Report
+   someone from a past match" lists call_b.
+8. **Hide from people I know** — connect call_a and call_b on Momentum
+   (accepted connection), then turn on Settings → Hide me from people I know
+   on call_a. Neither sees the other in the deck any more.
+9. **Scam alert** — needs an admin: report call_b as "scam" from a third
+   account that matched call_b, then in the admin console suspend call_b on
+   that report. call_a gets the "Safety notice" push naming call_b.
+10. **Screen protection (Android)** — screenshots of the deck and profiles
+    come out black; screenshots of a chat still work.
+11. **Voice/video answers** — on a prompt, record a short voice or video
+    answer (30 s max). A voice clip waits for a moderator (admin console →
+    clips); once approved it plays on the card for the other phone.
 
 ## 4. Giving an account a pass on dev without paying
 
