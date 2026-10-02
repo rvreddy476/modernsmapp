@@ -68,10 +68,13 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.dating.profile.ProfileOptionsUi
+import com.us.android.feature.dating.profile.rememberProfileOptions
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.ReportSheet
 import com.us.android.feature.dating.ui.ConfirmDialog
 import com.us.android.feature.dating.ui.DatingPhoto
+import com.us.android.feature.dating.ui.LabelChips
 import com.us.android.feature.dating.ui.LoadingPane
 import com.us.android.feature.dating.ui.MessagePane
 import com.us.android.feature.dating.ui.Pill
@@ -111,6 +114,7 @@ internal fun PulseDeck(viewModel: PulseViewModel, onOpenPerson: (userId: String)
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     var reporting by remember { mutableStateOf<CardUi?>(null) }
     var blocking by remember { mutableStateOf<CardUi?>(null) }
+    val options = rememberProfileOptions()
 
     // Shown again — back from Premium, say, where a pack or a pass may have
     // landed: the allowances are read afresh.
@@ -153,6 +157,7 @@ internal fun PulseDeck(viewModel: PulseViewModel, onOpenPerson: (userId: String)
                     items = s.items,
                     deck = deck,
                     busy = busy,
+                    options = options,
                     viewModel = viewModel,
                     onOpenPerson = onOpenPerson,
                     onReport = { reporting = it },
@@ -294,6 +299,7 @@ private fun DeckStack(
     items: List<CardUi>,
     deck: DeckUi,
     busy: String?,
+    options: ProfileOptionsUi?,
     viewModel: PulseViewModel,
     onOpenPerson: (String) -> Unit,
     onReport: (CardUi) -> Unit,
@@ -331,6 +337,7 @@ private fun DeckStack(
                     CardFace(
                         card = next,
                         photoUrl = next.photos().first(),
+                        interests = next.glanceInterests(options),
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
@@ -347,6 +354,7 @@ private fun DeckStack(
             key(top.userId) {
                 SwipeCard(
                     card = top,
+                    interests = top.glanceInterests(options),
                     offset = offset,
                     size = cardSize,
                     leaving = deck.leaving?.takeIf { it.userId == top.userId }?.exit,
@@ -407,6 +415,7 @@ private fun DeckStack(
 @Composable
 private fun SwipeCard(
     card: CardUi,
+    interests: List<String>,
     offset: Animatable<Offset, AnimationVector2D>,
     size: IntSize,
     leaving: DeckExit?,
@@ -492,6 +501,7 @@ private fun SwipeCard(
         CardFace(
             card = card,
             photoUrl = photos.getOrNull(shown),
+            interests = interests,
             modifier = Modifier.fillMaxSize(),
             photoCount = photos.size,
             photoIndex = shown,
@@ -557,6 +567,7 @@ private fun CardFace(
     card: CardUi,
     photoUrl: String?,
     modifier: Modifier = Modifier,
+    interests: List<String> = emptyList(),
     photoCount: Int = 0,
     photoIndex: Int = 0,
     onPrevious: () -> Unit = {},
@@ -622,6 +633,8 @@ private fun CardFace(
             card.detail?.bio?.let {
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
+            // Mechanic M6: a few interests for the glance; the full list is on the profile.
+            LabelChips(interests)
             card.reasons.take(MAX_REASONS).forEach {
                 Text("• $it", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -652,6 +665,12 @@ private fun TapZone(label: String, enabled: Boolean, onClick: () -> Unit, modifi
     )
 }
 
+/** The first few interest LABELS for the card face; none until the option lists have loaded. */
+internal fun CardUi.glanceInterests(options: ProfileOptionsUi?): List<String> {
+    val basics = detail?.basics ?: return emptyList()
+    return options?.basicsOf(basics)?.interests.orEmpty().take(MAX_GLANCE_INTERESTS)
+}
+
 /** The gallery, primary first, or the single card photo; a null entry is the placeholder. */
 private fun CardUi.photos(): List<String?> =
     detail?.gallery?.map { it.url }?.takeIf { it.isNotEmpty() } ?: listOf(photoUrl)
@@ -679,6 +698,7 @@ private fun rememberReducedMotion(): Boolean {
 
 private const val SUPER_SPARK = "Super Spark"
 private const val MAX_REASONS = 2
+private const val MAX_GLANCE_INTERESTS = 3
 private const val EXIT_MILLIS = 220
 private const val EXIT_FACTOR = 1.6f
 private const val UP_RESISTANCE = 0.3f

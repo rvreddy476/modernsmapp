@@ -69,6 +69,19 @@ class DatingSession @Inject constructor() {
 
     fun isMechanicDisabled(mechanic: String): Boolean = mechanic in disabledMechanics.value
 
+    private val _filtersVersion = MutableStateFlow(0)
+
+    /**
+     * Bumped each time the deck filters are saved (mechanic M6). The deck reads
+     * a fresh batch on every change, so what it shows always follows the
+     * filters the server now holds.
+     */
+    val filtersVersion: StateFlow<Int> = _filtersVersion.asStateFlow()
+
+    fun filtersChanged() {
+        _filtersVersion.update { it + 1 }
+    }
+
     /** The other participant of a match. */
     fun otherOf(userA: String, userB: String): String = if (userA == myUserId) userB else userA
 

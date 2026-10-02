@@ -13,6 +13,7 @@ import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.ProfileDetailDto
 import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.photos.PhotoRules
+import com.us.android.feature.dating.profile.ProfileBasicsCodes
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,8 +36,15 @@ data class PersonDetailUi(
     val languages: List<String>,
     /** The approved gallery, primary first, each already resolved to its own variant. */
     val gallery: List<GalleryPhotoUi>,
+    /**
+     * Mechanic M6: interests and the lifestyle basics, still as CODES. They are
+     * resolved to labels at the screen through `ProfileOptionsUi.basicsOf`,
+     * from the session's option lists, so an unknown code renders nothing.
+     */
+    val basics: ProfileBasicsCodes = ProfileBasicsCodes(),
 ) {
-    val isEmpty: Boolean get() = bio == null && prompts.isEmpty() && languages.isEmpty() && gallery.isEmpty()
+    val isEmpty: Boolean
+        get() = bio == null && prompts.isEmpty() && languages.isEmpty() && gallery.isEmpty() && basics.isEmpty
 }
 
 /** One catalogue question and this person's answer. */
@@ -62,9 +70,20 @@ internal fun ProfileDetailDto?.toUi(urls: DatingPhotoUrls): PersonDetailUi? {
         prompts = dto.prompts.mapNotNull { it.toUi() },
         languages = dto.languages.map { it.trim() }.filter { it.isNotBlank() },
         gallery = dto.photos.mapNotNull { it.toUi(urls) },
+        basics = dto.basicsCodes(),
     )
     return detail.takeIf { !it.isEmpty }
 }
+
+/** The M6 members of a detail block, blanks and a zero height read as unset. */
+internal fun ProfileDetailDto.basicsCodes(): ProfileBasicsCodes = ProfileBasicsCodes(
+    interests = interests.map { it.trim() }.filter { it.isNotEmpty() },
+    heightCm = heightCm.takeIf { it > 0 },
+    drinking = drinking.trim().takeIf { it.isNotEmpty() },
+    smoking = smoking.trim().takeIf { it.isNotEmpty() },
+    exercise = exercise.trim().takeIf { it.isNotEmpty() },
+    diet = diet.trim().takeIf { it.isNotEmpty() },
+)
 
 private fun com.us.android.feature.dating.network.DetailPromptDto.toUi(): PromptUi? {
     val q = question.trim()

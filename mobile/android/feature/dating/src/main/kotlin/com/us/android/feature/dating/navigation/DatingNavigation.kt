@@ -16,6 +16,8 @@ import androidx.navigation.toRoute
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.feature.dating.DatingCopy
 import com.us.android.feature.dating.OnboardingStep
+import com.us.android.feature.dating.filters.FiltersScreen
+import com.us.android.feature.dating.profile.AboutMeScreen
 import com.us.android.feature.dating.home.DatingHomeScreen
 import com.us.android.feature.dating.home.HomeTab
 import com.us.android.feature.dating.home.MatchDetailScreen
@@ -75,6 +77,14 @@ data object DatingPrivacyRoute
 @Serializable
 data object DatingBlocksRoute
 
+/** Mechanic M6: interests, height, languages and the lifestyle basics. Optional. */
+@Serializable
+data object DatingAboutMeRoute
+
+/** Mechanic M6: the deck filters, from the Pulse top bar. */
+@Serializable
+data object DatingFiltersRoute
+
 /**
  * Registers Dating.
  *
@@ -103,7 +113,17 @@ fun NavGraphBuilder.datingScreens(
                 onOpenPremium = { navController.navigate(DatingPremiumRoute) },
                 onOpenPrivacy = { navController.navigate(DatingPrivacyRoute) },
                 onOpenPrompts = { navController.navigate(DatingPromptsRoute) },
+                onOpenAboutMe = { navController.navigate(DatingAboutMeRoute) },
+                onOpenFilters = { navController.navigate(DatingFiltersRoute) },
             )
+        }
+
+        composable<DatingAboutMeRoute> {
+            AboutMeScreen(onBack = navController::popBackStack)
+        }
+
+        composable<DatingFiltersRoute> {
+            FiltersScreen(onBack = navController::popBackStack, onOpenPremium = { navController.navigate(DatingPremiumRoute) })
         }
 
         composable<DatingMatchRoute> {
@@ -150,6 +170,7 @@ fun NavGraphBuilder.datingScreens(
                 onOpenBlocks = { navController.navigate(DatingBlocksRoute) },
                 // The profile is gone: leave Dating entirely.
                 onDeleted = { navController.popBackStack<DatingGraph>(inclusive = true) },
+                onEditAboutMe = { navController.navigate(DatingAboutMeRoute) },
             )
         }
 
@@ -170,6 +191,8 @@ private fun DatingRoot(
     onOpenPremium: () -> Unit,
     onOpenPrivacy: () -> Unit,
     onOpenPrompts: () -> Unit,
+    onOpenAboutMe: () -> Unit,
+    onOpenFilters: () -> Unit,
     viewModel: DatingRootViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -198,10 +221,21 @@ private fun DatingRoot(
                     onBack = onBack,
                     onSaved = viewModel::reload,
                 )
-            OnboardingStep.PHOTOS -> PhotosScreen(onBack = onBack, onContinue = viewModel::reload, onOpenPrompts = onOpenPrompts)
+            OnboardingStep.PHOTOS -> PhotosScreen(
+                onBack = onBack,
+                onContinue = viewModel::reload,
+                onOpenPrompts = onOpenPrompts,
+                onOpenAboutMe = onOpenAboutMe,
+            )
             OnboardingStep.SELFIE -> SelfieScreen(onBack = onBack, onDone = viewModel::reload)
             OnboardingStep.REVIEW, OnboardingStep.PAUSED, OnboardingStep.HELD ->
-                StatusPane(step = s.step, onBack = onBack, onUnpause = viewModel::unpause, onOpenPrivacy = onOpenPrivacy)
+                StatusPane(
+                    step = s.step,
+                    onBack = onBack,
+                    onUnpause = viewModel::unpause,
+                    onOpenPrivacy = onOpenPrivacy,
+                    onOpenAboutMe = onOpenAboutMe,
+                )
             OnboardingStep.READY -> DatingHomeScreen(
                 initialTab = initialTab,
                 onBack = onBack,
@@ -211,6 +245,7 @@ private fun DatingRoot(
                 onOpenSafety = onOpenSafety,
                 onOpenPremium = onOpenPremium,
                 onOpenSettings = onOpenPrivacy,
+                onOpenFilters = onOpenFilters,
             )
         }
     }

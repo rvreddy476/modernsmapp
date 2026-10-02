@@ -76,6 +76,13 @@ data class PrivacyUiState(
     val busy: Boolean = false,
     val deleted: Boolean = false,
     val message: UsMessage? = null,
+    /**
+     * Mechanic M6: `GET /preferences` carried `pass_filters`, so the server's
+     * filters flag is on and "verified only" is a pass filter in Filters. The
+     * old switch is then not drawn here. False (the flag off, or preferences
+     * unreadable) keeps the switch where it was.
+     */
+    val verifiedOnlyInFilters: Boolean = false,
 )
 
 /**
@@ -105,9 +112,11 @@ class PrivacyViewModel @Inject constructor(
             val consents = repository.consents().valueOrNull()?.also(session::setConsents)
             val profile = repository.profile().valueOrNull()
             val exports = repository.exports().valueOrNull().orEmpty()
+            val filtersFlag = repository.preferences().valueOrNull()?.passFilters != null
             _state.update {
                 it.copy(
                     loading = false,
+                    verifiedOnlyInFilters = filtersFlag,
                     privacy = privacy,
                     consents = consents,
                     paused = profile?.profileStatus == OnboardingGate.STATUS_PAUSED,
@@ -333,6 +342,7 @@ fun PrivacyScreen(
     onEditPrompts: () -> Unit,
     onOpenBlocks: () -> Unit,
     onDeleted: () -> Unit,
+    onEditAboutMe: () -> Unit = {},
     viewModel: PrivacyViewModel = hiltViewModel(),
     firstMove: FirstMoveSettingsViewModel = hiltViewModel(),
 ) {
@@ -378,13 +388,17 @@ fun PrivacyScreen(
                     SwitchRow("Hide when I was last active", null, privacy.hideLastActive, !state.busy) {
                         viewModel.update(PrivacyUpdateRequest(hideLastActive = it))
                     }
-                    SwitchRow("Show me verified people only", null, privacy.verifiedOnlyFilter, !state.busy) {
-                        viewModel.update(PrivacyUpdateRequest(verifiedOnlyFilter = it))
+                    // Mechanic M6 moves this into Filters once the server's flag is on.
+                    if (!state.verifiedOnlyInFilters) {
+                        SwitchRow("Show me verified people only", null, privacy.verifiedOnlyFilter, !state.busy) {
+                            viewModel.update(PrivacyUpdateRequest(verifiedOnlyFilter = it))
+                        }
                     }
                     SwitchRow("Blur my photos until we match", "Everyone else sees them blurred.", privacy.blurPhotosUntilMatch, !state.busy) {
                         viewModel.update(PrivacyUpdateRequest(blurPhotosUntilMatch = it))
                     }
                     InfoNote("Your location is always approximate. Others only see a distance range.")
+                    if (state.verifiedOnlyInFilters) InfoNote(VERIFIED_ONLY_MOVED)
                 }
             }
 
@@ -429,6 +443,7 @@ fun PrivacyScreen(
                 DatingCard {
                     UsSecondaryButton(text = "Edit photos", onClick = onEditPhotos, modifier = Modifier.fillMaxWidth())
                     UsSecondaryButton(text = "Edit prompts", onClick = onEditPrompts, modifier = Modifier.fillMaxWidth())
+                    UsSecondaryButton(text = "Edit interests and basics", onClick = onEditAboutMe, modifier = Modifier.fillMaxWidth())
                     UsSecondaryButton(
                         text = if (state.paused) "Resume dating" else "Pause my profile",
                         enabled = !state.busy,
@@ -538,3 +553,6 @@ fun exportLabel(status: String): String = when (status) {
 }
 
 private const val EXPORT_READY = "ready"
+
+/** Where the old switch went, said once where it used to be. */
+const val VERIFIED_ONLY_MOVED = "Seeing verified people only is now in Filters, on Pulse."

@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -242,6 +243,10 @@ class PulseViewModel @Inject constructor(
 
     init {
         refresh()
+        // Mechanic M6: saved filters change who the server deals, so the deck
+        // on screen is replaced by a fresh batch. The current value is skipped:
+        // this view model has just loaded.
+        viewModelScope.launch { session.filtersVersion.drop(1).collect { refresh() } }
     }
 
     fun refresh() {

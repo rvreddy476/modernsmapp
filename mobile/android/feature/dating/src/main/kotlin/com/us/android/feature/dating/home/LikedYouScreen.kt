@@ -51,6 +51,7 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.dating.profile.rememberProfileOptions
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.ReportSheet
 import com.us.android.feature.dating.ui.ConfirmDialog
@@ -370,7 +371,7 @@ private fun SparkSheet(
                 Text(about, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
             }
             spark.note?.let { Text("“$it”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary) }
-            PersonDetailBody(spark.detail)
+            PersonDetailBody(spark.detail, rememberProfileOptions())
             Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), modifier = Modifier.padding(top = UsTheme.spacing.m)) {
                 UsSecondaryButton(text = "Decline", enabled = !busy, onClick = onDecline, modifier = Modifier.weight(1f))
                 UsButton(text = "Spark back", enabled = !busy, loading = busy, onClick = onAccept, modifier = Modifier.weight(1f))

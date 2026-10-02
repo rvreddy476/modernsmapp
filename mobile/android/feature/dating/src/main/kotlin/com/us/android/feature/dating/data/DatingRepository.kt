@@ -38,6 +38,7 @@ import com.us.android.feature.dating.network.PremiumPurchaseRequest
 import com.us.android.feature.dating.network.PremiumPurchaseResultDto
 import com.us.android.feature.dating.network.PrivacyDto
 import com.us.android.feature.dating.network.PrivacyUpdateRequest
+import com.us.android.feature.dating.network.ProfileOptionsDto
 import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PromptAnswerRequest
 import com.us.android.feature.dating.network.PromptCatalogItemDto
@@ -133,6 +134,9 @@ class DatingRepository @Inject constructor(
 
     suspend fun updatePreferences(request: PreferencesRequest): DatingResult<PreferencesDto> =
         call { api.updatePreferences(request) }
+
+    /** The option lists for "About me" and Filters (mechanic M6). ProfileOptionsStore caches them per session. */
+    suspend fun profileOptions(): DatingResult<ProfileOptionsDto> = call { api.profileOptions() }
 
     suspend fun myPhotos(): DatingResult<List<DatingPhotoDto>> = list { api.myPhotos() }
 

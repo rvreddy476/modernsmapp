@@ -52,11 +52,21 @@ interface DatingApi {
     @PATCH("v1/dating/profile/privacy")
     suspend fun updatePrivacy(@Body body: PrivacyUpdateRequest): Response<ApiEnvelope<PrivacyDto>>
 
+    /** With the M6 filters flag on, carries `distance_bucket` and `pass_filters`; without it, neither. */
     @GET("v1/dating/preferences")
     suspend fun preferences(): Response<ApiEnvelope<PreferencesDto>>
 
+    /**
+     * 403 FILTERS_REQUIRE_PASS for a pass filter (or the old `language_filter`)
+     * set without a pass while the M6 flag is on; 400 INVALID_DISTANCE_BUCKET,
+     * INVALID_HEIGHT, INVALID_LANGUAGE, INVALID_LIFESTYLE with `details.field`.
+     */
     @PUT("v1/dating/preferences")
     suspend fun updatePreferences(@Body body: PreferencesRequest): Response<ApiEnvelope<PreferencesDto>>
+
+    /** Mechanic M6: the fixed interest, language, height, basics and distance lists, with our labels. */
+    @GET("v1/dating/profile/options")
+    suspend fun profileOptions(): Response<ApiEnvelope<ProfileOptionsDto>>
 
     // Photos
 

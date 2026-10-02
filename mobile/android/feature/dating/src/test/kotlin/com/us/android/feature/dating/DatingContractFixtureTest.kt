@@ -63,6 +63,15 @@ import com.us.android.feature.dating.network.TrustedContactDto
 import com.us.android.feature.dating.network.TrustedContactsDto
 import com.us.android.feature.dating.network.VerificationStatusDto
 import com.us.android.feature.dating.network.LikedYouDto
+import com.us.android.feature.dating.network.FieldRefusalDetailsDto
+import com.us.android.feature.dating.network.OptionDto
+import com.us.android.feature.dating.network.OptionRangeDto
+import com.us.android.feature.dating.network.ProfileOptionsDto
+import com.us.android.feature.dating.filters.FiltersField
+import com.us.android.feature.dating.filters.FiltersRules
+import com.us.android.feature.dating.profile.AboutMeField
+import com.us.android.feature.dating.profile.LifestyleBasic
+import com.us.android.feature.dating.profile.ProfileOptionsUi
 import com.us.android.feature.dating.photos.PhotoRules
 import com.us.android.feature.dating.premium.toReading
 import com.us.android.feature.dating.safety.MAX_TRUSTED_CONTACTS
@@ -761,6 +770,83 @@ class DatingContractFixtureTest {
             assertThat(it.verified).isTrue()
             assertThat(it.trustTier).isEqualTo("selfie")
             assertThat(it.nextStep).isEqualTo("none")
+        },
+        // ── Mechanic M6: profile basics and filters ─────────────────────────
+        "profile_options_get_200.json" to data(ProfileOptionsDto.serializer()) {
+            assertThat(it.interests).hasSize(40)
+            assertThat(it.interests.first()).isEqualTo(OptionDto("art", "Art"))
+            assertThat(it.maxInterests).isEqualTo(10)
+            assertThat(it.languages.first { o -> o.code == "te" }.label).isEqualTo("Telugu")
+            assertThat(it.maxLanguages).isEqualTo(8)
+            assertThat(it.heightCm).isEqualTo(OptionRangeDto(min = 120, max = 230))
+            assertThat(it.drinking.map { o -> o.code }).containsExactly("never", "rarely", "socially", "regularly").inOrder()
+            assertThat(it.smoking.last().label).isEqualTo("Trying to quit")
+            assertThat(it.exercise).hasSize(4)
+            assertThat(it.diet.first { o -> o.code == "non_vegetarian" }.label).isEqualTo("Non-vegetarian")
+            assertThat(it.distanceBuckets.map { o -> o.code }).containsExactly("lt_5_km", "km_5_10", "km_10_25", "gt_25_km").inOrder()
+            // The display model keeps the server's labels and limits as sent.
+            val ui = ProfileOptionsUi.from(it)
+            assertThat(ui.heightRange).isEqualTo(120..230)
+            assertThat(ui.distanceLabel("gt_25_km")).isEqualTo("Any distance")
+            assertThat(ui.basicLabel(LifestyleBasic.EXERCISE, "often")).isEqualTo("Often")
+        },
+        "preferences_get_200_filters.json" to data(PreferencesDto.serializer()) {
+            assertThat(it.distanceBucket).isEqualTo("km_5_10")
+            val pass = checkNotNull(it.passFilters)
+            assertThat(pass.active).isTrue()
+            assertThat(pass.verifiedOnly).isTrue()
+            assertThat(pass.minHeightCm).isEqualTo(160)
+            assertThat(pass.maxHeightCm).isEqualTo(190)
+            assertThat(pass.languages).containsExactly("en", "te").inOrder()
+            assertThat(pass.drinking).containsExactly("never", "socially").inOrder()
+            // Go sends [] for an empty filter, never null.
+            assertThat(pass.exercise).isEmpty()
+            assertThat(pass.diet).containsExactly("vegetarian")
+        },
+        "preferences_put_200_filters.json" to data(PreferencesDto.serializer()) {
+            // The PUT answers with the same view as the GET.
+            assertThat(it.distanceBucket).isEqualTo("km_5_10")
+            assertThat(it.passFilters?.active).isTrue()
+            assertThat(it.intentFilter).containsExactly("serious")
+        },
+        "preferences_put_403_filters_require_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("FILTERS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.FILTERS_REQUIRE_PASS)
+        },
+        "preferences_put_400_invalid_distance_bucket.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DISTANCE_BUCKET")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("lt_5_km", "km_5_10", "km_10_25", "gt_25_km").inOrder()
+            assertThat(FiltersRules.fieldFor(error, strict)).isEqualTo(FiltersField.DISTANCE)
+        },
+        "profile_upsert_400_invalid_interest.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_INTEREST")
+            val details = details(error, FieldRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("interests")
+            assertThat(details.allowed).hasSize(40)
+            assertThat(AboutMeField.fromWire(details.field)).isEqualTo(AboutMeField.INTERESTS)
+        },
+        "profile_upsert_400_invalid_height.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_HEIGHT")
+            assertThat(details(error, FieldRefusalDetailsDto.serializer(), name))
+                .isEqualTo(FieldRefusalDetailsDto(field = "height_cm", min = 120, max = 230))
+            assertThat(DatingCopy.forError(error, strict)).isEqualTo("Height needs to be between 120 and 230 cm.")
+        },
+        "privacy_patch_403_filters_require_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("FILTERS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+        },
+        "person_get_200_basics.json" to data(DatingPersonDto.serializer()) {
+            val detail = checkNotNull(it.detail)
+            assertThat(detail.languages).containsExactly("en", "te").inOrder()
+            assertThat(detail.interests).containsExactly("books", "cricket", "yoga").inOrder()
+            assertThat(detail.heightCm).isEqualTo(172)
+            assertThat(detail.drinking).isEqualTo("socially")
+            assertThat(detail.smoking).isEqualTo("never")
+            assertThat(detail.exercise).isEqualTo("often")
+            assertThat(detail.diet).isEqualTo("vegetarian")
+            assertThat(it.lastActiveLabel).isEqualTo("Active today")
         },
     )
 

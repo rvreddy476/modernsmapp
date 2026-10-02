@@ -1,0 +1,376 @@
+{
+  "data": {
+    "interests": [
+      {
+        "code": "art",
+        "label": "Art"
+      },
+      {
+        "code": "baking",
+        "label": "Baking"
+      },
+      {
+        "code": "board_games",
+        "label": "Board games"
+      },
+      {
+        "code": "books",
+        "label": "Books"
+      },
+      {
+        "code": "chai",
+        "label": "Chai"
+      },
+      {
+        "code": "coding",
+        "label": "Coding"
+      },
+      {
+        "code": "comedy",
+        "label": "Comedy"
+      },
+      {
+        "code": "cooking",
+        "label": "Cooking"
+      },
+      {
+        "code": "cricket",
+        "label": "Cricket"
+      },
+      {
+        "code": "cycling",
+        "label": "Cycling"
+      },
+      {
+        "code": "dancing",
+        "label": "Dancing"
+      },
+      {
+        "code": "fashion",
+        "label": "Fashion"
+      },
+      {
+        "code": "film",
+        "label": "Film"
+      },
+      {
+        "code": "fitness",
+        "label": "Fitness"
+      },
+      {
+        "code": "football",
+        "label": "Football"
+      },
+      {
+        "code": "gaming",
+        "label": "Gaming"
+      },
+      {
+        "code": "gardening",
+        "label": "Gardening"
+      },
+      {
+        "code": "hiking",
+        "label": "Hiking"
+      },
+      {
+        "code": "history",
+        "label": "History"
+      },
+      {
+        "code": "languages",
+        "label": "Languages"
+      },
+      {
+        "code": "meditation",
+        "label": "Meditation"
+      },
+      {
+        "code": "music",
+        "label": "Music"
+      },
+      {
+        "code": "nature",
+        "label": "Nature"
+      },
+      {
+        "code": "painting",
+        "label": "Painting"
+      },
+      {
+        "code": "pets",
+        "label": "Pets"
+      },
+      {
+        "code": "photography",
+        "label": "Photography"
+      },
+      {
+        "code": "podcasts",
+        "label": "Podcasts"
+      },
+      {
+        "code": "poetry",
+        "label": "Poetry"
+      },
+      {
+        "code": "running",
+        "label": "Running"
+      },
+      {
+        "code": "science",
+        "label": "Science"
+      },
+      {
+        "code": "singing",
+        "label": "Singing"
+      },
+      {
+        "code": "startups",
+        "label": "Startups"
+      },
+      {
+        "code": "swimming",
+        "label": "Swimming"
+      },
+      {
+        "code": "technology",
+        "label": "Technology"
+      },
+      {
+        "code": "theatre",
+        "label": "Theatre"
+      },
+      {
+        "code": "travel",
+        "label": "Travel"
+      },
+      {
+        "code": "trekking",
+        "label": "Trekking"
+      },
+      {
+        "code": "volunteering",
+        "label": "Volunteering"
+      },
+      {
+        "code": "writing",
+        "label": "Writing"
+      },
+      {
+        "code": "yoga",
+        "label": "Yoga"
+      }
+    ],
+    "max_interests": 10,
+    "languages": [
+      {
+        "code": "ar",
+        "label": "Arabic"
+      },
+      {
+        "code": "as",
+        "label": "Assamese"
+      },
+      {
+        "code": "bn",
+        "label": "Bengali"
+      },
+      {
+        "code": "zh",
+        "label": "Chinese"
+      },
+      {
+        "code": "en",
+        "label": "English"
+      },
+      {
+        "code": "fr",
+        "label": "French"
+      },
+      {
+        "code": "de",
+        "label": "German"
+      },
+      {
+        "code": "gu",
+        "label": "Gujarati"
+      },
+      {
+        "code": "hi",
+        "label": "Hindi"
+      },
+      {
+        "code": "it",
+        "label": "Italian"
+      },
+      {
+        "code": "ja",
+        "label": "Japanese"
+      },
+      {
+        "code": "kn",
+        "label": "Kannada"
+      },
+      {
+        "code": "kok",
+        "label": "Konkani"
+      },
+      {
+        "code": "ko",
+        "label": "Korean"
+      },
+      {
+        "code": "ml",
+        "label": "Malayalam"
+      },
+      {
+        "code": "mr",
+        "label": "Marathi"
+      },
+      {
+        "code": "ne",
+        "label": "Nepali"
+      },
+      {
+        "code": "or",
+        "label": "Odia"
+      },
+      {
+        "code": "pt",
+        "label": "Portuguese"
+      },
+      {
+        "code": "pa",
+        "label": "Punjabi"
+      },
+      {
+        "code": "ru",
+        "label": "Russian"
+      },
+      {
+        "code": "sa",
+        "label": "Sanskrit"
+      },
+      {
+        "code": "es",
+        "label": "Spanish"
+      },
+      {
+        "code": "ta",
+        "label": "Tamil"
+      },
+      {
+        "code": "te",
+        "label": "Telugu"
+      },
+      {
+        "code": "ur",
+        "label": "Urdu"
+      }
+    ],
+    "max_languages": 8,
+    "height_cm": {
+      "min": 120,
+      "max": 230
+    },
+    "drinking": [
+      {
+        "code": "never",
+        "label": "Never"
+      },
+      {
+        "code": "rarely",
+        "label": "Rarely"
+      },
+      {
+        "code": "socially",
+        "label": "Socially"
+      },
+      {
+        "code": "regularly",
+        "label": "Regularly"
+      }
+    ],
+    "smoking": [
+      {
+        "code": "never",
+        "label": "Never"
+      },
+      {
+        "code": "socially",
+        "label": "Socially"
+      },
+      {
+        "code": "regularly",
+        "label": "Regularly"
+      },
+      {
+        "code": "trying_to_quit",
+        "label": "Trying to quit"
+      }
+    ],
+    "exercise": [
+      {
+        "code": "never",
+        "label": "Never"
+      },
+      {
+        "code": "sometimes",
+        "label": "Sometimes"
+      },
+      {
+        "code": "often",
+        "label": "Often"
+      },
+      {
+        "code": "daily",
+        "label": "Daily"
+      }
+    ],
+    "diet": [
+      {
+        "code": "eggetarian",
+        "label": "Eggetarian"
+      },
+      {
+        "code": "jain",
+        "label": "Jain"
+      },
+      {
+        "code": "non_vegetarian",
+        "label": "Non-vegetarian"
+      },
+      {
+        "code": "other",
+        "label": "Other"
+      },
+      {
+        "code": "vegan",
+        "label": "Vegan"
+      },
+      {
+        "code": "vegetarian",
+        "label": "Vegetarian"
+      }
+    ],
+    "distance_buckets": [
+      {
+        "code": "lt_5_km",
+        "label": "Under 5 km"
+      },
+      {
+        "code": "km_5_10",
+        "label": "Within 10 km"
+      },
+      {
+        "code": "km_10_25",
+        "label": "Within 25 km"
+      },
+      {
+        "code": "gt_25_km",
+        "label": "Any distance"
+      }
+    ]
+  }
+}

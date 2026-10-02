@@ -4,6 +4,7 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.feature.dating.data.DatingError
 import com.us.android.feature.dating.data.code
 import com.us.android.feature.dating.data.detailsAs
+import com.us.android.feature.dating.network.FieldRefusalDetailsDto
 import com.us.android.feature.dating.network.LocationRateLimitDetailsDto
 import com.us.android.feature.dating.network.MaxLengthDetailsDto
 import com.us.android.feature.dating.network.RangeDetailsDto
@@ -72,7 +73,46 @@ object DatingCopy {
             "OPENING_ANSWER_REFUSED" -> "Answers can't include phone numbers, emails or links."
             "CHAT_UNAVAILABLE" -> "Chat isn't reachable right now. Try again in a moment."
             "EXTEND_LIMIT_REACHED" -> "You've already given extra time today."
+            // Mechanic M6 — profile basics and filters.
+            "FILTERS_REQUIRE_PASS" -> FILTERS_REQUIRE_PASS
+            "INVALID_DISTANCE_BUCKET" -> "That distance isn't available any more. Pick another one."
+            "INVALID_AGE_RANGE" -> ageRange(error, json)
+            "INVALID_INTENT_FILTER" -> "One of those choices isn't available any more. Check what you picked."
+            "INVALID_INTEREST" -> "One of those interests isn't on the list any more. Check your picks and try again."
+            "TOO_MANY_INTEREST" -> tooMany(error, json, "interests")
+            "INVALID_LANGUAGE" -> "One of those languages isn't on the list any more. Check your picks and try again."
+            "TOO_MANY_LANGUAGE" -> tooMany(error, json, "languages")
+            "INVALID_HEIGHT" -> height(error, json)
+            "INVALID_LIFESTYLE" -> "That choice isn't available any more. Pick another one."
             else -> GENERIC
+        }
+    }
+
+    /** `403 FILTERS_REQUIRE_PASS`: a pass filter was set without a pass. */
+    const val FILTERS_REQUIRE_PASS = "These filters come with a Premium pass."
+
+    private fun tooMany(error: DatingError, json: Json?, what: String): String {
+        val max = json?.let { error.detailsAs(it, FieldRefusalDetailsDto.serializer()) }?.max?.takeIf { it > 0 }
+        return if (max != null) "You can pick up to $max $what." else "That's too many $what."
+    }
+
+    private fun height(error: DatingError, json: Json?): String {
+        val details = json?.let { error.detailsAs(it, FieldRefusalDetailsDto.serializer()) }
+        return when {
+            // Both heights were fine on their own, but the range was upside down.
+            details?.field == "min_height_cm" && details.min > 0 && details.max > 0 ->
+                "Pick a height range from ${details.min} to ${details.max} cm, shortest first."
+            details != null && details.min > 0 && details.max > 0 -> "Height needs to be between ${details.min} and ${details.max} cm."
+            else -> "That height isn't one we can save."
+        }
+    }
+
+    private fun ageRange(error: DatingError, json: Json?): String {
+        val range = json?.let { error.detailsAs(it, RangeDetailsDto.serializer()) }
+        return if (range != null && range.min > 0 && range.max > 0) {
+            "Ages run from ${range.min} to ${range.max}, youngest first."
+        } else {
+            "That age range doesn't work. Check both ages."
         }
     }
 

@@ -72,6 +72,7 @@ fun DatingHomeScreen(
     onOpenSafety: () -> Unit,
     onOpenPremium: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenFilters: () -> Unit = {},
     pulse: PulseViewModel = hiltViewModel(),
     sparks: LikedYouViewModel = hiltViewModel(),
     matches: MatchesViewModel = hiltViewModel(),
@@ -112,6 +113,10 @@ fun DatingHomeScreen(
         message = if (tab == HomeTab.SPARKS) sparksMessage else pulseMessage,
         onDismissMessage = { if (tab == HomeTab.SPARKS) sparks.dismissMessage() else pulse.dismissMessage() },
         actions = {
+            // Mechanic M6: the deck's filters, drawn on the deck only.
+            if (tab == HomeTab.PULSE) {
+                IconButton(onClick = onOpenFilters) { Icon(UsIcons.Sliders, contentDescription = "Filters", tint = UsTheme.extended.textPrimary) }
+            }
             IconButton(onClick = onOpenSafety) { Icon(UsIcons.Flag, contentDescription = "Safety", tint = UsTheme.extended.textPrimary) }
             IconButton(onClick = onOpenPremium) { Icon(UsIcons.HeartHandshake, contentDescription = "Premium", tint = UsTheme.extended.textPrimary) }
             IconButton(onClick = onOpenSettings) { Icon(UsIcons.Settings, contentDescription = "Privacy and settings", tint = UsTheme.extended.textPrimary) }

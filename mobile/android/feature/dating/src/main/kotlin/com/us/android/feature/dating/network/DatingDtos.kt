@@ -83,6 +83,16 @@ data class ProfileDetailDto(
     val languages: List<String> = emptyList(),
     /** The whole approved gallery, primary first. Each entry carries its OWN variant. */
     val photos: List<CardPhotoDto> = emptyList(),
+    // Mechanic M6: interests and the lifestyle basics, as option CODES. The
+    // labels come from `GET /profile/options`; an unknown code renders nothing.
+    // Go omits each one while unset, so every field defaults to empty.
+    val interests: List<String> = emptyList(),
+    /** 0 = not set. */
+    @SerialName("height_cm") val heightCm: Int = 0,
+    val drinking: String = "",
+    val smoking: String = "",
+    val exercise: String = "",
+    val diet: String = "",
 )
 
 /** One catalogue question and this person's answer; the question text is resolved server-side. */
@@ -158,6 +168,8 @@ data class DatingProfileDto(
     @SerialName("visible_to_public") val visibleToPublic: Boolean = false,
     val paused: Boolean = false,
     @SerialName("language_prefs") val languagePrefs: List<String>? = null,
+    /** Mechanic M6: interest codes. Omitted while empty. */
+    val interests: List<String>? = null,
     @SerialName("trust_tier") val trustTier: String = "",
     @SerialName("profile_status") val profileStatus: String = "",
     @SerialName("created_at") val createdAt: String = "",
@@ -191,6 +203,14 @@ data class UpsertProfileRequest(
     val community: String? = null,
     val occupation: String? = null,
     val education: String? = null,
+    // Mechanic M6 ("About me"): option CODES only. A list is written whole, so
+    // `[]` clears it; a basic set to "" is cleared ("Prefer not to say").
+    val interests: List<String>? = null,
+    @SerialName("language_prefs") val languagePrefs: List<String>? = null,
+    val drinking: String? = null,
+    val smoking: String? = null,
+    val exercise: String? = null,
+    val diet: String? = null,
 )
 
 @Serializable
@@ -202,7 +222,7 @@ data class DeleteProfileRequest(val reason: String? = null)
 @Serializable
 data class StatusDto(val status: String = "")
 
-// ── Preferences, no fixture ─────────────────────────────────────────────────
+// ── Preferences (fixtures: preferences_get_200, preferences_*_filters) ──────
 
 @Serializable
 data class PreferencesDto(
@@ -215,14 +235,94 @@ data class PreferencesDto(
     @SerialName("blur_mode_pref") val blurModePref: Boolean = false,
     @SerialName("language_filter") val languageFilter: List<String>? = null,
     @SerialName("updated_at") val updatedAt: String = "",
+    /**
+     * Mechanic M6: the distance filter as a bucket code. Present only while the
+     * server's filters flag is on, together with [passFilters].
+     */
+    @SerialName("distance_bucket") val distanceBucket: String? = null,
+    /**
+     * Mechanic M6: the filters that come with a pass. ABSENT means the server's
+     * filters flag is off — the app then keeps its older screens.
+     */
+    @SerialName("pass_filters") val passFilters: PassFiltersDto? = null,
 )
 
+/**
+ * `pass_filters` on `GET /preferences`. [active]: the caller holds a pass, so
+ * these apply to the deck; without one they are stored but not applied.
+ * Go omits the two heights while unset and sends `[]` for an empty list.
+ */
+@Serializable
+data class PassFiltersDto(
+    val active: Boolean = false,
+    @SerialName("verified_only") val verifiedOnly: Boolean = false,
+    @SerialName("min_height_cm") val minHeightCm: Int? = null,
+    @SerialName("max_height_cm") val maxHeightCm: Int? = null,
+    val languages: List<String> = emptyList(),
+    val drinking: List<String> = emptyList(),
+    val smoking: List<String> = emptyList(),
+    val exercise: List<String> = emptyList(),
+    val diet: List<String> = emptyList(),
+)
+
+/** `PUT /preferences` — a partial write: null is left out of the body and stays as it is. */
 @Serializable
 data class PreferencesRequest(
     @SerialName("min_age") val minAge: Int? = null,
     @SerialName("max_age") val maxAge: Int? = null,
     @SerialName("distance_km") val distanceKm: Int? = null,
     @SerialName("interested_in_gender") val interestedInGender: String? = null,
+    /** `[]` clears the intent filter. */
+    @SerialName("intent_filter") val intentFilter: List<String>? = null,
+    /** Mechanic M6, flag on only: replaces [distanceKm]. */
+    @SerialName("distance_bucket") val distanceBucket: String? = null,
+    /** Mechanic M6, flag on only: the WHOLE pass filter set, replaced as one. */
+    @SerialName("pass_filters") val passFilters: PassFiltersRequest? = null,
+)
+
+/**
+ * `pass_filters` on `PUT /preferences`. Every member is always sent (no
+ * defaults), because the server replaces the set as one. Setting any of them
+ * without a pass is `403 FILTERS_REQUIRE_PASS`; an all-empty set clears them
+ * and is always allowed.
+ */
+@Serializable
+data class PassFiltersRequest(
+    @SerialName("verified_only") val verifiedOnly: Boolean,
+    @SerialName("min_height_cm") val minHeightCm: Int?,
+    @SerialName("max_height_cm") val maxHeightCm: Int?,
+    val languages: List<String>,
+    val drinking: List<String>,
+    val smoking: List<String>,
+    val exercise: List<String>,
+    val diet: List<String>,
+)
+
+// ── Profile options (mechanic M6; fixture: profile_options_get_200) ─────────
+
+/** One choice: the stable code that goes on the wire, and the server's label that goes on screen. */
+@Serializable
+data class OptionDto(val code: String = "", val label: String = "")
+
+@Serializable
+data class OptionRangeDto(val min: Int = 0, val max: Int = 0)
+
+/**
+ * `GET /profile/options`: every list the new profile fields and filters draw
+ * from, with OUR labels. The app shows these labels and never a code.
+ */
+@Serializable
+data class ProfileOptionsDto(
+    val interests: List<OptionDto> = emptyList(),
+    @SerialName("max_interests") val maxInterests: Int = 0,
+    val languages: List<OptionDto> = emptyList(),
+    @SerialName("max_languages") val maxLanguages: Int = 0,
+    @SerialName("height_cm") val heightCm: OptionRangeDto = OptionRangeDto(),
+    val drinking: List<OptionDto> = emptyList(),
+    val smoking: List<OptionDto> = emptyList(),
+    val exercise: List<OptionDto> = emptyList(),
+    val diet: List<OptionDto> = emptyList(),
+    @SerialName("distance_buckets") val distanceBuckets: List<OptionDto> = emptyList(),
 )
 
 // ── Privacy (fixture: privacy_get_200) ──────────────────────────────────────
@@ -1031,6 +1131,19 @@ data class OnboardingIncompleteDetailsDto(val status: String = "", val step: Str
 
 @Serializable
 data class AllowedDetailsDto(val allowed: List<String> = emptyList())
+
+/**
+ * `details` of a refused M6 field (`INVALID_INTEREST`, `TOO_MANY_LANGUAGE`,
+ * `INVALID_HEIGHT`, `INVALID_LIFESTYLE`, …): [field] names the picker, and the
+ * rest is whichever of the allowed codes or the limits the refusal carries.
+ */
+@Serializable
+data class FieldRefusalDetailsDto(
+    val field: String = "",
+    val allowed: List<String> = emptyList(),
+    val min: Int = 0,
+    val max: Int = 0,
+)
 
 @Serializable
 data class MovedDetailsDto(

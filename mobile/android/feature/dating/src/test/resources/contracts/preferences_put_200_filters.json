@@ -1,0 +1,40 @@
+{
+  "data": {
+    "user_id": "<viewer>",
+    "min_age": 24,
+    "max_age": 34,
+    "distance_km": 10,
+    "interested_in_gender": "<gender>",
+    "intent_filter": [
+      "serious"
+    ],
+    "blur_mode_pref": false,
+    "language_filter": [
+      "en",
+      "te"
+    ],
+    "updated_at": "<timestamp>",
+    "distance_bucket": "km_5_10",
+    "pass_filters": {
+      "active": true,
+      "verified_only": true,
+      "min_height_cm": 160,
+      "max_height_cm": 190,
+      "languages": [
+        "en",
+        "te"
+      ],
+      "drinking": [
+        "never",
+        "socially"
+      ],
+      "smoking": [
+        "never"
+      ],
+      "exercise": [],
+      "diet": [
+        "vegetarian"
+      ]
+    }
+  }
+}

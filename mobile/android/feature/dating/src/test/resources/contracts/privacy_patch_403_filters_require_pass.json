@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FILTERS_REQUIRE_PASS",
+    "message": "these filters come with a pass"
+  },
+  "meta": {}
+}

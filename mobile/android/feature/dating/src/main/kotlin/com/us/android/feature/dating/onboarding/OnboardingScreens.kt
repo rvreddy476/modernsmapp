@@ -354,6 +354,7 @@ fun PhotosScreen(
     onBack: () -> Unit,
     onContinue: (() -> Unit)?,
     onOpenPrompts: () -> Unit,
+    onOpenAboutMe: (() -> Unit)? = null,
     viewModel: PhotosViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -429,6 +430,12 @@ fun PhotosScreen(
             item {
                 UsSecondaryButton(text = "Answer a few prompts (optional)", onClick = onOpenPrompts, modifier = Modifier.fillMaxWidth())
             }
+            // Mechanic M6: offered here, beside the prompts, and never waited on.
+            if (onOpenAboutMe != null) {
+                item {
+                    UsSecondaryButton(text = "Add interests and basics (optional)", onClick = onOpenAboutMe, modifier = Modifier.fillMaxWidth())
+                }
+            }
         }
     }
 
@@ -484,13 +491,22 @@ fun PromptsScreen(onBack: () -> Unit, viewModel: PromptsViewModel = hiltViewMode
 
 /** A step the person cannot act on from here: under review, paused, or held. */
 @Composable
-fun StatusPane(step: OnboardingStep, onBack: () -> Unit, onUnpause: () -> Unit, onOpenPrivacy: () -> Unit) {
+fun StatusPane(
+    step: OnboardingStep,
+    onBack: () -> Unit,
+    onUnpause: () -> Unit,
+    onOpenPrivacy: () -> Unit,
+    onOpenAboutMe: (() -> Unit)? = null,
+) {
     DatingScreen(title = "Dating", onBack = onBack) { _ ->
         when (step) {
+            // The last onboarding stop: "About me" is offered while they wait, never required.
             OnboardingStep.REVIEW -> com.us.android.feature.dating.ui.MessagePane(
                 title = "We're reviewing your profile",
                 body = "A moderator is checking your profile. This usually doesn't take long, and we'll let you know.",
                 icon = UsIcons.Clock,
+                secondaryLabel = if (onOpenAboutMe != null) "Add interests and basics (optional)" else null,
+                onSecondary = { onOpenAboutMe?.invoke() },
             )
             OnboardingStep.PAUSED -> com.us.android.feature.dating.ui.MessagePane(
                 title = "Your profile is paused",

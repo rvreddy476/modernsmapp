@@ -29,7 +29,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.dating.profile.ProfileOptionsUi
+import com.us.android.feature.dating.profile.rememberProfileOptions
 import com.us.android.feature.dating.ui.DatingPhoto
+import com.us.android.feature.dating.ui.LabelChips
 import com.us.android.feature.dating.ui.DatingScreen
 import com.us.android.feature.dating.ui.LoadingPane
 import com.us.android.feature.dating.ui.MessagePane
@@ -102,9 +105,13 @@ private fun photoDescription(name: String?, index: Int? = null, total: Int? = nu
  * prompt list — so a sparse profile stays a photo and a name.
  */
 @Composable
-fun PersonDetailBody(detail: PersonDetailUi?, modifier: Modifier = Modifier) {
+fun PersonDetailBody(detail: PersonDetailUi?, options: ProfileOptionsUi?, modifier: Modifier = Modifier) {
     if (detail == null) return
-    val hasText = detail.bio != null || detail.prompts.isNotEmpty() || detail.languages.isNotEmpty()
+    // Codes become labels only through the session's option lists: until they
+    // load, interests and basics draw nothing rather than a raw code.
+    val basics = options?.basicsOf(detail.basics)
+    val languages = options?.languageLabels(detail.languages) ?: detail.languages
+    val hasText = detail.bio != null || detail.prompts.isNotEmpty() || languages.isNotEmpty() || basics?.isEmpty == false
     if (!hasText) return
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
         detail.bio?.let { bio ->
@@ -139,14 +146,31 @@ fun PersonDetailBody(detail: PersonDetailUi?, modifier: Modifier = Modifier) {
                 }
             }
         }
-        if (detail.languages.isNotEmpty()) {
+        if (basics != null && basics.interests.isNotEmpty()) {
+            SectionLabel("Interests")
+            LabelChips(basics.interests)
+        }
+        if (basics != null && (basics.height != null || basics.lines.isNotEmpty())) {
+            SectionLabel("Basics")
+            basics.height?.let { BasicRow("Height", it) }
+            basics.lines.forEach { BasicRow(it.title, it.label) }
+        }
+        if (languages.isNotEmpty()) {
             SectionLabel("Languages")
             Text(
-                text = detail.languages.joinToString(", "),
+                text = languages.joinToString(", "),
                 style = MaterialTheme.typography.bodyMedium,
                 color = UsTheme.extended.textSecondary,
             )
         }
+    }
+}
+
+@Composable
+private fun BasicRow(title: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textPrimary)
     }
 }
 
@@ -161,6 +185,7 @@ fun PersonScreen(
     viewModel: PersonViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val options = rememberProfileOptions()
     DatingScreen(title = "Profile", onBack = onBack) { padding ->
         when (val s = state) {
             PersonState.Loading -> LoadingPane()
@@ -214,7 +239,7 @@ fun PersonScreen(
                 s.person.lastActive?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
                 }
-                PersonDetailBody(s.person.detail)
+                PersonDetailBody(s.person.detail, options)
             }
         }
     }

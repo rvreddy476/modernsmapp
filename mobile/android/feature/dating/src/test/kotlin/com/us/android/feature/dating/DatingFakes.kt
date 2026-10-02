@@ -59,6 +59,7 @@ import com.us.android.feature.dating.network.PrivacyUpdateRequest
 import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PromptAnswerRequest
 import com.us.android.feature.dating.network.PromptCatalogItemDto
+import com.us.android.feature.dating.network.ProfileOptionsDto
 import com.us.android.feature.dating.network.CardPhotoDto
 import com.us.android.feature.dating.network.DetailPromptDto
 import com.us.android.feature.dating.network.ProfileDetailDto
@@ -350,9 +351,27 @@ class FakeDatingApi : DatingApi {
 
     override suspend fun deleteProfile(body: DeleteProfileRequest) = ok(StatusDto("deleted"))
 
-    override suspend fun privacy() = ok(PrivacyDto())
+    /** What `GET /profile/privacy` answers. */
+    var privacyState = PrivacyDto()
+    val privacyWrites = mutableListOf<PrivacyUpdateRequest>()
+    var privacyWriteResponse: ((PrivacyUpdateRequest) -> Response<ApiEnvelope<PrivacyDto>>)? = null
 
-    override suspend fun updatePrivacy(body: PrivacyUpdateRequest) = ok(PrivacyDto(incognito = body.incognito ?: false))
+    override suspend fun privacy() = ok(privacyState)
+
+    override suspend fun updatePrivacy(body: PrivacyUpdateRequest): Response<ApiEnvelope<PrivacyDto>> {
+        calls += "privacy:write"
+        privacyWrites += body
+        return privacyWriteResponse?.invoke(body) ?: ok(PrivacyDto(incognito = body.incognito ?: false))
+    }
+
+    /** `GET /profile/options` (mechanic M6). The default is the server's golden. */
+    var profileOptionsResponse: () -> Response<ApiEnvelope<ProfileOptionsDto>> =
+        { ok(fixture("profile_options_get_200.json", ProfileOptionsDto.serializer())) }
+
+    override suspend fun profileOptions(): Response<ApiEnvelope<ProfileOptionsDto>> {
+        calls += "profile-options"
+        return profileOptionsResponse()
+    }
 
     override suspend fun preferences(): Response<ApiEnvelope<PreferencesDto>> {
         calls += "preferences"
