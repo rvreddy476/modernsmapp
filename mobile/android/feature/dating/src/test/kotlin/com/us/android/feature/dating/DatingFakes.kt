@@ -19,6 +19,15 @@ import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
 import com.us.android.feature.dating.network.BlockedPersonDto
 import com.us.android.feature.dating.network.BlocksDto
+import com.us.android.feature.dating.network.BotheredDto
+import com.us.android.feature.dating.network.BotheredRequest
+import com.us.android.feature.dating.network.ClientConfigDto
+import com.us.android.feature.dating.network.CommentFilterDto
+import com.us.android.feature.dating.network.CommentFilterRequest
+import com.us.android.feature.dating.network.HideKnownDto
+import com.us.android.feature.dating.network.HideKnownRequest
+import com.us.android.feature.dating.network.KindCheckDto
+import com.us.android.feature.dating.network.KindCheckRequest
 import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.ConsentRequest
 import com.us.android.feature.dating.network.ConsentStateDto
@@ -568,9 +577,12 @@ class FakeDatingApi : DatingApi {
 
     override suspend fun unstash(candidateId: String) = ok(RemovedDto(removed = true))
 
+    /** Overrides `GET /matches`, for its refusals. */
+    var matchesResponse: (() -> Response<ApiEnvelope<List<MatchDto>>>)? = null
+
     override suspend fun matches(status: String?): Response<ApiEnvelope<List<MatchDto>>> {
         calls += "matches"
-        return ok(matches)
+        return matchesResponse?.invoke() ?: ok(matches)
     }
 
     override suspend fun match(id: String): Response<ApiEnvelope<MatchDto>> =
@@ -678,6 +690,79 @@ class FakeDatingApi : DatingApi {
     override suspend fun pastMatches(): Response<PastMatchesDto> {
         calls += "past-matches"
         return pastMatchesResponse()
+    }
+
+    // ── Mechanic M13: kind messages ─────────────────────────────────────────
+
+    /** Every text `POST /kind-check` was asked about, in order. */
+    val kindChecks = mutableListOf<String>()
+
+    /** `POST /kind-check`. The default is the server's flag OFF, as the golden writes it. */
+    var kindCheckResponse: (text: String) -> Response<ApiEnvelope<KindCheckDto>> =
+        { refusedWithFixture(404, "kind_check_post_404_not_enabled.json") }
+    val botheredWrites = mutableListOf<Pair<String, BotheredRequest>>()
+    var botheredResponse: (matchId: String, BotheredRequest) -> Response<ApiEnvelope<BotheredDto>> =
+        { matchId, body -> ok(BotheredDto(matchId = matchId, bothered = body.bothered, offerReport = body.bothered)) }
+
+    /** `GET /comment-filter`. The default is the server's flag OFF. */
+    var commentFilterResponse: () -> Response<ApiEnvelope<CommentFilterDto>> =
+        { refusedWithFixture(404, "kind_check_post_404_not_enabled.json") }
+    val commentFilterWrites = mutableListOf<CommentFilterRequest>()
+    var commentFilterWriteResponse: (CommentFilterRequest) -> Response<ApiEnvelope<CommentFilterDto>> =
+        { ok(CommentFilterDto(filterUnkind = it.filterUnkind, words = it.words)) }
+
+    override suspend fun kindCheck(body: KindCheckRequest): Response<ApiEnvelope<KindCheckDto>> {
+        calls += "kind-check"
+        kindChecks += body.text
+        return kindCheckResponse(body.text)
+    }
+
+    override suspend fun bothered(matchId: String, body: BotheredRequest): Response<ApiEnvelope<BotheredDto>> {
+        calls += "bothered"
+        botheredWrites += matchId to body
+        return botheredResponse(matchId, body)
+    }
+
+    override suspend fun commentFilter(): Response<ApiEnvelope<CommentFilterDto>> {
+        calls += "comment-filter"
+        return commentFilterResponse()
+    }
+
+    override suspend fun updateCommentFilter(body: CommentFilterRequest): Response<ApiEnvelope<CommentFilterDto>> {
+        calls += "comment-filter:write"
+        commentFilterWrites += body
+        return commentFilterWriteResponse(body)
+    }
+
+    // ── Mechanic M16: hide from people I know ───────────────────────────────
+
+    /** `GET /hide-known`. The default is the server's flag OFF, as the golden writes it. */
+    var hideKnownResponse: () -> Response<ApiEnvelope<HideKnownDto>> =
+        { refusedWithFixture(404, "hide_known_get_404_not_enabled.json") }
+    val hideKnownWrites = mutableListOf<HideKnownRequest>()
+    var hideKnownWriteResponse: (HideKnownRequest) -> Response<ApiEnvelope<HideKnownDto>> =
+        { ok(HideKnownDto(enabled = it.enabled, hiddenCount = if (it.enabled) 2 else 0)) }
+
+    override suspend fun hideKnown(): Response<ApiEnvelope<HideKnownDto>> {
+        calls += "hide-known"
+        return hideKnownResponse()
+    }
+
+    override suspend fun updateHideKnown(body: HideKnownRequest): Response<ApiEnvelope<HideKnownDto>> {
+        calls += "hide-known:write"
+        hideKnownWrites += body
+        return hideKnownWriteResponse(body)
+    }
+
+    // ── Mechanic M18: client config ─────────────────────────────────────────
+
+    /** `GET /client-config`. The default is protection off, as the golden writes it. */
+    var clientConfigResponse: () -> Response<ApiEnvelope<ClientConfigDto>> =
+        { ok(fixture("client_config_get_200_off.json", ClientConfigDto.serializer())) }
+
+    override suspend fun clientConfig(): Response<ApiEnvelope<ClientConfigDto>> {
+        calls += "client-config"
+        return clientConfigResponse()
     }
 
     override suspend fun block(body: BlockRequest): Response<ApiEnvelope<BlockedDto>> {

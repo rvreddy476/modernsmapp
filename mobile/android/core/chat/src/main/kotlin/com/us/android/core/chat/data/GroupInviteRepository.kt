@@ -170,4 +170,6 @@ internal fun ConversationDto.toDomain(): Conversation = Conversation(
     isMuted = isMuted,
     description = description,
     avatarUrl = avatarUrl,
+    sourceApp = sourceApp?.takeIf { it.isNotBlank() },
+    matchId = matchId?.takeIf { it.isNotBlank() },
 )

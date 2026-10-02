@@ -10,6 +10,15 @@ import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
 import com.us.android.feature.dating.network.BlocksDto
+import com.us.android.feature.dating.network.BotheredDto
+import com.us.android.feature.dating.network.BotheredRequest
+import com.us.android.feature.dating.network.ClientConfigDto
+import com.us.android.feature.dating.network.CommentFilterDto
+import com.us.android.feature.dating.network.CommentFilterRequest
+import com.us.android.feature.dating.network.HideKnownDto
+import com.us.android.feature.dating.network.HideKnownRequest
+import com.us.android.feature.dating.network.KindCheckDto
+import com.us.android.feature.dating.network.KindCheckRequest
 import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.ConsentRequest
 import com.us.android.feature.dating.network.ConsentsDto
@@ -249,9 +258,34 @@ class DatingRepository @Inject constructor(
 
     suspend fun stash(candidateId: String): DatingResult<StashDto> = call { api.stash(StashRequest(candidateId)) }
 
-    suspend fun matches(): DatingResult<List<MatchDto>> = list { api.matches() }
+    suspend fun matches(): DatingResult<List<MatchDto>> = list { api.matches() }.also { result ->
+        if (result is DatingResult.Success) result.value.forEach(::rememberConversation)
+    }
 
-    suspend fun match(matchId: String): DatingResult<MatchDto> = call { api.match(matchId) }
+    suspend fun match(matchId: String): DatingResult<MatchDto> = call { api.match(matchId) }.also { result ->
+        if (result is DatingResult.Success) rememberConversation(result.value)
+    }
+
+    /**
+     * Which match a chat conversation belongs to, from the matches this process
+     * has read — how the kind-message checks (mechanic M13) tell a Pulse chat
+     * from every other conversation. Null: not one this process knows.
+     */
+    fun matchForConversation(conversationId: String): String? = conversationMatches[conversationId]
+
+    private val conversationMatches = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Sign-out: one account's matches are not the next one's. */
+    fun forgetConversations() = conversationMatches.clear()
+
+    private fun rememberConversation(match: MatchDto) = rememberConversation(match.conversationId.orEmpty(), match.id)
+
+    /** [conversationId] is the chat of [matchId] — from a match read here, or from chat's own conversation response. */
+    fun rememberConversation(conversationId: String, matchId: String) {
+        val conversation = conversationId.trim()
+        val match = matchId.trim()
+        if (conversation.isNotEmpty() && match.isNotEmpty()) conversationMatches[conversation] = match
+    }
 
     suspend fun unmatch(matchId: String): DatingResult<ClosedDto> = call { api.closeMatch(matchId) }
 
@@ -285,6 +319,27 @@ class DatingRepository @Inject constructor(
 
     /** Matches that ended recently, so someone from one can still be reported (mechanic M19). */
     suspend fun pastMatches(): DatingResult<PastMatchesDto> = datingRawCall(json) { api.pastMatches() }
+
+    /** Whether [text] might come across as unkind (mechanic M13). The text is not stored. */
+    suspend fun kindCheck(text: String): DatingResult<KindCheckDto> = call { api.kindCheck(KindCheckRequest(text)) }
+
+    /** The answer to "did this bother you?" about a message in [matchId] (mechanic M13). */
+    suspend fun bothered(matchId: String, bothered: Boolean): DatingResult<BotheredDto> =
+        call { api.bothered(matchId, BotheredRequest(bothered)) }
+
+    /** The caller's spark-comment filter (mechanic M13). */
+    suspend fun commentFilter(): DatingResult<CommentFilterDto> = call { api.commentFilter() }
+
+    suspend fun updateCommentFilter(filterUnkind: Boolean, words: List<String>): DatingResult<CommentFilterDto> =
+        call { api.updateCommentFilter(CommentFilterRequest(filterUnkind = filterUnkind, words = words)) }
+
+    /** "Hide me from people I know" (mechanic M16). */
+    suspend fun hideKnown(): DatingResult<HideKnownDto> = call { api.hideKnown() }
+
+    suspend fun setHideKnown(enabled: Boolean): DatingResult<HideKnownDto> = call { api.updateHideKnown(HideKnownRequest(enabled)) }
+
+    /** The switches the app acts on locally (mechanic M18). */
+    suspend fun clientConfig(): DatingResult<ClientConfigDto> = call { api.clientConfig() }
 
     suspend fun block(userId: String): DatingResult<BlockedDto> = call { api.block(BlockRequest(userId)) }
 

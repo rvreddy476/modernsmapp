@@ -316,6 +316,10 @@ data class Conversation(
     /** Groups pass: the description and the signed, short-lived avatar URL. */
     val description: String = "",
     val avatarUrl: String? = null,
+    /** The product a conversation belongs to ("dating" for a Pulse match's chat); null for every other. */
+    val sourceApp: String? = null,
+    /** That product's own id for it (the Pulse match); null otherwise. */
+    val matchId: String? = null,
 ) {
     /**
      * What to show as the thread's name.

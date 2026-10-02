@@ -98,6 +98,7 @@ import com.us.android.feature.commerce.navigation.navigateToMStore
 import com.us.android.feature.dating.navigation.datingScreens
 import com.us.android.feature.dating.navigation.navigateToDating
 import com.us.android.feature.dating.navigation.navigateToDatingMatch
+import com.us.android.feature.dating.navigation.navigateToDatingReport
 import com.us.android.feature.dating.navigation.navigateToDatingSafety
 import com.us.android.feature.dating.navigation.navigateToDatingSparks
 import com.us.android.feature.dating.premium.DatingPaymentRequest
@@ -876,6 +877,10 @@ private fun NavGraphBuilder.tabDestinations(
         },
         onStartCall = { peerUserId, peerName, video, conversationId ->
             navController.navigateToOutgoingCall(peerUserId, peerName, video, conversationId)
+        },
+        // Kind messages (Pulse M13): only a Pulse chat ever offers this.
+        onReportSender = { senderId, messageId, name ->
+            navController.navigateToDatingReport(senderId, messageId, name)
         },
     )
     callScreen(onBack = { navController.popBackStack() })

@@ -94,6 +94,21 @@ class DatingSession @Inject constructor() {
         _travelVersion.update { it + 1 }
     }
 
+    @Volatile
+    private var visits = 0
+
+    /**
+     * Which opening of Dating this is: bumped each time the Dating graph is
+     * entered. What is read "once per Dating session" (the client config,
+     * mechanic M18) is read again when it changes.
+     */
+    val visit: Int get() = visits
+
+    /** Dating was opened (its root screen was created). */
+    fun entered() {
+        visits++
+    }
+
     /** The other participant of a match. */
     fun otherOf(userA: String, userB: String): String = if (userA == myUserId) userB else userA
 

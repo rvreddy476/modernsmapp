@@ -42,6 +42,7 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.dating.safety.ProtectThisScreen
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.ReportSheet
 import com.us.android.feature.dating.travel.TravelCopy
@@ -97,6 +98,8 @@ fun DatingHomeScreen(
     matches: MatchesViewModel = hiltViewModel(),
     checkIns: DateCheckInViewModel = hiltViewModel(),
 ) {
+    // Mechanic M18: every tab here shows other people — the deck, picks, who sparked you, matches.
+    ProtectThisScreen()
     var chosen by rememberSaveable { mutableStateOf(initialTab) }
     val checkIn by checkIns.state.collectAsStateWithLifecycle()
     val picksVisible by picks.visible.collectAsStateWithLifecycle()
@@ -323,6 +326,8 @@ fun MatchDetailScreen(
     viewModel: MatchDetailViewModel = hiltViewModel(),
     checkIns: DateCheckInViewModel = hiltViewModel(),
 ) {
+    // Mechanic M18: the match screen shows the other person.
+    ProtectThisScreen()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val checkIn by checkIns.state.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()

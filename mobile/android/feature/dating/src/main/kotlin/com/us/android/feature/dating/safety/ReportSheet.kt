@@ -83,7 +83,11 @@ fun ReportSheet(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = draft.includeEvidence, onCheckedChange = { draft = draft.copy(includeEvidence = it) })
                     Text(
-                        if (initial.sparkIds.isNotEmpty()) "Include their spark" else "Include their photo",
+                        when {
+                            initial.sparkIds.isNotEmpty() -> "Include their spark"
+                            initial.messageIds.isNotEmpty() -> "Include their message"
+                            else -> "Include their photo"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = UsTheme.extended.textSecondary,
                     )

@@ -37,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -382,7 +383,7 @@ private fun SparkSheet(
             if (about.isNotBlank()) {
                 Text(about, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
             }
-            spark.note?.let { Text("“$it”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary) }
+            spark.note?.let { SparkNote(sparkId = spark.sparkId, note = it, hidden = spark.noteHidden) }
             PersonDetailBody(spark.detail, rememberProfileOptions())
             Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), modifier = Modifier.padding(top = UsTheme.spacing.m)) {
                 UsSecondaryButton(text = "Decline", enabled = !busy, onClick = onDecline, modifier = Modifier.weight(1f))
@@ -391,6 +392,45 @@ private fun SparkSheet(
             TextButton(onClick = onOpenProfile, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                 Text("View full profile", color = UsTheme.extended.accentSolid)
             }
+        }
+    }
+}
+
+/** The spark note words (mechanic M13). Our own. */
+object SparkNoteCopy {
+    const val FOLDED = "Their note is folded away"
+    const val TAP_TO_READ = "Tap to read"
+    const val FOLD_AGAIN = "Fold away"
+}
+
+/**
+ * A spark's note. One the viewer's comment filter hides arrives with a reason
+ * and shows folded — the reason and "Tap to read" — until tapped; it can be
+ * folded again. An ordinary note shows as it always has.
+ */
+@Composable
+internal fun SparkNote(sparkId: String, note: String, hidden: NoteHidden?) {
+    var open by rememberSaveable(sparkId) { mutableStateOf(false) }
+    if (hidden == null) {
+        Text("“$note”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary)
+        return
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.card))
+            .background(UsTheme.extended.bgCardSolid)
+            .clickable { open = !open }
+            .padding(UsTheme.spacing.m),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        if (open) {
+            Text("“$note”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary)
+            Text(SparkNoteCopy.FOLD_AGAIN, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.accentSolid)
+        } else {
+            Text(SparkNoteCopy.FOLDED, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textPrimary)
+            Text(hidden.reason, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+            Text(SparkNoteCopy.TAP_TO_READ, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.accentSolid)
         }
     }
 }

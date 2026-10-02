@@ -1,0 +1,39 @@
+{
+  "data": [
+    {
+      "id": "<spark>",
+      "from_user_id": "<sender>",
+      "to_user_id": "<viewer>",
+      "target_kind": "prompt",
+      "target_ref": "m13",
+      "note": "you look stupid",
+      "created_at": "<timestamp>",
+      "note_hidden": "unkind",
+      "person": {
+        "user_id": "<sender>",
+        "first_name": "Asha",
+        "age": 30,
+        "primary_photo_id": "<uuid>",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "photo_state": "full",
+        "verified": false,
+        "trust_tier": "phone",
+        "distance_bucket": "lt_5_km",
+        "distance_label": "\u003c 5 km",
+        "city": "Hyderabad",
+        "intent": "casual",
+        "last_active_bucket": "today",
+        "last_active_label": "Active today",
+        "detail": {
+          "photos": [
+            {
+              "id": "<uuid>",
+              "url": "/v1/dating/photos/<uuid>/full",
+              "state": "full"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

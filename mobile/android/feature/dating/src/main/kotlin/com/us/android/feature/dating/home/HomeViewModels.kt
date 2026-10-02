@@ -644,7 +644,29 @@ data class IncomingSparkUi(
     val superSpark: Boolean = false,
     /** Mechanic M8: "Visiting Pune" while they are on a trip, else null. */
     val visiting: String? = null,
+    /** Mechanic M13: why the viewer's comment filter folds [note] away; null shows it as it is. */
+    val noteHidden: NoteHidden? = null,
 )
+
+/**
+ * Why a spark's note is folded away (mechanic M13, the server's `note_hidden`).
+ * A reason this app does not know still folds it, with general words.
+ */
+enum class NoteHidden(val wire: String?, val reason: String) {
+    UNKIND("unkind", "Folded away because it might be unkind."),
+    YOUR_WORDS("your_words", "Folded away because it uses one of your hidden words."),
+    OTHER(null, "Folded away by your comment filter."),
+    ;
+
+    companion object {
+        /** Null for absent or blank: the note is not hidden. */
+        fun fromWire(code: String?): NoteHidden? {
+            val c = code?.trim().orEmpty()
+            if (c.isEmpty()) return null
+            return entries.firstOrNull { it.wire == c } ?: OTHER
+        }
+    }
+}
 
 /** Incoming sparks: accept (through the accept route) or decline. */
 @HiltViewModel
@@ -749,7 +771,7 @@ class SparksViewModel @Inject constructor(
     }
 
     private fun SparkDto.toUi(): IncomingSparkUi =
-        incomingSparkUi(sparkId = id, fromUserId = fromUserId, person = person, note = note, superSpark = superSpark, urls = urls)
+        incomingSparkUi(sparkId = id, fromUserId = fromUserId, person = person, note = note, superSpark = superSpark, urls = urls, noteHidden = noteHidden)
 
     private companion object {
         const val HTTP_NOT_FOUND = 404
@@ -769,6 +791,7 @@ internal fun incomingSparkUi(
     superSpark: Boolean,
     urls: DatingPhotoUrls,
     photoUrl: String? = urls.forPerson(person),
+    noteHidden: String? = null,
 ): IncomingSparkUi = IncomingSparkUi(
     sparkId = sparkId,
     fromUserId = fromUserId,
@@ -783,6 +806,8 @@ internal fun incomingSparkUi(
     detail = person?.detail.toUi(urls),
     superSpark = superSpark,
     visiting = visitingLabel(person?.travelling == true, person?.city),
+    // Only a note there is can be folded away.
+    noteHidden = NoteHidden.fromWire(noteHidden).takeIf { !note.isNullOrBlank() },
 )
 
 data class MatchUi(

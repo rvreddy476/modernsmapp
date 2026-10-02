@@ -29,6 +29,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.chat.lock.chatLockSecureWindowFlags
+import com.us.android.core.common.window.SecureWindow
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
@@ -57,8 +58,10 @@ fun ChatLockGate(
     DisposableEffect(state.enabled, context) {
         val window = (context as? Activity)?.window
         val flags = chatLockSecureWindowFlags(state.enabled)
-        if (flags != 0) window?.addFlags(flags)
-        onDispose { if (flags != 0) window?.clearFlags(flags) }
+        // Held through the shared count, so a Pulse screen leaving as the chat
+        // arrives (or the other way round) never clears what the other holds.
+        val hold = if (flags != 0 && window != null) SecureWindow.hold(window) else null
+        onDispose { hold?.release() }
     }
     if (locked) {
         ChatLockScreen(viewModel = viewModel)

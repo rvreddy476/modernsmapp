@@ -482,9 +482,15 @@ object FiltersRules {
      * The dealbreaker codes a save sends: the marked ones whose preference is
      * still set, in the server's order. A preference cleared takes its
      * dealbreaker with it.
+     *
+     * Without a pass, the pass dealbreakers saved earlier go along unchanged:
+     * the server keeps them (they count again with the next pass) and refuses
+     * only a NEW one ([addsLockedDealbreaker]). With the filters flag off this
+     * screen cannot show their preferences at all, so a saved one is kept as
+     * it is rather than dropped for looking unset.
      */
     fun dealbreakersFor(draft: FiltersDraft, flagOn: Boolean): List<String> =
-        Dealbreaker.entries.filter { it in draft.dealbreakers && isSet(draft, it, flagOn) }.map { it.code }
+        Dealbreaker.entries.filter { it in draft.dealbreakers && (isSet(draft, it, flagOn) || (it.needsPass && !flagOn)) }.map { it.code }
 
     /** Without a pass, the save would newly mark a pass dealbreaker: the server can only refuse that. */
     fun addsLockedDealbreaker(state: FiltersUiState): Boolean {

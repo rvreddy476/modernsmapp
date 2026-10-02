@@ -31,6 +31,7 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.dating.profile.ProfileOptionsUi
 import com.us.android.feature.dating.profile.rememberProfileOptions
+import com.us.android.feature.dating.safety.ProtectThisScreen
 import com.us.android.feature.dating.travel.VisitingMark
 import com.us.android.feature.dating.ui.DatingPhoto
 import com.us.android.feature.dating.ui.LabelChips
@@ -185,6 +186,8 @@ fun PersonScreen(
     onBack: () -> Unit,
     viewModel: PersonViewModel = hiltViewModel(),
 ) {
+    // Mechanic M18: someone else's profile.
+    ProtectThisScreen()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val options = rememberProfileOptions()
     DatingScreen(title = "Profile", onBack = onBack) { padding ->

@@ -32,6 +32,7 @@ import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.dating.premium.PremiumScreen
 import com.us.android.feature.dating.privacy.BlocksScreen
 import com.us.android.feature.dating.privacy.PrivacyScreen
+import com.us.android.feature.dating.safety.ReportPersonScreen
 import com.us.android.feature.dating.safety.SafetyScreen
 import com.us.android.feature.dating.safety.SharedLocationScreen
 import com.us.android.feature.dating.selfie.SelfieScreen
@@ -93,6 +94,14 @@ data object DatingFiltersRoute
 /** Mechanic M8: travel mode, from the Pulse and Picks top bar and the deck's trip banner. */
 @Serializable
 data object DatingTravelRoute
+
+/**
+ * The ordinary report sheet for [userId], opened from outside Dating — the
+ * chat of a Pulse match after "Did this bother you?" (mechanic M13).
+ * [messageId] goes along as evidence; [name] titles the sheet.
+ */
+@Serializable
+data class DatingReportRoute(val userId: String, val messageId: String? = null, val name: String? = null)
 
 /**
  * Registers Dating.
@@ -196,6 +205,10 @@ fun NavGraphBuilder.datingScreens(
         composable<DatingBlocksRoute> {
             BlocksScreen(onBack = navController::popBackStack)
         }
+
+        composable<DatingReportRoute> {
+            ReportPersonScreen(onBack = navController::popBackStack)
+        }
     }
 }
 
@@ -286,6 +299,10 @@ fun NavController.navigateToDatingMatch(matchId: String, openChat: Boolean, chec
 
 /** The safety centre, as a scam-alert push (mechanic M17, deep link `/dating/safety`) opens it. */
 fun NavController.navigateToDatingSafety() = navigate(DatingSafetyRoute())
+
+/** The report sheet for someone in a Pulse chat (mechanic M13): [messageId] is the message that bothered the viewer. */
+fun NavController.navigateToDatingReport(userId: String, messageId: String?, name: String?) =
+    navigate(DatingReportRoute(userId = userId, messageId = messageId, name = name))
 
 /**
  * Whether a dating deep link asks for the after-date check-in: the

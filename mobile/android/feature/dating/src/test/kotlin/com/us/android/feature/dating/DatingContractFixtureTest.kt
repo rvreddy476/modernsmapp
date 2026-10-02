@@ -103,6 +103,18 @@ import com.us.android.feature.dating.safety.MAX_TRUSTED_CONTACTS
 import com.us.android.feature.dating.selfie.SelfieOutcomes
 import com.us.android.feature.dating.selfie.SelfieState
 import com.us.android.core.payments.PaymentStatusReading
+import com.us.android.feature.dating.home.NoteHidden
+import com.us.android.feature.dating.network.BotheredDto
+import com.us.android.feature.dating.network.ClientConfigDto
+import com.us.android.feature.dating.network.CommentFilterDto
+import com.us.android.feature.dating.network.CommentFilterRefusalDetailsDto
+import com.us.android.feature.dating.network.HideKnownDto
+import com.us.android.feature.dating.network.KindCheckDto
+import com.us.android.feature.dating.network.KindCheckRefusalDetailsDto
+import com.us.android.feature.dating.privacy.CommentFilterCopy
+import com.us.android.feature.dating.privacy.CommentFilterRules
+import com.us.android.feature.dating.privacy.HideKnownCopy
+import com.us.android.feature.dating.safety.DatingConversationKindness
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -783,6 +795,85 @@ class DatingContractFixtureTest {
         "past_matches_get_404_not_enabled.json" to error { error, _ ->
             assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
             assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M13: kind messages ─────────────────────────────────────
+        "kind_check_post_200_kind.json" to data(KindCheckDto.serializer()) {
+            assertThat(it.kind).isTrue()
+            assertThat(it.reasons).isEmpty()
+        },
+        "kind_check_post_200_unkind.json" to data(KindCheckDto.serializer()) {
+            // Only an explicit false slows a send down or covers a message.
+            assertThat(it.kind).isFalse()
+            assertThat(it.reasons).containsExactly("insult")
+        },
+        "kind_check_post_400_invalid.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_KIND_CHECK")
+            val details = details(error, KindCheckRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("text")
+            // The app never asks about a longer text: it simply sends it.
+            assertThat(details.max).isEqualTo(DatingConversationKindness.MAX_TEXT)
+        },
+        "kind_check_post_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "bothered_post_201.json" to data(BotheredDto.serializer()) {
+            assertThat(it.matchId).isEqualTo("<match>")
+            assertThat(it.bothered).isTrue()
+            assertThat(it.offerReport).isTrue()
+        },
+        "comment_filter_get_200.json" to data(CommentFilterDto.serializer()) {
+            assertThat(it.filterUnkind).isTrue()
+            assertThat(it.words).containsExactly("ex", "cricket").inOrder()
+            it.words.orEmpty().forEach { w -> assertThat(CommentFilterRules.normalize(w)).isEqualTo(w) }
+        },
+        "comment_filter_put_200.json" to data(CommentFilterDto.serializer()) {
+            assertThat(it.filterUnkind).isTrue()
+            assertThat(it.words).containsExactly("ex", "cricket").inOrder()
+        },
+        "comment_filter_put_400_invalid.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_COMMENT_FILTER")
+            val details = details(error, CommentFilterRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("words")
+            // The app's own limits are the server's.
+            assertThat(details.maxWords).isEqualTo(CommentFilterRules.MAX_WORDS)
+            assertThat(details.minLen).isEqualTo(CommentFilterRules.MIN_LEN)
+            assertThat(details.maxLen).isEqualTo(CommentFilterRules.MAX_LEN)
+            assertThat(DatingCopy.forError(error)).isEqualTo(CommentFilterCopy.INVALID)
+        },
+        "sparks_incoming_get_200_note_hidden.json" to data(listSerializer(SparkDto.serializer())) {
+            val spark = it.single()
+            // The note itself still arrives: the recipient may read it.
+            assertThat(spark.note).isEqualTo("you look stupid")
+            assertThat(spark.noteHidden).isEqualTo("unkind")
+            assertThat(NoteHidden.fromWire(spark.noteHidden)).isEqualTo(NoteHidden.UNKIND)
+            assertThat(checkNotNull(spark.person).firstName).isEqualTo("Asha")
+        },
+        // ── Mechanic M16: hide from people I know ───────────────────────────
+        "hide_known_get_200.json" to data(HideKnownDto.serializer()) {
+            assertThat(it.enabled).isTrue()
+            assertThat(it.hiddenCount).isEqualTo(2)
+            assertThat(it.refreshedAt).isEqualTo("<timestamp>")
+            assertThat(HideKnownCopy.hiddenFrom(it.hiddenCount)).isEqualTo("Hidden from 2 connections")
+        },
+        "hide_known_put_200.json" to data(HideKnownDto.serializer()) {
+            assertThat(it.enabled).isTrue()
+            assertThat(it.hiddenCount).isEqualTo(2)
+        },
+        "hide_known_put_503_unavailable.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("HIDE_KNOWN_UNAVAILABLE")
+            assertThat((error as DatingError.Refused).status).isEqualTo(503)
+        },
+        "hide_known_get_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M18: client config ─────────────────────────────────────
+        "client_config_get_200.json" to data(ClientConfigDto.serializer()) {
+            assertThat(it.screenProtection).isTrue()
+        },
+        "client_config_get_200_off.json" to data(ClientConfigDto.serializer()) {
+            assertThat(it.screenProtection).isFalse()
         },
         // ── Mechanic M4: who liked you ──────────────────────────────────────
         "liked_you_get_200_locked.json" to data(LikedYouDto.serializer()) {

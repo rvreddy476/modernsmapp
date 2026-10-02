@@ -348,6 +348,7 @@ class LikedYouViewModel @Inject constructor(
                 superSpark = superSpark,
                 urls = urls,
                 photoUrl = photo,
+                noteHidden = noteHidden,
             ),
         )
     }

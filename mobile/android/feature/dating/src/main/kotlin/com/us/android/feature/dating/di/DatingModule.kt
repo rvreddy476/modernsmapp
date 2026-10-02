@@ -1,5 +1,8 @@
 package com.us.android.feature.dating.di
 
+import com.us.android.core.common.session.SessionTeardownTask
+import com.us.android.feature.dating.safety.DatingTeardown
+import dagger.multibindings.IntoSet
 import com.us.android.feature.dating.location.CurrentLocationSource
 import com.us.android.feature.dating.location.FusedCurrentLocationSource
 import com.us.android.feature.dating.network.DatingApi
@@ -32,6 +35,11 @@ abstract class DatingModule {
 
     @Binds
     abstract fun bindSelfieVideoUploader(impl: MediaSelfieVideoUploader): SelfieVideoUploader
+
+    /** Mechanics M13/M18: what Dating remembers per account goes at sign-out. */
+    @Binds
+    @IntoSet
+    abstract fun bindDatingTeardown(impl: DatingTeardown): SessionTeardownTask
 
     companion object {
         @Provides

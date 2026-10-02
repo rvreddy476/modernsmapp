@@ -158,6 +158,8 @@ fun NavGraphBuilder.chatThreadScreen(
     onOpenGroupInfo: (conversationId: String) -> Unit,
     onStartCall: (peerUserId: String, peerName: String, video: Boolean, conversationId: String) -> Unit =
         { _, _, _, _ -> },
+    // Kind messages: the report flow the conversation's owner offered for a sender.
+    onReportSender: (senderId: String, messageId: String, name: String) -> Unit = { _, _, _ -> },
 ) {
     composable<ChatThreadRoute> { entry ->
         val route = entry.toRoute<ChatThreadRoute>()
@@ -170,6 +172,7 @@ fun NavGraphBuilder.chatThreadScreen(
                 onStartCall = { peerUserId, peerName, video ->
                     onStartCall(peerUserId, peerName, video, route.conversationId)
                 },
+                onReportSender = onReportSender,
             )
         }
     }

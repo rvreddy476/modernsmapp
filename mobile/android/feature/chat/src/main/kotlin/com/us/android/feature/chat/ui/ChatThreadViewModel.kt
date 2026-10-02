@@ -18,6 +18,7 @@ import com.us.android.core.chat.data.ThreadController
 import com.us.android.core.chat.data.ThreadUiState
 import com.us.android.core.chat.data.isValidMessage
 import com.us.android.core.chat.data.sendDurably
+import com.us.android.core.common.chat.ConversationKindness
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.upload.ChatAttachmentUploader
 import com.us.android.core.model.SessionState
@@ -28,6 +29,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -80,11 +83,29 @@ data class ThreadRenderState(
      * outbox row for the same text.
      */
     val sendInFlight: Boolean = false,
+    /**
+     * Kind messages ([ConversationKindness]): the send is held because the text
+     * might come across as unkind. The viewer chooses Edit or Send anyway.
+     */
+    val kindPrompt: Boolean = false,
+    /** Kind messages: received messages covered until tapped, by message id. */
+    val covers: Map<String, KindCover> = emptyMap(),
 ) {
     /** Send is offered for text OR photos — a photo alone is a message. */
     val canSend: Boolean
         get() = (thread.canSend || staged.isNotEmpty()) && !sendInFlight && !thread.draftTooLong
 }
+
+/**
+ * A received message the conversation's owner asked to cover (kind messages).
+ * [revealed]: tapped to read. [answered]: "Did this bother you?" was answered
+ * Yes. [offerReport]: the owner then offered the report flow for the sender.
+ */
+data class KindCover(
+    val revealed: Boolean = false,
+    val answered: Boolean = false,
+    val offerReport: Boolean = false,
+)
 
 /**
  * One photo waiting on the composer.
@@ -111,6 +132,9 @@ class ChatThreadViewModel @Inject constructor(
     private val notificationPresenter: NotificationPresenter,
     sessionState: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
+    // Kind messages: a product's check over ITS conversations (a Pulse chat);
+    // nothing to do for every other conversation.
+    private val kindness: ConversationKindness = ConversationKindness.None,
 ) : ViewModel() {
 
     private val conversationId: String =
@@ -128,6 +152,9 @@ class ChatThreadViewModel @Inject constructor(
 
     private val typingTimers = mutableMapOf<String, Job>()
     private var attachmentJob: Job? = null
+
+    /** True once the conversation's owner said it checks this conversation's messages. Declared before init, which sets it. */
+    private var kindChecks = false
 
     init {
         // ONE session socket for the whole app (CH-LB-4.1); this screen only
@@ -202,8 +229,92 @@ class ChatThreadViewModel @Inject constructor(
      *  - Clear only the EXACT draft revision that was queued. If the user
      *    typed while the enqueue was in flight, the newer draft stays —
      *    the composer never erases text that was not sent.
+     *
+     * In a conversation with kind-message checks the text is asked about
+     * first; "might be unkind" holds the send for Edit / Send anyway, and
+     * anything else — including any failure — sends it.
      */
     fun send() {
+        val current = _state.value
+        if (current.sendInFlight || current.kindPrompt) return
+        val text = current.thread.draft.trim()
+        val checkable = text.isNotEmpty() && (current.staged.isNotEmpty() || text.isValidMessage())
+        if (!kindChecks || !checkable) {
+            sendNow()
+            return
+        }
+        _state.update { it.copy(sendInFlight = true) }
+        viewModelScope.launch {
+            val unkind = try {
+                kindness.mightBeUnkind(conversationId, text)
+            } finally {
+                _state.update { it.copy(sendInFlight = false) }
+            }
+            if (unkind) _state.update { it.copy(kindPrompt = true) } else sendNow()
+        }
+    }
+
+    /** "Send anyway": the held message goes as it is. */
+    fun sendAnyway() {
+        if (!_state.value.kindPrompt) return
+        _state.update { it.copy(kindPrompt = false) }
+        sendNow()
+    }
+
+    /** "Edit": the held message stays in the composer, unsent. */
+    fun editHeldMessage() = _state.update { it.copy(kindPrompt = false) }
+
+    /** Tapped to read a covered message. */
+    fun revealCovered(messageId: String) = _state.update { s ->
+        val cover = s.covers[messageId] ?: return@update s
+        s.copy(covers = s.covers + (messageId to cover.copy(revealed = true)))
+    }
+
+    /**
+     * "Did this bother you?" about a covered message. No uncovers it at once;
+     * Yes keeps it covered and, when the owner offers it, the report flow.
+     */
+    fun answerBothered(messageId: String, bothered: Boolean) {
+        val cover = _state.value.covers[messageId] ?: return
+        if (cover.answered) return
+        _state.update { s ->
+            if (bothered) {
+                s.copy(covers = s.covers + (messageId to cover.copy(answered = true)))
+            } else {
+                s.copy(covers = s.covers - messageId)
+            }
+        }
+        viewModelScope.launch {
+            val offerReport = kindness.bothered(conversationId, messageId, bothered)
+            if (bothered && offerReport) {
+                _state.update { s ->
+                    val now = s.covers[messageId] ?: return@update s
+                    s.copy(covers = s.covers + (messageId to now.copy(offerReport = true)))
+                }
+            }
+        }
+    }
+
+    /**
+     * Each text someone else sent is asked about once; a "cover" answer covers
+     * it. Only for a conversation whose owner checks it.
+     */
+    private fun observeKindness() = viewModelScope.launch {
+        if (!kindness.appliesTo(conversationId)) return@launch
+        kindChecks = true
+        val asked = mutableSetOf<String>()
+        _state.map { it.thread.messages }.distinctUntilChanged().collect { messages ->
+            for (message in messages) {
+                val theirs = message.senderId.isNotBlank() && message.senderId != viewerId
+                if (!theirs || message.pending || message.text.isBlank() || !asked.add(message.id)) continue
+                if (kindness.shouldCover(conversationId, message.id, message.text)) {
+                    _state.update { it.copy(covers = it.covers + (message.id to KindCover())) }
+                }
+            }
+        }
+    }
+
+    private fun sendNow() {
         if (_state.value.sendInFlight) return
         if (_state.value.staged.isNotEmpty()) {
             sendStagedAttachments()
@@ -414,9 +525,14 @@ class ChatThreadViewModel @Inject constructor(
                 } else {
                     result.data.members.firstOrNull { it.userId != viewerId }?.userId.orEmpty()
                 },
-            )
+            ).also {
+                // Kind messages: the server names the conversation's product
+                // (a Pulse match's chat) — told before the owner is asked.
+                kindness.conversationSource(conversationId, result.data.sourceApp, result.data.matchId)
+            }
             is AppResult.Failure -> Unit
         }
+        observeKindness()
     }
 
     private fun observeSession() = viewModelScope.launch {

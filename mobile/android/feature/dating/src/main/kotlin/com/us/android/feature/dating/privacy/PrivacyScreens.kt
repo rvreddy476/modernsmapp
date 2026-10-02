@@ -347,10 +347,14 @@ fun PrivacyScreen(
     viewModel: PrivacyViewModel = hiltViewModel(),
     firstMove: FirstMoveSettingsViewModel = hiltViewModel(),
     readReceipts: ReadReceiptsViewModel = hiltViewModel(),
+    hideKnown: HideKnownViewModel = hiltViewModel(),
+    commentFilter: CommentFilterViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val firstMoveState by firstMove.state.collectAsStateWithLifecycle()
     val receiptsState by readReceipts.state.collectAsStateWithLifecycle()
+    val hideKnownState by hideKnown.state.collectAsStateWithLifecycle()
+    val commentFilterState by commentFilter.state.collectAsStateWithLifecycle()
     // Shown again — back from Premium, where a pass may have landed.
     LaunchedEffect(Unit) { readReceipts.shown() }
     val context = LocalContext.current
@@ -373,12 +377,14 @@ fun PrivacyScreen(
     DatingScreen(
         title = "Privacy and data",
         onBack = onBack,
-        message = state.message ?: firstMoveState.message ?: receiptsState.message,
+        message = state.message ?: firstMoveState.message ?: receiptsState.message ?: hideKnownState.message ?: commentFilterState.message,
         onDismissMessage = {
             when {
                 state.message != null -> viewModel.dismissMessage()
                 firstMoveState.message != null -> firstMove.dismissMessage()
-                else -> readReceipts.dismissMessage()
+                receiptsState.message != null -> readReceipts.dismissMessage()
+                hideKnownState.message != null -> hideKnown.dismissMessage()
+                else -> commentFilter.dismissMessage()
             }
         },
     ) { padding ->
@@ -411,11 +417,17 @@ fun PrivacyScreen(
                 }
             }
 
+            // Mechanic M16: drawn only while the server's flag is on.
+            hideKnownSection(hideKnownState, hideKnown)
+
             // Mechanic M5: drawn only while the server's flag is on.
             firstMoveSection(firstMoveState, firstMove)
 
             // Mechanic M9: drawn only while the server's flag is on.
             readReceiptsSection(receiptsState, readReceipts, onOpenPremium)
+
+            // Mechanic M13: drawn only while the server's flag is on.
+            commentFilterSection(commentFilterState, commentFilter)
 
             item { SectionLabel("Blocked people") }
             item {

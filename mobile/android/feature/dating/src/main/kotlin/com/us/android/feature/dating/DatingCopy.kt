@@ -103,6 +103,12 @@ object DatingCopy {
             // Mechanic M14 — after-date check-ins.
             "INVALID_DATE_FEEDBACK" -> "That answer couldn't be saved. Check your choices and try again."
             "DATE_FEEDBACK_LIMIT" -> DATE_FEEDBACK_LIMIT
+            // Mechanic M13 — kind messages. A kind check that fails never
+            // reaches a person (the message is just sent); these are for the filter.
+            "INVALID_COMMENT_FILTER" -> "Use up to 50 different words, each 2 to 30 characters long."
+            "INVALID_KIND_CHECK", "KIND_CHECK_RATE_LIMITED" -> GENERIC
+            // Mechanic M16 — hide from people I know.
+            "HIDE_KNOWN_UNAVAILABLE" -> "We couldn't check your connections just now. Try again in a moment."
             else -> GENERIC
         }
     }

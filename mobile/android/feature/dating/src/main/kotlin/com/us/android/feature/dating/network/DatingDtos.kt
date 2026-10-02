@@ -742,6 +742,11 @@ data class SparkDto(
     @SerialName("photo_url") val photoUrl: String = "",
     /** True on an incoming spark the caller may not see the sender of. Omitted otherwise. */
     val locked: Boolean = false,
+    /**
+     * Mechanic M13: the recipient's comment filter tucks [note] away —
+     * `unkind` or `your_words`. Omitted otherwise. The note itself is still sent.
+     */
+    @SerialName("note_hidden") val noteHidden: String? = null,
 )
 
 // ── Who liked you (mechanic M4; fixtures liked_you_get_200_locked/_unlocked) ─
@@ -764,6 +769,8 @@ data class LikedYouItemDto(
     @SerialName("photo_url") val photoUrl: String = "",
     val person: DatingPersonDto? = null,
     val note: String? = null,
+    /** Mechanic M13: as on [SparkDto.noteHidden]. Omitted otherwise. */
+    @SerialName("note_hidden") val noteHidden: String? = null,
 )
 
 /** `GET /liked-you`. [total] counts every visible incoming spark across pages. */
@@ -932,6 +939,81 @@ data class PastMatchDto(
     val ended: String = "",
     /** The caller has already reported this person. */
     val reported: Boolean = false,
+)
+
+// ── Kind messages (mechanic M13; fixtures kind_check_*, bothered_*, comment_filter_*) ─
+
+@Serializable
+data class KindCheckRequest(val text: String)
+
+/**
+ * `POST /kind-check`. Go always writes `kind`; it stays nullable so that an
+ * answer without it reads as "nothing to say" — only an explicit `false` ever
+ * slows a message down or tucks one away.
+ */
+@Serializable
+data class KindCheckDto(
+    val kind: Boolean? = null,
+    val reasons: List<String>? = null,
+)
+
+@Serializable
+data class BotheredRequest(val bothered: Boolean)
+
+/** The 201 of `POST /matches/:id/bothered`. [offerReport]: the app offers the report flow for the sender. */
+@Serializable
+data class BotheredDto(
+    @SerialName("match_id") val matchId: String = "",
+    val bothered: Boolean = false,
+    @SerialName("offer_report") val offerReport: Boolean = false,
+)
+
+/** `GET`/`PUT /comment-filter`. Null [words] is none. */
+@Serializable
+data class CommentFilterDto(
+    @SerialName("filter_unkind") val filterUnkind: Boolean = false,
+    val words: List<String>? = null,
+)
+
+/** The whole filter, as the server replaces it. */
+@Serializable
+data class CommentFilterRequest(
+    @SerialName("filter_unkind") val filterUnkind: Boolean,
+    val words: List<String>,
+)
+
+/** `details` of `400 INVALID_KIND_CHECK`. */
+@Serializable
+data class KindCheckRefusalDetailsDto(val field: String = "", val max: Int = 0)
+
+/** `details` of `400 INVALID_COMMENT_FILTER`: the word limits. */
+@Serializable
+data class CommentFilterRefusalDetailsDto(
+    val field: String = "",
+    @SerialName("max_words") val maxWords: Int = 0,
+    @SerialName("min_len") val minLen: Int = 0,
+    @SerialName("max_len") val maxLen: Int = 0,
+)
+
+// ── Hide from people I know (mechanic M16; fixtures hide_known_*) ───────────
+
+@Serializable
+data class HideKnownRequest(val enabled: Boolean)
+
+/** `GET`/`PUT /hide-known`. [refreshedAt] is omitted until a snapshot of the connections was taken. */
+@Serializable
+data class HideKnownDto(
+    val enabled: Boolean = false,
+    @SerialName("hidden_count") val hiddenCount: Int = 0,
+    @SerialName("refreshed_at") val refreshedAt: String? = null,
+)
+
+// ── Client config (mechanic M18; fixtures client_config_*) ─────────────────
+
+/** `GET /client-config`: the switches the app acts on locally. */
+@Serializable
+data class ClientConfigDto(
+    @SerialName("screen_protection") val screenProtection: Boolean = false,
 )
 
 /**

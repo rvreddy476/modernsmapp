@@ -271,6 +271,42 @@ interface DatingApi {
     @GET("v1/dating/past-matches")
     suspend fun pastMatches(): Response<PastMatchesDto>
 
+    // Kind messages (mechanic M13)
+
+    /**
+     * Judges one text: `{kind, reasons}`. 400 INVALID_KIND_CHECK (blank or over
+     * 2000 characters), 429 KIND_CHECK_RATE_LIMITED, 404 MECHANIC_NOT_ENABLED.
+     * Nothing about the text is stored.
+     */
+    @POST("v1/dating/kind-check")
+    suspend fun kindCheck(@Body body: KindCheckRequest): Response<ApiEnvelope<KindCheckDto>>
+
+    /** The answer to "did this bother you?" about a message in one of the caller's matches. 201; 404 NOT_FOUND / MECHANIC_NOT_ENABLED. */
+    @POST("v1/dating/matches/{id}/bothered")
+    suspend fun bothered(@Path("id") matchId: String, @Body body: BotheredRequest): Response<ApiEnvelope<BotheredDto>>
+
+    @GET("v1/dating/comment-filter")
+    suspend fun commentFilter(): Response<ApiEnvelope<CommentFilterDto>>
+
+    /** Replaces the filter. 400 INVALID_COMMENT_FILTER: up to 50 distinct words of 2 to 30 characters. */
+    @PUT("v1/dating/comment-filter")
+    suspend fun updateCommentFilter(@Body body: CommentFilterRequest): Response<ApiEnvelope<CommentFilterDto>>
+
+    // Hide from people I know (mechanic M16)
+
+    @GET("v1/dating/hide-known")
+    suspend fun hideKnown(): Response<ApiEnvelope<HideKnownDto>>
+
+    /** 503 HIDE_KNOWN_UNAVAILABLE when the connections cannot be read to turn it on. */
+    @PUT("v1/dating/hide-known")
+    suspend fun updateHideKnown(@Body body: HideKnownRequest): Response<ApiEnvelope<HideKnownDto>>
+
+    // Client config (mechanic M18)
+
+    /** The switches the app acts on locally, e.g. screen protection. Always 200 for a signed-in pilot user. */
+    @GET("v1/dating/client-config")
+    suspend fun clientConfig(): Response<ApiEnvelope<ClientConfigDto>>
+
     // Safety
 
     @POST("v1/dating/safety/block")
