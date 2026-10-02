@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "CLIP_MEDIA_NOT_FOUND",
+    "message": "that upload is not yours or does not exist"
+  },
+  "meta": {}
+}

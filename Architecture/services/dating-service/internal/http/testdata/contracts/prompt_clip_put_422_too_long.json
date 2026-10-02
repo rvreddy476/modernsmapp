@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "CLIP_TOO_LONG",
+    "message": "a clip is at most 30 seconds",
+    "details": {
+      "max_ms": 30000
+    }
+  },
+  "meta": {}
+}

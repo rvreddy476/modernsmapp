@@ -1778,3 +1778,34 @@ CREATE TABLE IF NOT EXISTS dating_message_feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_dating_message_feedback_other
     ON dating_message_feedback(other_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M15 — voice/video prompt answers (DATING_MEDIA_PROMPTS_ENABLED).
+--
+-- A prompt answer may carry a <=30 s clip held by media-service in the
+-- private dating_clip scope (media's reclaim_policy lists clip_media_id as
+-- a live reference). clip_status: pending (media undecided), pending_review
+-- (a moderator decides), approved (shown), rejected. A clip-only answer has
+-- an empty text answer. Purged with the prompt rows.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_prompts
+    ADD COLUMN IF NOT EXISTS clip_media_id    UUID,
+    ADD COLUMN IF NOT EXISTS clip_kind        TEXT,
+    ADD COLUMN IF NOT EXISTS clip_duration_ms INT,
+    ADD COLUMN IF NOT EXISTS clip_status      TEXT,
+    ADD COLUMN IF NOT EXISTS clip_reason      TEXT,
+    ADD COLUMN IF NOT EXISTS clip_checked_at  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS clip_source      TEXT;
+DO $m15$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'dating_prompts_clip_status_chk') THEN
+        ALTER TABLE dating_prompts ADD CONSTRAINT dating_prompts_clip_status_chk
+            CHECK (clip_status IS NULL OR clip_status IN ('pending','pending_review','approved','rejected'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'dating_prompts_clip_kind_chk') THEN
+        ALTER TABLE dating_prompts ADD CONSTRAINT dating_prompts_clip_kind_chk
+            CHECK (clip_kind IS NULL OR clip_kind IN ('audio','video'));
+    END IF;
+END $m15$;
+CREATE INDEX IF NOT EXISTS idx_dating_prompts_clip_status
+    ON dating_prompts(clip_status, clip_checked_at) WHERE clip_media_id IS NOT NULL;

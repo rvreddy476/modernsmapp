@@ -161,6 +161,13 @@ type Prompt struct {
 	Answer    string    `json:"answer"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Mechanic M15: the answer's voice or video clip, shown to the owner
+	// only (cards carry service.PromptClip). The media id never leaves.
+	ClipMediaID    *uuid.UUID `json:"-"`
+	ClipKind       *string    `json:"clip_kind,omitempty"`
+	ClipDurationMs *int       `json:"clip_duration_ms,omitempty"`
+	ClipStatus     *string    `json:"clip_status,omitempty"`
+	ClipReason     *string    `json:"clip_reason,omitempty"`
 }
 
 // Preferences are the discovery filters chosen by a user.

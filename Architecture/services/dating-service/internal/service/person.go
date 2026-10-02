@@ -99,6 +99,9 @@ type PromptAnswer struct {
 	PromptID int    `json:"prompt_id"`
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
+	// Clip (mechanic M15): an approved voice or video clip; the answer
+	// text may then be empty.
+	Clip *PromptClip `json:"clip,omitempty"`
 }
 
 // ProfileDetail is the pre-match block described above. Every member is
@@ -167,7 +170,15 @@ func promptAnswers(ps []store.Prompt) []PromptAnswer {
 		if !ok {
 			continue
 		}
-		out = append(out, PromptAnswer{PromptID: p.PromptID, Question: question, Answer: p.Answer})
+		a := PromptAnswer{PromptID: p.PromptID, Question: question, Answer: p.Answer}
+		if p.ClipStatus != nil && *p.ClipStatus == store.ClipStatusApproved && p.ClipKind != nil && p.ClipDurationMs != nil {
+			a.Clip = &PromptClip{Kind: *p.ClipKind, DurationMs: *p.ClipDurationMs, URL: PromptClipPath(p.UserID, p.PromptID)}
+		}
+		// A clip-only answer whose clip is not shown has nothing to show.
+		if a.Answer == "" && a.Clip == nil {
+			continue
+		}
+		out = append(out, a)
 	}
 	if len(out) == 0 {
 		return nil
@@ -325,6 +336,14 @@ func (s *Service) detailFor(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID
 	if err != nil {
 		slog.Warn("card prompts lookup failed", "error", err)
 		prompts = nil
+	}
+	// Mechanic M15: with the flag off no clip reaches a card.
+	if !s.mechanics.MediaPrompts {
+		for _, ps := range prompts {
+			for i := range ps {
+				ps[i].ClipStatus = nil
+			}
+		}
 	}
 	photos, err := s.store.ListApprovedPhotosForUsers(ctx, ids)
 	if err != nil {

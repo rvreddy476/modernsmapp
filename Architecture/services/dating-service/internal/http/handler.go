@@ -118,6 +118,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/prompts/catalog", h.GetPromptCatalog)
 		dating.GET("/prompts", h.ListPrompts)
 		dating.PUT("/prompts/:promptId", h.UpsertPrompt)
+		// Mechanic M15: a voice or video clip on a prompt answer.
+		dating.PUT("/prompts/:promptId/clip", h.PutPromptClip)
+		dating.DELETE("/prompts/:promptId/clip", h.DeletePromptClip)
 		dating.DELETE("/prompts/:promptId", h.DeletePrompt)
 
 		// §P0-7 Phase B — capture (X-Device-Fingerprint, client IP)
@@ -165,6 +168,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Lane D10 — the compact card for one person, for a current match,
 		// an incoming spark or someone in the viewer's deck. 404 otherwise.
 		dating.GET("/people/:userId", h.GetPersonCard)
+		dating.GET("/people/:userId/prompts/:promptId/clip", h.GetPromptClip)
 		// Sprint 3 — Stash
 		dating.GET("/stash", h.ListStash)
 		dating.POST("/stash", h.AddStash)
@@ -321,6 +325,9 @@ func (h *Handler) registerAdminRoutes(g *gin.RouterGroup, gate func(perms ...str
 	g.POST("/safety/panic/:id/ack", gate(PermPanicAct), h.AcknowledgePanic)
 	g.POST("/safety/panic/:id/resolve", gate(PermPanicAct), h.ResolvePanic)
 	g.GET("/photos/pending", gate(PermPhotosReview), h.ListPendingPhotos)
+	// Mechanic M15 — prompt clips waiting for a moderator, and the decision.
+	g.GET("/clips/pending", gate(PermPhotosReview), h.ListPendingClips)
+	g.POST("/clips/review", gate(PermPhotosReview), h.ReviewPromptClip)
 	// Lane D5 — selfie review queue (borderline similarity, high-risk first
 	// attempts) and the moderator decision.
 	g.GET("/verification/selfie/pending", gate(PermSelfieReview), h.ListSelfieReviews)
@@ -593,6 +600,31 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	}
 	if errors.Is(err, service.ErrLikedYouLocked) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKED_YOU_LOCKED", "a pass is needed to see who sparked you", nil)
+		return
+	}
+	if errors.Is(err, service.ErrClipMediaNotFound) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "CLIP_MEDIA_NOT_FOUND", "that upload is not yours or does not exist", nil)
+		return
+	}
+	if errors.Is(err, service.ErrClipNotReady) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "CLIP_NOT_READY", "the clip is still processing; try again shortly", nil)
+		return
+	}
+	if errors.Is(err, service.ErrClipUnsupported) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "CLIP_UNSUPPORTED", "only a voice or video clip can answer a prompt", nil)
+		return
+	}
+	var clipTooLong *service.ClipTooLongError
+	if errors.As(err, &clipTooLong) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "CLIP_TOO_LONG", clipTooLong.Error(), map[string]any{"max_ms": clipTooLong.MaxMs})
+		return
+	}
+	if errors.Is(err, service.ErrClipMediaUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "CLIP_MEDIA_UNAVAILABLE", "clips are unavailable right now", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidClipDecision) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CLIP_DECISION", "decision must be approved or rejected", nil)
 		return
 	}
 	if errors.Is(err, service.ErrKindCheckRateLimited) {

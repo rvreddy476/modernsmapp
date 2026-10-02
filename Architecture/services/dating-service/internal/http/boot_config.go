@@ -455,6 +455,7 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_SCREEN_PROTECTION_ENABLED    Android blocks screenshots of people (M18)
 //	DATING_HIDE_KNOWN_ENABLED           hide from my Momentum connections (M16)
 //	DATING_KIND_CHECK_ENABLED           kind-message check + comment filter (M13)
+//	DATING_MEDIA_PROMPTS_ENABLED        voice/video prompt answers (M15)
 //	DATING_DEALBREAKERS_ENABLED         dealbreakers apply both ways (M12)
 //	DATING_TRAVEL_ENABLED               travel mode (M8)
 //	DATING_READ_RECEIPTS_ENABLED        read receipts for pass holders (M9)
@@ -529,6 +530,9 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 		return cfg, err
 	}
 	if cfg.KindCheck, err = envFlag(getenv, "DATING_KIND_CHECK_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.MediaPrompts, err = envFlag(getenv, "DATING_MEDIA_PROMPTS_ENABLED", def); err != nil {
 		return cfg, err
 	}
 	if cfg.Dealbreakers, err = envFlag(getenv, "DATING_DEALBREAKERS_ENABLED", def); err != nil {

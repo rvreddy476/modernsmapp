@@ -33,6 +33,8 @@ type Service struct {
 	// strip + blur, signed delivery, delete) and the photo safety bars
 	// (unset = DefaultPhotoSafetyConfig).
 	mediaPhotos          MediaPhotoClient
+	// mediaClips is media-service for prompt clips (mechanic M15).
+	mediaClips MediaClipClient
 	photoCfg             PhotoSafetyConfig
 	photoCfgSet          bool
 	graphServiceClient   GraphServiceClient

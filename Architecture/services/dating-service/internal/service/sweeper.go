@@ -172,6 +172,13 @@ func (s *Service) runSweeperOnce(ctx context.Context, cfg SweeperConfig) {
 		slog.Info("sweeper: hide-known snapshots refreshed", "count", n)
 	}
 
+	// 4e. Mechanic M15: ask media-service about undecided prompt clips.
+	if n, err := s.RecheckPromptClips(ctx, 50); err != nil {
+		slog.Warn("sweeper: RecheckPromptClips failed", "error", err)
+	} else if n > 0 {
+		slog.Info("sweeper: prompt clips decided", "count", n)
+	}
+
 	// 5. §P0-7 Phase A: recompute risk for users whose row is older
 	// than `RiskStaleAfter`. Idempotent — re-running on the same user
 	// just refreshes the row. Capped at `RiskRecomputeBatch` per tick

@@ -85,6 +85,10 @@ type MechanicsConfig struct {
 	// this bother you?" and the spark-comment filter (kind_check.go).
 	KindCheck bool
 
+	// MediaPrompts (DATING_MEDIA_PROMPTS_ENABLED): voice and video answers
+	// to profile prompts (prompt_clips.go).
+	MediaPrompts bool
+
 	// Dealbreakers (DATING_DEALBREAKERS_ENABLED): preferences marked as
 	// dealbreakers apply both ways (dealbreakers.go).
 	Dealbreakers bool

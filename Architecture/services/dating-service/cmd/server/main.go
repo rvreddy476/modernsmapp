@@ -234,7 +234,7 @@ func main() {
 		"liked_you_gate", mechanicsCfg.LikedYouGate, "first_move", mechanicsCfg.FirstMove, "filters_v2", mechanicsCfg.FiltersV2,
 		"picks", mechanicsCfg.Picks, "picks_mutual", mechanicsCfg.PicksMutual, "picks_exposure_cap", mechanicsCfg.PicksExposureCap,
 		"dealbreakers", mechanicsCfg.Dealbreakers, "fair_turn", mechanicsCfg.FairTurn, "fair_turn_limit", mechanicsCfg.FairTurnLimit,
-		"past_match_report", mechanicsCfg.PastMatchReport, "scam_alert", mechanicsCfg.ScamAlert, "date_checkin", mechanicsCfg.DateCheckin, "screen_protection", mechanicsCfg.ScreenProtection, "hide_known", mechanicsCfg.HideKnown, "kind_check", mechanicsCfg.KindCheck,
+		"past_match_report", mechanicsCfg.PastMatchReport, "scam_alert", mechanicsCfg.ScamAlert, "date_checkin", mechanicsCfg.DateCheckin, "screen_protection", mechanicsCfg.ScreenProtection, "hide_known", mechanicsCfg.HideKnown, "kind_check", mechanicsCfg.KindCheck, "media_prompts", mechanicsCfg.MediaPrompts,
 		"travel", mechanicsCfg.Travel,
 		"read_receipts", mechanicsCfg.ReadReceipts, "call_after_exchange", mechanicsCfg.CallAfterExchange)
 	datingSvc.SetLocationPrivacyConfig(locationCfg)
@@ -338,6 +338,9 @@ func main() {
 	// per-viewer delivery, and asset deletion.
 	datingSvc.SetPhotoSafetyConfig(photoCfg)
 	datingSvc.SetMediaPhotoClient(service.NewHTTPMediaPhotoClient(mediaServiceURL, internalKey, nil))
+	// Mechanic M15: voice/video prompt clips (media-service needs
+	// MEDIA_DATING_CLIPS_ENABLED too).
+	datingSvc.SetMediaClipClient(service.NewHTTPMediaClipClient(mediaServiceURL, internalKey, nil))
 	slog.Info("dating photo safety configured", "max_photos", photoCfg.MaxPhotos,
 		"explicit_min_confidence", photoCfg.ExplicitMinConfidence, "review_min_confidence", photoCfg.ReviewMinConfidence,
 		"require_face", photoCfg.RequireFaceOnPrimary, "recheck_enabled", photoCfg.RecheckEnabled,
