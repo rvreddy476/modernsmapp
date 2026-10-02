@@ -1501,3 +1501,52 @@ CREATE TABLE IF NOT EXISTS dating_rewind_ledger (
 );
 CREATE INDEX IF NOT EXISTS idx_dating_rewind_ledger_user
     ON dating_rewind_ledger(user_id, rewound_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M3 — Super Spark (DATING_SUPER_SPARK_ENABLED).
+--
+-- dating_sparks.is_super: the spark was sent as a Super Spark. The recipient
+--   sees it marked and first in their incoming list.
+-- dating_super_spark_ledger: one row per Super Spark charged. source 'daily'
+--   rows inside the last 24 hours are the daily allowance used; 'pack' rows
+--   record a purchased one being spent.
+-- dating_super_spark_balances: purchased Super Sparks not yet spent. A paid
+--   pack adds its quantity; a full refund takes back what is still unspent.
+-- dating_premium_purchases.units_granted / units_revoked: what a pack
+--   purchase added and what its refund took back, so a refund can never take
+--   more than that purchase gave.
+-- The product CHECK is widened once to admit the two packs.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_sparks ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS dating_super_spark_ledger (
+    user_id    UUID        NOT NULL,
+    to_user_id UUID        NOT NULL,
+    source     TEXT        NOT NULL CHECK (source IN ('daily','pack')),
+    sent_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_super_spark_ledger_user
+    ON dating_super_spark_ledger(user_id, sent_at DESC);
+
+CREATE TABLE IF NOT EXISTS dating_super_spark_balances (
+    user_id    UUID PRIMARY KEY,
+    balance    INT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE dating_premium_purchases ADD COLUMN IF NOT EXISTS units_granted INT NOT NULL DEFAULT 0;
+ALTER TABLE dating_premium_purchases ADD COLUMN IF NOT EXISTS units_revoked INT NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'dating_premium_purchases'::regclass
+          AND conname = 'dating_premium_purchases_product_check'
+          AND pg_get_constraintdef(oid) LIKE '%super_spark_5%'
+    ) THEN
+        ALTER TABLE dating_premium_purchases DROP CONSTRAINT IF EXISTS dating_premium_purchases_product_check;
+        ALTER TABLE dating_premium_purchases ADD CONSTRAINT dating_premium_purchases_product_check
+            CHECK (product IN ('pass_30d','pass_90d','pass_365d','boost','super_spark_5','super_spark_15'));
+    END IF;
+END $$;

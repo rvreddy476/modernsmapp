@@ -27,6 +27,13 @@ type MechanicsConfig struct {
 	// RewindDailyLimitFree per rolling 24 hours; a pass holder is not limited.
 	Rewind               bool
 	RewindDailyLimitFree int
+
+	// SuperSpark (DATING_SUPER_SPARK_ENABLED): a stronger, limited spark.
+	// The daily allowance is SuperSparkDailyLimitFree, or ...Pass for a pass
+	// holder, per rolling 24 hours; beyond it a purchased pack is spent.
+	SuperSpark               bool
+	SuperSparkDailyLimitFree int
+	SuperSparkDailyLimitPass int
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.
@@ -36,6 +43,9 @@ func DefaultMechanicsConfig() MechanicsConfig {
 		DeckDailyLimitPass: DefaultDeckDailyLimitPass,
 
 		RewindDailyLimitFree: DefaultRewindDailyLimitFree,
+
+		SuperSparkDailyLimitFree: DefaultSuperSparkDailyLimitFree,
+		SuperSparkDailyLimitPass: DefaultSuperSparkDailyLimitPass,
 	}
 }
 
@@ -51,6 +61,12 @@ func (s *Service) SetMechanicsConfig(cfg MechanicsConfig) {
 	}
 	if cfg.RewindDailyLimitFree <= 0 {
 		cfg.RewindDailyLimitFree = d.RewindDailyLimitFree
+	}
+	if cfg.SuperSparkDailyLimitFree <= 0 {
+		cfg.SuperSparkDailyLimitFree = d.SuperSparkDailyLimitFree
+	}
+	if cfg.SuperSparkDailyLimitPass <= 0 {
+		cfg.SuperSparkDailyLimitPass = d.SuperSparkDailyLimitPass
 	}
 	s.mechanics = cfg
 }

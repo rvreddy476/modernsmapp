@@ -78,7 +78,23 @@ func (s *Service) consentPolicy() string {
 
 // PremiumCatalogue is GET /v1/dating/premium/catalogue.
 func (s *Service) PremiumCatalogue() []payments.Product {
-	return payments.Catalogue()
+	all := payments.Catalogue()
+	out := make([]payments.Product, 0, len(all))
+	for _, p := range all {
+		if s.productOnSale(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// productOnSale reports whether a catalogue product may be listed and bought:
+// a product of a mechanic whose flag is off is neither.
+func (s *Service) productOnSale(p payments.Product) bool {
+	if p.Kind == payments.KindSuperSpark {
+		return s.mechanics.SuperSpark
+	}
+	return true
 }
 
 // PremiumPurchaseInput is the client's request: a product, a key and an
@@ -105,7 +121,7 @@ func (s *Service) CreatePremiumPurchase(ctx context.Context, userID uuid.UUID, i
 		return nil, false, ErrPremiumIdempotencyKeyRequired
 	}
 	product, ok := payments.LookupProduct(strings.TrimSpace(in.Product))
-	if !ok {
+	if !ok || !s.productOnSale(product) {
 		return nil, false, ErrPremiumProductUnknown
 	}
 	method := in.Method
@@ -207,6 +223,8 @@ type MyPremiumResponse struct {
 	Pass         *PremiumPassView            `json:"pass"`
 	Entitlements []PremiumFeatureEntitlement `json:"entitlements"`
 	BoostBalance int                         `json:"boost_balance"`
+	// SuperSparkBalance is the purchased Super Sparks left (M3); omitted at 0.
+	SuperSparkBalance int `json:"super_spark_balance,omitempty"`
 }
 
 // MyPremium returns the user's premium state. A pass is active only while
@@ -220,7 +238,7 @@ func (s *Service) MyPremium(ctx context.Context, userID uuid.UUID) (*MyPremiumRe
 		return nil, err
 	}
 	active := ent.PassActive && ent.PassExpiresAt != nil
-	out := &MyPremiumResponse{IsPremium: active, BoostBalance: ent.BoostBalance}
+	out := &MyPremiumResponse{IsPremium: active, BoostBalance: ent.BoostBalance, SuperSparkBalance: ent.SuperSparkBalance}
 	var expires *time.Time
 	if ent.PassExpiresAt != nil {
 		e := ent.PassExpiresAt.UTC()

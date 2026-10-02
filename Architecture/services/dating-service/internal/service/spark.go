@@ -99,7 +99,7 @@ func (s *Service) requireActiveAdultCandidate(ctx context.Context, candidateID u
 // applicable. Returns the persisted Spark and an optional matchID — when
 // non-nil, a match was formed as a side effect.
 func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*store.Spark, *uuid.UUID, error) {
-	sp, matchID, err := s.createSpark(ctx, fromUserID, toUserID, targetKind, targetRef, note)
+	sp, matchID, err := s.createSpark(ctx, fromUserID, toUserID, targetKind, targetRef, note, false)
 	if err == nil {
 		// Mechanic M1: a spark sent from the deck uses one card of the
 		// daily allowance. AcceptSpark answers an incoming spark, not a
@@ -110,7 +110,8 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 }
 
 // createSpark is CreateSpark without the deck bookkeeping.
-func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*store.Spark, *uuid.UUID, error) {
+// super sends it as a Super Spark (super_spark.go), charged with the insert.
+func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, super bool) (*store.Spark, *uuid.UUID, error) {
 	if fromUserID == uuid.Nil {
 		return nil, nil, fmt.Errorf("invalid: fromUserID required")
 	}
@@ -195,8 +196,16 @@ func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 
 	// Lane D3: the rolling spark allowance is enforced in the same
 	// transaction as the insert.
-	sp, err := s.store.CreateSparkWithQuota(ctx, fromUserID, toUserID, targetKind, targetRef, note, s.sparkDailyLimit(ctx, fromUserID))
+	opts := store.SparkOptions{Limit: s.sparkDailyLimit(ctx, fromUserID)}
+	if super {
+		opts.Super = true
+		opts.SuperDailyLimit = s.superSparkDailyLimit(ctx, fromUserID)
+	}
+	sp, err := s.store.CreateSparkWithOptions(ctx, fromUserID, toUserID, targetKind, targetRef, note, opts)
 	if err != nil {
+		if errors.Is(err, store.ErrSuperSparkLimited) {
+			return nil, nil, s.superSparkLimitError(ctx, fromUserID, opts.SuperDailyLimit)
+		}
 		return nil, nil, err
 	}
 	if liftsDecline {
@@ -303,7 +312,7 @@ func (s *Service) AcceptSpark(ctx context.Context, sparkID, recipientID uuid.UUI
 	if sp.ToUserID != recipientID || sp.DeclinedAt != nil {
 		return nil, nil, store.ErrSparkNotFound
 	}
-	out, matchID, err := s.createSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "")
+	out, matchID, err := s.createSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "", false)
 	if err == nil && s.mechanics.DeckRefill {
 		// The sender may also be a card in the recipient's cached batch.
 		s.removeFromCachedDeck(ctx, recipientID, sp.FromUserID)

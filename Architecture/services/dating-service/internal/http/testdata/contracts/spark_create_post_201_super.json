@@ -1,0 +1,13 @@
+{
+  "data": {
+    "spark": {
+      "id": "<uuid>",
+      "from_user_id": "<viewer>",
+      "to_user_id": "<candidate>",
+      "target_kind": "prompt",
+      "target_ref": "m3",
+      "created_at": "<timestamp>",
+      "super": true
+    }
+  }
+}

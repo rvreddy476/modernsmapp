@@ -23,12 +23,17 @@ const (
 	ProductPass90d  = "pass_90d"
 	ProductPass365d = "pass_365d"
 	ProductBoost    = "boost"
+	// Super Spark packs (mechanic M3): one-off, never renewing, like the rest.
+	ProductSuperSpark5  = "super_spark_5"
+	ProductSuperSpark15 = "super_spark_15"
 )
 
 // Product kinds.
 const (
 	KindPass  = "pass"
 	KindBoost = "boost"
+	// KindSuperSpark is a pack of Quantity Super Sparks.
+	KindSuperSpark = "super_spark"
 )
 
 // Premium features a pass unlocks. Every pass unlocks all of them; the list is
@@ -57,6 +62,8 @@ type Product struct {
 	// DurationDays is the pass length; 0 for Boost.
 	DurationDays int      `json:"duration_days,omitempty"`
 	Features     []string `json:"features,omitempty"`
+	// Quantity is how many Super Sparks a pack adds; 0 for everything else.
+	Quantity int `json:"quantity,omitempty"`
 }
 
 var catalogue = []Product{
@@ -64,6 +71,8 @@ var catalogue = []Product{
 	{ID: ProductPass90d, Kind: KindPass, Name: "Premium pass, 90 days", AmountMinor: 99900, Currency: CurrencyINR, DurationDays: 90},
 	{ID: ProductPass365d, Kind: KindPass, Name: "Premium pass, 365 days", AmountMinor: 249900, Currency: CurrencyINR, DurationDays: 365},
 	{ID: ProductBoost, Kind: KindBoost, Name: "Boost", AmountMinor: 4900, Currency: CurrencyINR},
+	{ID: ProductSuperSpark5, Kind: KindSuperSpark, Name: "Super Sparks, pack of 5", AmountMinor: 9900, Currency: CurrencyINR, Quantity: 5},
+	{ID: ProductSuperSpark15, Kind: KindSuperSpark, Name: "Super Sparks, pack of 15", AmountMinor: 24900, Currency: CurrencyINR, Quantity: 15},
 }
 
 // Catalogue returns a copy of every product, in display order.

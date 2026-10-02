@@ -12,6 +12,9 @@ func TestPremiumCatalogue_Prices(t *testing.T) {
 		ProductPass90d:  {KindPass, 99900, 90},
 		ProductPass365d: {KindPass, 249900, 365},
 		ProductBoost:    {KindBoost, 4900, 0},
+
+		ProductSuperSpark5:  {KindSuperSpark, 9900, 0},
+		ProductSuperSpark15: {KindSuperSpark, 24900, 0},
 	}
 	got := Catalogue()
 	if len(got) != len(want) {

@@ -447,6 +447,15 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
 		return
 	}
+	var superLimited *service.SuperSparkLimitError
+	if errors.As(err, &superLimited) {
+		details := map[string]any{"limit": superLimited.Limit, "window_hours": int(store.SuperSparkQuotaWindow.Hours())}
+		if superLimited.ResetsAt != nil {
+			details["resets_at"] = superLimited.ResetsAt.Format(time.RFC3339)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SUPER_SPARK_LIMIT_REACHED", superLimited.Error(), details)
+		return
+	}
 	if errors.Is(err, service.ErrSparkNoteRefused) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SPARK_NOTE_REFUSED", "spark notes cannot contain phone numbers, email addresses or links", nil)
 		return

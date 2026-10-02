@@ -228,7 +228,9 @@ func main() {
 	datingSvc.SetMechanicsConfig(mechanicsCfg)
 	slog.Info("pulse mechanics configured", "deck_refill", mechanicsCfg.DeckRefill,
 		"deck_daily_limit_free", mechanicsCfg.DeckDailyLimitFree, "deck_daily_limit_pass", mechanicsCfg.DeckDailyLimitPass,
-		"rewind", mechanicsCfg.Rewind, "rewind_daily_limit_free", mechanicsCfg.RewindDailyLimitFree)
+		"rewind", mechanicsCfg.Rewind, "rewind_daily_limit_free", mechanicsCfg.RewindDailyLimitFree,
+		"super_spark", mechanicsCfg.SuperSpark, "super_spark_daily_limit_free", mechanicsCfg.SuperSparkDailyLimitFree,
+		"super_spark_daily_limit_pass", mechanicsCfg.SuperSparkDailyLimitPass)
 	datingSvc.SetLocationPrivacyConfig(locationCfg)
 	slog.Info("location privacy limits configured",
 		"location_change_min_interval", locationCfg.LocationChangeMinInterval,
