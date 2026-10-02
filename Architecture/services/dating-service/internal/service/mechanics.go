@@ -72,6 +72,19 @@ type MechanicsConfig struct {
 	// went, and take the answer (date_checkin.go).
 	DateCheckin bool
 
+	// ScreenProtection (DATING_SCREEN_PROTECTION_ENABLED): the Android app
+	// blocks screenshots on the dating screens that show people
+	// (client_config.go).
+	ScreenProtection bool
+
+	// HideKnown (DATING_HIDE_KNOWN_ENABLED): hide from (and not see) one's
+	// accepted Momentum connections (hide_known.go).
+	HideKnown bool
+
+	// KindCheck (DATING_KIND_CHECK_ENABLED): the kind-message check, "did
+	// this bother you?" and the spark-comment filter (kind_check.go).
+	KindCheck bool
+
 	// Dealbreakers (DATING_DEALBREAKERS_ENABLED): preferences marked as
 	// dealbreakers apply both ways (dealbreakers.go).
 	Dealbreakers bool
@@ -133,6 +146,7 @@ func (s *Service) SetMechanicsConfig(cfg MechanicsConfig) {
 	s.mechanics = cfg
 	if s.store != nil {
 		s.store.SetTravelEnabled(cfg.Travel)
+		s.store.SetHideKnownEnabled(cfg.HideKnown)
 	}
 }
 

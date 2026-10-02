@@ -68,6 +68,17 @@ func validateDealbreakers(codes []string) (needsPass bool, err error) {
 	return needsPass, nil
 }
 
+// addsPassDealbreaker reports whether codes holds a pass dealbreaker that
+// current does not.
+func addsPassDealbreaker(codes, current []string) bool {
+	for _, c := range codes {
+		if slices.Contains(passDealbreakers, c) && !slices.Contains(current, c) {
+			return true
+		}
+	}
+	return false
+}
+
 // viewerFacts is what the candidate-side rules look at on the viewer.
 type viewerFacts struct {
 	Age       int

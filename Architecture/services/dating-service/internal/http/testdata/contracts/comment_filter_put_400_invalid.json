@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "INVALID_COMMENT_FILTER",
+    "message": "up to 50 distinct words of 2 to 30 characters",
+    "details": {
+      "field": "words",
+      "max_len": 30,
+      "max_words": 50,
+      "min_len": 2
+    }
+  },
+  "meta": {}
+}

@@ -113,3 +113,16 @@ func TestM12ContractFixturesWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// Guard: once a pass runs out, a pass dealbreaker saved with it may be kept
+// while the free ones change; only adding a new one needs a pass.
+func TestDealbreakersKeptAfterThePassRunsOut(t *testing.T) {
+	d := newM1Deck(t, m12Config(true))
+	d.exec(`INSERT INTO dating_preferences (user_id, dealbreakers) VALUES ($1, '{diet}')
+        ON CONFLICT (user_id) DO UPDATE SET dealbreakers = '{diet}'`, d.viewer)
+	if code := d.putPrefs(`{"dealbreakers":["age","diet"]}`); code != http.StatusOK {
+		t.Fatalf("keeping a saved pass dealbreaker: %d, want 200", code)
+	}
+	d.wantRefusal(contractDo(d.env.r, http.MethodPut, "/v1/dating/preferences", `{"dealbreakers":["age","diet","height"]}`, d.viewer),
+		http.StatusForbidden, "DEALBREAKERS_REQUIRE_PASS")
+}

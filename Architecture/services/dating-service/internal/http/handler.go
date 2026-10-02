@@ -178,6 +178,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Mechanic M14: how did the date go.
 		dating.POST("/matches/:id/date-feedback", h.PostDateFeedback)
 		dating.GET("/date-checkins", h.GetDateCheckins)
+		// Mechanic M18: switches the apps act on locally.
+		dating.GET("/client-config", h.GetClientConfig)
+		// Mechanic M16: hide from people I know.
+		dating.GET("/hide-known", h.GetHideKnown)
+		dating.PUT("/hide-known", h.PutHideKnown)
+		// Mechanic M13: kind messages and the spark-comment filter.
+		dating.POST("/kind-check", h.PostKindCheck)
+		dating.POST("/matches/:id/bothered", h.PostBothered)
+		dating.GET("/comment-filter", h.GetCommentFilter)
+		dating.PUT("/comment-filter", h.PutCommentFilter)
 		dating.POST("/matches/:id/close", h.CloseMatch)
 		dating.POST("/matches/:id/extend", h.ExtendMatch)
 		// Mechanic M5 — the waiting person's answer to an opening question.
@@ -583,6 +593,14 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	}
 	if errors.Is(err, service.ErrLikedYouLocked) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKED_YOU_LOCKED", "a pass is needed to see who sparked you", nil)
+		return
+	}
+	if errors.Is(err, service.ErrKindCheckRateLimited) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "KIND_CHECK_RATE_LIMITED", "too many checks this hour", nil)
+		return
+	}
+	if errors.Is(err, service.ErrHideKnownUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "HIDE_KNOWN_UNAVAILABLE", "your connections cannot be read right now; try again shortly", nil)
 		return
 	}
 	if errors.Is(err, service.ErrDateFeedbackLimit) {

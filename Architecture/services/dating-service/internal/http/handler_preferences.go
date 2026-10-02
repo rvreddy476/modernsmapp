@@ -51,3 +51,48 @@ func (h *Handler) PutPreferences(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusOK, prefs, nil)
 }
+
+// GetClientConfig — GET /v1/dating/client-config (mechanic M18): the
+// switches the apps act on locally, e.g. screen protection.
+func (h *Handler) GetClientConfig(c *gin.Context) {
+	if _, ok := getUserID(c); !ok {
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, h.svc.ClientConfig(), nil)
+}
+
+// GetHideKnown — GET /v1/dating/hide-known (mechanic M16).
+func (h *Handler) GetHideKnown(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetHideKnown(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// PutHideKnown — PUT /v1/dating/hide-known {enabled} (mechanic M16). 503
+// HIDE_KNOWN_UNAVAILABLE when the connections cannot be read to turn it on.
+func (h *Handler) PutHideKnown(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Enabled == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "enabled is required", nil)
+		return
+	}
+	out, err := h.svc.PutHideKnown(c.Request.Context(), userID, *body.Enabled)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}

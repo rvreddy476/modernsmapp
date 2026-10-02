@@ -234,7 +234,7 @@ func main() {
 		"liked_you_gate", mechanicsCfg.LikedYouGate, "first_move", mechanicsCfg.FirstMove, "filters_v2", mechanicsCfg.FiltersV2,
 		"picks", mechanicsCfg.Picks, "picks_mutual", mechanicsCfg.PicksMutual, "picks_exposure_cap", mechanicsCfg.PicksExposureCap,
 		"dealbreakers", mechanicsCfg.Dealbreakers, "fair_turn", mechanicsCfg.FairTurn, "fair_turn_limit", mechanicsCfg.FairTurnLimit,
-		"past_match_report", mechanicsCfg.PastMatchReport, "scam_alert", mechanicsCfg.ScamAlert, "date_checkin", mechanicsCfg.DateCheckin,
+		"past_match_report", mechanicsCfg.PastMatchReport, "scam_alert", mechanicsCfg.ScamAlert, "date_checkin", mechanicsCfg.DateCheckin, "screen_protection", mechanicsCfg.ScreenProtection, "hide_known", mechanicsCfg.HideKnown, "kind_check", mechanicsCfg.KindCheck,
 		"travel", mechanicsCfg.Travel,
 		"read_receipts", mechanicsCfg.ReadReceipts, "call_after_exchange", mechanicsCfg.CallAfterExchange)
 	datingSvc.SetLocationPrivacyConfig(locationCfg)
@@ -271,6 +271,8 @@ func main() {
 	}
 	if graphURL := strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")); graphURL != "" {
 		datingSvc.SetConnectionChecker(service.NewHTTPConnectionChecker(graphURL, internalKey, nil))
+		// Mechanic M16: the accepted connections a user hides from.
+		datingSvc.SetConnectionLister(service.NewHTTPConnectionLister(graphURL, internalKey, nil))
 	} else {
 		slog.Warn("dating-service: GRAPH_SERVICE_URL not set — only current matches can be added as trusted contacts")
 	}

@@ -312,3 +312,85 @@ func (h *Handler) GetDateCheckins(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
+
+// PostKindCheck — POST /v1/dating/kind-check {text} (mechanic M13).
+func (h *Handler) PostKindCheck(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.KindCheck(c.Request.Context(), userID, body.Text)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "KIND_CHECK_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// PostBothered — POST /v1/dating/matches/:id/bothered {bothered} (mechanic
+// M13): the caller's answer to "did this message bother you?".
+func (h *Handler) PostBothered(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	matchID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid match id", nil)
+		return
+	}
+	var body struct {
+		Bothered *bool `json:"bothered"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Bothered == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "bothered is required", nil)
+		return
+	}
+	out, err := h.svc.Bothered(c.Request.Context(), userID, matchID, *body.Bothered)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "FEEDBACK_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, out, nil)
+}
+
+// GetCommentFilter — GET /v1/dating/comment-filter (mechanic M13).
+func (h *Handler) GetCommentFilter(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetCommentFilter(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// PutCommentFilter — PUT /v1/dating/comment-filter {filter_unkind, words}
+// (mechanic M13). 400 INVALID_COMMENT_FILTER.
+func (h *Handler) PutCommentFilter(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body service.CommentFilterView
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.PutCommentFilter(c.Request.Context(), userID, body)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}

@@ -596,6 +596,15 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 	if err := exec(`DELETE FROM dating_travel WHERE user_id = $1`, userID); err != nil {
 		return nil, err
 	}
+	if err := exec(`DELETE FROM dating_known_people WHERE user_id = $1 OR other_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_hide_known WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_comment_filters WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
 
 	// 3) Matches: the rows stay (the other party's history), but every
 	//    open match is closed first — returned so the caller emits
@@ -645,6 +654,16 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 	//     purged person becomes their subject token on either side.
 	if err := exec(`
         UPDATE dating_date_feedback
+        SET user_id  = CASE WHEN user_id = $1 THEN $2::uuid ELSE user_id END,
+            other_id = CASE WHEN other_id = $1 THEN $2::uuid ELSE other_id END
+        WHERE user_id = $1 OR other_id = $1`, userID, token); err != nil {
+		return nil, err
+	}
+
+	// 3d) "Did this bother you?" answers (M13) are safety evidence and stay:
+	//     the purged person becomes their subject token on either side.
+	if err := exec(`
+        UPDATE dating_message_feedback
         SET user_id  = CASE WHEN user_id = $1 THEN $2::uuid ELSE user_id END,
             other_id = CASE WHEN other_id = $1 THEN $2::uuid ELSE other_id END
         WHERE user_id = $1 OR other_id = $1`, userID, token); err != nil {

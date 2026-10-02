@@ -280,6 +280,11 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		// profile reveals nothing.
 		incognitoVisiblePredicate("p", "$1"),
 	}
+	// Mechanic M16: people who know each other, when either hides from
+	// people they know, stay apart.
+	if s.hideKnownEnabled {
+		where = append(where, `NOT `+hideKnownPredicate("$1", "p.user_id"))
+	}
 	// Decline cooldown: a candidate who declined one of the viewer's sparks
 	// stays out of the viewer's deck for the cooldown. One-directional.
 	args = append(args, s.declineCutoff())

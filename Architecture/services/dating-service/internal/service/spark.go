@@ -309,6 +309,8 @@ func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limi
 	if err != nil {
 		return nil, err
 	}
+	// Mechanic M13: the recipient's comment filter.
+	s.markHiddenNotes(ctx, userID, sparks)
 	return s.decorateIncomingSparks(ctx, userID, sparks), nil
 }
 

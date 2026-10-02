@@ -27,6 +27,10 @@ type Spark struct {
 	// DeclinedAt is set when the recipient declined. Never serialised: the
 	// sender must not learn of a decline.
 	DeclinedAt *time.Time `json:"-"`
+	// NoteHidden (mechanic M13) is set only in the recipient's lists when
+	// their comment filter hides the note: "unkind" or "your_words". Not
+	// stored.
+	NoteHidden string `json:"note_hidden,omitempty"`
 }
 
 // ErrSparkNotFound is returned when a spark id does not exist.

@@ -46,6 +46,8 @@ type LikedYouItem struct {
 	// Person and Note are present only when unlocked.
 	Person *PersonCard `json:"person,omitempty"`
 	Note   *string     `json:"note,omitempty"`
+	// NoteHidden (M13): the recipient's filter hides the note.
+	NoteHidden string `json:"note_hidden,omitempty"`
 }
 
 // LikedYouResponse is GET /v1/dating/liked-you.
@@ -103,8 +105,9 @@ func (s *Service) LikedYou(ctx context.Context, userID uuid.UUID, limit, offset 
 		}
 		return out, nil
 	}
+	s.markHiddenNotes(ctx, userID, sparks)
 	for _, sp := range s.decorateIncomingSparks(ctx, userID, sparks) {
-		item := LikedYouItem{SparkID: sp.ID, Super: sp.IsSuper, CreatedAt: sp.CreatedAt, Person: sp.Person, Note: sp.Note}
+		item := LikedYouItem{SparkID: sp.ID, Super: sp.IsSuper, CreatedAt: sp.CreatedAt, Person: sp.Person, Note: sp.Note, NoteHidden: sp.NoteHidden}
 		if sp.Person != nil {
 			item.PhotoURL = sp.Person.PrimaryPhotoURL
 		}

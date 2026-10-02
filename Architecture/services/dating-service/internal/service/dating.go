@@ -58,6 +58,8 @@ type Service struct {
 	safetyCfgSet bool
 	trustSafety  TrustSafetyClient
 	connections  ConnectionChecker
+	// connectionLister lists accepted connections (mechanic M16).
+	connectionLister ConnectionLister
 
 	// Sprint 6 — moderation-strict feature-flag cache (60s TTL). The mutex
 	// is held for the cache read/write only; flag fetches happen outside.

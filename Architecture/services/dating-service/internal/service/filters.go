@@ -166,8 +166,16 @@ func (s *Service) PutPreferences(ctx context.Context, userID uuid.UUID, in Prefe
 		if err != nil {
 			return nil, err
 		}
+		// Without a pass, a pass dealbreaker already saved may be kept (it
+		// counts again with the next pass); only adding one is refused.
 		if needsPass && !s.holdsPass(ctx, userID) {
-			return nil, ErrDealbreakersRequirePass
+			current, err := s.store.GetDealbreakers(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			if addsPassDealbreaker(*in.Dealbreakers, current) {
+				return nil, ErrDealbreakersRequirePass
+			}
 		}
 	}
 	params := in.UpsertPreferencesParams

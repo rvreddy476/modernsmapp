@@ -33,6 +33,9 @@ type Store struct {
 	// travelEnabled switches trips' effect on discovery (mechanic M8,
 	// travel.go). Off: home locations everywhere.
 	travelEnabled bool
+	// hideKnownEnabled switches "hide from people I know" (mechanic M16,
+	// hide_known.go) in discovery.
+	hideKnownEnabled bool
 }
 
 // New returns a Store backed by the given pool.

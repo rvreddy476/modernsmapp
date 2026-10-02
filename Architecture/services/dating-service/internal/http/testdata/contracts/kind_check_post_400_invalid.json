@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "INVALID_KIND_CHECK",
+    "message": "text is required and at most 2000 characters",
+    "details": {
+      "field": "text",
+      "max": 2000
+    }
+  },
+  "meta": {}
+}

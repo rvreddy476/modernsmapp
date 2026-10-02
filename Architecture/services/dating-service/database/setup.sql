@@ -1729,3 +1729,52 @@ CREATE INDEX IF NOT EXISTS idx_dating_date_feedback_other
     ON dating_date_feedback(other_id);
 CREATE INDEX IF NOT EXISTS idx_dating_meets_checkin_due
     ON dating_meets(scheduled_at) WHERE date_checkin_asked_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M16 — hide from people I know (DATING_HIDE_KNOWN_ENABLED).
+--
+-- dating_hide_known: who has the setting on. dating_known_people: their
+-- accepted Momentum connections, snapshotted from graph-service and
+-- refreshed daily. Either side's setting keeps the pair out of each other's
+-- decks and picks. Purged with the profile.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_hide_known (
+    user_id      UUID        PRIMARY KEY,
+    enabled      BOOLEAN     NOT NULL DEFAULT false,
+    connections  INT         NOT NULL DEFAULT 0,
+    refreshed_at TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS dating_known_people (
+    user_id  UUID NOT NULL,
+    other_id UUID NOT NULL,
+    PRIMARY KEY (user_id, other_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_known_people_other
+    ON dating_known_people(other_id);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M13 — kind messages (DATING_KIND_CHECK_ENABLED).
+--
+-- dating_comment_filters: each user's spark-comment filter (hide unkind
+-- comments, on by default; their own hidden words). Purged with the profile.
+-- dating_message_feedback: "did this message bother you?" answers. Safety
+-- evidence: append-only, never deleted; a purge swaps the purged id for its
+-- subject token. The message text is never stored.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_comment_filters (
+    user_id       UUID        PRIMARY KEY,
+    filter_unkind BOOLEAN     NOT NULL DEFAULT true,
+    words         TEXT[]      NOT NULL DEFAULT '{}',
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS dating_message_feedback (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id   UUID        NOT NULL,
+    user_id    UUID        NOT NULL,
+    other_id   UUID        NOT NULL,
+    bothered   BOOLEAN     NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_message_feedback_other
+    ON dating_message_feedback(other_id, created_at DESC);
