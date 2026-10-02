@@ -23,6 +23,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/atpost/post-service/database"
 	store "github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -267,6 +268,22 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE posts SET related_post_id = $2 WHERE id = $1`, postB1, postA1); err != nil {
 		t.Fatal(err)
 	}
+	// Offline copies (migration 060, applied here from the real file: it is
+	// idempotent). userA holds a copy of userB's post, userB holds a copy of
+	// userA's post and of their own.
+	offlineDDL, err := database.Migrations.ReadFile("migrations/060_post_offline_copies.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(offlineDDL)); err != nil {
+		t.Fatalf("apply migration 060: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO post_offline_copies (user_id, post_id, device_id, expires_at)
+		VALUES ($1,$2,'dev-a',NOW() + INTERVAL '30 days'), ($3,$4,'dev-b',NOW() + INTERVAL '30 days'), ($3,$2,'dev-b',NOW() + INTERVAL '30 days')`,
+		userA, postB1, userB, postA1); err != nil {
+		t.Fatal(err)
+	}
 
 	// Baseline counters on the survivor: seed non-zero so the decrement is
 	// unambiguous (the AFTER-INSERT trigger creates the row at all-zero).
@@ -304,6 +321,11 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	assertZero(t, pool, "post_private_shares", "user_id=$1", userA)
 	assertZero(t, pool, "post_private_shares", "post_id=$1", postA1)
 	assertZero(t, pool, "posts", "related_post_id=$1", postA1)
+	// Offline copies: the purged user's own grants, and everyone's copies of
+	// the purged user's posts; the survivor's copy of their own post stays.
+	assertZero(t, pool, "post_offline_copies", "user_id=$1", userA)
+	assertZero(t, pool, "post_offline_copies", "post_id=$1", postA1)
+	assertOne(t, pool, "post_offline_copies", "user_id=$1", userB)
 
 	// Cross-user rows owned by userA are gone.
 	assertZero(t, pool, "comments", "id=$1", commentID)

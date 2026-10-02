@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/google/uuid"
 )
@@ -56,6 +57,13 @@ type HandlerTestDeps struct {
 	SoundCounts        func(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*scylla.Counts, error)
 	MediaServiceURL    string
 	InternalServiceKey string
+	// Offline copies (offline_copies.go): the store, the relationship graph
+	// the playback decision reads, the caption-track list in place of
+	// media-service and the members-only answer in place of monetization.
+	Offline            offlineStore
+	Relationships      GraphRelationships
+	OfflineCaptions    offlineCaptionSource
+	OfflineEntitlement func(ctx context.Context, viewerID uuid.UUID, p *postgres.Post) (bool, error)
 }
 
 // NewForHandlerTests builds a Service over HandlerTestDeps, with no
@@ -87,6 +95,13 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		soundCounts:         d.SoundCounts,
 		mediaServiceURL:     d.MediaServiceURL,
 		internalServiceKey:  d.InternalServiceKey,
+
+		offline:              d.Offline,
+		offlineCaptionTracks: d.OfflineCaptions,
+		offlineEntitlement:   d.OfflineEntitlement,
+	}
+	if d.Relationships != nil {
+		s.storyAudience = NewStoryAudience(d.Relationships)
 	}
 	s.hiddenAuthors = d.HiddenAuthors
 	s.authoringOwners = d.Authoring

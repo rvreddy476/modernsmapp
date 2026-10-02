@@ -177,6 +177,31 @@ func anonymousMayAccessPost(p *postgres.Post, authorVisible bool) bool {
 // (there is nobody to be blocked by), no share list, no age; the account gate
 // is asked as the nil viewer, which graph-service resolves like a stranger.
 func (s *Service) postMediaJudge(ctx context.Context, viewerID uuid.UUID, posts []*postgres.Post) (func(*postgres.Post) bool, error) {
+	v, err := s.postMediaDecisions(ctx, viewerID, posts)
+	if err != nil {
+		return nil, err
+	}
+	return v.allowed, nil
+}
+
+// postMediaDecision is postMediaJudge's decision with the two facts the
+// offline-copy routes (offline_copies.go) need on top of the yes/no: whether
+// a refusal is a block (so the copy's owner is told "blocked", not
+// "private"), and whether the account gate behind the decision actually
+// answered (so a graph outage is a retry, never a reason to delete a stored
+// copy). The decision itself is `allowed`, and it is the only one there is.
+type postMediaDecision struct {
+	allowed func(*postgres.Post) bool
+	// blocked reports a block in either direction between the viewer and
+	// the post's author. Always false for the signed-out viewer.
+	blocked func(*postgres.Post) bool
+	// resolved is false when the account gate fell back to its fail-closed
+	// denial because graph-service or the hidden-author list did not answer.
+	resolved bool
+}
+
+// postMediaDecisions resolves the facts behind postMediaJudge once for posts.
+func (s *Service) postMediaDecisions(ctx context.Context, viewerID uuid.UUID, posts []*postgres.Post) (*postMediaDecision, error) {
 	authors := make([]uuid.UUID, 0, len(posts))
 	authorStrings := make([]string, 0, len(posts))
 	seen := make(map[uuid.UUID]bool, len(posts))
@@ -199,11 +224,15 @@ func (s *Service) postMediaJudge(ctx context.Context, viewerID uuid.UUID, posts 
 	// Account privacy and hidden authors, fail-closed (privacy_gate.go): an
 	// author the graph did not answer for, or whose hidden lookup failed, is
 	// not visible.
-	authorOK := s.canViewPosts(ctx, viewer, authors)
+	authorOK, resolved := s.canViewPostsResolved(ctx, viewer, authors)
 
 	if viewer == nil {
-		return func(p *postgres.Post) bool {
-			return p != nil && anonymousMayAccessPost(p, authorOK[p.AuthorID])
+		return &postMediaDecision{
+			allowed: func(p *postgres.Post) bool {
+				return p != nil && anonymousMayAccessPost(p, authorOK[p.AuthorID])
+			},
+			blocked:  func(*postgres.Post) bool { return false },
+			resolved: resolved,
 		}, nil
 	}
 
@@ -217,16 +246,26 @@ func (s *Service) postMediaJudge(ctx context.Context, viewerID uuid.UUID, posts 
 	}
 	shared := s.privateSharedSet(ctx, viewerID, privatePostIDs(posts, viewerID))
 	ageOK := s.ageAllowance(ctx, viewer)
-	return func(p *postgres.Post) bool {
-		if p == nil {
-			return false
-		}
-		in := postMediaInputs{
-			rel:           rels[p.AuthorID.String()],
-			shared:        shared[p.ID],
-			authorVisible: authorOK[p.AuthorID],
-		}
-		return evaluatePostMediaVisibility(viewerID, p, in) && ageOK(p)
+	return &postMediaDecision{
+		allowed: func(p *postgres.Post) bool {
+			if p == nil {
+				return false
+			}
+			in := postMediaInputs{
+				rel:           rels[p.AuthorID.String()],
+				shared:        shared[p.ID],
+				authorVisible: authorOK[p.AuthorID],
+			}
+			return evaluatePostMediaVisibility(viewerID, p, in) && ageOK(p)
+		},
+		blocked: func(p *postgres.Post) bool {
+			if p == nil || p.AuthorID == viewerID {
+				return false
+			}
+			rel := rels[p.AuthorID.String()]
+			return rel.Blocked || rel.BlockedBy
+		},
+		resolved: resolved,
 	}, nil
 }
 

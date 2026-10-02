@@ -220,6 +220,11 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		// list. Their own posts' lists cascade with the posts below.
 		`DELETE FROM post_private_shares WHERE user_id = $1`,
 
+		// Offline copies (migration 060): the user's own grants on every
+		// device. Copies other people hold of this user's posts cascade
+		// with the posts below.
+		`DELETE FROM post_offline_copies WHERE user_id = $1`,
+
 		// post_moderation_decisions is ON DELETE RESTRICT from posts(id) —
 		// must be emptied before the posts row goes.
 		`DELETE FROM post_moderation_decisions WHERE post_id IN (SELECT id FROM _purge_posts)`,

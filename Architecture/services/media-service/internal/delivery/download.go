@@ -12,6 +12,15 @@ import (
 
 // MTube download (2026-09-27) — GET /v1/media/:id/download.
 //
+// OWNER ONLY since 2026-10-02 (service/download.go): a viewer never receives
+// a file, so the route no longer asks the DownloadAuthorizer below and
+// posts.allow_download opens it to nobody. The authorizer and
+// AuthorizeDownload stay as the tested client of post-service's
+// /v1/internal/media-download-allowed, consulted by no route today; what
+// this file still does for the route is mark the signed URL as an
+// attachment (SignDownload). The paragraphs below describe the 2026-09-27
+// design.
+//
 // A download is a byte read with two differences from playback: the bytes
 // leave the player (so the AUTHOR decides, per post, whether that is
 // allowed — posts.allow_download), and the browser must be told to save

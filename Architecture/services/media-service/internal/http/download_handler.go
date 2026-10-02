@@ -12,16 +12,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// MTube download (2026-09-27).
+// The one file-download route (MTube, 2026-09-27; OWNER ONLY since
+// 2026-10-02: a viewer never receives a file — "Keep a copy" is an offline
+// copy inside the app, fetched through /serve).
 //
 //	GET /v1/media/:mediaId/download
 //	  307 → signed URL of the best MP4 (720p, else 480p, else the original)
 //	        with Content-Disposition: attachment; filename="<mediaId>.mp4"
-//	  403 DOWNLOAD_NOT_ALLOWED   caller is not the owner and post-service
-//	                             did not say the post allows download
-//	                             (anonymous callers land here too)
-//	  404 NOT_FOUND              no such asset, or not a video
-//	  503 DEPENDENCY_UNAVAILABLE post-service could not be asked
+//	        for the UPLOADER, or for a trusted service acting for an
+//	        administrator (the internal key and no viewer identity)
+//	  404 NOT_FOUND              no such asset, not a video, or the caller
+//	                             is not the uploader — one answer, whatever
+//	                             the post's allow_download says, and the
+//	                             same for an anonymous caller
+//	  503 DEPENDENCY_UNAVAILABLE the record or the signer could not answer
 //
 // No authMW, like every other media read: the viewer is the edge-verified
 // X-User-Id, and the decision (service/download.go) fails closed without
@@ -32,6 +36,7 @@ import (
 // PostgreSQL.
 type downloadService interface {
 	DownloadURL(ctx context.Context, viewerID, mediaID uuid.UUID) (string, error)
+	DownloadURLForService(ctx context.Context, mediaID uuid.UUID) (string, error)
 }
 
 func (h *Handler) registerDownloadRoutes(v1 *gin.RouterGroup) {
@@ -52,7 +57,12 @@ func (h *Handler) DownloadMedia(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
-	url, err := h.downloadSvc().DownloadURL(c.Request.Context(), deliveryViewer(c), mediaID)
+	var url string
+	if h.downloadForAdministrator(c) {
+		url, err = h.downloadSvc().DownloadURLForService(c.Request.Context(), mediaID)
+	} else {
+		url, err = h.downloadSvc().DownloadURL(c.Request.Context(), deliveryViewer(c), mediaID)
+	}
 	if err != nil {
 		writeDownloadError(c, err)
 		return
@@ -60,19 +70,26 @@ func (h *Handler) DownloadMedia(c *gin.Context) {
 	writeDeliveryRedirect(c, url)
 }
 
+// downloadForAdministrator reports a trusted service acting for an
+// administrator: the request carries this service's internal key AND no
+// viewer identity. The gateway strips a client-sent copy of the key and
+// stamps none on /v1/media (see trustedServiceCaller), so no edge request
+// can reach this branch; a service that forwards a viewer's X-User-Id is
+// judged as that viewer, by the owner rule.
+func (h *Handler) downloadForAdministrator(c *gin.Context) bool {
+	return h.trustedServiceCaller(c) && c.GetHeader("X-User-Id") == ""
+}
+
 func writeDownloadError(c *gin.Context, err error) {
 	ctx := c.Request.Context()
 	switch {
-	case errors.Is(err, service.ErrDownloadNotAllowed):
-		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "DOWNLOAD_NOT_ALLOWED", "Downloading this video is not allowed", nil)
-	case errors.Is(err, service.ErrAssetNotFound), errors.Is(err, service.ErrDownloadNotVideo):
+	case errors.Is(err, service.ErrDownloadNotAllowed), errors.Is(err, delivery.ErrDeliveryDenied),
+		errors.Is(err, service.ErrAssetNotFound), errors.Is(err, service.ErrDownloadNotVideo):
+		// One answer for "no such video" and "not yours": the route is the
+		// creator's, and to anyone else the asset is simply not there.
 		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 	case errors.Is(err, delivery.ErrDeliveryUnresolved):
-		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "Download permission could not be determined; retry", nil)
-	case errors.Is(err, delivery.ErrDeliveryDenied):
-		// The service maps a denial to ErrDownloadNotAllowed; a raw one can
-		// only come from a fake, but it must never fall through to 500.
-		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "DOWNLOAD_NOT_ALLOWED", "Downloading this video is not allowed", nil)
+		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "The download could not be prepared; retry", nil)
 	default:
 		api.ErrorWithContext(ctx, c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

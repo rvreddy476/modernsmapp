@@ -504,7 +504,9 @@ func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, delivery.URLSigne
 	gate := delivery.NewGate(signer, authz)
 	// MTube download (2026-09-27): post-service also owns the per-post
 	// "allow download" switch. Same base URL and key as the media-access
-	// authority; see delivery/download.go for the contract.
+	// authority; see delivery/download.go for the contract. Since
+	// 2026-10-02 the download route is owner only and does not consult
+	// this authorizer (service/download.go); it stays wired and unused.
 	gate.WithDownloadAuthorizer(delivery.NewHTTPDownloadAuthorizer(postURL, internalKey, nil))
 	return gate, signer, nil
 }
