@@ -76,3 +76,18 @@ func (s *Store) SaveDailyPicks(ctx context.Context, userID uuid.UUID, day time.T
 	}
 	return tx.Commit(ctx)
 }
+
+// InRecentPicks reports whether candidateID was one of userID's daily picks
+// for a local date no older than yesterday (UTC), which covers every zone's
+// "today". Visibility is the caller's to apply.
+func (s *Store) InRecentPicks(ctx context.Context, userID, candidateID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+        SELECT EXISTS (SELECT 1 FROM dating_daily_picks
+            WHERE user_id = $1 AND candidate_id = $2
+              AND pick_date >= (now() AT TIME ZONE 'UTC')::date - 1)`, userID, candidateID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("recent picks: %w", err)
+	}
+	return ok, nil
+}

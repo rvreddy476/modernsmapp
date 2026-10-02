@@ -202,3 +202,26 @@ func TestPicksFollowTheLocalDay(t *testing.T) {
 		t.Fatalf("default zone = %q", def.Meta.Timezone)
 	}
 }
+
+// Guard: a pick opens its person card (picks are not in the deck), and the
+// card still honours a block.
+func TestPicksOpenThePersonCard(t *testing.T) {
+	// One deck card a day, spent below, so the deck is empty and only the
+	// pick can explain access to the card.
+	d := newM1Deck(t, service.MechanicsConfig{DeckRefill: true, DeckDailyLimitFree: 1, DeckDailyLimitPass: 1, Picks: true})
+	x, y := d.candidate(), d.candidate()
+	if got := d.picks("UTC").ids(); len(got) != 2 {
+		t.Fatalf("want two picks, got %v", got)
+	}
+	d.pass(y)
+	if ids, _ := d.deck(); len(ids) != 0 {
+		t.Fatalf("deck should be empty after its one card: %v", ids)
+	}
+	if rec := contractDo(d.env.r, http.MethodGet, "/v1/dating/people/"+x.String(), ``, d.viewer); rec.Code != http.StatusOK {
+		t.Fatalf("person card for a pick: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/safety/block", `{"target_user_id":"`+d.viewer.String()+`"}`, x); rec.Code != http.StatusOK {
+		t.Fatalf("block: %d", rec.Code)
+	}
+	d.wantRefusal(contractDo(d.env.r, http.MethodGet, "/v1/dating/people/"+x.String(), ``, d.viewer), http.StatusNotFound, "CANDIDATE_UNAVAILABLE")
+}

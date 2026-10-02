@@ -371,6 +371,17 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 			return true, nil
 		}
 	}
+	// Mechanic M7: a daily pick opens the card too (picks are kept apart
+	// from the deck, so the deck check alone would refuse them).
+	if s.mechanics.Picks {
+		picked, err := s.store.InRecentPicks(ctx, viewerID, targetID)
+		if err != nil {
+			return false, err
+		}
+		if picked {
+			return true, nil
+		}
+	}
 	return s.inCurrentDeck(ctx, viewerID, targetID)
 }
 
