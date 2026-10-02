@@ -153,8 +153,11 @@ missing from this answer, and the apps hide its controls.
 10. **Screen protection (Android)** — screenshots of the deck and profiles
     come out black; screenshots of a chat still work.
 11. **Voice/video answers** — on a prompt, record a short voice or video
-    answer (30 s max). A voice clip waits for a moderator (admin console →
-    clips); once approved it plays on the card for the other phone.
+    answer (30 s max). A voice clip waits for a moderator; there is no
+    console page for clips yet, so a moderator uses the API
+    (`GET /v1/dating/admin/clips/pending`, then `POST /v1/dating/admin/clips/review`
+    with `{user_id, prompt_id, decision: "approved"}`). Once approved it plays
+    on the card for the other phone.
 
 ## 4. Giving an account a pass on dev without paying
 
