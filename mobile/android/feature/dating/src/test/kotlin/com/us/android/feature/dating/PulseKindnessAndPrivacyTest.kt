@@ -59,7 +59,10 @@ class PulseKindnessAndPrivacyTest {
 
     private var now = 1_000_000L
 
-    private fun kindness() = DatingConversationKindness(repository, session) { now }
+    /** What the device remembers across chats and restarts; each [kindness] is a fresh process's view of it. */
+    private val kindAnswers = FakeKindAnswers()
+
+    private fun kindness() = DatingConversationKindness(repository, session, kindAnswers) { now }
 
     private fun unkind() = ok(fixture("kind_check_post_200_unkind.json", KindCheckDto.serializer()))
 
@@ -213,9 +216,81 @@ class PulseKindnessAndPrivacyTest {
         val k = kindness()
 
         assertThat(k.bothered("conv-m1", "msg-1", true)).isTrue()
-        assertThat(k.bothered("conv-m1", "msg-1", false)).isFalse()
+        assertThat(k.bothered("conv-m1", "msg-2", false)).isFalse()
         assertThat(api.botheredWrites.map { it.first }).containsExactly("m1", "m1")
         assertThat(api.botheredWrites.map { it.second.bothered }).containsExactly(true, false).inOrder()
+    }
+
+    @Test
+    fun `an answered message is remembered - reopening the chat neither asks again nor records twice`() = runTest {
+        api.matches = listOf(match("m1", "x"))
+        api.kindCheckResponse = { unkind() }
+        val k = kindness()
+        assertThat(k.shouldCover("conv-m1", "msg-1", "you look stupid")).isTrue()
+        assertThat(k.alreadyAnswered("conv-m1", "msg-1")).isFalse()
+
+        assertThat(k.bothered("conv-m1", "msg-1", true)).isTrue()
+        assertThat(kindAnswers.stored).containsExactly("msg-1", true)
+
+        // The same chat again: answered, so the cover shows without the question,
+        // and a second answer — a double tap, a reopened chat — records nothing.
+        assertThat(k.alreadyAnswered("conv-m1", "msg-1")).isTrue()
+        assertThat(k.bothered("conv-m1", "msg-1", false)).isFalse()
+        assertThat(k.bothered("conv-m1", "msg-1", true)).isFalse()
+        assertThat(api.botheredWrites).hasSize(1)
+
+        // A new process (the app restarted): still covered, still answered, nothing asked of the server.
+        val restarted = kindness()
+        assertThat(restarted.shouldCover("conv-m1", "msg-1", "you look stupid")).isTrue()
+        assertThat(restarted.alreadyAnswered("conv-m1", "msg-1")).isTrue()
+        assertThat(restarted.bothered("conv-m1", "msg-1", true)).isFalse()
+        assertThat(api.kindChecks).hasSize(1)
+        assertThat(api.botheredWrites).hasSize(1)
+    }
+
+    @Test
+    fun `a no is remembered across restarts and the message stays uncovered`() = runTest {
+        api.matches = listOf(match("m1", "x"))
+        api.kindCheckResponse = { unkind() }
+        kindness().also {
+            assertThat(it.shouldCover("conv-m1", "msg-1", "you look stupid")).isTrue()
+            assertThat(it.bothered("conv-m1", "msg-1", false)).isFalse()
+        }
+
+        val restarted = kindness()
+        assertThat(restarted.shouldCover("conv-m1", "msg-1", "you look stupid")).isFalse()
+        assertThat(restarted.alreadyAnswered("conv-m1", "msg-1")).isTrue()
+        assertThat(api.kindChecks).hasSize(1)
+        assertThat(api.botheredWrites).hasSize(1)
+    }
+
+    @Test
+    fun `a failed answer is not remembered, so it can be given again`() = runTest {
+        api.matches = listOf(match("m1", "x"))
+        api.botheredResponse = { _, _ -> offline() }
+        val k = kindness()
+
+        assertThat(k.bothered("conv-m1", "msg-1", true)).isFalse()
+        assertThat(k.alreadyAnswered("conv-m1", "msg-1")).isFalse()
+        assertThat(kindAnswers.stored).isEmpty()
+
+        api.botheredResponse = { matchId, body -> ok(com.us.android.feature.dating.network.BotheredDto(matchId = matchId, bothered = body.bothered, offerReport = true)) }
+        assertThat(k.bothered("conv-m1", "msg-1", true)).isTrue()
+        assertThat(api.botheredWrites).hasSize(2)
+        assertThat(kindAnswers.stored).containsExactly("msg-1", true)
+    }
+
+    @Test
+    fun `sign-out forgets the stored answers`() = runTest {
+        api.matches = listOf(match("m1", "x"))
+        val k = kindness()
+        k.bothered("conv-m1", "msg-1", true)
+        assertThat(kindAnswers.stored).isNotEmpty()
+
+        k.forget()
+
+        assertThat(kindAnswers.stored).isEmpty()
+        assertThat(k.alreadyAnswered("conv-m1", "msg-1")).isFalse()
     }
 
     @Test

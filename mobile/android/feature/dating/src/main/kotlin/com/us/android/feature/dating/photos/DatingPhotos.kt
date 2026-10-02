@@ -13,6 +13,9 @@ import com.us.android.core.media.upload.PROCESSING_REJECTED
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.core.media.upload.SUBTYPE_GENERAL
 import com.us.android.core.network.ApiConfig
+import com.us.android.feature.dating.clips.ClipRules
+import com.us.android.feature.dating.clips.PromptClipUi
+import com.us.android.feature.dating.network.CardClipDto
 import com.us.android.feature.dating.network.CardPhotoDto
 import com.us.android.feature.dating.network.DatingPersonDto
 import kotlinx.coroutines.CoroutineDispatcher
@@ -116,6 +119,13 @@ class DatingPhotoUrls @Inject constructor(private val config: ApiConfig) {
 
     /** The person's own photo, always the full variant. */
     fun own(photoId: String): String = absolute(PhotoRules.pathFor(photoId, PhotoVariant.FULL))
+
+    /**
+     * A card's prompt clip (mechanic M15), on the same API origin and through
+     * the same authenticated client as a photo. Null for anything but the
+     * exact `/v1/dating/people/<id>/prompts/<n>/clip` route, or an unknown kind.
+     */
+    fun forClip(clip: CardClipDto?): PromptClipUi? = ClipRules.cardClip(clip, ::absolute)
 
     private fun absolute(path: String): String = config.baseUrl.trimEnd('/') + path
 }

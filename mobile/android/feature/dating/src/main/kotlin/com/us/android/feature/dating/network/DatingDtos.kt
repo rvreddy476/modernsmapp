@@ -100,12 +100,32 @@ data class ProfileDetailDto(
     val diet: String = "",
 )
 
-/** One catalogue question and this person's answer; the question text is resolved server-side. */
+/**
+ * One catalogue question and this person's answer; the question text is resolved server-side.
+ * With a [clip] (mechanic M15) the [answer] text may be empty.
+ */
 @Serializable
 data class DetailPromptDto(
     @SerialName("prompt_id") val promptId: Int = 0,
     val question: String = "",
     val answer: String = "",
+    /** An approved voice or video answer; absent otherwise (Go omits it). */
+    val clip: CardClipDto? = null,
+)
+
+/**
+ * A prompt answer's voice or video clip on someone's card (mechanic M15,
+ * fixture pulse_today_get_200_prompt_clip). Only an APPROVED clip reaches a
+ * card. [url] is a dating route (`/v1/dating/people/<id>/prompts/<n>/clip`)
+ * that needs the bearer and answers 307 to a short-lived media URL — never a
+ * media id, never the signed URL itself.
+ */
+@Serializable
+data class CardClipDto(
+    /** audio | video */
+    val kind: String = "",
+    @SerialName("duration_ms") val durationMs: Long = 0,
+    val url: String = "",
 )
 
 /**
@@ -400,13 +420,45 @@ data class PromptAnswerDto(
     val id: String = "",
     @SerialName("user_id") val userId: String = "",
     @SerialName("prompt_id") val promptId: Int = 0,
+    /** Empty for a clip-only answer (mechanic M15). */
     val answer: String = "",
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
+    // Mechanic M15: the owner's own clip on this answer, from store.Prompt
+    // (no fixture: `prompts_get_200` is []). Each is omitted while unset.
+    /** audio | video */
+    @SerialName("clip_kind") val clipKind: String? = null,
+    @SerialName("clip_duration_ms") val clipDurationMs: Long? = null,
+    /** pending | pending_review | approved | rejected */
+    @SerialName("clip_status") val clipStatus: String? = null,
+    /** Why a rejected clip is not shown, in the server's words. */
+    @SerialName("clip_reason") val clipReason: String? = null,
 )
 
 @Serializable
 data class PromptAnswerRequest(val answer: String)
+
+// ── Prompt clips (mechanic M15; fixtures prompt_clip_put_*) ─────────────────
+
+/** `PUT /prompts/:promptId/clip`: the media id of an upload that finished. */
+@Serializable
+data class PromptClipRequest(@SerialName("media_id") val mediaId: String)
+
+/** The 200 of `PUT /prompts/:promptId/clip`: the owner's view of the clip just attached. */
+@Serializable
+data class PromptClipViewDto(
+    @SerialName("prompt_id") val promptId: Int = 0,
+    /** audio | video */
+    val kind: String = "",
+    @SerialName("duration_ms") val durationMs: Long = 0,
+    /** pending | pending_review | approved | rejected */
+    val status: String = "",
+    val reason: String? = null,
+)
+
+/** `details` of `422 CLIP_TOO_LONG`. */
+@Serializable
+data class ClipTooLongDetailsDto(@SerialName("max_ms") val maxMs: Long = 0)
 
 // ── Selfie liveness (D5); only the consent refusal has a fixture ────────────
 

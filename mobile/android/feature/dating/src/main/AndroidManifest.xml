@@ -2,13 +2,19 @@
 <!--
     Dating asks for each of these only after an in-app explanation:
     location for the profile's approximate point, panic and live sharing;
-    the camera for the blink-twice selfie video (no audio is recorded).
+    the camera for the blink-twice selfie video (no audio is recorded); the
+    microphone only while a voice prompt answer of up to 30 s is recorded.
     Declared here so only an app that ships Dating (Momentum) carries them.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
 
     <uses-feature
         android:name="android.hardware.camera.front"

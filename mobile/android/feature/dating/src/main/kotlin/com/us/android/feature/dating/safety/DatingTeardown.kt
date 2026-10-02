@@ -7,8 +7,8 @@ import javax.inject.Inject
 /**
  * Sign-out: what the kind-message checks (mechanic M13) and screen protection
  * (mechanic M18) remember for one account is dropped before the next signs in —
- * which conversations are Pulse chats, the verdicts on received texts, and the
- * client config.
+ * which conversations are Pulse chats, the verdicts on received texts, the
+ * stored "did this bother you?" answers, and the client config.
  */
 class DatingTeardown @Inject constructor(
     private val repository: DatingRepository,

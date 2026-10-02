@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,15 +17,19 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,7 +43,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsChoice
@@ -48,6 +57,9 @@ import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.dating.OnboardingStep
+import com.us.android.feature.dating.clips.ClipCopy
+import com.us.android.feature.dating.clips.ClipRules
+import com.us.android.feature.dating.clips.ClipStatus
 import com.us.android.feature.dating.location.LocationEffect
 import com.us.android.feature.dating.location.LocationStep
 import com.us.android.feature.dating.network.DatingProfileDto
@@ -461,6 +473,21 @@ fun PhotosScreen(
 @Composable
 fun PromptsScreen(onBack: () -> Unit, viewModel: PromptsViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    // Mechanic M15: the microphone is asked for only after the explanation.
+    val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission(), viewModel::micPermissionResult)
+    var pickingFor by rememberSaveable { mutableStateOf<Int?>(null) }
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        pickingFor?.let { viewModel.videoPicked(it, uri?.toString()) }
+        pickingFor = null
+    }
+    // Nothing is recorded in the background: leaving the screen throws the recording away.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) viewModel.cancelRecording() }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
     DatingScreen(title = "Prompts", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
         if (state.loading) {
             LoadingPane()
@@ -483,8 +510,100 @@ fun PromptsScreen(onBack: () -> Unit, viewModel: PromptsViewModel = hiltViewMode
                         enabled = !state.saving && PromptsViewModel.fits(text) && text.trim() != state.answers[prompt.id].orEmpty(),
                         onClick = { viewModel.answer(prompt.id, text) },
                     )
+                    PromptClipSection(
+                        promptId = prompt.id,
+                        state = state,
+                        onRecord = {
+                            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                            viewModel.recordVoice(prompt.id, micPermitted = granted)
+                        },
+                        onChooseVideo = {
+                            pickingFor = prompt.id
+                            videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                        },
+                        onStop = viewModel::stopRecording,
+                        onCancel = viewModel::cancelRecording,
+                        onRemove = { viewModel.removeClip(prompt.id) },
+                    )
                 }
             }
+        }
+    }
+    if (state.micRationaleFor != null) {
+        ConfirmDialog(
+            title = ClipCopy.MIC_TITLE,
+            body = ClipCopy.MIC_BODY,
+            confirmLabel = ClipCopy.MIC_CONTINUE,
+            onConfirm = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+            onDismiss = viewModel::dismissMicRationale,
+        )
+    }
+}
+
+/**
+ * One prompt's clip (mechanic M15): what is on the profile and where it
+ * stands, the countdown while recording, the upload, and Record voice /
+ * Choose video. Nothing at all once the server said the feature is off.
+ */
+@Composable
+private fun PromptClipSection(
+    promptId: Int,
+    state: PromptsUiState,
+    onRecord: () -> Unit,
+    onChooseVideo: () -> Unit,
+    onStop: () -> Unit,
+    onCancel: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val clip = state.clips[promptId]
+    val work = state.clipWork?.takeIf { it.promptId == promptId }
+    if (!state.clipsEnabled && clip == null) return
+    clip?.let { own ->
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+            Column(Modifier.weight(1f)) {
+                Text(ClipCopy.summary(own.kind, own.durationMs), style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textPrimary)
+                Text(
+                    own.statusLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when (own.status) {
+                        ClipStatus.LIVE -> UsTheme.extended.statusSuccess
+                        ClipStatus.CHECKING -> UsTheme.extended.textMuted
+                        ClipStatus.REJECTED -> UsTheme.extended.statusDanger
+                    },
+                )
+            }
+            if (state.clipsEnabled) {
+                TextButton(onClick = onRemove, enabled = !state.clipBusy) { Text(ClipCopy.REMOVE, color = UsTheme.extended.statusDanger) }
+            }
+        }
+    }
+    if (!state.clipsEnabled) return
+    when (work) {
+        is ClipWork.Recording -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+            Icon(UsIcons.Mic, contentDescription = null, tint = UsTheme.extended.statusDanger, modifier = Modifier.size(18.dp))
+            Text(
+                "${ClipCopy.RECORDING} · ${ClipRules.secondsLeft(work.secondsLeft)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onCancel) { Text(ClipCopy.CANCEL, color = UsTheme.extended.textMuted) }
+            TextButton(onClick = onStop) { Text(ClipCopy.STOP, color = UsTheme.extended.accentSolid) }
+        }
+        // Removing shows on the clip's own row (its button is disabled meanwhile).
+        is ClipWork.Removing -> Unit
+        is ClipWork.Uploading, is ClipWork.Attaching -> Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
+            Text(ClipCopy.UPLOADING, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+            val progress = (work as? ClipWork.Uploading)?.progress
+            if (progress != null && progress > 0f) {
+                LinearProgressIndicator(progress = { progress }, color = UsTheme.extended.accentSolid, modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(color = UsTheme.extended.accentSolid, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        null -> Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+            UsSecondaryButton(text = ClipCopy.RECORD_VOICE, enabled = !state.clipBusy, onClick = onRecord, modifier = Modifier.weight(1f))
+            UsSecondaryButton(text = ClipCopy.CHOOSE_VIDEO, enabled = !state.clipBusy, onClick = onChooseVideo, modifier = Modifier.weight(1f))
         }
     }
 }

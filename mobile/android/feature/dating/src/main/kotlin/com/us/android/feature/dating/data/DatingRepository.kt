@@ -59,6 +59,8 @@ import com.us.android.feature.dating.network.ProfileOptionsDto
 import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PromptAnswerRequest
 import com.us.android.feature.dating.network.PromptCatalogItemDto
+import com.us.android.feature.dating.network.PromptClipRequest
+import com.us.android.feature.dating.network.PromptClipViewDto
 import com.us.android.feature.dating.network.PulseTodayDto
 import com.us.android.feature.dating.network.ReadReceiptsDto
 import com.us.android.feature.dating.network.ReadReceiptsRequest
@@ -175,6 +177,13 @@ class DatingRepository @Inject constructor(
         call { api.answerPrompt(promptId, PromptAnswerRequest(answer)) }
 
     suspend fun deletePrompt(promptId: Int): DatingResult<StatusDto> = call { api.deletePrompt(promptId) }
+
+    /** Attaches the uploaded clip [mediaId] to the caller's prompt [promptId] (mechanic M15). */
+    suspend fun putPromptClip(promptId: Int, mediaId: String): DatingResult<PromptClipViewDto> =
+        call { api.putPromptClip(promptId, PromptClipRequest(mediaId)) }
+
+    /** Removes the clip from the caller's prompt [promptId] (mechanic M15). */
+    suspend fun deletePromptClip(promptId: Int): DatingResult<StatusDto> = call { api.deletePromptClip(promptId) }
 
     suspend fun selfieChallenge(): DatingResult<SelfieChallengeDto> = call { api.selfieChallenge() }
 

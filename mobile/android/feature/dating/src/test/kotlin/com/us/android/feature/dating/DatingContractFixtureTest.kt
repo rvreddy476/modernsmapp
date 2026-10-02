@@ -4,6 +4,15 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.feature.dating.data.DatingError
+import com.us.android.feature.dating.clips.ClipCopy
+import com.us.android.feature.dating.clips.ClipKind
+import com.us.android.feature.dating.clips.ClipRules
+import com.us.android.feature.dating.clips.ClipStatus
+import com.us.android.feature.dating.clips.OwnClipUi
+import com.us.android.feature.dating.clips.PromptClipUi
+import com.us.android.feature.dating.clips.clipRefusal
+import com.us.android.feature.dating.network.ClipTooLongDetailsDto
+import com.us.android.feature.dating.network.PromptClipViewDto
 import com.us.android.feature.dating.home.AllowanceUi
 import com.us.android.feature.dating.home.DeckCopy
 import com.us.android.feature.dating.home.DeckUi
@@ -1226,6 +1235,67 @@ class DatingContractFixtureTest {
             assertThat(detail.diet).isEqualTo("vegetarian")
             assertThat(it.lastActiveLabel).isEqualTo("Active today")
         },
+        // ── Mechanic M15: voice and video prompt answers ────────────────────
+        "prompt_clip_put_200_approved.json" to data(PromptClipViewDto.serializer()) {
+            assertThat(it.promptId).isEqualTo(1)
+            assertThat(it.kind).isEqualTo("video")
+            assertThat(it.durationMs).isEqualTo(12_000L)
+            assertThat(it.status).isEqualTo("approved")
+            // Omitted unless rejected.
+            assertThat(it.reason).isNull()
+            assertThat(ClipKind.fromWire(it.kind)).isEqualTo(ClipKind.VIDEO)
+            assertThat(ClipStatus.fromWire(it.status)).isEqualTo(ClipStatus.LIVE)
+            assertThat(OwnClipUi(ClipKind.VIDEO, it.durationMs, ClipStatus.LIVE).statusLine).isEqualTo("Live on your profile")
+        },
+        "prompt_clip_put_200_pending_review.json" to data(PromptClipViewDto.serializer()) {
+            assertThat(it.promptId).isEqualTo(2)
+            assertThat(it.kind).isEqualTo("audio")
+            assertThat(it.durationMs).isEqualTo(8_000L)
+            assertThat(it.status).isEqualTo("pending_review")
+            assertThat(ClipStatus.fromWire(it.status)).isEqualTo(ClipStatus.CHECKING)
+            assertThat(ClipCopy.summary(ClipKind.fromWire(it.kind)!!, it.durationMs)).isEqualTo("Voice answer · 0:08")
+        },
+        "prompt_clip_put_404_media_not_found.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("CLIP_MEDIA_NOT_FOUND")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+            assertThat(clipRefusal(error, strict)).isEqualTo(ClipCopy.MEDIA_NOT_FOUND)
+        },
+        "prompt_clip_put_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "prompt_clip_put_409_not_ready.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("CLIP_NOT_READY")
+            assertThat((error as DatingError.Refused).status).isEqualTo(409)
+            assertThat(clipRefusal(error, strict)).isEqualTo(ClipCopy.STILL_PROCESSING)
+        },
+        "prompt_clip_put_422_too_long.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("CLIP_TOO_LONG")
+            assertThat((error as DatingError.Refused).status).isEqualTo(422)
+            val max = details(error, ClipTooLongDetailsDto.serializer(), name).maxMs
+            assertThat(max).isEqualTo(ClipRules.MAX_CLIP_MS)
+            assertThat(clipRefusal(error, strict)).isEqualTo("Keep your clip to 30 seconds or less.")
+        },
+        "pulse_today_get_200_prompt_clip.json" to { _, raw ->
+            // A clip-only answer on a deck card: no words, an approved video, and only a route.
+            val card = strict.decodeFromString(PulseTodayDto.serializer(), raw).data.single()
+            val prompt = checkNotNull(card.profile.detail).prompts.single()
+            assertThat(prompt.promptId).isEqualTo(4)
+            assertThat(prompt.question).isEqualTo("A skill I'm working on...")
+            assertThat(prompt.answer).isEmpty()
+            val clip = checkNotNull(prompt.clip)
+            assertThat(clip.kind).isEqualTo("video")
+            assertThat(clip.durationMs).isEqualTo(10_000L)
+            assertThat(clip.url).isEqualTo("/v1/dating/people/<owner>/prompts/4/clip")
+            // The card keeps the clip-only answer and resolves the route on the API origin.
+            val ui = card.toCardUi(photoUrls())
+            val shown = checkNotNull(ui.detail).prompts.single()
+            assertThat(shown.answer).isEmpty()
+            assertThat(shown.clip).isEqualTo(
+                PromptClipUi(ClipKind.VIDEO, 10_000L, "https://api.test/v1/dating/people/<owner>/prompts/4/clip"),
+            )
+        },
     )
 
     @Test
@@ -1249,6 +1319,7 @@ class DatingContractFixtureTest {
             "pulse_today_get_200_refill.json" to 1,
             "pulse_today_get_200_out_of_cards.json" to 0,
             "pulse_today_get_200_travelling.json" to 1,
+            "pulse_today_get_200_prompt_clip.json" to 1,
         )
         // `/picks` is not the envelope either.
         val picks = mapOf("picks_get_200.json" to 1)

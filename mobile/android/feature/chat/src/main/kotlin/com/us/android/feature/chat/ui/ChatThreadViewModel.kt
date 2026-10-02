@@ -308,7 +308,8 @@ class ChatThreadViewModel @Inject constructor(
                 val theirs = message.senderId.isNotBlank() && message.senderId != viewerId
                 if (!theirs || message.pending || message.text.isBlank() || !asked.add(message.id)) continue
                 if (kindness.shouldCover(conversationId, message.id, message.text)) {
-                    _state.update { it.copy(covers = it.covers + (message.id to KindCover())) }
+                    val answered = kindness.alreadyAnswered(conversationId, message.id)
+                    _state.update { it.copy(covers = it.covers + (message.id to KindCover(answered = answered))) }
                 }
             }
         }

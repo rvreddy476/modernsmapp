@@ -2,6 +2,14 @@ package com.us.android.feature.dating.di
 
 import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.feature.dating.safety.DatingTeardown
+import com.us.android.feature.dating.safety.KindAnswerStore
+import com.us.android.feature.dating.safety.PrefsKindAnswerStore
+import com.us.android.feature.dating.clips.AndroidVideoDurationReader
+import com.us.android.feature.dating.clips.AndroidVoiceRecorder
+import com.us.android.feature.dating.clips.ClipUploader
+import com.us.android.feature.dating.clips.MediaClipUploader
+import com.us.android.feature.dating.clips.VideoDurationReader
+import com.us.android.feature.dating.clips.VoiceRecorder
 import dagger.multibindings.IntoSet
 import com.us.android.feature.dating.location.CurrentLocationSource
 import com.us.android.feature.dating.location.FusedCurrentLocationSource
@@ -35,6 +43,20 @@ abstract class DatingModule {
 
     @Binds
     abstract fun bindSelfieVideoUploader(impl: MediaSelfieVideoUploader): SelfieVideoUploader
+
+    /** Mechanic M15: voice and video prompt answers. */
+    @Binds
+    abstract fun bindClipUploader(impl: MediaClipUploader): ClipUploader
+
+    @Binds
+    abstract fun bindVoiceRecorder(impl: AndroidVoiceRecorder): VoiceRecorder
+
+    @Binds
+    abstract fun bindVideoDurationReader(impl: AndroidVideoDurationReader): VideoDurationReader
+
+    /** Mechanic M13: "did this bother you?" answered once per message. */
+    @Binds
+    abstract fun bindKindAnswerStore(impl: PrefsKindAnswerStore): KindAnswerStore
 
     /** Mechanics M13/M18: what Dating remembers per account goes at sign-out. */
     @Binds

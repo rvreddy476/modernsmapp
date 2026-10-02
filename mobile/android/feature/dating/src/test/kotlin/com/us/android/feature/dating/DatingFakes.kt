@@ -75,6 +75,8 @@ import com.us.android.feature.dating.network.PrivacyUpdateRequest
 import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PromptAnswerRequest
 import com.us.android.feature.dating.network.PromptCatalogItemDto
+import com.us.android.feature.dating.network.PromptClipRequest
+import com.us.android.feature.dating.network.PromptClipViewDto
 import com.us.android.feature.dating.network.ProfileOptionsDto
 import com.us.android.feature.dating.network.CardPhotoDto
 import com.us.android.feature.dating.network.DetailPromptDto
@@ -423,11 +425,35 @@ class FakeDatingApi : DatingApi {
 
     override suspend fun promptCatalog() = ok(listOf(PromptCatalogItemDto(1, "My ideal Sunday is...")))
 
-    override suspend fun prompts(): Response<ApiEnvelope<List<PromptAnswerDto>>> = Response.success(ApiEnvelope(data = null))
+    override suspend fun prompts(): Response<ApiEnvelope<List<PromptAnswerDto>>> = promptsResponse()
 
     override suspend fun answerPrompt(promptId: Int, body: PromptAnswerRequest) = ok(PromptAnswerDto(promptId = promptId, answer = body.answer))
 
     override suspend fun deletePrompt(promptId: Int) = ok(StatusDto("deleted"))
+
+    // ── Mechanic M15: prompt clips ──────────────────────────────────────────
+
+    /** `GET /prompts`; null data by default, as before. */
+    var promptsResponse: () -> Response<ApiEnvelope<List<PromptAnswerDto>>> = { Response.success(ApiEnvelope(data = null)) }
+    val clipWrites = mutableListOf<Pair<Int, String>>()
+
+    /** `PUT /prompts/:promptId/clip`. The default is the approved golden, for the prompt asked about. */
+    var clipResponse: (promptId: Int, mediaId: String) -> Response<ApiEnvelope<PromptClipViewDto>> =
+        { promptId, _ -> ok(fixture("prompt_clip_put_200_approved.json", PromptClipViewDto.serializer()).copy(promptId = promptId)) }
+    val clipDeletes = mutableListOf<Int>()
+    var clipDeleteResponse: (promptId: Int) -> Response<ApiEnvelope<StatusDto>> = { ok(StatusDto("deleted")) }
+
+    override suspend fun putPromptClip(promptId: Int, body: PromptClipRequest): Response<ApiEnvelope<PromptClipViewDto>> {
+        calls += "clip:put"
+        clipWrites += promptId to body.mediaId
+        return clipResponse(promptId, body.mediaId)
+    }
+
+    override suspend fun deletePromptClip(promptId: Int): Response<ApiEnvelope<StatusDto>> {
+        calls += "clip:delete"
+        clipDeletes += promptId
+        return clipDeleteResponse(promptId)
+    }
 
     override suspend fun selfieChallenge(): Response<ApiEnvelope<SelfieChallengeDto>> {
         calls += "challenge"
@@ -846,6 +872,19 @@ class FakeDatingApi : DatingApi {
 
 fun premiumPayment(purchaseId: String = "purchase-1", status: String, refund: String? = null) =
     ok(PremiumPaymentDto(purchaseId = purchaseId, product = "pass_30d", status = status, amountMinor = 39_900, currency = "INR", refundStatus = refund))
+
+/** The device's stored "did this bother you?" answers, in memory; survives a new [DatingConversationKindness] like the real file does. */
+class FakeKindAnswers : com.us.android.feature.dating.safety.KindAnswerStore {
+    val stored = linkedMapOf<String, Boolean>()
+
+    override suspend fun answer(messageId: String): Boolean? = stored[messageId]
+
+    override suspend fun remember(messageId: String, bothered: Boolean) {
+        stored[messageId] = bothered
+    }
+
+    override suspend fun clear() = stored.clear()
+}
 
 class FakeLocation(var permission: Boolean = true, var fix: Coordinates? = Coordinates(17.44, 78.35)) : CurrentLocationSource {
     override fun hasPermission(): Boolean = permission

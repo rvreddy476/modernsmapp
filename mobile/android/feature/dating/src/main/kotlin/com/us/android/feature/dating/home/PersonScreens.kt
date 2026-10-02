@@ -29,6 +29,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.dating.clips.PromptClipPlayer
 import com.us.android.feature.dating.profile.ProfileOptionsUi
 import com.us.android.feature.dating.profile.rememberProfileOptions
 import com.us.android.feature.dating.safety.ProtectThisScreen
@@ -140,11 +141,18 @@ fun PersonDetailBody(detail: PersonDetailUi?, options: ProfileOptionsUi?, modifi
                         fontWeight = FontWeight.SemiBold,
                         color = UsTheme.extended.textDim,
                     )
-                    Text(
-                        text = prompt.answer,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = UsTheme.extended.textPrimary,
-                    )
+                    // A clip-only answer has no words: the clip is the answer.
+                    if (prompt.answer.isNotBlank()) {
+                        Text(
+                            text = prompt.answer,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = UsTheme.extended.textPrimary,
+                        )
+                    }
+                    // Mechanic M15: nothing plays until tapped; released when this card leaves.
+                    prompt.clip?.let { clip ->
+                        PromptClipPlayer(clip, modifier = Modifier.padding(top = UsTheme.spacing.s))
+                    }
                 }
             }
         }

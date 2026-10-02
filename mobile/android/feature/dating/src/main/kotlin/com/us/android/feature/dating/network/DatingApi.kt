@@ -98,6 +98,20 @@ interface DatingApi {
     @DELETE("v1/dating/prompts/{promptId}")
     suspend fun deletePrompt(@Path("promptId") promptId: Int): Response<ApiEnvelope<StatusDto>>
 
+    /**
+     * Mechanic M15: attaches an uploaded voice or video clip (≤ 30 s) to a
+     * prompt answer, creating a clip-only answer when there is none. 409
+     * CLIP_NOT_READY while media-service still processes it; 422 CLIP_TOO_LONG
+     * (details.max_ms) / CLIP_UNSUPPORTED; 404 CLIP_MEDIA_NOT_FOUND /
+     * MECHANIC_NOT_ENABLED; 503 CLIP_MEDIA_UNAVAILABLE.
+     */
+    @PUT("v1/dating/prompts/{promptId}/clip")
+    suspend fun putPromptClip(@Path("promptId") promptId: Int, @Body body: PromptClipRequest): Response<ApiEnvelope<PromptClipViewDto>>
+
+    /** Mechanic M15: removes the clip; the text answer, if any, stays. */
+    @DELETE("v1/dating/prompts/{promptId}/clip")
+    suspend fun deletePromptClip(@Path("promptId") promptId: Int): Response<ApiEnvelope<StatusDto>>
+
     // Selfie liveness
 
     @POST("v1/dating/verification/selfie/challenge")

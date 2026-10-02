@@ -41,6 +41,9 @@ interface ConversationKindness {
      */
     suspend fun shouldCover(conversationId: String, messageId: String, text: String): Boolean
 
+    /** "Did this bother you?" was already answered for [messageId]: a cover shows without asking again. */
+    suspend fun alreadyAnswered(conversationId: String, messageId: String): Boolean = false
+
     /**
      * The viewer answered "did this bother you?" about [messageId] in
      * [conversationId]. True when the report flow should be offered next. A

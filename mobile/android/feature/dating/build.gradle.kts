@@ -46,6 +46,14 @@ dependencies {
     // OkHttp client (bearer on the API origin only, redirects followed).
     implementation(libs.coil.compose)
 
+    // Voice and video prompt answers (mechanic M15): ExoPlayer comes from
+    // :core:media's PlayerFactory (media3 is `api` there); the clip route is
+    // read through the same authenticated OkHttp client, uncached, and a video
+    // draws through the Compose surface :feature:feed and :feature:tube use.
+    // Both libraries are already in the app — no new third-party code.
+    implementation(libs.media3.datasource.okhttp)
+    implementation(libs.media3.ui.compose)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)

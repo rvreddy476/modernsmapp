@@ -26,7 +26,10 @@ import javax.inject.Singleton
  *    message id). `kind: false` covers it ("Tap to read") and asks "Did this
  *    bother you?": Yes posts `bothered: true`, and the 201's `offer_report`
  *    offers the ordinary report flow for the sender; No posts `bothered: false`
- *    and uncovers it.
+ *    and uncovers it. Once answered, the answer is kept by message id
+ *    ([KindAnswerStore], across restarts, until sign-out): reopening the chat
+ *    neither asks again nor records a second answer — a "yes" stays covered,
+ *    already answered, and a "no" stays uncovered.
  *  - `404 MECHANIC_NOT_ENABLED` from any of these switches the checks off for
  *    the rest of the session, silently.
  *
@@ -43,11 +46,16 @@ import javax.inject.Singleton
 class DatingConversationKindness internal constructor(
     private val repository: DatingRepository,
     private val session: DatingSession,
+    private val answers: KindAnswerStore,
     private val clock: () -> Long,
 ) : ConversationKindness {
 
     @Inject
-    constructor(repository: DatingRepository, session: DatingSession) : this(repository, session, System::currentTimeMillis)
+    constructor(repository: DatingRepository, session: DatingSession, answers: KindAnswerStore) :
+        this(repository, session, answers, System::currentTimeMillis)
+
+    /** Answers on their way to the server, so a double tap records one. */
+    private val answering = mutableSetOf<String>()
 
     private val lookup = Mutex()
     private var lastLookupAt: Long? = null
@@ -79,28 +87,47 @@ class DatingConversationKindness internal constructor(
         synchronized(judged) { judged[messageId] }?.let { return it }
         val trimmed = text.trim()
         if (trimmed.isEmpty() || trimmed.codePointCount(0, trimmed.length) > MAX_TEXT || matchOf(conversationId) == null) return false
+        // Already answered here: "yes" stays covered, "no" stays uncovered, and nothing is asked.
+        answers.answer(messageId)?.let { bothered ->
+            synchronized(judged) { judged[messageId] = bothered }
+            return bothered
+        }
         // Only an answer is kept: a failure is not a verdict.
         val cover = unkind(trimmed) ?: return false
         synchronized(judged) { judged[messageId] = cover }
         return cover
     }
 
+    override suspend fun alreadyAnswered(conversationId: String, messageId: String): Boolean =
+        messageId.isNotBlank() && answers.answer(messageId) != null
+
     override suspend fun bothered(conversationId: String, messageId: String, bothered: Boolean): Boolean {
         val matchId = matchOf(conversationId) ?: return false
-        // "No": the viewer read it and it was fine — it stays uncovered from now on.
-        if (!bothered) synchronized(judged) { judged[messageId] = false }
-        return when (val result = repository.bothered(matchId, bothered)) {
-            is DatingResult.Success -> result.value.offerReport
-            is DatingResult.Failure -> {
-                switchOffIfDisabled(result.error)
-                false
+        // One answer per message, ever: a second one — a reopened chat, a double tap — records nothing.
+        if (answers.answer(messageId) != null) return false
+        if (!synchronized(answering) { answering.add(messageId) }) return false
+        try {
+            // "No": the viewer read it and it was fine — it stays uncovered from now on.
+            if (!bothered) synchronized(judged) { judged[messageId] = false }
+            return when (val result = repository.bothered(matchId, bothered)) {
+                is DatingResult.Success -> {
+                    answers.remember(messageId, bothered)
+                    result.value.offerReport
+                }
+                is DatingResult.Failure -> {
+                    switchOffIfDisabled(result.error)
+                    false
+                }
             }
+        } finally {
+            synchronized(answering) { answering.remove(messageId) }
         }
     }
 
-    /** Sign-out: nothing judged for one account is kept for the next. */
-    fun forget() {
+    /** Sign-out: nothing judged or answered for one account is kept for the next. */
+    suspend fun forget() {
         synchronized(judged) { judged.clear() }
+        answers.clear()
         lastLookupAt = null
         unavailable = false
     }

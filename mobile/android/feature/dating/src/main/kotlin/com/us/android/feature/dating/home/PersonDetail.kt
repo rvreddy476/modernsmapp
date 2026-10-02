@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.feature.dating.DatingCopy
 import com.us.android.feature.dating.DatingIntent
 import com.us.android.feature.dating.DistanceBucket
+import com.us.android.feature.dating.clips.PromptClipUi
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.network.CardPhotoDto
@@ -48,8 +49,11 @@ data class PersonDetailUi(
         get() = bio == null && prompts.isEmpty() && languages.isEmpty() && gallery.isEmpty() && basics.isEmpty
 }
 
-/** One catalogue question and this person's answer. */
-data class PromptUi(val promptId: Int, val question: String, val answer: String)
+/**
+ * One catalogue question and this person's answer: words, a voice or video
+ * [clip] (mechanic M15), or both. [answer] is empty for a clip-only answer.
+ */
+data class PromptUi(val promptId: Int, val question: String, val answer: String, val clip: PromptClipUi? = null)
 
 /**
  * One gallery photo, already resolved to the variant ITS OWN `state` allows.
@@ -68,7 +72,7 @@ internal fun ProfileDetailDto?.toUi(urls: DatingPhotoUrls): PersonDetailUi? {
     val dto = this ?: return null
     val detail = PersonDetailUi(
         bio = dto.bio.trim().takeIf { it.isNotBlank() },
-        prompts = dto.prompts.mapNotNull { it.toUi() },
+        prompts = dto.prompts.mapNotNull { it.toUi(urls) },
         languages = dto.languages.map { it.trim() }.filter { it.isNotBlank() },
         gallery = dto.photos.mapNotNull { it.toUi(urls) },
         basics = dto.basicsCodes(),
@@ -86,10 +90,12 @@ internal fun ProfileDetailDto.basicsCodes(): ProfileBasicsCodes = ProfileBasicsC
     diet = diet.trim().takeIf { it.isNotEmpty() },
 )
 
-private fun com.us.android.feature.dating.network.DetailPromptDto.toUi(): PromptUi? {
+/** Nothing to show — no question, or neither words nor a clip we can play — is no prompt at all. */
+private fun com.us.android.feature.dating.network.DetailPromptDto.toUi(urls: DatingPhotoUrls): PromptUi? {
     val q = question.trim()
     val a = answer.trim()
-    return if (q.isBlank() || a.isBlank()) null else PromptUi(promptId, q, a)
+    val clip = urls.forClip(clip)
+    return if (q.isBlank() || (a.isBlank() && clip == null)) null else PromptUi(promptId, q, a, clip)
 }
 
 /**

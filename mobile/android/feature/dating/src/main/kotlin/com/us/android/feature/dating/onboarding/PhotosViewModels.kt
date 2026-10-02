@@ -7,8 +7,6 @@ import com.us.android.feature.dating.DatingCopy
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.network.DatingPhotoDto
-import com.us.android.feature.dating.network.PromptAnswerDto
-import com.us.android.feature.dating.network.PromptCatalogItemDto
 import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.photos.PhotoUploader
 import com.us.android.feature.dating.photos.UploadOutcome
@@ -150,66 +148,5 @@ class PhotosViewModel @Inject constructor(
             "BORDERLINE_CONTENT" -> "That photo needs a moderator's review."
             else -> "That photo wasn't approved. Choose a clear photo of you."
         }
-    }
-}
-
-data class PromptsUiState(
-    val loading: Boolean = true,
-    val catalog: List<PromptCatalogItemDto> = emptyList(),
-    val answers: Map<Int, String> = emptyMap(),
-    val saving: Boolean = false,
-    val message: UsMessage? = null,
-)
-
-/** Optional prompts: up to the catalog's questions, each answer ≤ 280 bytes (checked the way the server checks). */
-@HiltViewModel
-class PromptsViewModel @Inject constructor(
-    private val repository: DatingRepository,
-) : ViewModel() {
-
-    private val _state = MutableStateFlow(PromptsUiState())
-    val state: StateFlow<PromptsUiState> = _state.asStateFlow()
-
-    init {
-        viewModelScope.launch {
-            val catalog = (repository.promptCatalog() as? DatingResult.Success)?.value.orEmpty()
-            val answers = (repository.prompts() as? DatingResult.Success)?.value.orEmpty()
-            _state.update { it.copy(loading = false, catalog = catalog, answers = answers.toMap()) }
-        }
-    }
-
-    fun dismissMessage() = _state.update { it.copy(message = null) }
-
-    fun answer(promptId: Int, text: String) {
-        val trimmed = text.trim()
-        if (!fits(trimmed)) {
-            _state.update { it.copy(message = errorMessage("Keep your answer under 280 characters.")) }
-            return
-        }
-        _state.update { it.copy(saving = true) }
-        viewModelScope.launch {
-            val result = if (trimmed.isEmpty()) {
-                repository.deletePrompt(promptId).let { r -> if (r is DatingResult.Success) null else r }
-            } else {
-                repository.answerPrompt(promptId, trimmed).let { r -> if (r is DatingResult.Success) null else r }
-            }
-            if (result is DatingResult.Failure) {
-                _state.update { it.copy(saving = false, message = DatingCopy.message(result.error)) }
-            } else {
-                _state.update {
-                    val answers = if (trimmed.isEmpty()) it.answers - promptId else it.answers + (promptId to trimmed)
-                    it.copy(saving = false, answers = answers, message = successMessage("Saved."))
-                }
-            }
-        }
-    }
-
-    private fun List<PromptAnswerDto>.toMap(): Map<Int, String> = associate { it.promptId to it.answer }
-
-    companion object {
-        /** The server measures bytes after trimming, not characters. */
-        const val MAX_ANSWER_BYTES = 280
-
-        fun fits(answer: String): Boolean = answer.trim().toByteArray(Charsets.UTF_8).size <= MAX_ANSWER_BYTES
     }
 }
