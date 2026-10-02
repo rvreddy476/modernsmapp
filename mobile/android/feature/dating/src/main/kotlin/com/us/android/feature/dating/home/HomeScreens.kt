@@ -51,7 +51,8 @@ import com.us.android.feature.dating.ui.listPadding
 enum class HomeTab(val label: String) { PULSE("Pulse"), SPARKS("Sparks"), MATCHES("Matches") }
 
 /**
- * Dating home once the profile is active: Pulse, incoming sparks and matches.
+ * Dating home once the profile is active: Pulse, who sparked you (the
+ * "liked you" grid, mechanic M4, in [LikedYouGrid]) and matches.
  *
  * A new match — from the deck or from a spark sent back — takes the whole
  * screen (see [MatchCelebrationScreen]) until it is answered. It is state on
@@ -70,7 +71,7 @@ fun DatingHomeScreen(
     onOpenPremium: () -> Unit,
     onOpenSettings: () -> Unit,
     pulse: PulseViewModel = hiltViewModel(),
-    sparks: SparksViewModel = hiltViewModel(),
+    sparks: LikedYouViewModel = hiltViewModel(),
     matches: MatchesViewModel = hiltViewModel(),
 ) {
     var tab by rememberSaveable { mutableStateOf(initialTab) }
@@ -127,7 +128,7 @@ fun DatingHomeScreen(
             Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
                 when (tab) {
                     HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson, onOpenPremium)
-                    HomeTab.SPARKS -> SparksList(sparks, onOpenPerson)
+                    HomeTab.SPARKS -> LikedYouGrid(sparks, onOpenPerson, onOpenPremium)
                     HomeTab.MATCHES -> MatchesList(matches, onOpenMatch)
                 }
             }
@@ -135,85 +136,9 @@ fun DatingHomeScreen(
     }
 }
 
-@Composable
-private fun SparksList(viewModel: SparksViewModel, onOpenPerson: (String) -> Unit) {
-    LaunchedEffect(Unit) { viewModel.refresh() }
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    var reporting by remember { mutableStateOf<IncomingSparkUi?>(null) }
-    when (val s = state) {
-        ListState.Loading -> LoadingPane()
-        is ListState.Failed -> MessagePane(title = "Sparks didn't load", body = s.message, primaryLabel = "Try again", onPrimary = viewModel::refresh)
-        is ListState.Items -> if (s.items.isEmpty()) {
-            MessagePane(title = "No sparks yet", body = "When someone sparks you, they'll show up here.", icon = UsIcons.HeartOutline)
-        } else {
-            LazyColumn(
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.l),
-                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-            ) {
-                items(s.items, key = { it.sparkId }) { spark ->
-                    DatingCard(onClick = { onOpenPerson(spark.fromUserId) }) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-                            DatingPhoto(url = spark.photoUrl, contentDescription = null, modifier = Modifier.size(56.dp).clip(CircleShape))
-                            Column(Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-                                    Text(
-                                        personLine(spark.name, spark.age) ?: "Someone sparked you",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = UsTheme.extended.textPrimary,
-                                    )
-                                    if (spark.verified) Pill("Verified", Tone.Positive)
-                                }
-                                if (spark.superSpark) SuperSparkMark()
-                                // One line, the deck's separator: city and intent
-                                // join the distance the row already carried rather
-                                // than adding rows to a row that is already dense.
-                                val about = listOfNotNull(spark.city, spark.intent, spark.distance).joinToString(" · ")
-                                if (about.isNotBlank()) {
-                                    Text(about, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
-                                }
-                                spark.note?.let { Text("“$it”", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary) }
-                            }
-                            IconButton(onClick = { reporting = spark }) { Icon(UsIcons.Flag, contentDescription = "Report", tint = UsTheme.extended.textMuted) }
-                        }
-                        // The same pre-match detail the deck shows: decline or
-                        // spark back is a decision, so it needs the same to go on.
-                        spark.detail?.gallery?.takeIf { it.isNotEmpty() }?.let { gallery ->
-                            PersonGallery(
-                                photos = gallery,
-                                fallbackUrl = spark.photoUrl,
-                                name = spark.name,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(PHOTO_RATIO)
-                                    .clip(RoundedCornerShape(UsTheme.radii.card)),
-                            )
-                        }
-                        PersonDetailBody(spark.detail)
-                        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-                            UsSecondaryButton(text = "Decline", onClick = { viewModel.decline(spark) }, modifier = Modifier.weight(1f))
-                            UsButton(text = "Spark back", onClick = { viewModel.accept(spark) }, modifier = Modifier.weight(1f))
-                        }
-                    }
-                }
-            }
-        }
-    }
-    reporting?.let { spark ->
-        ReportSheet(
-            initial = ReportDraft(targetId = spark.fromUserId, sparkIds = listOf(spark.sparkId)),
-            name = spark.name,
-            onSubmit = {
-                viewModel.report(it)
-                reporting = null
-            },
-            onDismiss = { reporting = null },
-        )
-    }
-}
-
 /** An incoming Super Spark: a star and our own words, in the warm status colour. */
 @Composable
-private fun SuperSparkMark() {
+internal fun SuperSparkMark() {
     val color = UsTheme.extended.statusWarning
     Row(
         verticalAlignment = Alignment.CenterVertically,

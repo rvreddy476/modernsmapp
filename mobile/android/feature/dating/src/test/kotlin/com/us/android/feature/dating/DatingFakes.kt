@@ -31,6 +31,8 @@ import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.DeleteProfileRequest
 import com.us.android.feature.dating.network.ExplainDto
+import com.us.android.feature.dating.network.LikedYouDto
+import com.us.android.feature.dating.network.LikedYouItemDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.MyLocationShareDto
 import com.us.android.feature.dating.network.MyLocationSharesDto
@@ -214,6 +216,14 @@ fun match(id: String, other: String, card: DatingPersonDto? = person(other)) =
 
 fun spark(id: String, from: String, card: DatingPersonDto? = person(from)) =
     SparkDto(id = id, fromUserId = from, toUserId = ME, targetKind = "photo", targetRef = "0", person = card)
+
+/** An unlocked "liked you" card: the sender's person card, their note and their photo route. */
+fun likedYouOpen(sparkId: String, from: String, superSpark: Boolean = false, card: DatingPersonDto? = person(from), note: String? = "Hi") =
+    LikedYouItemDto(sparkId = sparkId, superSpark = superSpark, createdAt = "t", photoUrl = card?.primaryPhotoUrl.orEmpty(), person = card, note = note)
+
+/** A locked "liked you" card, exactly as the server sends one: the spark, the flag and the blurred route. */
+fun likedYouLocked(sparkId: String, superSpark: Boolean = false) =
+    LikedYouItemDto(sparkId = sparkId, superSpark = superSpark, createdAt = "t", photoUrl = "/v1/dating/liked-you/$sparkId/photo")
 
 /**
  * A trusted contact as `GET /safety/trusted-contacts` lists it. [card] is null
@@ -416,9 +426,23 @@ class FakeDatingApi : DatingApi {
         return ok(incoming)
     }
 
+    /** `GET /liked-you`, by (limit, offset). The default is an empty, unlocked grid: the gate off. */
+    var likedYouResponse: (limit: Int, offset: Int) -> Response<ApiEnvelope<LikedYouDto>> =
+        { _, _ -> ok(LikedYouDto(unlocked = true)) }
+    val likedYouReads = mutableListOf<Pair<Int, Int>>()
+
+    override suspend fun likedYou(limit: Int, offset: Int): Response<ApiEnvelope<LikedYouDto>> {
+        calls += "liked-you"
+        likedYouReads += limit to offset
+        return likedYouResponse(limit, offset)
+    }
+
+    var declineResponse: (String) -> Response<ApiEnvelope<SparkDeclineDto>> = { ok(SparkDeclineDto(declined = true, sparkId = it)) }
+
     override suspend fun declineSpark(id: String): Response<ApiEnvelope<SparkDeclineDto>> {
+        calls += "decline"
         declines += id
-        return ok(SparkDeclineDto(declined = true, sparkId = id))
+        return declineResponse(id)
     }
 
     override suspend fun acceptSpark(id: String): Response<ApiEnvelope<SparkCreatedDto>> {

@@ -66,6 +66,22 @@ object PhotoRules {
     fun statePath(serverPath: String?, photoState: String?): String? =
         photoIdOf(serverPath)?.let { pathFor(it, variantForState(photoState)) }
 
+    private val LIKED_YOU_PHOTO_PATH = Regex("^/v1/dating/liked-you/([^/?#]+)/photo$")
+
+    /**
+     * A locked "liked you" card's image (mechanic M4): the route that only ever
+     * redirects to the server-blurred variant. Anything else — a full photo
+     * route included — is refused (null), so a locked card can never be handed
+     * a full image by mistake.
+     */
+    fun likedYouPath(serverPath: String?): String? =
+        serverPath?.trim()?.takeIf { LIKED_YOU_PHOTO_PATH.matches(it) }
+
+    /** The same route for a spark id, for a card the app had to lock itself (403 LIKED_YOU_LOCKED). */
+    fun likedYouPathFor(sparkId: String): String? =
+        sparkId.trim().takeIf { it.isNotEmpty() && it.none { c -> c == '/' || c == '?' || c == '#' } }
+            ?.let { "/v1/dating/liked-you/$it/photo" }
+
     const val STATE_FULL = "full"
     const val STATE_BLURRED = "blurred"
 }
@@ -91,6 +107,12 @@ class DatingPhotoUrls @Inject constructor(private val config: ApiConfig) {
      */
     fun forGalleryPhoto(photo: CardPhotoDto?): String? =
         PhotoRules.statePath(photo?.url, photo?.state)?.let(::absolute)
+
+    /** A locked "liked you" card's blurred image; null for anything but that route. */
+    fun forLikedYou(serverPath: String?): String? = PhotoRules.likedYouPath(serverPath)?.let(::absolute)
+
+    /** The blurred route built from a spark id, for a card the app locked itself. */
+    fun forLikedYouSpark(sparkId: String): String? = PhotoRules.likedYouPathFor(sparkId)?.let(::absolute)
 
     /** The person's own photo, always the full variant. */
     fun own(photoId: String): String = absolute(PhotoRules.pathFor(photoId, PhotoVariant.FULL))

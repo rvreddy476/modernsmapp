@@ -58,6 +58,8 @@ import com.us.android.feature.dating.network.StopShareDto
 import com.us.android.feature.dating.network.TrustedContactDto
 import com.us.android.feature.dating.network.TrustedContactsDto
 import com.us.android.feature.dating.network.VerificationStatusDto
+import com.us.android.feature.dating.network.LikedYouDto
+import com.us.android.feature.dating.photos.PhotoRules
 import com.us.android.feature.dating.premium.toReading
 import com.us.android.feature.dating.safety.MAX_TRUSTED_CONTACTS
 import com.us.android.feature.dating.selfie.SelfieOutcomes
@@ -565,6 +567,55 @@ class DatingContractFixtureTest {
             assertThat(it.deck).isNull()
             assertThat(it.rewind).isNull()
             assertThat(it.superSpark).isNull()
+        },
+        // ── Mechanic M4: who liked you ──────────────────────────────────────
+        "liked_you_get_200_locked.json" to data(LikedYouDto.serializer()) {
+            assertThat(it.total).isEqualTo(2)
+            assertThat(it.unlocked).isFalse()
+            // Super Sparks first; an ordinary spark omits the key.
+            assertThat(it.items.map { i -> i.superSpark }).containsExactly(true, false).inOrder()
+            it.items.forEach { item ->
+                assertThat(item.sparkId).isEqualTo("<uuid>")
+                // Nothing that identifies the sender, and only the blurred route.
+                assertThat(item.person).isNull()
+                assertThat(item.note).isNull()
+                assertThat(item.photoUrl).isEqualTo("/v1/dating/liked-you/<uuid>/photo")
+                assertThat(PhotoRules.likedYouPath(item.photoUrl)).isEqualTo(item.photoUrl)
+                assertThat(PhotoRules.photoIdOf(item.photoUrl)).isNull()
+            }
+        },
+        "liked_you_get_200_unlocked.json" to data(LikedYouDto.serializer()) {
+            assertThat(it.total).isEqualTo(2)
+            assertThat(it.unlocked).isTrue()
+            assertThat(it.items.map { i -> i.superSpark }).containsExactly(true, false).inOrder()
+            assertThat(it.items.map { i -> checkNotNull(i.person).userId }).containsExactly("<super_sender>", "<sender>").inOrder()
+            it.items.forEach { item ->
+                val person = checkNotNull(item.person)
+                assertThat(person.firstName).isEqualTo("Asha")
+                assertThat(person.age).isEqualTo(30)
+                assertThat(person.photoState).isEqualTo("full")
+                // The item's photo is the person's own route.
+                assertThat(item.photoUrl).isEqualTo(person.primaryPhotoUrl)
+                assertThat(item.note).isEqualTo("Loved your answer")
+                assertThat(checkNotNull(person.detail).photos.single().state).isEqualTo("full")
+            }
+        },
+        "sparks_incoming_get_200_locked.json" to data(listSerializer(SparkDto.serializer())) {
+            assertThat(it.map { s -> s.superSpark }).containsExactly(true, false).inOrder()
+            it.forEach { spark ->
+                assertThat(spark.locked).isTrue()
+                assertThat(spark.id).isEqualTo("<uuid>")
+                // No sender at all: the old list path must cope with that.
+                assertThat(spark.fromUserId).isEmpty()
+                assertThat(spark.person).isNull()
+                assertThat(spark.note).isNull()
+                assertThat(spark.photoUrl).isEqualTo("/v1/dating/liked-you/<uuid>/photo")
+            }
+        },
+        "spark_accept_403_liked_you_locked.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("LIKED_YOU_LOCKED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo("You'll need a Premium pass to see who sparked you.")
         },
         "spark_create_post_201_matched.json" to data(SparkCreatedDto.serializer()) {
             assertThat(it.matched).isTrue()

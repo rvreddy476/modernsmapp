@@ -40,6 +40,7 @@ object DatingCopy {
             "REWIND_LIMIT_REACHED" -> "You've used today's undos."
             "REWIND_NOTHING_TO_UNDO" -> "There's no pass to undo."
             "MECHANIC_NOT_ENABLED" -> "That isn't available right now."
+            "LIKED_YOU_LOCKED" -> "You'll need a Premium pass to see who sparked you."
             "SPARK_NOTE_REFUSED" ->"Notes can't include phone numbers, emails or links."
             "EXPLAIN_RATE_LIMITED" -> "Try again later."
             "PROFILE_TRANSITION_NOT_ALLOWED", "PROFILE_STATUS_CONFLICT" -> "Your profile can't do that right now."

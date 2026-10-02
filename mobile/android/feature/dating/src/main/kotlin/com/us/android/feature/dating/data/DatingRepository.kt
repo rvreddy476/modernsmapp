@@ -16,6 +16,7 @@ import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.DeleteProfileRequest
 import com.us.android.feature.dating.network.ExplainDto
+import com.us.android.feature.dating.network.LikedYouDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.MyLocationSharesDto
 import com.us.android.feature.dating.network.PanicDto
@@ -179,6 +180,9 @@ class DatingRepository @Inject constructor(
         }
 
     suspend fun incomingSparks(): DatingResult<List<SparkDto>> = list { api.incomingSparks() }
+
+    /** Who sparked the caller (mechanic M4), one page; the total spans every page. */
+    suspend fun likedYou(limit: Int, offset: Int): DatingResult<LikedYouDto> = call { api.likedYou(limit, offset) }
 
     suspend fun declineSpark(sparkId: String): DatingResult<SparkDeclineDto> = call { api.declineSpark(sparkId) }
 

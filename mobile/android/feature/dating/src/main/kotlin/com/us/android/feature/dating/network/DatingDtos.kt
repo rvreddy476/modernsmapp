@@ -515,8 +515,49 @@ data class SparkDto(
     @SerialName("created_at") val createdAt: String = "",
     /** A Super Spark. Omitted when false; incoming Super Sparks are listed first by the server. */
     @SerialName("super") val superSpark: Boolean = false,
-    /** The SENDER, on `GET /sparks/incoming`. Absent on a spark the app just created. */
+    /**
+     * The SENDER, on `GET /sparks/incoming`. Absent on a spark the app just
+     * created, and on a LOCKED incoming spark (mechanic M4).
+     */
     val person: DatingPersonDto? = null,
+    /**
+     * Locked incoming sparks only (mechanic M4, the gate on and no pass): the
+     * blurred-image route `/v1/dating/liked-you/<id>/photo`. Such a row carries
+     * no `from_user_id`, `person` or `note`.
+     */
+    @SerialName("photo_url") val photoUrl: String = "",
+    /** True on an incoming spark the caller may not see the sender of. Omitted otherwise. */
+    val locked: Boolean = false,
+)
+
+// ── Who liked you (mechanic M4; fixtures liked_you_get_200_locked/_unlocked) ─
+
+/**
+ * One card of `GET /liked-you`.
+ *
+ * LOCKED (the response's `unlocked` false): only [sparkId], [superSpark],
+ * [createdAt] and [photoUrl] — the server-blurred route
+ * `/v1/dating/liked-you/<spark_id>/photo`. UNLOCKED: [person] and [note] too,
+ * and [photoUrl] is the person's own photo route. The app never shows a person
+ * from a locked response, even if one arrived.
+ */
+@Serializable
+data class LikedYouItemDto(
+    @SerialName("spark_id") val sparkId: String = "",
+    /** A Super Spark. Omitted when false; the server lists these first. */
+    @SerialName("super") val superSpark: Boolean = false,
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("photo_url") val photoUrl: String = "",
+    val person: DatingPersonDto? = null,
+    val note: String? = null,
+)
+
+/** `GET /liked-you`. [total] counts every visible incoming spark across pages. */
+@Serializable
+data class LikedYouDto(
+    val total: Int = 0,
+    val unlocked: Boolean = false,
+    val items: List<LikedYouItemDto> = emptyList(),
 )
 
 /** `match_id` and `matched` are present only when a mutual match formed. */

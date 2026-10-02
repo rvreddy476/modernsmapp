@@ -15,6 +15,7 @@ import com.us.android.feature.dating.data.code
 import com.us.android.feature.dating.data.detailsAs
 import com.us.android.feature.dating.data.valueOrNull
 import com.us.android.feature.dating.network.AllowancesDto
+import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.PulseCardDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
@@ -618,7 +619,10 @@ class SparksViewModel @Inject constructor(
             when (val result = repository.incomingSparks()) {
                 is DatingResult.Success -> {
                     list.failure.value = null
-                    list.rows.value = result.value
+                    // A LOCKED row (mechanic M4) names no sender: nothing on it
+                    // can be accepted, reported or shown, so this list leaves it
+                    // out. The "liked you" grid is where locked sparks appear.
+                    list.rows.value = result.value.filterNot { it.locked || it.fromUserId.isBlank() }
                 }
                 is DatingResult.Failure -> list.failure.value = DatingCopy.forError(result.error)
             }
@@ -683,25 +687,41 @@ class SparksViewModel @Inject constructor(
         }
     }
 
-    private fun SparkDto.toUi(): IncomingSparkUi = IncomingSparkUi(
-        sparkId = id,
-        fromUserId = fromUserId,
-        name = person?.firstName?.takeIf { it.isNotBlank() },
-        age = person?.age?.takeIf { it > 0 },
-        city = person?.city?.trim()?.takeIf { it.isNotBlank() },
-        intent = DatingIntent.labelFor(person?.intent),
-        distance = DistanceBucket.labelFor(person?.distanceBucket),
-        verified = person?.verified == true,
-        photoUrl = urls.forPerson(person),
-        note = note?.takeIf { it.isNotBlank() },
-        detail = person?.detail.toUi(urls),
-        superSpark = superSpark,
-    )
+    private fun SparkDto.toUi(): IncomingSparkUi =
+        incomingSparkUi(sparkId = id, fromUserId = fromUserId, person = person, note = note, superSpark = superSpark, urls = urls)
 
     private companion object {
         const val HTTP_NOT_FOUND = 404
     }
 }
+
+/**
+ * An incoming spark in display terms, from the sender's person card. Shared by
+ * the incoming list and the unlocked "liked you" grid, so the two can never
+ * describe the same person differently.
+ */
+internal fun incomingSparkUi(
+    sparkId: String,
+    fromUserId: String,
+    person: DatingPersonDto?,
+    note: String?,
+    superSpark: Boolean,
+    urls: DatingPhotoUrls,
+    photoUrl: String? = urls.forPerson(person),
+): IncomingSparkUi = IncomingSparkUi(
+    sparkId = sparkId,
+    fromUserId = fromUserId,
+    name = person?.firstName?.takeIf { it.isNotBlank() },
+    age = person?.age?.takeIf { it > 0 },
+    city = person?.city?.trim()?.takeIf { it.isNotBlank() },
+    intent = DatingIntent.labelFor(person?.intent),
+    distance = DistanceBucket.labelFor(person?.distanceBucket),
+    verified = person?.verified == true,
+    photoUrl = photoUrl,
+    note = note?.takeIf { it.isNotBlank() },
+    detail = person?.detail.toUi(urls),
+    superSpark = superSpark,
+)
 
 data class MatchUi(
     val matchId: String,

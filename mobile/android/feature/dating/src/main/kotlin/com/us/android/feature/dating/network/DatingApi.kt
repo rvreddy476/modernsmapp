@@ -139,10 +139,23 @@ interface DatingApi {
     @GET("v1/dating/sparks/incoming")
     suspend fun incomingSparks(@Query("limit") limit: Int = 50): Response<ApiEnvelope<List<SparkDto>>>
 
+    /**
+     * Mechanic M4: who sparked the caller, as a grid, with the total. Locked
+     * (the gate on, no pass): no names, ids, notes or full images.
+     */
+    @GET("v1/dating/liked-you")
+    suspend fun likedYou(
+        @Query("limit") limit: Int = 50,
+        @Query("offset") offset: Int = 0,
+    ): Response<ApiEnvelope<LikedYouDto>>
+
     @POST("v1/dating/sparks/{id}/decline")
     suspend fun declineSpark(@Path("id") id: String): Response<ApiEnvelope<SparkDeclineDto>>
 
-    /** Accepts an incoming spark: sparks back through the normal path. Idempotent; 404 once declined. */
+    /**
+     * Accepts an incoming spark: sparks back through the normal path. Idempotent;
+     * 404 once declined; 403 LIKED_YOU_LOCKED on a locked spark (mechanic M4).
+     */
     @POST("v1/dating/sparks/{id}/accept")
     suspend fun acceptSpark(@Path("id") id: String): Response<ApiEnvelope<SparkCreatedDto>>
 
