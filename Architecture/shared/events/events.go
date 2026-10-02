@@ -394,6 +394,12 @@ const (
 	EventDatingPhotoModerationRejected = "dating.photo.moderation_rejected"
 	EventDatingPremiumPaymentFailure   = "dating.premium.payment_failure"
 	EventDatingUserBlocked             = "dating.user.blocked"
+	// Pulse mechanics M17: someone the recipient matched with in the last
+	// 90 days was suspended for scam behaviour (DATING_SCAM_ALERT_ENABLED).
+	EventDatingScamAlert = "dating.safety.scam_alert"
+	// Pulse mechanics M14: ask the recipient how a date went
+	// (DATING_DATE_CHECKIN_ENABLED).
+	EventDatingDateCheckinDue = "dating.date_checkin.due"
 	// Phase 1 — chat-side. Emitted by chat-service when a dating_match
 	// conversation receives a message. Notification-service consumes it
 	// to drive push when recipient isn't WS-connected.

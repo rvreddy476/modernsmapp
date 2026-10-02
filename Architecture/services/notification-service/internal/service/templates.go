@@ -255,6 +255,23 @@ var Templates = map[string]NotificationTemplate{
 		Icon: "system", Priority: "medium", PushEligible: true, CanAggregate: false,
 	},
 
+	// === Pulse (dating) mechanics, dating_pulse.go ===
+	// A scam alert is a safety notice: critical, so even if it ever reaches
+	// the general resolver no toggle, mute or quiet hours can hold it back.
+	// It is normally delivered through CreateSafetyAlertNotification.
+	DatingScamAlertType: {
+		EventType: DatingScamAlertType, TitleTemplate: datingScamAlertTitle,
+		BodyTemplate: datingScamAlertNoName,
+		Icon:         "security", Priority: "critical", PushEligible: true,
+		CanAggregate: false, OverridePrefs: true, OverrideMute: true,
+	},
+	// A date check-in is ordinary: master toggle and quiet hours apply.
+	DatingDateCheckinType: {
+		EventType: DatingDateCheckinType, TitleTemplate: datingDateCheckinTitle,
+		BodyTemplate: datingDateCheckinNoName,
+		Icon:         "system", Priority: "medium", PushEligible: true, CanAggregate: false,
+	},
+
 	// === Commerce ===
 	"commerce.order.created": {
 		EventType: "commerce.order.created", TitleTemplate: "Order {order_number} placed",

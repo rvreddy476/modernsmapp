@@ -242,6 +242,11 @@ func categoryForEvent(eventType string) prefCategory {
 	// master push toggle and quiet hours apply — never a category toggle.
 	case "missed_call":
 		return catAlwaysOn
+	// A Pulse scam alert is a safety notice: no category toggle may hide it
+	// (its template is critical as well). The date check-in stays catDefault,
+	// like every other dating engagement notice.
+	case DatingScamAlertType:
+		return catAlwaysOn
 	}
 	if len(eventType) > 5 && eventType[:5] == "live." {
 		return catLive
