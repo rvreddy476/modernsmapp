@@ -31,6 +31,12 @@ import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.DeleteProfileRequest
 import com.us.android.feature.dating.network.ExplainDto
+import com.us.android.feature.dating.network.ExtendDto
+import com.us.android.feature.dating.network.FirstMoveRequest
+import com.us.android.feature.dating.network.FirstMoveSettingsDto
+import com.us.android.feature.dating.network.OpeningAnswerDto
+import com.us.android.feature.dating.network.OpeningAnswerRequest
+import com.us.android.feature.dating.network.OpeningQuestionDto
 import com.us.android.feature.dating.network.LikedYouDto
 import com.us.android.feature.dating.network.LikedYouItemDto
 import com.us.android.feature.dating.network.MatchDto
@@ -488,6 +494,56 @@ class FakeDatingApi : DatingApi {
         matches.firstOrNull { it.id == id }?.let { ok(it) } ?: refused(404, "NOT_FOUND")
 
     override suspend fun closeMatch(id: String) = ok(ClosedDto(closed = true))
+
+    // ── Mechanic M5: first move ─────────────────────────────────────────────
+
+    /** `GET /first-move`. The default is the server's flag OFF, as the golden writes it. */
+    var firstMoveResponse: () -> Response<ApiEnvelope<FirstMoveSettingsDto>> =
+        { refusedWithFixture(404, "first_move_get_404_not_enabled.json") }
+    val firstMoveWrites = mutableListOf<FirstMoveRequest>()
+
+    /** What the server holds for `PUT /first-move`'s default answer. */
+    var firstMoveStored = FirstMoveSettingsDto(maxQuestions = 3, maxLength = 140)
+
+    /** `PUT /first-move`. The default stores what was asked as the server does: an absent field is unchanged. */
+    var firstMoveWriteResponse: (FirstMoveRequest) -> Response<ApiEnvelope<FirstMoveSettingsDto>> = { body ->
+        firstMoveStored = firstMoveStored.copy(
+            enabled = body.enabled ?: firstMoveStored.enabled,
+            questions = body.questions?.mapIndexed { i, text -> OpeningQuestionDto(id = "q-$i", text = text) } ?: firstMoveStored.questions,
+        )
+        ok(firstMoveStored)
+    }
+
+    override suspend fun firstMove(): Response<ApiEnvelope<FirstMoveSettingsDto>> {
+        calls += "first-move"
+        return firstMoveResponse()
+    }
+
+    override suspend fun updateFirstMove(body: FirstMoveRequest): Response<ApiEnvelope<FirstMoveSettingsDto>> {
+        calls += "first-move:write"
+        firstMoveWrites += body
+        return firstMoveWriteResponse(body)
+    }
+
+    val openingAnswers = mutableListOf<Pair<String, OpeningAnswerRequest>>()
+    var openingAnswerResponse: (matchId: String, OpeningAnswerRequest) -> Response<ApiEnvelope<OpeningAnswerDto>> =
+        { matchId, _ -> ok(OpeningAnswerDto(sent = true, conversationId = "conv-$matchId")) }
+
+    override suspend fun openingAnswer(id: String, body: OpeningAnswerRequest): Response<ApiEnvelope<OpeningAnswerDto>> {
+        calls += "opening-answer"
+        openingAnswers += id to body
+        return openingAnswerResponse(id, body)
+    }
+
+    val extends = mutableListOf<String>()
+    var extendResponse: (matchId: String) -> Response<ApiEnvelope<ExtendDto>> =
+        { ok(fixture("match_extend_post_200_free.json", ExtendDto.serializer())) }
+
+    override suspend fun extendMatch(id: String): Response<ApiEnvelope<ExtendDto>> {
+        calls += "extend"
+        extends += id
+        return extendResponse(id)
+    }
 
     override suspend fun block(body: BlockRequest): Response<ApiEnvelope<BlockedDto>> {
         blocks += body.targetUserId

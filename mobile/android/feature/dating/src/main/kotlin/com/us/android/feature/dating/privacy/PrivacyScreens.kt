@@ -334,8 +334,10 @@ fun PrivacyScreen(
     onOpenBlocks: () -> Unit,
     onDeleted: () -> Unit,
     viewModel: PrivacyViewModel = hiltViewModel(),
+    firstMove: FirstMoveSettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val firstMoveState by firstMove.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var withdraw by remember { mutableStateOf<ConsentType?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -353,7 +355,14 @@ fun PrivacyScreen(
 
     LaunchedEffect(state.deleted) { if (state.deleted) onDeleted() }
 
-    DatingScreen(title = "Privacy and data", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
+    DatingScreen(
+        title = "Privacy and data",
+        onBack = onBack,
+        message = state.message ?: firstMoveState.message,
+        onDismissMessage = {
+            if (state.message != null) viewModel.dismissMessage() else firstMove.dismissMessage()
+        },
+    ) { padding ->
         if (state.loading) {
             LoadingPane()
             return@DatingScreen
@@ -378,6 +387,9 @@ fun PrivacyScreen(
                     InfoNote("Your location is always approximate. Others only see a distance range.")
                 }
             }
+
+            // Mechanic M5: drawn only while the server's flag is on.
+            firstMoveSection(firstMoveState, firstMove)
 
             item { SectionLabel("Blocked people") }
             item {

@@ -182,6 +182,33 @@ interface DatingApi {
     @POST("v1/dating/matches/{id}/close")
     suspend fun closeMatch(@Path("id") id: String): Response<ApiEnvelope<ClosedDto>>
 
+    /**
+     * More time on a match. Free once per rolling 24 h for the person waiting
+     * on a first-move match (429 EXTEND_LIMIT_REACHED after that); otherwise
+     * the premium 7-day extend (403 FORBIDDEN without a pass). No body.
+     */
+    @POST("v1/dating/matches/{id}/extend")
+    suspend fun extendMatch(@Path("id") id: String): Response<ApiEnvelope<ExtendDto>>
+
+    /**
+     * Mechanic M5: the waiting person answers one of the first mover's
+     * opening questions; the server posts it as the chat's first message.
+     * 409 FIRST_MOVE_NOT_PENDING, 404 OPENING_QUESTION_UNKNOWN,
+     * 400 OPENING_ANSWER_INVALID / OPENING_ANSWER_REFUSED, 503 CHAT_UNAVAILABLE.
+     */
+    @POST("v1/dating/matches/{id}/opening-answer")
+    suspend fun openingAnswer(@Path("id") id: String, @Body body: OpeningAnswerRequest): Response<ApiEnvelope<OpeningAnswerDto>>
+
+    // First move (mechanic M5)
+
+    /** 404 MECHANIC_NOT_ENABLED while the server flag is off. */
+    @GET("v1/dating/first-move")
+    suspend fun firstMove(): Response<ApiEnvelope<FirstMoveSettingsDto>>
+
+    /** 400 OPENING_QUESTIONS_TOO_MANY / OPENING_QUESTION_INVALID / OPENING_QUESTION_REFUSED. */
+    @PUT("v1/dating/first-move")
+    suspend fun updateFirstMove(@Body body: FirstMoveRequest): Response<ApiEnvelope<FirstMoveSettingsDto>>
+
     // Safety
 
     @POST("v1/dating/safety/block")

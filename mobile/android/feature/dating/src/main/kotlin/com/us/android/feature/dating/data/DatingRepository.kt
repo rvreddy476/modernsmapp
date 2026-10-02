@@ -16,6 +16,11 @@ import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.DeleteProfileRequest
 import com.us.android.feature.dating.network.ExplainDto
+import com.us.android.feature.dating.network.ExtendDto
+import com.us.android.feature.dating.network.FirstMoveRequest
+import com.us.android.feature.dating.network.FirstMoveSettingsDto
+import com.us.android.feature.dating.network.OpeningAnswerDto
+import com.us.android.feature.dating.network.OpeningAnswerRequest
 import com.us.android.feature.dating.network.LikedYouDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.MyLocationSharesDto
@@ -209,6 +214,20 @@ class DatingRepository @Inject constructor(
     suspend fun match(matchId: String): DatingResult<MatchDto> = call { api.match(matchId) }
 
     suspend fun unmatch(matchId: String): DatingResult<ClosedDto> = call { api.closeMatch(matchId) }
+
+    /** More time on a match: the free first-move extend, or the premium one. */
+    suspend fun extendMatch(matchId: String): DatingResult<ExtendDto> = call { api.extendMatch(matchId) }
+
+    /** Answers one of the first mover's opening questions (mechanic M5); it becomes the first message. */
+    suspend fun openingAnswer(matchId: String, questionId: String, answer: String): DatingResult<OpeningAnswerDto> =
+        call { api.openingAnswer(matchId, OpeningAnswerRequest(questionId = questionId, answer = answer.trim())) }
+
+    /** The caller's first-move setting and opening questions (mechanic M5). */
+    suspend fun firstMove(): DatingResult<FirstMoveSettingsDto> = call { api.firstMove() }
+
+    /** Null fields stay as they are on the server; an empty [questions] removes them all. */
+    suspend fun updateFirstMove(enabled: Boolean? = null, questions: List<String>? = null): DatingResult<FirstMoveSettingsDto> =
+        call { api.updateFirstMove(FirstMoveRequest(enabled = enabled, questions = questions)) }
 
     suspend fun block(userId: String): DatingResult<BlockedDto> = call { api.block(BlockRequest(userId)) }
 

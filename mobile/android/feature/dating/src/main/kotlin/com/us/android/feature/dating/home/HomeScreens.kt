@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -157,6 +159,7 @@ const val SUPER_SPARK_MARK = "Sent you a Super Spark"
 private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Unit) {
     LaunchedEffect(Unit) { viewModel.refresh() }
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val now by rememberNow()
     when (val s = state) {
         ListState.Loading -> LoadingPane()
         is ListState.Failed -> MessagePane(title = "Matches didn't load", body = s.message, primaryLabel = "Try again", onPrimary = viewModel::refresh)
@@ -180,11 +183,14 @@ private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Un
                                     )
                                     if (match.verified) Pill("Verified", Tone.Positive)
                                 }
+                                // Mechanic M5: who starts, and the time left.
+                                match.firstMove?.let { FirstMoveRowTag(it, now) }
                                 // City sits with the distance it belongs to. The
                                 // row stays one line: last active is on the match
-                                // itself, where there is room for it.
+                                // itself, where there is room for it. A first-move
+                                // match drops "say hello": its tag says who starts.
                                 val line = listOfNotNull(
-                                    matchStatusLabel(match.status).takeIf { it.isNotBlank() },
+                                    matchStatusLabel(match.status).takeIf { it.isNotBlank() && match.firstMove == null },
                                     match.city,
                                     match.distance,
                                 ).joinToString(" · ")
@@ -229,6 +235,17 @@ fun MatchDetailScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val firstMoveActions by viewModel.firstMove.collectAsStateWithLifecycle()
+    val now by rememberNow()
+    val waitingActions = remember(viewModel) {
+        WaitingActions(
+            onStartAnswer = viewModel::startAnswer,
+            onEditAnswer = viewModel::editAnswer,
+            onSendAnswer = viewModel::sendAnswer,
+            onCancelAnswer = viewModel::cancelAnswer,
+            onExtend = viewModel::extend,
+        )
+    }
     var confirmUnmatch by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
     var reporting by remember { mutableStateOf(false) }
@@ -245,7 +262,10 @@ fun MatchDetailScreen(
             MatchDetailState.Loading -> LoadingPane()
             is MatchDetailState.Gone -> MessagePane(title = s.message, body = "", primaryLabel = "Back", onPrimary = onBack)
             is MatchDetailState.Loaded -> Column(
-                modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding()),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding()),
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 DatingPhoto(
@@ -262,7 +282,7 @@ fun MatchDetailScreen(
                     if (s.match.verified) Pill("Verified", Tone.Positive)
                 }
                 val detail = listOfNotNull(
-                    matchStatusLabel(s.match.status).takeIf { it.isNotBlank() },
+                    matchStatusLabel(s.match.status).takeIf { it.isNotBlank() && s.match.firstMove == null },
                     s.match.city,
                     s.match.distance,
                 ).joinToString(" · ")
@@ -273,7 +293,13 @@ fun MatchDetailScreen(
                 s.match.lastActive?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
                 }
-                UsButton(text = "Open chat", onClick = viewModel::openChat, modifier = Modifier.fillMaxWidth())
+                // Mechanic M5 decides how a first-move match is started; see FirstMoveUi.
+                val move = s.match.firstMove
+                when {
+                    move == null -> UsButton(text = "Open chat", onClick = viewModel::openChat, modifier = Modifier.fillMaxWidth())
+                    move.youMoveFirst -> YouStartPanel(move, now, onOpenChat = viewModel::openChat)
+                    else -> WaitingPanel(name = s.match.name, firstMove = move, actions = firstMoveActions, now = now, on = waitingActions)
+                }
                 UsSecondaryButton(text = "Share my live location", onClick = { onShareLocation(s.match.otherUserId) }, modifier = Modifier.fillMaxWidth())
                 UsSecondaryButton(text = "Unmatch", onClick = { confirmUnmatch = true }, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {

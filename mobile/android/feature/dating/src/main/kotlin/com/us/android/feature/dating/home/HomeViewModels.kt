@@ -81,6 +81,12 @@ data class MatchCelebration(
     val conversationId: String? = null,
     /** "Say hello" was tapped and the chat is being looked up. */
     val opening: Boolean = false,
+    /**
+     * Mechanic M5: the other person writes first, so chat would refuse a
+     * hello. "Say hello" leads to the match screen instead, where the opening
+     * questions are.
+     */
+    val waitingForThem: Boolean = false,
 )
 
 /** Where "Say hello" leads: the chat when it exists, the match's own screen while it does not. */
@@ -123,7 +129,7 @@ internal class MatchCelebrations(
         scope.launch {
             val conversation = current.conversationId ?: load(current.matchId)
             val latest = _state.value?.takeIf { it.matchId == current.matchId } ?: current
-            _hello.value = if (conversation != null) {
+            _hello.value = if (conversation != null && !latest.waitingForThem) {
                 HelloTarget.Chat(conversation, latest.name.ifBlank { "Match" })
             } else {
                 HelloTarget.Match(current.matchId)
@@ -144,6 +150,7 @@ internal class MatchCelebrations(
                     name = dto.person?.firstName?.takeIf { it.isNotBlank() } ?: current.name,
                     photoUrl = urls.forPerson(dto.person) ?: current.photoUrl,
                     conversationId = conversation ?: current.conversationId,
+                    waitingForThem = dto.firstMove?.youMoveFirst == false,
                 )
             }
         }
@@ -740,6 +747,8 @@ data class MatchUi(
     val status: String,
     val conversationId: String?,
     val expiresAt: String?,
+    /** Mechanic M5: set while the match waits for its first message under the rule. */
+    val firstMove: FirstMoveUi? = null,
 )
 
 /** One match row, from the person the SERVER resolved for this viewer. */
@@ -756,6 +765,7 @@ private fun MatchDto.toUi(other: String, urls: DatingPhotoUrls) = MatchUi(
     status = status,
     conversationId = conversationId,
     expiresAt = expiresAt,
+    firstMove = firstMove.toUi(),
 )
 
 /** The matches list. Closed matches are not shown; blocked people are filtered through the session. */
@@ -808,7 +818,14 @@ sealed interface MatchDetailState {
 /** A chat the screen should open once. */
 data class ChatRequest(val conversationId: String, val title: String)
 
-/** One match: open its chat (created server-side), unmatch, block, report. */
+/**
+ * One match: open its chat (created server-side), unmatch, block, report.
+ *
+ * On a first-move match (mechanic M5) the person who writes first opens the
+ * chat as usual; the person waiting answers an opening question — which the
+ * server posts as the first message — or takes the free 24-hour extend.
+ */
+@Suppress("TooManyFunctions")
 @HiltViewModel
 class MatchDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -830,6 +847,14 @@ class MatchDetailViewModel @Inject constructor(
     private val _message = MutableStateFlow<UsMessage?>(null)
     val message: StateFlow<UsMessage?> = _message.asStateFlow()
 
+    /** Mechanic M5: the answer composer and the free extend. */
+    private val _firstMove = MutableStateFlow(FirstMoveActionsUi())
+    val firstMove: StateFlow<FirstMoveActionsUi> = _firstMove.asStateFlow()
+
+    /** This person's opening answer went through: the first-move rule is over for them. */
+    private var answered = false
+    private var answeredConversation: String? = null
+
     init {
         viewModelScope.launch {
             if (session.myUserId == null) {
@@ -849,6 +874,11 @@ class MatchDetailViewModel @Inject constructor(
 
     fun openChat() {
         val match = (_state.value as? MatchDetailState.Loaded)?.match ?: return
+        if (match.firstMove?.waiting == true) {
+            // Chat would refuse this person's first message (FIRST_MOVE_PENDING).
+            _message.value = infoMessage("They start this one. Answer one of their questions here, or wait for their message.")
+            return
+        }
         val conversationId = match.conversationId
         if (conversationId == null) {
             _message.value = errorMessage("Your chat is still being set up. Try again in a moment.")
@@ -886,6 +916,124 @@ class MatchDetailViewModel @Inject constructor(
         }
     }
 
+    // ── Mechanic M5: the waiting person's answer and free extend ────────────
+
+    /** Opens the answer composer under [questionId]. A draft for the same question is kept. */
+    fun startAnswer(questionId: String) {
+        if (_firstMove.value.sending) return
+        _firstMove.update {
+            if (it.answeringId == questionId) it else it.copy(answeringId = questionId, answer = "", answerError = null)
+        }
+    }
+
+    fun editAnswer(text: String) {
+        _firstMove.update { it.copy(answer = text.take(FirstMoveCopy.MAX_ANSWER_LENGTH), answerError = null) }
+    }
+
+    fun cancelAnswer() {
+        if (_firstMove.value.sending) return
+        _firstMove.update { it.copy(answeringId = null, answer = "", answerError = null) }
+    }
+
+    /**
+     * Sends the answer; the server posts it as the chat's first message. From
+     * then on this is an ordinary match and "Open chat" is the way in, even if
+     * a reload still lists the rule while the server catches up.
+     */
+    fun sendAnswer() {
+        val actions = _firstMove.value
+        val questionId = actions.answeringId ?: return
+        if (actions.sending) return
+        val text = actions.answer.trim()
+        if (text.isEmpty()) {
+            _firstMove.update { it.copy(answerError = FirstMoveCopy.ANSWER_EMPTY) }
+            return
+        }
+        _firstMove.update { it.copy(sending = true, answerError = null) }
+        viewModelScope.launch {
+            when (val result = repository.openingAnswer(matchId, questionId, text)) {
+                is DatingResult.Success -> {
+                    answered = true
+                    answeredConversation = result.value.conversationId?.takeIf { it.isNotBlank() }
+                    _firstMove.value = FirstMoveActionsUi()
+                    _state.update { s -> if (s is MatchDetailState.Loaded) s.copy(match = s.match.answered()) else s }
+                    _message.value = successMessage(FirstMoveCopy.ANSWER_SENT)
+                    load()
+                }
+                is DatingResult.Failure -> answerRefused(result.error)
+            }
+        }
+    }
+
+    private suspend fun answerRefused(error: DatingError) {
+        when (error.code) {
+            // The answer itself: the words go under the field and the draft stays.
+            CODE_ANSWER_INVALID, CODE_ANSWER_REFUSED ->
+                _firstMove.update { it.copy(sending = false, answerError = DatingCopy.forError(error, repository.json)) }
+            // The match moved on, or the question went: read it again.
+            CODE_NOT_PENDING, CODE_QUESTION_UNKNOWN, CODE_MECHANIC_NOT_ENABLED -> {
+                _firstMove.update { FirstMoveActionsUi(extendLimit = it.extendLimit) }
+                _message.value = DatingCopy.message(error, repository.json)
+                load()
+            }
+            else -> if (isGone(error)) {
+                _state.value = MatchDetailState.Gone(GONE)
+            } else {
+                // CHAT_UNAVAILABLE and the network: the draft stays for another try.
+                _firstMove.update { it.copy(sending = false) }
+                _message.value = DatingCopy.message(error, repository.json)
+            }
+        }
+    }
+
+    /** The free 24 hours for the person waiting on a first-move match. */
+    fun extend() {
+        val move = (_state.value as? MatchDetailState.Loaded)?.match?.firstMove ?: return
+        if (!move.canExtend || _firstMove.value.extending) return
+        _firstMove.update { it.copy(extending = true) }
+        viewModelScope.launch {
+            when (val result = repository.extendMatch(matchId)) {
+                is DatingResult.Success -> {
+                    val extended = result.value
+                    _firstMove.update { it.copy(extending = false, extendLimit = null) }
+                    updateFirstMove { it.copy(canExtend = false, deadline = parseInstant(extended.expiresAt) ?: it.deadline) }
+                    _message.value = successMessage(FirstMoveCopy.extended(extended.free, extended.extraHours, extended.extraDays))
+                    load()
+                }
+                is DatingResult.Failure -> extendRefused(result.error)
+            }
+        }
+    }
+
+    private fun extendRefused(error: DatingError) {
+        when {
+            error.code == CODE_EXTEND_LIMIT -> {
+                val limit = error.detailsAs(repository.json, RateLimitDetailsDto.serializer()).toUi()
+                _firstMove.update { it.copy(extending = false, extendLimit = limit) }
+                updateFirstMove { it.copy(canExtend = false) }
+            }
+            isGone(error) -> _state.value = MatchDetailState.Gone(GONE)
+            else -> {
+                _firstMove.update { it.copy(extending = false) }
+                _message.value = DatingCopy.message(error, repository.json)
+            }
+        }
+    }
+
+    private fun updateFirstMove(transform: (FirstMoveUi) -> FirstMoveUi) {
+        _state.update { s ->
+            val move = (s as? MatchDetailState.Loaded)?.match?.firstMove
+            if (s is MatchDetailState.Loaded && move != null) s.copy(match = s.match.copy(firstMove = transform(move))) else s
+        }
+    }
+
+    /** A dating-service 404 on this match: blocked, closed or gone. */
+    private fun isGone(error: DatingError): Boolean =
+        error is DatingError.Refused && error.status == HTTP_NOT_FOUND && error.code == CODE_NOT_FOUND
+
+    /** The match once this person's answer was sent: the rule is over for them. */
+    private fun MatchUi.answered(): MatchUi = copy(firstMove = null, conversationId = conversationId ?: answeredConversation)
+
     private suspend fun load() {
         when (val result = repository.match(matchId)) {
             is DatingResult.Success -> {
@@ -895,15 +1043,20 @@ class MatchDetailViewModel @Inject constructor(
                     _state.value = MatchDetailState.Gone("This match has ended.")
                     return
                 }
-                val ui = dto.toUi(other, urls)
+                val ui = dto.toUi(other, urls).let { if (answered) it.answered() else it }
                 _state.value = MatchDetailState.Loaded(ui)
-                if (openChatOnLoad && ui.conversationId != null) {
+                // The free extend is back: its "spent" line goes.
+                if (ui.firstMove?.canExtend == true) _firstMove.update { it.copy(extendLimit = null) }
+                if (openChatOnLoad && ui.firstMove?.waiting == true) {
+                    // A push for a match they cannot write in yet: stay here, by the questions.
+                    openChatOnLoad = false
+                } else if (openChatOnLoad && ui.conversationId != null) {
                     openChatOnLoad = false
                     _chat.value = ChatRequest(ui.conversationId, ui.name ?: "Match")
                 }
             }
             is DatingResult.Failure -> _state.value = MatchDetailState.Gone(
-                if ((result.error as? DatingError.Refused)?.status == HTTP_NOT_FOUND) "This match isn't available any more." else DatingCopy.forError(result.error),
+                if ((result.error as? DatingError.Refused)?.status == HTTP_NOT_FOUND) GONE else DatingCopy.forError(result.error),
             )
         }
     }
@@ -912,5 +1065,13 @@ class MatchDetailViewModel @Inject constructor(
         const val ARG_MATCH_ID = "matchId"
         const val ARG_OPEN_CHAT = "openChat"
         private const val HTTP_NOT_FOUND = 404
+        private const val GONE = "This match isn't available any more."
+        private const val CODE_NOT_FOUND = "NOT_FOUND"
+        private const val CODE_ANSWER_INVALID = "OPENING_ANSWER_INVALID"
+        private const val CODE_ANSWER_REFUSED = "OPENING_ANSWER_REFUSED"
+        private const val CODE_NOT_PENDING = "FIRST_MOVE_NOT_PENDING"
+        private const val CODE_QUESTION_UNKNOWN = "OPENING_QUESTION_UNKNOWN"
+        private const val CODE_MECHANIC_NOT_ENABLED = "MECHANIC_NOT_ENABLED"
+        private const val CODE_EXTEND_LIMIT = "EXTEND_LIMIT_REACHED"
     }
 }

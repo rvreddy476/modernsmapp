@@ -609,7 +609,87 @@ data class MatchDto(
     @SerialName("closed_by") val closedBy: String? = null,
     /** The OTHER participant, as the server resolved them for this viewer. */
     val person: DatingPersonDto? = null,
+    /**
+     * Mechanic M5: present only while the match waits for its first message
+     * under the first-move rule. Absent means an ordinary match.
+     */
+    @SerialName("first_move") val firstMove: MatchFirstMoveDto? = null,
 )
+
+/**
+ * The caller's view of a first-move match (`service.FirstMoveView`).
+ *
+ * [youMoveFirst] true: the caller writes first. False: the other person does,
+ * and chat refuses the caller's own first message (`403 FIRST_MOVE_PENDING`);
+ * they may answer one of [openingQuestions] instead, or use the free extend
+ * while [canExtend]. Go omits the empty list and a nil deadline.
+ */
+@Serializable
+data class MatchFirstMoveDto(
+    @SerialName("you_move_first") val youMoveFirst: Boolean = false,
+    /** RFC 3339: when the match ends if nobody has written. */
+    val deadline: String? = null,
+    @SerialName("opening_questions") val openingQuestions: List<OpeningQuestionDto> = emptyList(),
+    @SerialName("can_extend") val canExtend: Boolean = false,
+)
+
+/** One opening question a first mover wrote. */
+@Serializable
+data class OpeningQuestionDto(
+    val id: String = "",
+    val text: String = "",
+)
+
+// ── First move (mechanic M5; fixtures first_move_*, match_opening_answer_*, match_extend_*) ─
+
+/** `GET`/`PUT /first-move`. The limits are the server's; 0 means it sent none. */
+@Serializable
+data class FirstMoveSettingsDto(
+    val enabled: Boolean = false,
+    val questions: List<OpeningQuestionDto> = emptyList(),
+    @SerialName("max_questions") val maxQuestions: Int = 0,
+    @SerialName("max_length") val maxLength: Int = 0,
+)
+
+/**
+ * `PUT /first-move`. A null field is left out of the body and the server
+ * leaves it unchanged; `questions = []` removes every question.
+ */
+@Serializable
+data class FirstMoveRequest(
+    val enabled: Boolean? = null,
+    val questions: List<String>? = null,
+)
+
+@Serializable
+data class OpeningAnswerRequest(
+    @SerialName("question_id") val questionId: String,
+    val answer: String,
+)
+
+/** `POST /matches/:id/opening-answer` — the answer is now the chat's first message. */
+@Serializable
+data class OpeningAnswerDto(
+    val sent: Boolean = false,
+    @SerialName("conversation_id") val conversationId: String? = null,
+)
+
+/**
+ * `POST /matches/:id/extend`. The free first-move extend sends [extraHours]
+ * and [free]; the premium path sends [extraDays] too. Go omits zero values.
+ */
+@Serializable
+data class ExtendDto(
+    val extended: Boolean = false,
+    @SerialName("extra_hours") val extraHours: Int = 0,
+    @SerialName("extra_days") val extraDays: Int = 0,
+    @SerialName("expires_at") val expiresAt: String? = null,
+    val free: Boolean = false,
+)
+
+/** `details` of `OPENING_QUESTION_INVALID` and `OPENING_ANSWER_INVALID`. */
+@Serializable
+data class MaxLengthDetailsDto(@SerialName("max_length") val maxLength: Int = 0)
 
 @Serializable
 data class SparkTargetDto(

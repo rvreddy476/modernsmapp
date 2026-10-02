@@ -7,6 +7,10 @@ import com.us.android.feature.dating.data.DatingError
 import com.us.android.feature.dating.home.AllowanceUi
 import com.us.android.feature.dating.home.DeckCopy
 import com.us.android.feature.dating.home.DeckUi
+import com.us.android.feature.dating.home.FirstMoveCopy
+import com.us.android.feature.dating.network.ExtendDto
+import com.us.android.feature.dating.network.FirstMoveSettingsDto
+import com.us.android.feature.dating.network.OpeningAnswerDto
 import com.us.android.feature.dating.home.onto
 import com.us.android.feature.dating.home.toUi
 import com.us.android.feature.dating.network.AllowanceDto
@@ -673,6 +677,81 @@ class DatingContractFixtureTest {
             val contact = it.items.single()
             assertThat(contact.contactId).isEqualTo("<contact>")
             assertThat(contact.person).isNull()
+        },
+        // ── Mechanic M5: first move ─────────────────────────────────────────
+        "first_move_get_200.json" to data(FirstMoveSettingsDto.serializer()) {
+            assertThat(it.enabled).isTrue()
+            assertThat(it.questions.map { q -> q.text })
+                .containsExactly("What does your perfect Sunday look like?", "Tea or coffee, and why?").inOrder()
+            assertThat(it.questions.map { q -> q.id }.toSet()).containsExactly("<uuid>")
+            assertThat(it.maxQuestions).isEqualTo(3)
+            assertThat(it.maxLength).isEqualTo(140)
+        },
+        "first_move_put_200.json" to data(FirstMoveSettingsDto.serializer()) {
+            // The PUT answers with the same shape as the GET.
+            assertThat(it.enabled).isTrue()
+            assertThat(it.questions).hasSize(2)
+            assertThat(it.maxQuestions).isEqualTo(3)
+            assertThat(it.maxLength).isEqualTo(140)
+        },
+        "first_move_put_400_too_many_questions.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("OPENING_QUESTIONS_TOO_MANY")
+            assertThat(details(error, RangeDetailsDto.serializer(), name).max).isEqualTo(3)
+            assertThat(DatingCopy.forError(error, strict)).isEqualTo("You can have up to 3 opening questions.")
+        },
+        "first_move_get_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "match_get_200_first_move_waiting.json" to data(MatchDto.serializer()) {
+            assertThat(it.status).isEqualTo("matched")
+            assertThat(it.person?.firstName).isEqualTo("Asha")
+            val move = checkNotNull(it.firstMove)
+            assertThat(move.youMoveFirst).isFalse()
+            assertThat(move.deadline).isEqualTo("<timestamp>")
+            assertThat(move.canExtend).isTrue()
+            assertThat(move.openingQuestions.map { q -> q.text })
+                .containsExactly("What does your perfect Sunday look like?", "Tea or coffee, and why?").inOrder()
+            val ui = checkNotNull(move.toUi())
+            assertThat(ui.waiting).isTrue()
+            assertThat(ui.questions).hasSize(2)
+            assertThat(ui.canExtend).isTrue()
+            // The golden redacts the time; an unparseable deadline is simply absent.
+            assertThat(ui.deadline).isNull()
+        },
+        "match_get_200_first_move_yours.json" to data(MatchDto.serializer()) {
+            val move = checkNotNull(it.firstMove)
+            assertThat(move.youMoveFirst).isTrue()
+            assertThat(move.deadline).isEqualTo("<timestamp>")
+            // The first mover gets no questions and no extend: Go omits the list.
+            assertThat(move.openingQuestions).isEmpty()
+            assertThat(move.canExtend).isFalse()
+            val ui = checkNotNull(move.toUi())
+            assertThat(ui.youMoveFirst).isTrue()
+            assertThat(ui.waiting).isFalse()
+        },
+        "match_opening_answer_post_201.json" to data(OpeningAnswerDto.serializer()) {
+            assertThat(it.sent).isTrue()
+            assertThat(it.conversationId).isEqualTo("<uuid>")
+        },
+        "match_opening_answer_409_not_pending.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("FIRST_MOVE_NOT_PENDING")
+            assertThat((error as DatingError.Refused).status).isEqualTo(409)
+            assertThat(DatingCopy.forError(error)).isEqualTo("This match isn't waiting for an answer from you any more.")
+        },
+        "match_extend_post_200_free.json" to data(ExtendDto.serializer()) {
+            assertThat(it.extended).isTrue()
+            assertThat(it.extraHours).isEqualTo(24)
+            // The free extend omits extra_days.
+            assertThat(it.extraDays).isEqualTo(0)
+            assertThat(it.expiresAt).isEqualTo("<timestamp>")
+            assertThat(it.free).isTrue()
+            assertThat(FirstMoveCopy.extended(it.free, it.extraHours, it.extraDays)).isEqualTo("Done. They have 24 more hours.")
+        },
+        "match_extend_429_limit_reached.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("EXTEND_LIMIT_REACHED")
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(1, 24, "<timestamp>"))
         },
         "verification_status_get_200.json" to data(VerificationStatusDto.serializer()) {
             assertThat(it.selfie.state).isEqualTo("passed")

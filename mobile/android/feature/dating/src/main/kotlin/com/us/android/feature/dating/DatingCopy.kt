@@ -5,6 +5,8 @@ import com.us.android.feature.dating.data.DatingError
 import com.us.android.feature.dating.data.code
 import com.us.android.feature.dating.data.detailsAs
 import com.us.android.feature.dating.network.LocationRateLimitDetailsDto
+import com.us.android.feature.dating.network.MaxLengthDetailsDto
+import com.us.android.feature.dating.network.RangeDetailsDto
 import com.us.android.feature.dating.ui.errorMessage
 import kotlinx.serialization.json.Json
 
@@ -60,6 +62,16 @@ object DatingCopy {
             "PREMIUM_PAYMENTS_REFUSED" -> "The payment couldn't be started. Try again later."
             "IDEMPOTENCY_KEY_REUSED", "PURCHASE_INTENT_CONFLICT" -> "That purchase changed. Start again."
             "FORBIDDEN" -> "You can't do that right now."
+            // Mechanic M5 — first move.
+            "OPENING_QUESTIONS_TOO_MANY" -> openingQuestionsTooMany(error, json)
+            "OPENING_QUESTION_INVALID" -> openingQuestionInvalid(error, json)
+            "OPENING_QUESTION_REFUSED" -> "Questions can't include phone numbers, emails or links."
+            "FIRST_MOVE_NOT_PENDING" -> "This match isn't waiting for an answer from you any more."
+            "OPENING_QUESTION_UNKNOWN" -> "That question isn't there any more."
+            "OPENING_ANSWER_INVALID" -> openingAnswerInvalid(error, json)
+            "OPENING_ANSWER_REFUSED" -> "Answers can't include phone numbers, emails or links."
+            "CHAT_UNAVAILABLE" -> "Chat isn't reachable right now. Try again in a moment."
+            "EXTEND_LIMIT_REACHED" -> "You've already given extra time today."
             else -> GENERIC
         }
     }
@@ -74,6 +86,21 @@ object DatingCopy {
      * than in the preferences screen, which used to read a bare 400.
      */
     const val INVALID_INTERESTED_IN_GENDER = "That choice isn't available any more. Pick who you want to see and try again."
+
+    private fun openingQuestionsTooMany(error: DatingError, json: Json?): String {
+        val max = json?.let { error.detailsAs(it, RangeDetailsDto.serializer()) }?.max?.takeIf { it > 0 }
+        return if (max != null) "You can have up to $max opening questions." else "That's too many opening questions."
+    }
+
+    private fun openingQuestionInvalid(error: DatingError, json: Json?): String {
+        val max = json?.let { error.detailsAs(it, MaxLengthDetailsDto.serializer()) }?.maxLength?.takeIf { it > 0 }
+        return if (max != null) "Each question needs 1 to $max characters." else "Each question needs a few words, and not too many."
+    }
+
+    private fun openingAnswerInvalid(error: DatingError, json: Json?): String {
+        val max = json?.let { error.detailsAs(it, MaxLengthDetailsDto.serializer()) }?.maxLength?.takeIf { it > 0 }
+        return if (max != null) "Your answer needs 1 to $max characters." else "Your answer is empty or too long."
+    }
 
     private fun locationRateLimited(error: DatingError, json: Json?): String {
         val limits = json?.let { error.detailsAs(it, LocationRateLimitDetailsDto.serializer()) }
