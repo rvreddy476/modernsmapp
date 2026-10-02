@@ -386,6 +386,26 @@ func main() {
 		slog.Warn("media-service: no delivery signer — dating photo routes NOT registered")
 	}
 
+	// Pulse dating clips: internal routes (owner-status, prepare,
+	// delivery-url, delete) for ≤30 s voice/video prompt answers. Off unless
+	// MEDIA_DATING_CLIPS_ENABLED=true; a malformed setting refuses boot only
+	// while it is on. Like the photo routes they need the delivery signer.
+	datingClips, err := service.ResolveDatingClipSettings(os.Getenv)
+	if err != nil {
+		slog.Error("media-service: dating clip configuration refused", "error", err)
+		os.Exit(1)
+	}
+	switch {
+	case !datingClips.Enabled:
+		slog.Info("media-service: dating clip routes disabled (MEDIA_DATING_CLIPS_ENABLED is not true)")
+	case deliverySigner == nil:
+		slog.Warn("media-service: no delivery signer — dating clip routes NOT registered")
+	default:
+		mediaHandler.WithDatingClips(service.NewDatingClipService(pgStore, blobStore, deliverySigner,
+			datingClips.URLTTL, datingClips.MaxMs, slog.Default()))
+		slog.Info("media-service: dating clip routes enabled", "url_ttl", datingClips.URLTTL, "max_ms", datingClips.MaxMs)
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -404,6 +424,7 @@ func main() {
 	mediaHandler.RegisterStudioRoutes(r, authMW)
 	mediaHandler.RegisterFaceCompareRoutes(r)
 	mediaHandler.RegisterDatingPhotoRoutes(r)
+	mediaHandler.RegisterDatingClipRoutes(r)
 
 	// 10. Graceful shutdown
 	if err := server.Run(r, server.Config{

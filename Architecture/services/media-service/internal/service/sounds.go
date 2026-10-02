@@ -184,9 +184,10 @@ func (s *Sounds) loadSource(ctx context.Context, mediaID uuid.UUID) (*postgres.M
 // soundSourceRefusal is every reason an asset is not a sound source, decided
 // from the row alone. Nothing has been downloaded when it answers.
 func soundSourceRefusal(media *postgres.MediaAsset) error {
-	// A dating photo and an anonymous attachment are their uploader's alone,
-	// and a sound names its creator: there is no sound of either.
-	if media.AccessScope == postgres.AccessScopeDatingPhoto || media.AccessScope == postgres.AccessScopeAnonymous {
+	// A dating photo or clip and an anonymous attachment are their
+	// uploader's alone, and a sound names its creator: there is no sound of
+	// either.
+	if postgres.IsDatingScope(media.AccessScope) || media.AccessScope == postgres.AccessScopeAnonymous {
 		return ErrAssetNotFound
 	}
 	if media.FileType != "video" {

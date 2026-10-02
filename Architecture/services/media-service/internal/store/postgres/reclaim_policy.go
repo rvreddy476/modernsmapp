@@ -271,6 +271,11 @@ var LiveMediaReferences = []MediaReference{
 		Why: "a dating profile photo; its lifecycle belongs to dating-service's own purge",
 	},
 	{
+		Table: "dating_prompts", Column: "clip_media_id",
+		Why: "a Pulse prompt answer's voice or video clip (scope dating_clip); its lifecycle " +
+			"belongs to dating-service, deleted through the dating_clip referrer purge",
+	},
+	{
 		Table: "dating_selfie_attempts", Column: "video_media_id",
 		Why: "the liveness video of a selfie attempt — review/appeal evidence; " +
 			"never reclaimed while the attempt row exists",
