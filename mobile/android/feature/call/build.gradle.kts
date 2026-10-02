@@ -20,6 +20,8 @@ dependencies {
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
     implementation(projects.core.model)
+    // LightSystemBarGlyphs: the call stage keeps the status bar readable on a light device.
+    implementation(projects.core.ui)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     // ON_RESUME re-reads the real permission grants (CALL-LB-6).

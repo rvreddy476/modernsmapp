@@ -251,7 +251,7 @@ private fun CarouselPips(pageCount: Int, currentPage: Int, modifier: Modifier = 
                 modifier = Modifier
                     .size(if (index == currentPage) PIP_SELECTED else PIP_UNSELECTED)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = if (index == currentPage) 1f else PIP_DIM_ALPHA)),
+                    .background(UsTheme.extended.onMedia.copy(alpha = if (index == currentPage) 1f else PIP_DIM_ALPHA)),
             )
         }
     }
@@ -584,9 +584,42 @@ const val MEDIA_FRAME_ASPECT = 4f / 5f
 // See PostCard above for why this is one long composable rather than several.
 // MagicNumber covers the inline alpha and gradient stops this presentation was
 // written with; they are one-off visual constants, not shared tokens.
-@Suppress("LongParameterList", "LongMethod", "MagicNumber")
+@Suppress("LongParameterList")
 @Composable
 fun ImmersivePostPage(
+    state: PostCardState,
+    onClick: () -> Unit,
+    onAuthorClick: () -> Unit,
+    onReact: () -> Unit,
+    onComment: () -> Unit,
+    onRepost: () -> Unit,
+    onBookmark: () -> Unit,
+    onShare: () -> Unit,
+    modifier: Modifier = Modifier,
+    /**
+     * Null hides the control.
+     *
+     * It previously defaulted to an empty lambda and rendered unconditionally,
+     * so every card carried an overflow button that did nothing on every
+     * surface that had no menu to show. Nullable makes "no action" impossible
+     * to render by accident.
+     */
+    onOptionClick: (() -> Unit)? = null,
+    onFollow: (() -> Unit)? = null,
+) {
+    // 2026-10-02: a full-bleed media page is a stage, dark in BOTH themes, so everything
+    // drawn on it (the action bar included) takes the dark theme whatever the device says.
+    UsTheme(darkTheme = true) {
+        ImmersivePostStage(
+            state, onClick, onAuthorClick, onReact, onComment, onRepost, onBookmark, onShare,
+            modifier, onOptionClick, onFollow,
+        )
+    }
+}
+
+@Suppress("LongParameterList", "LongMethod", "MagicNumber")
+@Composable
+private fun ImmersivePostStage(
     state: PostCardState,
     onClick: () -> Unit,
     onAuthorClick: () -> Unit,
@@ -610,7 +643,7 @@ fun ImmersivePostPage(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF0C0C0F))
+            .background(UsTheme.extended.stage)
             .clickable(onClick = onClick),
     ) {
         // 1. Media or Text background canvas
@@ -618,7 +651,7 @@ fun ImmersivePostPage(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black),
+                    .background(UsTheme.extended.stage),
                 contentAlignment = Alignment.Center,
             ) {
                 if (state.mediaUrl != null) {
@@ -639,7 +672,7 @@ fun ImmersivePostPage(
                             .fillMaxSize()
                             .background(
                                 brush = Brush.verticalGradient(
-                                    colors = listOf(Color(0xFF1E1E28), Color(0xFF0E0E14)),
+                                    colors = listOf(UsTheme.extended.bgRaised, UsTheme.extended.stage),
                                 ),
                             ),
                     )
@@ -650,14 +683,14 @@ fun ImmersivePostPage(
                         modifier = Modifier
                             .size(64.dp)
                             .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.5f))
-                            .border(HAIRLINE, Color(0x40FFFFFF), CircleShape),
+                            .background(UsTheme.extended.mediaPlate)
+                            .border(HAIRLINE, UsTheme.extended.mediaRim, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             imageVector = UsIcons.Play,
                             contentDescription = "Play video",
-                            tint = Color.White,
+                            tint = UsTheme.extended.onMedia,
                             modifier = Modifier.size(32.dp),
                         )
                     }
@@ -669,15 +702,15 @@ fun ImmersivePostPage(
                             .align(Alignment.TopEnd)
                             .padding(top = 72.dp, end = UsTheme.spacing.l)
                             .clip(RoundedCornerShape(UsTheme.radii.full))
-                            .background(Color.Black.copy(alpha = COUNT_PILL_ALPHA))
-                            .border(HAIRLINE, Color(0x33FFFFFF), RoundedCornerShape(UsTheme.radii.full))
+                            .background(UsTheme.extended.mediaPlate)
+                            .border(HAIRLINE, UsTheme.extended.mediaRim, RoundedCornerShape(UsTheme.radii.full))
                             .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs),
                     ) {
                         Text(
                             text = "1/${state.mediaCount}",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Medium,
-                            color = Color.White,
+                            color = UsTheme.extended.onMedia,
                         )
                     }
                 }
@@ -689,7 +722,7 @@ fun ImmersivePostPage(
                     .fillMaxSize()
                     .background(
                         brush = Brush.verticalGradient(
-                            colors = listOf(Color(0xFF14141E), Color(0xFF0A0A10)),
+                            colors = listOf(UsTheme.extended.bgRaised, UsTheme.extended.stage),
                         ),
                     )
                     .padding(horizontal = UsTheme.spacing.xxl, vertical = 96.dp),
@@ -699,7 +732,7 @@ fun ImmersivePostPage(
                     text = state.text,
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                     modifier = Modifier.semantics { heading() },
                 )
             }
@@ -714,8 +747,8 @@ fun ImmersivePostPage(
                     brush = Brush.verticalGradient(
                         colors = listOf(
                             Color.Transparent,
-                            Color.Black.copy(alpha = 0.45f),
-                            Color.Black.copy(alpha = 0.90f),
+                            UsTheme.extended.stage.copy(alpha = 0.45f),
+                            UsTheme.extended.stage.copy(alpha = 0.90f),
                         ),
                     ),
                 )
@@ -746,7 +779,7 @@ fun ImmersivePostPage(
                         UsAvatar(
                             name = state.authorName,
                             size = UsAvatarSize.Medium,
-                            modifier = Modifier.border(1.dp, Color(0x33FFFFFF), CircleShape),
+                            modifier = Modifier.border(1.dp, UsTheme.extended.mediaRim, CircleShape),
                         )
                         Column {
                             Row(
@@ -757,7 +790,7 @@ fun ImmersivePostPage(
                                     text = state.authorName,
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color.White,
+                                    color = UsTheme.extended.onMedia,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -773,7 +806,7 @@ fun ImmersivePostPage(
                             Text(
                                 text = state.timestamp,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.7f),
+                                color = UsTheme.extended.onMediaMuted,
                             )
                         }
                     }
@@ -786,7 +819,7 @@ fun ImmersivePostPage(
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(UsTheme.radii.full))
-                                    .background(Color.White)
+                                    .background(UsTheme.extended.onMedia)
                                     .clickable(onClick = onFollow)
                                     .padding(horizontal = UsTheme.spacing.l, vertical = 6.dp),
                                 contentAlignment = Alignment.Center,
@@ -795,7 +828,7 @@ fun ImmersivePostPage(
                                     text = "Follow",
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color.Black,
+                                    color = UsTheme.extended.stage,
                                 )
                             }
                         }
@@ -805,7 +838,7 @@ fun ImmersivePostPage(
                                 Icon(
                                     imageVector = UsIcons.More,
                                     contentDescription = "More options",
-                                    tint = Color.White.copy(alpha = 0.8f),
+                                    tint = UsTheme.extended.onMediaMuted,
                                 )
                             }
                         }
@@ -817,7 +850,7 @@ fun ImmersivePostPage(
                     Text(
                         text = state.text,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White,
+                        color = UsTheme.extended.onMedia,
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -901,21 +934,20 @@ fun PostMedia(
 }
 
 /** "2/5" on a dark plate over the media's top-right corner. */
-@Suppress("MagicNumber") // The plate's hairline is a one-off ARGB literal, not a token.
 @Composable
 private fun MediaCountPill(text: String, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(Color.Black.copy(alpha = COUNT_PILL_ALPHA))
-            .border(HAIRLINE, Color(0x33FFFFFF), RoundedCornerShape(UsTheme.radii.full))
+            .background(UsTheme.extended.mediaPlate)
+            .border(HAIRLINE, UsTheme.extended.mediaRim, RoundedCornerShape(UsTheme.radii.full))
             .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs),
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Medium,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
         )
     }
 }
@@ -1086,7 +1118,6 @@ const val DEFAULT_MEDIA_ASPECT = 16f / 9f
 
 const val VIDEO_POST = "video"
 private val HAIRLINE = 0.5.dp
-private const val COUNT_PILL_ALPHA = 0.6f
 
 // ── Previews ────────────────────────────────────────────────────────────
 

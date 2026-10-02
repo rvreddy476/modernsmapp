@@ -27,7 +27,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -211,14 +210,14 @@ private fun Spinner() {
         modifier = Modifier
             .size(DISC)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = PLATE_ALPHA)),
+            .background(UsTheme.extended.scrim),
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator(
             modifier = Modifier.size(RING),
             strokeWidth = RING_STROKE,
             color = UsTheme.extended.accentSolid,
-            trackColor = Color.White.copy(alpha = TRACK_ALPHA),
+            trackColor = UsTheme.extended.mediaTrack,
         )
     }
 }
@@ -233,7 +232,7 @@ private fun StalledNote(onRetry: (() -> Unit)?) {
         Text(
             text = STALLED_MESSAGE,
             style = MaterialTheme.typography.labelMedium,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = UsTheme.spacing.xxl),
         )
@@ -405,8 +404,6 @@ const val VIDEO_LOADING_RETRY_TAG = "video_loading_retry"
 private const val LOADING_DESCRIPTION = "Loading video"
 private const val STALLED_MESSAGE = "This is taking longer than usual."
 private const val FADE_MILLIS = 150
-private const val PLATE_ALPHA = 0.55f
-private const val TRACK_ALPHA = 0.18f
 private val DISC = 56.dp
 private val RING = 28.dp
 private val RING_STROKE = 3.dp

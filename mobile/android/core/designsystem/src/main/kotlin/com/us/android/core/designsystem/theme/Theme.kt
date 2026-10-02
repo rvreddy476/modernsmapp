@@ -46,6 +46,19 @@ internal val UsDarkColorScheme: ColorScheme = darkColorScheme(
     outline = UsColorTokens.Dark.Border,
     outlineVariant = UsColorTokens.Dark.BorderSubtle,
     scrim = UsColorTokens.Stage,
+    // What Material makes a sheet, a menu and a dialog of when the caller
+    // names no colour (2026-10-02). Left unset these are Material's baseline
+    // lavender greys, which are not the web's. The tint is the surface
+    // itself, so tonal elevation adds no colour of its own.
+    surfaceContainerLowest = UsColorTokens.Dark.Sheet,
+    surfaceContainerLow = UsColorTokens.Dark.Sheet,
+    surfaceContainer = UsColorTokens.Dark.Sheet,
+    surfaceContainerHigh = UsColorTokens.Dark.Sheet,
+    surfaceContainerHighest = UsColorTokens.Dark.Sunken,
+    surfaceTint = UsColorTokens.Dark.Card,
+    inverseSurface = UsColorTokens.Dark.SelectedPill,
+    inverseOnSurface = UsColorTokens.Dark.OnSelectedPill,
+    inversePrimary = UsColorTokens.Light.AccentText,
 )
 
 internal val UsLightColorScheme: ColorScheme = lightColorScheme(
@@ -70,6 +83,16 @@ internal val UsLightColorScheme: ColorScheme = lightColorScheme(
     outline = UsColorTokens.Light.Border,
     outlineVariant = UsColorTokens.Light.BorderSubtle,
     scrim = UsColorTokens.Stage,
+    // The same roles as the dark scheme, from the light block.
+    surfaceContainerLowest = UsColorTokens.Light.Sheet,
+    surfaceContainerLow = UsColorTokens.Light.Sheet,
+    surfaceContainer = UsColorTokens.Light.Sheet,
+    surfaceContainerHigh = UsColorTokens.Light.Sheet,
+    surfaceContainerHighest = UsColorTokens.Light.Sunken,
+    surfaceTint = UsColorTokens.Light.Card,
+    inverseSurface = UsColorTokens.Light.SelectedPill,
+    inverseOnSurface = UsColorTokens.Light.OnSelectedPill,
+    inversePrimary = UsColorTokens.Dark.AccentText,
 )
 
 // Radii ported from app_spacing.dart: 8 / 12 / 16 / 20.

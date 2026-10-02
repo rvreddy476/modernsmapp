@@ -29,7 +29,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -303,7 +302,7 @@ private fun BackButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
         Icon(
             imageVector = UsIcons.Back,
             contentDescription = "Back",
-            tint = Color.White,
+            tint = UsTheme.extended.textPrimary,
             modifier = Modifier.size(BACK_GLYPH),
         )
     }

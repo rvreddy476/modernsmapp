@@ -21,7 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -44,10 +43,10 @@ internal fun ExportSheet(percent: Int, onCancel: () -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onCancel,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = Modifier.testTag("studio-export-sheet"),
     ) {
@@ -98,10 +97,10 @@ internal fun ExportErrorSheet(message: String, onDismiss: () -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = Modifier.testTag("studio-export-error"),
     ) {
@@ -151,7 +150,7 @@ private fun ProgressBar(fraction: Float) {
             .fillMaxWidth()
             .height(BAR_HEIGHT)
             .clip(CircleShape)
-            .background(Color.White.copy(alpha = TRACK_ALPHA)),
+            .background(UsTheme.extended.fillStrong),
     ) {
         Box(
             modifier = Modifier
@@ -164,9 +163,7 @@ private fun ProgressBar(fraction: Float) {
 }
 
 private const val PERCENT = 100f
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
-private const val TRACK_ALPHA = 0.12f
 private val SHEET_RADIUS = 28.dp
 private val HANDLE_WIDTH = 32.dp
 private val HANDLE_HEIGHT = 4.dp

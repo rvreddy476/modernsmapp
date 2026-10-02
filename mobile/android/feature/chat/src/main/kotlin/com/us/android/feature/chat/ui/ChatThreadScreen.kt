@@ -446,12 +446,12 @@ private fun StagedAttachmentRow(
                         modifier = Modifier
                             .size(REMOVE_GLYPH_BG)
                             .clip(CircleShape)
-                            .background(SCRIM),
+                            .background(UsTheme.extended.mediaPlate),
                     ) {
                         Icon(
                             imageVector = UsIcons.Close,
                             contentDescription = "Remove photo",
-                            tint = Color.White,
+                            tint = UsTheme.extended.onMedia,
                             modifier = Modifier.size(REMOVE_GLYPH),
                         )
                     }
@@ -608,7 +608,7 @@ private fun Composer(
                 Icon(
                     imageVector = UsIcons.Forward,
                     contentDescription = null,
-                    tint = if (canSend) Color.White else UsTheme.extended.textGhost,
+                    tint = if (canSend) UsTheme.extended.onChatAccent else UsTheme.extended.textGhost,
                     modifier = Modifier.size(SEND_GLYPH),
                 )
             }
@@ -650,7 +650,7 @@ private fun ComposerField(
         Icon(
             imageVector = UsIcons.Smile,
             contentDescription = if (emojiOpen) "Hide emoji" else "Emoji",
-            tint = if (emojiOpen) UsTheme.extended.chatAccent else UsTheme.extended.textMuted,
+            tint = if (emojiOpen) UsTheme.extended.chatAccentText else UsTheme.extended.textMuted,
             modifier = Modifier
                 .size(COMPOSER_GLYPH)
                 .clip(CircleShape)
@@ -828,7 +828,7 @@ private fun MessageRow(
                     text = name,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = senderColor(message.senderId.ifBlank { name }),
+                    color = senderColor(message.senderId.ifBlank { name }, UsTheme.extended.chatSenders),
                 )
             }
             MessageBubble(message = message, isOwn = isOwn, quoteAuthor = quoteAuthor)
@@ -946,8 +946,8 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
     // survives where it is small: the send button, the quote bar, badges.
     val bubbleColor = when {
         photoOnly -> Color.Transparent
-        isOwn && message.pending -> OWN_BUBBLE.copy(alpha = PENDING_ALPHA)
-        isOwn -> OWN_BUBBLE
+        isOwn && message.pending -> UsTheme.extended.chatBubbleOwn.copy(alpha = PENDING_ALPHA)
+        isOwn -> UsTheme.extended.chatBubbleOwn
         else -> UsTheme.extended.bgCardSolid
     }
     Column(
@@ -978,7 +978,7 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
             Text(
                 text = message.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isOwn) OWN_BUBBLE_INK else UsTheme.extended.textPrimary,
+                color = if (isOwn) UsTheme.extended.onChatBubbleOwn else UsTheme.extended.textPrimary,
             )
         }
     }
@@ -993,13 +993,19 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
 private fun QuoteCard(author: String, preview: String, lightGround: Boolean) {
     // On the light own bubble the quote inks dark; on the dark incoming
     // card it stays white. The accent bar is the accent on both.
-    val ink = if (lightGround) OWN_BUBBLE_INK else Color.White
+    val ink = if (lightGround) UsTheme.extended.onChatBubbleOwn else UsTheme.extended.textPrimary
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = UsTheme.spacing.s)
             .clip(RoundedCornerShape(UsTheme.radii.small))
-            .background(if (lightGround) QUOTE_GROUND_LIGHT else QUOTE_GROUND),
+            .background(
+                if (lightGround) {
+                    UsTheme.extended.onChatBubbleOwn.copy(alpha = QUOTE_GROUND_ALPHA)
+                } else {
+                    UsTheme.extended.fillStrong
+                },
+            ),
     ) {
         Box(
             modifier = Modifier
@@ -1067,7 +1073,7 @@ private fun ReplyBanner(author: String, preview: String, onCancel: () -> Unit) {
                 text = if (author.isNotBlank()) "Replying to $author" else "Replying",
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = UsTheme.extended.chatAccent,
+                color = UsTheme.extended.chatAccentText,
                 maxLines = 1,
             )
             Text(
@@ -1157,12 +1163,8 @@ private val QUOTE_MIN_HEIGHT = 40.dp
 private val REPLY_BANNER_HEIGHT = 44.dp
 private const val QUOTE_TEXT_ALPHA = 0.8f
 
-/** Translucent grounds the quote card sits on, one per bubble fill. */
-@Suppress("MagicNumber")
-private val QUOTE_GROUND = Color(0x33000000)
-
-@Suppress("MagicNumber")
-private val QUOTE_GROUND_LIGHT = Color(0x1A000000)
+/** How much of the own bubble's ink the quote card's ground is; the incoming card takes the themed strong fill. */
+private const val QUOTE_GROUND_ALPHA = 0.1f
 
 // Composer attachments, staged and waiting for Send.
 private val STAGED_THUMB = 72.dp
@@ -1172,17 +1174,6 @@ private val SPINNER_STROKE = 3.dp
 private val REMOVE_BUTTON = 28.dp
 private val REMOVE_GLYPH_BG = 20.dp
 private val REMOVE_GLYPH = 12.dp
-
-/** Dim laid over a thumbnail so a white ring or glyph reads on any photo. */
-@Suppress("MagicNumber")
-private val SCRIM = Color(0x99000000)
-
-/** Own-message surface: soft green, dark ink — light like a paper note. */
-@Suppress("MagicNumber")
-private val OWN_BUBBLE = Color(0xFFD9FDD3)
-
-@Suppress("MagicNumber")
-private val OWN_BUBBLE_INK = Color(0xFF10231B)
 
 /** Tighter tracking is what separates a NAME from a label set in the same face. */
 @Suppress("MagicNumber") // The tracking value IS the constant.
@@ -1201,15 +1192,5 @@ private val COMPOSER_GLYPH = 20.dp
  * Stable per-sender name colours for group threads (98:396): the id hashes
  * into a fixed palette, so a sender keeps one colour for the whole thread.
  */
-@Suppress("MagicNumber")
-private val SENDER_PALETTE = listOf(
-    Color(0xFFAB47BC),
-    Color(0xFF22C55E),
-    Color(0xFFFF6B35),
-    Color(0xFF2196F3),
-    Color(0xFF4ECDC4),
-    Color(0xFFFFAB00),
-)
-
-private fun senderColor(seed: String): Color =
-    SENDER_PALETTE[abs(seed.hashCode()) % SENDER_PALETTE.size]
+private fun senderColor(seed: String, palette: List<Color>): Color =
+    palette[abs(seed.hashCode()) % palette.size]

@@ -37,7 +37,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -48,17 +47,33 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.us.android.core.call.CallState
+import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.ui.LightSystemBarGlyphs
 import kotlinx.coroutines.delay
 
 /**
  * The one call surface: outgoing ring, incoming ring, connecting, active
  * (audio or video) and the ended card. Dark, full-bleed, self-contained —
  * calls do not inherit the app scaffold.
+ *
+ * 2026-10-02: a call is a stage, dark in BOTH themes, so it runs inside the
+ * dark theme whatever the device says and keeps the status bar's glyphs light.
  */
 @Composable
 fun CallScreen(
     onBack: () -> Unit,
     viewModel: CallViewModel = hiltViewModel(),
+) {
+    UsTheme(darkTheme = true) {
+        LightSystemBarGlyphs()
+        CallStage(onBack = onBack, viewModel = viewModel)
+    }
+}
+
+@Composable
+private fun CallStage(
+    onBack: () -> Unit,
+    viewModel: CallViewModel,
 ) {
     val state by viewModel.callState.collectAsState()
     val message by viewModel.message.collectAsState()
@@ -76,7 +91,7 @@ fun CallScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(BACKDROP))
+            .background(UsTheme.extended.stage)
             .testTag("call-screen"),
     ) {
         CallStateContent(
@@ -91,7 +106,7 @@ fun CallScreen(
         message?.let {
             Text(
                 text = it,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -281,7 +296,7 @@ private fun CenteredStatus(text: String) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(text, color = Color.White, style = MaterialTheme.typography.titleLarge)
+        Text(text, color = UsTheme.extended.onMedia, style = MaterialTheme.typography.titleLarge)
     }
 }
 
@@ -293,8 +308,8 @@ private fun RingingContent(title: String, subtitle: String, onCancel: () -> Unit
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(title, color = Color.White, style = MaterialTheme.typography.headlineMedium)
-            Text(subtitle, color = Color.Gray, style = MaterialTheme.typography.bodyLarge)
+            Text(title, color = UsTheme.extended.onMedia, style = MaterialTheme.typography.headlineMedium)
+            Text(subtitle, color = UsTheme.extended.onMediaMuted, style = MaterialTheme.typography.bodyLarge)
             CircularProgressIndicator(modifier = Modifier.padding(top = 24.dp).size(28.dp))
         }
         EndCallButton(onClick = onCancel, tag = "call-cancel")
@@ -317,7 +332,7 @@ private fun IncomingContent(
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = if (video) "Incoming video call" else "Incoming call",
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 style = MaterialTheme.typography.headlineMedium,
             )
             if (showOpenSettings) {
@@ -336,12 +351,18 @@ private fun IncomingContent(
         ) {
             Button(
                 onClick = onDecline,
-                colors = ButtonDefaults.buttonColors(containerColor = DANGER_RED),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
                 modifier = Modifier.testTag("call-decline"),
             ) { Text("Decline") }
             Button(
                 onClick = onAccept,
-                colors = ButtonDefaults.buttonColors(containerColor = ACCEPT_GREEN),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = UsTheme.extended.statusSuccess,
+                    contentColor = UsTheme.extended.onStatus,
+                ),
                 modifier = Modifier.testTag("call-accept"),
             ) { Text("Accept") }
         }
@@ -372,7 +393,7 @@ private fun ActiveContent(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = peerName.ifBlank { "In call" },
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                     style = MaterialTheme.typography.titleLarge,
                 )
                 ElapsedTime(state.startedAtMillis)
@@ -386,7 +407,7 @@ private fun ActiveContent(
                         IconButton(
                             onClick = viewModel::switchCamera,
                             modifier = Modifier.testTag("call-flip"),
-                        ) { Text("🔄", color = Color.White) }
+                        ) { Text("🔄", color = UsTheme.extended.onMedia) }
                     }
                 }
                 EndCallButton(onClick = viewModel::hangUp, tag = "call-end")
@@ -408,7 +429,10 @@ private fun ControlToggle(tag: String, checked: Boolean, onToggle: () -> Unit, g
 private fun EndCallButton(onClick: () -> Unit, tag: String) {
     Button(
         onClick = onClick,
-        colors = ButtonDefaults.buttonColors(containerColor = DANGER_RED),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.error,
+            contentColor = MaterialTheme.colorScheme.onError,
+        ),
         modifier = Modifier.padding(top = 16.dp).testTag(tag),
     ) { Text("End call") }
 }
@@ -424,7 +448,7 @@ private fun ElapsedTime(startedAtMillis: Long) {
     }
     Text(
         text = "%d:%02d".format(seconds / SECONDS_PER_MINUTE, seconds % SECONDS_PER_MINUTE),
-        color = Color.Gray,
+        color = UsTheme.extended.onMediaMuted,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.testTag("call-elapsed"),
     )
@@ -464,12 +488,7 @@ private fun Context.openAppSettings() {
     )
 }
 
-private const val DANGER_RED_ARGB = 0xFFB3261E
-private const val ACCEPT_GREEN_ARGB = 0xFF2E7D32
-private val DANGER_RED = Color(DANGER_RED_ARGB)
-private val ACCEPT_GREEN = Color(ACCEPT_GREEN_ARGB)
 private const val TICK_MILLIS = 1_000L
-private const val BACKDROP = 0xFF101418
 private const val ENDED_CARD_MILLIS = 1_800L
 private const val MILLIS_PER_SECOND = 1_000L
 private const val SECONDS_PER_MINUTE = 60

@@ -25,7 +25,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -229,7 +228,7 @@ private fun ScheduleButton(label: String, enabled: Boolean, onClick: () -> Unit,
         Icon(
             imageVector = UsIcons.Clock,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.textPrimary,
             modifier = Modifier.size(CLOCK_GLYPH),
         )
         Spacer(Modifier.width(UsTheme.spacing.s))

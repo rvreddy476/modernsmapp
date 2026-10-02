@@ -40,7 +40,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -250,10 +249,10 @@ private fun ReelSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = Modifier.testTag(testTag),
     ) {
@@ -295,7 +294,6 @@ private fun SheetTitle(text: String) {
 
 // ── Metrics ─────────────────────────────────────────────────────────────
 
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private const val RING_ALPHA = 0.7f
 

@@ -64,7 +64,7 @@ fun WatchSettingsSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
         scrimColor = UsTheme.extended.scrim,

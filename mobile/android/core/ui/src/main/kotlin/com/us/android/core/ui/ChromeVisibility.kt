@@ -81,3 +81,27 @@ fun LightStatusBarGlyphs() {
         onDispose { controller.isAppearanceLightStatusBars = wasLightBar }
     }
 }
+
+/**
+ * [LightStatusBarGlyphs] for a screen that is a stage from edge to edge
+ * (2026-10-02): the photo studio, a call, a live room. Their dark ground runs
+ * under the NAVIGATION bar too, so on a light device the three-button bar's
+ * dark glyphs would sit on it unreadable. Both bars are put back the way they
+ * were when the screen leaves.
+ */
+@Composable
+fun LightSystemBarGlyphs() {
+    val activity = LocalActivity.current ?: return
+    val view = LocalView.current
+    DisposableEffect(activity, view) {
+        val controller = WindowCompat.getInsetsController(activity.window, view)
+        val wasLightStatus = controller.isAppearanceLightStatusBars
+        val wasLightNavigation = controller.isAppearanceLightNavigationBars
+        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightNavigationBars = false
+        onDispose {
+            controller.isAppearanceLightStatusBars = wasLightStatus
+            controller.isAppearanceLightNavigationBars = wasLightNavigation
+        }
+    }
+}

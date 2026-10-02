@@ -24,7 +24,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -138,7 +137,7 @@ private fun PicturesRow(
                                     if (picture.failed) {
                                         UsTheme.extended.accentDeep.copy(alpha = SCRIM_ALPHA)
                                     } else {
-                                        Color.Black.copy(alpha = SCRIM_ALPHA)
+                                        UsTheme.extended.stage.copy(alpha = SCRIM_ALPHA)
                                     },
                                 ),
                             contentAlignment = Alignment.Center,
@@ -146,7 +145,7 @@ private fun PicturesRow(
                             Icon(
                                 imageVector = if (picture.failed) UsIcons.Close else UsIcons.Upload,
                                 contentDescription = if (picture.failed) "Upload failed" else "Uploading",
-                                tint = Color.White,
+                                tint = UsTheme.extended.onMedia,
                             )
                         }
                     }
@@ -156,6 +155,7 @@ private fun PicturesRow(
                         onClick = { onRemove(picture.uri) },
                         size = REMOVE_TARGET,
                         glyph = REMOVE_GLYPH,
+                        tint = UsTheme.extended.onMedia,
                         modifier = Modifier.align(Alignment.TopEnd),
                     )
                 }
@@ -169,7 +169,11 @@ private fun PicturesRow(
                         .pressScale(onAdd)
                         .testTag("community_post_add_picture"),
                 ) {
-                    Icon(imageVector = UsIcons.ImagePlus, contentDescription = "Add pictures", tint = Color.White)
+                    Icon(
+                        imageVector = UsIcons.ImagePlus,
+                        contentDescription = "Add pictures",
+                        tint = UsTheme.extended.textPrimary,
+                    )
                 }
             }
         }

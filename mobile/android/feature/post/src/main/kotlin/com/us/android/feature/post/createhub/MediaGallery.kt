@@ -56,7 +56,6 @@ import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -730,12 +729,12 @@ private fun MediaTile(item: GalleryItem, order: Int, onClick: () -> Unit) {
                 formatDuration(duration),
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(UsTheme.spacing.s)
                     .clip(RoundedCornerShape(UsTheme.radii.small))
-                    .background(DURATION_SCRIM)
+                    .background(UsTheme.extended.mediaPlate)
                     .padding(
                         horizontal = UsTheme.spacing.s,
                         vertical = UsTheme.spacing.xs,
@@ -934,6 +933,3 @@ private const val SECONDS_PER_MINUTE = 60L
 private val GRID_GAP = 2.dp
 private val CAMERA_GLYPH = 28.dp
 private val SELECT_BADGE = 24.dp
-
-@Suppress("MagicNumber")
-private val DURATION_SCRIM = Color(0x99000000)

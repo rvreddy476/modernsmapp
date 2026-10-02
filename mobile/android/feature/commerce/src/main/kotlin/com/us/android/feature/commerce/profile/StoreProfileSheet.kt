@@ -84,7 +84,7 @@ fun StoreProfileSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = SCRIM_ALPHA),

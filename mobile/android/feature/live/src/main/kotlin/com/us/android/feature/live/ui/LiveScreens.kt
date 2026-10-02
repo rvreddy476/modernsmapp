@@ -53,6 +53,7 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -86,6 +87,8 @@ fun LiveHubScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     UsTheme(darkTheme = true) {
+        // 2026-10-02: the room is dark on a light device too, so both system bars keep light glyphs.
+        LightSystemBarGlyphs()
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -277,6 +280,8 @@ fun GoLiveScreen(
     BackHandler(enabled = state.isOnAir) { confirmEnd = true }
 
     UsTheme(darkTheme = true) {
+        // 2026-10-02: the room is dark on a light device too, so both system bars keep light glyphs.
+        LightSystemBarGlyphs()
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -527,6 +532,8 @@ fun LiveWatchScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     UsTheme(darkTheme = true) {
+        // 2026-10-02: the room is dark on a light device too, so both system bars keep light glyphs.
+        LightSystemBarGlyphs()
         Box(
             modifier = Modifier
                 .fillMaxSize()

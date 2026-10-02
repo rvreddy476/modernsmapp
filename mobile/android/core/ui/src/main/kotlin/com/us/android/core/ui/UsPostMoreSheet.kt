@@ -162,7 +162,7 @@ fun UsPostMoreSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
         scrimColor = UsTheme.extended.scrim,
@@ -647,7 +647,7 @@ private fun ConfirmDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(DIALOG_RADIUS))
-                .background(UsTheme.extended.bgCardSolid)
+                .background(UsTheme.extended.bgSheet)
                 .padding(DIALOG_PADDING)
                 .testTag(testTag),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),

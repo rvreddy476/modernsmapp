@@ -3,13 +3,13 @@ package com.us.android.feature.post.createhub.studio
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Build
 import androidx.core.content.res.ResourcesCompat
 import com.us.android.core.designsystem.R
+import com.us.android.core.designsystem.theme.UsContentColors
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -63,7 +63,7 @@ class TextPillRenderer @Inject constructor(
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = outfit
             this.textSize = textSize
-            color = if (pill.style == TextPillStyle.WHITE) NAVY else Color.WHITE
+            color = if (pill.style == TextPillStyle.WHITE) NAVY else WHITE
         }
         val padX = textSize * PAD_X
         val padY = textSize * PAD_Y
@@ -75,7 +75,7 @@ class TextPillRenderer @Inject constructor(
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (pill.style == TextPillStyle.WHITE) Color.WHITE else NAVY
+            color = if (pill.style == TextPillStyle.WHITE) WHITE else NAVY
         }
         canvas.drawRoundRect(RectF(0f, 0f, width.toFloat(), height.toFloat()), height / 2f, height / 2f, fill)
         canvas.drawText(fitted, padX, padY - metrics.ascent, paint)
@@ -101,12 +101,9 @@ class TextPillRenderer @Inject constructor(
     }
 
     private companion object {
-        /**
-         * Momentum's brand navy — `UsColorTokens.BrandNavy`, which is internal
-         * to the design system; the preview pill reads it as
-         * `UsTheme.extended.brandNavy`, and the export must paint the same ink.
-         */
-        const val NAVY = 0xFF0F3460.toInt()
+        /** The pill's two colours: the design system's content colours, which the preview reads too. */
+        const val NAVY = UsContentColors.PILL_NAVY_ARGB
+        const val WHITE = UsContentColors.PILL_WHITE_ARGB
         const val TEXT_FRACTION = 0.052f
         const val PAD_X = 0.9f
         const val PAD_Y = 0.42f

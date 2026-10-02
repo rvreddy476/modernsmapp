@@ -130,6 +130,33 @@ internal object UsColorTokens {
 
         /** `--theme-info` 47 107 163. */
         val Info = Color(0xFF2F6BA3)
+
+        // ── Roles added 2026-10-02 (light-mode pass) ───────────────────
+        /** `--theme-brand-highlight` 15 20 25: a SELECTED pill's fill (the web's inverse highlight). */
+        val SelectedPill = Color(0xFF0F1419)
+
+        /** `--theme-brand-bg` 255 255 255: the label on [SelectedPill]. */
+        val OnSelectedPill = Color(0xFFFFFFFF)
+
+        /** `--theme-brand-card` 255 255 255: a sheet, a dialog, a menu. The dimmed page separates it. */
+        val Sheet = Color(0xFFFFFFFF)
+
+        /** `--theme-success` 27 127 75: chat's green where it is READ on the light ground. */
+        val ChatAccentText = Color(0xFF1B7F4B)
+
+        /**
+         * Per-sender name colours in a group thread, each at 4.5:1 or better
+         * on the white incoming bubble. The web's own inks where it has one:
+         * success, `brand-ink`, warning.
+         */
+        val ChatSenders = listOf(
+            Color(0xFF7B1FA2),
+            Color(0xFF1B7F4B),
+            Color(0xFFB45309),
+            Color(0xFF2F6BA3),
+            Color(0xFF0F766E),
+            Color(0xFF8A5300),
+        )
     }
 
     /** The dark theme: `.dark` in the web's theme.css. */
@@ -215,6 +242,33 @@ internal object UsColorTokens {
 
         /** `--theme-info` 106 168 224. */
         val Info = Color(0xFF6AA8E0)
+
+        // ── Roles added 2026-10-02 (light-mode pass) ───────────────────
+        /** `--theme-brand-highlight` 247 249 249: a SELECTED pill's fill. */
+        val SelectedPill = Color(0xFFF7F9F9)
+
+        /** `--theme-brand-bg` 0 0 0: the label on [SelectedPill]. */
+        val OnSelectedPill = Color(0xFF000000)
+
+        /**
+         * `--theme-brand-secondary` 22 24 28: a sheet, a dialog, a menu. The
+         * page and the card are both black on dark, so a sheet in the card
+         * colour is black on black; the raised surface is what separates it.
+         */
+        val Sheet = Color(0xFF16181C)
+
+        /** Chat's green where it is read on the dark ground: `--theme-success` 74 222 128. */
+        val ChatAccentText = Color(0xFF4ADE80)
+
+        /** Per-sender name colours in a group thread, each at 4.5:1 or better on the black incoming bubble. */
+        val ChatSenders = listOf(
+            Color(0xFFC084FC),
+            Color(0xFF4ADE80),
+            Color(0xFFFB923C),
+            Color(0xFF6AA8E0),
+            Color(0xFF4ECDC4),
+            Color(0xFFFBBF24),
+        )
     }
 
     // ── Shared by both themes ──────────────────────────────────────────
@@ -245,6 +299,45 @@ internal object UsColorTokens {
 
     /** What a sheet or a dialog dims the page with: the stage at 55%. */
     val Scrim = Color(0x8C080C12)
+
+    // ── Over media (2026-10-02). Fixed in both themes for the same reason
+    // as [OnMedia]: what is under them is a photo or a video, not the theme.
+    /** A plate behind a glyph or a short label over media: the stage at 60%. */
+    val MediaPlate = Color(0x99080C12)
+
+    /** A hairline around a plate or an avatar over media: white at 20%. */
+    val MediaRim = Color(0x33FFFFFF)
+
+    /** A progress track over media: white at 25%. */
+    val MediaTrack = Color(0x40FFFFFF)
+
+    /** A disabled or unselected label over the stage: white at 55%. */
+    val OnMediaDim = Color(0x8CFFFFFF)
+
+    /**
+     * The glyph on a per-type TILE gradient (Create, the launcher, an empty
+     * state's icon square): white in both themes, because the tile is its
+     * own colour in both.
+     */
+    val OnTile = Color(0xFFFFFFFF)
+
+    // ── Avatar initials (2026-10-02: moved here from UsAvatar) ──────────
+    /** A person's fallback disc: the seed hashes into this palette, under white initials. */
+    val AvatarPalette = listOf(
+        Color(0xFF1A73E8),
+        Color(0xFF7B1FA2),
+        Color(0xFFC2185B),
+        Color(0xFF00796B),
+        Color(0xFFC2410C),
+        Color(0xFF455A64),
+        Color(0xFF5D4037),
+        Color(0xFF283593),
+    )
+    val OnAvatar = Color(0xFFFFFFFF)
+
+    /** The reel studio's text pill, as Compose colours: see [UsContentColors]. */
+    val PillNavy = Color(UsContentColors.PILL_NAVY_ARGB)
+    val PillWhite = Color(UsContentColors.PILL_WHITE_ARGB)
 
     // ── Brand (legacy per-product gradients, kept for the story ring and
     // surfaces that have not moved to the single accent) ─────────────────
@@ -288,8 +381,32 @@ internal object UsColorTokens {
     val ChatAccent = Color(0xFF22C55E)
     val ChatOnline = Color(0xFF4ADE80)
 
+    /** The glyph or count ON chat's green (send, a badge): the web's ink, 8:1. White on it is 2.3:1. */
+    val OnChatAccent = Color(0xFF0F1419)
+
+    /** Your own bubble: a soft green paper note with dark ink, the same in both themes. */
+    val ChatBubbleOwn = Color(0xFFD9FDD3)
+    val OnChatBubbleOwn = Color(0xFF10231B)
+
     // ── Brand chip (legacy "at" logo square) ────────────────────────────
     val BrandChip = Color(0xFFFFFFFF)
     val OnBrandChip = Color(0xFF0F1419)
     val BrandChipLight = Color(0xFFF7F9F9)
+}
+
+/**
+ * Colours burned INTO a creator's video: the reel studio's text pill
+ * (2026-10-02). They are the creator's content, not the app's chrome, so
+ * they belong to no theme and never invert.
+ *
+ * Public and plain ARGB ints because the exporter paints them with
+ * `android.graphics.Paint`, outside Compose; the studio's preview reads the
+ * same two through `UsTheme.extended.pillNavy` / `pillWhite`, so the preview
+ * and the exported file cannot drift. (They had: the preview read `brandNavy`,
+ * which moved to the web's cerulean on 2026-10-02 while the export kept
+ * Momentum's navy.)
+ */
+object UsContentColors {
+    const val PILL_NAVY_ARGB: Int = 0xFF0F3460.toInt()
+    const val PILL_WHITE_ARGB: Int = 0xFFFFFFFF.toInt()
 }

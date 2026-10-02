@@ -59,7 +59,7 @@ internal fun Modifier.pressScale(onClick: () -> Unit, enabled: Boolean = true): 
         }
 }
 
-/** A square target, the icon in white, no ripple — the header's glyph. */
+/** A square target, the icon in the text colour, no ripple — the header's glyph. */
 @Composable
 internal fun HeaderGlyph(
     icon: ImageVector,
@@ -69,7 +69,7 @@ internal fun HeaderGlyph(
     tag: String? = null,
     size: Dp = GLYPH_TARGET,
     glyph: Dp = GLYPH_SIZE,
-    tint: Color = Color.White,
+    tint: Color = UsTheme.extended.textPrimary,
 ) {
     Box(
         contentAlignment = Alignment.Center,
@@ -87,8 +87,8 @@ internal fun HeaderGlyph(
 }
 
 /**
- * The surface's action pill — "New group", "Create community": an ember
- * capsule with a white glyph and label, 36dp tall. The one accent on a
+ * The surface's action pill — "New group", "Create community": a filled
+ * capsule with its glyph and label in the on-accent colour, 36dp tall. The one accent on a
  * list, so the way to make something is the loudest thing on it.
  */
 @Composable
@@ -114,7 +114,7 @@ internal fun ChatActionPill(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.onAccent,
             modifier = Modifier.size(ACTION_PILL_GLYPH)
         )
         Text(
@@ -122,7 +122,7 @@ internal fun ChatActionPill(
             style = MaterialTheme.typography.labelLarge,
             fontSize = ACTION_PILL_TEXT,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onAccent,
             maxLines = 1,
         )
     }
@@ -130,8 +130,8 @@ internal fun ChatActionPill(
 
 /**
  * The membership pill — Join / Joined / Follow-style toggles on a card.
- * Selected is WHITE with navy text (the bar's rule; never the accent);
- * unselected is a glass capsule with a hairline border and white text.
+ * Selected is the inverse highlight (ink on light, near-white on dark; never
+ * the accent); unselected is a glass capsule with a hairline border.
  */
 @Composable
 internal fun ChatTogglePill(
@@ -143,8 +143,8 @@ internal fun ChatTogglePill(
     tag: String? = null,
 ) {
     val shape = RoundedCornerShape(UsTheme.radii.full)
-    val fill = if (selected) Color.White else UsTheme.extended.glassBg
-    val outline = if (selected) Color.White else UsTheme.extended.glassBorder
+    val fill = if (selected) UsTheme.extended.selectedPill else UsTheme.extended.glassBg
+    val outline = if (selected) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -164,7 +164,7 @@ internal fun ChatTogglePill(
             style = MaterialTheme.typography.labelLarge,
             fontSize = TOGGLE_PILL_TEXT,
             fontWeight = FontWeight.SemiBold,
-            color = if (selected) UsTheme.extended.brandNavy else UsTheme.extended.textPrimary,
+            color = if (selected) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
             maxLines = 1,
         )
     }

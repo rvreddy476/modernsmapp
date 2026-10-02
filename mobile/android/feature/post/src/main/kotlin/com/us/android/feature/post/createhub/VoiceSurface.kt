@@ -37,7 +37,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -245,13 +244,13 @@ private fun RecordPanel(
                     modifier = Modifier
                         .size(STOP_GLYPH)
                         .clip(RoundedCornerShape(UsTheme.radii.small))
-                        .background(Color.White),
+                        .background(UsTheme.extended.onTile),
                 )
             } else {
                 Icon(
                     imageVector = UsIcons.Mic,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = UsTheme.extended.onTile,
                     modifier = Modifier.size(RECORD_GLYPH),
                 )
             }
@@ -335,7 +334,7 @@ private fun ClipCard(
                             modifier = Modifier
                                 .size(width = PAUSE_BAR, height = PAUSE_HEIGHT)
                                 .clip(RoundedCornerShape(1.dp))
-                                .background(Color.White),
+                                .background(UsTheme.extended.onTile),
                         )
                     }
                 }
@@ -343,7 +342,7 @@ private fun ClipCard(
                 Icon(
                     imageVector = UsIcons.Play,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = UsTheme.extended.onTile,
                     modifier = Modifier.size(PLAY_GLYPH),
                 )
             }

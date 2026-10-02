@@ -39,7 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -309,7 +308,7 @@ private fun FlatTile(icon: ImageVector) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.onTile,
             modifier = Modifier.size(TILE_GLYPH),
         )
     }
@@ -343,14 +342,14 @@ private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
         modifier = modifier
             .offset(x = BADGE_OFFSET, y = -BADGE_OFFSET)
             .size(BADGE_SIZE)
-            .background(Color.White, CircleShape),
+            .background(UsTheme.extended.selectedPill, CircleShape),
     ) {
         Text(
             text = if (count > BADGE_MAX) "$BADGE_MAX+" else "$count",
             fontSize = BADGE_TEXT,
             lineHeight = BADGE_TEXT,
             fontWeight = FontWeight.Bold,
-            color = UsTheme.extended.accentDeep,
+            color = UsTheme.extended.onSelectedPill,
             maxLines = 1,
         )
     }

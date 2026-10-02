@@ -64,6 +64,12 @@ data class UsExtendedColors(
     val statusDanger: Color,
     /** The web's info: a neutral notice. */
     val statusInfo: Color,
+    /**
+     * A label or glyph ON a status fill (a success pill, a danger badge): the
+     * web's `on-primary`, white on light and ink on dark, where the status
+     * colours are bright.
+     */
+    val onStatus: Color,
     val postbookGradient: Brush,
     val postgramGradient: Brush,
     val posttubeGradient: Brush,
@@ -134,6 +140,45 @@ data class UsExtendedColors(
      */
     val onMedia: Color,
     val onMediaMuted: Color,
+    /**
+     * Over media, like [onMedia], and fixed in both themes for the same
+     * reason (2026-10-02): the dark plate behind a glyph or a short label on
+     * a photo, the hairline round it, a progress track, and the dimmed white
+     * of a disabled or unselected label on the stage.
+     */
+    val mediaPlate: Color,
+    val mediaRim: Color,
+    val mediaTrack: Color,
+    val onMediaDim: Color,
+    /** The glyph on a per-type tile gradient (Create, the launcher): white in both themes, as the tile is. */
+    val onTile: Color,
+    /**
+     * A SELECTED pill and its label: the web's inverse highlight
+     * (`brand-highlight` under `brand-bg`), ink on the light theme and
+     * near-white on the dark one. It replaces the white pill with
+     * [brandNavy] text, which was white on white on the light theme.
+     */
+    val selectedPill: Color,
+    val onSelectedPill: Color,
+    /**
+     * What a sheet, a dialog or a menu is made of: the card on light, the
+     * RAISED surface on dark, where the card is as black as the page.
+     * Material's `surfaceContainer*` roles carry the same value, so a
+     * Material sheet that names no colour gets it too.
+     */
+    val bgSheet: Color,
+    /** Chat's green where it is READ (an unread time, a link): 4.5:1 on the ground in each theme. */
+    val chatAccentText: Color,
+    /** The glyph or count drawn ON [chatAccent]: dark ink, in both themes. */
+    val onChatAccent: Color,
+    /** The reel studio's text pill, as it is burned into the video: see [UsContentColors]. Not themed. */
+    val pillNavy: Color,
+    val pillWhite: Color,
+    /** Your own chat bubble and its ink: a brand identity, the same in both themes. */
+    val chatBubbleOwn: Color,
+    val onChatBubbleOwn: Color,
+    /** Per-sender name colours in a group thread, readable on the incoming bubble of each theme. */
+    val chatSenders: List<Color>,
     /** The Create sheet's per-type circle gradients. See [UsCreateColors]. */
     val create: UsCreateColors,
     /** The Explore launcher's per-app tile gradients. See [UsLauncherColors]. */
@@ -310,6 +355,7 @@ internal val DarkExtendedColors = UsExtendedColors(
     statusSuccess = UsColorTokens.Dark.Success,
     statusDanger = UsColorTokens.Dark.Danger,
     statusInfo = UsColorTokens.Dark.Info,
+    onStatus = UsColorTokens.Dark.OnPrimary,
     postbookGradient = Brush.horizontalGradient(
         listOf(UsColorTokens.PostbookPrimary, UsColorTokens.PostbookSecondary),
     ),
@@ -344,6 +390,21 @@ internal val DarkExtendedColors = UsExtendedColors(
     stage = UsColorTokens.Stage,
     onMedia = UsColorTokens.OnMedia,
     onMediaMuted = UsColorTokens.OnMediaMuted,
+    mediaPlate = UsColorTokens.MediaPlate,
+    mediaRim = UsColorTokens.MediaRim,
+    mediaTrack = UsColorTokens.MediaTrack,
+    onMediaDim = UsColorTokens.OnMediaDim,
+    onTile = UsColorTokens.OnTile,
+    selectedPill = UsColorTokens.Dark.SelectedPill,
+    onSelectedPill = UsColorTokens.Dark.OnSelectedPill,
+    bgSheet = UsColorTokens.Dark.Sheet,
+    chatAccentText = UsColorTokens.Dark.ChatAccentText,
+    onChatAccent = UsColorTokens.OnChatAccent,
+    pillNavy = UsColorTokens.PillNavy,
+    pillWhite = UsColorTokens.PillWhite,
+    chatBubbleOwn = UsColorTokens.ChatBubbleOwn,
+    onChatBubbleOwn = UsColorTokens.OnChatBubbleOwn,
+    chatSenders = UsColorTokens.Dark.ChatSenders,
     create = CreateColors,
     launcher = LauncherColors,
 )
@@ -380,6 +441,7 @@ internal val LightExtendedColors = DarkExtendedColors.copy(
     statusSuccess = UsColorTokens.Light.Success,
     statusDanger = UsColorTokens.Light.Danger,
     statusInfo = UsColorTokens.Light.Info,
+    onStatus = UsColorTokens.Light.OnPrimary,
     ctaGradient = flat(UsColorTokens.Light.AccentFill),
     unreadRow = UsColorTokens.Light.AccentTint,
     accentSolid = UsColorTokens.Light.AccentText,
@@ -391,4 +453,9 @@ internal val LightExtendedColors = DarkExtendedColors.copy(
     bgRaised = UsColorTokens.Light.Sunken,
     fillSubtle = UsColorTokens.Light.FillSubtle,
     fillStrong = UsColorTokens.Light.FillStrong,
+    selectedPill = UsColorTokens.Light.SelectedPill,
+    onSelectedPill = UsColorTokens.Light.OnSelectedPill,
+    bgSheet = UsColorTokens.Light.Sheet,
+    chatAccentText = UsColorTokens.Light.ChatAccentText,
+    chatSenders = UsColorTokens.Light.ChatSenders,
 )

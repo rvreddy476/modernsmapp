@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import com.us.android.core.designsystem.theme.UsColorTokens
 import com.us.android.core.designsystem.theme.UsTheme
 import kotlin.math.absoluteValue
 
@@ -87,7 +88,7 @@ fun UsAvatar(
             if (imageUrl.isNullOrBlank()) {
                 Text(
                     text = initialsOf(name),
-                    color = Color.White,
+                    color = UsColorTokens.OnAvatar,
                     fontSize = size.initialsSize,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
@@ -157,20 +158,9 @@ private fun String.firstCodePoint(): String {
  * white initials. A freely generated colour cannot promise that.
  */
 internal fun avatarColor(seed: String): Color {
-    if (seed.isEmpty()) return AvatarPalette[0]
-    return AvatarPalette[(seed.hashCode().absoluteValue) % AvatarPalette.size]
+    if (seed.isEmpty()) return UsColorTokens.AvatarPalette[0]
+    return UsColorTokens.AvatarPalette[(seed.hashCode().absoluteValue) % UsColorTokens.AvatarPalette.size]
 }
-
-private val AvatarPalette = listOf(
-    Color(0xFF1A73E8),
-    Color(0xFF7B1FA2),
-    Color(0xFFC2185B),
-    Color(0xFF00796B),
-    Color(0xFFE65100),
-    Color(0xFF455A64),
-    Color(0xFF5D4037),
-    Color(0xFF283593),
-)
 
 @Preview(name = "Avatar sizes", showBackground = true)
 @Composable

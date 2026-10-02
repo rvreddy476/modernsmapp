@@ -84,7 +84,7 @@ fun ScheduleSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
         scrimColor = UsTheme.extended.scrim,
@@ -108,12 +108,12 @@ fun ScheduleSheet(
                     title = null,
                     headline = null,
                     showModeToggle = false,
-                    colors = DatePickerDefaults.colors(containerColor = UsTheme.extended.bgCardSolid),
+                    colors = DatePickerDefaults.colors(containerColor = UsTheme.extended.bgSheet),
                 )
                 Step.TIME -> Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     TimePicker(
                         state = timeState,
-                        colors = TimePickerDefaults.colors(containerColor = UsTheme.extended.bgCardSolid),
+                        colors = TimePickerDefaults.colors(containerColor = UsTheme.extended.bgSheet),
                     )
                 }
             }
