@@ -23,6 +23,9 @@ import (
 type fakeFacts struct {
 	mu sync.Mutex
 
+	email    bool
+	emailErr error
+
 	phone    bool
 	phoneErr error
 
@@ -60,6 +63,11 @@ func (f *fakeFacts) total() int {
 	return n
 }
 
+func (f *fakeFacts) EmailVerified(context.Context, uuid.UUID) (bool, error) {
+	f.hit("email")
+	return f.email, f.emailErr
+}
+
 func (f *fakeFacts) PhoneVerified(context.Context, uuid.UUID) (bool, error) {
 	f.hit("phone")
 	return f.phone, f.phoneErr
@@ -87,9 +95,10 @@ func (f *fakeFacts) FollowerCount(context.Context, uuid.UUID) (int, error) {
 
 var errFactDown = errors.New("the service is down")
 
-// eligRig is the rig in `mode` with the default requirements and one user's
-// facts, all of them good: a verified phone, born in 1990, an active account
-// made 30 days ago, 5 posts and no followers.
+// eligRig is the rig in `mode` with the default requirements (email on,
+// phone off) and one user's facts, all of them good: a verified email, a
+// verified phone, born in 1990, an active account made 30 days ago, 5 posts
+// and no followers.
 type eligRig struct {
 	*rig
 	facts *fakeFacts
@@ -100,14 +109,15 @@ func newEligRig(mode string, pilot ...uuid.UUID) *eligRig {
 	r.svc.now = r.clock.Now
 	dob := time.Date(1990, 5, 17, 0, 0, 0, 0, time.UTC)
 	f := &fakeFacts{
-		phone: true, dob: &dob, identityFound: true,
+		email: true, phone: true, dob: &dob, identityFound: true,
 		account: AccountInfo{Found: true, Active: true, CreatedAt: r.clock.Now().Add(-30 * 24 * time.Hour)},
 		posts:   5,
 	}
 	r.svc.elig = EligibilityConfig{
-		Mode: mode, RequirePhone: true, MinAccountAge: DefaultEligMinAccountAge,
-		MinPosts: DefaultEligMinPosts, MinFollowers: DefaultEligMinFollowers,
-		Phones: f, BirthDates: f, Accounts: f, Posts: f, Followers: f,
+		Mode: mode, RequireEmail: DefaultEligRequireEmail, RequirePhone: DefaultEligRequirePhone,
+		MinAccountAge: DefaultEligMinAccountAge,
+		MinPosts:      DefaultEligMinPosts, MinFollowers: DefaultEligMinFollowers,
+		Emails: f, Phones: f, BirthDates: f, Accounts: f, Posts: f, Followers: f,
 	}
 	return &eligRig{rig: r, facts: f}
 }
@@ -168,20 +178,20 @@ func TestEligibilityConfigFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mode != AccessModePilot || !cfg.RequirePhone || cfg.MinAccountAge != 168*time.Hour ||
+	if cfg.Mode != AccessModePilot || !cfg.RequireEmail || cfg.RequirePhone || cfg.MinAccountAge != 168*time.Hour ||
 		cfg.MinPosts != 3 || cfg.MinFollowers != 10 || cfg.NewStreamerStreams != 3 || cfg.NewStreamerViewerCap != 200 {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 
 	cfg, err = EligibilityConfigFromEnv(env(map[string]string{
-		"LIVE_ACCESS_MODE": "open", "LIVE_ELIG_REQUIRE_PHONE": "false", "LIVE_ELIG_MIN_ACCOUNT_AGE": "36h",
-		"LIVE_ELIG_MIN_POSTS": "1", "LIVE_ELIG_MIN_FOLLOWERS": "0",
+		"LIVE_ACCESS_MODE": "open", "LIVE_ELIG_REQUIRE_EMAIL": "false", "LIVE_ELIG_REQUIRE_PHONE": "true",
+		"LIVE_ELIG_MIN_ACCOUNT_AGE": "36h", "LIVE_ELIG_MIN_POSTS": "1", "LIVE_ELIG_MIN_FOLLOWERS": "0",
 		"LIVE_NEW_STREAMER_STREAMS": "5", "LIVE_NEW_STREAMER_VIEWER_CAP": "0",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mode != AccessModeOpen || cfg.RequirePhone || cfg.MinAccountAge != 36*time.Hour ||
+	if cfg.Mode != AccessModeOpen || cfg.RequireEmail || !cfg.RequirePhone || cfg.MinAccountAge != 36*time.Hour ||
 		cfg.MinPosts != 1 || cfg.MinFollowers != 0 || cfg.NewStreamerStreams != 5 || cfg.NewStreamerViewerCap != 0 {
 		t.Fatalf("overrides: %+v", cfg)
 	}
@@ -189,6 +199,8 @@ func TestEligibilityConfigFromEnv(t *testing.T) {
 	// Anything unreadable refuses to boot rather than taking a default.
 	for _, bad := range []map[string]string{
 		{"LIVE_ACCESS_MODE": "public"},
+		{"LIVE_ELIG_REQUIRE_EMAIL": "maybe"},
+		{"LIVE_ELIG_REQUIRE_EMAIL": "2"},
 		{"LIVE_ELIG_REQUIRE_PHONE": "maybe"},
 		{"LIVE_ELIG_MIN_ACCOUNT_AGE": "7 days"},
 		{"LIVE_ELIG_MIN_ACCOUNT_AGE": "-1h"},
@@ -248,10 +260,18 @@ func TestRequirementStates(t *testing.T) {
 	}{
 		{"everything met", func(*eligRig) {}, want{ReqGoodStanding, &yes, true, nil}},
 
-		{"phone verified", func(*eligRig) {}, want{ReqPhoneVerified, &yes, true, nil}},
-		{"phone not verified", func(e *eligRig) { e.facts.phone = false }, want{ReqPhoneVerified, &no, false, ErrLiveNotEligible}},
-		{"phone lookup fails", func(e *eligRig) { e.facts.phoneErr = errFactDown }, want{ReqPhoneVerified, unknown, false, ErrAuthorityUnavailable}},
-		{"phone has no source", func(e *eligRig) { e.svc.elig.Phones = nil }, want{ReqPhoneVerified, unknown, false, ErrAuthorityUnavailable}},
+		{"email verified", func(*eligRig) {}, want{ReqEmailVerified, &yes, true, nil}},
+		// "No email on file" is this same answer from the source: false, not
+		// unknown (TestHTTPEmails).
+		{"email not verified", func(e *eligRig) { e.facts.email = false }, want{ReqEmailVerified, &no, false, ErrLiveNotEligible}},
+		{"email lookup fails", func(e *eligRig) { e.facts.emailErr = errFactDown }, want{ReqEmailVerified, unknown, false, ErrAuthorityUnavailable}},
+		{"email has no source", func(e *eligRig) { e.svc.elig.Emails = nil }, want{ReqEmailVerified, unknown, false, ErrAuthorityUnavailable}},
+
+		// phone_verified is off by default; switched on it works as before.
+		{"phone verified", func(e *eligRig) { e.svc.elig.RequirePhone = true }, want{ReqPhoneVerified, &yes, true, nil}},
+		{"phone not verified", func(e *eligRig) { e.svc.elig.RequirePhone = true; e.facts.phone = false }, want{ReqPhoneVerified, &no, false, ErrLiveNotEligible}},
+		{"phone lookup fails", func(e *eligRig) { e.svc.elig.RequirePhone = true; e.facts.phoneErr = errFactDown }, want{ReqPhoneVerified, unknown, false, ErrAuthorityUnavailable}},
+		{"phone has no source", func(e *eligRig) { e.svc.elig.RequirePhone = true; e.svc.elig.Phones = nil }, want{ReqPhoneVerified, unknown, false, ErrAuthorityUnavailable}},
 
 		{"adult", func(*eligRig) {}, want{ReqAdult, &yes, true, nil}},
 		{"18 today", func(e *eligRig) { e.facts.dob = day(at.Year()-18, at.Month(), at.Day()) }, want{ReqAdult, &yes, true, nil}},
@@ -288,7 +308,11 @@ func TestRequirementStates(t *testing.T) {
 			if got.Mode != AccessModeOpen || got.PilotOnly {
 				t.Fatalf("mode: %+v", got)
 			}
-			if len(got.Requirements) != 5 {
+			wantRows := 5
+			if e.svc.elig.RequirePhone {
+				wantRows = 6
+			}
+			if len(got.Requirements) != wantRows {
 				t.Fatalf("requirements: %s", keysOf(got.Requirements))
 			}
 			if r := reqByKey(t, got.Requirements, tc.want.key); metText(r.Met) != metText(tc.want.met) {
@@ -319,7 +343,7 @@ func TestRequirementShapes(t *testing.T) {
 	e.facts.posts, e.facts.followers = 1, 4
 	got, _ := e.svc.Eligibility(ctx, user)
 
-	if keys := keysOf(got.Requirements); keys != "phone_verified=true,adult=true,account_age=false,activity=false,good_standing=true" {
+	if keys := keysOf(got.Requirements); keys != "email_verified=true,adult=true,account_age=false,activity=false,good_standing=true" {
 		t.Fatalf("order and states: %s", keys)
 	}
 	age := reqByKey(t, got.Requirements, ReqAccountAge)
@@ -331,7 +355,7 @@ func TestRequirementShapes(t *testing.T) {
 		act.Followers == nil || act.Followers.Current == nil || *act.Followers.Current != 4 || act.Followers.Needed != 10 {
 		t.Fatalf("activity: posts %+v followers %+v", act.Posts, act.Followers)
 	}
-	for _, key := range []string{ReqPhoneVerified, ReqAdult, ReqGoodStanding} {
+	for _, key := range []string{ReqEmailVerified, ReqAdult, ReqGoodStanding} {
 		r := reqByKey(t, got.Requirements, key)
 		if r.Current != nil || r.Needed != nil || r.Unit != "" || r.Posts != nil || r.Followers != nil {
 			t.Fatalf("%s carries progress: %+v", key, r)
@@ -367,16 +391,16 @@ func TestRequirementShapes(t *testing.T) {
 func TestRequirementsSwitchedOff(t *testing.T) {
 	e := newEligRig(AccessModeOpen)
 	user := uuid.New()
-	e.svc.elig.RequirePhone = false
+	e.svc.elig.RequireEmail, e.svc.elig.RequirePhone = false, false
 	e.svc.elig.MinAccountAge = 0
 	e.svc.elig.MinPosts, e.svc.elig.MinFollowers = 0, 0
-	e.facts.phone, e.facts.posts = false, 0
+	e.facts.email, e.facts.phone, e.facts.posts = false, false, 0
 	e.facts.account.CreatedAt = e.clock.Now()
 	got, _ := e.svc.Eligibility(ctx, user)
 	if keys := keysOf(got.Requirements); keys != "adult=true,good_standing=true" || !got.Eligible {
 		t.Fatalf("with the optional requirements off: %s eligible=%v", keys, got.Eligible)
 	}
-	if e.facts.calls["phone"]+e.facts.calls["posts"]+e.facts.calls["followers"] != 0 {
+	if e.facts.calls["email"]+e.facts.calls["phone"]+e.facts.calls["posts"]+e.facts.calls["followers"] != 0 {
 		t.Fatalf("facts nobody needs were read: %v", e.facts.calls)
 	}
 	// adult cannot be switched off.
@@ -394,6 +418,108 @@ func TestRequirementsSwitchedOff(t *testing.T) {
 	act := reqByKey(t, got.Requirements, ReqActivity)
 	if act.Followers != nil || act.Posts == nil || act.Met == nil || *act.Met {
 		t.Fatalf("followers switched off: %+v", act)
+	}
+}
+
+// TestPhoneIsOffByDefault: with the settings as shipped phone_verified is not
+// listed, not read and decides nothing, and email_verified is first.
+// Switched on, phone_verified sits right after email_verified and gates as
+// it did. Both modes.
+func TestPhoneIsOffByDefault(t *testing.T) {
+	cfg, err := EligibilityConfigFromEnv(func(string) string { return "" })
+	if err != nil || !cfg.RequireEmail || cfg.RequirePhone {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	state := func(reqs []Requirement, key string) string {
+		for _, r := range reqs {
+			if r.Key == key {
+				return metText(r.Met)
+			}
+		}
+		return "absent"
+	}
+	for _, mode := range []string{AccessModeOpen, AccessModePilot} {
+		e := newEligRig(mode)
+		e.svc.elig.RequireEmail, e.svc.elig.RequirePhone = cfg.RequireEmail, cfg.RequirePhone
+		user := uuid.New()
+		open := mode == AccessModeOpen
+		// Nobody has a verified phone, and there is no source for one.
+		e.facts.phone, e.svc.elig.Phones = false, nil
+		got, _ := e.svc.Eligibility(ctx, user)
+		if keys := keysOf(got.Requirements); keys != "email_verified=true,adult=true,account_age=true,activity=true,good_standing=true" {
+			t.Fatalf("%s, defaults: %s", mode, keys)
+		}
+		if got.Eligible != open {
+			t.Fatalf("%s, defaults: eligible=%v", mode, got.Eligible)
+		}
+		if e.facts.calls["phone"] != 0 || e.facts.calls["email"] != 1 {
+			t.Fatalf("%s, defaults: reads %v", mode, e.facts.calls)
+		}
+
+		// Phone on: listed second; without a source it is unknown.
+		e.svc.elig.RequirePhone = true
+		got, _ = e.svc.Eligibility(ctx, user)
+		if keys := keysOf(got.Requirements); keys != "email_verified=true,phone_verified=null,adult=true,account_age=true,activity=true,good_standing=true" {
+			t.Fatalf("%s, phone on without a source: %s", mode, keys)
+		}
+		if got.Eligible {
+			t.Fatalf("%s: eligible with the phone unknown", mode)
+		}
+		// With a source it is read and it decides (in open mode).
+		e.svc.elig.Phones = e.facts
+		got, _ = e.svc.Eligibility(ctx, user)
+		if state(got.Requirements, ReqPhoneVerified) != "false" || got.Eligible {
+			t.Fatalf("%s, phone on and not verified: %s eligible=%v", mode, keysOf(got.Requirements), got.Eligible)
+		}
+		e.expire()
+		e.facts.phone = true
+		got, _ = e.svc.Eligibility(ctx, user)
+		if state(got.Requirements, ReqPhoneVerified) != "true" || got.Eligible != open {
+			t.Fatalf("%s, phone on and verified: %s eligible=%v", mode, keysOf(got.Requirements), got.Eligible)
+		}
+		// An unverified email shows as false in both modes.
+		e.expire()
+		e.facts.email = false
+		got, _ = e.svc.Eligibility(ctx, user)
+		if state(got.Requirements, ReqEmailVerified) != "false" || got.Eligible {
+			t.Fatalf("%s, email not verified: %s eligible=%v", mode, keysOf(got.Requirements), got.Eligible)
+		}
+	}
+
+	// The gate, open mode, defaults: an unverified email refuses with its
+	// row; an unverified phone does not matter.
+	e := newEligRig(AccessModeOpen)
+	user := uuid.New()
+	e.facts.phone, e.facts.email = false, false
+	_, err = e.svc.CreateStream(ctx, user, CreateStreamParams{Title: "x"})
+	var ne *NotEligibleError
+	if !errors.As(err, &ne) || keysOf(ne.Requirements) != "email_verified=false" {
+		t.Fatalf("create with an unverified email: %v", err)
+	}
+	e.expire()
+	e.facts.email = true
+	if _, err := e.svc.CreateStream(ctx, user, CreateStreamParams{Title: "x"}); err != nil {
+		t.Fatalf("create with a verified email and no verified phone: %v", err)
+	}
+	// Both asked for and both short: both rows, email first.
+	e.expire()
+	e.svc.elig.RequirePhone = true
+	e.facts.email = false
+	_, err = e.svc.CreateStream(ctx, user, CreateStreamParams{Title: "y"})
+	ne = nil
+	if !errors.As(err, &ne) || keysOf(ne.Requirements) != "email_verified=false,phone_verified=false" {
+		t.Fatalf("create with neither verified: %v", err)
+	}
+	// Email switched off: not listed, not read, and it gates nothing.
+	e2 := newEligRig(AccessModeOpen)
+	e2.svc.elig.RequireEmail = false
+	e2.facts.email, e2.svc.elig.Emails = false, nil
+	got, _ := e2.svc.Eligibility(ctx, user)
+	if keys := keysOf(got.Requirements); keys != "adult=true,account_age=true,activity=true,good_standing=true" || !got.Eligible {
+		t.Fatalf("email off: %s eligible=%v", keys, got.Eligible)
+	}
+	if e2.facts.calls["email"] != 0 {
+		t.Fatalf("the email fact was read with the requirement off")
 	}
 }
 
@@ -455,7 +581,7 @@ func TestActivityIsPostsOrFollowers(t *testing.T) {
 func TestNotEligibleListsWhatIsMissing(t *testing.T) {
 	e := newEligRig(AccessModeOpen)
 	user := uuid.New()
-	e.facts.phone = false
+	e.facts.email = false
 	e.facts.posts = 1
 	e.facts.accountErr = errFactDown // account_age and good_standing unknown
 	_, err := e.svc.CreateStream(ctx, user, CreateStreamParams{Title: "x"})
@@ -466,7 +592,7 @@ func TestNotEligibleListsWhatIsMissing(t *testing.T) {
 	if errors.Is(err, ErrAuthorityUnavailable) {
 		t.Fatalf("a definite refusal reads as unavailable")
 	}
-	if keys := keysOf(ne.Requirements); keys != "phone_verified=false,account_age=null,activity=false,good_standing=null" {
+	if keys := keysOf(ne.Requirements); keys != "email_verified=false,account_age=null,activity=false,good_standing=null" {
 		t.Fatalf("unmet: %s", keys)
 	}
 	if act := reqByKey(t, ne.Requirements, ReqActivity); *act.Posts.Current != 1 || act.Posts.Needed != 3 {
@@ -480,14 +606,14 @@ func TestNotEligibleListsWhatIsMissing(t *testing.T) {
 func TestPilotUsersAlwaysEligibleInOpenMode(t *testing.T) {
 	pilot := uuid.New()
 	e := newEligRig(AccessModeOpen, pilot)
-	e.facts.phone, e.facts.dob, e.facts.posts = false, nil, 0
+	e.facts.email, e.facts.dob, e.facts.posts = false, nil, 0
 	e.facts.accountErr = errFactDown
 
 	got, _ := e.svc.Eligibility(ctx, pilot)
 	if !got.Eligible || got.PilotOnly {
 		t.Fatalf("pilot in open mode: %+v", got)
 	}
-	if keys := keysOf(got.Requirements); keys != "phone_verified=false,adult=false,account_age=null,activity=false,good_standing=null" {
+	if keys := keysOf(got.Requirements); keys != "email_verified=false,adult=false,account_age=null,activity=false,good_standing=null" {
 		t.Fatalf("the requirements are still shown: %s", keys)
 	}
 	before := e.facts.total()
@@ -541,13 +667,13 @@ func TestPilotModeIsUnchanged(t *testing.T) {
 	if got.Mode != AccessModePilot || got.Eligible || !got.PilotOnly {
 		t.Fatalf("stranger: %+v", got)
 	}
-	if keys := keysOf(got.Requirements); keys != "phone_verified=true,adult=true,account_age=true,activity=true,good_standing=true" {
+	if keys := keysOf(got.Requirements); keys != "email_verified=true,adult=true,account_age=true,activity=true,good_standing=true" {
 		t.Fatalf("requirements in pilot mode: %s", keys)
 	}
 
 	// A pilot user who meets nothing still goes live.
 	e.expire()
-	e.facts.phone, e.facts.dob, e.facts.posts = false, nil, 0
+	e.facts.email, e.facts.dob, e.facts.posts = false, nil, 0
 	got, _ = e.svc.Eligibility(ctx, pilot)
 	if !got.Eligible || got.PilotOnly {
 		t.Fatalf("pilot: %+v", got)
@@ -707,10 +833,13 @@ func TestFactsCachedSixtySecondsPerUser(t *testing.T) {
 	if _, err := e.svc.CreateStream(ctx, a, CreateStreamParams{Title: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"phone", "identity", "account", "posts", "followers"} {
+	for _, name := range []string{"email", "identity", "account", "posts", "followers"} {
 		if e.facts.calls[name] != 1 {
 			t.Fatalf("%s read %d times in one minute", name, e.facts.calls[name])
 		}
+	}
+	if e.facts.calls["phone"] != 0 {
+		t.Fatalf("the phone fact was read with the requirement off")
 	}
 	// Per user.
 	_, _ = e.svc.Eligibility(ctx, b)
@@ -726,6 +855,33 @@ func TestFactsCachedSixtySecondsPerUser(t *testing.T) {
 	e.clock.Advance(time.Second)
 	if got, _ := e.svc.Eligibility(ctx, a); got.Eligible {
 		t.Fatalf("a fact outlived 60s")
+	}
+
+	// The email fact is held for the same minute.
+	e.expire()
+	e.facts.posts = 5
+	if got, _ := e.svc.Eligibility(ctx, a); !got.Eligible {
+		t.Fatalf("not eligible again: %s", keysOf(got.Requirements))
+	}
+	e.clock.Advance(59 * time.Second)
+	e.facts.email = false
+	if got, _ := e.svc.Eligibility(ctx, a); !got.Eligible {
+		t.Fatalf("the email fact did not hold for 59s")
+	}
+	e.clock.Advance(time.Second)
+	if got, _ := e.svc.Eligibility(ctx, a); got.Eligible || metText(reqByKey(t, got.Requirements, ReqEmailVerified).Met) != "false" {
+		t.Fatalf("the email fact outlived 60s: %s", keysOf(got.Requirements))
+	}
+	// A failed email read is unknown and is not kept: the next read asks
+	// again, and its answer counts at once.
+	e.expire()
+	e.facts.email, e.facts.emailErr = true, errFactDown
+	if got, _ := e.svc.Eligibility(ctx, a); reqByKey(t, got.Requirements, ReqEmailVerified).Met != nil || got.Eligible {
+		t.Fatalf("a failed email read produced an answer")
+	}
+	e.facts.emailErr = nil
+	if got, _ := e.svc.Eligibility(ctx, a); !got.Eligible {
+		t.Fatalf("the failed email read was cached: %s", keysOf(got.Requirements))
 	}
 
 	// A failure is not cached: the next read asks again.

@@ -195,8 +195,13 @@ func main() {
 	// cap) by the same time on air the founding creator badge asks for.
 	elig.CompletedMinLive = foundingMinLive
 	// The facts, each from a route that already exists. A source that is not
-	// configured, and the phone fact that no internal route exposes, make
-	// their requirement unknown: unknown never passes in open mode.
+	// configured makes its requirement unknown: unknown never passes in open
+	// mode. Email verified is identity auth-service's internal contact read;
+	// the phone fact has no route (no SMS is sent), so that requirement is
+	// off unless LIVE_ELIG_REQUIRE_PHONE=true.
+	if c := service.NewHTTPEmails(env("AUTH_SERVICE_URL", "http://identity-auth:8081"), internalKey); c != nil {
+		elig.Emails = c
+	}
 	if c := service.NewHTTPBirthDates(profileURL, internalKey); c != nil {
 		elig.BirthDates = c
 	}
@@ -210,14 +215,14 @@ func main() {
 		elig.Followers = c
 	}
 	slog.Info("live-v2: going-live access", "mode", elig.Mode,
-		"require_phone", elig.RequirePhone, "min_account_age", elig.MinAccountAge.String(),
+		"require_email", elig.RequireEmail, "require_phone", elig.RequirePhone, "min_account_age", elig.MinAccountAge.String(),
 		"min_posts", elig.MinPosts, "min_followers", elig.MinFollowers,
 		"new_streamer_streams", elig.NewStreamerStreams, "new_streamer_viewer_cap", elig.NewStreamerViewerCap)
 	if elig.Mode == service.AccessModeOpen {
 		if elig.RequirePhone && elig.Phones == nil {
 			slog.Warn("live-v2: open mode requires a verified phone but no internal route exposes phone_verified — nobody outside the pilot list can go live (503 AUTHORITY_UNAVAILABLE) until a source exists or LIVE_ELIG_REQUIRE_PHONE=false")
 		}
-		if elig.Accounts == nil || elig.BirthDates == nil || (elig.MinPosts > 0 && elig.Posts == nil) || (elig.MinFollowers > 0 && elig.Followers == nil) {
+		if (elig.RequireEmail && elig.Emails == nil) || elig.Accounts == nil || elig.BirthDates == nil || (elig.MinPosts > 0 && elig.Posts == nil) || (elig.MinFollowers > 0 && elig.Followers == nil) {
 			slog.Warn("live-v2: open mode with an eligibility source not configured — its requirement is unknown and blocks going live")
 		}
 	}

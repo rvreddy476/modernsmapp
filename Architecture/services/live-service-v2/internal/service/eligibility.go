@@ -11,8 +11,12 @@ package service
 //
 // Requirements, each one about trust and none about popularity:
 //
-//	phone_verified  identity says the phone is verified (LIVE_ELIG_REQUIRE_PHONE)
-//	adult           18 or over by the identity date of birth (always on)
+//	email_verified  identity holds an email address for the account and it is
+//	                verified (LIVE_ELIG_REQUIRE_EMAIL, on by default)
+//	phone_verified  identity says the phone is verified (LIVE_ELIG_REQUIRE_PHONE,
+//	                off by default: nothing sends an SMS, so nothing can
+//	                verify a phone and no route exposes the fact)
+//	adult          18 or over by the identity date of birth (always on)
 //	account_age     the account is at least LIVE_ELIG_MIN_ACCOUNT_AGE old
 //	activity        LIVE_ELIG_MIN_POSTS posts OR LIVE_ELIG_MIN_FOLLOWERS followers
 //	good_standing   no platform live ban, and the account is active
@@ -50,6 +54,7 @@ const (
 
 // Requirement keys, in the order they are listed.
 const (
+	ReqEmailVerified = "email_verified"
 	ReqPhoneVerified = "phone_verified"
 	ReqAdult         = "adult"
 	ReqAccountAge    = "account_age"
@@ -59,7 +64,8 @@ const (
 
 // Defaults of the eligibility settings.
 const (
-	DefaultEligRequirePhone     = true
+	DefaultEligRequireEmail     = true
+	DefaultEligRequirePhone     = false
 	DefaultEligMinAccountAge    = 168 * time.Hour
 	DefaultEligMinPosts         = 3
 	DefaultEligMinFollowers     = 10
@@ -119,6 +125,8 @@ func ParseAccessMode(raw string) (string, error) {
 type EligibilityConfig struct {
 	// Mode is AccessModePilot ("" too) or AccessModeOpen.
 	Mode string
+	// RequireEmail lists and enforces email_verified.
+	RequireEmail bool
 	// RequirePhone lists and enforces phone_verified.
 	RequirePhone bool
 	// MinAccountAge: zero or less drops the account_age requirement.
@@ -137,6 +145,7 @@ type EligibilityConfig struct {
 	CompletedMinLive time.Duration
 
 	// The fact sources. A nil source makes its facts unknown.
+	Emails     EmailSource
 	Phones     PhoneSource
 	BirthDates BirthDateSource
 	Accounts   AccountSource
@@ -148,6 +157,7 @@ type EligibilityConfig struct {
 // that does not parse is an error, and the caller refuses to start.
 func EligibilityConfigFromEnv(getenv func(string) string) (EligibilityConfig, error) {
 	cfg := EligibilityConfig{
+		RequireEmail:         DefaultEligRequireEmail,
 		RequirePhone:         DefaultEligRequirePhone,
 		MinAccountAge:        DefaultEligMinAccountAge,
 		MinPosts:             DefaultEligMinPosts,
@@ -160,12 +170,22 @@ func EligibilityConfigFromEnv(getenv func(string) string) (EligibilityConfig, er
 		return EligibilityConfig{}, err
 	}
 	cfg.Mode = mode
-	if v := strings.TrimSpace(getenv("LIVE_ELIG_REQUIRE_PHONE")); v != "" {
+	for _, f := range []struct {
+		key string
+		dst *bool
+	}{
+		{"LIVE_ELIG_REQUIRE_EMAIL", &cfg.RequireEmail},
+		{"LIVE_ELIG_REQUIRE_PHONE", &cfg.RequirePhone},
+	} {
+		v := strings.TrimSpace(getenv(f.key))
+		if v == "" {
+			continue
+		}
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return EligibilityConfig{}, errors.New("LIVE_ELIG_REQUIRE_PHONE must be true or false")
+			return EligibilityConfig{}, fmt.Errorf("%s must be true or false", f.key)
 		}
-		cfg.RequirePhone = b
+		*f.dst = b
 	}
 	if v := strings.TrimSpace(getenv("LIVE_ELIG_MIN_ACCOUNT_AGE")); v != "" {
 		d, err := time.ParseDuration(v)
@@ -197,6 +217,13 @@ func EligibilityConfigFromEnv(getenv func(string) string) (EligibilityConfig, er
 }
 
 // --- the facts and where they come from ---
+
+// EmailSource answers whether identity holds an email address for the user
+// AND that address is verified. No address on file, or no such account, is
+// false with no error; an error is "could not be read" (unknown).
+type EmailSource interface {
+	EmailVerified(ctx context.Context, userID uuid.UUID) (bool, error)
+}
 
 // PhoneSource answers whether identity holds a verified phone for the user.
 type PhoneSource interface {
@@ -240,6 +267,7 @@ type identityFact struct {
 
 // eligFacts is what was read about one user; a nil field is unknown.
 type eligFacts struct {
+	email     *bool
 	phone     *bool
 	identity  *identityFact
 	account   *AccountInfo
@@ -262,6 +290,7 @@ func (c cachedFact[T]) fresh(now time.Time) (*T, bool) {
 }
 
 type eligEntry struct {
+	email     cachedFact[bool]
 	phone     cachedFact[bool]
 	identity  cachedFact[identityFact]
 	account   cachedFact[AccountInfo]
@@ -317,7 +346,7 @@ func readFact[T any](ctx context.Context, s *Service, userID uuid.UUID, name str
 }
 
 // gatherFacts reads what the configured requirements need, the lookups side
-// by side so one slow service costs one timeout, not four.
+// by side so one slow service costs one timeout, not one per lookup.
 func (s *Service) gatherFacts(ctx context.Context, userID uuid.UUID) eligFacts {
 	cfg := s.elig
 	var f eligFacts
@@ -328,6 +357,15 @@ func (s *Service) gatherFacts(ctx context.Context, userID uuid.UUID) eligFacts {
 			defer wg.Done()
 			fn()
 		}()
+	}
+	if cfg.RequireEmail {
+		run(func() {
+			var read func(context.Context) (bool, error)
+			if cfg.Emails != nil {
+				read = func(c context.Context) (bool, error) { return cfg.Emails.EmailVerified(c, userID) }
+			}
+			f.email = readFact(ctx, s, userID, ReqEmailVerified, func(e *eligEntry) *cachedFact[bool] { return &e.email }, read)
+		})
 	}
 	if cfg.RequirePhone {
 		run(func() {
@@ -420,8 +458,11 @@ func isAdultOn(dob, now time.Time) bool {
 func (s *Service) buildRequirements(f eligFacts, banned *bool) []Requirement {
 	cfg := s.elig
 	now := s.clock()
-	out := make([]Requirement, 0, 5)
+	out := make([]Requirement, 0, 6)
 
+	if cfg.RequireEmail {
+		out = append(out, Requirement{Key: ReqEmailVerified, Met: f.email})
+	}
 	if cfg.RequirePhone {
 		out = append(out, Requirement{Key: ReqPhoneVerified, Met: f.phone})
 	}

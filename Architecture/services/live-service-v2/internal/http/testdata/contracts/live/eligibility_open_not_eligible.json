@@ -4,7 +4,7 @@
     "eligible": false,
     "requirements": [
       {
-        "key": "phone_verified",
+        "key": "email_verified",
         "met": true
       },
       {

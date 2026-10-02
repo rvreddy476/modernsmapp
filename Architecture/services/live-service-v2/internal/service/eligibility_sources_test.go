@@ -54,6 +54,89 @@ func (f *factServer) checkCall(t *testing.T, wantPath string) {
 	}
 }
 
+// TestHTTPEmails: auth-service's internal contact read. Verified needs an
+// address AND the flag; no address or no account is "not verified"; anything
+// that is not an answer is an error (unknown), and no error quotes the
+// address or the phone number.
+func TestHTTPEmails(t *testing.T) {
+	u := uuid.New()
+	f := newFactServer(t)
+	c := NewHTTPEmails(f.srv.URL+"/", dirKey)
+	body := func(email, verified string) string {
+		return `{"data":{"email":"` + email + `","email_verified":` + verified + `,"phone":"+919812345678","user_id":"` + u.String() + `"}}`
+	}
+
+	f.body = body("asha@example.com", "true")
+	if ok, err := c.EmailVerified(ctx, u); err != nil || !ok {
+		t.Fatalf("verified: %v %v", ok, err)
+	}
+	f.checkCall(t, "/v1/auth/internal/users/"+u.String())
+
+	f.body = body("asha@example.com", "false")
+	if ok, err := c.EmailVerified(ctx, u); err != nil || ok {
+		t.Fatalf("not verified: %v %v", ok, err)
+	}
+	// No email on file: not verified, whatever the flag says, and no error.
+	for _, b := range []string{
+		body("", "false"), body("", "true"), body("   ", "true"),
+		`{"data":{"email_verified":true,"phone":"+919812345678","user_id":"` + u.String() + `"}}`,
+	} {
+		f.body = b
+		if ok, err := c.EmailVerified(ctx, u); err != nil || ok {
+			t.Fatalf("no email on file, %s: %v %v", b, ok, err)
+		}
+	}
+	// 404: no such account.
+	f.status, f.body = http.StatusNotFound, `{"error":{"code":"NOT_FOUND","message":"user not found"}}`
+	if ok, err := c.EmailVerified(ctx, u); err != nil || ok {
+		t.Fatalf("404: %v %v", ok, err)
+	}
+	// Every other status is an error, even with a body that says verified.
+	for _, status := range []int{http.StatusInternalServerError, http.StatusUnauthorized, http.StatusServiceUnavailable, http.StatusBadRequest, http.StatusFound} {
+		f.status, f.body = status, body("asha@example.com", "true")
+		if ok, err := c.EmailVerified(ctx, u); err == nil {
+			t.Fatalf("status %d read as %v", status, ok)
+		}
+	}
+	f.status = http.StatusOK
+	for _, b := range []string{
+		`not json`, `{}`, `{"data":null}`,
+		// No flag at all.
+		`{"data":{"email":"asha@example.com","phone":"+919812345678","user_id":"` + u.String() + `"}}`,
+		body("asha@example.com", `null`),
+		body("asha@example.com", `"yes"`),
+		// Somebody else's record.
+		`{"data":{"email":"asha@example.com","email_verified":true,"phone":"+919812345678","user_id":"` + uuid.NewString() + `"}}`,
+		`{"data":{"email":"asha@example.com","email_verified":true,"phone":"+919812345678"}}`,
+	} {
+		f.body = b
+		ok, err := c.EmailVerified(ctx, u)
+		if err == nil {
+			t.Fatalf("%s read as %v", b, ok)
+		}
+		if ok {
+			t.Fatalf("%s: an error with a true answer", b)
+		}
+		if msg := err.Error(); strings.Contains(msg, "asha") || strings.Contains(msg, "9812345678") {
+			t.Fatalf("the error quotes the body: %s", msg)
+		}
+	}
+	// Unreachable.
+	f.srv.Close()
+	if ok, err := c.EmailVerified(ctx, u); err == nil || ok {
+		t.Fatalf("an unreachable service read as an answer")
+	}
+	if NewHTTPEmails("  ", dirKey) != nil {
+		t.Fatalf("a client without a base URL")
+	}
+	// The key goes with the call: without it auth-service answers 401.
+	f2 := newFactServer(t)
+	f2.body = body("asha@example.com", "true")
+	if ok, err := NewHTTPEmails(f2.srv.URL, "wrong-key").EmailVerified(ctx, u); err == nil || ok || f2.hits != 0 {
+		t.Fatalf("a wrong key was accepted")
+	}
+}
+
 func TestHTTPBirthDates(t *testing.T) {
 	u := uuid.New()
 	f := newFactServer(t)

@@ -21,11 +21,18 @@ package service
 //     and videos that are not deleted.
 //   - Followers: graph-service GET {GRAPH_SERVICE_URL}/v1/graph/counts/:id
 //     -> {"data":{"user_id","follower_count",...}}.
-//   - Phone verified: NO internal route exposes it. auth-service's
-//     GET /v1/auth/internal/users/:userId answers user_id, email, phone and
-//     email_verified only; phone_verified is on /v1/auth/me, which needs the
-//     user's own token. Until a route carries it there is no PhoneSource and
-//     the requirement is unknown.
+//   - Email verified: identity auth-service's internal contact read
+//     GET {AUTH_SERVICE_URL}/v1/auth/internal/users/:userId
+//     -> {"data":{"user_id","email","phone","email_verified"}}
+//     404 = no such account. `email` is "" when the account has none; an
+//     account without an address is not verified whatever the flag says.
+//     Only the flag is kept: the address and the phone number are never
+//     stored, logged or put in an error.
+//   - Phone verified: NO internal route exposes it (the read above carries
+//     the number, not phone_verified, which is on /v1/auth/me and needs the
+//     user's own token), and nothing sends an SMS, so no phone can be
+//     verified. The requirement is off by default (LIVE_ELIG_REQUIRE_PHONE);
+//     switched on, there is no PhoneSource and it is unknown.
 
 import (
 	"context"
@@ -83,6 +90,61 @@ func eligGet(ctx context.Context, client *http.Client, rawURL, internalKey strin
 }
 
 func trimBase(baseURL string) string { return strings.TrimRight(strings.TrimSpace(baseURL), "/") }
+
+// --- email verified ---
+
+// HTTPEmails is EmailSource over the identity auth-service.
+type HTTPEmails struct {
+	baseURL, internalKey string
+	http                 *http.Client
+}
+
+// NewHTTPEmails returns nil when baseURL is empty (email_verified is then
+// unknown).
+func NewHTTPEmails(baseURL, internalKey string) *HTTPEmails {
+	if trimBase(baseURL) == "" {
+		return nil
+	}
+	return &HTTPEmails{baseURL: trimBase(baseURL), internalKey: internalKey, http: eligHTTP()}
+}
+
+func (c *HTTPEmails) EmailVerified(ctx context.Context, userID uuid.UUID) (bool, error) {
+	status, body, err := eligGet(ctx, c.http, c.baseURL+"/v1/auth/internal/users/"+userID.String(), c.internalKey)
+	if err != nil {
+		return false, fmt.Errorf("contact read: %w", err)
+	}
+	switch status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		// No such account: there is no address, verified or not.
+		return false, nil
+	default:
+		return false, fmt.Errorf("contact read: status %d", status)
+	}
+	var w struct {
+		Data *struct {
+			UserID        string `json:"user_id"`
+			Email         string `json:"email"`
+			EmailVerified *bool  `json:"email_verified"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &w); err != nil || w.Data == nil {
+		return false, errors.New("contact read: malformed body")
+	}
+	if got, err := uuid.Parse(w.Data.UserID); err != nil || got != userID {
+		return false, errors.New("contact read: body is for a different user")
+	}
+	// A body without the flag says nothing; reading it as "not verified"
+	// would tell a verified user to verify again.
+	if w.Data.EmailVerified == nil {
+		return false, errors.New("contact read: no email_verified")
+	}
+	// No address on file is not a verified address, whatever the flag says.
+	if strings.TrimSpace(w.Data.Email) == "" {
+		return false, nil
+	}
+	return *w.Data.EmailVerified, nil
+}
 
 // --- date of birth ---
 

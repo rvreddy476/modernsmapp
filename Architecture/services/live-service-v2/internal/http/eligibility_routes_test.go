@@ -35,6 +35,7 @@ import (
 
 // userFacts is what the other services say about one user.
 type userFacts struct {
+	email     bool // an address on file, verified
 	phone     bool
 	dob       string // YYYY-MM-DD; "" = none
 	age       time.Duration
@@ -51,6 +52,13 @@ type stubFacts struct {
 }
 
 var errStubDown = errors.New("down")
+
+func (s *stubFacts) EmailVerified(_ context.Context, id uuid.UUID) (bool, error) {
+	if s.down {
+		return false, errStubDown
+	}
+	return s.users[id].email, nil
+}
 
 func (s *stubFacts) PhoneVerified(_ context.Context, id uuid.UUID) (bool, error) {
 	if s.down {
@@ -118,16 +126,18 @@ type eligRig struct {
 	facts *stubFacts
 }
 
-// newEligRig: the service in `mode` with the default requirements and the
-// default cap (200 viewers until 3 completed streams); elPilot is the pilot.
+// newEligRig: the service in `mode` with the default requirements (email
+// verified asked for, phone verified not) and the default cap (200 viewers
+// until 3 completed streams); elPilot is the pilot. Nobody in the rig has a
+// verified phone, so a phone requirement that crept back in would show.
 func newEligRig(t *testing.T, mode string) *eligRig {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	store := storetest.New()
 	blocked := map[uuid.UUID]bool{}
 	facts := &stubFacts{users: map[uuid.UUID]userFacts{
-		elReady:  {phone: true, dob: "1990-05-17", age: 30 * 24 * time.Hour, posts: 5},
-		elAlmost: {phone: true, dob: "1990-05-17", age: 2*24*time.Hour + time.Hour, posts: 1, followers: 4},
+		elReady:  {email: true, dob: "1990-05-17", age: 30 * 24 * time.Hour, posts: 5},
+		elAlmost: {email: true, dob: "1990-05-17", age: 2*24*time.Hour + time.Hour, posts: 1, followers: 4},
 	}}
 	cfg, err := service.EligibilityConfigFromEnv(func(k string) string {
 		if k == "LIVE_ACCESS_MODE" {
@@ -138,7 +148,7 @@ func newEligRig(t *testing.T, mode string) *eligRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Phones, cfg.BirthDates, cfg.Accounts, cfg.Posts, cfg.Followers = facts, facts, facts, facts, facts
+	cfg.Emails, cfg.Phones, cfg.BirthDates, cfg.Accounts, cfg.Posts, cfg.Followers = facts, facts, facts, facts, facts, facts
 	lk := &ingressLK{held: map[string]*livekit.Ingress{}}
 	svc := service.New(store, lk, relGraph{blocked: blocked}, nil, service.Config{
 		PilotUserIDs: []uuid.UUID{elPilot},
@@ -236,13 +246,13 @@ func TestEligibilityRoute(t *testing.T) {
 	if _, has := d["pilot_only"]; has {
 		t.Fatalf("pilot_only in open mode: %v", d)
 	}
-	if got := reqStates(t, d["requirements"]); got != "phone_verified=true,adult=true,account_age=true,activity=true,good_standing=true" {
+	if got := reqStates(t, d["requirements"]); got != "email_verified=true,adult=true,account_age=true,activity=true,good_standing=true" {
 		t.Fatalf("requirements: %s", got)
 	}
 	// A pilot user in open mode: eligible whatever the requirements say (no
 	// account exists for elPilot in this rig).
 	d = data(t, open.call(http.MethodGet, elPath, elPilot, nil, nil))
-	if d["eligible"] != true || reqStates(t, d["requirements"]) != "phone_verified=false,adult=false,account_age=false,activity=false,good_standing=false" {
+	if d["eligible"] != true || reqStates(t, d["requirements"]) != "email_verified=false,adult=false,account_age=false,activity=false,good_standing=false" {
 		t.Fatalf("pilot in open mode: %v", d)
 	}
 	// Unknown is null on the wire, never false, and never eligible; the read
@@ -254,7 +264,7 @@ func TestEligibilityRoute(t *testing.T) {
 	if rec.Code != http.StatusOK || d["eligible"] != false {
 		t.Fatalf("sources down: %d %v", rec.Code, d)
 	}
-	if got := reqStates(t, d["requirements"]); got != "phone_verified=null,adult=null,account_age=null,activity=null,good_standing=null" {
+	if got := reqStates(t, d["requirements"]); got != "email_verified=null,adult=null,account_age=null,activity=null,good_standing=null" {
 		t.Fatalf("sources down: %s", got)
 	}
 	if !strings.Contains(rec.Body.String(), `"met":null`) {
@@ -272,7 +282,7 @@ func TestEligibilityRoute(t *testing.T) {
 	}
 	d = data(t, pilot.call(http.MethodGet, elPath, elAlmost, nil, nil))
 	if d["eligible"] != false || d["pilot_only"] != true ||
-		reqStates(t, d["requirements"]) != "phone_verified=true,adult=true,account_age=false,activity=false,good_standing=true" {
+		reqStates(t, d["requirements"]) != "email_verified=true,adult=true,account_age=false,activity=false,good_standing=true" {
 		t.Fatalf("stranger in pilot mode: %v", d)
 	}
 }
