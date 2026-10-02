@@ -33,11 +33,11 @@ type datingMatchStub struct {
 	firstMovers []uuid.UUID
 }
 
-func (s *datingMatchStub) CreateDatingMatchConversation(_ context.Context, userA, userB, matchID uuid.UUID, firstMovers []uuid.UUID) (*service.ConversationResponse, error) {
+func (s *datingMatchStub) CreateDatingMatchConversation(_ context.Context, userA, userB, matchID uuid.UUID, opts service.DatingMatchOptions) (*service.ConversationResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
-	s.firstMovers = firstMovers
+	s.firstMovers = opts.FirstMovers
 	if s.byMatch == nil {
 		s.byMatch = map[uuid.UUID]uuid.UUID{}
 	}

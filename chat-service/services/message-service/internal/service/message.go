@@ -529,7 +529,8 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 // firstMovers (dating mechanic M5) names who may send the first message;
 // empty leaves the conversation open to both. They must be members of the
 // pair. A retry re-applies them while no message has landed.
-func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, firstMovers []uuid.UUID) (*ConversationResponse, error) {
+func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, opts DatingMatchOptions) (*ConversationResponse, error) {
+	firstMovers := opts.FirstMovers
 	if userA == userB {
 		return nil, errors.New("dating-match conversation requires two distinct users")
 	}
@@ -545,6 +546,15 @@ func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, user
 	}
 	if len(firstMovers) > 0 {
 		if err := s.setDatingFirstMovers(ctx, convID, firstMovers); err != nil {
+			return nil, err
+		}
+	}
+	if opts.ReceiptsGated || opts.CallAfterExchange {
+		st, err := s.datingExtras()
+		if err != nil {
+			return nil, err
+		}
+		if err := st.SetDatingConversationRules(ctx, convID, opts.ReceiptsGated, opts.CallAfterExchange); err != nil {
 			return nil, err
 		}
 	}
@@ -1789,6 +1799,12 @@ func (s *Service) attachReadCursors(ctx context.Context, viewerID uuid.UUID, res
 	if resp == nil || len(resp.Members) == 0 {
 		return
 	}
+	// Dating mechanic M9: in a gated dating conversation the viewer sees
+	// receipts only while dating allows it.
+	if meta, err := s.convStore.GetConversationMeta(ctx, resp.ID); err == nil && meta != nil && meta.ReceiptsGated &&
+		!s.datingReceiptsAllowed(ctx, resp.ID, viewerID) {
+		return
+	}
 	cursors, err := s.groupStore().GetConversationReadCursors(ctx, resp.ID)
 	if err != nil {
 		s.log.Warn("read cursor fetch failed", "err", err, "conversation_id", resp.ID)
@@ -2082,6 +2098,12 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		return nil
 	}
 
+	// Dating mechanic M9: a gated dating conversation delivers the frame
+	// only to members dating allows to see receipts.
+	gated := false
+	if meta, err := s.convStore.GetConversationMeta(ctx, conversationID); err == nil && meta != nil {
+		gated = meta.ReceiptsGated
+	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"type": "read_receipt",
 		"payload": map[string]interface{}{
@@ -2097,6 +2119,9 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		}
 		if policy.ReadReceiptsVisibility == "connections_only" &&
 			!s.discloseReceiptTo(ctx, m.UserID, userID) {
+			continue
+		}
+		if gated && !s.datingReceiptsAllowed(ctx, conversationID, m.UserID) {
 			continue
 		}
 		s.rdb.Publish(ctx, fmt.Sprintf("chat:%s", m.UserID), payload)

@@ -37,7 +37,8 @@ type ChatService interface {
 	GetPresence(ctx context.Context, requesterID uuid.UUID, userIDs []uuid.UUID) (map[string]bool, error)
 	GetConversationPresence(ctx context.Context, userID, convID uuid.UUID) (*service.ConversationPresence, error)
 	// P0-3 dating-match internal entry points.
-	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, firstMovers []uuid.UUID) (*service.ConversationResponse, error)
+	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, opts service.DatingMatchOptions) (*service.ConversationResponse, error)
+	SetDatingReceiptsUntil(ctx context.Context, matchID, userID uuid.UUID, until *time.Time) error
 	SendDatingOpeningAnswer(ctx context.Context, matchID, senderID uuid.UUID, text, idempotencyKey string) (*service.MessageResponse, error)
 	CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error
 	HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error)
@@ -140,6 +141,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// (the waiting member's first message) past the first-move gate. Same
 	// gates as the route above.
 	internal.POST("/conversations/dating-match/opening-answer", h.DatingOpeningAnswer)
+	// Dating mechanic M9: dating-service sets until when a member may see
+	// read receipts in a match's conversation. Same gates.
+	internal.POST("/conversations/dating-match/read-receipts", h.DatingReadReceipts)
 	// Open-match probe: graph-service asks whether a pair holds an open
 	// dating match, so a matched pair may place a live call without becoming
 	// a graph connection. Same gates, same prefix, same reasoning as above.
@@ -933,6 +937,17 @@ type createDatingMatchRequest struct {
 	// FirstMoverIDs (dating mechanic M5): who may send the first message.
 	// Absent or empty: anyone.
 	FirstMoverIDs []string `json:"first_mover_ids,omitempty"`
+	// ReceiptsGated / CallAfterExchange (dating mechanic M9).
+	ReceiptsGated     bool `json:"receipts_gated,omitempty"`
+	CallAfterExchange bool `json:"call_after_exchange,omitempty"`
+}
+
+// datingReadReceiptsRequest is the body of the read-receipts route. Until
+// empty or absent: no receipts.
+type datingReadReceiptsRequest struct {
+	MatchID string `json:"match_id" binding:"required"`
+	UserID  string `json:"user_id" binding:"required"`
+	Until   string `json:"until,omitempty"`
 }
 
 // datingOpeningAnswerRequest is the body of the opening-answer route.
@@ -1014,7 +1029,9 @@ func (h *Handler) CreateDatingMatchConversation(c *gin.Context) {
 		}
 		firstMovers = append(firstMovers, id)
 	}
-	resp, err := h.svc.CreateDatingMatchConversation(c.Request.Context(), userA, userB, matchID, firstMovers)
+	resp, err := h.svc.CreateDatingMatchConversation(c.Request.Context(), userA, userB, matchID, service.DatingMatchOptions{
+		FirstMovers: firstMovers, ReceiptsGated: body.ReceiptsGated, CallAfterExchange: body.CallAfterExchange,
+	})
 	if errors.Is(err, store.ErrDatingMatchPairMismatch) {
 		h.log.Warn("dating-match conversation: match_id already bound to a different pair", "match_id", matchID,
 			"request_id", RequestIDFromContext(c))
@@ -1084,6 +1101,61 @@ func (h *Handler) DatingOpeningAnswer(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, msg, nil)
+}
+
+// DatingReadReceipts — POST /internal/v1/chat/conversations/dating-match/read-receipts
+//
+// Service-only (dating mechanic M9). Body {match_id, user_id, until}: the
+// member sees read receipts in the match's conversation until `until`
+// (RFC 3339); empty means not at all.
+func (h *Handler) DatingReadReceipts(c *gin.Context) {
+	if h.internalServiceKey == "" {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MISCONFIGURED", "internal-only endpoint not configured", nil, nil)
+		return
+	}
+	if carriesUserIdentity(c) {
+		api.Error(c.Writer, http.StatusForbidden, "USER_CALLER_REFUSED", "service-only endpoint; user requests are not accepted", nil, nil)
+		return
+	}
+	if c.GetHeader("X-Internal-Service-Key") != h.internalServiceKey {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		return
+	}
+	var body datingReadReceiptsRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	matchID, err := uuid.Parse(body.MatchID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid match_id", nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(body.UserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_id", nil, nil)
+		return
+	}
+	var until *time.Time
+	if body.Until != "" {
+		t, err := time.Parse(time.RFC3339, body.Until)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "until must be RFC 3339", nil, nil)
+			return
+		}
+		until = &t
+	}
+	err = h.svc.SetDatingReceiptsUntil(c.Request.Context(), matchID, userID, until)
+	switch {
+	case errors.Is(err, service.ErrDatingConversationNotFound):
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "no conversation member for this match", nil, nil)
+		return
+	case err != nil:
+		h.log.Warn("dating read receipts update failed", "err", err, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "could not update read receipts", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"updated": true}, nil)
 }
 
 // DatingMatchState — POST /internal/v1/chat/dating-match/state

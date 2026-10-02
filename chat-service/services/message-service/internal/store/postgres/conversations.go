@@ -285,6 +285,11 @@ func (s *ConversationStore) HasOpenDatingMatch(ctx context.Context, userA, userB
 		          SELECT 1 FROM chat.conversation_members mb
 		          WHERE mb.conversation_id = c.id AND mb.user_id = $2 AND mb.left_at IS NULL
 		      )
+		      -- Dating mechanic M9: with the rule on, both must have written.
+		      AND (NOT c.dating_call_after_exchange OR (
+		          SELECT COUNT(*) FROM chat.conversation_members mx
+		          WHERE mx.conversation_id = c.id AND mx.left_at IS NULL AND mx.first_sent_at IS NOT NULL
+		      ) >= 2)
 		)
 	`, userA, userB).Scan(&exists)
 	if err != nil {
@@ -302,6 +307,9 @@ type ConversationMeta struct {
 	// Empty: anyone. LastMessageAt nil means no message has landed yet.
 	FirstMovers   []uuid.UUID
 	LastMessageAt *time.Time
+	// ReceiptsGated (dating mechanic M9): read receipts only for members
+	// dating-service allows.
+	ReceiptsGated bool
 }
 
 // GetConversationMeta returns the source_app + match_id + closed_at for
@@ -311,10 +319,10 @@ type ConversationMeta struct {
 func (s *ConversationStore) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*ConversationMeta, error) {
 	var m ConversationMeta
 	err := s.db.QueryRow(ctx, `
-		SELECT source_app, match_id, closed_at, COALESCE(dating_first_movers, '{}'), last_message_at
+		SELECT source_app, match_id, closed_at, COALESCE(dating_first_movers, '{}'), last_message_at, dating_receipts_gated
 		FROM chat.conversations
 		WHERE id = $1
-	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt, &m.FirstMovers, &m.LastMessageAt)
+	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt, &m.FirstMovers, &m.LastMessageAt, &m.ReceiptsGated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
