@@ -1630,3 +1630,30 @@ CREATE TABLE IF NOT EXISTS dating_daily_picks (
 );
 CREATE INDEX IF NOT EXISTS idx_dating_daily_picks_candidate
     ON dating_daily_picks(candidate_id);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M8 — travel mode (DATING_TRAVEL_ENABLED).
+--
+-- dating_travel: one row per user, the destination city's public centre
+--   (snapped to the location grid, with its geohash) and the trip window.
+--   An active trip (inside the window, not ended, the traveller holding an
+--   unexpired pass) makes the destination the traveller's effective
+--   location in discovery. Ending a trip stamps ended_at. Purged with the
+--   profile.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_travel (
+    user_id    UUID PRIMARY KEY,
+    city_code  TEXT             NOT NULL,
+    city_label TEXT             NOT NULL,
+    latitude   DOUBLE PRECISION NOT NULL,
+    longitude  DOUBLE PRECISION NOT NULL,
+    geohash    TEXT             NOT NULL,
+    starts_at  TIMESTAMPTZ      NOT NULL,
+    ends_at    TIMESTAMPTZ      NOT NULL,
+    ended_at   TIMESTAMPTZ,
+    created_at TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    CHECK (ends_at > starts_at AND ends_at <= starts_at + INTERVAL '7 days 1 minute')
+);
+CREATE INDEX IF NOT EXISTS idx_dating_travel_geohash
+    ON dating_travel(geohash) WHERE ended_at IS NULL;

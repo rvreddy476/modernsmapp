@@ -49,6 +49,10 @@ type MechanicsConfig struct {
 
 	// Picks (DATING_PICKS_ENABLED): up to ten curated profiles a day.
 	Picks bool
+
+	// Travel (DATING_TRAVEL_ENABLED): a pass holder browses another city for
+	// up to seven days.
+	Travel bool
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.
@@ -84,6 +88,9 @@ func (s *Service) SetMechanicsConfig(cfg MechanicsConfig) {
 		cfg.SuperSparkDailyLimitPass = d.SuperSparkDailyLimitPass
 	}
 	s.mechanics = cfg
+	if s.store != nil {
+		s.store.SetTravelEnabled(cfg.Travel)
+	}
 }
 
 // Mechanics returns the active flags and limits.

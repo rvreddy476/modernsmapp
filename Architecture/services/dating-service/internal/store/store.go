@@ -30,6 +30,9 @@ type Store struct {
 	// pii seals religion, community, exact points and device signals (lane
 	// D9, pii.go). Nil only in local/dev without DATING_PII_KEYS.
 	pii *datingpii.Crypto
+	// travelEnabled switches trips' effect on discovery (mechanic M8,
+	// travel.go). Off: home locations everywhere.
+	travelEnabled bool
 }
 
 // New returns a Store backed by the given pool.

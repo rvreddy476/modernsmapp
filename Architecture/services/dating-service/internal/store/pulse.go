@@ -63,6 +63,9 @@ type CandidateProfile struct {
 	Exercise  *string
 	Diet      *string
 	Interests []string
+	// Travelling (mechanic M8): the candidate is on an active trip, so City
+	// and the point above are the destination's.
+	Travelling bool
 }
 
 // Age returns the candidate's age in whole years, or 0 if BirthDate is nil.
@@ -150,7 +153,7 @@ func (e *EchoCache) CommunitySlugs() []string {
 
 const candidateSelectCols = `
     p.user_id, p.first_name, p.intent, p.bio, p.gender, p.birth_date,
-    p.city, p.country, p.latitude, p.longitude, p.location_geohash,
+    {{city}}, p.country, {{latitude}}, {{longitude}}, {{geohash}},
     p.community, p.community_sealed, p.blur_mode, p.trust_tier, p.last_active_at, p.language_prefs,
     t.lifestyle_rhythm, t.conversation_style, t.faith_weight, t.family_weight,
     t.region_weight, t.family_plans_axis, t.education_axis,
@@ -170,7 +173,20 @@ const candidateSelectCols = `
     EXISTS (SELECT 1 FROM dating_sparks sv
         WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
     p.hide_last_active, p.blur_photos_until_match, p.incognito,
-    p.height_cm, p.drinking, p.smoking, p.exercise, p.diet, p.interests`
+    p.height_cm, p.drinking, p.smoking, p.exercise, p.diet, p.interests, {{travelling}}`
+
+// candidateCols is candidateSelectCols with the travel-aware location
+// (mechanic M8): during an active trip a candidate's point, geohash and city
+// are the destination's, and the last column says they are travelling.
+func (s *Store) candidateCols() string {
+	return strings.NewReplacer(
+		"{{city}}", s.effectiveCol("p", "city", "city_label"),
+		"{{latitude}}", s.effectiveCol("p", "latitude", "latitude"),
+		"{{longitude}}", s.effectiveCol("p", "longitude", "longitude"),
+		"{{geohash}}", s.effectiveCol("p", "location_geohash", "geohash"),
+		"{{travelling}}", s.travellingCol("p"),
+	).Replace(candidateSelectCols)
+}
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
 type CandidateQuery struct {
@@ -368,7 +384,7 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 				ors := make([]string, 0, len(cells))
 				for _, c := range cells {
 					args = append(args, c+"%")
-					ors = append(ors, fmt.Sprintf("p.location_geohash LIKE $%d", len(args)))
+					ors = append(ors, fmt.Sprintf("%s LIKE $%d", s.effectiveCol("p", "location_geohash", "geohash"), len(args)))
 				}
 				where = append(where, "("+strings.Join(ors, " OR ")+")")
 			}
@@ -387,7 +403,7 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	// Larger inner scan, randomised so subsequent calls vary, then top-N by random.
 	args = append(args, limit*4) // over-fetch so distance pruning + diversity have headroom
 	sql := `
-        SELECT ` + candidateSelectCols + `
+        SELECT ` + s.candidateCols() + `
         FROM dating_profiles p
         LEFT JOIN dating_tunes t ON t.user_id = p.user_id
         ` + whereClause + `
@@ -442,7 +458,7 @@ func scanCandidateRow(row pgx.Row) (*CandidateProfile, error) {
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
 		&c.PrimaryPhotoID, &c.PrimaryPhotoVisibility, &c.SparkedViewer,
 		&c.HideLastActive, &c.BlurPhotosUntilMatch, &c.Incognito,
-		&c.HeightCm, &c.Drinking, &c.Smoking, &c.Exercise, &c.Diet, &c.Interests,
+		&c.HeightCm, &c.Drinking, &c.Smoking, &c.Exercise, &c.Diet, &c.Interests, &c.Travelling,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan candidate: %w", err)
@@ -464,7 +480,7 @@ func incognitoVisiblePredicate(alias, viewer string) string {
 // sparked the viewer.
 func (s *Store) GetCandidateForViewer(ctx context.Context, viewerID, userID uuid.UUID) (*CandidateProfile, error) {
 	row := s.db.QueryRow(ctx, `
-        SELECT `+candidateSelectCols+`
+        SELECT `+s.candidateCols()+`
         FROM dating_profiles p
         LEFT JOIN dating_tunes t ON t.user_id = p.user_id
         WHERE p.user_id = $2

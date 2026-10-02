@@ -50,6 +50,9 @@ type PersonCard struct {
 	// hides last active — the default for a new profile. Never a timestamp.
 	LastActiveBucket string `json:"last_active_bucket,omitempty"`
 	LastActiveLabel  string `json:"last_active_label,omitempty"`
+	// Travelling (mechanic M8): on an active trip; City and the distance
+	// bucket are the destination's. Omitted when false.
+	Travelling bool `json:"travelling,omitempty"`
 	// Detail is the pre-match "enough to decide" block, present only on the
 	// surfaces where the viewer is deciding about this person: the person
 	// card itself and an incoming spark. The match list, the trusted-contact
@@ -244,6 +247,9 @@ func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Pro
 		band := LastActiveBucketFor(row.LastActiveAt, time.Now())
 		card.LastActiveBucket, card.LastActiveLabel = band.Code, band.Label
 	}
+	if row.Travelling {
+		card.Travelling = true
+	}
 	if row.PrimaryPhotoID != nil {
 		id := *row.PrimaryPhotoID
 		card.PrimaryPhotoID = &id
@@ -288,7 +294,7 @@ func (s *Service) personCardsDetail(ctx context.Context, viewerID uuid.UUID, ids
 		slog.Warn("person cards matched-partners lookup failed", "viewer_id", viewerID, "error", mErr)
 		matched = map[uuid.UUID]struct{}{}
 	}
-	viewer, _ := s.store.GetProfile(ctx, viewerID)
+	viewer, _ := s.viewerProfile(ctx, viewerID)
 
 	// Only the ids that survived the visibility query are looked up, so a
 	// blocked or deleted person's prompts and photos are never even read.
@@ -421,7 +427,7 @@ func (s *Service) GetPersonCard(ctx context.Context, viewerID, targetID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	viewer, _ := s.store.GetProfile(ctx, viewerID)
+	viewer, _ := s.viewerProfile(ctx, viewerID)
 	// The person card is where the viewer decides, so it carries the
 	// pre-match detail block.
 	prompts, photos := s.detailFor(ctx, []uuid.UUID{targetID})

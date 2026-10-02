@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,6 +64,9 @@ type PersonRow struct {
 	Exercise  *string
 	Diet      *string
 	Interests []string
+	// Travelling (mechanic M8): on an active trip; City and the point are
+	// the destination's.
+	Travelling bool
 }
 
 // Age returns whole years, or 0 when no birth date is known.
@@ -83,9 +87,19 @@ const personSelectCols = `
           AND ph.moderation_status = 'approved' LIMIT 1), 'public') AS primary_photo_visibility,
     EXISTS (SELECT 1 FROM dating_sparks sv
         WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
-    p.blur_photos_until_match, p.blur_mode, p.latitude, p.longitude,
-    p.intent, p.city, p.last_active_at, p.hide_last_active,
-    p.height_cm, p.drinking, p.smoking, p.exercise, p.diet, p.interests`
+    p.blur_photos_until_match, p.blur_mode, {{latitude}}, {{longitude}},
+    p.intent, {{city}}, p.last_active_at, p.hide_last_active,
+    p.height_cm, p.drinking, p.smoking, p.exercise, p.diet, p.interests, {{travelling}}`
+
+// personCols is personSelectCols with the travel-aware location (M8).
+func (s *Store) personCols() string {
+	return strings.NewReplacer(
+		"{{city}}", s.effectiveCol("p", "city", "city_label"),
+		"{{latitude}}", s.effectiveCol("p", "latitude", "latitude"),
+		"{{longitude}}", s.effectiveCol("p", "longitude", "longitude"),
+		"{{travelling}}", s.travellingCol("p"),
+	).Replace(personSelectCols)
+}
 
 func scanPersonRow(row pgx.Row) (*PersonRow, error) {
 	p := &PersonRow{}
@@ -94,7 +108,7 @@ func scanPersonRow(row pgx.Row) (*PersonRow, error) {
 		&p.PrimaryPhotoID, &p.PrimaryPhotoVisibility, &p.SparkedViewer,
 		&p.BlurPhotosUntilMatch, &p.BlurMode, &p.Latitude, &p.Longitude,
 		&p.Intent, &p.City, &p.LastActiveAt, &p.HideLastActive,
-		&p.HeightCm, &p.Drinking, &p.Smoking, &p.Exercise, &p.Diet, &p.Interests); err != nil {
+		&p.HeightCm, &p.Drinking, &p.Smoking, &p.Exercise, &p.Diet, &p.Interests, &p.Travelling); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -120,7 +134,7 @@ func (s *Store) GetPersonForViewer(ctx context.Context, viewerID, userID uuid.UU
 		return nil, ErrProfileNotFound
 	}
 	p, err := scanPersonRow(s.db.QueryRow(ctx, `
-        SELECT `+personSelectCols+`
+        SELECT `+s.personCols()+`
         FROM dating_profiles p
         WHERE p.user_id = $2 AND `+personVisibleWhere, viewerID, userID))
 	if err != nil {
@@ -141,7 +155,7 @@ func (s *Store) ListPeopleForViewer(ctx context.Context, viewerID uuid.UUID, ids
 		return out, nil
 	}
 	rows, err := s.db.Query(ctx, `
-        SELECT `+personSelectCols+`
+        SELECT `+s.personCols()+`
         FROM dating_profiles p
         WHERE p.user_id = ANY($2::uuid[]) AND `+personVisibleWhere, viewerID, ids)
 	if err != nil {

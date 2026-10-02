@@ -1,0 +1,33 @@
+{
+  "error": {
+    "code": "INVALID_CITY",
+    "message": "city must be one of the travel cities",
+    "details": {
+      "allowed": [
+        "ahmedabad",
+        "bengaluru",
+        "chandigarh",
+        "chennai",
+        "delhi",
+        "dubai",
+        "goa",
+        "hyderabad",
+        "indore",
+        "jaipur",
+        "kochi",
+        "kolkata",
+        "london",
+        "lucknow",
+        "mumbai",
+        "mysuru",
+        "new_york",
+        "pune",
+        "singapore",
+        "sydney",
+        "toronto",
+        "visakhapatnam"
+      ]
+    }
+  },
+  "meta": {}
+}

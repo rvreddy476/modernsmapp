@@ -141,6 +141,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/allowances", h.GetAllowances)
 		// Mechanic M7 — daily picks, apart from the deck.
 		dating.GET("/picks", fpMW, h.GetDailyPicks)
+		// Mechanic M8 — travel mode (pass holders).
+		dating.GET("/travel", h.GetTravel)
+		dating.PUT("/travel", h.PutTravel)
+		dating.DELETE("/travel", h.DeleteTravel)
 		// Mechanic M4 — who sparked the caller, as a grid; locked without a
 		// pass while DATING_LIKED_YOU_GATE_ENABLED is on.
 		dating.GET("/liked-you", fpMW, h.GetLikedYou)
@@ -469,6 +473,25 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
+		return
+	}
+	// Mechanic M8 — travel mode.
+	if errors.Is(err, service.ErrTravelRequiresPass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TRAVEL_REQUIRES_PASS", "travel mode comes with a pass", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidCity) {
+		allowed := make([]string, 0, len(service.TravelCities))
+		for _, tc := range service.TravelCities {
+			allowed = append(allowed, tc.Code)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CITY", "city must be one of the travel cities",
+			map[string]any{"allowed": allowed})
+		return
+	}
+	if errors.Is(err, service.ErrInvalidTravelDays) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TRAVEL_DAYS", "days must be 1 to 7",
+			map[string]any{"min": 1, "max": service.MaxTravelDays})
 		return
 	}
 	// Mechanic M7 — daily picks and the action source.

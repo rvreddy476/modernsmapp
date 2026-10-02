@@ -157,7 +157,7 @@ func (s *Service) cardFor(ctx context.Context, viewerID, candidateID uuid.UUID) 
 	if err != nil || c == nil {
 		return nil
 	}
-	viewer, _ := s.store.GetProfile(ctx, viewerID)
+	viewer, _ := s.viewerProfile(ctx, viewerID)
 	matched, err := s.store.ListActiveMatchPartnerIDs(ctx, viewerID)
 	if err != nil {
 		matched = map[uuid.UUID]struct{}{}

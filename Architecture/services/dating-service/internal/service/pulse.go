@@ -49,6 +49,9 @@ type PulseProfileSummary struct {
 	// the default for new profiles. Never a timestamp.
 	LastActiveBucket string `json:"last_active_bucket,omitempty"`
 	LastActiveLabel  string `json:"last_active_label,omitempty"`
+	// Travelling (mechanic M8): on an active trip; City and the distance
+	// bucket are the destination's. Omitted when false.
+	Travelling bool `json:"travelling,omitempty"`
 	// Detail is the pre-match block (ProfileDetail in person.go): the
 	// candidate's own description, their prompt answers, their languages and
 	// the rest of their approved photos to swipe through. It is what the
@@ -377,7 +380,7 @@ func (s *Service) InvalidateDecksForCandidate(ctx context.Context, candidateID u
 // computePulseToday is the real matching pipeline.
 func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
 	// 1. Load viewer state.
-	viewerProfile, err := s.store.GetProfile(ctx, viewerID)
+	viewerProfile, err := s.viewerProfile(ctx, viewerID)
 	if err != nil && !errors.Is(err, store.ErrProfileNotFound) {
 		return nil, fmt.Errorf("load viewer profile: %w", err)
 	}
@@ -580,6 +583,7 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 		PrimaryPhotoBlurred: primaryBlurred,
 		TuneSummary:         tuneSummary,
 		TrustTier:           c.TrustTier,
+		Travelling:          c.Travelling,
 	}
 	if !c.HideLastActive {
 		band := LastActiveBucketFor(c.LastActiveAt, time.Now())
@@ -615,7 +619,7 @@ func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	viewerProfile, _ := s.store.GetProfile(ctx, viewerID)
+	viewerProfile, _ := s.viewerProfile(ctx, viewerID)
 
 	// §P1-3: matched-partner set drives the blur-photos-until-match
 	// lift inside buildCard. Best-effort on lookup errors.

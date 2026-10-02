@@ -232,7 +232,7 @@ func main() {
 		"super_spark", mechanicsCfg.SuperSpark, "super_spark_daily_limit_free", mechanicsCfg.SuperSparkDailyLimitFree,
 		"super_spark_daily_limit_pass", mechanicsCfg.SuperSparkDailyLimitPass,
 		"liked_you_gate", mechanicsCfg.LikedYouGate, "first_move", mechanicsCfg.FirstMove, "filters_v2", mechanicsCfg.FiltersV2,
-		"picks", mechanicsCfg.Picks)
+		"picks", mechanicsCfg.Picks, "travel", mechanicsCfg.Travel)
 	datingSvc.SetLocationPrivacyConfig(locationCfg)
 	slog.Info("location privacy limits configured",
 		"location_change_min_interval", locationCfg.LocationChangeMinInterval,

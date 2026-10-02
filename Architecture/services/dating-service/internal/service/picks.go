@@ -124,7 +124,7 @@ func (s *Service) GetDailyPicks(ctx context.Context, viewerID uuid.UUID, tz stri
 	for i := range visible {
 		byID[visible[i].UserID] = &visible[i]
 	}
-	viewer, _ := s.store.GetProfile(ctx, viewerID)
+	viewer, _ := s.viewerProfile(ctx, viewerID)
 	matched, err := s.store.ListActiveMatchPartnerIDs(ctx, viewerID)
 	if err != nil {
 		matched = map[uuid.UUID]struct{}{}
@@ -146,7 +146,7 @@ func (s *Service) GetDailyPicks(ctx context.Context, viewerID uuid.UUID, tz stri
 
 // choosePicks makes the day's selection.
 func (s *Service) choosePicks(ctx context.Context, viewerID uuid.UUID) ([]uuid.UUID, error) {
-	viewerProfile, err := s.store.GetProfile(ctx, viewerID)
+	viewerProfile, err := s.viewerProfile(ctx, viewerID)
 	if err != nil && !errors.Is(err, store.ErrProfileNotFound) {
 		return nil, err
 	}

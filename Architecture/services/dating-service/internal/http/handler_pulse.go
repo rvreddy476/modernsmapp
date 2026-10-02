@@ -168,6 +168,60 @@ func (h *Handler) GetDailyPicks(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// travelRequest is the body of PUT /travel.
+type travelRequest struct {
+	City string `json:"city"`
+	Days int    `json:"days"`
+}
+
+// GetTravel — GET /v1/dating/travel (mechanic M8): the caller's trip, the
+// cities and whether they may travel.
+func (h *Handler) GetTravel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetTravel(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// PutTravel — PUT /v1/dating/travel {city, days} (mechanic M8, pass holders).
+func (h *Handler) PutTravel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body travelRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.StartTravel(c.Request.Context(), userID, body.City, body.Days)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// DeleteTravel — DELETE /v1/dating/travel (mechanic M8): back home.
+func (h *Handler) DeleteTravel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.EndTravel(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
 // GetAllowances — GET /v1/dating/allowances
 //
 // Mechanic M10: the caller's sparks, deck, rewind and Super Spark
