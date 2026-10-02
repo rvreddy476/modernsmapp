@@ -367,6 +367,14 @@ data class PulseMetaDto(
     val size: Int = 0,
     @SerialName("cohort_gated") val cohortGated: Boolean = false,
     @SerialName("request_id") val requestId: String? = null,
+    // Mechanic M1 (the refilling deck). All three are ABSENT while the server's
+    // DATING_DECK_REFILL_ENABLED is off, and then the deck behaves as before.
+    /** The caller's card allowance per rolling 24 hours. 0 = the server sent none. */
+    @SerialName("daily_limit") val dailyLimit: Int = 0,
+    /** Cards left. Go omits 0, so "daily_limit > 0 and this absent" means none left. */
+    @SerialName("remaining_today") val remainingToday: Int = 0,
+    /** RFC 3339: when the allowance starts to come back. Absent while nothing is used. */
+    @SerialName("resets_at") val resetsAt: String? = null,
 )
 
 @Serializable
@@ -819,7 +827,21 @@ data class LocationRateLimitDetailsDto(
 data class RateLimitDetailsDto(
     val limit: Int = 0,
     @SerialName("window_hours") val windowHours: Int = 0,
+    /** RFC 3339. Not sent yet; preferred over the window when it is. */
+    @SerialName("resets_at") val resetsAt: String? = null,
 )
+
+/** `details` of a bounds refusal (`INVALID_AGE_RANGE`, `PROMPT_ANSWER_TOO_LONG`, …). Either end may be absent. */
+@Serializable
+data class RangeDetailsDto(val min: Int = 0, val max: Int = 0)
+
+/** `details` of `UNKNOWN_PROMPT`: the catalogue's prompt ids. */
+@Serializable
+data class AllowedIdsDetailsDto(val allowed: List<Int> = emptyList())
+
+/** `details` of `ONBOARDING_INCOMPLETE`: where the profile stands. */
+@Serializable
+data class OnboardingIncompleteDetailsDto(val status: String = "", val step: String = "")
 
 @Serializable
 data class AllowedDetailsDto(val allowed: List<String> = emptyList())

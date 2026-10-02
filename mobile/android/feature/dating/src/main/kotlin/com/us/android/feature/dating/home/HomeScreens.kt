@@ -1,6 +1,5 @@
 package com.us.android.feature.dating.home
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,14 +11,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,7 +29,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,12 +50,21 @@ import com.us.android.feature.dating.ui.listPadding
 
 enum class HomeTab(val label: String) { PULSE("Pulse"), SPARKS("Sparks"), MATCHES("Matches") }
 
-/** Dating home once the profile is active: Pulse, incoming sparks and matches. */
+/**
+ * Dating home once the profile is active: Pulse, incoming sparks and matches.
+ *
+ * A new match — from the deck or from a spark sent back — takes the whole
+ * screen (see [MatchCelebrationScreen]) until it is answered. It is state on
+ * the two view models rather than a route: they already own the moment and
+ * what is known about the person, and "Keep browsing" is then just this screen
+ * again, exactly as it was left.
+ */
 @Composable
 fun DatingHomeScreen(
     initialTab: HomeTab,
     onBack: () -> Unit,
     onOpenMatch: (matchId: String) -> Unit,
+    onOpenChat: (conversationId: String, title: String) -> Unit,
     onOpenPerson: (userId: String) -> Unit,
     onOpenSafety: () -> Unit,
     onOpenPremium: () -> Unit,
@@ -77,6 +78,30 @@ fun DatingHomeScreen(
     val sparksMessage by sparks.message.collectAsStateWithLifecycle()
     val pulseMatch by pulse.celebration.collectAsStateWithLifecycle()
     val sparksMatch by sparks.celebration.collectAsStateWithLifecycle()
+    val pulseHello by pulse.hello.collectAsStateWithLifecycle()
+    val sparksHello by sparks.hello.collectAsStateWithLifecycle()
+
+    // "Say hello": the chat when the match has one, the match itself until it does.
+    LaunchedEffect(pulseHello, sparksHello) {
+        val target = pulseHello ?: sparksHello ?: return@LaunchedEffect
+        pulse.helloHandled()
+        sparks.helloHandled()
+        when (target) {
+            is HelloTarget.Chat -> onOpenChat(target.conversationId, target.title)
+            is HelloTarget.Match -> onOpenMatch(target.matchId)
+        }
+    }
+
+    val celebration = pulseMatch ?: sparksMatch
+    if (celebration != null) {
+        val fromPulse = pulseMatch != null
+        MatchCelebrationScreen(
+            match = celebration,
+            onSayHello = { if (fromPulse) pulse.sayHello() else sparks.sayHello() },
+            onKeepBrowsing = { if (fromPulse) pulse.dismissCelebration() else sparks.dismissCelebration() },
+        )
+        return
+    }
 
     DatingScreen(
         title = "Dating",
@@ -101,166 +126,11 @@ fun DatingHomeScreen(
             }
             Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
                 when (tab) {
-                    HomeTab.PULSE -> PulseDeck(pulse)
+                    HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson)
                     HomeTab.SPARKS -> SparksList(sparks, onOpenPerson)
                     HomeTab.MATCHES -> MatchesList(matches, onOpenMatch)
                 }
             }
-        }
-    }
-
-    (pulseMatch ?: sparksMatch)?.let { match ->
-        ConfirmDialog(
-            title = "It's a match",
-            body = if (match.name.isBlank()) "You both sparked. Say hello." else "You and ${match.name} both sparked. Say hello.",
-            confirmLabel = "Open match",
-            dismissLabel = "Later",
-            onConfirm = {
-                pulse.dismissCelebration()
-                sparks.dismissCelebration()
-                onOpenMatch(match.matchId)
-            },
-            onDismiss = {
-                pulse.dismissCelebration()
-                sparks.dismissCelebration()
-            },
-        )
-    }
-}
-
-@Composable
-private fun PulseDeck(viewModel: PulseViewModel) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val busy by viewModel.busy.collectAsStateWithLifecycle()
-    var reporting by remember { mutableStateOf<CardUi?>(null) }
-    var blocking by remember { mutableStateOf<CardUi?>(null) }
-
-    when (val s = state) {
-        ListState.Loading -> LoadingPane()
-        is ListState.Failed -> MessagePane(title = "Pulse didn't load", body = s.message, primaryLabel = "Try again", onPrimary = viewModel::refresh)
-        is ListState.Items -> if (s.items.isEmpty()) {
-            MessagePane(
-                title = if (s.gated) "Pulse isn't ready for you yet" else "You're all caught up",
-                body = if (s.gated) "We're opening Pulse gradually. Check back soon." else "New people show up every day.",
-                icon = UsIcons.Compass,
-                secondaryLabel = "Refresh",
-                onSecondary = viewModel::refresh,
-            )
-        } else {
-            val pager = rememberPagerState(pageCount = { s.items.size })
-            HorizontalPager(
-                state = pager,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = UsTheme.spacing.pageHorizontal),
-                pageSpacing = UsTheme.spacing.l,
-                modifier = Modifier.fillMaxSize(),
-            ) { page ->
-                val card = s.items[page]
-                PulseCard(
-                    card = card,
-                    busy = busy == card.userId,
-                    onSpark = { viewModel.spark(card.userId) },
-                    onPass = { viewModel.pass(card.userId) },
-                    onStash = { viewModel.stash(card.userId) },
-                    onReport = { reporting = card },
-                    onBlock = { blocking = card },
-                )
-            }
-        }
-    }
-
-    reporting?.let { card ->
-        ReportSheet(
-            initial = ReportDraft(targetId = card.userId, photoIds = listOfNotNull(card.photoId)),
-            name = card.name,
-            onSubmit = {
-                viewModel.report(it)
-                reporting = null
-            },
-            onDismiss = { reporting = null },
-        )
-    }
-    blocking?.let { card ->
-        ConfirmDialog(
-            title = "Block ${card.name}?",
-            body = "You won't see each other in Pulse, sparks or matches again.",
-            confirmLabel = "Block",
-            destructive = true,
-            onConfirm = {
-                viewModel.block(card.userId)
-                blocking = null
-            },
-            onDismiss = { blocking = null },
-        )
-    }
-}
-
-@Composable
-private fun PulseCard(
-    card: CardUi,
-    busy: Boolean,
-    onSpark: () -> Unit,
-    onPass: () -> Unit,
-    onStash: () -> Unit,
-    onReport: () -> Unit,
-    onBlock: () -> Unit,
-) {
-    var menu by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().padding(vertical = UsTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-        // The card scrolls: the photo decides at a glance, the description and
-        // prompt answers below are what someone actually sparks on.
-        Column(
-            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-        ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(PHOTO_RATIO)
-                .clip(RoundedCornerShape(UsTheme.radii.card)),
-        ) {
-            PersonGallery(
-                photos = card.detail?.gallery.orEmpty(),
-                fallbackUrl = card.photoUrl,
-                name = card.name,
-                modifier = Modifier.fillMaxSize(),
-            )
-            Box(Modifier.align(Alignment.TopEnd)) {
-                IconButton(onClick = { menu = true }, modifier = Modifier.padding(6.dp).background(UsTheme.extended.bgCanvas.copy(alpha = 0.7f), CircleShape)) {
-                    Icon(UsIcons.More, contentDescription = "More", tint = UsTheme.extended.textPrimary)
-                }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Report") }, onClick = { menu = false; onReport() })
-                    DropdownMenuItem(text = { Text("Block") }, onClick = { menu = false; onBlock() })
-                }
-            }
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .background(UsTheme.extended.bgCanvas.copy(alpha = 0.72f))
-                    .padding(UsTheme.spacing.xxl),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-                    Text("${card.name}, ${card.age}", style = MaterialTheme.typography.headlineSmall, color = UsTheme.extended.textPrimary)
-                    if (card.verified) Pill("Verified", Tone.Positive)
-                }
-                val place = listOfNotNull(card.city.takeIf { it.isNotBlank() }, card.distance).joinToString(" · ")
-                if (place.isNotBlank()) Text(place, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary)
-                card.lastActive?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted) }
-                card.reasons.take(MAX_REASONS).forEach {
-                    Text("• $it", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
-            PersonDetailBody(card.detail)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), verticalAlignment = Alignment.CenterVertically) {
-            UsSecondaryButton(text = "Pass", enabled = !busy, onClick = onPass, modifier = Modifier.weight(1f))
-            IconButton(onClick = onStash, enabled = !busy) {
-                Icon(UsIcons.BookmarkOutline, contentDescription = "Save for later", tint = UsTheme.extended.textPrimary)
-            }
-            UsButton(text = "Spark", loading = busy, onClick = onSpark, modifier = Modifier.weight(1f))
         }
     }
 }
@@ -510,5 +380,3 @@ fun MatchDetailScreen(
         )
     }
 }
-
-private const val MAX_REASONS = 3

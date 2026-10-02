@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "ONBOARDING_INCOMPLETE",
+    "message": "complete onboarding (profile_status=pending_selfie, step=pending_selfie) before sparking",
+    "details": {
+      "status": "pending_selfie",
+      "step": "pending_selfie"
+    }
+  },
+  "meta": {}
+}

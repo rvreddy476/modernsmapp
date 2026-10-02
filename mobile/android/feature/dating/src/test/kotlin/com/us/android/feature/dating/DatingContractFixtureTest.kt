@@ -4,7 +4,13 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.feature.dating.data.DatingError
+import com.us.android.feature.dating.home.DeckCopy
+import com.us.android.feature.dating.home.DeckUi
+import com.us.android.feature.dating.home.onto
 import com.us.android.feature.dating.network.AllowedDetailsDto
+import com.us.android.feature.dating.network.AllowedIdsDetailsDto
+import com.us.android.feature.dating.network.OnboardingIncompleteDetailsDto
+import com.us.android.feature.dating.network.RangeDetailsDto
 import com.us.android.feature.dating.network.BlockedDto
 import com.us.android.feature.dating.network.BlocksDto
 import com.us.android.feature.dating.network.ClosedDto
@@ -334,6 +340,79 @@ class DatingContractFixtureTest {
             assertThat(detail.photos.first().url).isEqualTo("/v1/dating/photos/<photo-primary>/full")
             assertThat(detail.photos.last().url).isEqualTo("/v1/dating/photos/<photo-match_only>/blurred")
         },
+        // ── Fixtures the server had and the app had never copied ────────────
+        "photos_post_400_invalid_visibility.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_VISIBILITY")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("public", "match_only", "sparked_only").inOrder()
+        },
+        "preferences_put_400_invalid_age_range.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_AGE_RANGE")
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(min = 18, max = 120))
+        },
+        "preferences_put_400_invalid_distance_km.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DISTANCE_KM")
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(min = 1, max = 500))
+        },
+        "preferences_put_400_invalid_intent_filter.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_INTENT_FILTER")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("casual", "serious", "marriage").inOrder()
+        },
+        "profile_upsert_400_invalid_intent.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_INTENT")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("casual", "serious", "marriage").inOrder()
+        },
+        "prompts_put_400_answer_required.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("PROMPT_ANSWER_REQUIRED")
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(min = 1, max = 280))
+        },
+        "prompts_put_400_answer_too_long.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("PROMPT_ANSWER_TOO_LONG")
+            // Only the upper bound is sent.
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(max = 280))
+        },
+        "prompts_put_400_unknown_prompt.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("UNKNOWN_PROMPT")
+            // Prompt IDS — numbers, unlike every other `allowed`.
+            assertThat(details(error, AllowedIdsDetailsDto.serializer(), name).allowed).isEqualTo((1..12).toList())
+        },
+        "pulse_pass_400_reason_too_long.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("PASS_REASON_TOO_LONG")
+            assertThat(details(error, RangeDetailsDto.serializer(), name).max).isEqualTo(200)
+        },
+        "spark_create_409_onboarding_incomplete.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("ONBOARDING_INCOMPLETE")
+            assertThat(details(error, OnboardingIncompleteDetailsDto.serializer(), name))
+                .isEqualTo(OnboardingIncompleteDetailsDto(status = "pending_selfie", step = "pending_selfie"))
+        },
+        // ── Mechanic M1: the refilling deck ─────────────────────────────────
+        "pulse_today_get_200_refill.json" to { _, raw ->
+            // A batch, with the allowance in meta. Nothing has been used yet,
+            // so resets_at is absent.
+            val today = strict.decodeFromString(PulseTodayDto.serializer(), raw)
+            assertThat(today.data).hasSize(1)
+            val meta = checkNotNull(today.meta)
+            assertThat(meta.dailyLimit).isEqualTo(2)
+            assertThat(meta.remainingToday).isEqualTo(2)
+            assertThat(meta.resetsAt).isNull()
+            val deck = meta.onto(DeckUi())
+            assertThat(deck.metered).isTrue()
+            assertThat(deck.outOfCards).isFalse()
+            assertThat(DeckCopy.cardsLeft(deck)).isEqualTo("2 cards left today")
+        },
+        "pulse_today_get_200_out_of_cards.json" to { _, raw ->
+            // The allowance is spent: daily_limit present, remaining_today
+            // OMITTED (Go drops the 0), and no cards.
+            val today = strict.decodeFromString(PulseTodayDto.serializer(), raw)
+            assertThat(today.data).isEmpty()
+            val meta = checkNotNull(today.meta)
+            assertThat(meta.dailyLimit).isEqualTo(2)
+            assertThat(meta.remainingToday).isEqualTo(0)
+            assertThat(meta.resetsAt).isNotNull()
+            assertThat(meta.onto(DeckUi()).outOfCards).isTrue()
+        },
         "report_post_201.json" to data(ReportResultDto.serializer()) {
             assertThat(it.reason).isEqualTo("harassment")
             assertThat(it.status).isEqualTo("submitted")
@@ -491,13 +570,19 @@ class DatingContractFixtureTest {
 
     @Test
     fun `every fixture also decodes with the production json`() {
-        val pulse = setOf("pulse_today_get_200.json", "pulse_today_get_200_rich_card.json")
+        // `/pulse/today` is not the envelope; each fixture and the cards it carries.
+        val pulse = mapOf(
+            "pulse_today_get_200.json" to 1,
+            "pulse_today_get_200_rich_card.json" to 1,
+            "pulse_today_get_200_refill.json" to 1,
+            "pulse_today_get_200_out_of_cards.json" to 0,
+        )
         parsers.keys.filter { statusOf(it) < 300 && it !in pulse }.forEach { name ->
             val envelope = production.decodeFromString(ApiEnvelope.serializer(kotlinx.serialization.json.JsonElement.serializer()), fixture(name))
             assertThat(envelope.data).isNotNull()
         }
-        pulse.forEach { name ->
-            assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture(name)).data).hasSize(1)
+        pulse.forEach { (name, cards) ->
+            assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture(name)).data).hasSize(cards)
         }
     }
 

@@ -254,7 +254,11 @@ class FakeDatingApi : DatingApi {
     var matches: List<MatchDto> = emptyList()
     val sparks = mutableListOf<SparkRequest>()
     var sparkResponse: (SparkRequest) -> Response<ApiEnvelope<SparkCreatedDto>> = { ok(SparkCreatedDto()) }
+
+    /** Holds a spark open until the test lets it go, so the action can be seen in flight. */
+    var sparkGate: (suspend () -> Unit)? = null
     val passes = mutableListOf<String>()
+    var passResponse: ((String) -> Response<ApiEnvelope<PassDto>>)? = null
     val declines = mutableListOf<String>()
     val accepts = mutableListOf<String>()
     var acceptResponse: (String) -> Response<ApiEnvelope<SparkCreatedDto>> = { ok(SparkCreatedDto()) }
@@ -378,12 +382,13 @@ class FakeDatingApi : DatingApi {
 
     override suspend fun pass(candidateId: String, body: PassRequest): Response<ApiEnvelope<PassDto>> {
         passes += candidateId
-        return ok(PassDto(passed = true, candidateId = candidateId))
+        return passResponse?.invoke(candidateId) ?: ok(PassDto(passed = true, candidateId = candidateId))
     }
 
     override suspend fun spark(body: SparkRequest): Response<ApiEnvelope<SparkCreatedDto>> {
         calls += "spark"
         sparks += body
+        sparkGate?.invoke()
         return sparkResponse(body)
     }
 

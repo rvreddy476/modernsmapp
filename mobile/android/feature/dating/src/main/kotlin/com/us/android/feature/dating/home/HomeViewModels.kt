@@ -12,16 +12,21 @@ import com.us.android.feature.dating.data.DatingError
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.data.code
+import com.us.android.feature.dating.data.detailsAs
+import com.us.android.feature.dating.data.valueOrNull
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.PulseCardDto
+import com.us.android.feature.dating.network.RateLimitDetailsDto
 import com.us.android.feature.dating.network.SparkDto
 import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.photos.PhotoRules
 import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.SafetyActions
 import com.us.android.feature.dating.ui.errorMessage
+import com.us.android.feature.dating.ui.infoMessage
 import com.us.android.feature.dating.ui.successMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -57,8 +62,91 @@ sealed interface ListState<out T> {
     data class Failed(val message: String) : ListState<Nothing>
 }
 
-/** A mutual spark just became a match. */
-data class MatchCelebration(val matchId: String, val name: String)
+/**
+ * A mutual spark just became a match.
+ *
+ * It opens with what the screen that made it already had — the name and the
+ * photo on the card — and is completed from `GET /matches/:id`: the server's
+ * own card for the other person (the variant a MATCH may see) and the
+ * conversation, once the server has created it.
+ */
+data class MatchCelebration(
+    val matchId: String,
+    val name: String,
+    val photoUrl: String? = null,
+    /** Null until the server has created the chat. */
+    val conversationId: String? = null,
+    /** "Say hello" was tapped and the chat is being looked up. */
+    val opening: Boolean = false,
+)
+
+/** Where "Say hello" leads: the chat when it exists, the match's own screen while it does not. */
+sealed interface HelloTarget {
+    data class Chat(val conversationId: String, val title: String) : HelloTarget
+
+    data class Match(val matchId: String) : HelloTarget
+}
+
+/** The match screen's state, shared by the deck and the incoming sparks — either can make a match. */
+internal class MatchCelebrations(
+    private val repository: DatingRepository,
+    private val urls: DatingPhotoUrls,
+    private val scope: CoroutineScope,
+) {
+    private val _state = MutableStateFlow<MatchCelebration?>(null)
+    val state: StateFlow<MatchCelebration?> = _state.asStateFlow()
+
+    private val _hello = MutableStateFlow<HelloTarget?>(null)
+    val hello: StateFlow<HelloTarget?> = _hello.asStateFlow()
+
+    fun show(matchId: String, name: String, photoUrl: String?) {
+        _state.value = MatchCelebration(matchId, name, photoUrl)
+        scope.launch { load(matchId) }
+    }
+
+    fun dismiss() {
+        _state.value = null
+    }
+
+    fun helloHandled() {
+        _hello.value = null
+    }
+
+    /** Opens the chat if the match has one — asking once more if it did not yet — else the match itself. */
+    fun sayHello() {
+        val current = _state.value ?: return
+        if (current.opening) return
+        _state.value = current.copy(opening = true)
+        scope.launch {
+            val conversation = current.conversationId ?: load(current.matchId)
+            val latest = _state.value?.takeIf { it.matchId == current.matchId } ?: current
+            _hello.value = if (conversation != null) {
+                HelloTarget.Chat(conversation, latest.name.ifBlank { "Match" })
+            } else {
+                HelloTarget.Match(current.matchId)
+            }
+            _state.value = null
+        }
+    }
+
+    /** Fills the celebration from the match and returns its conversation id, if any. A failure changes nothing. */
+    private suspend fun load(matchId: String): String? {
+        val dto = repository.match(matchId).valueOrNull() ?: return null
+        val conversation = dto.conversationId?.takeIf { it.isNotBlank() }
+        _state.update { current ->
+            if (current?.matchId != matchId) {
+                current
+            } else {
+                current.copy(
+                    name = dto.person?.firstName?.takeIf { it.isNotBlank() } ?: current.name,
+                    photoUrl = urls.forPerson(dto.person) ?: current.photoUrl,
+                    conversationId = conversation ?: current.conversationId,
+                )
+            }
+        }
+        return conversation
+    }
+}
 
 /** Shared by the three lists: the server's rows, a load failure, and the person-removal filter. */
 private class RemovableList<Dto>(private val idOf: (Dto) -> String) {
@@ -83,7 +171,24 @@ private class RemovableList<Dto>(private val idOf: (Dto) -> String) {
 /**
  * Pulse today: a deck of cards with spark, pass and stash, plus report and
  * block. A card leaves the deck once the server has taken the action.
+ *
+ * ## One action at a time
+ *
+ * An action is refused while another is in flight ([busy]); each one says so
+ * by returning false, and the screen puts the card back where it was. While it
+ * runs, [deck]'s `leaving` names the card and the way out, so the screen can
+ * send it off; a refusal clears it and the card comes back, except for
+ * `CANDIDATE_UNAVAILABLE`, where there is no one to come back to.
+ *
+ * ## The refilling deck (mechanic M1)
+ *
+ * With the server's refill flag on, `GET /pulse/today` serves a batch and its
+ * meta carries the daily allowance. When the stack on screen runs empty and
+ * the LAST meta said cards remain, the next batch is fetched. Without a
+ * `daily_limit` in that meta — the flag is off — nothing is refetched, exactly
+ * as before; with none remaining, the screen shows the out-of-cards pane.
  */
+@Suppress("TooManyFunctions")
 @HiltViewModel
 class PulseViewModel @Inject constructor(
     private val repository: DatingRepository,
@@ -97,11 +202,18 @@ class PulseViewModel @Inject constructor(
     val state: StateFlow<ListState<CardUi>> =
         list.state(session) { it.toUi() }.stateIn(viewModelScope, SharingStarted.Eagerly, ListState.Loading)
 
+    private val _deck = MutableStateFlow(DeckUi())
+    val deck: StateFlow<DeckUi> = _deck.asStateFlow()
+
+    /** What the server's last meta said was left. The refetch rule reads THIS, not the local countdown. */
+    private var remainingAtLastMeta = 0
+
     private val _message = MutableStateFlow<UsMessage?>(null)
     val message: StateFlow<UsMessage?> = _message.asStateFlow()
 
-    private val _celebration = MutableStateFlow<MatchCelebration?>(null)
-    val celebration: StateFlow<MatchCelebration?> = _celebration.asStateFlow()
+    private val celebrations = MatchCelebrations(repository, urls, viewModelScope)
+    val celebration: StateFlow<MatchCelebration?> = celebrations.state
+    val hello: StateFlow<HelloTarget?> = celebrations.hello
 
     private val _busy = MutableStateFlow<String?>(null)
     val busy: StateFlow<String?> = _busy.asStateFlow()
@@ -111,16 +223,33 @@ class PulseViewModel @Inject constructor(
     }
 
     fun refresh() {
-        viewModelScope.launch {
-            when (val result = repository.pulseToday()) {
-                is DatingResult.Success -> {
-                    // cohort_gated lives in meta now, and at the top level on the
-                    // older shape; PulseTodayDto.gated reads whichever says yes.
-                    list.gated.value = result.value.gated
-                    list.failure.value = null
-                    list.rows.value = result.value.data
+        viewModelScope.launch { load() }
+    }
+
+    private suspend fun load(refill: Boolean = false) {
+        when (val result = repository.pulseToday()) {
+            is DatingResult.Success -> {
+                // cohort_gated lives in meta now, and at the top level on the
+                // older shape; PulseTodayDto.gated reads whichever says yes.
+                list.gated.value = result.value.gated
+                list.failure.value = null
+                list.rows.value = result.value.data
+                remainingAtLastMeta = result.value.meta?.remainingToday?.coerceAtLeast(0) ?: 0
+                // A fresh batch: nobody in it is on their way out, unless an
+                // action is still in flight and this is the answer overtaking it.
+                _deck.update { current ->
+                    result.value.meta.onto(current).copy(
+                        refilling = false,
+                        leaving = current.leaving.takeIf { _busy.value != null },
+                    )
                 }
-                is DatingResult.Failure -> list.failure.value = DatingCopy.forError(result.error)
+            }
+            is DatingResult.Failure -> {
+                list.failure.value = DatingCopy.forError(result.error)
+                _deck.update { it.copy(refilling = false) }
+                // The stack is empty but not failed-to-load, so the pane would
+                // read "all caught up": say what actually happened.
+                if (refill) _message.value = DatingCopy.message(result.error)
             }
         }
     }
@@ -129,37 +258,66 @@ class PulseViewModel @Inject constructor(
         _message.value = null
     }
 
-    fun dismissCelebration() {
-        _celebration.value = null
+    fun dismissCelebration() = celebrations.dismiss()
+
+    fun sayHello() = celebrations.sayHello()
+
+    fun helloHandled() = celebrations.helloHandled()
+
+    fun dismissSparkLimit() {
+        _deck.update { it.copy(sparkLimit = null) }
     }
 
-    fun spark(userId: String, note: String? = null) = act(userId) {
+    fun spark(userId: String, note: String? = null): Boolean = act(userId, DeckExit.SPARK) {
         when (val result = repository.spark(userId, note)) {
             is DatingResult.Success -> {
-                // The name comes from the card being sparked, which is on screen.
-                val name = list.rows.value?.firstOrNull { it.profile.userId == userId }?.profile?.firstName.orEmpty()
-                list.drop(userId)
+                // The name and photo come from the card being sparked, which is on screen.
+                val card = list.rows.value?.firstOrNull { it.profile.userId == userId }?.profile
+                acted(userId)
                 val created = result.value
                 if (created.matched && created.matchId != null) {
-                    _celebration.value = MatchCelebration(created.matchId, name)
+                    celebrations.show(
+                        matchId = created.matchId,
+                        name = card?.firstName.orEmpty(),
+                        photoUrl = urls.forViewer(card?.primaryPhotoUrl, matched = false),
+                    )
                 } else {
                     _message.value = successMessage("Spark sent.")
                 }
             }
-            is DatingResult.Failure -> refused(userId, result.error)
+            is DatingResult.Failure ->
+                if (result.error.code == CODE_SPARK_RATE_LIMITED) {
+                    // Its own pane, not a line: the card comes back and stays.
+                    val details = result.error.detailsAs(repository.json, RateLimitDetailsDto.serializer())
+                    _deck.update { it.copy(sparkLimit = details.toUi()) }
+                } else {
+                    refused(userId, result.error)
+                }
         }
     }
 
-    fun pass(userId: String) = act(userId) {
+    /**
+     * Super Spark. Not available yet: [DeckUi.superSparkEnabled] is false, the
+     * screen shows no button and treats an upward drag as nothing, and this
+     * refuses. The server route arrives with the mechanic itself.
+     */
+    fun superSpark(userId: String): Boolean {
+        if (!_deck.value.superSparkEnabled || userId.isBlank()) return false
+        _message.value = infoMessage("Super Spark isn't available yet.")
+        return false
+    }
+
+    fun pass(userId: String): Boolean = act(userId, DeckExit.PASS) {
         when (val result = repository.pass(userId)) {
-            is DatingResult.Success -> list.drop(userId)
+            is DatingResult.Success -> acted(userId)
             is DatingResult.Failure -> refused(userId, result.error)
         }
     }
 
-    fun stash(userId: String) = act(userId) {
+    fun stash(userId: String): Boolean = act(userId, DeckExit.STASH) {
         when (val result = repository.stash(userId)) {
             is DatingResult.Success -> {
+                // Saving is not a decision: the server does not count it.
                 list.drop(userId)
                 _message.value = successMessage("Saved for later.")
             }
@@ -167,18 +325,24 @@ class PulseViewModel @Inject constructor(
         }
     }
 
-    fun block(userId: String) = act(userId) {
+    fun block(userId: String): Boolean = act(userId) {
         when (val result = safety.block(userId)) {
             is DatingResult.Success -> _message.value = successMessage("Blocked. You won't see each other again.")
             is DatingResult.Failure -> _message.value = DatingCopy.message(result.error)
         }
     }
 
-    fun report(draft: ReportDraft) = act(draft.targetId) {
+    fun report(draft: ReportDraft): Boolean = act(draft.targetId) {
         when (val result = safety.report(draft)) {
             is DatingResult.Success -> _message.value = successMessage("Thanks for telling us. We've blocked them for you.")
             is DatingResult.Failure -> _message.value = reportFailure(result.error)
         }
+    }
+
+    /** A spark or a pass the server took: the card goes, and it counts against today's allowance. */
+    private fun acted(userId: String) {
+        list.drop(userId)
+        _deck.update { if (it.metered) it.copy(remaining = (it.remaining - 1).coerceAtLeast(0)) else it }
     }
 
     private fun refused(userId: String, error: DatingError) {
@@ -186,16 +350,37 @@ class PulseViewModel @Inject constructor(
         _message.value = DatingCopy.message(error, repository.json)
     }
 
-    private fun act(userId: String, block: suspend () -> Unit) {
-        if (_busy.value != null) return
+    /** Runs [block] as the one action in flight. False when another already is, and nothing was started. */
+    private fun act(userId: String, exit: DeckExit? = null, block: suspend () -> Unit): Boolean {
+        if (_busy.value != null) return false
         _busy.value = userId
+        _deck.update { it.copy(leaving = exit?.let { way -> DeckLeaving(userId, way) }) }
         viewModelScope.launch {
             try {
                 block()
             } finally {
+                // Still in the deck means the server refused: the card comes
+                // back. A card that left keeps its marker — it is no longer
+                // drawn, and clearing it first would start it back for a frame.
+                if (inDeck(userId)) _deck.update { it.copy(leaving = null) }
                 _busy.value = null
             }
+            refillIfEmpty()
         }
+        return true
+    }
+
+    private fun visibleRows(): List<PulseCardDto> =
+        list.rows.value.orEmpty().filterNot { it.profile.userId in session.removed.value }
+
+    private fun inDeck(userId: String): Boolean = visibleRows().any { it.profile.userId == userId }
+
+    /** The refetch rule. See the class comment. */
+    private suspend fun refillIfEmpty() {
+        if (!_deck.value.metered || remainingAtLastMeta <= 0) return
+        if (list.rows.value == null || visibleRows().isNotEmpty()) return
+        _deck.update { it.copy(refilling = true) }
+        load(refill = true)
     }
 
     private fun PulseCardDto.toUi(): CardUi = CardUi(
@@ -211,6 +396,10 @@ class PulseViewModel @Inject constructor(
         reasons = matchReasons.map { it.summary }.filter { it.isNotBlank() },
         detail = profile.detail.toUi(urls),
     )
+
+    private companion object {
+        const val CODE_SPARK_RATE_LIMITED = "SPARK_RATE_LIMITED"
+    }
 }
 
 internal fun reportFailure(error: DatingError): UsMessage =
@@ -255,12 +444,17 @@ class SparksViewModel @Inject constructor(
     private val _message = MutableStateFlow<UsMessage?>(null)
     val message: StateFlow<UsMessage?> = _message.asStateFlow()
 
-    private val _celebration = MutableStateFlow<MatchCelebration?>(null)
-    val celebration: StateFlow<MatchCelebration?> = _celebration.asStateFlow()
+    private val celebrations = MatchCelebrations(repository, urls, viewModelScope)
+    val celebration: StateFlow<MatchCelebration?> = celebrations.state
+    val hello: StateFlow<HelloTarget?> = celebrations.hello
 
     init {
         refresh()
     }
+
+    fun sayHello() = celebrations.sayHello()
+
+    fun helloHandled() = celebrations.helloHandled()
 
     fun refresh() {
         viewModelScope.launch {
@@ -278,9 +472,7 @@ class SparksViewModel @Inject constructor(
         _message.value = null
     }
 
-    fun dismissCelebration() {
-        _celebration.value = null
-    }
+    fun dismissCelebration() = celebrations.dismiss()
 
     /** Accepts BY SPARK ID, so the server pairs it with the spark that was sent. */
     fun accept(spark: IncomingSparkUi) {
@@ -289,8 +481,12 @@ class SparksViewModel @Inject constructor(
                 is DatingResult.Success -> {
                     list.drop(spark.fromUserId)
                     val created = result.value
-                    _celebration.value = created.matchId?.takeIf { created.matched }?.let { MatchCelebration(it, spark.name.orEmpty()) }
-                    if (_celebration.value == null) _message.value = successMessage("Spark sent back. Your match will appear soon.")
+                    val matchId = created.matchId?.takeIf { created.matched }
+                    if (matchId != null) {
+                        celebrations.show(matchId, spark.name.orEmpty(), spark.photoUrl)
+                    } else {
+                        _message.value = successMessage("Spark sent back. Your match will appear soon.")
+                    }
                 }
                 is DatingResult.Failure -> {
                     // Gone either way: already declined (404) or the person left.

@@ -1,0 +1,23 @@
+{
+  "error": {
+    "code": "UNKNOWN_PROMPT",
+    "message": "prompt_id is not in the v1 catalog",
+    "details": {
+      "allowed": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ]
+    }
+  },
+  "meta": {}
+}
