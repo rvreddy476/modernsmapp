@@ -10,7 +10,9 @@
         "duration_days": 30,
         "features": [
           "match_extend",
-          "daily_boost"
+          "daily_boost",
+          "more_daily_cards",
+          "more_super_sparks"
         ]
       },
       {
@@ -22,7 +24,9 @@
         "duration_days": 90,
         "features": [
           "match_extend",
-          "daily_boost"
+          "daily_boost",
+          "more_daily_cards",
+          "more_super_sparks"
         ]
       },
       {
@@ -34,7 +38,9 @@
         "duration_days": 365,
         "features": [
           "match_extend",
-          "daily_boost"
+          "daily_boost",
+          "more_daily_cards",
+          "more_super_sparks"
         ]
       },
       {
