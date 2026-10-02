@@ -425,11 +425,15 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	// the candidate query. Best-effort on lookup errors — the
 	// deck stays visible rather than empty if the privacy row is
 	// momentarily unreadable.
+	privacyVerifiedOnly := false
 	if viewerPrivacy, perr := s.store.GetPrivacy(ctx, viewerID); perr == nil && viewerPrivacy != nil {
-		q.VerifiedOnly = viewerPrivacy.VerifiedOnlyFilter
+		privacyVerifiedOnly = viewerPrivacy.VerifiedOnlyFilter
 	} else if perr != nil && !errors.Is(perr, store.ErrProfileNotFound) {
 		slog.Warn("pulse privacy lookup failed", "viewer_id", viewerID, "error", perr)
 	}
+	// Mechanic M6: verified only and the pass filters apply to a pass
+	// holder only while the flag is on; with it off, the pilot's free toggle.
+	s.applyDeckFilters(ctx, viewerID, &q, privacyVerifiedOnly)
 
 	// 3. Fetch candidates.
 	candidates, err := s.store.FetchCandidates(ctx, q)
@@ -584,7 +588,9 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 	// The pre-match block. c.Bio and c.LanguagePrefs are the candidate's own
 	// profile text; c.Community is deliberately NOT used — it is read only
 	// for the deck's same-community cap and stays sealed until a match.
-	summary.Detail = buildProfileDetail(c.Bio, c.LanguagePrefs, prompts, photos, photoViewer)
+	summary.Detail = buildProfileDetail(c.Bio, c.LanguagePrefs, ProfileBasics{
+		Interests: c.Interests, HeightCm: c.HeightCm, Drinking: c.Drinking, Smoking: c.Smoking, Exercise: c.Exercise, Diet: c.Diet,
+	}, prompts, photos, photoViewer)
 
 	return PulseCard{
 		CandidateID:  c.UserID,

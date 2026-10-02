@@ -443,6 +443,7 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_SUPER_SPARK_DAILY_LIMIT_PASS 1-100, default 5 for pass holders
 //	DATING_LIKED_YOU_GATE_ENABLED       who sparked you is for pass holders (M4)
 //	DATING_FIRST_MOVE_ENABLED           first move + opening questions (M5)
+//	DATING_FILTERS_V2_ENABLED           distance buckets + pass filters (M6)
 //
 // Any malformed value is an error, on which main refuses to start.
 func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig, error) {
@@ -477,6 +478,9 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 		return cfg, err
 	}
 	if cfg.FirstMove, err = envFlag(getenv, "DATING_FIRST_MOVE_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.FiltersV2, err = envFlag(getenv, "DATING_FILTERS_V2_ENABLED", def); err != nil {
 		return cfg, err
 	}
 	return cfg, nil

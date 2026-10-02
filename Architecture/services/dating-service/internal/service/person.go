@@ -112,6 +112,28 @@ type ProfileDetail struct {
 	// Photos is the whole approved gallery, primary first, so the card can
 	// be swiped through. Each entry carries its own variant.
 	Photos []CardPhoto `json:"photos,omitempty"`
+	// Mechanic M6: interests and the lifestyle basics, as option codes
+	// (labels come from GET /profile/options). Omitted when unset.
+	Interests []string `json:"interests,omitempty"`
+	HeightCm  int      `json:"height_cm,omitempty"`
+	Drinking  string   `json:"drinking,omitempty"`
+	Smoking   string   `json:"smoking,omitempty"`
+	Exercise  string   `json:"exercise,omitempty"`
+	Diet      string   `json:"diet,omitempty"`
+}
+
+// ProfileBasics is the shown basics feeding a ProfileDetail.
+type ProfileBasics struct {
+	Interests                         []string
+	HeightCm                          *int
+	Drinking, Smoking, Exercise, Diet *string
+}
+
+func strOr(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // cardPhotos applies the lane D6 rule to each photo with that photo's OWN
@@ -151,14 +173,26 @@ func promptAnswers(ps []store.Prompt) []PromptAnswer {
 }
 
 // buildProfileDetail assembles the block, or nil when there is nothing in it.
-func buildProfileDetail(bio string, languages []string, prompts []store.Prompt, photos []store.PhotoRef, v PhotoViewer) *ProfileDetail {
+func buildProfileDetail(bio string, languages []string, basics ProfileBasics, prompts []store.Prompt, photos []store.PhotoRef, v PhotoViewer) *ProfileDetail {
 	d := &ProfileDetail{
 		Bio:       bio,
 		Prompts:   promptAnswers(prompts),
 		Languages: languages,
 		Photos:    cardPhotos(photos, v),
+		Interests: basics.Interests,
+		Drinking:  strOr(basics.Drinking),
+		Smoking:   strOr(basics.Smoking),
+		Exercise:  strOr(basics.Exercise),
+		Diet:      strOr(basics.Diet),
 	}
-	if d.Bio == "" && len(d.Prompts) == 0 && len(d.Languages) == 0 && len(d.Photos) == 0 {
+	if basics.HeightCm != nil {
+		d.HeightCm = *basics.HeightCm
+	}
+	if len(d.Interests) == 0 {
+		d.Interests = nil
+	}
+	if d.Bio == "" && len(d.Prompts) == 0 && len(d.Languages) == 0 && len(d.Photos) == 0 &&
+		len(d.Interests) == 0 && d.HeightCm == 0 && d.Drinking == "" && d.Smoking == "" && d.Exercise == "" && d.Diet == "" {
 		return nil
 	}
 	return d
@@ -221,7 +255,9 @@ func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Pro
 		}
 	}
 	if withDetail {
-		card.Detail = buildProfileDetail(row.Bio, row.LanguagePrefs, prompts, photos, photoViewer)
+		card.Detail = buildProfileDetail(row.Bio, row.LanguagePrefs, ProfileBasics{
+			Interests: row.Interests, HeightCm: row.HeightCm, Drinking: row.Drinking, Smoking: row.Smoking, Exercise: row.Exercise, Diet: row.Diet,
+		}, prompts, photos, photoViewer)
 	}
 	return card
 }

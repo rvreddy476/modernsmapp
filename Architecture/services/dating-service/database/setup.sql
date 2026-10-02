@@ -1585,3 +1585,23 @@ CREATE TABLE IF NOT EXISTS dating_match_extend_ledger (
 );
 CREATE INDEX IF NOT EXISTS idx_dating_match_extend_ledger_user
     ON dating_match_extend_ledger(user_id, extended_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M6 — filters (DATING_FILTERS_V2_ENABLED).
+--
+-- dating_profiles.interests: up to ten codes from the fixed interest list
+--   (service/profile_options.go). Height, languages and the lifestyle basics
+--   already have columns; their values are now validated against the same
+--   lists.
+-- dating_preferences: the filters a pass unlocks. They stay stored when a
+--   pass runs out and apply only while the user holds one. language_filter
+--   (already present) is the language filter.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles    ADD COLUMN IF NOT EXISTS interests       TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS verified_only   BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS min_height_cm   INT;
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS max_height_cm   INT;
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS drinking_filter TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS smoking_filter  TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS exercise_filter TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS diet_filter     TEXT[]  NOT NULL DEFAULT '{}';

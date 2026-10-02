@@ -30,6 +30,9 @@ func (s *Service) GetPrivacy(ctx context.Context, userID uuid.UUID) (*store.Priv
 // viewers' decks, because their cached cards include this candidate.
 // An Echoes opt-in or opt-out is recorded in the consent log.
 func (s *Service) UpdatePrivacy(ctx context.Context, userID uuid.UUID, u store.PrivacyUpdate) (*store.Privacy, error) {
+	if err := s.checkVerifiedOnlyToggle(ctx, userID, u); err != nil {
+		return nil, err
+	}
 	out, err := s.store.UpdatePrivacy(ctx, userID, u)
 	if err != nil {
 		return nil, err

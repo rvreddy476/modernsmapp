@@ -48,6 +48,8 @@ type UpsertProfileParams struct {
 	BlurMode         *bool      `json:"blur_mode,omitempty"`
 	VisibleToPublic  *bool      `json:"visible_to_public,omitempty"`
 	LanguagePrefs    []string   `json:"language_prefs,omitempty"`
+	// Interests (mechanic M6): codes from the fixed interest list.
+	Interests []string `json:"interests,omitempty"`
 }
 
 // ErrProfileNotFound is returned when no row matches the requested user.
@@ -60,7 +62,7 @@ const profileSelectCols = `
     wants_children, family_plans, blur_mode, visible_to_public, paused,
     language_prefs, trust_tier, profile_status, created_at, updated_at, deleted_at,
     first_name, prior_status, dob_source, first_name_source,
-    religion_sealed, community_sealed`
+    religion_sealed, community_sealed, interests`
 
 // scanProfile scans a profile and opens its sealed fields (lane D9). A row
 // the backfill has not reached yet still reads its legacy plaintext.
@@ -84,7 +86,7 @@ func scanProfileRow(row pgx.Row) (*Profile, error) {
 		&p.WantsChildren, &p.FamilyPlans, &p.BlurMode, &p.VisibleToPublic, &p.Paused,
 		&p.LanguagePrefs, &p.TrustTier, &p.ProfileStatus, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 		&p.FirstName, &p.PriorStatus, &p.DOBSource, &p.FirstNameSource,
-		&p.religionSealed, &p.communitySealed,
+		&p.religionSealed, &p.communitySealed, &p.Interests,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -214,6 +216,9 @@ func profileAssignments(p UpsertProfileParams) ([]string, []any) {
 	}
 	if p.Bio != nil {
 		add("bio", *p.Bio)
+	}
+	if p.Interests != nil {
+		add("interests", p.Interests)
 	}
 	if p.Gender != nil {
 		add("gender", *p.Gender)

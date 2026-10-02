@@ -1,0 +1,52 @@
+{
+  "error": {
+    "code": "INVALID_INTEREST",
+    "message": "interests must be codes from the profile options",
+    "details": {
+      "allowed": [
+        "art",
+        "baking",
+        "board_games",
+        "books",
+        "chai",
+        "coding",
+        "comedy",
+        "cooking",
+        "cricket",
+        "cycling",
+        "dancing",
+        "fashion",
+        "film",
+        "fitness",
+        "football",
+        "gaming",
+        "gardening",
+        "hiking",
+        "history",
+        "languages",
+        "meditation",
+        "music",
+        "nature",
+        "painting",
+        "pets",
+        "photography",
+        "podcasts",
+        "poetry",
+        "running",
+        "science",
+        "singing",
+        "startups",
+        "swimming",
+        "technology",
+        "theatre",
+        "travel",
+        "trekking",
+        "volunteering",
+        "writing",
+        "yoga"
+      ],
+      "field": "interests"
+    }
+  },
+  "meta": {}
+}

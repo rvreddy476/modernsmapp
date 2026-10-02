@@ -93,6 +93,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.PUT("/tune", h.PutTune)
 
 		dating.GET("/preferences", h.GetPreferences)
+		// Mechanic M6 — the fixed lists for the new profile fields and filters.
+		dating.GET("/profile/options", h.GetProfileOptions)
 		dating.PUT("/preferences", h.PutPreferences)
 
 		dating.GET("/photos", h.ListPhotos)
@@ -465,6 +467,21 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
+		return
+	}
+	// Mechanic M6 — filters and the new profile fields.
+	if errors.Is(err, service.ErrFiltersRequirePass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FILTERS_REQUIRE_PASS", "these filters come with a pass", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidDistanceBucket) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DISTANCE_BUCKET", "distance_bucket must be one of the profile options",
+			map[string]any{"allowed": []string{"lt_5_km", "km_5_10", "km_10_25", "gt_25_km"}})
+		return
+	}
+	var fieldErr *service.FieldError
+	if errors.As(err, &fieldErr) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, fieldErr.Code, fieldErr.Message, fieldErr.Details)
 		return
 	}
 	// Mechanic M5 — first move.

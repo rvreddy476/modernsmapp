@@ -42,6 +42,10 @@ type MechanicsConfig struct {
 	// FirstMove (DATING_FIRST_MOVE_ENABLED): a per-user opt-in to sending
 	// the first message, with opening questions and a free 24-hour extend.
 	FirstMove bool
+
+	// FiltersV2 (DATING_FILTERS_V2_ENABLED): distance buckets, and the pass
+	// filters (verified only, height, languages, lifestyle basics).
+	FiltersV2 bool
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.

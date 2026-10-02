@@ -56,6 +56,13 @@ type PersonRow struct {
 	// true the card carries neither bucket nor label.
 	LastActiveAt   time.Time
 	HideLastActive bool
+	// Mechanic M6: the shown basics (not sealed) and interests.
+	HeightCm  *int
+	Drinking  *string
+	Smoking   *string
+	Exercise  *string
+	Diet      *string
+	Interests []string
 }
 
 // Age returns whole years, or 0 when no birth date is known.
@@ -77,7 +84,8 @@ const personSelectCols = `
     EXISTS (SELECT 1 FROM dating_sparks sv
         WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
     p.blur_photos_until_match, p.blur_mode, p.latitude, p.longitude,
-    p.intent, p.city, p.last_active_at, p.hide_last_active`
+    p.intent, p.city, p.last_active_at, p.hide_last_active,
+    p.height_cm, p.drinking, p.smoking, p.exercise, p.diet, p.interests`
 
 func scanPersonRow(row pgx.Row) (*PersonRow, error) {
 	p := &PersonRow{}
@@ -85,7 +93,8 @@ func scanPersonRow(row pgx.Row) (*PersonRow, error) {
 		&p.Bio, &p.LanguagePrefs,
 		&p.PrimaryPhotoID, &p.PrimaryPhotoVisibility, &p.SparkedViewer,
 		&p.BlurPhotosUntilMatch, &p.BlurMode, &p.Latitude, &p.Longitude,
-		&p.Intent, &p.City, &p.LastActiveAt, &p.HideLastActive); err != nil {
+		&p.Intent, &p.City, &p.LastActiveAt, &p.HideLastActive,
+		&p.HeightCm, &p.Drinking, &p.Smoking, &p.Exercise, &p.Diet, &p.Interests); err != nil {
 		return nil, err
 	}
 	return p, nil

@@ -56,6 +56,13 @@ type CandidateProfile struct {
 	HideLastActive       bool
 	BlurPhotosUntilMatch bool
 	Incognito            bool
+	// Mechanic M6: the shown basics (not sealed) and interests.
+	HeightCm  *int
+	Drinking  *string
+	Smoking   *string
+	Exercise  *string
+	Diet      *string
+	Interests []string
 }
 
 // Age returns the candidate's age in whole years, or 0 if BirthDate is nil.
@@ -162,7 +169,8 @@ const candidateSelectCols = `
         LIMIT 1), 'public') AS primary_photo_visibility,
     EXISTS (SELECT 1 FROM dating_sparks sv
         WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
-    p.hide_last_active, p.blur_photos_until_match, p.incognito`
+    p.hide_last_active, p.blur_photos_until_match, p.incognito,
+    p.height_cm, p.drinking, p.smoking, p.exercise, p.diet, p.interests`
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
 type CandidateQuery struct {
@@ -185,6 +193,15 @@ type CandidateQuery struct {
 	// from the deck. Defaults to false so the existing deck shape
 	// is preserved.
 	VerifiedOnly bool
+	// Mechanic M6 pass filters (0 / empty: not applied). A candidate with no
+	// value for a filtered field is left out.
+	MinHeightCm int
+	MaxHeightCm int
+	Languages   []string
+	Drinking    []string
+	Smoking     []string
+	Exercise    []string
+	Diet        []string
 	// ExcludeActed (mechanic M1, the refilling deck) keeps out everyone the
 	// viewer has already acted on: a live spark (newer than the pair's last
 	// closed match) or an open match. Passes are ExcludePassed.
@@ -298,6 +315,24 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	if q.ExcludeActed {
 		where = append(where, `NOT `+actedOnPredicate("$1", "p.user_id"))
 	}
+	if q.MinHeightCm > 0 {
+		args = append(args, q.MinHeightCm)
+		where = append(where, fmt.Sprintf(`p.height_cm >= $%d`, len(args)))
+	}
+	if q.MaxHeightCm > 0 {
+		args = append(args, q.MaxHeightCm)
+		where = append(where, fmt.Sprintf(`p.height_cm <= $%d`, len(args)))
+	}
+	if len(q.Languages) > 0 {
+		args = append(args, q.Languages)
+		where = append(where, fmt.Sprintf(`p.language_prefs && $%d::text[]`, len(args)))
+	}
+	for col, set := range map[string][]string{"drinking": q.Drinking, "smoking": q.Smoking, "exercise": q.Exercise, "diet": q.Diet} {
+		if len(set) > 0 {
+			args = append(args, set)
+			where = append(where, fmt.Sprintf(`p.%s = ANY($%d::text[])`, col, len(args)))
+		}
+	}
 
 	// P0-10 Phase A: geohash prefix prefilter. When the viewer has a
 	// location + a distance cap, compute the viewer's geohash at the
@@ -400,6 +435,7 @@ func scanCandidateRow(row pgx.Row) (*CandidateProfile, error) {
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
 		&c.PrimaryPhotoID, &c.PrimaryPhotoVisibility, &c.SparkedViewer,
 		&c.HideLastActive, &c.BlurPhotosUntilMatch, &c.Incognito,
+		&c.HeightCm, &c.Drinking, &c.Smoking, &c.Exercise, &c.Diet, &c.Interests,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan candidate: %w", err)

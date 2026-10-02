@@ -73,6 +73,8 @@ type Profile struct {
 	VisibleToPublic  bool       `json:"visible_to_public"`
 	Paused           bool       `json:"paused"`
 	LanguagePrefs    []string   `json:"language_prefs"`
+	// Interests (mechanic M6): omitted while empty.
+	Interests        []string   `json:"interests,omitempty"`
 	TrustTier        string     `json:"trust_tier"`
 	// ProfileStatus is the §P1-1 lifecycle column. Values: draft,
 	// pending_photo, pending_selfie, pending_review, active, paused,
