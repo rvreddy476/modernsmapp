@@ -1,0 +1,19 @@
+{
+  "data": {
+    "sparks": {
+      "unlimited": false,
+      "daily_limit": 50,
+      "remaining_today": 50
+    },
+    "deck": {
+      "unlimited": false,
+      "daily_limit": 50,
+      "remaining_today": 50
+    },
+    "fair_turn": {
+      "owed": 6,
+      "limit": 6,
+      "paused": true
+    }
+  }
+}

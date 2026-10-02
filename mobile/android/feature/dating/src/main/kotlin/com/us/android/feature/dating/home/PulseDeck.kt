@@ -117,14 +117,41 @@ internal fun PulseDeck(
     onOpenPerson: (userId: String) -> Unit,
     onOpenPremium: () -> Unit,
     onOpenTravel: () -> Unit = {},
+    onOpenMatches: () -> Unit = {},
 ) {
     val deck by viewModel.deck.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
         // While travelling, the deck says whose city it is showing.
         deck.trip?.let { TripBanner(it, onClick = onOpenTravel, modifier = Modifier.padding(top = UsTheme.spacing.m)) }
+        // Mechanic M11: replies are owed, so new sparks wait. Calm, with the way to the matches.
+        deck.fairTurn?.takeIf { it.paused }?.let {
+            FairTurnNotice(it, onOpenMatches = onOpenMatches, modifier = Modifier.padding(top = UsTheme.spacing.m))
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             DeckBody(viewModel, onOpenPerson, onOpenPremium)
         }
+    }
+}
+
+/** Fair turn (mechanic M11): who is waiting, and the way to them. Not an error: nothing was done wrong. */
+@Composable
+private fun FairTurnNotice(fairTurn: FairTurnUi, onOpenMatches: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(UsTheme.radii.large)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(UsTheme.extended.bgRaised, shape)
+            .border(1.dp, UsTheme.extended.borderSubtle, shape)
+            .padding(UsTheme.spacing.l),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+            Icon(UsIcons.Comment, contentDescription = null, tint = UsTheme.extended.accentSolid, modifier = Modifier.size(18.dp))
+            Text(DeckCopy.FAIR_TURN_TITLE, style = MaterialTheme.typography.titleSmall, color = UsTheme.extended.textPrimary)
+        }
+        Text(DeckCopy.fairTurnBody(fairTurn), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+        UsSecondaryButton(text = DeckCopy.FAIR_TURN_ACTION, onClick = onOpenMatches, modifier = Modifier.fillMaxWidth())
     }
 }
 
@@ -330,6 +357,8 @@ private fun DeckStack(
     val top = items.first()
     val next = items.getOrNull(1)
     val idle = busy == null
+    // Mechanic M11: while replies are owed, spark and Super Spark wait; pass and save do not.
+    val canSpark = !deck.sparksPaused
     val offset = remember(top.userId) { Animatable(Offset.Zero, Offset.VectorConverter) }
     var cardSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -381,7 +410,9 @@ private fun DeckStack(
                     size = cardSize,
                     leaving = deck.leaving?.takeIf { it.userId == top.userId }?.exit,
                     enabled = idle,
-                    superSparkEnabled = deck.superSparkEnabled,
+                    // Paused (M11): an upward drag is resisted like a switched-off Super Spark;
+                    // a drag right is refused by the view model and springs back.
+                    superSparkEnabled = deck.superSparkEnabled && canSpark,
                     onSwipe = { direction ->
                         when (direction) {
                             SwipeDirection.RIGHT -> viewModel.spark(top.userId)
@@ -402,19 +433,32 @@ private fun DeckStack(
                 Icon(UsIcons.BookmarkOutline, contentDescription = "Save for later", tint = UsTheme.extended.textPrimary)
             }
             if (deck.superSparkEnabled) {
-                IconButton(onClick = { viewModel.superSpark(top.userId) }, enabled = idle) {
-                    Icon(UsIcons.Star, contentDescription = SUPER_SPARK, tint = UsTheme.extended.statusWarning)
+                IconButton(onClick = { viewModel.superSpark(top.userId) }, enabled = idle && canSpark) {
+                    Icon(
+                        UsIcons.Star,
+                        contentDescription = SUPER_SPARK,
+                        tint = if (canSpark) UsTheme.extended.statusWarning else UsTheme.extended.textDim,
+                    )
                 }
             }
             UsButton(
                 text = "Spark",
-                enabled = idle || busy == top.userId,
+                enabled = canSpark && (idle || busy == top.userId),
                 loading = busy == top.userId && deck.leaving?.exit == DeckExit.SPARK,
                 onClick = { viewModel.spark(top.userId) },
                 modifier = Modifier.weight(1f),
             )
         }
-        DeckCopy.superSparksLeft(deck)?.let {
+        if (!canSpark) {
+            Text(
+                text = DeckCopy.FAIR_TURN_SPARK_HELD,
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textMuted,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        DeckCopy.superSparksLeft(deck)?.takeIf { canSpark }?.let {
             Text(
                 text = it,
                 style = MaterialTheme.typography.labelSmall,

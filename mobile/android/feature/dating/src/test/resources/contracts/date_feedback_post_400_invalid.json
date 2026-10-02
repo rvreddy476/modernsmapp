@@ -1,0 +1,20 @@
+{
+  "error": {
+    "code": "INVALID_DATE_FEEDBACK",
+    "message": "met must be yes, no or not_yet; again must be yes, no or unsure and, like felt_safe, only follows met=yes",
+    "details": {
+      "again": [
+        "yes",
+        "no",
+        "unsure"
+      ],
+      "field": "met",
+      "met": [
+        "yes",
+        "no",
+        "not_yet"
+      ]
+    }
+  },
+  "meta": {}
+}

@@ -5,9 +5,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RangeSlider
@@ -61,6 +63,7 @@ import com.us.android.feature.dating.ui.MessagePane
 import com.us.android.feature.dating.ui.MultiOptionChips
 import com.us.android.feature.dating.ui.SectionLabel
 import com.us.android.feature.dating.ui.SingleOptionChips
+import com.us.android.feature.dating.ui.infoMessage
 import com.us.android.feature.dating.ui.listPadding
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -123,7 +126,40 @@ data class FiltersDraft(
     val distanceKm: Int = FiltersRules.DEFAULT_DISTANCE_KM,
     val intents: List<String> = emptyList(),
     val pass: PassFiltersDraft = PassFiltersDraft(),
+    /** Mechanic M12: the preferences marked as dealbreakers. Only ones that are set count; see [FiltersRules.dealbreakersFor]. */
+    val dealbreakers: Set<Dealbreaker> = emptySet(),
 )
+
+/**
+ * A preference that can be made a dealbreaker (mechanic M12): then only people
+ * who fit it are shown this person too. Age, distance and intent are free; the
+ * rest are pass filters, and need a pass to be set as dealbreakers.
+ */
+enum class Dealbreaker(val code: String, val needsPass: Boolean) {
+    AGE("age", false),
+    DISTANCE("distance", false),
+    INTENT("intent", false),
+    VERIFIED("verified", true),
+    HEIGHT("height", true),
+    LANGUAGES("languages", true),
+    DRINKING("drinking", true),
+    SMOKING("smoking", true),
+    EXERCISE("exercise", true),
+    DIET("diet", true),
+    ;
+
+    companion object {
+        /** Null for a code this app does not know: it is dropped, never shown raw. */
+        fun fromCode(code: String?): Dealbreaker? = entries.firstOrNull { it.code == code }
+
+        fun of(basic: LifestyleBasic): Dealbreaker = when (basic) {
+            LifestyleBasic.DRINKING -> DRINKING
+            LifestyleBasic.SMOKING -> SMOKING
+            LifestyleBasic.EXERCISE -> EXERCISE
+            LifestyleBasic.DIET -> DIET
+        }
+    }
+}
 
 /** A control the server can refuse, by its `details.field` (or by the code where it names none). */
 enum class FiltersField { AGE, DISTANCE, INTENT, HEIGHT, LANGUAGES, DRINKING, SMOKING, EXERCISE, DIET }
@@ -139,6 +175,8 @@ data class FiltersUiState(
     val passActive: Boolean = false,
     /** The older privacy "verified only" switch is on; Filters now owns it. */
     val privacyVerifiedOnly: Boolean = false,
+    /** Mechanic M12: `dealbreakers` was present on `GET /preferences`. False hides every Dealbreaker switch. */
+    val dealbreakersOn: Boolean = false,
     val draft: FiltersDraft = FiltersDraft(),
     val saved: FiltersDraft = FiltersDraft(),
     val saving: Boolean = false,
@@ -153,6 +191,12 @@ data class FiltersUiState(
     val locked: Boolean get() = flagOn && !passActive
 
     val dirty: Boolean get() = draft != saved
+
+    /** A Dealbreaker switch is drawn: the mechanic is on and the preference it belongs to is set. */
+    fun showsDealbreaker(dealbreaker: Dealbreaker): Boolean = dealbreakersOn && FiltersRules.isSet(draft, dealbreaker, flagOn)
+
+    /** A pass dealbreaker without a pass: it can be switched off, and switching it on opens the upsell. */
+    fun dealbreakerLocked(dealbreaker: Dealbreaker): Boolean = dealbreaker.needsPass && !passActive
 }
 
 @Suppress("TooManyFunctions")
@@ -195,10 +239,25 @@ class FiltersViewModel @Inject constructor(
                     flagOn = flagOn,
                     passActive = preferences.value.passFilters?.active == true,
                     privacyVerifiedOnly = privacyVerifiedOnly,
+                    dealbreakersOn = preferences.value.dealbreakers != null,
                     draft = draft,
                     saved = draft,
                 )
             }
+        }
+    }
+
+    /**
+     * Mechanic M12: marks [dealbreaker] on or off. Switching a pass one ON
+     * without a pass opens the upsell instead; switching any one off always works.
+     */
+    fun setDealbreaker(dealbreaker: Dealbreaker, on: Boolean) = _state.update {
+        when {
+            it.phase != FiltersPhase.READY || !it.dealbreakersOn -> it
+            on && it.dealbreakerLocked(dealbreaker) -> it.copy(upsell = true)
+            else -> it.copy(
+                draft = it.draft.copy(dealbreakers = if (on) it.draft.dealbreakers + dealbreaker else it.draft.dealbreakers - dealbreaker),
+            )
         }
     }
 
@@ -261,12 +320,47 @@ class FiltersViewModel @Inject constructor(
             _state.update { it.copy(upsell = true) }
             return
         }
+        // So can a pass dealbreaker newly marked without one (mechanic M12).
+        if (FiltersRules.addsLockedDealbreaker(current)) {
+            _state.update { it.copy(upsell = true) }
+            return
+        }
         _state.update { it.copy(saving = true, fieldErrors = emptyMap()) }
+        send(current, FiltersRules.requestFor(current))
+    }
+
+    private fun send(current: FiltersUiState, request: PreferencesRequest) {
         viewModelScope.launch {
-            when (val result = repository.updatePreferences(FiltersRules.requestFor(current))) {
+            when (val result = repository.updatePreferences(request)) {
                 is DatingResult.Success -> saved(current, result.value)
-                is DatingResult.Failure -> refused(result.error)
+                is DatingResult.Failure -> if (dealbreakersSwitchedOff(result.error, request)) {
+                    retryWithoutDealbreakers(current, request)
+                } else {
+                    refused(result.error)
+                }
             }
+        }
+    }
+
+    /** The dealbreakers mechanic went off since the read: only a write that carried them is refused for it. */
+    private fun dealbreakersSwitchedOff(error: DatingError, request: PreferencesRequest): Boolean =
+        request.dealbreakers != null && error.code == CODE_MECHANIC_NOT_ENABLED
+
+    /** The switches go, and whatever else was changed is saved without them. */
+    private fun retryWithoutDealbreakers(current: FiltersUiState, request: PreferencesRequest) {
+        val hidden = current.copy(
+            dealbreakersOn = false,
+            draft = current.draft.copy(dealbreakers = emptySet()),
+            saved = current.saved.copy(dealbreakers = emptySet()),
+        )
+        _state.update {
+            it.copy(dealbreakersOn = false, draft = it.draft.copy(dealbreakers = emptySet()), saved = it.saved.copy(dealbreakers = emptySet()))
+        }
+        val rest = request.copy(dealbreakers = null)
+        if (rest == PreferencesRequest()) {
+            _state.update { it.copy(saving = false, message = infoMessage(FiltersCopy.DEALBREAKERS_GONE)) }
+        } else {
+            send(hidden, rest)
         }
     }
 
@@ -281,6 +375,8 @@ class FiltersViewModel @Inject constructor(
             it.copy(
                 saving = false,
                 passActive = answer.passFilters?.active ?: it.passActive,
+                // The PUT answers with the GET's view: no list means the mechanic is off now.
+                dealbreakersOn = answer.dealbreakers != null,
                 privacyVerifiedOnly = it.privacyVerifiedOnly && !privacyCleared,
                 saved = it.draft,
                 savedCount = if (privacyOk) it.savedCount + 1 else it.savedCount,
@@ -290,7 +386,8 @@ class FiltersViewModel @Inject constructor(
     }
 
     private fun refused(error: DatingError) {
-        if (error.code == CODE_FILTERS_REQUIRE_PASS) {
+        // A pass that ran out since the read: the pass section and pass dealbreakers lock, and Premium is offered.
+        if (error.code == CODE_FILTERS_REQUIRE_PASS || error.code == CODE_DEALBREAKERS_REQUIRE_PASS) {
             _state.update { it.copy(saving = false, upsell = true, passActive = false) }
             return
         }
@@ -323,6 +420,8 @@ class FiltersViewModel @Inject constructor(
 
     private companion object {
         const val CODE_FILTERS_REQUIRE_PASS = "FILTERS_REQUIRE_PASS"
+        const val CODE_DEALBREAKERS_REQUIRE_PASS = "DEALBREAKERS_REQUIRE_PASS"
+        const val CODE_MECHANIC_NOT_ENABLED = "MECHANIC_NOT_ENABLED"
         val PASS_FIELDS = setOf(
             FiltersField.HEIGHT,
             FiltersField.LANGUAGES,
@@ -354,7 +453,46 @@ object FiltersRules {
             distanceKm = prefs.distanceKm.takeIf { it > 0 } ?: DEFAULT_DISTANCE_KM,
             intents = prefs.intentFilter.orEmpty().filter { DatingIntent.fromCode(it) != null }.distinct(),
             pass = if (pass == null || options == null) PassFiltersDraft() else passDraftFrom(pass, options, privacyVerifiedOnly),
+            dealbreakers = prefs.dealbreakers.orEmpty().mapNotNull { Dealbreaker.fromCode(it) }.toSet(),
         )
+    }
+
+    /**
+     * Whether the preference [dealbreaker] belongs to is set, so it can be a
+     * dealbreaker at all. Age and distance always hold a value; the rest are
+     * set once something is chosen. The pass ones exist only with the M6 flag on.
+     */
+    fun isSet(draft: FiltersDraft, dealbreaker: Dealbreaker, flagOn: Boolean): Boolean {
+        val pass = draft.pass
+        return when (dealbreaker) {
+            Dealbreaker.AGE -> true
+            Dealbreaker.DISTANCE -> !flagOn || draft.distanceBucket != null
+            Dealbreaker.INTENT -> draft.intents.isNotEmpty()
+            Dealbreaker.VERIFIED -> flagOn && pass.verifiedOnly
+            Dealbreaker.HEIGHT -> flagOn && (pass.minHeightCm != null || pass.maxHeightCm != null)
+            Dealbreaker.LANGUAGES -> flagOn && pass.languages.isNotEmpty()
+            Dealbreaker.DRINKING -> flagOn && pass.basic(LifestyleBasic.DRINKING).isNotEmpty()
+            Dealbreaker.SMOKING -> flagOn && pass.basic(LifestyleBasic.SMOKING).isNotEmpty()
+            Dealbreaker.EXERCISE -> flagOn && pass.basic(LifestyleBasic.EXERCISE).isNotEmpty()
+            Dealbreaker.DIET -> flagOn && pass.basic(LifestyleBasic.DIET).isNotEmpty()
+        }
+    }
+
+    /**
+     * The dealbreaker codes a save sends: the marked ones whose preference is
+     * still set, in the server's order. A preference cleared takes its
+     * dealbreaker with it.
+     */
+    fun dealbreakersFor(draft: FiltersDraft, flagOn: Boolean): List<String> =
+        Dealbreaker.entries.filter { it in draft.dealbreakers && isSet(draft, it, flagOn) }.map { it.code }
+
+    /** Without a pass, the save would newly mark a pass dealbreaker: the server can only refuse that. */
+    fun addsLockedDealbreaker(state: FiltersUiState): Boolean {
+        if (!state.dealbreakersOn || state.passActive) return false
+        val before = dealbreakersFor(state.saved, state.flagOn).toSet()
+        return dealbreakersFor(state.draft, state.flagOn).any { code ->
+            code !in before && Dealbreaker.fromCode(code)?.needsPass == true
+        }
     }
 
     private fun passDraftFrom(pass: PassFiltersDto, options: ProfileOptionsUi, privacyVerifiedOnly: Boolean) = PassFiltersDraft(
@@ -382,6 +520,7 @@ object FiltersRules {
         val draft = state.draft
         val saved = state.saved
         val agesChanged = draft.minAge != saved.minAge || draft.maxAge != saved.maxAge
+        val dealbreakers = dealbreakersFor(draft, state.flagOn)
         return PreferencesRequest(
             minAge = draft.minAge.takeIf { agesChanged },
             maxAge = draft.maxAge.takeIf { agesChanged },
@@ -389,6 +528,8 @@ object FiltersRules {
             distanceBucket = draft.distanceBucket.takeIf { state.flagOn && it != saved.distanceBucket },
             distanceKm = draft.distanceKm.takeIf { !state.flagOn && it != saved.distanceKm },
             passFilters = draft.pass.toRequest().takeIf { state.flagOn && draft.pass != saved.pass },
+            // Mechanic M12: the WHOLE list whenever it changed; never while the mechanic is off.
+            dealbreakers = dealbreakers.takeIf { state.dealbreakersOn && it != dealbreakersFor(saved, state.flagOn) },
         )
     }
 
@@ -460,6 +601,12 @@ object FiltersCopy {
     const val UPSELL_BODY =
         "A Premium pass lets you narrow Pulse by verified profiles, height, languages and lifestyle. Age, distance and what people are looking for stay free."
     const val NOT_NOW = "Not now"
+
+    // Mechanic M12 — dealbreakers.
+    const val DEALBREAKER = "Dealbreaker"
+    const val DEALBREAKER_BODY = "Only people who fit this will see you, too."
+    const val DEALBREAKER_LOCKED = "Dealbreakers on this come with a Premium pass."
+    const val DEALBREAKERS_GONE = "Dealbreakers aren't available right now, so nothing was changed."
 }
 
 /** Filters. [onOpenPremium] is where the upsell leads; a save closes the screen and the deck reloads. */
@@ -534,6 +681,7 @@ private fun AgeCard(state: FiltersUiState, enabled: Boolean, viewModel: FiltersV
             colors = sliderColors(),
         )
         FieldError(state.fieldErrors[FiltersField.AGE])
+        DealbreakerRow(state, Dealbreaker.AGE, enabled, viewModel)
     }
 }
 
@@ -559,6 +707,7 @@ private fun DistanceCard(state: FiltersUiState, enabled: Boolean, viewModel: Fil
             )
         }
         FieldError(state.fieldErrors[FiltersField.DISTANCE])
+        DealbreakerRow(state, Dealbreaker.DISTANCE, enabled, viewModel)
     }
 }
 
@@ -574,6 +723,7 @@ private fun IntentCard(state: FiltersUiState, enabled: Boolean, viewModel: Filte
         )
         if (state.draft.intents.isEmpty()) InfoNote(FiltersCopy.INTENT_ANY)
         FieldError(state.fieldErrors[FiltersField.INTENT])
+        DealbreakerRow(state, Dealbreaker.INTENT, enabled, viewModel)
     }
 }
 
@@ -610,6 +760,7 @@ private fun LazyListScope.passSection(state: FiltersUiState, options: ProfileOpt
                     colors = SwitchDefaults.colors(checkedTrackColor = UsTheme.extended.accentSolid),
                 )
             }
+            DealbreakerRow(state, Dealbreaker.VERIFIED, enabled, viewModel)
         }
     }
     item { HeightRangeCard(state, options, enabled, viewModel) }
@@ -618,6 +769,7 @@ private fun LazyListScope.passSection(state: FiltersUiState, options: ProfileOpt
             Text(FiltersCopy.LANGUAGES, style = MaterialTheme.typography.titleSmall, color = UsTheme.extended.textPrimary)
             MultiOptionChips(options = options.languages, selected = pass.languages, onToggle = viewModel::toggleLanguage, enabled = enabled)
             FieldError(state.fieldErrors[FiltersField.LANGUAGES])
+            DealbreakerRow(state, Dealbreaker.LANGUAGES, enabled, viewModel)
         }
     }
     LifestyleBasic.entries.forEach { basic ->
@@ -631,6 +783,7 @@ private fun LazyListScope.passSection(state: FiltersUiState, options: ProfileOpt
                     enabled = enabled,
                 )
                 FieldError(state.fieldErrors[FiltersRules.fieldOf(basic)])
+                DealbreakerRow(state, Dealbreaker.of(basic), enabled, viewModel)
             }
         }
     }
@@ -664,6 +817,39 @@ private fun HeightRangeCard(state: FiltersUiState, options: ProfileOptionsUi, en
             )
         }
         FieldError(state.fieldErrors[FiltersField.HEIGHT])
+        DealbreakerRow(state, Dealbreaker.HEIGHT, enabled, viewModel)
+    }
+}
+
+/**
+ * Mechanic M12: the "Dealbreaker" switch under a set preference, with its one
+ * line. Nothing at all while the mechanic is off or the preference is unset.
+ * A pass one without a pass carries the lock; switching it on opens the upsell.
+ */
+@Composable
+private fun DealbreakerRow(state: FiltersUiState, dealbreaker: Dealbreaker, enabled: Boolean, viewModel: FiltersViewModel) {
+    if (!state.showsDealbreaker(dealbreaker)) return
+    val on = dealbreaker in state.draft.dealbreakers
+    val locked = state.dealbreakerLocked(dealbreaker) && !on
+    HorizontalDivider(color = UsTheme.extended.borderSubtle, modifier = Modifier.padding(vertical = UsTheme.spacing.xs))
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+        if (locked) {
+            Icon(UsIcons.Lock, contentDescription = null, tint = UsTheme.extended.textMuted, modifier = Modifier.size(16.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(FiltersCopy.DEALBREAKER, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textPrimary)
+            Text(
+                if (locked) FiltersCopy.DEALBREAKER_LOCKED else FiltersCopy.DEALBREAKER_BODY,
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+        Switch(
+            checked = on,
+            onCheckedChange = { viewModel.setDealbreaker(dealbreaker, it) },
+            enabled = enabled,
+            colors = SwitchDefaults.colors(checkedTrackColor = UsTheme.extended.accentSolid),
+        )
     }
 }
 

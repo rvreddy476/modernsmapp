@@ -26,6 +26,10 @@ import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.DataExportDto
 import com.us.android.feature.dating.network.DatingApi
+import com.us.android.feature.dating.network.DateCheckinDto
+import com.us.android.feature.dating.network.DateFeedbackDto
+import com.us.android.feature.dating.network.DateFeedbackRequest
+import com.us.android.feature.dating.network.PastMatchesDto
 import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
@@ -396,7 +400,8 @@ class FakeDatingApi : DatingApi {
     override suspend fun updatePreferences(body: PreferencesRequest): Response<ApiEnvelope<PreferencesDto>> {
         calls += "preferences:write"
         preferenceWrites += body
-        return preferencesWriteResponse?.invoke(body) ?: ok(preferences.copy(interestedInGender = body.interestedInGender))
+        return preferencesWriteResponse?.invoke(body)
+            ?: ok(preferences.copy(interestedInGender = body.interestedInGender, dealbreakers = body.dealbreakers ?: preferences.dealbreakers))
     }
 
     override suspend fun myPhotos(): Response<ApiEnvelope<List<DatingPhotoDto>>> = ok(emptyList())
@@ -643,6 +648,36 @@ class FakeDatingApi : DatingApi {
         calls += "read-receipts:write"
         readReceiptsWrites += body
         return readReceiptsWriteResponse(body)
+    }
+
+    // ── Mechanic M14: after-date check-ins ──────────────────────────────────
+
+    /** `GET /date-checkins`. The default is the server's flag OFF, as the golden for the POST writes it. */
+    var dateCheckinsResponse: () -> Response<ApiEnvelope<List<DateCheckinDto>>> =
+        { refusedWithFixture(404, "date_feedback_post_404_not_enabled.json") }
+    val dateFeedbackWrites = mutableListOf<Pair<String, DateFeedbackRequest>>()
+    var dateFeedbackResponse: (matchId: String, DateFeedbackRequest) -> Response<ApiEnvelope<DateFeedbackDto>> =
+        { _, _ -> ok(fixture("date_feedback_post_201.json", DateFeedbackDto.serializer())) }
+
+    override suspend fun dateCheckins(): Response<ApiEnvelope<List<DateCheckinDto>>> {
+        calls += "date-checkins"
+        return dateCheckinsResponse()
+    }
+
+    override suspend fun dateFeedback(matchId: String, body: DateFeedbackRequest): Response<ApiEnvelope<DateFeedbackDto>> {
+        calls += "date-feedback"
+        dateFeedbackWrites += matchId to body
+        return dateFeedbackResponse(matchId, body)
+    }
+
+    // ── Mechanic M19: past matches ──────────────────────────────────────────
+
+    /** `GET /past-matches` (not the envelope). The default is the server's flag OFF, as the golden writes it. */
+    var pastMatchesResponse: () -> Response<PastMatchesDto> = { rawRefusedWithFixture(404, "past_matches_get_404_not_enabled.json") }
+
+    override suspend fun pastMatches(): Response<PastMatchesDto> {
+        calls += "past-matches"
+        return pastMatchesResponse()
     }
 
     override suspend fun block(body: BlockRequest): Response<ApiEnvelope<BlockedDto>> {

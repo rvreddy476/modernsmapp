@@ -51,6 +51,7 @@ import com.us.android.feature.dating.ui.SectionLabel
 import com.us.android.feature.dating.ui.Tone
 import com.us.android.feature.dating.ui.listPadding
 import com.us.android.feature.dating.ui.toneColor
+import java.time.ZoneId
 
 /**
  * The safety centre. [shareWith] preselects a live-share recipient (opened from
@@ -62,8 +63,11 @@ fun SafetyScreen(
     onBack: () -> Unit,
     onOpenSharedLocation: (shareId: String) -> Unit,
     viewModel: SafetyViewModel = hiltViewModel(),
+    pastMatches: PastMatchesViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val past by pastMatches.state.collectAsStateWithLifecycle()
+    val zone = remember { ZoneId.systemDefault() }
     val context = LocalContext.current
     var confirmPanic by remember { mutableStateOf(false) }
     var recipient by rememberSaveable { mutableStateOf(shareWith) }
@@ -75,7 +79,12 @@ fun SafetyScreen(
         viewModel.onPermissionResult(grants.values.any { it }, canAskAgain)
     }
 
-    DatingScreen(title = "Safety", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
+    DatingScreen(
+        title = "Safety",
+        onBack = onBack,
+        message = state.message ?: past.message,
+        onDismissMessage = { if (state.message != null) viewModel.dismissMessage() else pastMatches.dismissMessage() },
+    ) { padding ->
         if (state.loading) {
             LoadingPane()
             return@DatingScreen
@@ -189,7 +198,19 @@ fun SafetyScreen(
                     }
                 }
             }
+
+            // Mechanic M19: report someone from a match that has ended.
+            pastMatchesSection(past, pastMatches, zone)
         }
+    }
+
+    past.reporting?.let { row ->
+        ReportSheet(
+            initial = ReportDraft(targetId = row.userId),
+            name = row.name.takeIf { it != PastMatchesCopy.SOMEONE },
+            onSubmit = pastMatches::report,
+            onDismiss = pastMatches::dismissReport,
+        )
     }
 
     if (confirmPanic) {

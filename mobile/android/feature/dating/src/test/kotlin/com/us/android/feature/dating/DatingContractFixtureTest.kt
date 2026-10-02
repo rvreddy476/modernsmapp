@@ -80,8 +80,20 @@ import com.us.android.feature.dating.network.FieldRefusalDetailsDto
 import com.us.android.feature.dating.network.OptionDto
 import com.us.android.feature.dating.network.OptionRangeDto
 import com.us.android.feature.dating.network.ProfileOptionsDto
+import com.us.android.feature.dating.filters.Dealbreaker
 import com.us.android.feature.dating.filters.FiltersField
 import com.us.android.feature.dating.filters.FiltersRules
+import com.us.android.feature.dating.home.DateAgain
+import com.us.android.feature.dating.home.DateMet
+import com.us.android.feature.dating.home.FairTurnUi
+import com.us.android.feature.dating.network.DateCheckinDto
+import com.us.android.feature.dating.network.DateFeedbackDto
+import com.us.android.feature.dating.network.DateFeedbackRefusalDetailsDto
+import com.us.android.feature.dating.network.FairTurnDetailsDto
+import com.us.android.feature.dating.network.FairTurnDto
+import com.us.android.feature.dating.network.PastMatchPersonDto
+import com.us.android.feature.dating.network.PastMatchesDto
+import com.us.android.feature.dating.safety.PastMatchesCopy
 import com.us.android.feature.dating.profile.AboutMeField
 import com.us.android.feature.dating.profile.LifestyleBasic
 import com.us.android.feature.dating.profile.ProfileOptionsUi
@@ -664,6 +676,114 @@ class DatingContractFixtureTest {
             assertThat(it.rewind).isNull()
             assertThat(it.superSpark).isNull()
         },
+        // ── Mechanic M11: fair turn ─────────────────────────────────────────
+        "allowances_get_200_fair_turn.json" to data(AllowancesDto.serializer()) {
+            assertThat(it.sparks).isEqualTo(AllowanceDto(dailyLimit = 50, remainingToday = 50))
+            assertThat(it.deck).isEqualTo(AllowanceDto(dailyLimit = 50, remainingToday = 50))
+            assertThat(it.rewind).isNull()
+            assertThat(it.superSpark).isNull()
+            assertThat(it.fairTurn).isEqualTo(FairTurnDto(owed = 6, limit = 6, paused = true))
+            assertThat(checkNotNull(it.fairTurn).toUi()).isEqualTo(FairTurnUi(owed = 6, limit = 6, paused = true))
+            assertThat(DeckUi(fairTurn = it.fairTurn?.toUi()).sparksPaused).isTrue()
+        },
+        "sparks_post_409_fair_turn_limit.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("FAIR_TURN_LIMIT")
+            assertThat((error as DatingError.Refused).status).isEqualTo(409)
+            val details = details(error, FairTurnDetailsDto.serializer(), name)
+            assertThat(details).isEqualTo(FairTurnDetailsDto(limit = 6, owed = 6))
+            assertThat(details.toUi()).isEqualTo(FairTurnUi(owed = 6, limit = 6, paused = true))
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.FAIR_TURN_LIMIT)
+        },
+        // ── Mechanic M12: dealbreakers ──────────────────────────────────────
+        "preferences_get_200_dealbreakers.json" to data(PreferencesDto.serializer()) {
+            assertThat(it.minAge).isEqualTo(25)
+            assertThat(it.maxAge).isEqualTo(35)
+            assertThat(it.dealbreakers).containsExactly("age", "intent").inOrder()
+            // The filters flag is off in this golden: no pass section, no bucket.
+            assertThat(it.passFilters).isNull()
+            assertThat(it.distanceBucket).isNull()
+            val draft = FiltersRules.draftFrom(it, options = null, privacyVerifiedOnly = false)
+            assertThat(draft.dealbreakers).containsExactly(Dealbreaker.AGE, Dealbreaker.INTENT)
+            // No intent is chosen, so its dealbreaker has nothing to hold and is not sent.
+            assertThat(FiltersRules.dealbreakersFor(draft, flagOn = false)).containsExactly("age")
+        },
+        "preferences_put_200_dealbreakers.json" to data(PreferencesDto.serializer()) {
+            // The PUT answers with the GET's view.
+            assertThat(it.dealbreakers).containsExactly("age", "intent").inOrder()
+            assertThat(it.intentFilter).isEmpty()
+            assertThat(it.languageFilter).isEmpty()
+        },
+        "preferences_put_400_invalid_dealbreaker.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DEALBREAKER")
+            val details = details(error, FieldRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("dealbreakers")
+            // The server's list is exactly the codes this app knows, in the same order.
+            assertThat(details.allowed).containsExactlyElementsIn(Dealbreaker.entries.map { d -> d.code }).inOrder()
+            assertThat(FiltersRules.fieldFor(error, strict)).isNull()
+            assertThat(DatingCopy.forError(error, strict)).isNotEqualTo(DatingCopy.GENERIC)
+        },
+        "preferences_put_403_dealbreakers_require_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("DEALBREAKERS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.DEALBREAKERS_REQUIRE_PASS)
+        },
+        "preferences_put_404_dealbreakers_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M14: after-date check-ins ──────────────────────────────
+        "date_checkins_get_200.json" to data(listSerializer(DateCheckinDto.serializer())) {
+            val row = it.single()
+            assertThat(row.matchId).isEqualTo("<match>")
+            assertThat(row.meetId).isEqualTo("<meet>")
+            assertThat(row.person).isEqualTo(PastMatchPersonDto(userId = "<other>", firstName = "Asha"))
+            assertThat(row.askedAt).isEqualTo("<timestamp>")
+        },
+        "date_feedback_post_201.json" to data(DateFeedbackDto.serializer()) {
+            assertThat(it.matchId).isEqualTo("<match>")
+            assertThat(it.met).isEqualTo(DateMet.YES.wire)
+            assertThat(it.again).isEqualTo(DateAgain.YES.wire)
+            assertThat(it.feltSafe).isTrue()
+            assertThat(it.offerReport).isFalse()
+        },
+        "date_feedback_post_201_unsafe.json" to data(DateFeedbackDto.serializer()) {
+            assertThat(it.again).isEqualTo(DateAgain.NO.wire)
+            assertThat(it.feltSafe).isFalse()
+            assertThat(it.offerReport).isTrue()
+        },
+        "date_feedback_post_400_invalid.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DATE_FEEDBACK")
+            val details = details(error, DateFeedbackRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("met")
+            // The server's answers are exactly the app's, so nothing it offers can be refused for its code.
+            assertThat(details.met).containsExactlyElementsIn(DateMet.entries.map { m -> m.wire })
+            assertThat(details.again).containsExactlyElementsIn(DateAgain.entries.map { a -> a.wire })
+            assertThat(DatingCopy.forError(error)).isNotEqualTo(DatingCopy.GENERIC)
+        },
+        "date_feedback_post_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M19: past matches ──────────────────────────────────────
+        "past_matches_get_200.json" to { _, raw ->
+            // NOT the envelope's meta: its own {data, meta:{window_days}}.
+            val past = strict.decodeFromString(PastMatchesDto.serializer(), raw)
+            val row = past.data.single()
+            assertThat(row.matchId).isEqualTo("<match>")
+            assertThat(row.person).isEqualTo(PastMatchPersonDto(userId = "<other>", firstName = "Asha"))
+            assertThat(row.matchedAt).isEqualTo("<timestamp>")
+            assertThat(row.endedAt).isEqualTo("<timestamp>")
+            assertThat(row.ended).isEqualTo("unmatched")
+            assertThat(row.reported).isFalse()
+            assertThat(past.meta?.windowDays).isEqualTo(30)
+            // The golden redacts the time: the line falls back to how it ended.
+            assertThat(PastMatchesCopy.endedLine(row.ended, parseInstant(row.endedAt), ZoneId.of("UTC"))).isEqualTo("Unmatched")
+        },
+        "past_matches_get_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
         // ── Mechanic M4: who liked you ──────────────────────────────────────
         "liked_you_get_200_locked.json" to data(LikedYouDto.serializer()) {
             assertThat(it.total).isEqualTo(2)
@@ -1041,12 +1161,17 @@ class DatingContractFixtureTest {
         )
         // `/picks` is not the envelope either.
         val picks = mapOf("picks_get_200.json" to 1)
-        parsers.keys.filter { statusOf(it) < 300 && it !in pulse && it !in picks }.forEach { name ->
+        // Nor is `/past-matches`: its meta carries the window.
+        val past = mapOf("past_matches_get_200.json" to 1)
+        parsers.keys.filter { statusOf(it) < 300 && it !in pulse && it !in picks && it !in past }.forEach { name ->
             val envelope = production.decodeFromString(ApiEnvelope.serializer(kotlinx.serialization.json.JsonElement.serializer()), fixture(name))
             assertThat(envelope.data).isNotNull()
         }
         picks.forEach { (name, cards) ->
             assertThat(production.decodeFromString(PicksDto.serializer(), fixture(name)).data).hasSize(cards)
+        }
+        past.forEach { (name, rows) ->
+            assertThat(production.decodeFromString(PastMatchesDto.serializer(), fixture(name)).data).hasSize(rows)
         }
         pulse.forEach { (name, cards) ->
             assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture(name)).data).hasSize(cards)

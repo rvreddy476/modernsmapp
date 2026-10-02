@@ -74,6 +74,12 @@ class PushDestinations @Inject constructor() {
         const val TYPE_DATING_MESSAGE = "dating.match.new_message"
         const val TYPE_DATING_FIRST_MESSAGE = "dating.match.first_message"
 
+        // Pulse safety pushes (notification-service dating_pulse.go): a scam
+        // alert opens the safety page; a date check-in opens the match with
+        // its "how did it go?" sheet.
+        const val TYPE_DATING_SCAM_ALERT = "dating_scam_alert"
+        const val TYPE_DATING_DATE_CHECKIN = "dating_date_checkin"
+
         /**
          * Where a dating push lands, or null when it is not one / carries no
          * usable id. Pure string work, like [joinCodeOf].
@@ -92,6 +98,10 @@ class PushDestinations @Inject constructor() {
                     ?.let { DatingPushTarget.Match(it, openChat = false) }
             TYPE_DATING_MESSAGE, TYPE_DATING_FIRST_MESSAGE ->
                 datingMatchIdOf(destination.deepLink)?.let { DatingPushTarget.Match(it, openChat = true) }
+            TYPE_DATING_SCAM_ALERT -> DatingPushTarget.Safety
+            TYPE_DATING_DATE_CHECKIN ->
+                (datingMatchIdOf(destination.deepLink) ?: destination.entityId.trim().takeIf { it.isNotEmpty() })
+                    ?.let { DatingPushTarget.Match(it, openChat = false, checkIn = true) }
             else -> null
         }
 
@@ -126,7 +136,9 @@ class PushDestinations @Inject constructor() {
 sealed interface DatingPushTarget {
     data object IncomingSparks : DatingPushTarget
 
-    data class Match(val matchId: String, val openChat: Boolean) : DatingPushTarget
+    data object Safety : DatingPushTarget
+
+    data class Match(val matchId: String, val openChat: Boolean, val checkIn: Boolean = false) : DatingPushTarget
 }
 
 /** The routing triple a chat push carries. Ids only — never content. */

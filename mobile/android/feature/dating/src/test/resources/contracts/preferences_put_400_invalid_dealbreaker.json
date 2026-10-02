@@ -1,0 +1,22 @@
+{
+  "error": {
+    "code": "INVALID_DEALBREAKER",
+    "message": "dealbreakers must be distinct codes from the allowed list",
+    "details": {
+      "allowed": [
+        "age",
+        "distance",
+        "intent",
+        "verified",
+        "height",
+        "languages",
+        "drinking",
+        "smoking",
+        "exercise",
+        "diet"
+      ],
+      "field": "dealbreakers"
+    }
+  },
+  "meta": {}
+}

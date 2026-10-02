@@ -16,6 +16,7 @@ import com.us.android.feature.dating.data.detailsAs
 import com.us.android.feature.dating.data.valueOrNull
 import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.DatingPersonDto
+import com.us.android.feature.dating.network.FairTurnDetailsDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.PulseCardDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
@@ -296,6 +297,8 @@ class PulseViewModel @Inject constructor(
         return copy(
             rewind = rewind?.toUi(),
             superSpark = superSpark?.toUi(),
+            // Mechanic M11: absent (flag off, or chat not reachable) is not paused.
+            fairTurn = allowances.fairTurn?.toUi(),
             superSparkBalance = superSpark?.purchasedBalance?.coerceAtLeast(0) ?: 0,
             // A mechanic switched off takes its pane with it.
             rewindLimit = rewindLimit.takeIf { rewind != null },
@@ -353,16 +356,24 @@ class PulseViewModel @Inject constructor(
         _deck.update { it.copy(rewindLimit = null) }
     }
 
-    fun spark(userId: String, note: String? = null): Boolean =
-        act(userId, DeckExit.SPARK) { sendSpark(userId, note, superSpark = false) }
+    /**
+     * A spark: the button and the swipe right. Held back without asking the
+     * server while fair turn (mechanic M11) has new sparks paused; the card
+     * springs back and the deck's notice says why.
+     */
+    fun spark(userId: String, note: String? = null): Boolean {
+        if (_deck.value.sparksPaused) return false
+        return act(userId, DeckExit.SPARK) { sendSpark(userId, note, superSpark = false) }
+    }
 
     /**
      * A Super Spark (mechanic M3): the button and the upward swipe. Refused
      * without asking the server while the mechanic is off — absent from the
-     * allowances read — which is also when the screen draws neither.
+     * allowances read — which is also when the screen draws neither; and,
+     * like a spark, while fair turn has new sparks paused.
      */
     fun superSpark(userId: String): Boolean {
-        if (!_deck.value.superSparkEnabled || userId.isBlank()) return false
+        if (!_deck.value.superSparkEnabled || _deck.value.sparksPaused || userId.isBlank()) return false
         return act(userId, DeckExit.SUPER_SPARK) { sendSpark(userId, note = null, superSpark = true) }
     }
 
@@ -394,6 +405,11 @@ class PulseViewModel @Inject constructor(
         when {
             // Each allowance has its own pane, not a line: the card comes back and stays.
             error.code == CODE_SPARK_RATE_LIMITED -> _deck.update { it.copy(sparkLimit = limit()) }
+            // Mechanic M11: replies are owed. The deck's own notice, not an error
+            // line; sendSpark reads the allowances again straight after.
+            error.code == CODE_FAIR_TURN_LIMIT -> _deck.update {
+                it.copy(fairTurn = error.detailsAs(repository.json, FairTurnDetailsDto.serializer()).toUi())
+            }
             superSpark && error.code == CODE_SUPER_SPARK_LIMIT -> _deck.update {
                 // The daily allowance is used AND no pack Super Spark is left.
                 it.copy(superSparkLimit = limit(), superSpark = it.superSpark?.copy(remaining = 0), superSparkBalance = 0)
@@ -590,6 +606,7 @@ class PulseViewModel @Inject constructor(
 
     private companion object {
         const val CODE_SPARK_RATE_LIMITED = "SPARK_RATE_LIMITED"
+        const val CODE_FAIR_TURN_LIMIT = "FAIR_TURN_LIMIT"
         const val CODE_SUPER_SPARK_LIMIT = "SUPER_SPARK_LIMIT_REACHED"
         const val CODE_REWIND_LIMIT = "REWIND_LIMIT_REACHED"
         const val CODE_NOTHING_TO_UNDO = "REWIND_NOTHING_TO_UNDO"

@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "FAIR_TURN_LIMIT",
+    "message": "reply to the matches waiting on you before sending new sparks",
+    "details": {
+      "limit": 6,
+      "owed": 6
+    }
+  },
+  "meta": {}
+}

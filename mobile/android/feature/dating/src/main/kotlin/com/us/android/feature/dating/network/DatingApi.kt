@@ -251,6 +251,26 @@ interface DatingApi {
     @PUT("v1/dating/read-receipts")
     suspend fun updateReadReceipts(@Body body: ReadReceiptsRequest): Response<ApiEnvelope<ReadReceiptsDto>>
 
+    // After-date check-ins (mechanic M14)
+
+    /** The "how did it go?" asks still waiting for the caller. 404 MECHANIC_NOT_ENABLED while the flag is off. */
+    @GET("v1/dating/date-checkins")
+    suspend fun dateCheckins(): Response<ApiEnvelope<List<DateCheckinDto>>>
+
+    /**
+     * The caller's answer about one of their matches, asked or not. 201 with
+     * `offer_report`; 400 INVALID_DATE_FEEDBACK, 429 DATE_FEEDBACK_LIMIT,
+     * 404 NOT_FOUND / MECHANIC_NOT_ENABLED.
+     */
+    @POST("v1/dating/matches/{id}/date-feedback")
+    suspend fun dateFeedback(@Path("id") matchId: String, @Body body: DateFeedbackRequest): Response<ApiEnvelope<DateFeedbackDto>>
+
+    // Past matches (mechanic M19)
+
+    /** NOT the envelope's meta: `{data:[...], meta:{window_days}}`. 404 MECHANIC_NOT_ENABLED while the flag is off. */
+    @GET("v1/dating/past-matches")
+    suspend fun pastMatches(): Response<PastMatchesDto>
+
     // Safety
 
     @POST("v1/dating/safety/block")

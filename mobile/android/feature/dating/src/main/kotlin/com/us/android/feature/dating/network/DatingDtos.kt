@@ -250,6 +250,13 @@ data class PreferencesDto(
      * filters flag is off — the app then keeps its older screens.
      */
     @SerialName("pass_filters") val passFilters: PassFiltersDto? = null,
+    /**
+     * Mechanic M12: the preferences the person made dealbreakers, as codes
+     * (age, distance, intent; with a pass verified, height, languages,
+     * drinking, smoking, exercise, diet). PRESENT, possibly empty, only while
+     * the server's dealbreakers flag is on: null means the mechanic is off.
+     */
+    val dealbreakers: List<String>? = null,
 )
 
 /**
@@ -283,6 +290,11 @@ data class PreferencesRequest(
     @SerialName("distance_bucket") val distanceBucket: String? = null,
     /** Mechanic M6, flag on only: the WHOLE pass filter set, replaced as one. */
     @SerialName("pass_filters") val passFilters: PassFiltersRequest? = null,
+    /**
+     * Mechanic M12, flag on only: the WHOLE dealbreaker list, replaced as one;
+     * `[]` clears it. A pass code without a pass is `403 DEALBREAKERS_REQUIRE_PASS`.
+     */
+    val dealbreakers: List<String>? = null,
 )
 
 /**
@@ -655,6 +667,28 @@ data class AllowancesDto(
     val deck: AllowanceDto? = null,
     val rewind: AllowanceDto? = null,
     @SerialName("super_spark") val superSpark: SuperSparkAllowanceDto? = null,
+    /** Mechanic M11: absent while the server's fair-turn flag is off, or when chat could not be asked. */
+    @SerialName("fair_turn") val fairTurn: FairTurnDto? = null,
+)
+
+/**
+ * Fair turn (mechanic M11): how many matches wait on the caller's reply.
+ * [paused]: new sparks (a Super Spark included) are refused until [owed] drops
+ * below [limit]. Accepting a spark, sparking back someone who sparked you, and
+ * passing are never paused.
+ */
+@Serializable
+data class FairTurnDto(
+    val owed: Int = 0,
+    val limit: Int = 0,
+    val paused: Boolean = false,
+)
+
+/** `details` of `409 FAIR_TURN_LIMIT`. */
+@Serializable
+data class FairTurnDetailsDto(
+    val limit: Int = 0,
+    val owed: Int = 0,
 )
 
 /**
@@ -820,6 +854,85 @@ data class ReadReceiptsDto(
 /** `PUT /read-receipts`. Turning it on needs a pass (`403 READ_RECEIPTS_REQUIRE_PASS`); off always works. */
 @Serializable
 data class ReadReceiptsRequest(val enabled: Boolean)
+
+// ── After-date check-ins (mechanic M14; fixtures date_checkins_*, date_feedback_*) ─
+
+/**
+ * The other person on a check-in or a past match: an id and a first name
+ * only. Go omits the name when there is none (a deleted profile).
+ */
+@Serializable
+data class PastMatchPersonDto(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("first_name") val firstName: String = "",
+)
+
+/** One row of `GET /date-checkins`: a "how did it go?" still waiting for the caller's answer. */
+@Serializable
+data class DateCheckinDto(
+    @SerialName("match_id") val matchId: String = "",
+    @SerialName("meet_id") val meetId: String = "",
+    val person: PastMatchPersonDto = PastMatchPersonDto(),
+    @SerialName("asked_at") val askedAt: String = "",
+)
+
+/**
+ * `POST /matches/:id/date-feedback`. [met] is yes | no | not_yet; [again]
+ * (yes | no | unsure) and [feltSafe] only follow met=yes, and null leaves
+ * them out of the body.
+ */
+@Serializable
+data class DateFeedbackRequest(
+    val met: String,
+    val again: String? = null,
+    @SerialName("felt_safe") val feltSafe: Boolean? = null,
+)
+
+/** The 201. [offerReport]: they did not feel safe, and the app offers the report flow. */
+@Serializable
+data class DateFeedbackDto(
+    @SerialName("match_id") val matchId: String = "",
+    val met: String = "",
+    val again: String? = null,
+    @SerialName("felt_safe") val feltSafe: Boolean? = null,
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("offer_report") val offerReport: Boolean = false,
+)
+
+/** `details` of `400 INVALID_DATE_FEEDBACK`: the allowed answers for each question. */
+@Serializable
+data class DateFeedbackRefusalDetailsDto(
+    val field: String = "",
+    val met: List<String> = emptyList(),
+    val again: List<String> = emptyList(),
+)
+
+// ── Past matches (mechanic M19; fixtures past_matches_*) ───────────────────
+
+/**
+ * `GET /past-matches` — NOT the envelope's meta: its own `{data, meta}`,
+ * meta carrying the window. Matches that ended within [PastMatchesMetaDto.windowDays].
+ */
+@Serializable
+data class PastMatchesDto(
+    val data: List<PastMatchDto> = emptyList(),
+    val meta: PastMatchesMetaDto? = null,
+)
+
+@Serializable
+data class PastMatchesMetaDto(@SerialName("window_days") val windowDays: Int = 0)
+
+@Serializable
+data class PastMatchDto(
+    @SerialName("match_id") val matchId: String = "",
+    val person: PastMatchPersonDto = PastMatchPersonDto(),
+    @SerialName("matched_at") val matchedAt: String = "",
+    @SerialName("ended_at") val endedAt: String = "",
+    /** unmatched | blocked | expired | closed */
+    val ended: String = "",
+    /** The caller has already reported this person. */
+    val reported: Boolean = false,
+)
 
 /**
  * The caller's view of a first-move match (`service.FirstMoveView`).

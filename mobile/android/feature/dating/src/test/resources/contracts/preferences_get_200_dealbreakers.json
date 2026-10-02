@@ -1,0 +1,17 @@
+{
+  "data": {
+    "user_id": "<viewer>",
+    "min_age": 25,
+    "max_age": 35,
+    "distance_km": 25,
+    "interested_in_gender": "<gender>",
+    "intent_filter": [],
+    "blur_mode_pref": false,
+    "language_filter": [],
+    "updated_at": "<timestamp>",
+    "dealbreakers": [
+      "age",
+      "intent"
+    ]
+  }
+}

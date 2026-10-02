@@ -1,6 +1,8 @@
 package com.us.android.feature.dating.home
 
 import com.us.android.feature.dating.network.AllowanceDto
+import com.us.android.feature.dating.network.FairTurnDetailsDto
+import com.us.android.feature.dating.network.FairTurnDto
 import com.us.android.feature.dating.network.PulseMetaDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
 import com.us.android.feature.dating.network.SuperSparkAllowanceDto
@@ -77,6 +79,11 @@ data class DeckUi(
     val travelEnabled: Boolean = false,
     /** The viewer's own trip in effect: the deck says whose city it is showing. */
     val trip: TripUi? = null,
+    /**
+     * Mechanic M11: replies the viewer owes, from `GET /allowances` or a
+     * `409 FAIR_TURN_LIMIT`. Null while the server sends none (its flag off).
+     */
+    val fairTurn: FairTurnUi? = null,
 ) {
     /** The server is counting cards for this viewer. */
     val metered: Boolean get() = dailyLimit > 0
@@ -89,7 +96,24 @@ data class DeckUi(
 
     /** The undo control is drawn: the mechanic is on and the last action was a pass the server took. */
     val canRewind: Boolean get() = rewind != null && rewindable != null
+
+    /**
+     * Mechanic M11: new sparks are paused until the viewer replies to some
+     * matches. Spark and Super Spark are held back on the deck; passing,
+     * saving and the Sparks tab (sparking back) carry on.
+     */
+    val sparksPaused: Boolean get() = fairTurn?.paused == true
 }
+
+/** Fair turn (mechanic M11) in display terms. A 0 means the server did not say. */
+data class FairTurnUi(val owed: Int, val limit: Int, val paused: Boolean)
+
+internal fun FairTurnDto.toUi(): FairTurnUi =
+    FairTurnUi(owed = owed.coerceAtLeast(0), limit = limit.coerceAtLeast(0), paused = paused)
+
+/** `409 FAIR_TURN_LIMIT`'s details: paused by definition, whatever the numbers say. */
+internal fun FairTurnDetailsDto?.toUi(): FairTurnUi =
+    FairTurnUi(owed = this?.owed?.coerceAtLeast(0) ?: 0, limit = this?.limit?.coerceAtLeast(0) ?: 0, paused = true)
 
 /** The allowance a `GET /pulse/today` meta carried, onto [current]. Absent, null, "" and 0 are all "none". */
 internal fun PulseMetaDto?.onto(current: DeckUi): DeckUi {
@@ -155,6 +179,21 @@ object DeckCopy {
             else -> "They come back soon."
         }
         return allowance + again + " You can still pass or save people for later."
+    }
+
+    // Mechanic M11 — fair turn. Calm: nobody did anything wrong.
+    const val FAIR_TURN_TITLE = "Your matches are waiting on you"
+    const val FAIR_TURN_ACTION = "Go to your matches"
+    const val FAIR_TURN_SPARK_HELD = "New sparks open again once you've replied."
+
+    /** The notice's body; the count only when the server sent one. */
+    fun fairTurnBody(fairTurn: FairTurnUi): String {
+        val waiting = when {
+            fairTurn.owed == 1 -> "1 match is waiting for your reply."
+            fairTurn.owed > 1 -> "${fairTurn.owed} matches are waiting for your reply."
+            else -> "Some of your matches are waiting for your reply."
+        }
+        return "$waiting Write back to a few of them and you can send new sparks again. You can still pass and save people for later."
     }
 
     const val UNDO = "Undo pass"

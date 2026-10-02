@@ -98,6 +98,7 @@ import com.us.android.feature.commerce.navigation.navigateToMStore
 import com.us.android.feature.dating.navigation.datingScreens
 import com.us.android.feature.dating.navigation.navigateToDating
 import com.us.android.feature.dating.navigation.navigateToDatingMatch
+import com.us.android.feature.dating.navigation.navigateToDatingSafety
 import com.us.android.feature.dating.navigation.navigateToDatingSparks
 import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.feast.checkout.FeastPaymentRequest
@@ -527,9 +528,13 @@ private fun NavHostController.openPushDestination(
         PushDestinations.TYPE_DATING_MATCH,
         PushDestinations.TYPE_DATING_MESSAGE,
         PushDestinations.TYPE_DATING_FIRST_MESSAGE,
+        PushDestinations.TYPE_DATING_SCAM_ALERT,
+        PushDestinations.TYPE_DATING_DATE_CHECKIN,
         -> when (val target = PushDestinations.datingTargetOf(destination)) {
             DatingPushTarget.IncomingSparks -> navigateToDatingSparks()
-            is DatingPushTarget.Match -> navigateToDatingMatch(target.matchId, openChat = target.openChat)
+            DatingPushTarget.Safety -> navigateToDatingSafety()
+            is DatingPushTarget.Match ->
+                navigateToDatingMatch(target.matchId, openChat = target.openChat, checkIn = target.checkIn)
             null -> Unit
         }
         // Mopedu (2026-09-18): every ride push opens the ride screen, which

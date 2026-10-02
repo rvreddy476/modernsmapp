@@ -94,9 +94,27 @@ object DatingCopy {
             "INVALID_TRAVEL_DAYS" -> travelDays(error, json)
             // Mechanic M9 — in-match extras.
             "READ_RECEIPTS_REQUIRE_PASS" -> READ_RECEIPTS_REQUIRE_PASS
+            // Mechanic M11 — fair turn. The deck shows its own notice; other
+            // surfaces that spark (picks, a profile) say this line.
+            "FAIR_TURN_LIMIT" -> FAIR_TURN_LIMIT
+            // Mechanic M12 — dealbreakers.
+            "DEALBREAKERS_REQUIRE_PASS" -> DEALBREAKERS_REQUIRE_PASS
+            "INVALID_DEALBREAKER" -> "One of those dealbreakers isn't available any more. Check your choices and try again."
+            // Mechanic M14 — after-date check-ins.
+            "INVALID_DATE_FEEDBACK" -> "That answer couldn't be saved. Check your choices and try again."
+            "DATE_FEEDBACK_LIMIT" -> DATE_FEEDBACK_LIMIT
             else -> GENERIC
         }
     }
+
+    /** `409 FAIR_TURN_LIMIT` anywhere but the deck. */
+    const val FAIR_TURN_LIMIT = "A few of your matches are waiting on a reply. Answer them, then you can send new sparks."
+
+    /** `403 DEALBREAKERS_REQUIRE_PASS`: a pass dealbreaker was set without a pass. */
+    const val DEALBREAKERS_REQUIRE_PASS = "Those dealbreakers come with a Premium pass."
+
+    /** `429 DATE_FEEDBACK_LIMIT`: this date was already answered. */
+    const val DATE_FEEDBACK_LIMIT = "You've already told us how this one went. Thank you."
 
     /** `403 READ_RECEIPTS_REQUIRE_PASS`: read receipts were turned on without a pass. */
     const val READ_RECEIPTS_REQUIRE_PASS = "Read receipts come with a Premium pass."

@@ -95,8 +95,10 @@ fun DatingHomeScreen(
     picks: PicksViewModel = hiltViewModel(),
     sparks: LikedYouViewModel = hiltViewModel(),
     matches: MatchesViewModel = hiltViewModel(),
+    checkIns: DateCheckInViewModel = hiltViewModel(),
 ) {
     var chosen by rememberSaveable { mutableStateOf(initialTab) }
+    val checkIn by checkIns.state.collectAsStateWithLifecycle()
     val picksVisible by picks.visible.collectAsStateWithLifecycle()
     val tabs = visibleTabs(picksVisible)
     // Picks switched off while chosen: back to the deck.
@@ -157,12 +159,15 @@ fun DatingHomeScreen(
         message = when (tab) {
             HomeTab.SPARKS -> sparksMessage
             HomeTab.PICKS -> picksMessage
+            // Mechanic M14: the check-in's answer and report lines.
+            HomeTab.MATCHES -> checkIn.message ?: pulseMessage
             else -> pulseMessage
         },
         onDismissMessage = {
             when (tab) {
                 HomeTab.SPARKS -> sparks.dismissMessage()
                 HomeTab.PICKS -> picks.dismissMessage()
+                HomeTab.MATCHES -> if (checkIn.message != null) checkIns.dismissMessage() else pulse.dismissMessage()
                 else -> pulse.dismissMessage()
             }
         },
@@ -194,10 +199,10 @@ fun DatingHomeScreen(
             }
             Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
                 when (tab) {
-                    HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson, onOpenPremium, onOpenTravel)
+                    HomeTab.PULSE -> PulseDeck(pulse, onOpenPerson, onOpenPremium, onOpenTravel, onOpenMatches = { chosen = HomeTab.MATCHES })
                     HomeTab.PICKS -> PicksTab(picks, onOpenPerson)
                     HomeTab.SPARKS -> LikedYouGrid(sparks, onOpenPerson, onOpenPremium)
-                    HomeTab.MATCHES -> MatchesList(matches, onOpenMatch)
+                    HomeTab.MATCHES -> MatchesList(matches, checkIns, checkIn, onOpenMatch)
                 }
             }
         }
@@ -222,20 +227,33 @@ internal fun SuperSparkMark() {
 const val SUPER_SPARK_MARK = "Sent you a Super Spark"
 
 @Composable
-private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Unit) {
-    LaunchedEffect(Unit) { viewModel.refresh() }
+private fun MatchesList(
+    viewModel: MatchesViewModel,
+    checkIns: DateCheckInViewModel,
+    checkIn: DateCheckInUi,
+    onOpenMatch: (String) -> Unit,
+) {
+    LaunchedEffect(Unit) {
+        viewModel.refresh()
+        checkIns.shown()
+    }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val now by rememberNow()
+    // Mechanic M14: the "How did it go?" asks sit above the matches; none while the mechanic is off.
+    val prompts = if (checkIn.available) checkIn.prompts else emptyList()
     when (val s = state) {
         ListState.Loading -> LoadingPane()
         is ListState.Failed -> MessagePane(title = "Matches didn't load", body = s.message, primaryLabel = "Try again", onPrimary = viewModel::refresh)
-        is ListState.Items -> if (s.items.isEmpty()) {
+        is ListState.Items -> if (s.items.isEmpty() && prompts.isEmpty()) {
             MessagePane(title = "No matches yet", body = "When you and someone both spark, you'll match here.", icon = UsIcons.HeartHandshake)
         } else {
             LazyColumn(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.l),
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
+                items(prompts, key = { "checkin-${it.matchId}" }) { target ->
+                    CheckInCard(target, onOpen = { checkIns.open(target) })
+                }
                 items(s.items, key = { it.matchId }) { match ->
                     DatingCard(onClick = { onOpenMatch(match.matchId) }) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
@@ -271,6 +289,7 @@ private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Un
             }
         }
     }
+    CheckInSheets(checkIn, checkIns)
 }
 
 /**
@@ -302,8 +321,10 @@ fun MatchDetailScreen(
     onShareLocation: (recipientId: String) -> Unit,
     onStartCall: (peerUserId: String, peerName: String, video: Boolean, conversationId: String) -> Unit = { _, _, _, _ -> },
     viewModel: MatchDetailViewModel = hiltViewModel(),
+    checkIns: DateCheckInViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val checkIn by checkIns.state.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val call by viewModel.call.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
@@ -336,8 +357,20 @@ fun MatchDetailScreen(
     }
     // Shown again — back from the chat, where a first message may have opened calls.
     LaunchedEffect(Unit) { viewModel.shown() }
+    // Mechanic M14: who this match is with, so a `?checkin=1` link can open the sheet.
+    val loadedMatch = (state as? MatchDetailState.Loaded)?.match
+    LaunchedEffect(loadedMatch?.matchId, loadedMatch?.otherUserId, loadedMatch?.name) {
+        loadedMatch?.let { checkIns.matchKnown(it.checkInTarget()) }
+    }
+    // A report from the check-in blocked them: the match is read again, and ends.
+    LaunchedEffect(checkIn.reported) { if (checkIn.reported > 0) viewModel.shown() }
 
-    DatingScreen(title = "Match", onBack = onBack, message = message, onDismissMessage = viewModel::dismissMessage) { padding ->
+    DatingScreen(
+        title = "Match",
+        onBack = onBack,
+        message = message ?: checkIn.message,
+        onDismissMessage = { if (message != null) viewModel.dismissMessage() else checkIns.dismissMessage() },
+    ) { padding ->
         when (val s = state) {
             MatchDetailState.Loading -> LoadingPane()
             is MatchDetailState.Gone -> MessagePane(title = s.message, body = "", primaryLabel = "Back", onPrimary = onBack)
@@ -396,6 +429,14 @@ fun MatchDetailScreen(
                     MatchCalls.NONE -> Unit
                 }
                 UsSecondaryButton(text = "Share my live location", onClick = { onShareLocation(s.match.otherUserId) }, modifier = Modifier.fillMaxWidth())
+                // Mechanic M14: tell us how a date went, asked or not. Nothing while the mechanic is off.
+                if (checkIn.available) {
+                    UsSecondaryButton(
+                        text = CheckInCopy.MATCH_ENTRY,
+                        onClick = { checkIns.open(s.match.checkInTarget()) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 UsSecondaryButton(text = "Unmatch", onClick = { confirmUnmatch = true }, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
                     UsSecondaryButton(text = "Report", onClick = { reporting = true }, modifier = Modifier.weight(1f))
@@ -443,7 +484,11 @@ fun MatchDetailScreen(
             onDismiss = { reporting = false },
         )
     }
+    CheckInSheets(checkIn, checkIns)
 }
+
+/** The match as a check-in is about it. */
+internal fun MatchUi.checkInTarget(): CheckInTarget = CheckInTarget(matchId = matchId, userId = otherUserId, name = name)
 
 /** A secondary action with its icon: the outline and colours of [UsSecondaryButton]. */
 @Composable

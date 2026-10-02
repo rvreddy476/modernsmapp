@@ -15,6 +15,10 @@ import com.us.android.feature.dating.network.ConsentRequest
 import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.DataExportDto
 import com.us.android.feature.dating.network.DatingApi
+import com.us.android.feature.dating.network.DateCheckinDto
+import com.us.android.feature.dating.network.DateFeedbackDto
+import com.us.android.feature.dating.network.DateFeedbackRequest
+import com.us.android.feature.dating.network.PastMatchesDto
 import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
@@ -271,6 +275,16 @@ class DatingRepository @Inject constructor(
     /** Turns read receipts on (needs a pass) or off (always allowed). */
     suspend fun setReadReceipts(enabled: Boolean): DatingResult<ReadReceiptsDto> =
         call { api.updateReadReceipts(ReadReceiptsRequest(enabled)) }
+
+    /** The "how did it go?" asks waiting for the caller (mechanic M14). */
+    suspend fun dateCheckins(): DatingResult<List<DateCheckinDto>> = list { api.dateCheckins() }
+
+    /** The caller's answer about [matchId]: [again] and [feltSafe] only after met=yes; null leaves them out. */
+    suspend fun dateFeedback(matchId: String, met: String, again: String?, feltSafe: Boolean?): DatingResult<DateFeedbackDto> =
+        call { api.dateFeedback(matchId, DateFeedbackRequest(met = met, again = again, feltSafe = feltSafe)) }
+
+    /** Matches that ended recently, so someone from one can still be reported (mechanic M19). */
+    suspend fun pastMatches(): DatingResult<PastMatchesDto> = datingRawCall(json) { api.pastMatches() }
 
     suspend fun block(userId: String): DatingResult<BlockedDto> = call { api.block(BlockRequest(userId)) }
 

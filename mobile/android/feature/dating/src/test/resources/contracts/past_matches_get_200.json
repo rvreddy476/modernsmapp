@@ -1,0 +1,18 @@
+{
+  "data": [
+    {
+      "match_id": "<match>",
+      "person": {
+        "user_id": "<other>",
+        "first_name": "Asha"
+      },
+      "matched_at": "<timestamp>",
+      "ended_at": "<timestamp>",
+      "ended": "unmatched",
+      "reported": false
+    }
+  ],
+  "meta": {
+    "window_days": 30
+  }
+}

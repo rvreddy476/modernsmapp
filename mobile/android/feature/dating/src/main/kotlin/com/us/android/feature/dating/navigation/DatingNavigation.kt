@@ -49,8 +49,12 @@ data object DatingGraph
 @Serializable
 data class DatingRootRoute(val tab: String = HomeTab.PULSE.name)
 
+/**
+ * One match. [checkIn] opens the after-date check-in sheet once the match is
+ * known (mechanic M14) — the `?checkin=1` on a check-in push's deep link.
+ */
 @Serializable
-data class DatingMatchRoute(val matchId: String, val openChat: Boolean = false)
+data class DatingMatchRoute(val matchId: String, val openChat: Boolean = false, val checkIn: Boolean = false)
 
 /** Someone else's card, with the pre-match detail the server allows. */
 @Serializable
@@ -273,5 +277,21 @@ fun NavController.navigateToDating() = navigate(DatingGraph)
 /** A spark push: Dating's home on the incoming sparks tab. */
 fun NavController.navigateToDatingSparks() = navigate(DatingRootRoute(tab = HomeTab.SPARKS.name))
 
-/** A match push; [openChat] continues into the conversation once the match loads. */
-fun NavController.navigateToDatingMatch(matchId: String, openChat: Boolean) = navigate(DatingMatchRoute(matchId, openChat))
+/**
+ * A match push; [openChat] continues into the conversation once the match
+ * loads; [checkIn] opens the after-date check-in sheet (mechanic M14).
+ */
+fun NavController.navigateToDatingMatch(matchId: String, openChat: Boolean, checkIn: Boolean = false) =
+    navigate(DatingMatchRoute(matchId, openChat, checkIn))
+
+/** The safety centre, as a scam-alert push (mechanic M17, deep link `/dating/safety`) opens it. */
+fun NavController.navigateToDatingSafety() = navigate(DatingSafetyRoute())
+
+/**
+ * Whether a dating deep link asks for the after-date check-in: the
+ * `checkin=1` query on `/dating/matches/{id}?checkin=1` (mechanic M14). Pure.
+ */
+fun datingCheckInRequested(deepLink: String?): Boolean {
+    val query = deepLink?.substringAfter('?', missingDelimiterValue = "")?.substringBefore('#').orEmpty()
+    return query.split('&').any { it.trim() == "checkin=1" }
+}
