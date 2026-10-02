@@ -49,6 +49,11 @@ type MechanicsConfig struct {
 
 	// Picks (DATING_PICKS_ENABLED): up to ten curated profiles a day.
 	Picks bool
+	// PicksMutual (DATING_PICKS_MUTUAL_ENABLED): a pick must also fit what
+	// the picked person is looking for, and nobody is picked for more than
+	// PicksExposureCap people a day (picks.go, mutualPicks).
+	PicksMutual      bool
+	PicksExposureCap int
 
 	// Travel (DATING_TRAVEL_ENABLED): a pass holder browses another city for
 	// up to seven days.
@@ -72,6 +77,8 @@ func DefaultMechanicsConfig() MechanicsConfig {
 
 		SuperSparkDailyLimitFree: DefaultSuperSparkDailyLimitFree,
 		SuperSparkDailyLimitPass: DefaultSuperSparkDailyLimitPass,
+
+		PicksExposureCap: DefaultPicksExposureCap,
 	}
 }
 
@@ -93,6 +100,9 @@ func (s *Service) SetMechanicsConfig(cfg MechanicsConfig) {
 	}
 	if cfg.SuperSparkDailyLimitPass <= 0 {
 		cfg.SuperSparkDailyLimitPass = d.SuperSparkDailyLimitPass
+	}
+	if cfg.PicksExposureCap <= 0 {
+		cfg.PicksExposureCap = d.PicksExposureCap
 	}
 	s.mechanics = cfg
 	if s.store != nil {

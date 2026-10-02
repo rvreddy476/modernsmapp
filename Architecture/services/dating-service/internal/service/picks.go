@@ -7,6 +7,8 @@
 // day (the client's IANA time zone, Asia/Kolkata by default) and refreshed
 // at local midnight. Every read re-checks visibility, so a block, a pause or
 // an action takes a pick out at once. Acting on a pick spends no deck card.
+// With DATING_PICKS_MUTUAL_ENABLED a pick must also suit the picked person,
+// and attention is spread out (mutualPicks).
 package service
 
 import (
@@ -24,6 +26,10 @@ import (
 
 // MaxDailyPicks is the most picks a day holds.
 const MaxDailyPicks = 10
+
+// DefaultPicksExposureCap is how many people's picks one person may be in
+// per day while mutual picks are on (DATING_PICKS_EXPOSURE_CAP).
+const DefaultPicksExposureCap = 30
 
 // DefaultPicksTimezone is used when the client sends none.
 const DefaultPicksTimezone = "Asia/Kolkata"
@@ -99,7 +105,7 @@ func (s *Service) GetDailyPicks(ctx context.Context, viewerID uuid.UUID, tz stri
 		return nil, err
 	}
 	if !made {
-		ids, err := s.choosePicks(ctx, viewerID)
+		ids, err := s.choosePicks(ctx, viewerID, day)
 		if err != nil {
 			return nil, err
 		}
@@ -145,7 +151,7 @@ func (s *Service) GetDailyPicks(ctx context.Context, viewerID uuid.UUID, tz stri
 }
 
 // choosePicks makes the day's selection.
-func (s *Service) choosePicks(ctx context.Context, viewerID uuid.UUID) ([]uuid.UUID, error) {
+func (s *Service) choosePicks(ctx context.Context, viewerID uuid.UUID, day time.Time) ([]uuid.UUID, error) {
 	viewerProfile, err := s.viewerProfile(ctx, viewerID)
 	if err != nil && !errors.Is(err, store.ErrProfileNotFound) {
 		return nil, err
@@ -184,6 +190,11 @@ func (s *Service) choosePicks(ctx context.Context, viewerID uuid.UUID) ([]uuid.U
 	candidates, err := s.store.FetchCandidates(ctx, q)
 	if err != nil {
 		return nil, err
+	}
+	if s.mechanics.PicksMutual {
+		if candidates, err = s.mutualPicks(ctx, viewerProfile, candidates, day); err != nil {
+			return nil, err
+		}
 	}
 	// Keep picks apart from the deck's current batch.
 	inDeck := map[uuid.UUID]bool{}
@@ -231,4 +242,88 @@ func (s *Service) choosePicks(ctx context.Context, viewerID uuid.UUID) ([]uuid.U
 		out[i] = p.id
 	}
 	return out, nil
+}
+
+// mutualPicks (DATING_PICKS_MUTUAL_ENABLED) keeps the candidates who would
+// see the viewer too, and spreads picks out. It is the cheap form of stable
+// matching (deferred acceptance), done per viewer rather than as a nightly
+// batch:
+//   - each candidate's own preferences must admit the viewer: their age
+//     range, their intents, their distance and their verified-only toggle
+//     (the gender rule already runs both ways in FetchCandidates);
+//   - nobody already in PicksExposureCap people's picks for the day is
+//     picked again, so the most-liked profiles are not everyone's picks.
+//
+// The cap is soft: two selections made at the same moment can both count
+// the same total and pass it by one.
+func (s *Service) mutualPicks(ctx context.Context, viewer *store.Profile, candidates []store.CandidateProfile, day time.Time) ([]store.CandidateProfile, error) {
+	if len(candidates) == 0 {
+		return candidates, nil
+	}
+	ids := make([]uuid.UUID, len(candidates))
+	for i := range candidates {
+		ids[i] = candidates[i].UserID
+	}
+	wants, err := s.store.PickReciprocities(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	seen, err := s.store.PickExposure(ctx, ids, day)
+	if err != nil {
+		return nil, err
+	}
+	age, intent, verified := 0, "", false
+	var lat, lon *float64
+	if viewer != nil {
+		if viewer.BirthDate != nil {
+			age = store.AgeOn(*viewer.BirthDate, time.Now())
+		}
+		intent, verified = viewer.Intent, verifiedTier(viewer.TrustTier)
+		lat, lon = viewer.Latitude, viewer.Longitude
+	}
+	out := make([]store.CandidateProfile, 0, len(candidates))
+	for _, c := range candidates {
+		if seen[c.UserID] >= s.mechanics.PicksExposureCap {
+			continue
+		}
+		w := wants[c.UserID]
+		if !admitsViewer(w, age, intent, verified, lat, lon, c.Latitude, c.Longitude) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// admitsViewer reports whether a candidate's own preferences w let the
+// viewer through. An unset bound admits anyone; an unknown viewer age or
+// location is given the benefit of the doubt, as the deck does.
+func admitsViewer(w store.PickReciprocity, age int, intent string, verified bool, vLat, vLon, cLat, cLon *float64) bool {
+	if age > 0 && ((w.MinAge > 0 && age < w.MinAge) || (w.MaxAge > 0 && age > w.MaxAge)) {
+		return false
+	}
+	if len(w.IntentFilter) > 0 && intent != "" {
+		ok := false
+		for _, want := range w.IntentFilter {
+			if want == intent {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	if w.VerifiedOnly && !verified {
+		return false
+	}
+	km := w.DistanceKm
+	if km <= 0 {
+		km = 25 // the default radius, as in choosePicks
+	}
+	if radius := store.EffectiveDiscoveryRadiusKm(km); vLat != nil && vLon != nil && cLat != nil && cLon != nil &&
+		store.SnappedDistanceKm(*vLat, *vLon, *cLat, *cLon) >= float64(radius) {
+		return false
+	}
+	return true
 }

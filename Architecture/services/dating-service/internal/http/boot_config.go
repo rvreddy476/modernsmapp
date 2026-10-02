@@ -445,6 +445,8 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_FIRST_MOVE_ENABLED           first move + opening questions (M5)
 //	DATING_FILTERS_V2_ENABLED           distance buckets + pass filters (M6)
 //	DATING_PICKS_ENABLED                daily picks (M7)
+//	DATING_PICKS_MUTUAL_ENABLED         picks must suit both people, spread out
+//	DATING_PICKS_EXPOSURE_CAP           1-10000, default 30 picks per person a day
 //	DATING_TRAVEL_ENABLED               travel mode (M8)
 //	DATING_READ_RECEIPTS_ENABLED        read receipts for pass holders (M9)
 //	DATING_CALL_AFTER_EXCHANGE_ENABLED  calls only after both wrote (M9)
@@ -488,6 +490,12 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 		return cfg, err
 	}
 	if cfg.Picks, err = envFlag(getenv, "DATING_PICKS_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.PicksMutual, err = envFlag(getenv, "DATING_PICKS_MUTUAL_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_PICKS_EXPOSURE_CAP", 1, 10000, &cfg.PicksExposureCap); err != nil {
 		return cfg, err
 	}
 	if cfg.Travel, err = envFlag(getenv, "DATING_TRAVEL_ENABLED", def); err != nil {
