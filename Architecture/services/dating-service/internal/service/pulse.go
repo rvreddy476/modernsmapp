@@ -443,6 +443,8 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	if err != nil {
 		return nil, fmt.Errorf("fetch candidates: %w", err)
 	}
+	// Mechanic M12: their dealbreakers apply to the viewer.
+	candidates = s.dropByTheirDealbreakers(ctx, viewerProfile, candidates)
 
 	// 4. Score each candidate and apply the diversity constraint.
 	provider := s.graphProvider

@@ -80,6 +80,8 @@ type PreferencesView struct {
 	*store.Preferences
 	DistanceBucket string           `json:"distance_bucket,omitempty"`
 	PassFilters    *PassFiltersView `json:"pass_filters,omitempty"`
+	// Dealbreakers (M12): present, possibly empty, while that flag is on.
+	Dealbreakers *[]string `json:"dealbreakers,omitempty"`
 }
 
 // PassFiltersInput is the "pass_filters" member of PUT /preferences.
@@ -99,6 +101,8 @@ type PreferencesInput struct {
 	store.UpsertPreferencesParams
 	DistanceBucket *string           `json:"distance_bucket,omitempty"`
 	PassFilters    *PassFiltersInput `json:"pass_filters,omitempty"`
+	// Dealbreakers (M12) replaces the list when present.
+	Dealbreakers *[]string `json:"dealbreakers,omitempty"`
 }
 
 func nonNil(v []string) []string {
@@ -127,6 +131,13 @@ func (s *Service) GetPreferencesView(ctx context.Context, userID uuid.UUID) (*Pr
 		return nil, err
 	}
 	out := &PreferencesView{Preferences: prefs}
+	if s.mechanics.Dealbreakers {
+		codes, err := s.store.GetDealbreakers(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		out.Dealbreakers = &codes
+	}
 	if !s.mechanics.FiltersV2 {
 		return out, nil
 	}
@@ -146,6 +157,18 @@ func (s *Service) GetPreferencesView(ctx context.Context, userID uuid.UUID) (*Pr
 func (s *Service) PutPreferences(ctx context.Context, userID uuid.UUID, in PreferencesInput) (*PreferencesView, error) {
 	if (in.DistanceBucket != nil || in.PassFilters != nil) && !s.mechanics.FiltersV2 {
 		return nil, ErrMechanicDisabled
+	}
+	if in.Dealbreakers != nil {
+		if !s.mechanics.Dealbreakers {
+			return nil, ErrMechanicDisabled
+		}
+		needsPass, err := validateDealbreakers(*in.Dealbreakers)
+		if err != nil {
+			return nil, err
+		}
+		if needsPass && !s.holdsPass(ctx, userID) {
+			return nil, ErrDealbreakersRequirePass
+		}
 	}
 	params := in.UpsertPreferencesParams
 	// The old language_filter field writes the same column as the pass
@@ -183,6 +206,11 @@ func (s *Service) PutPreferences(ctx context.Context, userID uuid.UUID, in Prefe
 			return nil, err
 		}
 		s.InvalidatePulseCache(ctx, userID)
+	}
+	if in.Dealbreakers != nil {
+		if err := s.store.SetDealbreakers(ctx, userID, *in.Dealbreakers); err != nil {
+			return nil, err
+		}
 	}
 	return s.GetPreferencesView(ctx, userID)
 }

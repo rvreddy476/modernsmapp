@@ -55,6 +55,10 @@ type MechanicsConfig struct {
 	PicksMutual      bool
 	PicksExposureCap int
 
+	// Dealbreakers (DATING_DEALBREAKERS_ENABLED): preferences marked as
+	// dealbreakers apply both ways (dealbreakers.go).
+	Dealbreakers bool
+
 	// Travel (DATING_TRAVEL_ENABLED): a pass holder browses another city for
 	// up to seven days.
 	Travel bool

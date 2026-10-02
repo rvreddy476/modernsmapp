@@ -191,6 +191,7 @@ func (s *Service) choosePicks(ctx context.Context, viewerID uuid.UUID, day time.
 	if err != nil {
 		return nil, err
 	}
+	candidates = s.dropByTheirDealbreakers(ctx, viewerProfile, candidates)
 	if s.mechanics.PicksMutual {
 		if candidates, err = s.mutualPicks(ctx, viewerProfile, candidates, day); err != nil {
 			return nil, err
@@ -264,7 +265,7 @@ func (s *Service) mutualPicks(ctx context.Context, viewer *store.Profile, candid
 	for i := range candidates {
 		ids[i] = candidates[i].UserID
 	}
-	wants, err := s.store.PickReciprocities(ctx, ids)
+	wants, err := s.store.TheirPreferencesOf(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -272,58 +273,16 @@ func (s *Service) mutualPicks(ctx context.Context, viewer *store.Profile, candid
 	if err != nil {
 		return nil, err
 	}
-	age, intent, verified := 0, "", false
-	var lat, lon *float64
-	if viewer != nil {
-		if viewer.BirthDate != nil {
-			age = store.AgeOn(*viewer.BirthDate, time.Now())
-		}
-		intent, verified = viewer.Intent, verifiedTier(viewer.TrustTier)
-		lat, lon = viewer.Latitude, viewer.Longitude
-	}
+	v := factsOf(viewer)
 	out := make([]store.CandidateProfile, 0, len(candidates))
 	for _, c := range candidates {
 		if seen[c.UserID] >= s.mechanics.PicksExposureCap {
 			continue
 		}
-		w := wants[c.UserID]
-		if !admitsViewer(w, age, intent, verified, lat, lon, c.Latitude, c.Longitude) {
+		if !admitsViewer(wants[c.UserID], v, c.Latitude, c.Longitude) {
 			continue
 		}
 		out = append(out, c)
 	}
 	return out, nil
-}
-
-// admitsViewer reports whether a candidate's own preferences w let the
-// viewer through. An unset bound admits anyone; an unknown viewer age or
-// location is given the benefit of the doubt, as the deck does.
-func admitsViewer(w store.PickReciprocity, age int, intent string, verified bool, vLat, vLon, cLat, cLon *float64) bool {
-	if age > 0 && ((w.MinAge > 0 && age < w.MinAge) || (w.MaxAge > 0 && age > w.MaxAge)) {
-		return false
-	}
-	if len(w.IntentFilter) > 0 && intent != "" {
-		ok := false
-		for _, want := range w.IntentFilter {
-			if want == intent {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-	if w.VerifiedOnly && !verified {
-		return false
-	}
-	km := w.DistanceKm
-	if km <= 0 {
-		km = 25 // the default radius, as in choosePicks
-	}
-	if radius := store.EffectiveDiscoveryRadiusKm(km); vLat != nil && vLon != nil && cLat != nil && cLon != nil &&
-		store.SnappedDistanceKm(*vLat, *vLon, *cLat, *cLon) >= float64(radius) {
-		return false
-	}
-	return true
 }

@@ -77,45 +77,6 @@ func (s *Store) SaveDailyPicks(ctx context.Context, userID uuid.UUID, day time.T
 	return tx.Commit(ctx)
 }
 
-// PickReciprocity is what a candidate is looking for, read for mutual picks.
-// Zero bounds mean "not set".
-type PickReciprocity struct {
-	MinAge       int
-	MaxAge       int
-	DistanceKm   int
-	IntentFilter []string
-	VerifiedOnly bool
-}
-
-// PickReciprocities returns each listed user's own preferences (age range,
-// distance, intents) and verified-only toggle. A user with no preferences
-// row gets zero bounds.
-func (s *Store) PickReciprocities(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]PickReciprocity, error) {
-	out := make(map[uuid.UUID]PickReciprocity, len(ids))
-	if len(ids) == 0 {
-		return out, nil
-	}
-	rows, err := s.db.Query(ctx, `
-        SELECT p.user_id, COALESCE(pr.min_age, 0), COALESCE(pr.max_age, 0), COALESCE(pr.distance_km, 0),
-               COALESCE(pr.intent_filter, '{}'), p.verified_only_filter
-        FROM dating_profiles p
-        LEFT JOIN dating_preferences pr ON pr.user_id = p.user_id
-        WHERE p.user_id = ANY($1::uuid[])`, ids)
-	if err != nil {
-		return nil, fmt.Errorf("pick reciprocity: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id uuid.UUID
-		var r PickReciprocity
-		if err := rows.Scan(&id, &r.MinAge, &r.MaxAge, &r.DistanceKm, &r.IntentFilter, &r.VerifiedOnly); err != nil {
-			return nil, err
-		}
-		out[id] = r
-	}
-	return out, rows.Err()
-}
-
 // PickExposure counts, for each listed user, how many people's picks they
 // are in for the local date day.
 func (s *Store) PickExposure(ctx context.Context, ids []uuid.UUID, day time.Time) (map[uuid.UUID]int, error) {

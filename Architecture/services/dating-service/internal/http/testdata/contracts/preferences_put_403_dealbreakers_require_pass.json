@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "DEALBREAKERS_REQUIRE_PASS",
+    "message": "these dealbreakers come with a pass"
+  },
+  "meta": {}
+}

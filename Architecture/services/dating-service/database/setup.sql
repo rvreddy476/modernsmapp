@@ -1668,3 +1668,14 @@ CREATE INDEX IF NOT EXISTS idx_dating_travel_geohash
 -- state in chat-service (conversation_members.first_sent_at).
 -- ---------------------------------------------------------------------------
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M12 — dealbreakers (DATING_DEALBREAKERS_ENABLED).
+--
+-- The preferences a user marked as dealbreakers: anyone who fails one is
+-- kept out of that user's deck and picks AND never shown that user.
+-- Codes: age, distance, intent (free); verified, height, languages,
+-- drinking, smoking, exercise, diet (pass).
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_preferences
+    ADD COLUMN IF NOT EXISTS dealbreakers TEXT[] NOT NULL DEFAULT '{}';

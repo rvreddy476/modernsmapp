@@ -513,6 +513,10 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		return
 	}
 	// Mechanic M6 — filters and the new profile fields.
+	if errors.Is(err, service.ErrDealbreakersRequirePass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "DEALBREAKERS_REQUIRE_PASS", "these dealbreakers come with a pass", nil)
+		return
+	}
 	if errors.Is(err, service.ErrFiltersRequirePass) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FILTERS_REQUIRE_PASS", "these filters come with a pass", nil)
 		return
