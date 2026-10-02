@@ -6,6 +6,9 @@ import com.us.android.core.feed.data.FeedItemHydrator
 import com.us.android.core.feed.data.HashtagPostHydrator
 import com.us.android.core.feed.data.SoundsApi
 import com.us.android.core.feed.data.VideoFeedApi
+import com.us.android.core.feed.data.VideoLibraryApi
+import com.us.android.core.feed.data.VideoLibraryRepository
+import com.us.android.core.feed.data.VideoLibraryWrites
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -33,6 +36,14 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideSoundsApi(retrofit: Retrofit): SoundsApi = retrofit.create(SoundsApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideVideoLibraryApi(retrofit: Retrofit): VideoLibraryApi = retrofit.create(VideoLibraryApi::class.java)
+
+    /** The store writes through the repository; tests hand it a fake. */
+    @Provides
+    fun provideVideoLibraryWrites(impl: VideoLibraryRepository): VideoLibraryWrites = impl
 
     /** The real hydrator behind the seam; tests bind the identity instead. */
     @Provides

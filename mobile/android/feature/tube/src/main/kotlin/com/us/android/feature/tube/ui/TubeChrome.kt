@@ -199,7 +199,7 @@ private fun HeaderCreate(onClick: () -> Unit) {
             Icon(
                 imageVector = UsIcons.Create,
                 contentDescription = null,
-                tint = Color.White,
+                tint = UsTheme.extended.textPrimary,
                 modifier = Modifier.size(CREATE_GLYPH),
             )
         }
@@ -215,7 +215,7 @@ private fun HeaderAction(icon: ImageVector, description: String, onClick: () -> 
         size = ACTION_TARGET,
         modifier = Modifier.testTag(tag),
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = Color.White)
+        Icon(imageVector = icon, contentDescription = null, tint = UsTheme.extended.textPrimary)
     }
 }
 
@@ -259,6 +259,8 @@ internal fun TubeWordmark(modifier: Modifier = Modifier) {
 @Composable
 private fun VideoMark(modifier: Modifier = Modifier) {
     val launcher = UsTheme.extended.launcher
+    // The mark is drawn in the text colour, so it reads on either theme's header.
+    val ink = UsTheme.extended.textPrimary
     val sweep = Brush.linearGradient(listOf(launcher.chat.glow, launcher.shop.glow))
     val body = remember { PathParser().parsePathString(VIDEO_MARK_BODY).toPath() }
     val play = remember { PathParser().parsePathString(VIDEO_MARK_PLAY).toPath() }
@@ -267,7 +269,7 @@ private fun VideoMark(modifier: Modifier = Modifier) {
         scale(scaleX = s, scaleY = s, pivot = Offset.Zero) {
             drawPath(
                 path = body,
-                color = Color.White,
+                color = ink,
                 style = Stroke(width = MARK_STROKE, cap = StrokeCap.Round, join = StrokeJoin.Round),
             )
             drawPath(path = play, brush = sweep)
@@ -328,8 +330,8 @@ fun TubeChipRail(
 @Composable
 private fun TubeChipPill(chip: TubeChip, active: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(UsTheme.radii.full)
-    val fill = if (active) Color.White else UsTheme.extended.glassBg
-    val outline = if (active) Color.White else UsTheme.extended.glassBorder
+    val fill = if (active) UsTheme.extended.textPrimary else UsTheme.extended.glassBg
+    val outline = if (active) UsTheme.extended.textPrimary else UsTheme.extended.glassBorder
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -349,7 +351,7 @@ private fun TubeChipPill(chip: TubeChip, active: Boolean, onClick: () -> Unit) {
             style = MaterialTheme.typography.labelLarge,
             fontSize = CHIP_TEXT,
             fontWeight = FontWeight.SemiBold,
-            color = if (active) UsTheme.extended.brandNavy else UsTheme.extended.textPrimary,
+            color = if (active) UsTheme.extended.bgCardSolid else UsTheme.extended.textPrimary,
             maxLines = 1,
         )
     }

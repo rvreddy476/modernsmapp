@@ -15,7 +15,7 @@ import org.junit.Test
  * "Which rows, for whom" is about which rows appear and says nothing about
  * order.
  *
- * Which rows — the rules that did not change:
+ * Which rows, on a FEED POST (unchanged):
  *
  *  - another person's post: Save, Copy link, Share; the feedback rows; the
  *    relationship row when the edge is known; Block and Report;
@@ -23,9 +23,12 @@ import org.junit.Test
  *    row that acts on "the author";
  *  - Unfollow only when the viewer follows, Follow only when they are
  *    known not to, neither while the edge is unknown;
- *  - "Why you're seeing this post" only when the server sent a sentence;
- *  - a reel adds Description, Clear screen or Show controls, Quality, and
- *    Use this sound when the host offers it.
+ *  - "Why you're seeing this post" only when the server sent a sentence.
+ *
+ * founder, 2026-10-02: a REEL and a LONG VIDEO show the web's rows and the
+ * web's words, and nothing else. The tests that pinned a reel as "the feed
+ * post's rows plus four" were changed deliberately; the two lists are
+ * pinned whole under their own headings below.
  *
  * And the report vocabulary: every label the reader can pick maps to the
  * token trust-safety stores, in the sheet's order.
@@ -62,7 +65,10 @@ class UsPostMoreRowsTest {
         canUseSound = canUseSound,
     )
 
-    private fun UsPostMoreState.labels(): List<String> = rows().map { it.menuLabel(username) }
+    private fun UsPostMoreState.labels(): List<String> = rows().map { labelOf(it) }
+
+    private fun longVideo(channel: String = "Clee Builds", shareHidden: Boolean = false) =
+        UsLongVideoMoreState(channelName = channel, shareHidden = shareHidden)
 
     // ── The order ───────────────────────────────────────────────────────
 
@@ -75,19 +81,21 @@ class UsPostMoreRowsTest {
                     val key = "$follow suggested=$suggested reason=${reason.isNotBlank()}"
                     put("a feed post, $key", post)
                     put("a saved feed post, $key", post.copy(isBookmarked = true))
-                    // Tube's watch screen: a video the viewer chose to open is never a suggestion.
-                    put("a long video, $key", post.copy(suggested = false))
+                    put("a long video, $key", post.copy(suggested = false, longVideo = longVideo()))
                     put("a reel, $key", post.copy(reel = reel(canUseSound = true)))
-                    put("a reel in full mode, $key", post.copy(reel = reel(fullMode = true, description = "")))
+                    put("a reel with no caption, $key", post.copy(reel = reel(description = "")))
                 }
             }
         }
         put("the viewer's own post", state(own = true))
         put("the viewer's own saved post", state(own = true, bookmarked = true))
         put("the viewer's own reel", state(own = true).copy(reel = reel(canUseSound = true)))
-        // Handles that would move a row if the label were compared by case, or without the handle.
+        put("the viewer's own long video", state(own = true).copy(longVideo = longVideo()))
+        put("a long video with sharing off", state().copy(longVideo = longVideo(shareHidden = true)))
+        // Names that would move a row if the label were compared by case, or without the name.
         put("an author named with capitals", state(username = "Zed", follow = UsPostMoreFollowRow.UNFOLLOW))
         put("an author named with a digit", state(username = "0x", follow = UsPostMoreFollowRow.FOLLOW))
+        put("a channel named with a lower-case letter", state().copy(longVideo = longVideo(channel = "zed tv")))
     }
 
     @Test
@@ -111,41 +119,80 @@ class UsPostMoreRowsTest {
         }
     }
 
-    /** The whole list, once, so the order is also readable: a reel by someone the viewer does not follow. */
+    /**
+     * The whole list, once, so the order is also readable: another person's
+     * reel. These are the web's rows and the web's words (founder,
+     * 2026-10-02); the web's Audio track, Auto scroll, Captions and Playback
+     * speed are absent because the Android reel player has no such setting.
+     */
     @Test
-    fun `another person's reel reads as one alphabetical list`() {
+    fun `another person's reel reads as the web's list, in alphabetical order`() {
         val labels = state(reason = "Trending").copy(reel = reel(canUseSound = true)).labels()
 
         assertThat(labels).containsExactly(
-            "Block @call_userb",
-            "Clear screen",
-            "Copy link",
             "Description",
-            "Don't recommend @call_userb",
-            "Follow",
-            "Interested",
+            "Don't recommend this channel",
             "Not interested",
             "Quality",
             "Report",
-            "Save",
-            "Share",
             "Use this sound",
-            "Why you're seeing this post",
         ).inOrder()
     }
 
-    /** The label SHOWN is what sorts: the rows about the author carry the handle. */
+    /** The web's watch page menu for a viewer: Block, Don't recommend, Not interested, Report, Share. */
+    @Test
+    fun `another person's long video reads as the web's list, in alphabetical order`() {
+        val labels = state(follow = UsPostMoreFollowRow.UNFOLLOW).copy(longVideo = longVideo()).labels()
+
+        assertThat(labels).containsExactly(
+            "Block Clee Builds",
+            "Don't recommend this channel",
+            "Not interested",
+            "Report",
+            "Share",
+        ).inOrder()
+    }
+
+    /** The label SHOWN is what sorts: on a feed post the rows about the author carry the handle. */
     @Test
     fun `a row about the author sorts by its own word, with the handle after it`() {
-        val labels = state(follow = UsPostMoreFollowRow.UNFOLLOW).copy(reel = reel(canUseSound = true)).labels()
+        val labels = state(follow = UsPostMoreFollowRow.UNFOLLOW).labels()
 
-        assertThat(labels).containsAtLeast("Share", "Unfollow @call_userb", "Use this sound").inOrder()
+        assertThat(labels).containsAtLeast("Share", "Unfollow @call_userb").inOrder()
         assertThat(labels.first()).isEqualTo("Block @call_userb")
         assertThat(UsPostMoreRow.DONT_RECOMMEND.menuLabel("ada")).isEqualTo("Don't recommend @ada")
         assertThat(UsPostMoreRow.UNFOLLOW.menuLabel("ada")).isEqualTo("Unfollow @ada")
         assertThat(UsPostMoreRow.BLOCK.menuLabel("ada")).isEqualTo("Block @ada")
         assertThat(UsPostMoreRow.FOLLOW.menuLabel("ada")).isEqualTo("Follow")
         assertThat(UsPostMoreRow.REPORT.menuLabel("ada")).isEqualTo("Report")
+    }
+
+    /** The same row reads differently by surface, and the sheet draws and sorts by what it reads. */
+    @Test
+    fun `the words are the web's on a reel and a long video, and the handle's on a feed post`() {
+        val post = state()
+        val onReel = state().copy(reel = reel())
+        val onVideo = state().copy(longVideo = longVideo())
+
+        assertThat(post.labelOf(UsPostMoreRow.DONT_RECOMMEND)).isEqualTo("Don't recommend @call_userb")
+        assertThat(onReel.labelOf(UsPostMoreRow.DONT_RECOMMEND)).isEqualTo("Don't recommend this channel")
+        assertThat(onVideo.labelOf(UsPostMoreRow.DONT_RECOMMEND)).isEqualTo("Don't recommend this channel")
+
+        assertThat(post.labelOf(UsPostMoreRow.BLOCK)).isEqualTo("Block @call_userb")
+        assertThat(onVideo.labelOf(UsPostMoreRow.BLOCK)).isEqualTo("Block Clee Builds")
+        // A channel with no name still names someone: the handle.
+        assertThat(state().copy(longVideo = longVideo(channel = "")).labelOf(UsPostMoreRow.BLOCK))
+            .isEqualTo("Block @call_userb")
+
+        assertThat(state(own = true).labelOf(UsPostMoreRow.DELETE)).isEqualTo("Delete post")
+        assertThat(state(own = true).copy(longVideo = longVideo()).labelOf(UsPostMoreRow.DELETE)).isEqualTo("Delete")
+    }
+
+    @Test
+    fun `the sheet knows which of the three menus it is`() {
+        assertThat(state().surface).isEqualTo(UsPostMoreSurface.POST)
+        assertThat(state().copy(reel = reel()).surface).isEqualTo(UsPostMoreSurface.REEL)
+        assertThat(state().copy(longVideo = longVideo()).surface).isEqualTo(UsPostMoreSurface.LONG_VIDEO)
     }
 
     /** Destructive rows keep their place in the alphabet: red is a colour, not a position. */
@@ -199,10 +246,15 @@ class UsPostMoreRowsTest {
             val own = state(own = true, follow = follow).rows()
             assertThat(own).containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
         }
-        // A reel changes nothing about it: the reel's rows are about the frame, not the author.
-        assertThat(state(own = false).copy(reel = reel()).rows())
+        // A reel offers Report on another person's reel and never Block (the web's menu, 2026-10-02);
+        // a long video offers both. The viewer's own has neither, on any surface.
+        assertThat(state(own = false).copy(reel = reel()).rows()).contains(UsPostMoreRow.REPORT)
+        assertThat(state(own = false).copy(reel = reel()).rows()).doesNotContain(UsPostMoreRow.BLOCK)
+        assertThat(state(own = false).copy(longVideo = longVideo()).rows())
             .containsAtLeast(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
         assertThat(state(own = true).copy(reel = reel()).rows())
+            .containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
+        assertThat(state(own = true).copy(longVideo = longVideo()).rows())
             .containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
     }
 
@@ -317,26 +369,76 @@ class UsPostMoreRowsTest {
         assertThat(postShareLink("abc-123")).isEqualTo("https://momentum.app/p/abc-123")
     }
 
-    // ── The reel's rows (YouTube Shorts, 2026-09-04; sounds, 2026-09-30) ──
+    // ── The reel's rows (the web's More menu, 2026-10-02) ───────────────
 
+    /**
+     * Until 2026-10-02 a reel's sheet was the feed post's rows plus the
+     * reel's own. It is now the web's menu and nothing else: the rows that
+     * left (Save, Share, Copy link, Clear screen, Why, Interested, Follow,
+     * Unfollow, Block, Delete post) are on the rail, the author row or the
+     * profile, or are reached by a gesture.
+     */
     @Test
-    fun `a reel adds description, clear screen and quality to the post's rows`() {
-        val rows = state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "Trending").copy(reel = reel()).rows()
+    fun `another person's reel offers exactly the web's rows`() {
+        val rows = state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "Trending")
+            .copy(reel = reel(canUseSound = true))
+            .rows()
 
         assertThat(rows).containsExactly(
             UsPostMoreRow.DESCRIPTION,
-            UsPostMoreRow.CLEAR_SCREEN,
+            UsPostMoreRow.DONT_RECOMMEND,
+            UsPostMoreRow.NOT_INTERESTED,
             UsPostMoreRow.QUALITY,
+            UsPostMoreRow.REPORT,
+            UsPostMoreRow.USE_SOUND,
+        )
+    }
+
+    /** The feedback rows are about someone else's reel; the viewer's own keeps the frame's rows only. */
+    @Test
+    fun `the viewer's own reel offers description, quality and use this sound, and nothing about an author`() {
+        val rows = state(own = true).copy(reel = reel(canUseSound = true)).rows()
+
+        assertThat(rows).containsExactly(
+            UsPostMoreRow.DESCRIPTION,
+            UsPostMoreRow.QUALITY,
+            UsPostMoreRow.USE_SOUND,
+        )
+    }
+
+    /** A row the web's reel menu does not have is not on this one, whatever the reel's state. */
+    @Test
+    fun `a reel never offers the feed post's rows`() {
+        val gone = listOf(
             UsPostMoreRow.SAVE,
+            UsPostMoreRow.UNSAVE,
             UsPostMoreRow.COPY_LINK,
             UsPostMoreRow.SHARE,
             UsPostMoreRow.WHY,
             UsPostMoreRow.INTERESTED,
-            UsPostMoreRow.NOT_INTERESTED,
+            UsPostMoreRow.FOLLOW,
             UsPostMoreRow.UNFOLLOW,
             UsPostMoreRow.BLOCK,
-            UsPostMoreRow.REPORT,
+            UsPostMoreRow.DELETE,
+            UsPostMoreRow.CLEAR_SCREEN,
+            UsPostMoreRow.SHOW_CONTROLS,
         )
+        val reels = listOf(
+            state(reason = "Trending").copy(reel = reel(canUseSound = true)),
+            state(bookmarked = true, follow = UsPostMoreFollowRow.UNFOLLOW).copy(reel = reel()),
+            state(own = true).copy(reel = reel(fullMode = true)),
+        )
+        for (reelState in reels) {
+            assertThat(reelState.rows()).containsNoneIn(gone)
+        }
+    }
+
+    /** "Don't recommend this channel" is offered on a reel whether or not the viewer follows, as the web offers it. */
+    @Test
+    fun `a reel offers don't recommend whatever the follow edge`() {
+        for (follow in UsPostMoreFollowRow.entries) {
+            assertThat(state(follow = follow).copy(reel = reel()).rows()).contains(UsPostMoreRow.DONT_RECOMMEND)
+        }
     }
 
     /** The feed card's sheet holds no reel rows: no reel, none of them. */
@@ -353,30 +455,64 @@ class UsPostMoreRowsTest {
         )
     }
 
+    // ── The long video's rows (the web watch page's More menu, 2026-10-02) ──
+
     @Test
-    fun `the viewer's own reel keeps the reel's rows, and delete`() {
-        val rows = state(own = true).copy(reel = reel()).rows()
+    fun `another person's long video offers exactly the web's rows`() {
+        val rows = state(reason = "Trending").copy(longVideo = longVideo()).rows()
 
         assertThat(rows).containsExactly(
-            UsPostMoreRow.DESCRIPTION,
-            UsPostMoreRow.CLEAR_SCREEN,
-            UsPostMoreRow.QUALITY,
-            UsPostMoreRow.SAVE,
-            UsPostMoreRow.COPY_LINK,
+            UsPostMoreRow.BLOCK,
+            UsPostMoreRow.DONT_RECOMMEND,
+            UsPostMoreRow.NOT_INTERESTED,
+            UsPostMoreRow.REPORT,
             UsPostMoreRow.SHARE,
-            UsPostMoreRow.DELETE,
         )
     }
 
     @Test
-    fun `clear screen reads show controls while full mode is on`() {
-        val normal = state().copy(reel = reel(fullMode = false)).rows()
-        assertThat(normal).contains(UsPostMoreRow.CLEAR_SCREEN)
-        assertThat(normal).doesNotContain(UsPostMoreRow.SHOW_CONTROLS)
+    fun `the viewer's own long video offers delete and share, and nothing about an author`() {
+        val rows = state(own = true).copy(longVideo = longVideo()).rows()
 
-        val full = state().copy(reel = reel(fullMode = true)).rows()
-        assertThat(full).contains(UsPostMoreRow.SHOW_CONTROLS)
-        assertThat(full).doesNotContain(UsPostMoreRow.CLEAR_SCREEN)
+        assertThat(rows).containsExactly(UsPostMoreRow.DELETE, UsPostMoreRow.SHARE)
+    }
+
+    /** `hide_share`: the creator turned sharing off, so the row is absent, for the owner too. */
+    @Test
+    fun `a long video with sharing off has no share row`() {
+        assertThat(state().copy(longVideo = longVideo(shareHidden = true)).rows()).doesNotContain(UsPostMoreRow.SHARE)
+        assertThat(state(own = true).copy(longVideo = longVideo(shareHidden = true)).rows())
+            .containsExactly(UsPostMoreRow.DELETE)
+    }
+
+    /** Save and Copy link are not in the web's watch menu: Save is on the action row under the video. */
+    @Test
+    fun `a long video never offers save, copy link, follow or the reel's rows`() {
+        for (follow in UsPostMoreFollowRow.entries) {
+            val rows = state(follow = follow, reason = "Trending").copy(longVideo = longVideo()).rows()
+            assertThat(rows).containsNoneOf(
+                UsPostMoreRow.SAVE,
+                UsPostMoreRow.UNSAVE,
+                UsPostMoreRow.COPY_LINK,
+                UsPostMoreRow.FOLLOW,
+                UsPostMoreRow.UNFOLLOW,
+                UsPostMoreRow.WHY,
+                UsPostMoreRow.INTERESTED,
+                UsPostMoreRow.DESCRIPTION,
+                UsPostMoreRow.QUALITY,
+                UsPostMoreRow.USE_SOUND,
+            )
+        }
+    }
+
+    /** What "Don't recommend" says once the server has it names the channel on a long video. */
+    @Test
+    fun `the confirmation names the channel on a long video and the handle elsewhere`() {
+        assertThat(state().copy(longVideo = longVideo()).dontRecommendDoneText())
+            .isEqualTo("We won't recommend Clee Builds any more")
+        assertThat(state().dontRecommendDoneText()).isEqualTo("We won't recommend posts from @call_userb")
+        assertThat(state().copy(reel = reel()).dontRecommendDoneText())
+            .isEqualTo("We won't recommend posts from @call_userb")
     }
 
     /** A "Description" that unfolds into nothing is a broken row, not a row. */

@@ -176,6 +176,8 @@ import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
+import com.us.android.feature.tube.navigation.navigateToTubeCollection
+import com.us.android.feature.tube.navigation.navigateToTubeCollections
 import com.us.android.feature.tube.navigation.navigateToTubeSaved
 import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
@@ -971,6 +973,8 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
             onOpenScheduled = { navController.navigateToTubeScheduled() },
             onOpenSaved = { navController.navigateToTubeSaved() },
+            onOpenCollections = { navController.navigateToTubeCollections() },
+            onOpenCollection = { id -> navController.navigateToTubeCollection(id) },
         ),
     )
 

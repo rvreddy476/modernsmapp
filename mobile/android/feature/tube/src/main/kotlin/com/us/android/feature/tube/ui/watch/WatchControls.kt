@@ -36,7 +36,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -157,7 +156,7 @@ fun WatchPlayer(
 
     Box(
         modifier = modifier
-            .background(Color.Black)
+            .background(UsTheme.extended.stage)
             .testTag("watch_player"),
     ) {
         PlayerSurface(player = player, surfaceType = SURFACE_TYPE_SURFACE_VIEW, modifier = Modifier.fillMaxSize())
@@ -233,18 +232,23 @@ private fun SkipPlate(icon: ImageVector, label: String) {
     Row(
         modifier = Modifier
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = PLATE_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = PLATE_ALPHA))
             .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.m)
             .testTag("watch_skip"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(SKIP_GLYPH))
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = UsTheme.extended.onMedia,
+            modifier = Modifier.size(SKIP_GLYPH),
+        )
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
         )
     }
 }
@@ -262,7 +266,7 @@ private fun Controls(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = SCRIM_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = SCRIM_ALPHA))
             .testTag("watch_controls"),
     ) {
         Row(
@@ -343,7 +347,7 @@ private fun TimeText(text: String, tag: String) {
         text = text,
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.SemiBold,
-        color = Color.White,
+        color = UsTheme.extended.onMedia,
         modifier = Modifier.testTag(tag),
     )
 }
@@ -351,7 +355,7 @@ private fun TimeText(text: String, tag: String) {
 @Composable
 private fun GlyphButton(icon: ImageVector, description: String, onClick: () -> Unit, tag: String) {
     IconButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
-        Icon(imageVector = icon, contentDescription = description, tint = Color.White)
+        Icon(imageVector = icon, contentDescription = description, tint = UsTheme.extended.onMedia)
     }
 }
 
@@ -362,7 +366,7 @@ private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, modifier: Mod
         modifier = modifier
             .size(PLAY_DISC)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = PLATE_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = PLATE_ALPHA))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -378,7 +382,7 @@ private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, modifier: Mod
         Icon(
             imageVector = if (playing) UsIcons.Pause else UsIcons.Play,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.onMedia,
             modifier = Modifier.size(PLAY_GLYPH),
         )
     }
@@ -395,8 +399,8 @@ private fun SeekBar(playhead: Playhead, onSeekTo: (Long) -> Unit, modifier: Modi
     var scrub by remember { mutableStateOf<Float?>(null) }
     val played = scrub ?: playhead.playedFraction
     val buffered = playhead.bufferedFraction
-    val track = Color.White.copy(alpha = TRACK_ALPHA)
-    val loaded = Color.White.copy(alpha = BUFFERED_ALPHA)
+    val track = UsTheme.extended.onMedia.copy(alpha = TRACK_ALPHA)
+    val loaded = UsTheme.extended.onMedia.copy(alpha = BUFFERED_ALPHA)
     val accent = UsTheme.extended.accentSolid
     val duration = playhead.durationMs
     Canvas(
@@ -431,7 +435,7 @@ private fun SeekBar(playhead: Playhead, onSeekTo: (Long) -> Unit, modifier: Modi
 /** The playhead as a 2dp line along the bottom edge while the controls are away. */
 @Composable
 private fun ProgressLine(playhead: Playhead, modifier: Modifier = Modifier) {
-    val track = Color.White.copy(alpha = TRACK_ALPHA)
+    val track = UsTheme.extended.onMedia.copy(alpha = TRACK_ALPHA)
     val accent = UsTheme.extended.accentSolid
     val played = playhead.playedFraction
     Canvas(

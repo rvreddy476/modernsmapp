@@ -165,7 +165,7 @@ fun UsPostMoreSheet(
         containerColor = UsTheme.extended.bgCardSolid,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = modifier.testTag("post_more_sheet:${state.postId}"),
     ) {
@@ -209,7 +209,7 @@ private fun MoreConfirmations(
 ) {
     if (ui.confirmBlock) {
         ConfirmDialog(
-            title = "Block @${state.username}?",
+            title = "${state.labelOf(UsPostMoreRow.BLOCK)}?",
             body = "They won't be able to see your posts or message you.",
             confirmLabel = "Block",
             testTag = "post_more_block_dialog",
@@ -225,7 +225,7 @@ private fun MoreConfirmations(
         // The sheet stays: the host answers through state.delete, and the
         // confirmation or the refusal is shown where the viewer is looking.
         ConfirmDialog(
-            title = "Delete post?",
+            title = if (state.surface == UsPostMoreSurface.LONG_VIDEO) "Delete video?" else "Delete post?",
             body = "It will be removed from your profile and feeds. " +
                 "You can restore it from Recently deleted for 30 days.",
             confirmLabel = "Delete",
@@ -373,13 +373,13 @@ private fun MoreMenu(
         )
         StatusPill(
             visible = delete == UsPostDeleteState.Deleted,
-            text = "Post deleted",
+            text = if (state.surface == UsPostMoreSurface.LONG_VIDEO) "Video deleted" else "Post deleted",
             testTag = "post_more_deleted",
             modifier = Modifier.align(Alignment.TopCenter),
         )
         StatusPill(
             visible = dontRecommend == UsPostDontRecommendState.Done,
-            text = "We won't recommend posts from @${state.username}",
+            text = state.dontRecommendDoneText(),
             testTag = "post_more_dont_recommend_done",
             modifier = Modifier.align(Alignment.TopCenter),
         )
@@ -402,7 +402,7 @@ private fun MenuRow(
     onClick: () -> Unit,
     onSelectQuality: (UsReelQuality) -> Unit,
 ) {
-    val label = row.menuLabel(state.username)
+    val label = state.labelOf(row)
     val tint = if (row.isDestructive) UsTheme.extended.liveRed else UsTheme.extended.textPrimary
     val reel = state.reel
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -571,7 +571,7 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.SHARE -> UsIcons.Share
     UsPostMoreRow.WHY -> UsIcons.Info
     UsPostMoreRow.INTERESTED -> UsIcons.ThumbsUp
-    UsPostMoreRow.NOT_INTERESTED -> UsIcons.ThumbsDown
+    UsPostMoreRow.NOT_INTERESTED -> UsIcons.CircleSlash
     UsPostMoreRow.REPORT -> UsIcons.Flag
     UsPostMoreRow.DELETE -> UsIcons.Trash
 }
@@ -796,7 +796,6 @@ internal fun Modifier.sheetPressScale(interaction: MutableInteractionSource, sca
 private const val CLIP_LABEL = "Post link"
 private const val LINK_COPIED_MILLIS = 2_000L
 private const val REPORT_LINGER_MILLIS = 1_400L
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private const val PRESS_SCALE = 0.85f
 private const val ROW_PRESS_SCALE = 0.97f
@@ -824,3 +823,13 @@ private val DIALOG_RADIUS = 20.dp
 private val DIALOG_PADDING = 22.dp
 private val DIALOG_TITLE_SIZE = 18.sp
 private val DIALOG_ACTION_SIZE = 14.sp
+
+/**
+ * What "Don't recommend" says once the server has it: the handle on a feed
+ * post, the channel on a long video (the web's sentence), the creator's
+ * handle on a reel.
+ */
+internal fun UsPostMoreState.dontRecommendDoneText(): String {
+    val channel = longVideo?.channelName?.takeIf { it.isNotBlank() }
+    return if (channel != null) "We won't recommend $channel any more" else "We won't recommend posts from @$username"
+}

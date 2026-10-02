@@ -10,6 +10,7 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.ui.UsLongVideoMoreState
 import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostDontRecommendState
 import com.us.android.core.ui.UsPostMoreCallbacks
@@ -61,6 +62,16 @@ fun PostMoreSheetHost(
      * "not interested" on a long video into the feed's numbers.
      */
     surface: AnalyticsSurface = AnalyticsSurface.FEED,
+    /**
+     * Set by Tube's watch screen alone (2026-10-02): the sheet is then the
+     * long video's menu, the web watch page's rows and words.
+     */
+    longVideo: UsLongVideoMoreState? = null,
+    /**
+     * A block was confirmed and sent. The watch screen leaves the video, as
+     * the web does; every other host has nothing to add.
+     */
+    onBlocked: () -> Unit = {},
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
@@ -70,7 +81,7 @@ fun PostMoreSheetHost(
         viewModel.opened()
     }
 
-    val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality, onUseSound) {
+    val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality, onUseSound, onBlocked) {
         UsPostMoreCallbacks(
             onToggleSave = { viewModel.toggleSave(item) },
             onShare = { onShare(item) },
@@ -79,7 +90,10 @@ fun PostMoreSheetHost(
             onDontRecommend = { viewModel.dontRecommend(item) },
             onFollow = { viewModel.follow(item.author.id) },
             onUnfollow = { viewModel.unfollow(item.author.id) },
-            onBlock = { viewModel.block(item) },
+            onBlock = {
+                viewModel.block(item)
+                onBlocked()
+            },
             onReport = { reason, details -> viewModel.report(item, reason, details) },
             onDelete = { viewModel.delete(item) },
             onClearScreen = onClearScreen,
@@ -88,7 +102,17 @@ fun PostMoreSheetHost(
         )
     }
     UsPostMoreSheet(
-        state = item.toMoreState(overlay, followEdge, ownUserId, report, delete, reel, dontRecommend, suggested),
+        state = item.toMoreState(
+            overlay = overlay,
+            followEdge = followEdge,
+            ownUserId = ownUserId,
+            report = report,
+            delete = delete,
+            reel = reel,
+            dontRecommend = dontRecommend,
+            suggested = suggested,
+            longVideo = longVideo,
+        ),
         callbacks = callbacks,
         onDismiss = onDismiss,
     )
@@ -108,6 +132,7 @@ fun FeedItem.toMoreState(
     reel: UsReelMoreState? = null,
     dontRecommend: UsPostDontRecommendState = UsPostDontRecommendState.Idle,
     suggested: Boolean? = null,
+    longVideo: UsLongVideoMoreState? = null,
 ): UsPostMoreState {
     val own = ownUserId.isNotBlank() && author.id == ownUserId
     return UsPostMoreState(
@@ -126,6 +151,7 @@ fun FeedItem.toMoreState(
         delete = delete,
         dontRecommend = dontRecommend,
         reel = reel,
+        longVideo = longVideo,
     )
 }
 

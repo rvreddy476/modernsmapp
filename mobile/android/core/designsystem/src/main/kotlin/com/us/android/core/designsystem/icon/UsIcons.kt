@@ -368,6 +368,22 @@ object UsIcons {
             "a2 2 0 0 0 2 2Z",
     )
 
+    /** Lucide `folder-plus`: "Add to collection" on the long-video watch screen, as on the web. */
+    val FolderPlus: ImageVector = lucideStroked(
+        "FolderPlus",
+        "M12 10v6",
+        "M9 13h6",
+        "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13" +
+            "a2 2 0 0 0 2 2Z",
+    )
+
+    /** Lucide `circle-slash`: "Not interested" on a reel and a long video, as on the web. */
+    val CircleSlash: ImageVector = lucideStroked(
+        "CircleSlash",
+        "M12,12 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0",
+        "M9 15l6-6",
+    )
+
     /** Lucide `film` — a reel, on the Create sheet. */
     val Film: ImageVector = lucideStroked(
         "Film",

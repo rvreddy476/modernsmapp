@@ -19,7 +19,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -132,7 +131,7 @@ fun EditChannelSheet(
         containerColor = UsTheme.extended.bgCardSolid,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         modifier = Modifier.testTag("edit_channel_sheet"),
     ) {
         Column(
@@ -207,6 +206,5 @@ private fun EditChannelFields(state: EditChannelUiState, viewModel: EditChannelV
     )
 }
 
-private const val SCRIM_ALPHA = 0.55f
 private val SHEET_RADIUS = 28.dp
 private val TITLE_SIZE = 20.sp

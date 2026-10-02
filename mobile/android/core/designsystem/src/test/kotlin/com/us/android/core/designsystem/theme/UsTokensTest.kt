@@ -4,53 +4,26 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Guards the Momentum token port (Figma YsWb936muw8pwIxgb0je2A, 2026-09-03).
+ * Guards the tokens that are NOT part of either theme, and the spacing and
+ * radii scales.
  *
- * These are not tautologies: they pin the exact ARGB values the design
- * specifies. If someone "tidies" a colour, this fails and the divergence
- * from the design is caught before it ships rather than in review-by-eyeball.
+ * The themed colours (ground, text, accent, status) are pinned to the web's
+ * values by `UsWebThemeParityTest`. Until 2026-10-02 this file pinned
+ * Momentum's navy ramp and ember accent (Figma YsWb936…, 2026-09-03); those
+ * tests went with the palette, deliberately, when the app took the web's
+ * two themes.
  */
 class UsTokensTest {
 
-    @Test
-    fun `dark surface ramp matches the Momentum frames`() {
-        assertThat(UsColorTokens.BgPrimary.hex()).isEqualTo("ff041122")
-        assertThat(UsColorTokens.BgSecondary.hex()).isEqualTo("ff0b1b2e")
-        assertThat(UsColorTokens.BgTertiary.hex()).isEqualTo("ff071d33")
-        assertThat(UsColorTokens.UnreadRow.hex()).isEqualTo("ff072440")
-        assertThat(UsColorTokens.BorderMedium.hex()).isEqualTo("ff0e2d4a")
-        assertThat(UsColorTokens.TextPrimary.hex()).isEqualTo("ffffffff")
-        assertThat(UsColorTokens.TextMuted.hex()).isEqualTo("ff8aa3c2")
-    }
-
-    @Test
-    fun `light surface ramp is the derived Momentum palette`() {
-        assertThat(UsColorTokens.Light.BgPrimary.hex()).isEqualTo("fff7f9fc")
-        assertThat(UsColorTokens.Light.BgSecondary.hex()).isEqualTo("ffffffff")
-        assertThat(UsColorTokens.Light.BgTertiary.hex()).isEqualTo("ffeef3f9")
-        assertThat(UsColorTokens.Light.UnreadRow.hex()).isEqualTo("fffff4ec")
-        assertThat(UsColorTokens.Light.BorderMedium.hex()).isEqualTo("ffdce4ef")
-        assertThat(UsColorTokens.Light.TextPrimary.hex()).isEqualTo("ff041122")
-        assertThat(UsColorTokens.Light.TextMuted.hex()).isEqualTo("ff5b6e88")
-    }
-
-    /** The accent is one identity across both themes, never re-derived. */
-    @Test
-    fun `accent gradient ends are the Momentum orange and red`() {
-        assertThat(UsColorTokens.AccentOrange.hex()).isEqualTo("fffb923c")
-        assertThat(UsColorTokens.AccentRed.hex()).isEqualTo("ffdc2626")
-        assertThat(DarkExtendedColors.accentSolid).isEqualTo(UsColorTokens.AccentOrange)
-        assertThat(LightExtendedColors.accentSolid).isEqualTo(UsColorTokens.AccentOrange)
-        assertThat(LightExtendedColors.accentDeep).isEqualTo(UsColorTokens.AccentRed)
-        assertThat(LightExtendedColors.ctaGradient).isEqualTo(DarkExtendedColors.ctaGradient)
-    }
-
     /**
-     * The Create sheet's five per-type gradients (founder render, 2026-09-04):
+     * The Create sheet's per-type gradients (founder render, 2026-09-04):
      * light → deep pairs, pinned so a "tidy" cannot drift them from the design.
+     * Ember is Text's and Go Live's own colour; it is no longer the app's accent.
      */
     @Test
-    fun `create tile colours are the founder's five gradient pairs`() {
+    fun `create tile colours are the founder's gradient pairs`() {
+        assertThat(UsColorTokens.CreateEmberLight.hex()).isEqualTo("fffb923c")
+        assertThat(UsColorTokens.CreateEmberDeep.hex()).isEqualTo("ffdc2626")
         assertThat(UsColorTokens.CreatePhotoLight.hex()).isEqualTo("ff34d399")
         assertThat(UsColorTokens.CreatePhotoDeep.hex()).isEqualTo("ff059669")
         assertThat(UsColorTokens.CreateReelLight.hex()).isEqualTo("fffb7185")
@@ -63,13 +36,13 @@ class UsTokensTest {
         assertThat(UsColorTokens.CreateArticleDeep.hex()).isEqualTo("ff0891b2")
     }
 
-    /** Text and Go Live ARE the ember accent; the set is shared across themes. */
+    /** Text and Go Live share the ember tile; the set is the same in both themes. */
     @Test
-    fun `text and live create tiles are the ember accent and the set does not invert`() {
+    fun `text and live create tiles are ember and the set does not invert`() {
         val create = DarkExtendedColors.create
-        assertThat(create.text.brush).isEqualTo(DarkExtendedColors.ctaGradient)
-        assertThat(create.live.brush).isEqualTo(DarkExtendedColors.ctaGradient)
+        assertThat(create.text).isEqualTo(create.live)
         assertThat(LightExtendedColors.create).isEqualTo(create)
+        assertThat(LightExtendedColors.launcher).isEqualTo(DarkExtendedColors.launcher)
         val distinct = setOf(create.text, create.photo, create.reel, create.audio, create.poll, create.article)
         assertThat(distinct).hasSize(6)
     }
@@ -78,8 +51,8 @@ class UsTokensTest {
     @Test
     fun `each create tile glows in its own deep colour`() {
         val create = DarkExtendedColors.create
-        assertThat(create.text.glow).isEqualTo(UsColorTokens.AccentRed)
-        assertThat(create.live.glow).isEqualTo(UsColorTokens.AccentRed)
+        assertThat(create.text.glow).isEqualTo(UsColorTokens.CreateEmberDeep)
+        assertThat(create.live.glow).isEqualTo(UsColorTokens.CreateEmberDeep)
         assertThat(create.photo.glow).isEqualTo(UsColorTokens.CreatePhotoDeep)
         assertThat(create.reel.glow).isEqualTo(UsColorTokens.CreateReelDeep)
         assertThat(create.audio.glow).isEqualTo(UsColorTokens.CreateAudioDeep)
@@ -88,18 +61,19 @@ class UsTokensTest {
     }
 
     /**
-     * Danger is a token, not an M3 slot, and it does not invert: a feature
-     * asking for "the destructive colour" gets the same red in both themes
-     * instead of reaching into `colorScheme.error`.
+     * Danger is a token, not an M3 slot: a feature asking for "the
+     * destructive colour" gets the web's danger for the theme it is in, and
+     * never the accent.
      */
     @Test
-    fun `danger is the status red in both themes`() {
-        assertThat(UsColorTokens.StatusError.hex()).isEqualTo("ffff4757")
-        assertThat(DarkExtendedColors.statusDanger).isEqualTo(UsColorTokens.StatusError)
-        assertThat(LightExtendedColors.statusDanger).isEqualTo(DarkExtendedColors.statusDanger)
-        // Never the accent: ember is for primary actions only.
-        assertThat(DarkExtendedColors.statusDanger).isNotEqualTo(DarkExtendedColors.accentSolid)
-        assertThat(DarkExtendedColors.statusDanger).isNotEqualTo(DarkExtendedColors.accentDeep)
+    fun `danger is its own colour in each theme and never the accent`() {
+        for (theme in listOf(DarkExtendedColors, LightExtendedColors)) {
+            assertThat(theme.statusDanger).isNotEqualTo(theme.accent)
+            assertThat(theme.statusDanger).isNotEqualTo(theme.accentSolid)
+            assertThat(theme.statusDanger).isNotEqualTo(theme.accentStrong)
+            // A lit like and a destructive row are the same red as a failure line.
+            assertThat(theme.liveRed).isEqualTo(theme.statusDanger)
+        }
     }
 
     /** Chat keeps its green on purpose — the brief carves it out of the accent. */
@@ -110,18 +84,28 @@ class UsTokensTest {
     }
 
     @Test
-    fun `text ramp has seven distinct steps`() {
-        val ramp = listOf(
-            UsColorTokens.TextPrimary,
-            UsColorTokens.TextSecondary,
-            UsColorTokens.TextTertiary,
-            UsColorTokens.TextMuted,
-            UsColorTokens.TextDim,
-            UsColorTokens.TextDimmest,
-            UsColorTokens.TextGhost,
-        )
-        assertThat(ramp).hasSize(7)
-        assertThat(ramp.toSet()).hasSize(7)
+    fun `the text ramp has seven distinct steps in each theme, darkest to faintest`() {
+        for (theme in listOf(DarkExtendedColors, LightExtendedColors)) {
+            val ramp = listOf(
+                theme.textPrimary,
+                theme.textSecondary,
+                theme.textTertiary,
+                theme.textMuted,
+                theme.textDim,
+                theme.textDimmest,
+                theme.textGhost,
+            )
+            assertThat(ramp.toSet()).hasSize(7)
+        }
+    }
+
+    /** The primary button's fill is flat: the fill token, as a brush. */
+    @Test
+    fun `the primary button's brush is the flat fill of its theme`() {
+        assertThat(LightExtendedColors.ctaGradient)
+            .isEqualTo(androidx.compose.ui.graphics.SolidColor(LightExtendedColors.accentStrong))
+        assertThat(DarkExtendedColors.ctaGradient)
+            .isEqualTo(androidx.compose.ui.graphics.SolidColor(DarkExtendedColors.accentStrong))
     }
 
     @Test

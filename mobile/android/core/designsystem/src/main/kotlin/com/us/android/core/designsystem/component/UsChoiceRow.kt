@@ -98,7 +98,7 @@ fun <T> UsChoiceRow(
                         style = MaterialTheme.typography.labelLarge,
                         color = when {
                             !enabled -> UsTheme.extended.textDim
-                            isSelected -> androidx.compose.ui.graphics.Color.Black
+                            isSelected -> MaterialTheme.colorScheme.onPrimary
                             else -> UsTheme.extended.textSecondary
                         },
                     )

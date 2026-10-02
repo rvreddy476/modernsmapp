@@ -39,6 +39,13 @@ data class FeedItemDto(
     @SerialName("has_reacted") val hasReacted: Boolean = false,
     @SerialName("has_reposted") val hasReposted: Boolean = false,
     @SerialName("viewer_reaction") val viewerReaction: String? = null,
+    /**
+     * The viewer's Watch later membership and private dislike (MTube,
+     * 2026-09-27): never omitted on the post detail, absent on list rows of
+     * a server that does not load them, so both default to false.
+     */
+    @SerialName("viewer_queued") val viewerQueued: Boolean = false,
+    @SerialName("viewer_disliked") val viewerDisliked: Boolean = false,
     @SerialName("is_repostable") val isRepostable: Boolean = false,
     /** Ranked surfaces only. Home is chronological and omits it. */
     val score: Double? = null,

@@ -104,6 +104,19 @@ class VideoFeedRepository @Inject constructor(
     }
 
     /**
+     * Everything the viewer saved that PLAYS: long videos and reels, newest
+     * save first (2026-10-02). The Saved page reads this. Before it, the page
+     * read [savedVideos], so a reel saved from the rail was listed nowhere in
+     * the app: the save reached the server and could never be found again.
+     * Saved photos and text posts are skipped, a page at a time, as there.
+     */
+    fun savedVideosAndReels(): Flow<PagingData<FeedItem>> = feedPager(errorMapper) { request ->
+        videosOnly(request, keep = { savedKind(it.feedContentType) != null }) { limit, cursor ->
+            api.bookmarks(limit, cursor)
+        }
+    }
+
+    /**
      * The first page of long videos from SUBSCRIBED channels, as a list;
      * the channels strip groups it by author (2026-09-12: the strip is the
      * viewer's subscriptions, not everyone they follow, because a subscribe
@@ -222,12 +235,13 @@ class VideoFeedRepository @Inject constructor(
      */
     private suspend fun videosOnly(
         request: FeedPageRequest,
+        keep: (FeedItem) -> Boolean = { it.feedContentType == LONG_VIDEO },
         load: suspend (limit: Int, cursor: String?) -> ApiEnvelope<List<FeedItemDto>>,
     ): FeedPage {
         var cursor = request.cursor
         repeat(MAX_PAGE_HOPS) {
             val page = load(request.limit, cursor).toFeedPage()
-            val videos = page.items.filter { it.feedContentType == LONG_VIDEO }
+            val videos = page.items.filter(keep)
             if (page.errorCode != null || videos.isNotEmpty() || page.nextCursor == null) {
                 return page.copy(items = hydrator.hydrate(videos))
             }
@@ -272,4 +286,18 @@ class VideoFeedRepository @Inject constructor(
         /** Pages of non-video bookmarks skipped in one load before giving Paging the cursor back. */
         private const val MAX_PAGE_HOPS = 4
     }
+}
+
+/** What a saved post is to the Saved page: a long video (the watch screen plays it) or a reel (the Reels tab does). */
+enum class SavedKind { VIDEO, REEL }
+
+/**
+ * The kind of a saved post by its content type, or null for one the Saved
+ * page does not list (a photo, a text post, a poll). A reel is one of the
+ * short-form types post-service uses; anything unknown is not guessed at.
+ */
+fun savedKind(contentType: String): SavedKind? = when (contentType) {
+    "long_video" -> SavedKind.VIDEO
+    "flick", "reel", "short" -> SavedKind.REEL
+    else -> null
 }

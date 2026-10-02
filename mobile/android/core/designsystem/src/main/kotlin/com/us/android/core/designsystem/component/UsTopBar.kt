@@ -32,6 +32,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsColorTokens
 import com.us.android.core.designsystem.theme.UsTheme
 
 /**
@@ -222,7 +223,7 @@ fun UsMomentumHeader(
 ) {
     // Over video the glyphs are plain white; the text ramp is tuned for the
     // navy ground, not for an arbitrary frame.
-    val tint = if (translucent) Color.White else UsTheme.extended.textPrimary
+    val tint = if (translucent) UsTheme.extended.onMedia else UsTheme.extended.textPrimary
     UsHomeTopBar(
         onHomeClick = onHomeClick,
         modifier = modifier,
@@ -253,7 +254,7 @@ fun UsMomentumHeader(
 
 /** Black at half strength on the top edge, gone by the bar's bottom. */
 private val TranslucentHeaderScrim: Brush = Brush.verticalGradient(
-    listOf(Color.Black.copy(alpha = 0.5f), Color.Transparent),
+    listOf(UsColorTokens.Stage.copy(alpha = 0.5f), Color.Transparent),
 )
 
 @Preview(name = "Momentum header", showBackground = true, backgroundColor = 0xFF041122)
@@ -320,14 +321,14 @@ fun UsBadgedIcon(
                     .align(Alignment.TopEnd)
                     .offset(x = BADGE_OFFSET, y = -BADGE_OFFSET)
                     .size(BADGE_SIZE)
-                    .background(Color.White, CircleShape),
+                    .background(UsTheme.extended.accentStrong, CircleShape),
             ) {
                 Text(
                     text = if (count > BADGE_MAX) "$BADGE_MAX+" else "$count",
                     fontSize = BADGE_TEXT,
                     lineHeight = BADGE_TEXT,
                     fontWeight = FontWeight.Bold,
-                    color = UsTheme.extended.accentDeep,
+                    color = UsTheme.extended.onAccent,
                     maxLines = 1,
                 )
             }

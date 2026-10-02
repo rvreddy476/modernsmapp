@@ -16,6 +16,7 @@ import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -537,11 +538,38 @@ class ReelsViewModel @Inject constructor(
         // given rather than the running net.
         if (!serverReacted) recordEngagement(postId, AnalyticsEventType.LIKE)
         engagement.toggleReaction(postId, serverReacted)
+        sayIfRefused(postId, EngagementAction.REACTION)
     }
 
     fun onBookmark(postId: String, serverBookmarked: Boolean) = viewModelScope.launch {
         if (!serverBookmarked) recordEngagement(postId, AnalyticsEventType.SAVE)
         engagement.toggleBookmark(postId, serverBookmarked)
+        sayIfRefused(postId, EngagementAction.BOOKMARK)
+    }
+
+    private val _engagementMessage = MutableStateFlow<UsMessage?>(null)
+
+    /**
+     * A like or a save the server refused, in one line over the reel
+     * (2026-10-02). The store has already put the rail's glyph back; before
+     * this the rollback was silent, so a failed Save read as a button that
+     * did nothing. Nothing else on this screen showed the store's failures.
+     */
+    val engagementMessage: StateFlow<UsMessage?> = _engagementMessage.asStateFlow()
+
+    fun dismissEngagementMessage() {
+        _engagementMessage.value = null
+    }
+
+    /**
+     * Called once the store's write has settled. The failure is taken off
+     * the shared list as it is said, so the Home feed's failure bar does not
+     * show a reel's refusal later.
+     */
+    private fun sayIfRefused(postId: String, action: EngagementAction) {
+        if (engagement.failures.value.none { it.postId == postId && it.action == action }) return
+        _engagementMessage.value = UsMessage(reelEngagementRefusal(action))
+        engagement.clearFailure(postId, action)
     }
 
     /** Recorded AFTER the chooser was launched; a failed count is not the viewer's problem. */
@@ -719,4 +747,11 @@ class ReelsViewModel @Inject constructor(
         const val LIVE_FETCH_ATTEMPTS = 3
         const val LIVE_FETCH_RETRY_MILLIS = 1_000L
     }
+}
+
+/** What the reel says when a rail action was refused: the action, never the transport. */
+fun reelEngagementRefusal(action: EngagementAction): String = when (action) {
+    EngagementAction.REACTION -> "Couldn't save your like. Try again."
+    EngagementAction.BOOKMARK -> "Couldn't save this reel. Try again."
+    EngagementAction.REPOST -> "Couldn't repost that. Try again."
 }

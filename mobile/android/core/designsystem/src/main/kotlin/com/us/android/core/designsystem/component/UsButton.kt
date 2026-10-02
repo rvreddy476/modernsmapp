@@ -84,13 +84,13 @@ fun UsButton(
                     // rendered as an oversized arc.
                     modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp,
-                    color = Color.White,
+                    color = UsTheme.extended.onAccent,
                 )
             } else {
                 Text(
                     text = text,
                     style = MaterialTheme.typography.labelLarge,
-                    color = if (enabled) Color.White else UsTheme.extended.textDim,
+                    color = if (enabled) UsTheme.extended.onAccent else UsTheme.extended.textDim,
                 )
             }
         }
@@ -175,7 +175,7 @@ fun UsPillButton(
     val labelColor = when {
         !filled && active -> UsTheme.extended.textPrimary
         !filled -> UsTheme.extended.textMuted
-        active -> Color.White
+        active -> UsTheme.extended.onAccent
         else -> UsTheme.extended.textDim
     }
     Box(
@@ -209,13 +209,13 @@ fun UsPillButton(
  * THE follow button — the same control wherever an account can be
  * followed: the post header's right end, the reel's author row, a profile.
  *
- * WHITE with navy text, so "follow" reads the same on a navy card, over a
- * video and on a profile (founder, 2026-09-05: the ember version "looked
- * odd"; one colour, kept consistent). A capsule, 32dp tall, 13sp semibold —
- * a real button, not an inline text link. The ground navy, not the accent,
- * for the text: white-on-navy is the brand pairing and it holds up over
- * any video frame. The text is the theme's brand navy — a visible blue,
- * not the near-black ground.
+ * The accent fill under a white label (2026-10-02), so "follow" reads the
+ * same on a card of either theme, over a video and on a profile. It was
+ * WHITE with navy text while the app was navy-only (founder, 2026-09-05:
+ * the ember version "looked odd"; one colour, kept consistent); a white
+ * capsule cannot be seen on the light theme's white card, and the web's
+ * primary button is this fill. A capsule, 32dp tall, 13sp semibold: a real
+ * button, not an inline text link.
  */
 @Composable
 fun UsFollowButton(
@@ -228,7 +228,7 @@ fun UsFollowButton(
     Box(
         modifier = modifier
             .clip(shape)
-            .background(Color.White, shape)
+            .background(UsTheme.extended.accentStrong, shape)
             .clickable(enabled = !busy, onClick = onClick)
             .semantics {
                 role = Role.Button
@@ -241,7 +241,7 @@ fun UsFollowButton(
             CircularProgressIndicator(
                 modifier = Modifier.size(PILL_SPINNER),
                 strokeWidth = 2.dp,
-                color = UsTheme.extended.brandNavy,
+                color = UsTheme.extended.onAccent,
             )
         } else {
             Text(
@@ -249,7 +249,7 @@ fun UsFollowButton(
                 style = MaterialTheme.typography.labelLarge,
                 fontSize = FOLLOW_TEXT,
                 fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.brandNavy,
+                color = UsTheme.extended.onAccent,
                 maxLines = 1,
             )
         }

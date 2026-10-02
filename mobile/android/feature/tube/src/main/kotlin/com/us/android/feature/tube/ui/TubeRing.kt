@@ -8,7 +8,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
@@ -28,7 +27,7 @@ fun TubeRing(
     gap: Dp = RING_GAP,
     content: @Composable () -> Unit,
 ) {
-    val track = Color.White.copy(alpha = TRACK_ALPHA)
+    val track = UsTheme.extended.onMedia.copy(alpha = TRACK_ALPHA)
     val played = UsTheme.extended.ctaGradient
     Box(
         modifier = modifier

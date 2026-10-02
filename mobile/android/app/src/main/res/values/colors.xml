@@ -9,4 +9,12 @@
     -->
     <color name="us_background">#FF041122</color>
     <color name="us_brand">#FFFB923C</color>
+    <!--
+      The window behind the app once the splash has gone (2026-10-02): the
+      page ground of the theme the first frame paints, so a light-mode launch
+      does not show navy between the splash and the feed. The web's canvas:
+      243 246 250 here, black in values-night. The splash itself and the
+      launcher icon keep us_background: the mark is drawn for the navy.
+    -->
+    <color name="us_window_background">#FFF3F6FA</color>
 </resources>

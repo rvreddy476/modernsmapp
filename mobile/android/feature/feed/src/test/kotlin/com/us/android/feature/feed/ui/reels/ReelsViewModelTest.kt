@@ -12,6 +12,7 @@ import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.datastore.ReelsSoundStore
+import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -257,12 +258,13 @@ class ReelsViewModelTest {
         val soundEntry: SoundEntry = SoundEntry(),
         val soundStore: FakeSoundStore = FakeSoundStore(),
         val watch: VideoWatchTracker = VideoWatchTracker.disabled(),
+        val writes: EngagementWrites = AcceptingWrites(),
     )
 
-    private fun viewModel(h: Harness = Harness()) = ReelsViewModel(
+    private fun viewModel(h: Harness = Harness(), store: EngagementStore = EngagementStore(h.writes)) = ReelsViewModel(
         repository = FeedRepository(h.api, ErrorMapper(json)) { it },
         urlResolver = resolver,
-        engagement = EngagementStore(AcceptingWrites()),
+        engagement = store,
         shares = EngagementRepository(UnusedEngagementApi(), ErrorMapper(json)),
         tracker = h.tracker,
         publishActions = h.actions,
@@ -1218,6 +1220,101 @@ class ReelsViewModelTest {
 
         assertThat(h.api.postRequests).containsExactly("post-9", "post-9", "post-9")
         assertThat(h.actions.calls).containsExactly("dismiss:key-1")
+    }
+
+    // ── Save on the rail (2026-10-02) ───────────────────────────────────
+
+    /** A server for the rail's writes that keeps its truth and can refuse. */
+    private class RailServer : EngagementWrites {
+        var saved = false
+        var liked = false
+        var refuse = false
+        val calls = mutableListOf<String>()
+
+        private fun answer(name: String, apply: () -> Unit): AppResult<Unit> {
+            calls += name
+            if (refuse) return AppResult.Failure(com.us.android.core.common.error.AppError.NoNetwork())
+            apply()
+            return AppResult.Success(Unit)
+        }
+
+        override suspend fun react(postId: String, reaction: String) = answer("POST reactions") { liked = true }
+        override suspend fun unreact(postId: String) = answer("DELETE reactions") { liked = false }
+        override suspend fun setBookmarked(postId: String, bookmarked: Boolean) =
+            answer(if (bookmarked) "POST bookmark" else "DELETE bookmark") { saved = bookmarked }
+        override suspend fun repost(postId: String) = answer("POST repost") {}
+        override suspend fun removeRepost(postId: String) = answer("DELETE repost") {}
+    }
+
+    @Test
+    fun `saving a reel lights the rail, reaches the server, and a second tap removes it`() {
+        val server = RailServer()
+        val viewModel = viewModel(Harness(writes = server))
+
+        viewModel.onBookmark("p", serverBookmarked = false)
+
+        assertThat(viewModel.overlays.value["p"]?.bookmarked).isTrue()
+        assertThat(server.saved).isTrue()
+        assertThat(viewModel.engagementMessage.value).isNull()
+
+        viewModel.onBookmark("p", serverBookmarked = false)
+
+        assertThat(viewModel.overlays.value["p"]?.bookmarked).isFalse()
+        assertThat(server.saved).isFalse()
+        assertThat(server.calls).containsExactly("POST bookmark", "DELETE bookmark").inOrder()
+    }
+
+    /** Before 2026-10-02 this rollback was silent: the glyph went back and the reel said nothing. */
+    @Test
+    fun `a refused save puts the rail back and says so over the reel`() {
+        val server = RailServer().apply { refuse = true }
+        val viewModel = viewModel(Harness(writes = server))
+
+        viewModel.onBookmark("p", serverBookmarked = false)
+
+        assertThat(viewModel.overlays.value["p"]?.bookmarked).isFalse()
+        assertThat(viewModel.engagementMessage.value?.text).isEqualTo("Couldn't save this reel. Try again.")
+
+        viewModel.dismissEngagementMessage()
+        assertThat(viewModel.engagementMessage.value).isNull()
+    }
+
+    @Test
+    fun `a refused like puts the heart back and says so`() {
+        val server = RailServer().apply { refuse = true }
+        val viewModel = viewModel(Harness(writes = server))
+
+        viewModel.onReact("p", serverReacted = false)
+
+        assertThat(viewModel.overlays.value["p"]?.reacted).isFalse()
+        assertThat(viewModel.engagementMessage.value?.text).isEqualTo("Couldn't save your like. Try again.")
+    }
+
+    /**
+     * The reel is saved, Reels is left, and the same reel comes round again
+     * from a page that still says "not saved": a second screen over the same
+     * store shows it saved, and its tap un-saves rather than saving twice.
+     */
+    @Test
+    fun `a saved reel is still saved when the reels screen is opened again`() {
+        val server = RailServer()
+        val store = EngagementStore(server)
+        val first = viewModel(Harness(), store)
+        first.onBookmark("p", serverBookmarked = false)
+
+        val reopened = viewModel(Harness(), store)
+
+        assertThat(reopened.overlays.value["p"]?.bookmarked).isTrue()
+        reopened.onBookmark("p", serverBookmarked = false)
+        assertThat(server.saved).isFalse()
+        assertThat(server.calls).containsExactly("POST bookmark", "DELETE bookmark").inOrder()
+    }
+
+    @Test
+    fun `each rail action is worded by what it was`() {
+        assertThat(reelEngagementRefusal(EngagementAction.BOOKMARK)).isEqualTo("Couldn't save this reel. Try again.")
+        assertThat(reelEngagementRefusal(EngagementAction.REACTION)).isEqualTo("Couldn't save your like. Try again.")
+        assertThat(reelEngagementRefusal(EngagementAction.REPOST)).isEqualTo("Couldn't repost that. Try again.")
     }
 
     // ── The rail ────────────────────────────────────────────────────────

@@ -24,7 +24,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -41,6 +40,7 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.ChannelState
+import com.us.android.feature.tube.navigation.TubeCollectionRoute
 import com.us.android.feature.tube.navigation.TubeDestinations
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
@@ -52,14 +52,20 @@ import javax.inject.Inject
  * viewer's channel — or the invitation to make one — Subscriptions, the
  * scheduled posts, the saved videos, and Notifications. Every row goes
  * somewhere real; there is no row for a page this build does not have.
+ *
+ * 2026-10-02: Collections and Watch later joined (the lists the watch page
+ * fills), "Saved videos" became "Saved" (it holds saved reels too), and the
+ * rows are drawn in ascending alphabetical order, the rule for every menu.
  */
 enum class TubeMenuRow(val label: String, val icon: ImageVector) {
     YOUR_CHANNEL("Your channel", UsIcons.Tv),
     CREATE_CHANNEL("Create your channel", UsIcons.Tv),
+    COLLECTIONS("Collections", UsIcons.Folder),
     SUBSCRIPTIONS("Subscriptions", UsIcons.ListVideo),
     SCHEDULED("Scheduled posts", UsIcons.Clock),
-    SAVED("Saved videos", UsIcons.BookmarkOutline),
+    SAVED("Saved", UsIcons.BookmarkOutline),
     NOTIFICATIONS("Notifications", UsIcons.Notifications),
+    WATCH_LATER("Watch later", UsIcons.ListVideo),
 }
 
 /**
@@ -72,11 +78,13 @@ enum class TubeMenuRow(val label: String, val icon: ImageVector) {
  */
 fun tubeMenuRows(channel: ChannelState): List<TubeMenuRow> = listOf(
     if (channel is ChannelState.None) TubeMenuRow.CREATE_CHANNEL else TubeMenuRow.YOUR_CHANNEL,
+    TubeMenuRow.COLLECTIONS,
     TubeMenuRow.SUBSCRIPTIONS,
     TubeMenuRow.SCHEDULED,
     TubeMenuRow.SAVED,
     TubeMenuRow.NOTIFICATIONS,
-)
+    TubeMenuRow.WATCH_LATER,
+).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
 
 /** The sheet's one question: does the viewer have a channel? The cached answer, loaded once per process. */
 @HiltViewModel
@@ -124,6 +132,8 @@ fun TubeMenuSheet(
             TubeMenuRow.SUBSCRIPTIONS -> destinations.onOpenTab(TubeTab.SUBSCRIPTIONS)
             TubeMenuRow.SCHEDULED -> destinations.onOpenScheduled()
             TubeMenuRow.SAVED -> destinations.onOpenSaved()
+            TubeMenuRow.COLLECTIONS -> destinations.onOpenCollections()
+            TubeMenuRow.WATCH_LATER -> destinations.onOpenCollection(TubeCollectionRoute.WATCH_LATER)
             TubeMenuRow.NOTIFICATIONS -> destinations.onOpenNotifications()
         }
     }
@@ -134,7 +144,7 @@ fun TubeMenuSheet(
         containerColor = UsTheme.extended.bgCardSolid,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = Modifier.testTag("tube_menu_sheet"),
     ) {
@@ -172,7 +182,7 @@ private fun MenuRow(row: TubeMenuRow, onClick: () -> Unit) {
         Icon(
             imageVector = row.icon,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.textPrimary,
             modifier = Modifier.size(ROW_GLYPH),
         )
         Text(
@@ -203,7 +213,6 @@ private fun GrabHandle() {
     }
 }
 
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private val SHEET_RADIUS = 28.dp
 private val CONTENT_BOTTOM = 12.dp

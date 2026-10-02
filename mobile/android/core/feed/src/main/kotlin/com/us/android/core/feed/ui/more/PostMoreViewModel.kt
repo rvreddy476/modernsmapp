@@ -142,7 +142,7 @@ class PostMoreViewModel @Inject constructor(
     fun interested(item: FeedItem) {
         // The undo of an earlier "Not interested" this session, if there was one.
         hidden.unhidePost(item.id)
-        say("We'll show you more posts like this", UsMessageType.Success)
+        say("We'll show you more ${noun()} like this", UsMessageType.Success)
         viewModelScope.launch {
             if (feed.sendFeedback(item.id, interested = true) is AppResult.Failure) {
                 say(COULD_NOT_SAVE, UsMessageType.Error)
@@ -156,7 +156,7 @@ class PostMoreViewModel @Inject constructor(
         // into exactly that, so inventing one would be a lie that survives.
         analytics.recordNegativeSignal(AnalyticsEventType.NOT_INTERESTED, session(item))
         hidden.hidePost(item.id)
-        say("We'll show you fewer posts like this", UsMessageType.Success)
+        say("We'll show you fewer ${noun()} like this", UsMessageType.Success)
         viewModelScope.launch {
             if (feed.sendFeedback(item.id, interested = false) is AppResult.Failure) {
                 hidden.unhidePost(item.id)
@@ -263,6 +263,9 @@ class PostMoreViewModel @Inject constructor(
         hidden.hidePost(postId)
         return UsPostDeleteState.Deleted
     }
+
+    /** "videos" on Tube, as the web's watch page says it; "posts" everywhere else. */
+    private fun noun(): String = if (surface == AnalyticsSurface.POSTTUBE) "videos" else "posts"
 
     private fun say(text: String, type: UsMessageType) {
         _message.value = UsMessage(text = text, type = type)

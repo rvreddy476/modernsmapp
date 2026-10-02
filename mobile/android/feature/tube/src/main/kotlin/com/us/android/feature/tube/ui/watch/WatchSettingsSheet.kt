@@ -22,7 +22,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -68,7 +67,7 @@ fun WatchSettingsSheet(
         containerColor = UsTheme.extended.bgCardSolid,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         modifier = Modifier.testTag("watch_settings_sheet"),
     ) {
         Column(
@@ -166,6 +165,5 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit, tag
     }
 }
 
-private const val SCRIM_ALPHA = 0.55f
 private val SHEET_RADIUS = 28.dp
 private val GLYPH = 18.dp

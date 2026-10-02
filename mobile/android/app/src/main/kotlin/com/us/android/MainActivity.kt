@@ -81,11 +81,14 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
-        // The app is navy whatever the device's night mode, so the system
-        // bars must draw light glyphs over it rather than follow the system.
+        // The app follows the device's light / dark setting (2026-10-02), so
+        // the system bars do too: dark glyphs over the light theme, light
+        // over the dark. They were pinned to light glyphs while the app was
+        // navy on every device.
+        val clear = android.graphics.Color.TRANSPARENT
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            statusBarStyle = SystemBarStyle.auto(clear, clear),
+            navigationBarStyle = SystemBarStyle.auto(clear, clear),
         )
         super.onCreate(savedInstanceState)
         offerPushDestination(intent)

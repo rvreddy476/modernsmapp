@@ -297,6 +297,19 @@ data class FeedViewerState(
      * the authoritative binary state.
      */
     val viewerReaction: String? = null,
+    /**
+     * In the viewer's Watch later list (2026-10-02): post-service's
+     * `viewer_queued`, sent on the post detail (`GET /v1/posts/{id}`) and
+     * false on list rows that do not load it. The long-video watch screen
+     * reads it after opening so the control is right on a reopen.
+     */
+    val isQueued: Boolean = false,
+    /**
+     * The viewer's PRIVATE dislike (2026-10-02): post-service's
+     * `viewer_disliked`. No count exists anywhere; it is only ever the
+     * viewer's own state, and never true together with [hasReacted].
+     */
+    val hasDisliked: Boolean = false,
 )
 
 /**

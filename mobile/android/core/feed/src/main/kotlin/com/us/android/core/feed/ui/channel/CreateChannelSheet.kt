@@ -90,7 +90,7 @@ fun CreateChannelSheet(
         containerColor = UsTheme.extended.bgCardSolid,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = Modifier.testTag("create_channel_sheet"),
     ) {
@@ -430,7 +430,6 @@ private fun FieldUnderline(spec: FieldSpec, error: String?) {
     }
 }
 
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private const val ABOUT_LINES = 4
 

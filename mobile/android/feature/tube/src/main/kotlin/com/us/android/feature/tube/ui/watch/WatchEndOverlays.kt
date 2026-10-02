@@ -66,7 +66,7 @@ fun NextEpisodeCountdown(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = SCRIM_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = SCRIM_ALPHA))
             .pointerInput(Unit) { detectTapGestures { } }
             .testTag("watch_countdown"),
         contentAlignment = Alignment.Center,
@@ -79,14 +79,14 @@ fun NextEpisodeCountdown(
             Text(
                 text = "Up next · Episode ${countdown.next.episodeNum}",
                 style = MaterialTheme.typography.labelLarge,
-                color = Color.White.copy(alpha = MUTED_ALPHA),
+                color = UsTheme.extended.onMedia.copy(alpha = MUTED_ALPHA),
             )
             if (countdown.next.title.isNotBlank()) {
                 Text(
                     text = countdown.next.title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -95,7 +95,7 @@ fun NextEpisodeCountdown(
                 text = "${countdown.secondsLeft}",
                 fontSize = SECONDS_SIZE,
                 fontWeight = FontWeight.Bold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 modifier = Modifier
                     .padding(vertical = UsTheme.spacing.s)
                     .semantics { contentDescription = "Plays in ${countdown.secondsLeft} seconds" }
@@ -137,7 +137,7 @@ fun WatchEndScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = SCRIM_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = SCRIM_ALPHA))
             .pointerInput(Unit) { detectTapGestures { } }
             .testTag("watch_end_screen"),
     ) {
@@ -153,7 +153,7 @@ fun WatchEndScreen(
                 Text(
                     text = "Up next",
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color.White.copy(alpha = MUTED_ALPHA),
+                    color = UsTheme.extended.onMedia.copy(alpha = MUTED_ALPHA),
                     modifier = Modifier.padding(top = UsTheme.spacing.s),
                 )
                 upNext.take(END_SCREEN_ROWS).forEach { item ->
@@ -182,13 +182,13 @@ private fun ReplayRow(onClick: () -> Unit) {
             modifier = Modifier
                 .size(REPLAY_DISC)
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = DISC_ALPHA)),
+                .background(UsTheme.extended.onMedia.copy(alpha = DISC_ALPHA)),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = UsIcons.RotateCcw,
                 contentDescription = null,
-                tint = Color.White,
+                tint = UsTheme.extended.onMedia,
                 modifier = Modifier.size(REPLAY_GLYPH),
             )
         }
@@ -196,7 +196,7 @@ private fun ReplayRow(onClick: () -> Unit) {
             text = "Replay",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
         )
     }
 }
@@ -227,14 +227,14 @@ private fun EndRow(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit) {
                 text = item.displayTitle,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = videoMetaLine(item.creatorName, item.createdAt, item.counts.views),
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = MUTED_ALPHA),
+                color = UsTheme.extended.onMedia.copy(alpha = MUTED_ALPHA),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -245,12 +245,16 @@ private fun EndRow(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit) {
 /** A pill button on the scrim: filled ember for the answer we expect, outlined for the other. */
 @Composable
 private fun Pill(label: String, icon: ImageVector?, filled: Boolean, onClick: () -> Unit, tag: String) {
-    val fill = if (filled) UsTheme.extended.accentSolid else Color.Transparent
+    val fill = if (filled) UsTheme.extended.accentStrong else Color.Transparent
     Row(
         modifier = Modifier
             .clip(CircleShape)
             .background(fill)
-            .border(width = 1.dp, color = if (filled) fill else Color.White.copy(alpha = MUTED_ALPHA), shape = CircleShape)
+            .border(
+                width = 1.dp,
+                color = if (filled) fill else UsTheme.extended.onMedia.copy(alpha = MUTED_ALPHA),
+                shape = CircleShape,
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -263,13 +267,18 @@ private fun Pill(label: String, icon: ImageVector?, filled: Boolean, onClick: ()
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
     ) {
         if (icon != null) {
-            Icon(imageVector = icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(PILL_GLYPH))
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = UsTheme.extended.onMedia,
+                modifier = Modifier.size(PILL_GLYPH),
+            )
         }
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
         )
     }
 }
@@ -288,7 +297,7 @@ fun EndedPoster(thumb: VideoThumb, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(UsTheme.extended.stage)
             .testTag("watch_ended_poster"),
     ) {
         BlurHashImage(hash = thumb.blurhash, modifier = Modifier.fillMaxSize())

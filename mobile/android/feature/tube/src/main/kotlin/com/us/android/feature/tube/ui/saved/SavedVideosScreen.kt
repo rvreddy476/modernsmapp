@@ -21,6 +21,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.data.SavedKind
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.model.FeedItem
@@ -36,7 +37,8 @@ import com.us.android.feature.tube.ui.home.appendFooter
 import com.us.android.feature.tube.ui.rememberTubeMoreState
 
 /**
- * "Saved videos" (header More, 2026-09-05): the viewer's bookmarked long
+ * "Saved" (header More, 2026-09-05): the viewer's bookmarked long videos and,
+ * since 2026-10-02, reels, on one page. Was: the viewer's bookmarked long
  * videos as the two-column mosaic, under Tube's chrome with a back glyph
  * and nothing lit on the bar. Empty says where a save comes from.
  */
@@ -55,8 +57,10 @@ fun SavedVideosScreen(
                 items = items,
                 thumbFor = viewModel::thumb,
                 onOpen = { item ->
-                    viewModel.onOpen(items.itemSnapshotList.items)
-                    destinations.onOpenVideo(item.id)
+                    when (viewModel.onOpen(item, items.itemSnapshotList.items)) {
+                        SavedKind.VIDEO -> destinations.onOpenVideo(item.id)
+                        SavedKind.REEL -> destinations.onOpenReels()
+                    }
                 },
                 onMore = { item -> moreState.open(item, suggested = false) },
                 bottomPadding = padding,
@@ -86,13 +90,13 @@ private fun SavedBody(
         refresh is LoadState.Loading && empty -> TubeGridSkeleton()
 
         refresh is LoadState.Error && empty -> UsErrorState(
-            message = "We couldn't load your saved videos.",
+            message = "We couldn't load what you saved.",
             onRetry = items::retry,
         )
 
         refresh is LoadState.NotLoading && empty -> UsEmptyState(
-            title = "No saved videos yet",
-            detail = "Save a video from its ⋮ menu and it will be kept here.",
+            title = "Nothing saved yet",
+            detail = "Tap Save on a video or a reel and it will be kept here.",
             modifier = Modifier.testTag("tube_saved_empty"),
         )
 
@@ -112,7 +116,7 @@ private fun SavedBody(
         ) {
             item(key = "title", span = StaggeredGridItemSpan.FullLine) {
                 Text(
-                    text = "Saved videos",
+                    text = "Saved",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = UsTheme.extended.textPrimary,

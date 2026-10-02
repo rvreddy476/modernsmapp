@@ -209,6 +209,8 @@ internal fun FeedItemDto.toDomain() = FeedItem(
         hasReacted = hasReacted,
         hasReposted = hasReposted,
         viewerReaction = viewerReaction,
+        isQueued = viewerQueued,
+        hasDisliked = viewerDisliked,
     ),
     isRepostable = isRepostable,
     score = score,

@@ -2,4 +2,6 @@
 <!-- Momentum's ground is the same navy in both modes — see values/colors.xml. -->
 <resources>
     <color name="us_background">#FF041122</color>
+    <!-- The dark theme's page ground (the web's dark canvas): see values/colors.xml. -->
+    <color name="us_window_background">#FF000000</color>
 </resources>

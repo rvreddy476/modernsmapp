@@ -1,5 +1,6 @@
 package com.us.android.core.ui
 
+import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
@@ -7,6 +8,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
 /**
  * What a screen asks of the app shell's chrome — today, only whether the
@@ -54,5 +57,27 @@ fun HideShellBottomBar(hidden: Boolean) {
     DisposableEffect(chrome, hidden) {
         chrome.hideBottomBar(hidden)
         onDispose { chrome.hideBottomBar(false) }
+    }
+}
+
+/**
+ * Keeps the STATUS bar's glyphs light while the calling screen is shown, and
+ * puts them back the way they were when it leaves (2026-10-02).
+ *
+ * The app follows the device's light / dark setting, so on a light device
+ * the status bar draws dark glyphs. A screen that is a video stage whatever
+ * the theme (Reels, where the frame runs under the status bar) would have
+ * those dark glyphs over a dark frame, unreadable; it asks for light ones
+ * here. Outside an Activity (a preview, a test) it does nothing.
+ */
+@Composable
+fun LightStatusBarGlyphs() {
+    val activity = LocalActivity.current ?: return
+    val view = LocalView.current
+    DisposableEffect(activity, view) {
+        val controller = WindowCompat.getInsetsController(activity.window, view)
+        val wasLightBar = controller.isAppearanceLightStatusBars
+        controller.isAppearanceLightStatusBars = false
+        onDispose { controller.isAppearanceLightStatusBars = wasLightBar }
     }
 }

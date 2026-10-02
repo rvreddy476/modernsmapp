@@ -122,6 +122,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.canUseSound
 import com.us.android.core.ui.HideShellBottomBar
+import com.us.android.core.ui.LightStatusBarGlyphs
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -260,6 +261,9 @@ fun ReelsScreen(
     // mode lands on a Home with its bar, and the next visit to Reels opens
     // in normal mode with a moving reel.
     HideShellBottomBar(hidden = !chrome.showBottomBar)
+    // The reel runs under the status bar and is a dark stage on either theme,
+    // so the bar's glyphs stay light here whatever the device's setting.
+    LightStatusBarGlyphs()
     // Back in full mode brings the controls back; it never leaves the tab.
     // Without this the system Back reached the root and closed the app
     // from a screen that had hidden every other way out (founder, 2026-09-04).
@@ -271,7 +275,7 @@ fun ReelsScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(UsTheme.extended.bgCanvas),
+            .background(UsTheme.extended.stage),
     ) {
         ReelsBody(
             items = items,
@@ -387,11 +391,13 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
 @Composable
 private fun BoxScope.ReelsMessages(viewModel: ReelsViewModel, more: PostMoreViewModel) {
     val soundMessage by viewModel.soundMessage.collectAsStateWithLifecycle()
+    val engagementMessage by viewModel.engagementMessage.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
     UsMessageHost(
-        message = soundMessage ?: moreMessage,
+        message = soundMessage ?: engagementMessage ?: moreMessage,
         onDismiss = {
             viewModel.dismissSoundMessage()
+            viewModel.dismissEngagementMessage()
             more.dismissMessage()
         },
     )
@@ -643,10 +649,10 @@ private fun ReelsHeader(
         showWordmark = false,
         actions = {
             IconButton(onClick = onOpenMenu, modifier = Modifier.testTag("reels_header:menu")) {
-                Icon(imageVector = UsIcons.Menu, contentDescription = "More", tint = Color.White)
+                Icon(imageVector = UsIcons.Menu, contentDescription = "More", tint = UsTheme.extended.onMedia)
             }
             IconButton(onClick = onOpenSearch, modifier = Modifier.testTag("reels_header:search")) {
-                Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = Color.White)
+                Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = UsTheme.extended.onMedia)
             }
         },
     )
@@ -843,7 +849,7 @@ private fun ReelsPager(
         beyondViewportPageCount = 1,
         modifier = Modifier
             .fillMaxSize()
-            .background(UsTheme.extended.bgCanvas),
+            .background(UsTheme.extended.stage),
     ) { page ->
         when (val content = pageAt(page, head, items, load = true)) {
             null -> Unit
@@ -926,7 +932,7 @@ private fun PendingReelPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(UsTheme.extended.bgCanvas)
+            .background(UsTheme.extended.stage)
             // The same double-tap as a real reel, so full mode is one gesture
             // wherever the pager is; the cover has no rail to hide.
             .pointerInput(onToggleMode) { detectTapGestures(onDoubleTap = { onToggleMode() }) }
@@ -943,8 +949,8 @@ private fun PendingReelPage(
         BottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
         if (head.failure == null) {
             CircularProgressIndicator(
-                color = Color.White,
-                trackColor = Color.White.copy(alpha = LOADER_TRACK_ALPHA),
+                color = UsTheme.extended.onMedia,
+                trackColor = UsTheme.extended.onMedia.copy(alpha = LOADER_TRACK_ALPHA),
                 strokeWidth = LOADER_STROKE,
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -967,7 +973,7 @@ private fun PendingReelPage(
                 Text(
                     text = head.caption,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                     maxLines = CAPTION_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -985,7 +991,7 @@ private fun PublishFailureStrip(
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(Color.Black.copy(alpha = STRIP_PLATE_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = STRIP_PLATE_ALPHA))
             .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
             .testTag("reel_pending_failure"),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
@@ -995,7 +1001,7 @@ private fun PublishFailureStrip(
             text = "Couldn't post",
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
             modifier = Modifier.semantics { contentDescription = "Couldn't post. ${failure.message}" },
         )
         if (failure.retryable) {
@@ -1012,7 +1018,7 @@ private fun StripDot() {
     Text(
         text = "·",
         style = MaterialTheme.typography.labelLarge,
-        color = Color.White.copy(alpha = DIM_ALPHA),
+        color = UsTheme.extended.onMedia.copy(alpha = DIM_ALPHA),
     )
 }
 
@@ -1236,7 +1242,7 @@ private fun TrackProgress(player: Player, polling: Boolean, onProgress: (Float) 
  */
 @Composable
 private fun ProgressRing(progress: Float, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val track = Color.White.copy(alpha = PROGRESS_TRACK_ALPHA)
+    val track = UsTheme.extended.onMedia.copy(alpha = PROGRESS_TRACK_ALPHA)
     val played = UsTheme.extended.ctaGradient
     Box(
         modifier = modifier
@@ -1281,14 +1287,14 @@ private fun PausedGlyph() {
         modifier = Modifier
             .size(PAUSE_DISC)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = PAUSE_DISC_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = PAUSE_DISC_ALPHA))
             .semantics { contentDescription = "Paused" }
             .testTag("reel_paused"),
     ) {
         Icon(
             imageVector = UsIcons.Play,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.onMedia,
             modifier = Modifier.size(PAUSE_GLYPH),
         )
     }
@@ -1301,7 +1307,11 @@ private fun BottomScrim(modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxWidth()
             .fillMaxHeight(SCRIM_FRACTION)
-            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = SCRIM_ALPHA)))),
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.Transparent, UsTheme.extended.stage.copy(alpha = SCRIM_ALPHA)),
+                ),
+            ),
     )
 }
 
@@ -1375,7 +1385,7 @@ private fun RailControlButton(
             icon = if (reacted) UsIcons.HeartFilled else UsIcons.HeartOutline,
             description = if (reacted) "Liked" else "Like",
             label = control.label,
-            tint = if (reacted) UsTheme.extended.liveRed else Color.White,
+            tint = if (reacted) UsTheme.extended.liveRed else UsTheme.extended.onMedia,
             onClick = { actions.onReact(item.id, item.viewer.hasReacted) },
         )
         RailKind.COMMENT -> RailButton(
@@ -1394,7 +1404,7 @@ private fun RailControlButton(
             icon = if (bookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
             description = if (bookmarked) "Saved" else "Save",
             label = control.label,
-            tint = if (bookmarked) UsTheme.extended.statusWarning else Color.White,
+            tint = if (bookmarked) UsTheme.extended.accent else UsTheme.extended.onMedia,
             onClick = { actions.onBookmark(item.id, item.viewer.isBookmarked) },
         )
     }
@@ -1411,7 +1421,7 @@ private fun RailButton(
     description: String,
     label: String?,
     onClick: () -> Unit,
-    tint: Color = Color.White,
+    tint: Color = UsTheme.extended.onMedia,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1440,7 +1450,7 @@ private fun RailButton(
                 style = MaterialTheme.typography.labelMedium,
                 fontSize = RAIL_LABEL_SIZE,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 1,
             )
         }
@@ -1530,7 +1540,7 @@ private fun ReelOverlay(
                 style = MaterialTheme.typography.bodyMedium,
                 fontSize = NAME_SIZE,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
@@ -1571,7 +1581,7 @@ private fun ReelCaption(item: FeedItem) {
         text = item.text,
         style = MaterialTheme.typography.bodyMedium,
         fontSize = CAPTION_SIZE,
-        color = Color.White,
+        color = UsTheme.extended.onMedia,
         maxLines = if (expanded) Int.MAX_VALUE else CAPTION_LINES,
         overflow = TextOverflow.Ellipsis,
         onTextLayout = { if (!expanded) overflowed = it.hasVisualOverflow },
@@ -1580,7 +1590,7 @@ private fun ReelCaption(item: FeedItem) {
         Text(
             text = if (expanded) "less" else "more",
             style = MaterialTheme.typography.labelLarge,
-            color = Color.White.copy(alpha = DIM_ALPHA),
+            color = UsTheme.extended.onMedia.copy(alpha = DIM_ALPHA),
             modifier = Modifier
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
@@ -1681,7 +1691,7 @@ private fun ReelSoundLine(line: SoundLine, onClick: () -> Unit, modifier: Modifi
 @Composable
 private fun ReelOverlayWithSoundPreview() {
     UsTheme {
-        Box(modifier = Modifier.background(UsTheme.extended.bgCanvas)) {
+        Box(modifier = Modifier.background(UsTheme.extended.stage)) {
             Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
                 ReelHashtags(tags = listOf("reels", "monsoon", "walk"), onOpenHashtag = {})
                 ReelSoundLine(line = SoundLine(label = "Original sound - Asha", added = true), onClick = {})
