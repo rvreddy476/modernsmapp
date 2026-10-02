@@ -185,6 +185,10 @@ type CandidateQuery struct {
 	// from the deck. Defaults to false so the existing deck shape
 	// is preserved.
 	VerifiedOnly bool
+	// ExcludeActed (mechanic M1, the refilling deck) keeps out everyone the
+	// viewer has already acted on: a live spark (newer than the pair's last
+	// closed match) or an open match. Passes are ExcludePassed.
+	ExcludeActed bool
 }
 
 // FetchCandidates returns up to Limit profiles that pass the hard-filter
@@ -288,6 +292,10 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		where = append(where, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM dating_passes dp
 		    WHERE dp.user_id = $1 AND dp.candidate_id = p.user_id
 		      AND dp.passed_at > now() - make_interval(secs => $%d))`, len(args)))
+	}
+
+	if q.ExcludeActed {
+		where = append(where, `NOT `+actedOnPredicate("$1", "p.user_id"))
 	}
 
 	// P0-10 Phase A: geohash prefix prefilter. When the viewer has a

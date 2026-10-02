@@ -99,6 +99,18 @@ func (s *Service) requireActiveAdultCandidate(ctx context.Context, candidateID u
 // applicable. Returns the persisted Spark and an optional matchID — when
 // non-nil, a match was formed as a side effect.
 func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*store.Spark, *uuid.UUID, error) {
+	sp, matchID, err := s.createSpark(ctx, fromUserID, toUserID, targetKind, targetRef, note)
+	if err == nil {
+		// Mechanic M1: a spark sent from the deck uses one card of the
+		// daily allowance. AcceptSpark answers an incoming spark, not a
+		// deck card, so it goes through createSpark and costs none.
+		s.recordDeckAction(ctx, fromUserID, toUserID, store.DeckActionSpark)
+	}
+	return sp, matchID, err
+}
+
+// createSpark is CreateSpark without the deck bookkeeping.
+func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*store.Spark, *uuid.UUID, error) {
 	if fromUserID == uuid.Nil {
 		return nil, nil, fmt.Errorf("invalid: fromUserID required")
 	}
@@ -291,5 +303,10 @@ func (s *Service) AcceptSpark(ctx context.Context, sparkID, recipientID uuid.UUI
 	if sp.ToUserID != recipientID || sp.DeclinedAt != nil {
 		return nil, nil, store.ErrSparkNotFound
 	}
-	return s.CreateSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "")
+	out, matchID, err := s.createSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "")
+	if err == nil && s.mechanics.DeckRefill {
+		// The sender may also be a card in the recipient's cached batch.
+		s.removeFromCachedDeck(ctx, recipientID, sp.FromUserID)
+	}
+	return out, matchID, err
 }

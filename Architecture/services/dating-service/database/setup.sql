@@ -1464,3 +1464,20 @@ CREATE TABLE IF NOT EXISTS dating_boost_balances (
     balance    INT NOT NULL DEFAULT 0 CHECK (balance >= 0),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M1 — the refilling swipe deck (DATING_DECK_REFILL_ENABLED).
+--
+-- dating_deck_ledger: one row per deck card the user acted on (spark | pass |
+--   super_spark). The daily card allowance counts the rows of the last 24
+--   hours; a rewind (M2) takes its pass row back out. It is a quota ledger,
+--   not a history: a profile purge deletes the user's rows.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_deck_ledger (
+    user_id      UUID        NOT NULL,
+    candidate_id UUID        NOT NULL,
+    action       TEXT        NOT NULL CHECK (action IN ('spark','pass','super_spark')),
+    acted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_deck_ledger_user
+    ON dating_deck_ledger(user_id, acted_at DESC);

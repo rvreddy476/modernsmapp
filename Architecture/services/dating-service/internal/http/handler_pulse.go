@@ -148,6 +148,11 @@ type pulseMeta struct {
 	Size        int       `json:"size"`
 	CohortGated bool      `json:"cohort_gated"`
 	RequestID   string    `json:"request_id,omitempty"`
+	// Mechanic M1, omitted while DATING_DECK_REFILL_ENABLED is off (see
+	// service.PulseMeta).
+	DailyLimit     int        `json:"daily_limit,omitempty"`
+	RemainingToday int        `json:"remaining_today,omitempty"`
+	ResetsAt       *time.Time `json:"resets_at,omitempty"`
 }
 
 // pulseEnvelope is the standard {data, meta} envelope for the deck: data is
@@ -178,6 +183,10 @@ func envelopePulse(ctx context.Context, resp *service.PulseResponse) pulseEnvelo
 			Size:        resp.Meta.Size,
 			CohortGated: resp.CohortGated,
 			RequestID:   trace.RequestIDFrom(ctx),
+
+			DailyLimit:     resp.Meta.DailyLimit,
+			RemainingToday: resp.Meta.RemainingToday,
+			ResetsAt:       resp.Meta.ResetsAt,
 		},
 		CohortGated: resp.CohortGated,
 	}

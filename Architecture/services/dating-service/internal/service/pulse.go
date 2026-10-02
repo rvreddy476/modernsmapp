@@ -83,6 +83,15 @@ type PulseResponse struct {
 type PulseMeta struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	Size        int       `json:"size"`
+	// Mechanic M1 (the refilling deck), all omitted while the flag is off.
+	// DailyLimit is the caller's card allowance per rolling 24 hours,
+	// RemainingToday what is left of it (omitted at 0: a client reads
+	// "daily_limit present, remaining_today absent" as none left) and
+	// ResetsAt when the oldest counted card leaves the window (omitted while
+	// nothing has been used).
+	DailyLimit     int        `json:"daily_limit,omitempty"`
+	RemainingToday int        `json:"remaining_today,omitempty"`
+	ResetsAt       *time.Time `json:"resets_at,omitempty"`
 }
 
 // pulseCacheTTL is the TTL on `dating:pulse:today:{user_id}`.
@@ -139,6 +148,9 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 	} else {
 		slog.Warn("pulse risk lookup failed", "viewer_id", viewerID, "error", rerr)
 	}
+	if s.mechanics.DeckRefill {
+		return s.pulseTodayRefill(ctx, viewerID)
+	}
 	if cached := s.readPulseCache(ctx, viewerID); cached != nil {
 		return cached, nil
 	}
@@ -149,6 +161,80 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 	}
 	s.writePulseCache(ctx, viewerID, resp)
 	return resp, nil
+}
+
+// emptyDeckRetryAfter is how long an empty cached deck is trusted before the
+// refilling deck looks for candidates again.
+const emptyDeckRetryAfter = 5 * time.Minute
+
+// deckDailyLimit is the caller's card allowance: the pass allowance while
+// they hold an unexpired pass, the free one otherwise (and when the pass
+// lookup fails — an outage never widens an allowance).
+func (s *Service) deckDailyLimit(ctx context.Context, viewerID uuid.UUID) int {
+	premium, err := s.store.IsPremium(ctx, viewerID)
+	if err != nil {
+		slog.Warn("deck limit: premium lookup failed; using the free allowance", "viewer_id", viewerID, "error", err)
+		return s.mechanics.DeckDailyLimitFree
+	}
+	if premium {
+		return s.mechanics.DeckDailyLimitPass
+	}
+	return s.mechanics.DeckDailyLimitFree
+}
+
+// pulseTodayRefill is GetPulseToday with mechanic M1 on. The deck is served
+// in batches: when the cached batch is used up the next one is computed, so
+// the deck refills as cards are acted on, until the caller's daily allowance
+// is spent. The response never holds more cards than the allowance has left,
+// and a candidate the caller already acted on is never in it
+// (CandidateQuery.ExcludeActed plus the pass cooldown).
+func (s *Service) pulseTodayRefill(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
+	limit := s.deckDailyLimit(ctx, viewerID)
+	used, oldest, err := s.store.DeckUsage(ctx, viewerID)
+	if err != nil {
+		return nil, err
+	}
+	remaining := limit - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	meta := PulseMeta{GeneratedAt: time.Now().UTC(), DailyLimit: limit, RemainingToday: remaining}
+	if oldest != nil {
+		resets := oldest.Add(store.DeckQuotaWindow).UTC()
+		meta.ResetsAt = &resets
+	}
+	if remaining == 0 {
+		return &PulseResponse{Data: []PulseCard{}, Meta: meta}, nil
+	}
+
+	deck := s.readPulseCache(ctx, viewerID)
+	if deck == nil || (len(deck.Data) == 0 && time.Since(deck.Meta.GeneratedAt) > emptyDeckRetryAfter) {
+		if deck, err = s.computePulseToday(ctx, viewerID); err != nil {
+			return nil, err
+		}
+		s.writePulseCache(ctx, viewerID, deck)
+	}
+	cards := deck.Data
+	if len(cards) > remaining {
+		cards = cards[:remaining]
+	}
+	meta.GeneratedAt = deck.Meta.GeneratedAt
+	meta.Size = len(cards)
+	return &PulseResponse{Data: cards, Meta: meta}, nil
+}
+
+// recordDeckAction notes a deck card the caller acted on (mechanic M1): the
+// card counts against the daily allowance and leaves the cached batch. A
+// failed ledger write is logged, not returned: the action itself is already
+// stored, and the candidate stays out of the deck either way.
+func (s *Service) recordDeckAction(ctx context.Context, viewerID, candidateID uuid.UUID, action string) {
+	if !s.mechanics.DeckRefill {
+		return
+	}
+	if err := s.store.RecordDeckAction(ctx, viewerID, candidateID, action); err != nil {
+		slog.Warn("deck ledger write failed", "viewer_id", viewerID, "action", action, "error", err)
+	}
+	s.removeFromCachedDeck(ctx, viewerID, candidateID)
 }
 
 // cacheKey is versioned. v2 (lane D7) cards carry distance and last-active
@@ -292,6 +378,7 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	q := store.CandidateQuery{
 		ViewerID:      viewerID,
 		ExcludePassed: true,
+		ExcludeActed:  s.mechanics.DeckRefill,
 		Limit:         50,
 	}
 	if prefs.MinAge != nil {
@@ -575,6 +662,7 @@ func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.
 		return nil, err
 	}
 	s.removeFromCachedDeck(ctx, viewerID, candidateID)
+	s.recordDeckAction(ctx, viewerID, candidateID, store.DeckActionPass)
 	return &PassResult{
 		Passed:        true,
 		CandidateID:   candidateID,

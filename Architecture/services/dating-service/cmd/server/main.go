@@ -76,6 +76,13 @@ func main() {
 		slog.Error("dating-service: refusing to start", "error", err)
 		os.Exit(1)
 	}
+	// Pulse mechanics flags (DATING_*_ENABLED; on by default in local/dev
+	// only) and their limits.
+	mechanicsCfg, err := datinghttp.ResolveMechanicsConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
 	// Lane D5: selfie bars (DATING_SELFIE_*), the media-service address for
 	// face comparison, and DIGILOCKER_MODE (mock refused outside local/dev).
 	selfieCfg, err := datinghttp.ResolveSelfieConfig(os.Getenv)
@@ -218,6 +225,9 @@ func main() {
 	datingStore.SetDeclineCooldown(declineCooldown)
 	slog.Info("decline cooldown configured", "cooldown", declineCooldown)
 	datingSvc := service.New(datingStore, rdb)
+	datingSvc.SetMechanicsConfig(mechanicsCfg)
+	slog.Info("pulse mechanics configured", "deck_refill", mechanicsCfg.DeckRefill,
+		"deck_daily_limit_free", mechanicsCfg.DeckDailyLimitFree, "deck_daily_limit_pass", mechanicsCfg.DeckDailyLimitPass)
 	datingSvc.SetLocationPrivacyConfig(locationCfg)
 	slog.Info("location privacy limits configured",
 		"location_change_min_interval", locationCfg.LocationChangeMinInterval,

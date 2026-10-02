@@ -69,6 +69,9 @@ type Service struct {
 	// for the best-effort block-propagation call to graph-service. Avoids
 	// the http.DefaultClient leak that hangs goroutines on a slow graph.
 	graphHTTPClient *http.Client
+
+	// Pulse mechanics flags and limits (mechanics.go). Zero value: all off.
+	mechanics MechanicsConfig
 }
 
 // New builds a Service. The producer + graphProvider are set later in main.go.

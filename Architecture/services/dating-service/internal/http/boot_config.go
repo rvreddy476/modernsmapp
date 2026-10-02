@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/dating-service/internal/payments"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 )
@@ -410,4 +411,44 @@ func ResolveTrustSafetyURL(getenv func(string) string) (baseURL, warning string,
 		return "", "", fmt.Errorf("TRUST_SAFETY_SERVICE_URL must be an absolute http(s) URL")
 	}
 	return strings.TrimRight(raw, "/"), "", nil
+}
+
+// envFlag reads a boolean flag: blank keeps def; true/1 and false/0 are the
+// only other accepted values.
+func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(getenv(key))) {
+	case "":
+		return def, nil
+	case "true", "1":
+		return true, nil
+	case "false", "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("%s must be true or false, got %q", key, getenv(key))
+}
+
+// ResolveMechanicsConfig reads the Pulse mechanics flags and limits. Every
+// flag defaults to ON only when ENV is local or dev and to OFF everywhere
+// else, so a mechanic reaches staging or production only by an explicit
+// "true".
+//
+//	DATING_DECK_REFILL_ENABLED     the refilling swipe deck (M1)
+//	DATING_DECK_DAILY_LIMIT_FREE   1-500,  default 25 cards per rolling 24h
+//	DATING_DECK_DAILY_LIMIT_PASS   1-2000, default 100 for pass holders
+//
+// Any malformed value is an error, on which main refuses to start.
+func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig, error) {
+	cfg := service.DefaultMechanicsConfig()
+	def := payments.IsLocalEnv(getenv("ENV"))
+	var err error
+	if cfg.DeckRefill, err = envFlag(getenv, "DATING_DECK_REFILL_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_DECK_DAILY_LIMIT_FREE", 1, 500, &cfg.DeckDailyLimitFree); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_DECK_DAILY_LIMIT_PASS", 1, 2000, &cfg.DeckDailyLimitPass); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }
