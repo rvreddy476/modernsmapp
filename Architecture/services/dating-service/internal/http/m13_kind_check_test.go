@@ -25,6 +25,7 @@ var m13Fixtures = []string{
 	"comment_filter_get_200",
 	"comment_filter_put_200",
 	"comment_filter_put_400_invalid",
+	"sparks_incoming_get_200_note_hidden",
 }
 
 func m13Config(on bool) service.MechanicsConfig {
@@ -59,6 +60,24 @@ func TestM13KindCheckContracts(t *testing.T) {
 	assertContract(t, contractDo(d.env.r, http.MethodGet, "/v1/dating/comment-filter", ``, d.viewer), http.StatusOK, "comment_filter_get_200", labels)
 	assertContract(t, contractDo(d.env.r, http.MethodPut, "/v1/dating/comment-filter", `{"filter_unkind":true,"words":["a"]}`, d.viewer),
 		http.StatusBadRequest, "comment_filter_put_400_invalid", labels)
+
+	// An incoming spark whose note the filter hides carries note_hidden
+	// (a fresh viewer, so it is the only one).
+	inc := newM1Deck(t, m13Config(true))
+	sender := inc.candidate()
+	noted := contractDo(inc.env.r, http.MethodPost, "/v1/dating/sparks", `{"to_user_id":"`+inc.viewer.String()+`","target_kind":"prompt","target_ref":"m13","note":"you look stupid"}`, sender)
+	var created struct {
+		Data struct {
+			Spark struct {
+				ID uuid.UUID `json:"id"`
+			} `json:"spark"`
+		} `json:"data"`
+	}
+	if noted.Code != http.StatusCreated || json.Unmarshal(noted.Body.Bytes(), &created) != nil {
+		t.Fatalf("spark: %d %s", noted.Code, noted.Body.String())
+	}
+	assertContract(t, contractDo(inc.env.r, http.MethodGet, "/v1/dating/sparks/incoming", ``, inc.viewer), http.StatusOK, "sparks_incoming_get_200_note_hidden",
+		map[uuid.UUID]string{inc.viewer: "<viewer>", sender: "<sender>", created.Data.Spark.ID: "<spark>"})
 
 	off := newM1Deck(t, m13Config(false))
 	assertContract(t, contractDo(off.env.r, http.MethodPost, "/v1/dating/kind-check", `{"text":"hi"}`, off.viewer),
