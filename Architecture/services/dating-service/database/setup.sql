@@ -1550,3 +1550,38 @@ BEGIN
             CHECK (product IN ('pass_30d','pass_90d','pass_365d','boost','super_spark_5','super_spark_15'));
     END IF;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M5 — first move (DATING_FIRST_MOVE_ENABLED).
+--
+-- dating_profiles.first_move_enabled: the per-user opt-in to sending the
+--   first message in every new match.
+-- dating_opening_questions: up to three questions per user that a match may
+--   answer as the first message. Replacing the set archives the old rows;
+--   a profile purge deletes them.
+-- dating_matches.first_mover_ids: snapshot, when the match forms, of who
+--   sends the first message (empty: anyone, the seven-day window).
+-- dating_match_extend_ledger: one row per free 24-hour extend; the free
+--   allowance counts the rows of the last 24 hours.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS first_move_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dating_matches  ADD COLUMN IF NOT EXISTS first_mover_ids UUID[] NOT NULL DEFAULT '{}';
+
+CREATE TABLE IF NOT EXISTS dating_opening_questions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID        NOT NULL,
+    position    INT         NOT NULL CHECK (position BETWEEN 1 AND 3),
+    text        TEXT        NOT NULL CHECK (length(text) BETWEEN 1 AND 600),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    archived_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dating_opening_questions_live
+    ON dating_opening_questions(user_id, position) WHERE archived_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS dating_match_extend_ledger (
+    user_id     UUID        NOT NULL,
+    match_id    UUID        NOT NULL,
+    extended_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_match_extend_ledger_user
+    ON dating_match_extend_ledger(user_id, extended_at DESC);

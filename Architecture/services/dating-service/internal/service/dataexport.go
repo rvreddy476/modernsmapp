@@ -153,6 +153,14 @@ type UserDataExport struct {
 	ReportsAgainst []ExportedReportAgainst `json:"reports_against,omitempty"`
 	PanicIncidents []ExportedPanicIncident `json:"panic_incidents,omitempty"`
 	Meets          []ExportedMeet          `json:"meets,omitempty"`
+	// Mechanic M5: the first-move opt-in and the live opening questions.
+	FirstMove *ExportedFirstMove `json:"first_move,omitempty"`
+}
+
+// ExportedFirstMove is the user's first-move setting.
+type ExportedFirstMove struct {
+	Enabled   bool                    `json:"enabled"`
+	Questions []store.OpeningQuestion `json:"opening_questions,omitempty"`
 }
 
 // ExportedSpark is the redacted Spark shape — counterparty is just an id.
@@ -253,6 +261,10 @@ func (s *Service) BuildExportPayload(ctx context.Context, userID uuid.UUID) ([]b
 	}
 	if prefs, err := s.store.GetPreferences(ctx, userID); err == nil {
 		out.Preferences = prefs
+	}
+
+	if fm, err := s.store.GetFirstMoveSettings(ctx, userID); err == nil && (fm.Enabled || len(fm.Questions) > 0) {
+		out.FirstMove = &ExportedFirstMove{Enabled: fm.Enabled, Questions: fm.Questions}
 	}
 
 	if sent, err := s.store.ListSparksSent(ctx, userID); err == nil {

@@ -38,6 +38,10 @@ type MechanicsConfig struct {
 	// LikedYouGate (DATING_LIKED_YOU_GATE_ENABLED): only a pass holder sees
 	// who sparked them; everyone else gets the count and blurred cards.
 	LikedYouGate bool
+
+	// FirstMove (DATING_FIRST_MOVE_ENABLED): a per-user opt-in to sending
+	// the first message, with opening questions and a free 24-hour extend.
+	FirstMove bool
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.

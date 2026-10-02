@@ -28,20 +28,23 @@ type Match struct {
 	LastMessageAt  *time.Time     `json:"last_message_at,omitempty"`
 	ExpiresAt      *time.Time     `json:"expires_at,omitempty"`
 	ClosedBy       *uuid.UUID     `json:"closed_by,omitempty"`
+	// FirstMoverIDs (mechanic M5): who sends the first message; empty means
+	// anyone. Not serialised: each viewer gets their own "first_move" view.
+	FirstMoverIDs []uuid.UUID `json:"-"`
 }
 
 // ErrMatchNotFound is returned when a match id does not exist.
 var ErrMatchNotFound = errors.New("not_found: match not found")
 
 const matchSelectCols = `id, user_a, user_b, status, conversation_id, spark_target,
-    matched_at, first_message_at, last_message_at, expires_at, closed_by`
+    matched_at, first_message_at, last_message_at, expires_at, closed_by, first_mover_ids`
 
 func scanMatch(row pgx.Row) (*Match, error) {
 	m := &Match{}
 	var sparkRaw []byte
 	if err := row.Scan(
 		&m.ID, &m.UserA, &m.UserB, &m.Status, &m.ConversationID, &sparkRaw,
-		&m.MatchedAt, &m.FirstMessageAt, &m.LastMessageAt, &m.ExpiresAt, &m.ClosedBy,
+		&m.MatchedAt, &m.FirstMessageAt, &m.LastMessageAt, &m.ExpiresAt, &m.ClosedBy, &m.FirstMoverIDs,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrMatchNotFound
@@ -165,15 +168,17 @@ func (s *Store) CreateOrGetOpenMatch(ctx context.Context, userA, userB uuid.UUID
 	return uuid.Nil, false, fmt.Errorf("insert match: open match for the pair kept changing")
 }
 
-// MarkMatchActive sets status='matched', conversation_id and the 7-day
-// expiry window. Idempotent: re-running is safe.
+// MarkMatchActive sets status='matched', conversation_id and the expiry
+// window: 24 hours for a first-move match (mechanic M5), 7 days otherwise.
+// Idempotent: re-running is safe.
 func (s *Store) MarkMatchActive(ctx context.Context, matchID, conversationID uuid.UUID) error {
 	tag, err := s.db.Exec(ctx, `
         UPDATE dating_matches
         SET conversation_id = $2,
             status = 'matched',
             matched_at = COALESCE(matched_at, now()),
-            expires_at = now() + INTERVAL '7 days'
+            expires_at = now() + CASE WHEN cardinality(first_mover_ids) > 0
+                                      THEN INTERVAL '24 hours' ELSE INTERVAL '7 days' END
         WHERE id = $1`, matchID, conversationID)
 	if err != nil {
 		return fmt.Errorf("mark match active: %w", err)

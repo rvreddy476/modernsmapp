@@ -398,6 +398,9 @@ func (s *Service) GetPersonCard(ctx context.Context, viewerID, targetID uuid.UUI
 type MatchWithPerson struct {
 	*store.Match
 	Person *PersonCard `json:"person,omitempty"`
+	// FirstMove (mechanic M5) is present while the match waits for its
+	// first message under the first-move rule.
+	FirstMove *FirstMoveView `json:"first_move,omitempty"`
 }
 
 // SparkWithPerson is an incoming spark plus the sender's compact card.
@@ -426,7 +429,7 @@ func (s *Service) decorateMatches(ctx context.Context, viewerID uuid.UUID, match
 	cards := s.personCards(ctx, viewerID, ids)
 	out := make([]*MatchWithPerson, 0, len(matches))
 	for _, m := range matches {
-		out = append(out, &MatchWithPerson{Match: m, Person: cards[otherParticipant(m, viewerID)]})
+		out = append(out, &MatchWithPerson{Match: m, Person: cards[otherParticipant(m, viewerID)], FirstMove: s.firstMoveView(ctx, m, viewerID)})
 	}
 	return out
 }
@@ -455,5 +458,5 @@ func (s *Service) GetMatchViewForUser(ctx context.Context, matchID, userID uuid.
 		return nil, err
 	}
 	other := otherParticipant(m, userID)
-	return &MatchWithPerson{Match: m, Person: s.personCards(ctx, userID, []uuid.UUID{other})[other]}, nil
+	return &MatchWithPerson{Match: m, Person: s.personCards(ctx, userID, []uuid.UUID{other})[other], FirstMove: s.firstMoveView(ctx, m, userID)}, nil
 }

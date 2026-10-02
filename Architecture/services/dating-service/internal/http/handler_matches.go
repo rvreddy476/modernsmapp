@@ -82,7 +82,8 @@ func (h *Handler) ExtendMatch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.ExtendMatch(c.Request.Context(), matchID, userID); err != nil {
+	out, err := h.svc.ExtendMatchFor(c.Request.Context(), matchID, userID)
+	if err != nil {
 		if errors.Is(err, store.ErrMatchNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "match not found", nil)
 			return
@@ -90,7 +91,95 @@ func (h *Handler) ExtendMatch(c *gin.Context) {
 		respondServiceError(c, err, http.StatusInternalServerError, "EXTEND_FAILED")
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"extended": true, "extra_days": 7}, nil)
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// openingAnswerRequest is the body of POST /matches/:id/opening-answer.
+type openingAnswerRequest struct {
+	QuestionID string `json:"question_id"`
+	Answer     string `json:"answer"`
+}
+
+// PostOpeningAnswer — POST /v1/dating/matches/:id/opening-answer
+//
+// Mechanic M5: the person waiting on a first-move match answers one of the
+// first mover's opening questions; the answer becomes the first message.
+func (h *Handler) PostOpeningAnswer(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	matchID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	var body openingAnswerRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	qid, err := uuid.Parse(body.QuestionID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid question_id", nil)
+		return
+	}
+	out, err := h.svc.SendOpeningAnswer(c.Request.Context(), matchID, userID, qid, body.Answer)
+	if err != nil {
+		if errors.Is(err, store.ErrMatchNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "match not found", nil)
+			return
+		}
+		respondServiceError(c, err, http.StatusInternalServerError, "OPENING_ANSWER_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, out, nil)
+}
+
+// firstMoveRequest is the body of PUT /first-move. Absent fields are left
+// as they are; "questions": [] removes every question.
+type firstMoveRequest struct {
+	Enabled   *bool     `json:"enabled"`
+	Questions *[]string `json:"questions"`
+}
+
+// GetFirstMove — GET /v1/dating/first-move (mechanic M5).
+func (h *Handler) GetFirstMove(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetFirstMove(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// PutFirstMove — PUT /v1/dating/first-move (mechanic M5).
+func (h *Handler) PutFirstMove(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body firstMoveRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	var questions []string
+	if body.Questions != nil {
+		questions = *body.Questions
+		if questions == nil {
+			questions = []string{}
+		}
+	}
+	out, err := h.svc.PutFirstMove(c.Request.Context(), userID, body.Enabled, questions)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
 
 // MatchFirstMessage — POST /v1/dating/internal/matches/:id/first-message

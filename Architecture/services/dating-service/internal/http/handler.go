@@ -164,6 +164,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/matches/:id", h.GetMatch)
 		dating.POST("/matches/:id/close", h.CloseMatch)
 		dating.POST("/matches/:id/extend", h.ExtendMatch)
+		// Mechanic M5 — the waiting person's answer to an opening question.
+		dating.POST("/matches/:id/opening-answer", h.PostOpeningAnswer)
+		// Mechanic M5 — the first-move opt-in and opening questions.
+		dating.GET("/first-move", h.GetFirstMove)
+		dating.PUT("/first-move", h.PutFirstMove)
 		// Moved to InternalFirstMessagePath; 410 for one release.
 		dating.POST("/matches/:id/first-message", movedTo(InternalFirstMessagePath))
 
@@ -460,6 +465,51 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
+		return
+	}
+	// Mechanic M5 — first move.
+	if errors.Is(err, service.ErrOpeningQuestionsTooMany) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_QUESTIONS_TOO_MANY", "too many opening questions",
+			map[string]any{"max": service.MaxOpeningQuestions})
+		return
+	}
+	if errors.Is(err, service.ErrOpeningQuestionInvalid) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_QUESTION_INVALID", "an opening question is too long or empty",
+			map[string]any{"max_length": service.MaxOpeningQuestionLen})
+		return
+	}
+	if errors.Is(err, service.ErrOpeningQuestionRefused) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_QUESTION_REFUSED", "opening questions cannot contain phone numbers, email addresses or links", nil)
+		return
+	}
+	if errors.Is(err, service.ErrFirstMoveNotPending) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FIRST_MOVE_NOT_PENDING", "this match is not waiting for an opening answer from you", nil)
+		return
+	}
+	if errors.Is(err, service.ErrOpeningQuestionUnknown) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "OPENING_QUESTION_UNKNOWN", "that opening question is not available", nil)
+		return
+	}
+	if errors.Is(err, service.ErrOpeningAnswerInvalid) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_ANSWER_INVALID", "an answer is too long or empty",
+			map[string]any{"max_length": service.MaxOpeningAnswerLen})
+		return
+	}
+	if errors.Is(err, service.ErrOpeningAnswerRefused) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_ANSWER_REFUSED", "answers cannot contain phone numbers, email addresses or links", nil)
+		return
+	}
+	if errors.Is(err, service.ErrChatUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "CHAT_UNAVAILABLE", "chat is unavailable; try again shortly", nil)
+		return
+	}
+	var extendLimited *service.ExtendLimitError
+	if errors.As(err, &extendLimited) {
+		details := map[string]any{"limit": extendLimited.Limit, "window_hours": int(store.FreeExtendWindow.Hours())}
+		if extendLimited.ResetsAt != nil {
+			details["resets_at"] = extendLimited.ResetsAt.Format(time.RFC3339)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "EXTEND_LIMIT_REACHED", extendLimited.Error(), details)
 		return
 	}
 	if errors.Is(err, service.ErrLikedYouLocked) {
