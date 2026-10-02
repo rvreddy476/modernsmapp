@@ -179,6 +179,12 @@ type ConversationResponse struct {
 	// earlier client and capture stays byte-compatible.
 	IsPinned bool `json:"is_pinned,omitempty"`
 	IsMuted  bool `json:"is_muted,omitempty"`
+
+	// A Pulse match's chat (dating mechanic M13): source_app "dating" and
+	// its match id, so a client can tell from any entry point. Omitted for
+	// every other conversation, so earlier captures stay byte-compatible.
+	SourceApp string     `json:"source_app,omitempty"`
+	MatchID   *uuid.UUID `json:"match_id,omitempty"`
 }
 
 type ReactionSummary struct {
@@ -755,6 +761,8 @@ func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit
 			HasUnread:          hasUnread,
 			IsPinned:           settings[c.ID].IsPinned,
 			IsMuted:            settings[c.ID].IsMuted,
+			SourceApp:          datingSourceApp(c.SourceApp),
+			MatchID:            datingMatchID(c.SourceApp, c.MatchID),
 		})
 	}
 	s.resolveGroupAvatarURLs(ctx, userID, out)
@@ -1772,7 +1780,25 @@ func (s *Service) getConversationResponse(ctx context.Context, convID uuid.UUID)
 		LastMessageAt:      conv.LastMessageAt,
 		LastMessagePreview: conv.LastMessagePreview,
 		LastMessageSender:  conv.LastMessageSender,
+		SourceApp:          datingSourceApp(conv.SourceApp),
+		MatchID:            datingMatchID(conv.SourceApp, conv.MatchID),
 	}, nil
+}
+
+// datingSourceApp shows the source app only for a Pulse chat.
+func datingSourceApp(app string) string {
+	if app == "dating" {
+		return app
+	}
+	return ""
+}
+
+// datingMatchID shows the match id only for a Pulse chat.
+func datingMatchID(app string, id *uuid.UUID) *uuid.UUID {
+	if app != "dating" {
+		return nil
+	}
+	return id
 }
 
 // getConversationResponseFor is getConversationResponse plus the viewer-

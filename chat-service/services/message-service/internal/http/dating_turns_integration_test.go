@@ -75,7 +75,11 @@ func TestDatingTurnsOwedEndToEnd(t *testing.T) {
 	}
 
 	a, b, c := uuid.New(), uuid.New(), uuid.New()
-	ab, _ := newMatch(a, b)
+	ab, abMatch := newMatch(a, b)
+	// A Pulse chat says so, with its match, from any entry point.
+	if conv, err := svc.GetConversation(ctx, a, ab); err != nil || conv.SourceApp != "dating" || conv.MatchID == nil || *conv.MatchID != abMatch {
+		t.Fatalf("dating conversation = %+v (err %v), want source_app dating and its match", conv, err)
+	}
 	ac, acMatch := newMatch(a, c)
 	if owed(a) != 0 {
 		t.Fatalf("no messages yet, but a owes %d", owed(a))
@@ -112,5 +116,8 @@ func TestDatingTurnsOwedEndToEnd(t *testing.T) {
 	}
 	if owed(b) != 0 {
 		t.Fatalf("a plain chat counts as a dating turn: %d", owed(b))
+	}
+	if conv, err := svc.GetConversation(ctx, a, ab); err != nil || conv.SourceApp != "" || conv.MatchID != nil {
+		t.Fatalf("a plain chat shows source_app %q match %v (err %v)", conv.SourceApp, conv.MatchID, err)
 	}
 }
