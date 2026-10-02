@@ -185,6 +185,21 @@ class OfflineWireTest {
         )
     }
 
+    /** `renewable` arrives on valid rows from 2 Oct 2026; an older server sends none. */
+    @Test
+    fun `a valid answer is renewable unless the server says it is not`() {
+        val answers = answersOf(
+            """[{"post_id":"said-yes","valid":true,"renewable":true},
+                {"post_id":"said-no","valid":true,"renewable":false},
+                {"post_id":"not-said","valid":true},
+                {"post_id":"null","valid":true,"renewable":null}]""",
+        )
+
+        assertThat(answers.mapValues { (it.value as OfflineCheckAnswer.Valid).renewable }).containsExactlyEntriesIn(
+            mapOf("said-yes" to true, "said-no" to false, "not-said" to true, "null" to true),
+        )
+    }
+
     @Test
     fun `an empty or null check answers for nobody`() {
         assertThat(answersOf("[]")).isEmpty()

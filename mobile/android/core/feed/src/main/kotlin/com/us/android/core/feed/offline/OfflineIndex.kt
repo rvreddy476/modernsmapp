@@ -6,14 +6,37 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
 
-/** The index file's whole content. */
+/**
+ * The index file's whole content: ONE account's copies in front ([ownerId],
+ * [copies]), and every other account's behind it ([held]).
+ *
+ * Version 1 had only the front set; it reads as a version 2 with nothing
+ * held and no stamp.
+ */
 @Serializable
 data class OfflineIndexFile(
-    val version: Int = 1,
+    val version: Int = 2,
     /** Whose copies these are. A different viewer on this device never sees or plays them. */
     val ownerId: String = "",
     /** The `device_id` the copies were granted under: what a remove must name, even after settings were cleared. */
     val deviceId: String = "",
+    val copies: List<OfflineCopy> = emptyList(),
+    /**
+     * When [ownerId] signed out (or was found signed out), on this device's
+     * clock; null while they are signed in. Stamped copies are shown to
+     * nobody, and are deleted once the stamp is 48 hours old.
+     */
+    val signedOutAtMs: Long? = null,
+    /** Other accounts' copies, each waiting out its own 48 hours. Never listed, played or counted. */
+    val held: List<OfflineHeldSet> = emptyList(),
+)
+
+/** One signed-out account's copies, kept apart from whoever is signed in now. */
+@Serializable
+data class OfflineHeldSet(
+    val ownerId: String,
+    val deviceId: String = "",
+    val signedOutAtMs: Long,
     val copies: List<OfflineCopy> = emptyList(),
 )
 
@@ -25,8 +48,7 @@ data class OfflineIndexFile(
  * `databases` directory, which a device-to-device transfer copies while it
  * leaves `no_backup` behind: an index that arrived on a new phone without
  * its bytes would list copies that are not there. Kept beside the bytes,
- * the index and the copies come and go together, and a sign-out wipe is one
- * directory.
+ * the index and the copies come and go together.
  *
  * A file that cannot be read is an empty index, never a crash: the worst
  * outcome is copies the app no longer lists, which the next wipe removes.

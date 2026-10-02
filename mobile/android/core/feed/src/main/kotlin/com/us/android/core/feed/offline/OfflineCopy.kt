@@ -92,12 +92,21 @@ data class OfflineCopy(
     /** Bytes on the device once stored. */
     val sizeBytes: Long = 0L,
     val post: OfflinePostSnapshot = OfflinePostSnapshot(),
+    /**
+     * The account the copy was granted to. Part of its stream keys and its
+     * folder, so two accounts' copies of one post never share bytes. Blank on
+     * a copy saved before 2 Oct 2026's sign-out rule, which keeps the keys it
+     * was stored under.
+     */
+    val ownerId: String = "",
+    /** When a renewal was last tried, whatever came of it; 0 before the first. */
+    val lastRenewAtMs: Long = 0L,
 ) {
     /** The streams whose bytes make the copy: the video, and the sound when the reel has one. */
     val streams: List<OfflineStream> get() = listOfNotNull(video, sound?.stream)
 
     /** The folder its poster and caption files are in. */
-    val folder: String get() = postId
+    val folder: String get() = if (ownerId.isBlank()) postId else "$ownerId-$postId"
 }
 
 /** Where one post's copy stands, as a screen reads it. */

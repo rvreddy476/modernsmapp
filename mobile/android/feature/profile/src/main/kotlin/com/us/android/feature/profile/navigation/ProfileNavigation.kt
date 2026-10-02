@@ -127,10 +127,12 @@ fun NavGraphBuilder.ownProfileScreen(
 }
 
 /**
- * The Momentum header's three controls, as the Me tab needs them. Every one
+ * The Momentum header's destinations, as the Me tab needs them. Every one
  * is required: a header glyph with nothing behind it is exactly the inert
  * control the Home header once shipped. `:app` decides where each goes —
  * search scoped to the viewer's own posts, the inbox, the notification list.
+ * Since 2026-10-02 the inbox is a row of the header's More menu, not a
+ * glyph: the corner is Search, the bell, More on every page but Home.
  */
 data class MomentumHeaderDestinations(
     val onOpenSearch: () -> Unit,

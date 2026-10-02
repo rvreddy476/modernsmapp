@@ -132,4 +132,6 @@ data class OfflineCheckDto(
     /** `deleted`, `private`, `not_allowed`, `expired`, `blocked`, `revoked` or `unknown`. */
     val reason: String = "",
     @SerialName("content_type") val contentType: String = "",
+    /** On a valid row: whether a repeated grant would extend the copy. Absent on an older server. */
+    val renewable: Boolean? = null,
 )

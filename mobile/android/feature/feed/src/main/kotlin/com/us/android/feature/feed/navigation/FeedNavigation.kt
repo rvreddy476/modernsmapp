@@ -148,6 +148,8 @@ fun NavGraphBuilder.reelsScreen(
      * of what this device keeps. Required for the same reason.
      */
     onOpenOffline: () -> Unit,
+    /** The header's bell (2026-10-02): `:app` pushes the notification list, as Home's bell does. */
+    onOpenNotifications: () -> Unit,
 ) {
     composable<ReelsRoute> {
         ReelsScreen(
@@ -158,6 +160,7 @@ fun NavGraphBuilder.reelsScreen(
             onOpenSound = onOpenSound,
             onCreateWithSound = onCreateWithSound,
             onOpenOffline = onOpenOffline,
+            onOpenNotifications = onOpenNotifications,
         )
     }
 }

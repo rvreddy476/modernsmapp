@@ -953,6 +953,7 @@ private fun NavGraphBuilder.tabDestinations(
         onCreateWithSound = onCreateWithSound,
         // The Offline page lives in Tube's graph; a reel's More sheet opens the same one.
         onOpenOffline = { navController.navigateToTubeOffline() },
+        onOpenNotifications = { navController.navigateToNotifications() },
     )
     // A sound's page, pushed over Reels. A tile opens its reel in the Reels
     // TAB (the page has left the id in ReelsEntry, as the feeds do).

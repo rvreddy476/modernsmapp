@@ -25,7 +25,7 @@ import java.io.File
  * tapped Save offline. The grant's words win where it has them; the row
  * fills what the server left unsaid.
  */
-internal fun OfflineGrant.toCopy(item: FeedItem, nowMs: Long): OfflineCopy {
+internal fun OfflineGrant.toCopy(item: FeedItem, nowMs: Long, ownerId: String): OfflineCopy {
     val video = item.media.firstOrNull { it.kind == VIDEO_KIND }
     val itemSound = item.sound
     return OfflineCopy(
@@ -39,11 +39,17 @@ internal fun OfflineGrant.toCopy(item: FeedItem, nowMs: Long): OfflineCopy {
         grantedAtMs = nowMs,
         // The grant IS the server's word that the copy may be kept.
         lastCheckedAtMs = nowMs,
-        video = OfflineStream(streamKey(postId, VIDEO_STREAM), this.video.url, this.video.mime, this.video.sizeBytes),
+        ownerId = ownerId,
+        video = OfflineStream(
+            streamKey(ownerId, postId, VIDEO_STREAM),
+            this.video.url,
+            this.video.mime,
+            this.video.sizeBytes,
+        ),
         sound = sound?.let { granted ->
             OfflineSound(
                 stream = OfflineStream(
-                    streamKey(postId, SOUND_STREAM),
+                    streamKey(ownerId, postId, SOUND_STREAM),
                     granted.stream.url,
                     granted.stream.mime,
                     granted.stream.sizeBytes,
@@ -157,8 +163,14 @@ fun OfflineCopy.toFeedItem(): FeedItem {
     )
 }
 
-/** `<post>/video`, `<post>/sound`: one key per stream, stable for the life of the copy. */
-internal fun streamKey(postId: String, stream: String): String = "$postId/$stream"
+/**
+ * `<owner>/<post>/video`, `<owner>/<post>/sound`: one key per stream, stable
+ * for the life of the copy. The owner is in the key because copies now stay
+ * on the device for 48 hours after sign-out: a second account saving the
+ * same post must get its own bytes, and removing one account's copy must
+ * never take the other's.
+ */
+internal fun streamKey(ownerId: String, postId: String, stream: String): String = "$ownerId/$postId/$stream"
 
 internal const val VIDEO_STREAM = "video"
 internal const val SOUND_STREAM = "sound"

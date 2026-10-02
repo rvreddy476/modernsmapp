@@ -120,6 +120,9 @@ internal class FakeRemote : OfflineRemote {
     /** Runs as a grant is answered, before the machine sees it. */
     var onGrant: suspend () -> Unit = {}
 
+    /** Runs as a check is answered, before the machine sees it. */
+    var onCheck: suspend () -> Unit = {}
+
     override suspend fun grant(postId: String, deviceId: String, nowMs: Long): AppResult<OfflineGrant> {
         calls += "grant:$postId:$deviceId"
         onGrant()
@@ -131,6 +134,7 @@ internal class FakeRemote : OfflineRemote {
         postIds: List<String>,
     ): AppResult<Map<String, OfflineCheckAnswer>> {
         calls += "check:$deviceId:${postIds.sorted().joinToString(",")}"
+        onCheck()
         return checkAnswers?.let { AppResult.Success(it) } ?: AppResult.Failure(AppError.NoNetwork())
     }
 

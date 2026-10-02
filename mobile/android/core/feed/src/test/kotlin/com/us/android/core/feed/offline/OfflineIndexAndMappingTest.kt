@@ -33,7 +33,7 @@ class OfflineIndexAndMappingTest {
     )
 
     private fun reelCopy() = grant("p1", nowMs = 5_000L, kind = OfflineKind.REEL, sound = soundGrant)
-        .toCopy(videoPost("p1", contentType = "flick", sound = reelSound("s1")), nowMs = 5_000L)
+        .toCopy(videoPost("p1", contentType = "flick", sound = reelSound("s1")), nowMs = 5_000L, ownerId = VIEWER)
 
     // ── The index ───────────────────────────────────────────────────────
 
@@ -68,6 +68,46 @@ class OfflineIndexAndMappingTest {
         assertThat(index().read().ownerId).isEqualTo(VIEWER)
     }
 
+    /** An index written before 2 Oct 2026's sign-out rule: one owner, no stamp, nothing held. */
+    @Test
+    fun `a version 1 index reads as one signed-in owner with nothing held`() {
+        file.parentFile!!.mkdirs()
+        file.writeText("""{"version":1,"ownerId":"$VIEWER","deviceId":"$DEVICE","copies":[]}""")
+
+        val read = index().read()
+
+        assertThat(read.ownerId).isEqualTo(VIEWER)
+        assertThat(read.signedOutAtMs).isNull()
+        assertThat(read.held).isEmpty()
+    }
+
+    @Test
+    fun `the sign-out stamp and the copies held for other accounts survive a restart`() {
+        val theirs = reelCopy().copy(ownerId = "someone-else")
+        val written = OfflineIndexFile(
+            ownerId = VIEWER,
+            deviceId = DEVICE,
+            copies = listOf(reelCopy()),
+            signedOutAtMs = 7_000L,
+            held = listOf(OfflineHeldSet("someone-else", DEVICE, signedOutAtMs = 3_000L, copies = listOf(theirs))),
+        )
+
+        index().write(written)
+
+        assertThat(index().read()).isEqualTo(written)
+    }
+
+    @Test
+    fun `two accounts' copies of one post never share a key or a folder`() {
+        val mine = grant("p1").toCopy(videoPost("p1"), 0L, ownerId = VIEWER)
+        val theirs = grant("p1").toCopy(videoPost("p1"), 0L, ownerId = "someone-else")
+
+        assertThat(mine.video.key).isNotEqualTo(theirs.video.key)
+        assertThat(mine.folder).isNotEqualTo(theirs.folder)
+        // A copy stored before the owner was part of the key keeps the folder it was stored in.
+        assertThat(mine.copy(ownerId = "").folder).isEqualTo("p1")
+    }
+
     @Test
     fun `deleting the index leaves nothing to read`() {
         index().write(OfflineIndexFile(ownerId = VIEWER, copies = listOf(reelCopy())))
@@ -91,9 +131,9 @@ class OfflineIndexAndMappingTest {
         assertThat(copy.grantedAtMs).isEqualTo(5_000L)
         // The grant IS the server's word: the copy is not asked about again until that ages out.
         assertThat(copy.lastCheckedAtMs).isEqualTo(5_000L)
-        assertThat(copy.video.key).isEqualTo("p1/video")
-        assertThat(copy.sound!!.stream.key).isEqualTo("p1/sound")
-        assertThat(copy.streams.map { it.key }).containsExactly("p1/video", "p1/sound").inOrder()
+        assertThat(copy.video.key).isEqualTo("$VIEWER/p1/video")
+        assertThat(copy.sound!!.stream.key).isEqualTo("$VIEWER/p1/sound")
+        assertThat(copy.streams.map { it.key }).containsExactly("$VIEWER/p1/video", "$VIEWER/p1/sound").inOrder()
         assertThat(copy.sound!!.soundId).isEqualTo("s1")
         assertThat(copy.post.authorId).isEqualTo("creator-1")
         assertThat(copy.post.width).isEqualTo(1280)
@@ -101,8 +141,9 @@ class OfflineIndexAndMappingTest {
 
     @Test
     fun `a grant that names no kind takes the post's`() {
-        val reel = grant("p1", kind = null).toCopy(videoPost("p1", contentType = "flick"), nowMs = 0L)
-        val video = grant("p1", kind = null).toCopy(videoPost("p1", contentType = "long_video"), nowMs = 0L)
+        val granted = grant("p1", kind = null)
+        val reel = granted.toCopy(videoPost("p1", contentType = "flick"), nowMs = 0L, ownerId = VIEWER)
+        val video = granted.toCopy(videoPost("p1", contentType = "long_video"), nowMs = 0L, ownerId = VIEWER)
 
         assertThat(reel.kind).isEqualTo(OfflineKind.REEL)
         assertThat(video.kind).isEqualTo(OfflineKind.VIDEO)
@@ -115,7 +156,7 @@ class OfflineIndexAndMappingTest {
         val playback = reelCopy().playback()
 
         assertThat(playback.kind).isEqualTo(PlaybackKind.Offline)
-        assertThat(playback.cacheKey).isEqualTo("p1/video")
+        assertThat(playback.cacheKey).isEqualTo("$VIEWER/p1/video")
         assertThat(playback.captions).isEmpty()
     }
 
@@ -142,8 +183,8 @@ class OfflineIndexAndMappingTest {
         assertThat(track.id).isEqualTo("s1")
         assertThat(track.startMs).isEqualTo(1_500L)
         assertThat(track.stored!!.kind).isEqualTo(PlaybackKind.Offline)
-        assertThat(track.stored!!.cacheKey).isEqualTo("p1/sound")
-        assertThat(grant("p1").toCopy(videoPost("p1"), 0L).soundTrack()).isNull()
+        assertThat(track.stored!!.cacheKey).isEqualTo("$VIEWER/p1/sound")
+        assertThat(grant("p1").toCopy(videoPost("p1"), 0L, VIEWER).soundTrack()).isNull()
     }
 
     @Test

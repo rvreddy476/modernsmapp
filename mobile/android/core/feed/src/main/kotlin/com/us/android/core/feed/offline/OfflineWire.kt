@@ -42,8 +42,12 @@ data class OfflineGrantSound(
 
 /** One post's answer from a check. */
 sealed interface OfflineCheckAnswer {
-    /** The copy may be kept. [expiresAtMs] is null when the server did not repeat the expiry. */
-    data class Valid(val expiresAtMs: Long?) : OfflineCheckAnswer
+    /**
+     * The copy may be kept. [expiresAtMs] is null when the server did not
+     * repeat the expiry. [renewable] is false only when the server said so:
+     * a grant repeated now would be refused, so it is not tried.
+     */
+    data class Valid(val expiresAtMs: Long?, val renewable: Boolean = true) : OfflineCheckAnswer
 
     /** The copy must go. [reason] is the server's token, kept for the notice. */
     data class Invalid(val reason: String) : OfflineCheckAnswer
@@ -112,7 +116,8 @@ private fun OfflineSoundDto.toSound(resolve: (String) -> String?): OfflineGrantS
 internal fun List<OfflineCheckDto>.toAnswers(): Map<String, OfflineCheckAnswer> =
     filter { it.postId.isNotBlank() }.associate { row ->
         row.postId.trim() to if (row.valid) {
-            OfflineCheckAnswer.Valid(parseInstantMs(row.expiresAt))
+            // Absent is "try": only an explicit `false` holds a renewal back.
+            OfflineCheckAnswer.Valid(parseInstantMs(row.expiresAt), renewable = row.renewable != false)
         } else {
             OfflineCheckAnswer.Invalid(row.reason.trim().ifEmpty { REASON_UNKNOWN })
         }

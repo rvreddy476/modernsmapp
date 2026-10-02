@@ -99,11 +99,13 @@ import coil3.compose.AsyncImage
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsBadgedIcon
 import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsHeaderCorner
 import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.usNotificationsDescription
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
@@ -131,6 +133,7 @@ import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.canUseSound
+import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.LightStatusBarGlyphs
 import com.us.android.core.ui.UsEmptyState
@@ -141,9 +144,9 @@ import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.ui.watchProbe
+import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import java.io.File
 
 /**
  * The reels surface: Instagram Reels on Momentum's palette (founder,
@@ -212,8 +215,9 @@ import java.io.File
  * HLS ladder the settled player reports; the pick is held for the session
  * by the ViewModel and applied to every page's player). What the sheet
  * leaves behind ("We'll show you fewer posts like this") is shown over the
- * reel once it has gone. The header's only other glyph is search, which
- * opens Explore; no wordmark, no messages, no bell over a reel.
+ * reel once it has gone. The header's other glyphs are search and, since
+ * 2026-10-02, the bell with the unread count Home's bell shows; no wordmark
+ * and no messages over a reel.
  */
 @Composable
 fun ReelsScreen(
@@ -229,10 +233,16 @@ fun ReelsScreen(
     onCreateWithSound: () -> Unit,
     /** "Offline", from the More sheet: `:app` pushes the page of what this device keeps. */
     onOpenOffline: () -> Unit,
+    /** The header's bell. Required for the reason [onOpenSearch] is. */
+    onOpenNotifications: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     sound: ReelSoundViewModel = hiltViewModel(),
+    // The same count Home's bell shows: one singleton behind both, refreshed when the page appears.
+    badge: UnreadBadgeViewModel = hiltViewModel(),
 ) {
+    val unread by badge.count.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { badge.refresh() }
     val head by viewModel.head.collectAsStateWithLifecycle()
     val view = rememberReelsViewState(viewModel)
     val chrome = view.chrome
@@ -320,6 +330,8 @@ fun ReelsScreen(
             // network), More goes straight to what the device keeps.
             onOpenMenu = { settledReel?.let { moreFor = it } ?: onOpenOffline() },
             onOpenSearch = onOpenSearch,
+            unreadCount = unread,
+            onOpenNotifications = onOpenNotifications,
         )
         ReelsMessages(viewModel = viewModel, more = more)
     }
@@ -618,7 +630,7 @@ internal data class ReelsViewState(
  * the pager and below the header so it never covers a control, and it is not
  * itself tappable — the video under it is.
  *
- * The header — search and More, nothing else (founder, 2026-09-05)
+ * The header — search, the bell and More (founder, 2026-10-02)
  * — rides its own top scrim and pads itself under the status bar the shell
  * left uncovered. It leaves upward in full mode, the same 200ms as the bar
  * leaves down.
@@ -629,6 +641,8 @@ private fun BoxScope.ScreenChrome(
     showHeader: Boolean,
     onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
+    unreadCount: Int,
+    onOpenNotifications: () -> Unit,
 ) {
     AnimatedVisibility(
         visible = paused,
@@ -646,27 +660,31 @@ private fun BoxScope.ScreenChrome(
         exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
     ) {
         ReelsHeader(
+            unreadCount = unreadCount,
             onOpenMenu = onOpenMenu,
             onOpenSearch = onOpenSearch,
+            onOpenNotifications = onOpenNotifications,
             modifier = Modifier.testTag("reels_header"),
         )
     }
 }
 
 /**
- * Two white glyphs over the translucent top scrim (founder, 2026-09-05):
- * search, and then, at the corner, the three-dots More, which opens the
- * settled reel's More sheet. The order and the glyphs are [UsHeaderCorner]'s
- * (founder, 2026-10-02: "Search, then More at the corner", the same as Home
- * and Tube; it was the hamburger and then search). No wordmark
- * (over a video the brand is the video), no messages, no bell: those stay
- * on Home's full header. The same [UsHomeTopBar] as Home so the scrim, the
- * height and the status-bar padding are one drawing, not two.
+ * Three white glyphs over the translucent top scrim: search, the bell with
+ * its unread count, and then, at the corner, the three-dots More, which
+ * opens the settled reel's More sheet. The order and the glyphs are
+ * [UsHeaderCorner]'s (founder, 2026-10-02: Search, Notifications, More at
+ * the corner, the same on every page but Home). No wordmark (over a video
+ * the brand is the video) and no messages: that one stays on Home's
+ * header. The same [UsHomeTopBar] as Home so the scrim, the height and the
+ * status-bar padding are one drawing, not two.
  */
 @Composable
 private fun ReelsHeader(
+    unreadCount: Int,
     onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     UsHomeTopBar(
@@ -677,14 +695,28 @@ private fun ReelsHeader(
             UsHeaderCorner.forEach { action ->
                 val (onClick, tag) = when (action) {
                     UsHeaderCornerAction.SEARCH -> onOpenSearch to "reels_header:search"
+                    UsHeaderCornerAction.NOTIFICATIONS -> onOpenNotifications to "reels_header:notifications"
                     UsHeaderCornerAction.MORE -> onOpenMenu to "reels_header:menu"
+                    // Home's alone; the standard corner never carries it.
+                    UsHeaderCornerAction.MESSAGES -> return@forEach
                 }
-                IconButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
-                    Icon(
-                        imageVector = action.icon,
-                        contentDescription = action.description,
-                        tint = UsTheme.extended.onMedia,
-                    )
+                if (action == UsHeaderCornerAction.NOTIFICATIONS) {
+                    IconButton(
+                        onClick = onClick,
+                        modifier = Modifier
+                            .testTag(tag)
+                            .semantics { contentDescription = usNotificationsDescription(unreadCount) },
+                    ) {
+                        UsBadgedIcon(icon = action.icon, count = unreadCount, tint = UsTheme.extended.onMedia)
+                    }
+                } else {
+                    IconButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
+                        Icon(
+                            imageVector = action.icon,
+                            contentDescription = action.description,
+                            tint = UsTheme.extended.onMedia,
+                        )
+                    }
                 }
             }
         },

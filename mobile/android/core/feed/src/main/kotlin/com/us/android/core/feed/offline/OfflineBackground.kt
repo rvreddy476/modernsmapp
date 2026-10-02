@@ -48,8 +48,9 @@ class AndroidOfflineConnectivity @Inject constructor(
 }
 
 /**
- * Asks the server which copies may still be kept, and deletes the ones that
- * may not ([OfflineCopies.refresh]).
+ * Asks the server which copies may still be kept, deletes the ones that may
+ * not, renews the rest, and deletes copies a signed-out account left more
+ * than 48 hours ago ([OfflineCopies.refresh]).
  *
  * Deliberately dumb, like `AnalyticsUploadWorker`: every rule is the state
  * machine's. Always a success: a check that could not be made changes
@@ -115,17 +116,20 @@ class WorkManagerOfflineCheckScheduler @Inject constructor(
 }
 
 /**
- * Sign-out: this device's copies and their index are deleted, and the
- * server is told for each while the session is still valid.
+ * Sign-out (founder, 2026-10-02): this device's copies are kept for 48
+ * hours, stamped and hidden from everyone ([OfflineCopies.holdForSignOut]);
+ * a save still in flight is cancelled and the server told while the session
+ * is still valid.
  *
- * Failure is not fatal by contract ([SessionTeardownTask]): the wipe itself
- * is local and unconditional, and nothing here throws.
+ * Failure is not fatal by contract ([SessionTeardownTask]): the stamp is
+ * local, a stamp that could not be written is put back on the next start,
+ * and nothing here throws.
  */
 @Singleton
 class OfflineTeardown @Inject constructor(
     private val copies: OfflineCopies,
 ) : SessionTeardownTask {
     override suspend fun onSignOut() {
-        runCatching { copies.wipeForSignOut() }
+        runCatching { copies.holdForSignOut() }
     }
 }

@@ -96,7 +96,7 @@ sealed interface OfflineVerdict {
  *    alone until its expiry. A phone in flight mode keeps its videos.
  *  - "Not valid" from the server deletes it, whatever the reason.
  *  - "Valid" keeps it and takes the server's expiry, which a check never
- *    extends (only a new grant does).
+ *    extends (only a repeated grant does: `OfflineCopies.renew`).
  */
 fun offlineVerdict(copy: OfflineCopy, nowMs: Long, answer: OfflineCheckAnswer?): OfflineVerdict = when {
     nowMs >= copy.expiresAtMs -> OfflineVerdict.Delete(REASON_EXPIRED)
@@ -112,6 +112,30 @@ fun offlineVerdict(copy: OfflineCopy, nowMs: Long, answer: OfflineCheckAnswer?):
 /** Whether the server's last word on [copy] is older than it said an answer is good for. */
 fun recheckDue(copy: OfflineCopy, nowMs: Long): Boolean =
     nowMs - copy.lastCheckedAtMs >= copy.recheckAfterSeconds * MILLIS_PER_SECOND
+
+// ── Renewing a copy ─────────────────────────────────────────────────────
+
+/**
+ * Whether a renewal may be tried for [copy] now: at most once in
+ * [RENEW_INTERVAL_MS], counted from the grant or from the last try,
+ * whichever is later, and whatever the last try came to. A copy saved an
+ * hour ago is not renewed, and a refusal is not asked again all day.
+ */
+fun renewDue(copy: OfflineCopy, nowMs: Long): Boolean =
+    nowMs - maxOf(copy.grantedAtMs, copy.lastRenewAtMs) >= RENEW_INTERVAL_MS
+
+const val RENEW_INTERVAL_MS = 24L * 60 * 60 * 1000
+
+// ── After sign-out ──────────────────────────────────────────────────────
+
+/**
+ * Whether copies whose owner signed out at [signedOutAtMs] have been held
+ * for the whole of [SIGN_OUT_HOLD_MS] and must now be deleted.
+ */
+fun signOutHoldOver(signedOutAtMs: Long, nowMs: Long): Boolean = nowMs - signedOutAtMs >= SIGN_OUT_HOLD_MS
+
+/** founder, 2026-10-02: copies stay 48 hours after sign-out, for the same account to come back to. */
+const val SIGN_OUT_HOLD_MS = 48L * 60 * 60 * 1000
 
 /** A stored copy that may be played right now: whole, and not past its expiry. */
 fun OfflineCopy.isPlayable(nowMs: Long): Boolean = stored && nowMs < expiresAtMs

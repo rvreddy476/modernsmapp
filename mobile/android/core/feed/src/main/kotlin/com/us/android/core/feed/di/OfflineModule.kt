@@ -41,7 +41,7 @@ abstract class OfflineBindings {
     @Binds
     abstract fun bindOfflineCheckScheduler(impl: WorkManagerOfflineCheckScheduler): OfflineCheckScheduler
 
-    /** Sign-out deletes this device's copies and tells the server while the session is still valid. */
+    /** Sign-out keeps this device's copies for 48 hours, hidden; then they are deleted. */
     @Binds
     @IntoSet
     abstract fun bindOfflineTeardown(impl: OfflineTeardown): SessionTeardownTask

@@ -197,11 +197,11 @@ fun UsHomeTopBar(
 }
 
 /**
- * The Momentum header every top-level page wears — Home, Reels, Friends and
- * Me (founder, 2026-09-04): the wordmark, then search, messages and the bell
- * with its unread count. One composable so the four pages cannot drift.
+ * The Momentum header the pages with the wordmark wear — Home and Me
+ * (founder, 2026-09-04): the wordmark, then the corner. One composable so
+ * the pages cannot drift.
  *
- * Every callback is REQUIRED. Search, New post and Messages were once
+ * Search and the bell are REQUIRED. Search, New post and Messages were once
  * rendered on Home with empty click handlers and shipped inert; they were
  * removed on the rule that a visible primary control which does nothing is
  * worse than an absent one, and a required parameter is what stops that
@@ -213,19 +213,22 @@ fun UsHomeTopBar(
  *
  * ## THE CORNER (founder, 2026-10-02)
  *
- * The top-right corner reads Search, then the three-dots More, with More at
- * the corner itself — [UsHeaderCorner], the same on Reels and Tube. So
- * messages and the bell now come FIRST and search moved to their right (it
- * was search, messages, bell). [onMore] is the page's own menu; a page with
- * no menu (Me, which has its Settings glyph) passes null and draws no dots.
+ * The glyphs are drawn by walking [corner], and nothing else decides their
+ * order. Every page passes nothing and gets [UsHeaderCorner]: Search, the
+ * bell, then the three-dots More at the corner itself. HOME ALONE passes
+ * [UsHomeHeaderCorner], which keeps what Home had: Messages, the bell,
+ * Search, More. A glyph whose callback is null is not drawn: [onMessages]
+ * is Home's only, and [onMore] is the page's own menu, absent on a page
+ * that has nothing to put in one.
  */
 @Composable
 fun UsMomentumHeader(
     unreadCount: Int,
     onSearch: () -> Unit,
-    onMessages: () -> Unit,
     onNotifications: () -> Unit,
     modifier: Modifier = Modifier,
+    corner: List<UsHeaderCornerAction> = UsHeaderCorner,
+    onMessages: (() -> Unit)? = null,
     onHomeClick: () -> Unit = {},
     translucent: Boolean = false,
     showWordmark: Boolean = true,
@@ -240,31 +243,25 @@ fun UsMomentumHeader(
         translucent = translucent,
         showWordmark = showWordmark,
         actions = {
-            IconButton(onClick = onMessages) {
-                Icon(imageVector = UsIcons.Comment, contentDescription = "Messages", tint = tint)
-            }
-            IconButton(
-                onClick = onNotifications,
-                modifier = Modifier.semantics {
-                    contentDescription = when {
-                        unreadCount <= 0 -> "Notifications"
-                        unreadCount == 1 -> "Notifications, 1 unread"
-                        else -> "Notifications, $unreadCount unread"
-                    }
-                },
-            ) {
-                UsBadgedIcon(icon = UsIcons.Notifications, count = unreadCount, tint = tint)
-            }
-            UsHeaderCorner.forEach { action ->
+            corner.forEach { action ->
                 val onClick = when (action) {
+                    UsHeaderCornerAction.MESSAGES -> onMessages
+                    UsHeaderCornerAction.NOTIFICATIONS -> onNotifications
                     UsHeaderCornerAction.SEARCH -> onSearch
                     UsHeaderCornerAction.MORE -> onMore
                 } ?: return@forEach
-                IconButton(
-                    onClick = onClick,
-                    modifier = Modifier.testTag("momentum_header:${action.name.lowercase()}"),
-                ) {
-                    Icon(imageVector = action.icon, contentDescription = action.description, tint = tint)
+                val tag = Modifier.testTag("momentum_header:${action.name.lowercase()}")
+                if (action == UsHeaderCornerAction.NOTIFICATIONS) {
+                    IconButton(
+                        onClick = onClick,
+                        modifier = tag.semantics { contentDescription = usNotificationsDescription(unreadCount) },
+                    ) {
+                        UsBadgedIcon(icon = action.icon, count = unreadCount, tint = tint)
+                    }
+                } else {
+                    IconButton(onClick = onClick, modifier = tag) {
+                        Icon(imageVector = action.icon, contentDescription = action.description, tint = tint)
+                    }
                 }
             }
         },
@@ -280,7 +277,22 @@ private val TranslucentHeaderScrim: Brush = Brush.verticalGradient(
 @Composable
 private fun UsMomentumHeaderPreview() {
     UsTheme {
-        UsMomentumHeader(unreadCount = 3, onSearch = {}, onMessages = {}, onNotifications = {}, onMore = {})
+        UsMomentumHeader(unreadCount = 3, onSearch = {}, onNotifications = {}, onMore = {})
+    }
+}
+
+@Preview(name = "Momentum header — Home", showBackground = true, backgroundColor = 0xFF041122)
+@Composable
+private fun UsMomentumHeaderHomePreview() {
+    UsTheme {
+        UsMomentumHeader(
+            unreadCount = 3,
+            onSearch = {},
+            onNotifications = {},
+            corner = UsHomeHeaderCorner,
+            onMessages = {},
+            onMore = {},
+        )
     }
 }
 
@@ -288,7 +300,7 @@ private fun UsMomentumHeaderPreview() {
 @Composable
 private fun UsMomentumHeaderTranslucentPreview() {
     UsTheme {
-        UsMomentumHeader(unreadCount = 0, onSearch = {}, onMessages = {}, onNotifications = {}, translucent = true)
+        UsMomentumHeader(unreadCount = 0, onSearch = {}, onNotifications = {}, translucent = true)
     }
 }
 

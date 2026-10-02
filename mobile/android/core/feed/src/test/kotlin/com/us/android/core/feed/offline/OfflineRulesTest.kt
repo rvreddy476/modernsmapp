@@ -3,6 +3,7 @@ package com.us.android.core.feed.offline
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.media.offline.OfflineFetch
 import com.us.android.core.media.offline.OfflineFetchState
+import com.us.android.core.model.SessionState
 import com.us.android.core.ui.UsOfflineAction
 import org.junit.Test
 
@@ -203,6 +204,35 @@ class OfflineRulesTest {
     fun `a copy is asked about again once the server's answer has aged out`() {
         assertThat(recheckDue(copy, nowMs = 2 * DAY_MS - 1)).isFalse()
         assertThat(recheckDue(copy, nowMs = 2 * DAY_MS)).isTrue()
+    }
+
+    // ── Renewing, and the 48 hours after sign-out ───────────────────────
+
+    @Test
+    fun `a renewal is due a day after the grant, and then a day after the last try`() {
+        assertThat(renewDue(copy, nowMs = DAY_MS - 1)).isFalse()
+        assertThat(renewDue(copy, nowMs = DAY_MS)).isTrue()
+
+        val tried = copy.copy(lastRenewAtMs = 3 * DAY_MS)
+
+        assertThat(renewDue(tried, nowMs = 4 * DAY_MS - 1)).isFalse()
+        assertThat(renewDue(tried, nowMs = 4 * DAY_MS)).isTrue()
+    }
+
+    @Test
+    fun `copies are held for 48 hours after sign-out and not a millisecond less`() {
+        assertThat(SIGN_OUT_HOLD_MS).isEqualTo(2 * DAY_MS)
+        assertThat(signOutHoldOver(signedOutAtMs = DAY_MS, nowMs = 3 * DAY_MS - 1)).isFalse()
+        assertThat(signOutHoldOver(signedOutAtMs = DAY_MS, nowMs = 3 * DAY_MS)).isTrue()
+    }
+
+    @Test
+    fun `only a real session names a viewer, and a session not read yet names nobody at all`() {
+        assertThat(SessionState.Authenticated(userId = "u1", sessionId = "s1").offlineViewerId()).isEqualTo("u1")
+        assertThat(SessionState.Unauthenticated.offlineViewerId()).isEmpty()
+        assertThat(SessionState.PendingTwoFactor("t").offlineViewerId()).isEmpty()
+        assertThat(SessionState.PendingStepUp(listOf("totp")).offlineViewerId()).isEmpty()
+        assertThat(SessionState.Unknown.offlineViewerId()).isNull()
     }
 
     @Test

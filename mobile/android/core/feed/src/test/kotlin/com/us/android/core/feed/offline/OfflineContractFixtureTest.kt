@@ -73,7 +73,7 @@ class OfflineContractFixtureTest {
 
             assertThat(answers).containsExactly(
                 "11111111-1111-4111-8111-111111111111",
-                OfflineCheckAnswer.Valid(parseInstantMs("2026-10-27T12:00:00Z")),
+                OfflineCheckAnswer.Valid(parseInstantMs("2026-10-27T12:00:00Z"), renewable = true),
                 "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 OfflineCheckAnswer.Invalid("not_allowed"),
                 "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

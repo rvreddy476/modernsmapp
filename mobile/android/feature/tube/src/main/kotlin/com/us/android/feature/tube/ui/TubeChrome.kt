@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,14 +49,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsBadgedIcon
 import com.us.android.core.designsystem.component.UsHeaderCorner
 import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.usNotificationsDescription
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.icon.VIDEO_MARK_BODY
 import com.us.android.core.designsystem.icon.VIDEO_MARK_PLAY
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
+import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.ui.home.TubeChip
 
@@ -83,16 +89,22 @@ fun TubePage(
     selected: TubeTab?,
     destinations: TubeDestinations,
     onBack: (() -> Unit)? = null,
+    // The same count Home's bell shows: one singleton behind both, refreshed when the page appears.
+    badge: UnreadBadgeViewModel = hiltViewModel(),
     content: @Composable (PaddingValues) -> Unit,
 ) {
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var createOpen by rememberSaveable { mutableStateOf(false) }
+    val unread by badge.count.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { badge.refresh() }
     UsScaffold(
         applyPageGutter = false,
         topBar = {
             TubeHeader(
+                unreadCount = unread,
                 onOpenMenu = { menuOpen = true },
                 onOpenSearch = destinations.onOpenSearch,
+                onOpenNotifications = destinations.onOpenNotifications,
                 onBack = onBack,
             )
         },
@@ -130,24 +142,28 @@ fun TubePage(
  * Tube's header (founder, 2026-09-05): the video mark — Momentum's
  * camera-and-play glyph on a raised tile, no name yet ("remove the name,
  * we think of a better one later") — on the left, and at the right corner
- * Search, then the three-dots More, in the same Material bar so the glyphs
- * sit at the same size and spacing. No bell and no avatar (You is on the
+ * Search, the bell, then the three-dots More, in the same Material bar so
+ * the glyphs sit at the same size and spacing. No avatar (You is on the
  * bar), and no search pill under it: the glyph is the one way into search.
  * [onBack] adds the back glyph before the mark on a page pushed inside
  * Tube; Tube's own roots have none, the system Back is the way out.
  *
  * ## THE CORNER (founder, 2026-10-02)
  *
- * "Search, then More at the corner", the same as Home and Reels: the corner
- * is drawn from [UsHeaderCorner]. It was "+", the hamburger, Search. The
- * "+" (added 2026-09-06) is gone: Create is the bar's centre tile, which
- * opens the same sheet, and a second one up here only duplicated it.
+ * Search, Notifications, then More at the corner, the same as every page
+ * but Home: the corner is drawn from [UsHeaderCorner]. It was "+", the
+ * hamburger, Search. The "+" (added 2026-09-06) is gone: Create is the
+ * bar's centre tile, which opens the same sheet, and a second one up here
+ * only duplicated it. The bell carries [unreadCount], the count Home's bell
+ * shows, and opens the notification list the menu's row opens.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TubeHeader(
+    unreadCount: Int,
     onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
 ) {
@@ -167,6 +183,15 @@ fun TubeHeader(
                         onClick = onOpenSearch,
                         tag = "tube_search",
                     )
+                    UsHeaderCornerAction.NOTIFICATIONS -> HeaderAction(
+                        icon = action.icon,
+                        description = usNotificationsDescription(unreadCount),
+                        onClick = onOpenNotifications,
+                        tag = "tube_notifications",
+                        badge = unreadCount,
+                    )
+                    // Home's alone; the standard corner never carries it.
+                    UsHeaderCornerAction.MESSAGES -> Unit
                     UsHeaderCornerAction.MORE -> HeaderAction(
                         icon = action.icon,
                         description = action.description,
@@ -184,16 +209,25 @@ fun TubeHeader(
     )
 }
 
-/** One of the header's glyphs: a 48dp target, the icon in white, no ripple — a dip on press. */
+/**
+ * One of the header's glyphs: a 48dp target, the icon in white, no ripple — a dip on press.
+ * [badge] is the bell's unread count; zero draws the bare icon.
+ */
 @Composable
-private fun HeaderAction(icon: ImageVector, description: String, onClick: () -> Unit, tag: String) {
+private fun HeaderAction(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    tag: String,
+    badge: Int = 0,
+) {
     HeaderGlyph(
         onClick = onClick,
         description = description,
         size = ACTION_TARGET,
         modifier = Modifier.testTag(tag),
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = UsTheme.extended.textPrimary)
+        UsBadgedIcon(icon = icon, count = badge, tint = UsTheme.extended.textPrimary)
     }
 }
 

@@ -20,6 +20,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -133,7 +136,7 @@ data class ProfileDestinations(
     val onOpenFollowRequests: (() -> Unit)? = null,
     /**
      * Present on the Me TAB only: it wears the Momentum header (wordmark,
-     * search, messages, bell) like every other top-level page. A pushed
+     * search, bell, More) like every other top-level page but Home. A pushed
      * profile keeps the titled bar with its back arrow.
      */
     val header: MomentumHeaderDestinations? = null,
@@ -184,10 +187,11 @@ internal fun ProfileContent(
         topBar = {
             val header = destinations.header
             if (header != null) {
-                // The Me tab: the same Momentum header as Home, Reels and
-                // Friends. Settings moves down beside "Edit profile" — the
-                // header is the app's, not this page's.
-                OwnProfileHeader(header)
+                // The Me tab: the Momentum header, with the standard corner
+                // (Search, the bell, More). Messages left the bar for the
+                // More menu on 2026-10-02; Settings is there too, and still
+                // beside "Edit profile".
+                OwnProfileHeader(header, onOpenSettings = destinations.onOpenSettings)
             } else {
                 // A pushed profile. The title tracks the loaded profile; while
                 // loading it stays generic rather than flashing a placeholder
@@ -781,22 +785,40 @@ private fun ProfileErrorTerminalPreview() =
 /**
  * The Me tab's Momentum header with its live unread count. The pure layout
  * is [UsMomentumHeader]; this only binds the badge, refreshed when the tab
- * appears rather than polled — the same contract Home uses.
+ * appears rather than polled — the same contract Home uses — and owns the
+ * More sheet ([MeMoreSheet]).
+ *
+ * founder, 2026-10-02: every page but Home reads Search, the bell, More.
+ * Messages was a glyph here; it is now a row of the menu, beside Settings.
  */
 @Composable
 private fun OwnProfileHeader(
     header: MomentumHeaderDestinations,
+    onOpenSettings: (() -> Unit)?,
     viewModel: UnreadBadgeViewModel = hiltViewModel(),
 ) {
     val count by viewModel.count.collectAsStateWithLifecycle()
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
 
     UsMomentumHeader(
         unreadCount = count,
         onSearch = header.onOpenSearch,
-        onMessages = header.onOpenMessages,
         onNotifications = header.onOpenNotifications,
         modifier = Modifier.testTag("me_header"),
+        onMore = { menuOpen = true },
     )
+    if (menuOpen) {
+        MeMoreSheet(
+            rows = meMenuRows(hasSettings = onOpenSettings != null),
+            onRow = { row ->
+                when (row) {
+                    MeMenuRow.MESSAGES -> header.onOpenMessages()
+                    MeMenuRow.SETTINGS -> onOpenSettings?.invoke()
+                }
+            },
+            onDismiss = { menuOpen = false },
+        )
+    }
 }
