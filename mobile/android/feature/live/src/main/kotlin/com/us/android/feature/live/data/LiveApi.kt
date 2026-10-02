@@ -28,6 +28,14 @@ import retrofit2.http.Query
 @Suppress("TooManyFunctions") // one function per live-service-v2 route
 interface LiveApi {
 
+    /**
+     * Whether the signed-in user may go live, and what is still missing
+     * (live-eligibility contract, 2026-10-02). Asked before the go-live form
+     * is shown; the server still decides on create and start.
+     */
+    @GET("v1/livestream/eligibility")
+    suspend fun eligibility(): ApiEnvelope<LiveEligibilityDto>
+
     @POST("v1/livestream/streams")
     suspend fun createStream(@Body body: CreateStreamRequest): ApiEnvelope<LiveStreamDto>
 
@@ -133,6 +141,28 @@ data class LiveChatMessageDto(
     val text: String = "",
     @SerialName("is_pinned") val isPinned: Boolean = false,
     @SerialName("created_at") val createdAt: String = "",
+    /**
+     * Who wrote it (live-eligibility contract B, 2026-10-02). Absent on a row
+     * from a server that does not hydrate authors yet; read through
+     * [chatAuthorName], [chatRoleOf] and [isFoundingCreator], never directly.
+     */
+    val author: LiveChatAuthorDto? = null,
+)
+
+/**
+ * A chat row's author. Only `user_id` and `role` are guaranteed: the name,
+ * handle and avatar come from a directory lookup that may fail without
+ * failing the message, and Go sends `""` and `null` for "nothing".
+ */
+@Serializable
+data class LiveChatAuthorDto(
+    @SerialName("user_id") val userId: String = "",
+    val name: String = "",
+    val handle: String = "",
+    @SerialName("avatar_url") val avatarUrl: String = "",
+    val badges: List<String> = emptyList(),
+    /** host | moderator | viewer. Read through [chatRoleOf]. */
+    val role: String = "",
 )
 
 /** `reason` is omitted when the host gave none. */
@@ -157,4 +187,42 @@ data class LiveReportRequest(
     val reason: String,
     @SerialName("message_id") val messageId: String? = null,
     val note: String? = null,
+)
+
+/**
+ * `GET /v1/livestream/eligibility`. [requirements] is computed in both
+ * modes; [pilotOnly] is set for a user outside the pilot list while live is
+ * in its closed pilot; [viewerCap] is present (non-zero) only while the
+ * new-streamer cap applies. Read through [liveGateOf].
+ */
+@Serializable
+data class LiveEligibilityDto(
+    /** pilot | open. */
+    val mode: String = "",
+    val eligible: Boolean = false,
+    val requirements: List<LiveRequirementDto> = emptyList(),
+    @SerialName("pilot_only") val pilotOnly: Boolean = false,
+    @SerialName("viewer_cap") val viewerCap: Int = 0,
+)
+
+/**
+ * One requirement. [met] is true, false, or null when the server could not
+ * check it right now. `account_age` carries [current] / [needed] / [unit];
+ * `activity` carries [posts] and [followers]. Every other field is absent.
+ */
+@Serializable
+data class LiveRequirementDto(
+    val key: String = "",
+    val met: Boolean? = null,
+    val current: Int = 0,
+    val needed: Int = 0,
+    val unit: String = "",
+    val posts: LiveProgressDto? = null,
+    val followers: LiveProgressDto? = null,
+)
+
+@Serializable
+data class LiveProgressDto(
+    val current: Int = 0,
+    val needed: Int = 0,
 )

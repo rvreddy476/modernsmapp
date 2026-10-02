@@ -40,9 +40,13 @@ fun PostMoreSheetHost(
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
     viewModel: PostMoreViewModel,
-    /** Set by Reels alone: the group above the rows, and the two things only a reel can do. */
+    /**
+     * Set by the two VIDEO hosts, Reels and Tube's watch screen (2026-10-02:
+     * one menu for both): what Description unfolds and what Quality offers.
+     */
     reel: UsReelMoreState? = null,
     onClearScreen: () -> Unit = {},
+    /** A rendition was picked from the Quality row; the host applies it to its player. */
     onSelectQuality: (UsReelQuality) -> Unit = {},
     /** Set by Reels alone: "Use this sound" was tapped on [item]. */
     onUseSound: (FeedItem) -> Unit = {},
@@ -63,8 +67,9 @@ fun PostMoreSheetHost(
      */
     surface: AnalyticsSurface = AnalyticsSurface.FEED,
     /**
-     * Set by Tube's watch screen alone (2026-10-02): the sheet is then the
-     * long video's menu, the web watch page's rows and words.
+     * Set by Tube's watch screen alone (2026-10-02): the sheet then says
+     * "video" where it says "reel" or "post", and names the channel in the
+     * block confirmation. The ROWS are the reel's.
      */
     longVideo: UsLongVideoMoreState? = null,
     /**

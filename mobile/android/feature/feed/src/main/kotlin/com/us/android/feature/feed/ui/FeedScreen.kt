@@ -82,10 +82,13 @@ fun FeedScreen(
     onOpenHashtag: (tag: String) -> Unit,
     /** A video was tapped; :app switches to the Reels tab, which opens on it. */
     onOpenReels: () -> Unit,
+    /** A row of the header's More menu was picked; :app opens that screen. */
+    onOpenMenuRow: (HomeMenuRow) -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Home) },
     ),
 ) {
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
     val tab by viewModel.tab.collectAsStateWithLifecycle()
     val trending by viewModel.trending.collectAsStateWithLifecycle()
     // One scroll position per timeline. For You's offset applied to
@@ -94,14 +97,16 @@ fun FeedScreen(
     val listStates = remember { FeedTab.entries.associateWith { LazyListState() } }
 
     UsScaffold(
-        // Momentum's header: search, Messages, the bell — the same header
-        // Reels, Friends and Me wear. Each callback is a REQUIRED parameter so
-        // none can be re-added inert. Create lives on the bar's centre button.
+        // Momentum's header: Messages, the bell, then the corner every section
+        // shares — search, and the three-dots More (founder, 2026-10-02). Each
+        // callback is a REQUIRED parameter so none can be re-added inert.
+        // Create lives on the bar's centre button, never up here.
         topBar = {
             MomentumHeader(
                 onOpenSearch = onOpenSearch,
                 onOpenMessages = onOpenMessages,
                 onOpenNotifications = onOpenNotifications,
+                onOpenMore = { menuOpen = true },
             )
         },
         applyPageGutter = false,
@@ -124,6 +129,9 @@ fun FeedScreen(
                 )
             }
         }
+    }
+    if (menuOpen) {
+        HomeMoreSheet(onRow = onOpenMenuRow, onDismiss = { menuOpen = false })
     }
 }
 

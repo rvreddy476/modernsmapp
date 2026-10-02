@@ -876,6 +876,17 @@ object UsIcons {
         "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8",
     )
 
+    /** Lucide `circle` — an open requirement: not met yet (the live "not yet" list, 2026-10-02). */
+    val Circle: ImageVector = lucideStroked("Circle", "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0")
+
+    /** Lucide `award` — the Founding creator badge beside a name in live chat (2026-10-02). */
+    val Award: ImageVector = lucideStroked(
+        "Award",
+        "m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469" +
+            "l1.514-8.526",
+        "M18 8A6 6 0 1 1 6 8a6 6 0 0 1 12 0",
+    )
+
     /** Lucide `clock` — a scheduled post: the Schedule button and the tile's badge. */
     val Clock: ImageVector = lucideStroked(
         "Clock",

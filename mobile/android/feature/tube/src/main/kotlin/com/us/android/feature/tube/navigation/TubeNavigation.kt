@@ -94,7 +94,8 @@ data class TubeDestinations(
      */
     val onOpenReels: () -> Unit,
     /**
-     * The "+" — the header's (2026-09-06) and the bar's alike. `:app` opens
+     * The bar's "+" (the header had one too from 2026-09-06 until 2026-10-02,
+     * when the founder removed it as a duplicate). `:app` opens
      * the Create sheet SCOPED TO TUBE: post a video, post a reel, go live,
      * and nothing else (founder, 2026-09-06: "only that plus button should
      * change according to the app we are on"). Which set that is belongs to

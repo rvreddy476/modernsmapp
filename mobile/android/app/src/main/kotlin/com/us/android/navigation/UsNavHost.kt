@@ -117,6 +117,7 @@ import com.us.android.feature.feed.navigation.navigateToHashtagPosts
 import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.feed.navigation.soundScreen
+import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.live.navigation.LiveWatchRoute
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
@@ -642,6 +643,14 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenSearch = { navController.navigateToSearch(SearchOrigin.HOME) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenReels = onOpenReels,
+        // Home's More menu (2026-10-02): three screens that already exist.
+        onOpenMenuRow = { row ->
+            when (row) {
+                HomeMenuRow.FRIENDS -> navController.navigate(FriendsFeedRoute)
+                HomeMenuRow.LIVE -> navController.navigateToLiveHub()
+                HomeMenuRow.SETTINGS -> navController.navigateToSettings()
+            }
+        },
     )
 
     // The Friends feed: the same feed narrowed to mutual follows. A root
@@ -687,6 +696,13 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         onGoLive = { navController.navigateToGoLive() },
         onWatch = { streamId -> navController.navigateToLiveWatch(streamId) },
+        // Go live's "not yet" screen (2026-10-02). "Create a post" opens the
+        // Create hub on Text; Back from it (or from the new post) returns to
+        // the screen, which asks the server again. "Verify phone number" opens
+        // Manage account, the one screen that shows the phone and its state:
+        // the app has no phone-verification flow of its own yet.
+        onCreatePost = { navController.navigateToCreate(CreateSurface.Text) },
+        onVerifyPhone = { navController.navigateToManageAccount() },
     )
 
     // Commerce — the buyer journey: catalogue → product → cart → address →
@@ -962,13 +978,15 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenNotifications = { navController.navigateToNotifications() },
             onOpenReels = onOpenReels,
-            // Tube's "+" — the header's and the bar's — opens the Create
+            // Tube's "+" (the bar's; the header's was removed 2026-10-02) opens the Create
             // sheet scoped to Tube: video, reel, live (founder, 2026-09-06).
             // It used to jump straight into the video composer, which is why
             // there was nothing to find at the top and no way to start a reel
             // from inside the video app.
             onCreateVideo = { onOpenCreate(CreateScope.Tube) },
-            onOpenExplore = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
+            // The launcher itself, not "the Explore tab as it was left": the
+            // tab switch restored Tube on top of it. See navigateToLauncher.
+            onOpenExplore = { navController.navigateToLauncher() },
             onOpenTab = { tab -> navController.navigateToTubeTab(tab) },
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
             onOpenScheduled = { navController.navigateToTubeScheduled() },

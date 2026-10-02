@@ -11,6 +11,7 @@ import com.us.android.core.media.PlayerPool
 import com.us.android.feature.feed.ui.FeedScreen
 import com.us.android.feature.feed.ui.FriendsFeedScreen
 import com.us.android.feature.feed.ui.HashtagPostsScreen
+import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.feed.ui.reels.ReelsScreen
 import com.us.android.feature.feed.ui.reels.sound.SoundPageScreen
 import kotlinx.serialization.Serializable
@@ -58,6 +59,8 @@ fun NavGraphBuilder.feedScreen(
     onOpenHashtag: (tag: String) -> Unit,
     /** A video was tapped. `:app` switches to the Reels tab. */
     onOpenReels: () -> Unit,
+    /** A row of Home's More menu (Friends, Live, Settings); `:app` opens that screen. */
+    onOpenMenuRow: (HomeMenuRow) -> Unit,
 ) {
     composable<FeedRoute> {
         FeedScreen(
@@ -67,6 +70,7 @@ fun NavGraphBuilder.feedScreen(
             onOpenSearch = onOpenSearch,
             onOpenHashtag = onOpenHashtag,
             onOpenReels = onOpenReels,
+            onOpenMenuRow = onOpenMenuRow,
         )
     }
 }

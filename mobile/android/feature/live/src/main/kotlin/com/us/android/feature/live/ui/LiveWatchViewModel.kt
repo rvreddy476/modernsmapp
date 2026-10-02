@@ -24,6 +24,8 @@ import com.us.android.feature.live.data.LiveStatus
 import com.us.android.feature.live.data.LiveStreamDto
 import com.us.android.feature.live.data.SendChatRequest
 import com.us.android.feature.live.data.ViewerMessageAction
+import com.us.android.feature.live.data.canSendChat
+import com.us.android.feature.live.data.clampChatDraft
 import com.us.android.feature.live.data.endedReasonOf
 import com.us.android.feature.live.data.liveStatusOf
 import com.us.android.feature.live.data.viewerMessageActions
@@ -98,6 +100,8 @@ class LiveWatchViewModel @Inject constructor(
         val hostId: String = "",
         /** The server listed this stream's moderators for us: we are one of them. */
         val canModerate: Boolean = false,
+        /** The stream's moderators, when the server lists them for us; marks their chat rows. */
+        val moderators: List<String> = emptyList(),
         /** The message whose moderator menu is open. */
         val selected: LiveChatMessageDto? = null,
     ) {
@@ -223,6 +227,7 @@ class LiveWatchViewModel @Inject constructor(
                 viewerCount = stream.viewerCount,
                 hostId = stream.creatorUserId.ifBlank { it.hostId },
                 canModerate = stream.moderatorUserIds != null,
+                moderators = stream.moderatorUserIds.orEmpty(),
             )
         }
         if (status.isOver) {
@@ -234,14 +239,15 @@ class LiveWatchViewModel @Inject constructor(
 
     // ── Chat ───────────────────────────────────────────────────────────
 
+    /** Held to what the server accepts, counted the way it counts: code points, never half an emoji. */
     fun onDraftChanged(draft: String) {
-        _state.update { it.copy(draft = draft) }
+        _state.update { it.copy(draft = clampChatDraft(draft)) }
     }
 
     fun onSendChat() {
         val current = _state.value
         val text = current.draft.trim()
-        if (text.isEmpty() || current.sending || !current.canChat) return
+        if (!canSendChat(text) || current.sending || !current.canChat) return
         _state.update { it.copy(draft = "", sending = true) }
         viewModelScope.launch {
             when (val result = apiCall(errorMapper) { api.sendChat(streamId, SendChatRequest(text = text)) }) {

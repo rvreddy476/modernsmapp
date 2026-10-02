@@ -209,7 +209,7 @@ private fun MoreConfirmations(
 ) {
     if (ui.confirmBlock) {
         ConfirmDialog(
-            title = "${state.labelOf(UsPostMoreRow.BLOCK)}?",
+            title = state.blockConfirmTitle(),
             body = "They won't be able to see your posts or message you.",
             confirmLabel = "Block",
             testTag = "post_more_block_dialog",
@@ -225,7 +225,7 @@ private fun MoreConfirmations(
         // The sheet stays: the host answers through state.delete, and the
         // confirmation or the refusal is shown where the viewer is looking.
         ConfirmDialog(
-            title = if (state.surface == UsPostMoreSurface.LONG_VIDEO) "Delete video?" else "Delete post?",
+            title = state.deleteConfirmTitle(),
             body = "It will be removed from your profile and feeds. " +
                 "You can restore it from Recently deleted for 30 days.",
             confirmLabel = "Delete",
@@ -373,7 +373,7 @@ private fun MoreMenu(
         )
         StatusPill(
             visible = delete == UsPostDeleteState.Deleted,
-            text = if (state.surface == UsPostMoreSurface.LONG_VIDEO) "Video deleted" else "Post deleted",
+            text = state.deletedText(),
             testTag = "post_more_deleted",
             modifier = Modifier.align(Alignment.TopCenter),
         )
@@ -430,7 +430,7 @@ private fun MenuRow(
             UsPostMoreRow.WHY -> Unfolded(open = ui.reasonOpen, text = state.reasonText, testTag = "post_more_reason")
             UsPostMoreRow.DESCRIPTION -> Unfolded(
                 open = ui.descriptionOpen,
-                text = reel?.description.orEmpty(),
+                text = reel?.description.orEmpty().ifBlank { NO_DESCRIPTION },
                 testTag = "post_more_description",
             )
             UsPostMoreRow.QUALITY -> AnimatedVisibility(

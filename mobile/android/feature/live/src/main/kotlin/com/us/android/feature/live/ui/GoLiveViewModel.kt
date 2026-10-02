@@ -14,16 +14,24 @@ import com.us.android.feature.live.data.CreateStreamRequest
 import com.us.android.feature.live.data.EndedReason
 import com.us.android.feature.live.data.HostMessageAction
 import com.us.android.feature.live.data.LiveApi
+import com.us.android.feature.live.data.LiveChatAuthorDto
 import com.us.android.feature.live.data.LiveChatMessageDto
+import com.us.android.feature.live.data.LiveGate
 import com.us.android.feature.live.data.LiveRoomFactory
 import com.us.android.feature.live.data.LiveRoomSession
 import com.us.android.feature.live.data.LiveStatus
 import com.us.android.feature.live.data.LiveStreamDto
 import com.us.android.feature.live.data.MAX_STREAM_MODERATORS
+import com.us.android.feature.live.data.SendChatRequest
 import com.us.android.feature.live.data.SetModeratorsRequest
 import com.us.android.feature.live.data.canAddModerator
+import com.us.android.feature.live.data.canSendChat
+import com.us.android.feature.live.data.chatPeople
+import com.us.android.feature.live.data.clampChatDraft
 import com.us.android.feature.live.data.endedReasonOf
 import com.us.android.feature.live.data.hostStatusAfterStart
+import com.us.android.feature.live.data.liveGateOf
+import com.us.android.feature.live.data.notYetFromRefusal
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.VideoTrack
@@ -36,6 +44,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 /**
@@ -63,10 +72,21 @@ class GoLiveViewModel @Inject constructor(
     private val api: LiveApi,
     private val errorMapper: ErrorMapper,
     private val roomFactory: LiveRoomFactory,
+    private val json: Json,
 ) : ViewModel() {
 
     sealed interface Phase {
+        /** The eligibility answer is in flight; nothing is offered until it lands. */
+        data object Checking : Phase
+
         data object Setup : Phase
+
+        /**
+         * Not eligible yet (2026-10-02): the requirements and the one button
+         * that helps. Reached from `GET /eligibility` before the form, and
+         * from a `403 LIVE_NOT_ELIGIBLE` on create or start.
+         */
+        data class NotYet(val gate: LiveGate.NotYet) : Phase
 
         /** Create, start and the LiveKit connect are in flight. */
         data object Preparing : Phase
@@ -90,10 +110,19 @@ class GoLiveViewModel @Inject constructor(
 
     data class UiState(
         val title: String = "",
-        val phase: Phase = Phase.Setup,
+        val phase: Phase = Phase.Checking,
+        /** "Check again" (or a return to the screen) is asking the server; the list stays up meanwhile. */
+        val rechecking: Boolean = false,
+        /** The new-streamer viewer cap, or 0 when none applies. */
+        val viewerCap: Int = 0,
         /** The server's count; the host is not in it. */
         val viewerCount: Int = 0,
         val chat: ChatLog = ChatLog(),
+        /** Everyone seen in chat, by user id: the names the moderation sheets print. */
+        val people: Map<String, LiveChatAuthorDto> = emptyMap(),
+        /** The host's own chat message, as typed. */
+        val draft: String = "",
+        val sending: Boolean = false,
         val hostId: String = "",
         val moderators: List<String> = emptyList(),
         /** Banned from this stream during this session (there is no list route). */
@@ -123,12 +152,65 @@ class GoLiveViewModel @Inject constructor(
     private var session: LiveRoomSession? = null
     private var streamId: String? = null
     private var pollJob: Job? = null
+    private var gateJob: Job? = null
+
+    init {
+        checkEligibility()
+    }
 
     /** The LiveKit room, for rendering. Null until connecting. */
     val room: Room? get() = session?.room
 
     /** The local camera track, once publishing. Null until then. */
     fun localVideoTrack(): VideoTrack? = session?.localVideo()
+
+    // ── Eligibility ────────────────────────────────────────────────────
+
+    /**
+     * `GET /eligibility`, before the form (2026-10-02). A FAILED call opens
+     * the form, as before this gate existed: the client must not lock a
+     * creator out over its own network hiccup, and the server still decides
+     * on create and start.
+     */
+    private fun checkEligibility() {
+        gateJob?.cancel()
+        gateJob = viewModelScope.launch {
+            val gate = when (val result = apiCall(errorMapper) { api.eligibility() }) {
+                is AppResult.Success -> liveGateOf(result.data)
+                is AppResult.Failure -> LiveGate.Open()
+            }
+            applyGate(gate)
+        }
+    }
+
+    /** Only ever moves the two waiting phases: an answer must not interrupt a broadcast or a retry. */
+    private fun applyGate(gate: LiveGate) {
+        _state.update { current ->
+            if (current.phase != Phase.Checking && current.phase !is Phase.NotYet) {
+                return@update current.copy(rechecking = false)
+            }
+            when (gate) {
+                is LiveGate.Open -> current.copy(phase = Phase.Setup, viewerCap = gate.viewerCap, rechecking = false)
+                LiveGate.PilotOnly -> current.copy(
+                    phase = Phase.Refused(GoLiveRefusal(LIVE_PILOT_COPY, canRetry = false)),
+                    rechecking = false,
+                )
+                is LiveGate.NotYet -> current.copy(phase = Phase.NotYet(gate), rechecking = false)
+            }
+        }
+    }
+
+    /**
+     * "Check again", and the screen coming back to the front: the user may
+     * have just published a post or verified a phone number. Asks only while
+     * the list is showing.
+     */
+    fun onCheckAgain() {
+        val current = _state.value
+        if (current.phase !is Phase.NotYet || current.rechecking) return
+        _state.update { it.copy(rechecking = true) }
+        checkEligibility()
+    }
 
     fun onTitleChanged(title: String) {
         _state.update { it.copy(title = title) }
@@ -151,7 +233,7 @@ class GoLiveViewModel @Inject constructor(
         val request = CreateStreamRequest(title = title)
         val created = when (val result = apiCall(errorMapper) { api.createStream(request) }) {
             is AppResult.Success -> result.data
-            is AppResult.Failure -> return refuse(goLiveRefusal(result.error))
+            is AppResult.Failure -> return refuse(result.error)
         }
         val id = created.id
         if (id.isBlank()) return refuse(goLiveRefusal(AppError.Malformed("create returned no stream id")))
@@ -160,7 +242,7 @@ class GoLiveViewModel @Inject constructor(
 
         val started = when (val result = apiCall(errorMapper) { api.startStream(id) }) {
             is AppResult.Success -> result.data
-            is AppResult.Failure -> return refuse(goLiveRefusal(result.error))
+            is AppResult.Failure -> return refuse(result.error)
         }
         applyStatus(started.stream.status, started.stream)
         if (!_state.value.isOnAir) return
@@ -189,6 +271,20 @@ class GoLiveViewModel @Inject constructor(
         false
     }
 
+    /**
+     * A refused create or start. `403 LIVE_NOT_ELIGIBLE` opens the same "not
+     * yet" list the eligibility call does, from `details.requirements`;
+     * everything else is the one-line refusal.
+     */
+    private fun refuse(error: AppError) {
+        val gate = notYetFromRefusal(error, json)
+        if (gate != null) {
+            _state.update { it.copy(phase = Phase.NotYet(gate)) }
+        } else {
+            refuse(goLiveRefusal(error))
+        }
+    }
+
     private fun refuse(refusal: GoLiveRefusal) {
         _state.update { it.copy(phase = Phase.Refused(refusal)) }
     }
@@ -212,7 +308,37 @@ class GoLiveViewModel @Inject constructor(
 
     private suspend fun refreshChat(id: String) {
         val rows = (listApiCall(errorMapper) { api.listChat(id) } as? AppResult.Success)?.data ?: return
-        _state.update { it.copy(chat = it.chat.withSnapshot(rows)) }
+        _state.update { it.copy(chat = it.chat.withSnapshot(rows), people = chatPeople(it.people, rows)) }
+    }
+
+    // ── The host's own chat ────────────────────────────────────────────
+
+    /** Held to what the server accepts, counted the way it counts: code points, never half an emoji. */
+    fun onDraftChanged(draft: String) {
+        _state.update { it.copy(draft = clampChatDraft(draft)) }
+    }
+
+    fun onSendChat() {
+        val id = streamId ?: return
+        val current = _state.value
+        val text = current.draft.trim()
+        if (!canSendChat(text) || current.sending || !current.isOnAir) return
+        _state.update { it.copy(draft = "", sending = true) }
+        viewModelScope.launch {
+            when (val result = apiCall(errorMapper) { api.sendChat(id, SendChatRequest(text = text)) }) {
+                is AppResult.Success -> _state.update {
+                    it.copy(
+                        sending = false,
+                        chat = it.chat.withSent(result.data),
+                        people = chatPeople(it.people, listOf(result.data)),
+                    )
+                }
+                // Give the words back unless the host already started a new message.
+                is AppResult.Failure -> _state.update {
+                    it.copy(sending = false, draft = it.draft.ifEmpty { text }, notice = chatSendRefusal(result.error))
+                }
+            }
+        }
     }
 
     private fun applyStatus(wire: String, stream: LiveStreamDto) {
@@ -330,6 +456,7 @@ class GoLiveViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        gateJob?.cancel()
         pollJob?.cancel()
         teardown()
     }

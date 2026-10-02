@@ -23,9 +23,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -58,7 +55,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,6 +70,7 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.network.ApiConfig
+import com.us.android.core.ui.UsEmojiPanel
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -690,35 +687,10 @@ private fun ComposerField(
     }
 }
 
-/**
- * The emoji panel: a curated grid inserted into the draft at a tap. Kept
- * in-app rather than relying on the keyboard's own emoji page — the point
- * of the smiley button is that emoji are ONE tap away, not three.
- */
+/** The emoji panel: the app's shared one (`UsEmojiPanel`, `:core:ui`), which the live chat uses too. */
 @Composable
 private fun EmojiPanel(onPick: (String) -> Unit) {
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(EMOJI_COLUMNS),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(EMOJI_PANEL_HEIGHT)
-            .background(UsTheme.extended.bgCardSolid)
-            .testTag("emoji-panel"),
-        contentPadding = PaddingValues(UsTheme.spacing.m),
-    ) {
-        items(EMOJI_CHOICES) { emoji ->
-            Text(
-                text = emoji,
-                style = MaterialTheme.typography.headlineSmall,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(UsTheme.radii.small))
-                    .clickable { onPick(emoji) }
-                    .padding(UsTheme.spacing.s)
-                    .semantics { contentDescription = "Insert $emoji" },
-            )
-        }
-    }
+    UsEmojiPanel(onPick = onPick, modifier = Modifier.testTag("emoji-panel"))
 }
 
 /**
@@ -1137,23 +1109,6 @@ private const val ATTACHMENT_ASPECT = 4f / 3f
 
 /** The quick-reaction palette. The server stores any emoji string. */
 private val REACTION_CHOICES = listOf("❤️", "👍", "😂", "😮", "😢", "🙏")
-
-/**
- * The composer's emoji grid — a curated set across the categories people
- * actually send, not a full unicode browser. The keyboard remains the long
- * tail; this is the fast path.
- */
-private val EMOJI_CHOICES = listOf(
-    "😀", "😂", "🤣", "😊", "😍", "😘", "😎", "🤩",
-    "😅", "😉", "🙃", "😇", "🥰", "😜", "🤔", "🙄",
-    "😴", "🥺", "😢", "😭", "😡", "🤯", "😱", "🥳",
-    "👍", "👎", "👏", "🙌", "🙏", "🤝", "💪", "✌️",
-    "👀", "🔥", "✨", "🎉", "🚀", "❤️", "💔", "💯",
-    "😋", "🍕", "☕", "🍻", "🎂", "🌟", "🌈", "☀️",
-)
-
-private const val EMOJI_COLUMNS = 8
-private val EMOJI_PANEL_HEIGHT = 220.dp
 
 // ── The Figma conversation language (98:321) ────────────────────────────
 

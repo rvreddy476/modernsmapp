@@ -48,6 +48,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.us.android.core.designsystem.component.UsHeaderCorner
+import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.icon.VIDEO_MARK_BODY
@@ -67,7 +69,7 @@ import com.us.android.feature.tube.ui.home.TubeChip
  * every Tube route is a pushed screen, not a tab root, so this bar is the
  * only one on screen.
  *
- * The header's More (≡) opens [TubeMenuSheet] over the page — the frame
+ * The header's More (⋮) opens [TubeMenuSheet] over the page — the frame
  * owns that state, so every page gets the same sheet from the same glyph
  * and none has to mount it — and a "Create your channel" row from it
  * opens the create sheet once the menu has left.
@@ -91,7 +93,6 @@ fun TubePage(
             TubeHeader(
                 onOpenMenu = { menuOpen = true },
                 onOpenSearch = destinations.onOpenSearch,
-                onCreate = destinations.onCreateVideo,
                 onBack = onBack,
             )
         },
@@ -129,29 +130,24 @@ fun TubePage(
  * Tube's header (founder, 2026-09-05): the video mark — Momentum's
  * camera-and-play glyph on a raised tile, no name yet ("remove the name,
  * we think of a better one later") — on the left, and at the right corner
- * the create "+", the More hamburger and Search, in the same Material bar
- * so the glyphs sit at the same size and spacing. No bell and no avatar
- * (You is on the bar), and no search pill under it: the glyph is the one
- * way into search. [onBack] adds the back glyph before the mark on a page
- * pushed inside Tube; Tube's own roots have none, the system Back is the
- * way out.
+ * Search, then the three-dots More, in the same Material bar so the glyphs
+ * sit at the same size and spacing. No bell and no avatar (You is on the
+ * bar), and no search pill under it: the glyph is the one way into search.
+ * [onBack] adds the back glyph before the mark on a page pushed inside
+ * Tube; Tube's own roots have none, the system Back is the way out.
  *
- * ## WHY THE "+" IS UP HERE (founder, 2026-09-06)
+ * ## THE CORNER (founder, 2026-10-02)
  *
- * "When in Tube, at the top give a plus button to create new videos."
- * Tube's create affordance existed already — but only as the unlabelled
- * raised tile in the MIDDLE OF THE BOTTOM BAR, identical to the shell's,
- * which reads as the app's create rather than "post a video here", and is
- * the last place a reader looks for it. So the same action is offered at
- * the top, on a raised tile of its own so it reads as a button rather than
- * a third grey glyph. The bar's tile stays: both open the same sheet.
+ * "Search, then More at the corner", the same as Home and Reels: the corner
+ * is drawn from [UsHeaderCorner]. It was "+", the hamburger, Search. The
+ * "+" (added 2026-09-06) is gone: Create is the bar's centre tile, which
+ * opens the same sheet, and a second one up here only duplicated it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TubeHeader(
     onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
-    onCreate: () -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
 ) {
@@ -163,9 +159,22 @@ fun TubeHeader(
             }
         },
         actions = {
-            HeaderCreate(onClick = onCreate)
-            HeaderAction(icon = UsIcons.Menu, description = "More", onClick = onOpenMenu, tag = "tube_menu")
-            HeaderAction(icon = UsIcons.Search, description = "Search", onClick = onOpenSearch, tag = "tube_search")
+            UsHeaderCorner.forEach { action ->
+                when (action) {
+                    UsHeaderCornerAction.SEARCH -> HeaderAction(
+                        icon = action.icon,
+                        description = action.description,
+                        onClick = onOpenSearch,
+                        tag = "tube_search",
+                    )
+                    UsHeaderCornerAction.MORE -> HeaderAction(
+                        icon = action.icon,
+                        description = action.description,
+                        onClick = onOpenMenu,
+                        tag = "tube_menu",
+                    )
+                }
+            }
         },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = Color.Transparent,
@@ -173,37 +182,6 @@ fun TubeHeader(
         ),
         modifier = modifier.testTag("tube_header"),
     )
-}
-
-/**
- * The header's "+": the plus on a raised tile with a hairline glass edge —
- * the wordmark badge's idiom, so it reads as a control and not as another
- * bare glyph beside More and Search. Same 48dp target as its neighbours.
- */
-@Composable
-private fun HeaderCreate(onClick: () -> Unit) {
-    val shape = RoundedCornerShape(CREATE_RADIUS)
-    HeaderGlyph(
-        onClick = onClick,
-        description = "Create video",
-        size = ACTION_TARGET,
-        modifier = Modifier.testTag("tube_create"),
-    ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(CREATE_TILE)
-                .background(UsTheme.extended.bgRaised, shape)
-                .border(BADGE_HAIRLINE, UsTheme.extended.glassBorder, shape),
-        ) {
-            Icon(
-                imageVector = UsIcons.Create,
-                contentDescription = null,
-                tint = UsTheme.extended.textPrimary,
-                modifier = Modifier.size(CREATE_GLYPH),
-            )
-        }
-    }
 }
 
 /** One of the header's glyphs: a 48dp target, the icon in white, no ripple — a dip on press. */
@@ -363,9 +341,6 @@ private val BADGE_SIZE = 36.dp
 private val BADGE_RADIUS = 11.dp
 private val BADGE_HAIRLINE = 1.dp
 private val BADGE_GLYPH = 24.dp
-private val CREATE_TILE = 32.dp
-private val CREATE_RADIUS = 10.dp
-private val CREATE_GLYPH = 20.dp
 private val GLYPH_TARGET = 40.dp
 
 /** The Reels header's target: Material's icon button, 48dp around a 24dp glyph. */

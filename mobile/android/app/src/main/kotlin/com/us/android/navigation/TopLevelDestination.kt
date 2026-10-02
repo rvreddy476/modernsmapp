@@ -98,12 +98,52 @@ val TopLevelDestination.rootRoute: Any
  *
  * Without the save/restore pair, every tab switch resets the feed to the top,
  * which is the single most-noticed navigation defect in an app like this.
+ *
+ * One root does NOT restore: see [restoresItsStack].
  */
 fun NavController.navigateToTopLevel(destination: TopLevelDestination) {
     val options = navOptions {
         popUpTo(graph.findStartDestination().id) { saveState = true }
         launchSingleTop = true
-        restoreState = true
+        restoreState = destination.restoresItsStack
     }
     navigate(destination.rootRoute, options)
+}
+
+/**
+ * Whether switching to this root brings back what was last open above it.
+ *
+ * Every root does, except [TopLevelDestination.EXPLORE] (2026-10-02). What
+ * is pushed above the launcher is a whole mini-app — Tube, MStore, Feast —
+ * with its own bar and no shell bar. Restoring it meant the bar's Explore
+ * item opened Tube, not Explore, for anyone who had left Tube by its Reels
+ * slot, and there was then no launcher to be found. The launcher is one
+ * screen; a mini-app is re-entered from its tile.
+ */
+val TopLevelDestination.restoresItsStack: Boolean
+    get() = this != TopLevelDestination.EXPLORE
+
+/**
+ * Opens the Explore launcher ITSELF, from inside a mini-app (Tube's bar,
+ * 2026-10-02).
+ *
+ * ## WHY THIS IS NOT [navigateToTopLevel]
+ *
+ * A mini-app is PUSHED from the launcher, so inside Tube the back stack is
+ * `Home, Explore, Tube`. [navigateToTopLevel], as it then was, popped to the
+ * start with `saveState` — which filed `Explore, Tube` away under Explore's
+ * id — and then navigated to Explore with `restoreState`, which put exactly
+ * that stack back. The user pressed Explore and was still looking at Tube: "Explore
+ * cannot be opened from PostTube" (founder's phone, 2026-10-02). A bottom-bar
+ * tab SHOULD come back the way it was left; a button that says "take me to
+ * the launcher" must not.
+ *
+ * So: when the launcher is under the mini-app, go back to it — the same
+ * entry, and Back from it still returns Home. When it is not (the mini-app
+ * was opened from a search result or a notification), open it as a tab,
+ * which since the same day no longer restores ([restoresItsStack]).
+ */
+fun NavController.navigateToLauncher() {
+    if (popBackStack<ExploreRoute>(inclusive = false)) return
+    navigateToTopLevel(TopLevelDestination.EXPLORE)
 }

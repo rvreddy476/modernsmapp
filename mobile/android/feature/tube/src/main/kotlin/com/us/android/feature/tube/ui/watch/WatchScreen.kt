@@ -53,6 +53,7 @@ import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.UsLongVideoMoreState
 import com.us.android.core.ui.UsPostDeleteState
+import com.us.android.core.ui.UsReelMoreState
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.tube.data.SeriesInfo
@@ -245,7 +246,21 @@ private fun WatchSheetsHost(
             viewModel = more,
             suggested = false,
             surface = AnalyticsSurface.POSTTUBE,
-            // The long video's menu: the web watch page's rows and words.
+            // The SAME rows as a reel's More (founder, 2026-10-02). The video
+            // group feeds Description and Quality: the caption the details
+            // show, and the ladder and the choice the gear's sheet has.
+            reel = UsReelMoreState(
+                description = item.text,
+                fullMode = false,
+                qualities = reelQualityOptions(
+                    heights = trackHeights,
+                    adaptive = (content as? WatchContent.Ready)?.playback?.kind == PlaybackKind.Hls,
+                ),
+                selected = quality,
+                shareHidden = item.controls.hideShare,
+            ),
+            onSelectQuality = viewModel::selectQuality,
+            // What makes it the long video's: the words that say "video", and the channel a block names.
             longVideo = UsLongVideoMoreState(
                 channelName = item.creatorName,
                 shareHidden = item.controls.hideShare,

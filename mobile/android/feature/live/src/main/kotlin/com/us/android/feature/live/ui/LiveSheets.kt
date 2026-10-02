@@ -39,10 +39,13 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsPostReportState
 import com.us.android.feature.live.data.HostMessageAction
+import com.us.android.feature.live.data.LiveChatAuthorDto
 import com.us.android.feature.live.data.LiveChatMessageDto
 import com.us.android.feature.live.data.LiveReportReason
 import com.us.android.feature.live.data.MAX_STREAM_MODERATORS
 import com.us.android.feature.live.data.ViewerMessageAction
+import com.us.android.feature.live.data.chatAuthorName
+import com.us.android.feature.live.data.isFoundingCreator
 import com.us.android.feature.live.data.liveReportReasons
 import kotlinx.coroutines.delay
 
@@ -246,13 +249,21 @@ private fun ViewerMessageContent(
     }
 }
 
+/** Who wrote the message (the name, never a piece of the id), then the message. */
 @Composable
 private fun MessageHeader(message: LiveChatMessageDto) {
-    Text(
-        shortUserLabel(message.userId),
-        style = MaterialTheme.typography.labelMedium,
-        color = UsTheme.extended.textMuted,
-    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        Text(
+            chatAuthorName(message.author),
+            style = MaterialTheme.typography.labelMedium,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.testTag("live-message-author"),
+        )
+        if (isFoundingCreator(message.author)) FoundingCreatorBadge()
+    }
     Text(
         message.text,
         style = MaterialTheme.typography.bodyMedium,
@@ -268,12 +279,14 @@ private fun MessageHeader(message: LiveChatMessageDto) {
 fun HostToolsSheet(
     moderators: List<String>,
     banned: Set<String>,
+    /** Everyone seen in chat, by user id: the names these rows print. */
+    people: Map<String, LiveChatAuthorDto>,
     onRemoveModerator: (String) -> Unit,
     onUnban: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     LiveSheet(tag = "live-host-tools-sheet", onDismiss = onDismiss) {
-        HostToolsContent(moderators, banned, onRemoveModerator, onUnban)
+        HostToolsContent(moderators, banned, people, onRemoveModerator, onUnban)
     }
 }
 
@@ -281,6 +294,7 @@ fun HostToolsSheet(
 private fun HostToolsContent(
     moderators: List<String>,
     banned: Set<String>,
+    people: Map<String, LiveChatAuthorDto>,
     onRemoveModerator: (String) -> Unit,
     onUnban: (String) -> Unit,
 ) {
@@ -288,16 +302,28 @@ private fun HostToolsContent(
     if (moderators.isEmpty()) {
         HelpLine("Tap a chat message to make its author a moderator.")
     }
-    moderators.sortedBy { shortUserLabel(it) }.forEach { userId ->
-        PersonRow(userId = userId, actionLabel = "Remove", tag = "live-moderator-remove", onAction = onRemoveModerator)
+    moderators.sortedBy { personName(it, people).lowercase() }.forEach { userId ->
+        PersonRow(
+            userId = userId,
+            author = people[userId],
+            actionLabel = "Remove",
+            tag = "live-moderator-remove",
+            onAction = onRemoveModerator,
+        )
     }
     Spacer(Modifier.height(UsTheme.spacing.xxl))
     SheetTitle("Banned from this stream")
     if (banned.isEmpty()) {
         HelpLine("Nobody yet. Tap a chat message to ban its author.")
     }
-    banned.sortedBy { shortUserLabel(it) }.forEach { userId ->
-        PersonRow(userId = userId, actionLabel = "Unban", tag = "live-ban-lift", onAction = onUnban)
+    banned.sortedBy { personName(it, people).lowercase() }.forEach { userId ->
+        PersonRow(
+            userId = userId,
+            author = people[userId],
+            actionLabel = "Unban",
+            tag = "live-ban-lift",
+            onAction = onUnban,
+        )
     }
 }
 
@@ -307,20 +333,78 @@ private fun HelpLine(text: String) {
 }
 
 @Composable
-private fun PersonRow(userId: String, actionLabel: String, tag: String, onAction: (String) -> Unit) {
+private fun PersonRow(
+    userId: String,
+    author: LiveChatAuthorDto?,
+    actionLabel: String,
+    tag: String,
+    onAction: (String) -> Unit,
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
-            shortUserLabel(userId),
+            chatAuthorName(author),
             style = MaterialTheme.typography.bodyMedium,
             color = UsTheme.extended.textPrimary,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f, fill = false),
         )
+        if (isFoundingCreator(author)) FoundingCreatorBadge()
+        Spacer(Modifier.weight(1f))
         TextButton(onClick = { onAction(userId) }, modifier = Modifier.testTag(tag)) {
             Text(actionLabel, color = UsTheme.extended.accentSolid)
+        }
+    }
+}
+
+// ── Host: the full chat ─────────────────────────────────────────────────
+
+/** What the chat sheet shows. One value so the sheet's parameter list stays readable. */
+data class ChatSheetState(
+    val messages: List<LiveChatMessageDto>,
+    val hostId: String,
+    val moderators: List<String>,
+    val hint: String,
+    val draft: String,
+    val sending: Boolean,
+    val canChat: Boolean,
+)
+
+/**
+ * The full chat, in a sheet (2026-10-02): what a tap on the comments over
+ * the video opens. The whole list, with its per-message menu, and the
+ * composer. The sheet is on the app's surface colours, but the chat is drawn
+ * in the dark theme the live screens run in, so its on-media text reads.
+ */
+@Suppress("LongParameterList")
+@Composable
+fun LiveChatSheet(
+    chat: ChatSheetState,
+    onMessageClick: ((LiveChatMessageDto) -> Unit)?,
+    onMessageLongClick: (LiveChatMessageDto) -> Unit,
+    onDraftChanged: (String) -> Unit,
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    LiveSheet(tag = "live-chat-sheet", onDismiss = onDismiss) {
+        SheetTitle("Chat")
+        LiveChatList(
+            messages = chat.messages,
+            hostId = chat.hostId,
+            moderators = chat.moderators,
+            onMessageClick = onMessageClick,
+            onMessageLongClick = onMessageLongClick,
+            hint = chat.hint,
+        )
+        if (chat.canChat) {
+            LiveChatComposer(
+                draft = chat.draft,
+                sending = chat.sending,
+                onDraftChanged = onDraftChanged,
+                onSend = onSend,
+            )
         }
     }
 }
@@ -354,7 +438,10 @@ private const val REPORT_NOTE_MAX = 500
 
 // ── Previews ────────────────────────────────────────────────────────────
 
-private val previewMessage = LiveChatMessageDto(id = "m1", userId = "5f0c2a9e-1111", text = "hello from the chat")
+private val previewAuthor =
+    LiveChatAuthorDto(userId = "5f0c2a9e-1111", name = "Asha Rao", badges = listOf("founding_creator"))
+private val previewMessage =
+    LiveChatMessageDto(id = "m1", userId = "5f0c2a9e-1111", text = "hello from the chat", author = previewAuthor)
 
 @Preview
 @Composable
@@ -408,6 +495,7 @@ private fun HostToolsContentPreview() {
             HostToolsContent(
                 moderators = listOf("5f0c2a9e-1111"),
                 banned = setOf("7a7a7a7a-2222"),
+                people = mapOf("5f0c2a9e-1111" to previewAuthor),
                 onRemoveModerator = {},
                 onUnban = {},
             )

@@ -200,6 +200,34 @@ class LiveWatchViewModelTest {
     }
 
     @Test
+    fun `an emoji message is sent whole, and emoji alone is a message`() = liveTest(dispatcher, vms) {
+        val vm = viewModel()
+
+        vm.onDraftChanged("so good 🎉❤️")
+        vm.onSendChat()
+        runCurrent()
+        vm.onDraftChanged("🔥")
+        vm.onSendChat()
+        runCurrent()
+
+        assertThat(api.sentChat).containsExactly("so good 🎉❤️", "🔥").inOrder()
+        assertThat(vm.state.value.draft).isEmpty()
+    }
+
+    @Test
+    fun `the draft is held to 500 code points, so 500 emoji fit and the 501st is not half kept`() =
+        liveTest(dispatcher, vms) {
+            val vm = viewModel()
+
+            vm.onDraftChanged("😀".repeat(501))
+
+            assertThat(vm.state.value.draft).isEqualTo("😀".repeat(500))
+            vm.onSendChat()
+            runCurrent()
+            assertThat(api.sentChat).containsExactly("😀".repeat(500))
+        }
+
+    @Test
     fun `reporting a message sends its id, the reason token and the trimmed note`() = liveTest(dispatcher, vms) {
         val vm = viewModel()
 

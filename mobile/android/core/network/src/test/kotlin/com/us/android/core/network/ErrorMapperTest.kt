@@ -103,6 +103,21 @@ class ErrorMapperTest {
     }
 
     @Test
+    fun `a 403 keeps a structured detail as its JSON text, a primitive as its content, and drops a null`() = runTest {
+        val error = failureFor(
+            403,
+            """{"error":{"code":"LIVE_NOT_ELIGIBLE","message":"no","details":{"requirements":""" +
+                """[{"key":"phone_verified","met":false}],"mode":"open","hint":null}}}""",
+        )
+
+        val forbidden = error as AppError.Forbidden
+        assertThat(forbidden.code).isEqualTo("LIVE_NOT_ELIGIBLE")
+        assertThat(forbidden.details["requirements"]).isEqualTo("""[{"key":"phone_verified","met":false}]""")
+        assertThat(forbidden.details["mode"]).isEqualTo("open")
+        assertThat(forbidden.details).doesNotContainKey("hint")
+    }
+
+    @Test
     fun `404 maps to NotFound`() = runTest {
         assertThat(failureFor(404, """{"error":{"code":"NOT_FOUND","message":"no"}}"""))
             .isInstanceOf(AppError.NotFound::class.java)

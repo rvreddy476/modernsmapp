@@ -39,14 +39,17 @@ data class UsPostMoreState(
     /** True while a one-shot action (block) is on the wire; the rows go inert. */
     val busy: Boolean = false,
     /**
-     * Present when the sheet was opened from a REEL: the group that goes
-     * above everything else (founder, 2026-09-04, from YouTube Shorts). Null
-     * on a feed card, and the card's sheet is exactly what it was.
+     * What a VIDEO's rows need: the caption Description unfolds, the Quality
+     * picker's options, whether "Use this sound" is offered. Set by Reels
+     * (founder, 2026-09-04) and, since 2026-10-02, by the long video's watch
+     * screen too — the two share one menu ([videoRows]). Null on a feed card,
+     * and the card's sheet is exactly what it was. The name is historical.
      */
     val reel: UsReelMoreState? = null,
     /**
-     * Present when the sheet was opened from a LONG VIDEO (2026-10-02): the
-     * rows are then the web watch page's More menu and nothing else. Null on
+     * Present when the sheet was opened from a LONG VIDEO (2026-10-02). It
+     * no longer changes WHICH rows are shown — a long video's are a reel's —
+     * only the words that say "video" and the channel a block names. Null on
      * a feed card and on a reel.
      */
     val longVideo: UsLongVideoMoreState? = null,
@@ -61,16 +64,16 @@ data class UsPostMoreState(
 }
 
 /**
- * Where the sheet was opened from. Each surface has its own list of rows,
- * and the reel's and the long video's are the web's (founder, 2026-10-02:
- * "the same rows and words as the web").
+ * Where the sheet was opened from. A feed post has its own list of rows; a
+ * reel and a long video share one (founder, 2026-10-02: "More options must
+ * be the same in Reels and in long videos").
  */
 enum class UsPostMoreSurface { POST, REEL, LONG_VIDEO }
 
 /** What the long video's menu needs beyond the post's own state. */
 @Immutable
 data class UsLongVideoMoreState(
-    /** The channel's name: "Block <channel>" names the channel, not the handle, as the web does. */
+    /** The channel's name: what the block confirmation names ("Block Clee Builds?"). */
     val channelName: String,
     /** The creator turned sharing off (`hide_share`): no Share row. */
     val shareHidden: Boolean = false,
@@ -97,6 +100,8 @@ data class UsReelMoreState(
      * draws the row.
      */
     val canUseSound: Boolean = false,
+    /** The creator turned sharing off (`hide_share`): no Share row, as the rail has no share glyph. */
+    val shareHidden: Boolean = false,
 ) {
     /**
      * Auto alone means there is nothing to pick — the reel plays its original
@@ -181,7 +186,7 @@ sealed interface UsPostDontRecommendState {
 
 /** One row of the sheet's menu. The order they are DRAWN in is [rows]'s: alphabetical, by the label shown. */
 enum class UsPostMoreRow(val label: String) {
-    /** Reels only: the full caption, unfolded inline. */
+    /** Videos (a reel, a long video): the full caption, unfolded inline. */
     DESCRIPTION("Description"),
 
     /** Reels only: full mode — the header and the bar go, the reel stays. */
@@ -190,7 +195,7 @@ enum class UsPostMoreRow(val label: String) {
     /** Reels only: [CLEAR_SCREEN]'s other face, while full mode is on. */
     SHOW_CONTROLS("Show controls"),
 
-    /** Reels only: the rendition picker, the current choice at the right. */
+    /** Videos (a reel, a long video): the rendition picker, the current choice at the right. */
     QUALITY("Quality"),
 
     /** Reels only: make a reel with this reel's sound. */
@@ -230,11 +235,11 @@ fun UsPostMoreState.rows(): List<UsPostMoreRow> =
 
 /**
  * Which rows this post offers this viewer, in no particular order — [rows]
- * orders them. One list per [UsPostMoreSurface].
+ * orders them. A feed post has its own list; a reel and a long video share
+ * ONE ([videoRows]).
  */
 internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = when (surface) {
-    UsPostMoreSurface.LONG_VIDEO -> longVideoRows()
-    UsPostMoreSurface.REEL -> reelRows()
+    UsPostMoreSurface.LONG_VIDEO, UsPostMoreSurface.REEL -> videoRows()
     UsPostMoreSurface.POST -> postRows()
 }
 
@@ -278,49 +283,40 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
 }
 
 /**
- * A REEL: the web's More menu (founder, 2026-10-02; `moreMenuItems` in the
- * web's `features/reels/menu.ts`). Description when there is a caption to
- * unfold, Quality, "Use this sound" when the host offers it; on another
- * person's reel also Not interested, "Don't recommend this channel" and
- * Report. Nothing else.
+ * A VIDEO — a reel and a long video ALIKE (founder, 2026-10-02: "More options
+ * must be the same in Reels and in long videos"). One function, so the two
+ * cannot drift again; [rows] puts it in alphabetical order:
  *
- * What the web's menu has and this one does not: Audio track, Auto scroll,
- * Captions and Playback speed. The Android reel player has none of those
- * settings yet, and a row with nothing behind it is not shown.
+ *   Block channel · Copy link · Description · Don't recommend this channel ·
+ *   Not interested · Quality · Report · Share
  *
- * What this menu had before and the web's does not, so it left: Save, Share
- * (both are on the rail), Copy link, Clear screen (a double tap does it),
- * "Why you're seeing this post", Interested, Follow and Unfollow (the author
- * row has Follow), Block, and "Delete post" on the viewer's own reel. Their
- * rows and handlers are kept, as the web keeps its own, so offering one
- * again is one line here.
+ * Only two things may differ, and both are about the content, not the surface:
+ *
+ *  - "Use this sound": a reel whose sound may be reused ([UsReelMoreState.canUseSound]).
+ *  - The owner's rows: on the viewer's OWN video, Delete stands in for the four
+ *    rows that act on "the channel" or judge the video (Block, Don't recommend,
+ *    Not interested, Report) — nobody blocks or reports themselves.
+ *
+ * And one rule that is the creator's, the same on both: Share is withheld
+ * when they turned sharing off (`hide_share`), as the reel's rail already
+ * withholds its share glyph.
+ *
+ * Description and Quality are always listed, so the list does not change
+ * shape from one video to the next: a video with no caption unfolds "No
+ * description", and Quality with Auto alone is shown but inert.
+ *
+ * What it replaced (the same day's earlier split, copied from the web's two
+ * menus): the reel had no Block, Copy link or Share and no Delete on the
+ * owner's own reel; the long video had no Copy link, Description or Quality.
+ * Save, Watch later and "Add to collection" stay where they were: on the
+ * reel's rail and on the action row under a long video.
  */
-private fun UsPostMoreState.reelRows(): List<UsPostMoreRow> = buildList {
-    val reel = reel ?: return@buildList
-    if (reel.description.isNotBlank()) add(UsPostMoreRow.DESCRIPTION)
+internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
+    add(UsPostMoreRow.COPY_LINK)
+    add(UsPostMoreRow.DESCRIPTION)
     add(UsPostMoreRow.QUALITY)
-    if (reel.canUseSound) add(UsPostMoreRow.USE_SOUND)
-    if (!isOwnPost) {
-        add(UsPostMoreRow.NOT_INTERESTED)
-        add(UsPostMoreRow.DONT_RECOMMEND)
-        add(UsPostMoreRow.REPORT)
-    }
-}
-
-/**
- * A LONG VIDEO: the web watch page's More menu (founder, 2026-10-02;
- * `watchMoreMenuRows` in the web's `WatchMoreMenu.tsx`). A viewer sees
- * "Block <channel>", "Don't recommend this channel", Not interested, Report
- * and Share; the owner sees Delete and Share. Share goes when the creator
- * turned sharing off.
- *
- * What the web's menu has and this one does not: "Keep a copy" (a download;
- * the app has no download flow) and the owner's "Audio tracks" and "Edit"
- * (the app has neither screen). Save, Watch later and "Add to collection"
- * are on the action row under the video, as on the web, not in this menu.
- */
-private fun UsPostMoreState.longVideoRows(): List<UsPostMoreRow> = buildList {
-    if (longVideo?.shareHidden != true) add(UsPostMoreRow.SHARE)
+    if (!shareHidden) add(UsPostMoreRow.SHARE)
+    if (reel?.canUseSound == true) add(UsPostMoreRow.USE_SOUND)
     if (isOwnPost) {
         add(UsPostMoreRow.DELETE)
         return@buildList
@@ -331,29 +327,56 @@ private fun UsPostMoreState.longVideoRows(): List<UsPostMoreRow> = buildList {
     add(UsPostMoreRow.REPORT)
 }
 
+/** The creator turned sharing off for this video, whichever surface it is on. */
+private val UsPostMoreState.shareHidden: Boolean
+    get() = reel?.shareHidden == true || longVideo?.shareHidden == true
+
 /**
  * What the row prints on THIS sheet, and therefore what it is sorted by.
  *
  * On a feed post the rows that act on the author carry the handle
- * ([menuLabel]). On a reel and a long video the words are the web's: "Don't
- * recommend this channel"; and on a long video "Block <channel name>" and a
- * plain "Delete".
+ * ([menuLabel]). On a video — a reel and a long video alike (2026-10-02) —
+ * the words are fixed: "Block channel", "Don't recommend this channel" and a
+ * plain "Delete". Fixed, not "Block <name>", so the list reads the same, in
+ * the same order, on every video; WHO is blocked is named where it is
+ * confirmed ([blockConfirmTitle]).
  */
 fun UsPostMoreState.labelOf(row: UsPostMoreRow): String = when (surface) {
     UsPostMoreSurface.POST -> row.menuLabel(username)
-    UsPostMoreSurface.REEL -> when (row) {
+    UsPostMoreSurface.REEL, UsPostMoreSurface.LONG_VIDEO -> when (row) {
+        UsPostMoreRow.BLOCK -> BLOCK_CHANNEL
         UsPostMoreRow.DONT_RECOMMEND -> DONT_RECOMMEND_CHANNEL
-        else -> row.menuLabel(username)
-    }
-    UsPostMoreSurface.LONG_VIDEO -> when (row) {
-        UsPostMoreRow.DONT_RECOMMEND -> DONT_RECOMMEND_CHANNEL
-        UsPostMoreRow.BLOCK -> "${row.label} ${longVideo?.channelName?.takeIf { it.isNotBlank() } ?: "@$username"}"
         UsPostMoreRow.DELETE -> "Delete"
-        else -> row.menuLabel(username)
+        else -> row.label
     }
 }
 
-/** The web's words, on a reel and a long video alike. */
+/** "Block <who>?": the confirmation names the channel a video's "Block channel" row did not. */
+fun UsPostMoreState.blockConfirmTitle(): String = when (surface) {
+    UsPostMoreSurface.POST -> "${labelOf(UsPostMoreRow.BLOCK)}?"
+    UsPostMoreSurface.REEL, UsPostMoreSurface.LONG_VIDEO ->
+        "Block ${longVideo?.channelName?.takeIf { it.isNotBlank() } ?: "@$username"}?"
+}
+
+/** What the delete confirmation asks, by what is being deleted. */
+fun UsPostMoreState.deleteConfirmTitle(): String = "Delete ${thingName()}?"
+
+/** The pill a landed delete shows. */
+fun UsPostMoreState.deletedText(): String = "${thingName().replaceFirstChar { it.uppercase() }} deleted"
+
+private fun UsPostMoreState.thingName(): String = when (surface) {
+    UsPostMoreSurface.POST -> "post"
+    UsPostMoreSurface.REEL -> "reel"
+    UsPostMoreSurface.LONG_VIDEO -> "video"
+}
+
+/** What a video with no caption unfolds under Description. */
+const val NO_DESCRIPTION = "No description"
+
+/** A video's Block row, on a reel and a long video alike. */
+private const val BLOCK_CHANNEL = "Block channel"
+
+/** A video's "Don't recommend" row, on a reel and a long video alike. */
 private const val DONT_RECOMMEND_CHANNEL = "Don't recommend this channel"
 
 /**

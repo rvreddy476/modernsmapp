@@ -31,6 +31,8 @@ internal fun MomentumHeader(
     onOpenSearch: () -> Unit,
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
+    /** The three dots at the corner: the page's own menu. */
+    onOpenMore: () -> Unit,
     modifier: Modifier = Modifier,
     translucent: Boolean = false,
     showWordmark: Boolean = true,
@@ -50,5 +52,6 @@ internal fun MomentumHeader(
         onHomeClick = onHomeClick,
         translucent = translucent,
         showWordmark = showWordmark,
+        onMore = onOpenMore,
     )
 }

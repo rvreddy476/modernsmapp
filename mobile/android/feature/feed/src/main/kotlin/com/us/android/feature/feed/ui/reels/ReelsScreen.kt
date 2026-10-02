@@ -99,6 +99,8 @@ import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
+import com.us.android.core.designsystem.component.UsHeaderCorner
+import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
@@ -139,7 +141,7 @@ import java.io.File
  * The reels surface: Instagram Reels on Momentum's palette (founder,
  * 2026-09-04). A full-screen vertical pager of short video that fills the
  * frame from the very top (the shell hands this tab no status-bar inset);
- * the header — the hamburger and search, white — translucent over the top
+ * the header — search and More, white — translucent over the top
  * of the video on its own scrim; the right rail — like, comment, share,
  * save, mute — bottom-right; the author, Follow and
  * the caption bottom-left over a bottom scrim. No For You / Following tabs:
@@ -195,7 +197,7 @@ import java.io.File
  * the author row is a 36dp avatar, "@handle" and a white Follow pill; and a
  * 2dp playhead line runs along the bottom of the frame ([ProgressLine]).
  *
- * The header's hamburger (founder, 2026-09-05; it was the rail's ⋮ before)
+ * The header's More (founder, 2026-09-05; the three dots since 2026-10-02; it was the rail's ⋮ before)
  * opens the same "more" sheet the feed card opens ([PostMoreSheetHost]),
  * driven by [more], for the reel the pager has SETTLED on, with the reel's
  * own group on top — Description, Clear screen / Show controls, Quality (the
@@ -231,9 +233,9 @@ fun ReelsScreen(
     val pagerState = rememberReelsPager(viewModel, items, head)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
-    // The reel the pager has settled on — what the header's hamburger opens
+    // The reel the pager has settled on — what the header's More opens
     // the more sheet FOR. Null over the pending head, where there is no
-    // reel yet to describe or report; the hamburger then does nothing.
+    // reel yet to describe or report; More then does nothing.
     var settledReel by remember { mutableStateOf<FeedItem?>(null) }
     // The player of the page the pager has settled on — what the more
     // sheet's Quality row reads its ladder from. Screen state, never the
@@ -494,6 +496,8 @@ private fun reelMoreState(
     qualities = reelQualityOptions(heights = trackHeights, adaptive = playback?.kind == PlaybackKind.Hls),
     selected = quality,
     canUseSound = canUseSound,
+    // The creator turned sharing off: the rail has no share glyph, and the sheet no Share row.
+    shareHidden = item.controls.hideShare,
 )
 
 /**
@@ -594,7 +598,7 @@ internal data class ReelsViewState(
  * the pager and below the header so it never covers a control, and it is not
  * itself tappable — the video under it is.
  *
- * The header — the hamburger and search, nothing else (founder, 2026-09-05)
+ * The header — search and More, nothing else (founder, 2026-09-05)
  * — rides its own top scrim and pads itself under the status bar the shell
  * left uncovered. It leaves upward in full mode, the same 200ms as the bar
  * leaves down.
@@ -631,8 +635,10 @@ private fun BoxScope.ScreenChrome(
 
 /**
  * Two white glyphs over the translucent top scrim (founder, 2026-09-05):
- * the hamburger, which opens the settled reel's More sheet — the sheet the
- * rail's ⋮ used to open — and then search, which opens Explore. No wordmark
+ * search, and then, at the corner, the three-dots More, which opens the
+ * settled reel's More sheet. The order and the glyphs are [UsHeaderCorner]'s
+ * (founder, 2026-10-02: "Search, then More at the corner", the same as Home
+ * and Tube; it was the hamburger and then search). No wordmark
  * (over a video the brand is the video), no messages, no bell: those stay
  * on Home's full header. The same [UsHomeTopBar] as Home so the scrim, the
  * height and the status-bar padding are one drawing, not two.
@@ -648,11 +654,18 @@ private fun ReelsHeader(
         translucent = true,
         showWordmark = false,
         actions = {
-            IconButton(onClick = onOpenMenu, modifier = Modifier.testTag("reels_header:menu")) {
-                Icon(imageVector = UsIcons.Menu, contentDescription = "More", tint = UsTheme.extended.onMedia)
-            }
-            IconButton(onClick = onOpenSearch, modifier = Modifier.testTag("reels_header:search")) {
-                Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = UsTheme.extended.onMedia)
+            UsHeaderCorner.forEach { action ->
+                val (onClick, tag) = when (action) {
+                    UsHeaderCornerAction.SEARCH -> onOpenSearch to "reels_header:search"
+                    UsHeaderCornerAction.MORE -> onOpenMenu to "reels_header:menu"
+                }
+                IconButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
+                    Icon(
+                        imageVector = action.icon,
+                        contentDescription = action.description,
+                        tint = UsTheme.extended.onMedia,
+                    )
+                }
             }
         },
     )
@@ -705,7 +718,7 @@ internal class ReelActions(
  * The bundle for [ReelsScreen]: everything the ViewModel answers directly,
  * plus the five things only the screen can do — push a profile, open the
  * system share sheet, open the comments sheet, and hold the settled reel
- * and its player (the hamburger's more sheet opens on the former, reads its
+ * and its player (the header's more sheet opens on the former, reads its
  * ladder from the latter).
  */
 private fun reelActions(
@@ -1321,7 +1334,7 @@ private fun BottomScrim(modifier: Modifier = Modifier) {
  * share, save — each glyph with a one-line label under it, the count
  * where there is one (share and save too, when the row carries theirs,
  * 2026-09-30) — then mute on its own, unlabelled. The ⋮ left the
- * rail for the header's hamburger (founder, 2026-09-05). 56dp from the
+ * rail for the header's More (founder, 2026-09-05). 56dp from the
  * bottom, 20dp between controls. Plain white glyphs on the bottom scrim —
  * no discs; the scrim carries the contrast for the whole strip.
  *

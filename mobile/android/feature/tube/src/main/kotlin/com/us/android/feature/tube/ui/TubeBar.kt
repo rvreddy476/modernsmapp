@@ -46,8 +46,8 @@ sealed interface TubeBarAction {
 
     /**
      * Create, from inside Tube: the Create sheet scoped to Tube's three —
-     * video, reel, live. Raised by the bar's centre tile and by the
-     * header's "+" (2026-09-06); `:app` resolves both the same way.
+     * video, reel, live. Raised by the bar's centre tile (the header's "+"
+     * of 2026-09-06 was removed on 2026-10-02 as a duplicate of it).
      */
     data object CreateVideo : TubeBarAction
 }

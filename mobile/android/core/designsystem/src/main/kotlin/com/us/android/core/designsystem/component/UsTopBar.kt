@@ -23,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -209,6 +210,14 @@ fun UsHomeTopBar(
  * [unreadCount] is the bell's badge. The count goes in the button's own
  * description — "Notifications" followed by a detached "3" is not a sentence
  * — and the badge itself is decorative to a screen reader.
+ *
+ * ## THE CORNER (founder, 2026-10-02)
+ *
+ * The top-right corner reads Search, then the three-dots More, with More at
+ * the corner itself — [UsHeaderCorner], the same on Reels and Tube. So
+ * messages and the bell now come FIRST and search moved to their right (it
+ * was search, messages, bell). [onMore] is the page's own menu; a page with
+ * no menu (Me, which has its Settings glyph) passes null and draws no dots.
  */
 @Composable
 fun UsMomentumHeader(
@@ -220,6 +229,7 @@ fun UsMomentumHeader(
     onHomeClick: () -> Unit = {},
     translucent: Boolean = false,
     showWordmark: Boolean = true,
+    onMore: (() -> Unit)? = null,
 ) {
     // Over video the glyphs are plain white; the text ramp is tuned for the
     // navy ground, not for an arbitrary frame.
@@ -230,9 +240,6 @@ fun UsMomentumHeader(
         translucent = translucent,
         showWordmark = showWordmark,
         actions = {
-            IconButton(onClick = onSearch) {
-                Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = tint)
-            }
             IconButton(onClick = onMessages) {
                 Icon(imageVector = UsIcons.Comment, contentDescription = "Messages", tint = tint)
             }
@@ -248,6 +255,18 @@ fun UsMomentumHeader(
             ) {
                 UsBadgedIcon(icon = UsIcons.Notifications, count = unreadCount, tint = tint)
             }
+            UsHeaderCorner.forEach { action ->
+                val onClick = when (action) {
+                    UsHeaderCornerAction.SEARCH -> onSearch
+                    UsHeaderCornerAction.MORE -> onMore
+                } ?: return@forEach
+                IconButton(
+                    onClick = onClick,
+                    modifier = Modifier.testTag("momentum_header:${action.name.lowercase()}"),
+                ) {
+                    Icon(imageVector = action.icon, contentDescription = action.description, tint = tint)
+                }
+            }
         },
     )
 }
@@ -260,7 +279,9 @@ private val TranslucentHeaderScrim: Brush = Brush.verticalGradient(
 @Preview(name = "Momentum header", showBackground = true, backgroundColor = 0xFF041122)
 @Composable
 private fun UsMomentumHeaderPreview() {
-    UsTheme { UsMomentumHeader(unreadCount = 3, onSearch = {}, onMessages = {}, onNotifications = {}) }
+    UsTheme {
+        UsMomentumHeader(unreadCount = 3, onSearch = {}, onMessages = {}, onNotifications = {}, onMore = {})
+    }
 }
 
 @Preview(name = "Momentum header — over media", showBackground = true, backgroundColor = 0xFF9A9A9A)
