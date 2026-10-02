@@ -218,6 +218,12 @@ type OfflineCheckItem struct {
 	// ContentType is the post's, as on the card; on a valid copy only (an
 	// invalid one may have no post left to read it from).
 	ContentType string `json:"content_type,omitempty"`
+	// Renewable is on a valid copy only: true when repeating the grant
+	// (POST /v1/posts/:id/offline with the same device_id) would succeed
+	// right now and move expires_at to 30 days from now, so a client can
+	// skip a renewal that would be refused. See offlineRenewable for what
+	// it is computed from.
+	Renewable *bool `json:"renewable,omitempty"`
 }
 
 // OfflineRemoved is the body of DELETE /v1/posts/:postId/offline.
@@ -314,21 +320,13 @@ func (s *Service) offlineStore() offlineStore {
 	return nil
 }
 
-// offlineEntitled answers the members-only rule for a viewer who is not the
-// author: (true, nil) for an ungated post or an entitled viewer, (false,
-// nil) for a resolved no, and an error when monetization could not answer.
+// offlineEntitled answers the members-only rule (step 5). It is the lookup
+// playback itself is gated on since 2026-10-02 (media_access.go
+// viewerEntitled); the offline routes ask it as their own step, after the
+// audience, so a non-member is told 403 "not allowed" rather than 404, and
+// an outage is a 503 rather than a reason to delete a stored copy.
 func (s *Service) offlineEntitled(ctx context.Context, viewerID uuid.UUID, p *postgres.Post) (bool, error) {
-	if p.TierRequiredID == nil || p.AuthorID == viewerID {
-		return true, nil
-	}
-	if s.offlineEntitlement != nil {
-		return s.offlineEntitlement(ctx, viewerID, p)
-	}
-	allowed, _, err := s.CheckEntitlement(ctx, viewerID, p.AuthorID, p.TierRequiredID)
-	if err != nil {
-		return false, err
-	}
-	return allowed, nil
+	return s.viewerEntitled(ctx, viewerID, p)
 }
 
 // GrantOfflineCopy grants (or refreshes) viewerID's copy of postID on
@@ -365,7 +363,9 @@ func (s *Service) GrantOfflineCopy(ctx context.Context, viewerID, postID uuid.UU
 		if err != nil {
 			return nil, false, fmt.Errorf("%w: audience: %v", ErrOfflineUnavailable, err)
 		}
-		if !decision.allowed(p) {
+		// The audience half of the playback decision; its membership half
+		// is step 5, with an answer of its own.
+		if !decision.audience(p) {
 			if !decision.resolved {
 				return nil, false, fmt.Errorf("%w: account gate unresolved", ErrOfflineUnavailable)
 			}
@@ -572,7 +572,7 @@ func (s *Service) offlineJudgeFor(ctx context.Context, viewerID uuid.UUID, posts
 		if p.AuthorID == viewerID {
 			return "", nil
 		}
-		if !decision.allowed(p) {
+		if !decision.audience(p) {
 			if decision.blocked(p) {
 				return OfflineReasonBlocked, nil
 			}
@@ -732,6 +732,14 @@ func (s *Service) CheckOfflineCopies(ctx context.Context, viewerID uuid.UUID, ra
 		return nil, err
 	}
 
+	var validPosts []*postgres.Post
+	for id, reason := range reasons {
+		if reason == "" && posts[id] != nil {
+			validPosts = append(validPosts, posts[id])
+		}
+	}
+	renewable := s.offlineRenewable(ctx, validPosts)
+
 	out := make([]OfflineCheckItem, 0, len(order))
 	var valid []uuid.UUID
 	for _, a := range order {
@@ -749,6 +757,8 @@ func (s *Service) CheckOfflineCopies(ctx context.Context, viewerID uuid.UUID, ra
 			if p := posts[a.id]; p != nil {
 				item.ContentType = p.ContentType
 			}
+			renew := renewable[a.id]
+			item.Renewable = &renew
 			valid = append(valid, a.id)
 		}
 		out = append(out, item)
@@ -757,6 +767,39 @@ func (s *Service) CheckOfflineCopies(ctx context.Context, viewerID uuid.UUID, ra
 		slog.WarnContext(ctx, "offline copy: last_checked_at not stamped", "copies", len(valid), "err", err)
 	}
 	return out, nil
+}
+
+// offlineRenewable answers, for posts whose copies the check just found
+// valid, whether repeating the grant would succeed right now. A valid copy
+// has already passed the grant's steps 1, 2, 4 and 5 against the post as it
+// stands (the viewer may watch it, the creator allows it or the viewer is
+// the creator, and a members-only viewer is entitled), and renewing an
+// active copy never counts against the limit (step 8). What is left is
+// steps 3 and 6: it is still a long video or a reel with a video on it, it
+// is published, and its media is ready and passed (the owner's own
+// scheduled or re-processing post is valid but not renewable).
+//
+// Step 7 — that media-service still lists a 720p, 480p or 360p rendition —
+// is NOT asked here: it is one HTTP call per video, and a check carries up
+// to 100. A ready, passed video that has lost its whole ladder is the one
+// case where `renewable` is true and the grant then answers 409 NOT_READY.
+//
+// Best-effort: if the media state cannot be read, every answer is false (a
+// client skips a renewal and asks again later); the check itself still
+// answers, because validity never depended on it.
+func (s *Service) offlineRenewable(ctx context.Context, posts []*postgres.Post) map[uuid.UUID]bool {
+	out := make(map[uuid.UUID]bool, len(posts))
+	if len(posts) == 0 {
+		return out
+	}
+	if err := s.attachMediaState(ctx, posts); err != nil {
+		slog.WarnContext(ctx, "offline copy: renewable not computed", "copies", len(posts), "err", err)
+		return out
+	}
+	for _, p := range posts {
+		out[p.ID] = offlineContentType(p.ContentType) && p.PublishAt == nil && !p.IsProcessing && primaryVideo(p) != nil
+	}
+	return out
 }
 
 // ListOfflineCopies returns the caller's valid copies on deviceID, newest

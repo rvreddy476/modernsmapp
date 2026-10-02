@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -27,6 +28,18 @@ import (
 	    the schedule now bind the byte gate for signed-in viewers too, exactly
 	    as they bind GET /v1/posts/:id (viewerMayViewPost + hiddenFromViewer);
 	    the retired `circle` audience is author-only on both gates.
+
+	  * Members-only videos (2026-10-02). A post gated on a membership tier
+	    (tier_required_id) plays only for its author and for a viewer who is
+	    entitled to that tier. The watch page always showed the join card to
+	    everyone else, but the byte gate did not ask: a signed-in non-member
+	    holding the media id could fetch the video. The membership clause is
+	    part of the one decision now (postMediaDecision.allowed), answered by
+	    the same lookup the offline grant uses (viewerEntitled ->
+	    CheckEntitlement, monetization-service). A lookup that does not answer
+	    refuses that asset and is never cached. The post's poster — its cover
+	    image, and a thumbnail still of the video — stays visible to a
+	    signed-in viewer who may see the post, because the join card shows it.
 
 	Every rule here is pure and testable: the storage the gate reads is the
 	narrow mediaAccessStore slice, relationships and the account gate are
@@ -184,14 +197,37 @@ func (s *Service) postMediaJudge(ctx context.Context, viewerID uuid.UUID, posts 
 	return v.allowed, nil
 }
 
-// postMediaDecision is postMediaJudge's decision with the two facts the
-// offline-copy routes (offline_copies.go) need on top of the yes/no: whether
-// a refusal is a block (so the copy's owner is told "blocked", not
-// "private"), and whether the account gate behind the decision actually
-// answered (so a graph outage is a retry, never a reason to delete a stored
-// copy). The decision itself is `allowed`, and it is the only one there is.
+// mediaMembershipTimeout bounds the membership lookup on the byte path:
+// media-service gives this whole decision three seconds, and a slow
+// monetization-service must become a refusal of one asset, not a held
+// connection.
+const mediaMembershipTimeout = 2 * time.Second
+
+// MediaAccessPurposePoster is the wire value media-service sends when the
+// read names a thumbnail still of the asset rather than something that
+// plays it. Any other value, and none, is playback.
+const MediaAccessPurposePoster = "poster"
+
+// postMediaDecision is postMediaJudge's decision with the facts its callers
+// need on top of the yes/no: the two halves it is made of, whether a refusal
+// is a block (so an offline copy's owner is told "blocked", not "private"),
+// and whether the account gate behind the decision actually answered (so a
+// graph outage is a retry, never a reason to delete a stored copy). The
+// decision itself is `allowed`, and it is the only one there is.
 type postMediaDecision struct {
+	// allowed is the playback decision: audience AND membership. A
+	// membership lookup that did not answer is a refusal here.
 	allowed func(*postgres.Post) bool
+	// audience is everything but the membership clause: may this viewer see
+	// the post at all (review state, schedule, account privacy, hidden
+	// authors, blocks and mutes, the post's audience, shares, the 18+ gate).
+	// It is what the watch page's join card is shown under.
+	audience func(*postgres.Post) bool
+	// entitled is the membership clause on its own: (true, nil) for a post
+	// with no tier, for its author and for an entitled viewer; (false, nil)
+	// for a resolved no; an error when monetization-service did not answer.
+	// One lookup per (author, tier) per decision.
+	entitled func(*postgres.Post) (bool, error)
 	// blocked reports a block in either direction between the viewer and
 	// the post's author. Always false for the signed-out viewer.
 	blocked func(*postgres.Post) bool
@@ -227,9 +263,16 @@ func (s *Service) postMediaDecisions(ctx context.Context, viewerID uuid.UUID, po
 	authorOK, resolved := s.canViewPostsResolved(ctx, viewer, authors)
 
 	if viewer == nil {
+		// anonymousMayAccessPost already refuses a members-only post, cover
+		// and stills included: a paid audience is never an anonymous one.
+		anonymous := func(p *postgres.Post) bool {
+			return p != nil && anonymousMayAccessPost(p, authorOK[p.AuthorID])
+		}
 		return &postMediaDecision{
-			allowed: func(p *postgres.Post) bool {
-				return p != nil && anonymousMayAccessPost(p, authorOK[p.AuthorID])
+			allowed:  anonymous,
+			audience: anonymous,
+			entitled: func(p *postgres.Post) (bool, error) {
+				return p != nil && p.TierRequiredID == nil, nil
 			},
 			blocked:  func(*postgres.Post) bool { return false },
 			resolved: resolved,
@@ -246,18 +289,30 @@ func (s *Service) postMediaDecisions(ctx context.Context, viewerID uuid.UUID, po
 	}
 	shared := s.privateSharedSet(ctx, viewerID, privatePostIDs(posts, viewerID))
 	ageOK := s.ageAllowance(ctx, viewer)
+	audience := func(p *postgres.Post) bool {
+		if p == nil {
+			return false
+		}
+		in := postMediaInputs{
+			rel:           rels[p.AuthorID.String()],
+			shared:        shared[p.ID],
+			authorVisible: authorOK[p.AuthorID],
+		}
+		return evaluatePostMediaVisibility(viewerID, p, in) && ageOK(p)
+	}
+	entitled := s.membershipClause(ctx, viewerID)
 	return &postMediaDecision{
 		allowed: func(p *postgres.Post) bool {
-			if p == nil {
+			if !audience(p) {
 				return false
 			}
-			in := postMediaInputs{
-				rel:           rels[p.AuthorID.String()],
-				shared:        shared[p.ID],
-				authorVisible: authorOK[p.AuthorID],
-			}
-			return evaluatePostMediaVisibility(viewerID, p, in) && ageOK(p)
+			// Members-only: the author, or a viewer entitled to the tier. A
+			// lookup that failed is a refusal; it is not remembered.
+			ok, err := entitled(p)
+			return err == nil && ok
 		},
+		audience: audience,
+		entitled: entitled,
 		blocked: func(p *postgres.Post) bool {
 			if p == nil || p.AuthorID == viewerID {
 				return false
@@ -267,6 +322,128 @@ func (s *Service) postMediaDecisions(ctx context.Context, viewerID uuid.UUID, po
 		},
 		resolved: resolved,
 	}, nil
+}
+
+// viewerEntitled answers the members-only rule for one viewer and one post:
+// (true, nil) for an ungated post, for its author and for an entitled
+// viewer, (false, nil) for a resolved no, and an error when
+// monetization-service could not answer. It is the one membership lookup:
+// playback (membershipClause) and the offline grant and check
+// (offline_copies.go) both ask it. A signed-out viewer is never entitled.
+func (s *Service) viewerEntitled(ctx context.Context, viewerID uuid.UUID, p *postgres.Post) (bool, error) {
+	if p.TierRequiredID == nil || p.AuthorID == viewerID {
+		return true, nil
+	}
+	if viewerID == uuid.Nil {
+		return false, nil
+	}
+	if s.offlineEntitlement != nil {
+		return s.offlineEntitlement(ctx, viewerID, p)
+	}
+	allowed, _, err := s.CheckEntitlement(ctx, viewerID, p.AuthorID, p.TierRequiredID)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
+}
+
+// membershipClause is viewerEntitled for one decision: asked lazily (only
+// for a gated post that reached the clause), bounded by
+// mediaMembershipTimeout, and once per (author, tier) however many posts and
+// assets of a page share it. Failures are remembered for the decision only,
+// so one page does not ask a service that is down once per card; nothing
+// outlives the request.
+func (s *Service) membershipClause(ctx context.Context, viewerID uuid.UUID) func(*postgres.Post) (bool, error) {
+	type key struct{ author, tier uuid.UUID }
+	type answer struct {
+		ok  bool
+		err error
+	}
+	asked := map[key]answer{}
+	return func(p *postgres.Post) (bool, error) {
+		if p == nil {
+			return false, nil
+		}
+		if p.TierRequiredID == nil || p.AuthorID == viewerID {
+			return true, nil
+		}
+		k := key{p.AuthorID, *p.TierRequiredID}
+		if a, done := asked[k]; done {
+			return a.ok, a.err
+		}
+		lookupCtx, cancel := context.WithTimeout(ctx, mediaMembershipTimeout)
+		ok, err := s.viewerEntitled(lookupCtx, viewerID, p)
+		cancel()
+		if err != nil {
+			ok = false
+			slog.WarnContext(ctx, "media access: membership lookup failed; refusing members-only media",
+				"viewer_id", viewerID, "post_id", p.ID, "author_id", p.AuthorID, "err", err)
+		}
+		asked[k] = answer{ok: ok, err: err}
+		return ok, err
+	}
+}
+
+// postCoverOnly reports that mediaID reaches p as its cover image and is not
+// one of the things the post plays. A cover is the poster of the join card:
+// it is shown to every signed-in viewer who may see the post, members or not.
+func postCoverOnly(p *postgres.Post, mediaID uuid.UUID) bool {
+	if p == nil || p.CoverMediaID == nil || *p.CoverMediaID != mediaID {
+		return false
+	}
+	for _, m := range p.Media {
+		if m.MediaID == mediaID {
+			return false
+		}
+	}
+	return true
+}
+
+// mediaAllowed is the decision for ONE asset reached through ONE post: the
+// audience first, then the membership clause — which a poster does not need.
+// poster is true for a read that named a thumbnail still of the asset; the
+// post's cover image is a poster whatever the read. The error is a
+// membership lookup that did not answer; the asset is refused either way.
+func (d *postMediaDecision) mediaAllowed(p *postgres.Post, mediaID uuid.UUID, poster bool) (bool, error) {
+	if p == nil || !d.audience(p) {
+		return false, nil
+	}
+	if poster || postCoverOnly(p, mediaID) {
+		return true, nil
+	}
+	return d.entitled(p)
+}
+
+// postMediaAnswer is what the posts carrying an asset say about it.
+type postMediaAnswer int
+
+const (
+	postMediaRefused postMediaAnswer = iota
+	postMediaPlays
+	// postMediaMembersOnly: the viewer may see a post carrying the asset,
+	// and is not a member of the tier it is gated on.
+	postMediaMembersOnly
+	// postMediaMembershipUnresolved: as above, but monetization-service did
+	// not answer. Refused, and the caller must not cache it.
+	postMediaMembershipUnresolved
+)
+
+// judgePostMedia folds mediaAllowed over the posts carrying mediaID: one
+// post that plays it is enough.
+func (d *postMediaDecision) judgePostMedia(posts []*postgres.Post, mediaID uuid.UUID, poster bool) postMediaAnswer {
+	answer := postMediaRefused
+	for _, p := range posts {
+		ok, err := d.mediaAllowed(p, mediaID, poster)
+		switch {
+		case err != nil:
+			answer = postMediaMembershipUnresolved
+		case ok:
+			return postMediaPlays
+		case p != nil && d.audience(p) && answer == postMediaRefused:
+			answer = postMediaMembersOnly
+		}
+	}
+	return answer
 }
 
 // approvedPostsForMedia loads the live posts carrying mediaID that a
@@ -296,24 +473,21 @@ func (s *Service) approvedPostsForMedia(ctx context.Context, mediaID uuid.UUID) 
 // media used by posts, Reels and PostTube. PostTube stays a separate product
 // surface; this merely honors its existing post/media reference and never
 // creates or merges a second video record.
-func (s *Service) viewerMayAccessPostMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error) {
+//
+// poster is true when the read named a thumbnail still (see mediaAllowed).
+func (s *Service) viewerMayAccessPostMedia(ctx context.Context, viewerID, mediaID uuid.UUID, poster bool) (postMediaAnswer, error) {
 	posts, err := s.approvedPostsForMedia(ctx, mediaID)
 	if err != nil {
-		return false, err
+		return postMediaRefused, err
 	}
 	if len(posts) == 0 {
-		return false, nil
+		return postMediaRefused, nil
 	}
-	judge, err := s.postMediaJudge(ctx, viewerID, posts)
+	decision, err := s.postMediaDecisions(ctx, viewerID, posts)
 	if err != nil {
-		return false, err
+		return postMediaRefused, err
 	}
-	for _, p := range posts {
-		if judge(p) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return decision.judgePostMedia(posts, mediaID, poster), nil
 }
 
 // privatePostIDs is the ids of the private posts in posts that viewerID
@@ -375,6 +549,29 @@ func storyMediaVerdict(ctx context.Context, viewerID, mediaID uuid.UUID, process
 		"media_id", mediaID,
 		"reason", "story_allowed")
 	return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "story_allowed"}
+}
+
+// membersOnlyDenied is the resolved denial of a members-only asset to a
+// signed-in viewer who may see the post and is not a member: the same shape
+// as every other denial, with a reason of its own for the log line.
+func membersOnlyDenied(ctx context.Context, viewerID, mediaID uuid.UUID) MediaAccessResult {
+	slog.InfoContext(ctx, "media access excluded: members-only post, viewer not entitled",
+		"viewer_id", viewerID,
+		"media_id", mediaID,
+		"reason", "members_only")
+	return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "members_only"}
+}
+
+// membershipUnresolvedDenied is the batch answer for a members-only asset
+// whose membership lookup did not answer: that one asset is refused and the
+// rest of the page is unaffected. (The single route answers 503 instead, so
+// a player retries.) Nothing is stored: the next request asks again.
+func membershipUnresolvedDenied(ctx context.Context, viewerID, mediaID uuid.UUID) MediaAccessResult {
+	slog.WarnContext(ctx, "media access excluded: membership lookup unresolved",
+		"viewer_id", viewerID,
+		"media_id", mediaID,
+		"reason", "membership_unresolved")
+	return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "membership_unresolved"}
 }
 
 // noVisibleContent is the resolved denial when nothing the viewer may see

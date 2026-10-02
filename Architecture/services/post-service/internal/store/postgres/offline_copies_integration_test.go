@@ -459,3 +459,180 @@ func TestOfflineITMigrationIsIdempotent(t *testing.T) {
 		t.Fatal("re-applying the migration lost a row")
 	}
 }
+
+// Migration 061 (founder decision, 2 Oct 2026): existing live recordings stop
+// being saveable offline, the copies viewers hold of them are revoked the
+// way the owner-edit path revokes them, and a creator's own choice — made
+// before the migration or after it — survives a second run.
+func TestOfflineITMigration061SwitchesRecordingsOff(t *testing.T) {
+	r := newOfflineITRig(t)
+	ctx := context.Background()
+	yes := true
+	sql, err := migrationSQL("061_live_recordings_not_saveable.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := func() {
+		t.Helper()
+		if _, err := r.pool.Exec(ctx, sql); err != nil {
+			t.Fatalf("apply 061: %v", err)
+		}
+	}
+	// asLive stamps a post the way CreateLiveVODPost does, with the old
+	// default (allow_download = TRUE) and no owner edit behind it.
+	asLive := func(p *postgres.Post) {
+		t.Helper()
+		if _, err := r.pool.Exec(ctx, `UPDATE posts SET source = 'live', live_stream_id = $2, visibility = 'unlisted', allow_download = TRUE WHERE id = $1`, p.ID, uuid.New()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allows := func(p *postgres.Post) bool {
+		t.Helper()
+		var v bool
+		if err := r.pool.QueryRow(ctx, `SELECT allow_download FROM posts WHERE id = $1`, p.ID).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	recording, chosen, upload := r.video(t), r.video(t), r.video(t)
+	asLive(recording)
+	// `chosen` is a recording whose creator set the switch themselves: an
+	// owner edit, with its audit row.
+	if _, err := r.pool.Exec(ctx, `UPDATE posts SET source = 'live', live_stream_id = $2, visibility = 'unlisted' WHERE id = $1`, chosen.ID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.UpdatePostFields(ctx, chosen.ID, r.owner, postgres.PostEditPatch{AllowDownload: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	// An ordinary upload that allows saving is not this migration's.
+	if _, err := r.pool.Exec(ctx, `UPDATE posts SET allow_download = TRUE WHERE id = $1`, upload.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	viewer, remover := uuid.New(), uuid.New()
+	for _, p := range []*postgres.Post{recording, chosen, upload} {
+		r.mustGrant(t, viewer, p.ID, offDeviceA)
+		r.mustGrant(t, r.owner, p.ID, offDeviceA)
+	}
+	// A copy its holder already removed keeps its own reason.
+	r.mustGrant(t, remover, recording.ID, offDeviceA)
+	if _, err := r.store.RevokeOfflineCopies(ctx, remover, offDeviceA, []uuid.UUID{recording.ID}, postgres.OfflineRevokeRemoved, r.now); err != nil {
+		t.Fatal(err)
+	}
+
+	verify := func(stage string) {
+		t.Helper()
+		if allows(recording) {
+			t.Fatalf("%s: the recording still allows saving offline", stage)
+		}
+		if !allows(chosen) {
+			t.Fatalf("%s: a recording its creator switched on was switched off", stage)
+		}
+		if !allows(upload) {
+			t.Fatalf("%s: an ordinary upload was switched off", stage)
+		}
+		if revoked, reason, _, _ := r.state(t, viewer, recording.ID, offDeviceA); !revoked || reason != "not_allowed" {
+			t.Fatalf("%s: viewer copy of the recording: revoked=%v reason=%q", stage, revoked, reason)
+		}
+		if revoked, _, _, _ := r.state(t, r.owner, recording.ID, offDeviceA); revoked {
+			t.Fatalf("%s: the creator's own copy of the recording was revoked", stage)
+		}
+		if revoked, reason, _, _ := r.state(t, remover, recording.ID, offDeviceA); !revoked || reason != "removed" {
+			t.Fatalf("%s: an already-removed copy: revoked=%v reason=%q", stage, revoked, reason)
+		}
+		for name, p := range map[string]*postgres.Post{"chosen": chosen, "upload": upload} {
+			if revoked, _, _, _ := r.state(t, viewer, p.ID, offDeviceA); revoked {
+				t.Fatalf("%s: viewer copy of %s was revoked", stage, name)
+			}
+		}
+	}
+	apply()
+	verify("first run")
+	var firstRevokedAt time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT revoked_at FROM post_offline_copies WHERE user_id=$1 AND post_id=$2 AND device_id=$3`,
+		viewer, recording.ID, offDeviceA).Scan(&firstRevokedAt); err != nil {
+		t.Fatal(err)
+	}
+	apply()
+	verify("second run")
+	var secondRevokedAt time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT revoked_at FROM post_offline_copies WHERE user_id=$1 AND post_id=$2 AND device_id=$3`,
+		viewer, recording.ID, offDeviceA).Scan(&secondRevokedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !secondRevokedAt.Equal(firstRevokedAt) {
+		t.Fatalf("a second run moved revoked_at: %v -> %v", firstRevokedAt, secondRevokedAt)
+	}
+
+	// The creator can still save their own recording (the store grants; the
+	// rule that the owner needs no permission is the service's), and can
+	// switch it on for viewers: a later run leaves that alone.
+	if _, _, err := r.grant(t, r.owner, recording.ID, offDeviceB, 100); err != nil {
+		t.Fatalf("the creator's own grant: %v", err)
+	}
+	if _, err := r.store.UpdatePostFields(ctx, recording.ID, r.owner, postgres.PostEditPatch{AllowDownload: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := r.grant(t, viewer, recording.ID, offDeviceA, 100); err != nil || !created {
+		t.Fatalf("re-grant after the creator switched it on: created=%v err=%v", created, err)
+	}
+	apply()
+	if !allows(recording) {
+		t.Fatal("a later run undid the creator switching it on")
+	}
+	if revoked, _, _, _ := r.state(t, viewer, recording.ID, offDeviceA); revoked {
+		t.Fatal("a later run revoked a copy the creator allows")
+	}
+}
+
+// Renewing (2026-10-02): repeating the grant on an active copy keeps the row
+// and restarts its thirty days; a row that was revoked or had expired is
+// granted anew, with the revocation cleared.
+func TestOfflineITRenewAndGrantAgain(t *testing.T) {
+	r := newOfflineITRig(t)
+	ctx := context.Background()
+	post, viewer := r.video(t), uuid.New()
+	first := r.mustGrant(t, viewer, post.ID, offDeviceA)
+
+	// Active: a renewal, at a limit of one copy (the copy itself).
+	r.now = r.now.Add(29 * 24 * time.Hour)
+	renewed, created, err := r.grant(t, viewer, post.ID, offDeviceA, 1)
+	if err != nil || created {
+		t.Fatalf("renewal: created=%v err=%v", created, err)
+	}
+	if !renewed.GrantedAt.Equal(first.GrantedAt) || !renewed.ExpiresAt.Equal(r.now.Add(720*time.Hour)) || renewed.RevokedAt != nil {
+		t.Fatalf("renewed row = %+v", renewed)
+	}
+
+	// Revoked: granted again, as a new copy.
+	if _, err := r.store.RevokeOfflineCopies(ctx, viewer, offDeviceA, []uuid.UUID{post.ID}, postgres.OfflineRevokeNotAllowed, r.now); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(time.Hour)
+	again, created, err := r.grant(t, viewer, post.ID, offDeviceA, 1)
+	if err != nil || !created {
+		t.Fatalf("grant of a revoked row: created=%v err=%v", created, err)
+	}
+	if again.RevokedAt != nil || again.RevokeReason != "" || !again.GrantedAt.Equal(r.now) || !again.ExpiresAt.Equal(r.now.Add(720*time.Hour)) {
+		t.Fatalf("row after the new grant = %+v", again)
+	}
+	if revoked, reason, _, _ := r.state(t, viewer, post.ID, offDeviceA); revoked || reason != "" {
+		t.Fatalf("stored row: revoked=%v reason=%q", revoked, reason)
+	}
+
+	// Expired: granted again, as a new copy.
+	r.now = r.now.Add(31 * 24 * time.Hour)
+	expired, created, err := r.grant(t, viewer, post.ID, offDeviceA, 1)
+	if err != nil || !created {
+		t.Fatalf("grant of an expired row: created=%v err=%v", created, err)
+	}
+	if !expired.GrantedAt.Equal(r.now) || !expired.ExpiresAt.Equal(r.now.Add(720*time.Hour)) {
+		t.Fatalf("row after an expired copy was granted again = %+v", expired)
+	}
+	var n int
+	_ = r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM post_offline_copies WHERE user_id=$1`, viewer).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows = %d, want the one row throughout", n)
+	}
+}

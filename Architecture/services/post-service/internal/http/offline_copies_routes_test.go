@@ -390,6 +390,71 @@ func TestOfflineGrantRouteCreatedThenRefreshed(t *testing.T) {
 	}
 }
 
+// Renewing over the wire (2026-10-02): the client repeats the grant with the
+// same device_id. 200 and thirty days from now while the copy is active; 403
+// once the creator has turned saving off, with the copy left revoked; 201
+// when a revoked copy is granted again after the creator turns it back on.
+func TestOfflineRenewRoute(t *testing.T) {
+	r := newOfflineRouteRig(t)
+	if w := r.grant(fxViewer); w.Code != http.StatusCreated {
+		t.Fatalf("grant: %d %s", w.Code, w.Body.String())
+	}
+	checkBody := `{"device_id":"` + offlineFxDevice + `","post_ids":["` + fxPost.String() + `"]}`
+	check := func() map[string]any {
+		t.Helper()
+		w := r.do(http.MethodPost, "/v1/posts/offline/check", fxViewer, checkBody)
+		if w.Code != http.StatusOK {
+			t.Fatalf("check: %d %s", w.Code, w.Body.String())
+		}
+		var items []map[string]any
+		if err := json.Unmarshal(offlineData(t, w), &items); err != nil || len(items) != 1 {
+			t.Fatalf("check body: %v %s", err, w.Body.String())
+		}
+		return items[0]
+	}
+	if item := check(); item["valid"] != true || item["renewable"] != true {
+		t.Fatalf("check before renewing = %v", item)
+	}
+
+	r.now = r.now.Add(20 * 24 * time.Hour)
+	renewed := r.grant(fxViewer)
+	if renewed.Code != http.StatusOK {
+		t.Fatalf("renewal: %d %s (want 200)", renewed.Code, renewed.Body.String())
+	}
+	var card service.OfflineCard
+	if err := json.Unmarshal(offlineData(t, renewed), &card); err != nil {
+		t.Fatal(err)
+	}
+	if !card.ExpiresAt.Equal(r.now.Add(720 * time.Hour)) {
+		t.Fatalf("renewed expires_at = %v, want thirty days from %v", card.ExpiresAt, r.now)
+	}
+
+	// The creator turns saving off; the check revokes the copy.
+	r.store.posts[fxPost].AllowDownload = false
+	if item := check(); item["valid"] != false || item["reason"] != "not_allowed" {
+		t.Fatalf("check after downloads were turned off = %v", item)
+	} else if _, said := item["renewable"]; said {
+		t.Fatalf("an invalid item says renewable: %v", item)
+	}
+	refused := r.grant(fxViewer)
+	if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), "OFFLINE_NOT_ALLOWED") {
+		t.Fatalf("renewal of a copy the post no longer allows: %d %s", refused.Code, refused.Body.String())
+	}
+	if row := r.store.rows[offlineRouteKey{fxViewer, fxPost, offlineFxDevice}]; row == nil || row.RevokedAt == nil || row.RevokeReason != "not_allowed" {
+		t.Fatalf("the refused renewal left the row %+v, want it still revoked", row)
+	}
+
+	// Switched back on: the revoked copy can be granted again, as a new one.
+	r.store.posts[fxPost].AllowDownload = true
+	again := r.grant(fxViewer)
+	if again.Code != http.StatusCreated {
+		t.Fatalf("grant of a revoked copy: %d %s (want 201)", again.Code, again.Body.String())
+	}
+	if item := check(); item["valid"] != true || item["renewable"] != true {
+		t.Fatalf("check after the new grant = %v", item)
+	}
+}
+
 // A reel whose added sound this viewer may not hear is saved without it:
 // sound is null, never an object with a path that would be refused.
 func TestOfflineGrantRouteReelSoundFollowsItsAudience(t *testing.T) {
@@ -815,11 +880,15 @@ func TestOfflineContractFieldNamesArePinned(t *testing.T) {
 		reason, _ := item["reason"].(string)
 		_, hasExpiry := item["expires_at"]
 		contentType, hasType := item["content_type"].(string)
+		renewable, hasRenewable := item["renewable"].(bool)
 		wantFields := 3
 		if valid {
-			wantFields = 4 // post_id, valid, expires_at, content_type
+			wantFields = 5 // post_id, valid, expires_at, content_type, renewable
 		}
+		// renewable is on a valid item only, and it is a boolean there —
+		// never absent, so a client can tell "no" from "not said".
 		if valid != (i == 0) || reason != wantReasons[i] || hasExpiry != valid || hasType != valid || len(item) != wantFields ||
+			hasRenewable != valid || (valid && !renewable) ||
 			(valid && contentType != "long_video") {
 			t.Errorf("check[%d] = %v", i, item)
 		}

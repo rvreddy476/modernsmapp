@@ -84,7 +84,15 @@ func TestCreateLiveVODPostMakesOneUnlistedLongVideo(t *testing.T) {
 	if p.ReviewStatus != "approved" {
 		t.Fatalf("review_status=%q want approved for a passed asset", p.ReviewStatus)
 	}
+	// Founder decision, 2 Oct 2026: a recording is not saveable offline
+	// until its creator says so.
+	if p.AllowDownload {
+		t.Fatal("a new recording allows saving offline; it must start switched off")
+	}
 	ins := store.inserts[0]
+	if ins.Post.AllowDownload {
+		t.Fatal("the row handed to the store allows saving offline")
+	}
 	if ins.StreamID != stream || ins.MediaID != media || ins.VideoMetadata == nil || ins.VideoMetadata.DurationSeconds != 90 || ins.VideoMetadata.FinalCategory != "long_video" {
 		t.Fatalf("insert: %+v", ins)
 	}
