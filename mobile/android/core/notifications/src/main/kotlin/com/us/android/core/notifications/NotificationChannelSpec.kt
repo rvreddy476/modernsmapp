@@ -82,6 +82,20 @@ enum class NotificationChannelSpec(
         importance = NotificationManager.IMPORTANCE_DEFAULT,
     ),
 
+    /**
+     * A creator the viewer follows went live (2026-10-02). Its own channel
+     * rather than NEW_VIDEOS or SOCIAL: a live stream is happening now and an
+     * upload is not, so someone may want one loud and the other quiet.
+     * DEFAULT, like NEW_VIDEOS: worth a shade entry and a sound, not a
+     * heads-up over whatever the viewer is doing.
+     */
+    LIVE(
+        id = "live",
+        title = "Live streams",
+        description = "When creators you follow go live",
+        importance = NotificationManager.IMPORTANCE_DEFAULT,
+    ),
+
     /** Account and security. LOW: important to see, never urgent. */
     ACCOUNT(
         id = "account",
@@ -239,6 +253,8 @@ enum class NotificationChannelSpec(
             MESSAGES,
             SOCIAL,
             NEW_VIDEOS,
+            // "{creator} is live" (2026-10-02).
+            LIVE,
             ACCOUNT,
             // Dating ships only in Momentum (Wave 3, 2026-09-16).
             DATING,
@@ -332,6 +348,9 @@ enum class NotificationChannelSpec(
             // subscribed channel (2026-09-12). Before this they fell through
             // to SOCIAL, so muting likes muted uploads too.
             "creator_uploaded_video", "creator_uploaded_flick" -> NEW_VIDEOS
+            // "{creator} is live" (2026-10-02). Before this it fell through
+            // to SOCIAL, so muting likes muted live alerts too.
+            "creator_went_live" -> LIVE
             "account", "security" -> ACCOUNT
             // What notification-service's dating and chat consumers emit
             // (dating_consumer.go, chat_consumer.go), Wave 3 2026-09-16.

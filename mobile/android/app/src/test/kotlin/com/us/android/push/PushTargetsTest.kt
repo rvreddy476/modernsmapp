@@ -50,4 +50,72 @@ class PushTargetsTest {
         assertThat(pushTargetOf(PushDestination("commerce.order.shipped", entityId = "o1", deepLink = "")))
             .isEqualTo(NotificationTarget.None)
     }
+
+    // ── A followed creator went live (2026-10-02) ───────────────────────
+
+    @Test
+    fun `a live deep link opens the live viewer, and wins over the entity id`() {
+        for (link in listOf("/posttube/live/$STREAM", "/reels/live/$STREAM", "/live/$STREAM")) {
+            val destination = PushDestination(TYPE_WENT_LIVE, entityId = OTHER_STREAM, deepLink = link)
+            assertThat(pushTargetOf(destination)).isEqualTo(NotificationTarget.Live(STREAM))
+        }
+    }
+
+    @Test
+    fun `a went-live push with no usable link falls back to its entity id`() {
+        for (link in listOf("", "not a link", "/posttube/live", "https://evil.example/live/$OTHER_STREAM")) {
+            val destination = PushDestination(TYPE_WENT_LIVE, entityId = STREAM, deepLink = link)
+            assertThat(pushTargetOf(destination)).isEqualTo(NotificationTarget.Live(STREAM))
+        }
+    }
+
+    /** The id goes into the join request: only a UUID is let through, link or no link. */
+    @Test
+    fun `a went-live push whose entity id is not a uuid opens nothing`() {
+        for (id in listOf("", " ", "stream-1", "../$STREAM")) {
+            assertThat(pushTargetOf(PushDestination(TYPE_WENT_LIVE, entityId = id, deepLink = "")))
+                .isEqualTo(NotificationTarget.None)
+        }
+    }
+
+    /** Only the went-live type may turn a bare entity id into a stream. */
+    @Test
+    fun `the live fallback belongs to the went-live type alone`() {
+        assertThat(pushTargetOf(PushDestination("live_gift", entityId = STREAM, deepLink = "")))
+            .isEqualTo(NotificationTarget.None)
+        assertThat(pushTargetOf(PushDestination("commerce.order.shipped", entityId = STREAM, deepLink = "")))
+            .isEqualTo(NotificationTarget.None)
+        assertThat(pushTargetOf(PushDestination(TYPE_UPLOADED_VIDEO, entityId = STREAM, deepLink = "")))
+            .isEqualTo(NotificationTarget.Video(STREAM))
+    }
+
+    @Test
+    fun `the went-live type is the one notification-service sends`() {
+        assertThat(TYPE_WENT_LIVE).isEqualTo("creator_went_live")
+    }
+
+    // ── How the viewer opens ────────────────────────────────────────────
+
+    @Test
+    fun `from any other screen the live viewer is pushed`() {
+        assertThat(liveOpenOf(watching = null, streamId = STREAM)).isEqualTo(LiveOpen.PUSH)
+    }
+
+    /** A second viewer of the same room from one account is at best a reconnect. */
+    @Test
+    fun `a tap for the stream already on screen does nothing`() {
+        assertThat(liveOpenOf(watching = STREAM, streamId = STREAM)).isEqualTo(LiveOpen.STAY)
+        assertThat(liveOpenOf(watching = STREAM, streamId = STREAM.uppercase())).isEqualTo(LiveOpen.STAY)
+    }
+
+    /** Stacking would leave the first stream connected, and audible, underneath. */
+    @Test
+    fun `a tap for a different stream replaces the viewer`() {
+        assertThat(liveOpenOf(watching = OTHER_STREAM, streamId = STREAM)).isEqualTo(LiveOpen.REPLACE)
+    }
+
+    private companion object {
+        const val STREAM = "3f2b8c1e-7a4d-4e9b-9c55-0d1e2f3a4b5c"
+        const val OTHER_STREAM = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+    }
 }

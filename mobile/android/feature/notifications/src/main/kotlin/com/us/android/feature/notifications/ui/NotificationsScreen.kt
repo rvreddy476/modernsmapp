@@ -658,6 +658,7 @@ internal fun Notification.describe(): String {
         NotificationKind.FollowRequestAccepted -> "$who accepted your follow request"
         NotificationKind.CreatorUploadedVideo -> "$who uploaded a new video"
         NotificationKind.CreatorUploadedFlick -> "$who posted a new reel"
+        NotificationKind.CreatorWentLive -> "$who is live"
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
         is NotificationKind.Unknown -> "You have a new notification"

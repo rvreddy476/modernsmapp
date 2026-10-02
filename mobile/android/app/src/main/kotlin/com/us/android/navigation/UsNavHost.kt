@@ -117,6 +117,7 @@ import com.us.android.feature.feed.navigation.navigateToHashtagPosts
 import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.feed.navigation.soundScreen
+import com.us.android.feature.live.navigation.LiveWatchRoute
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
 import com.us.android.feature.live.navigation.navigateToLiveHub
@@ -180,8 +181,11 @@ import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
 import com.us.android.feature.tube.navigation.navigateToWatch
 import com.us.android.feature.tube.navigation.tubeScreens
+import com.us.android.push.LiveOpen
 import com.us.android.push.TYPE_UPLOADED_FLICK
 import com.us.android.push.TYPE_UPLOADED_VIDEO
+import com.us.android.push.TYPE_WENT_LIVE
+import com.us.android.push.liveOpenOf
 import com.us.android.push.pushTargetOf
 import kotlinx.serialization.Serializable
 
@@ -505,7 +509,9 @@ private fun NavHostController.openPushDestination(
         }
         // A subscribed channel's upload (2026-09-12): the same target the
         // inbox row would resolve, so the shade and the inbox agree.
-        TYPE_UPLOADED_VIDEO, TYPE_UPLOADED_FLICK ->
+        // A followed creator went live (2026-10-02): the live viewer on that
+        // stream, resolved the same way.
+        TYPE_UPLOADED_VIDEO, TYPE_UPLOADED_FLICK, TYPE_WENT_LIVE ->
             openNotificationTarget(pushTargetOf(destination), onOpenReel)
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
@@ -1222,7 +1228,25 @@ private fun NavHostController.openNotificationTarget(
             onOpenReel(target.postId)
             navigateToTopLevel(TopLevelDestination.REELS)
         }
+        is NotificationTarget.Live -> openLiveStream(target.streamId)
         NotificationTarget.None -> Unit
+    }
+}
+
+/**
+ * Opens the live viewer from a notification (2026-10-02). Whether that is a
+ * push, a replace or nothing at all is [liveOpenOf]'s decision, from the
+ * stream (if any) the viewer is on right now.
+ */
+private fun NavHostController.openLiveStream(streamId: String) {
+    val watching = currentBackStackEntry
+        ?.takeIf { it.destination.hasRoute<LiveWatchRoute>() }
+        ?.toRoute<LiveWatchRoute>()
+        ?.streamId
+    when (liveOpenOf(watching = watching, streamId = streamId)) {
+        LiveOpen.STAY -> Unit
+        LiveOpen.REPLACE -> navigate(LiveWatchRoute(streamId)) { popUpTo<LiveWatchRoute> { inclusive = true } }
+        LiveOpen.PUSH -> navigateToLiveWatch(streamId)
     }
 }
 

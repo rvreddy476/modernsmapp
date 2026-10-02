@@ -27,11 +27,12 @@ import org.robolectric.annotation.Config
 class MomentumChannelSetTest {
 
     @Test
-    fun `Momentum's set is exactly today's seven channels`() {
+    fun `Momentum's set is exactly today's eight channels`() {
         // "dating" joined on 2026-09-16 (Wave 3): Dating ships only in Momentum.
         // "ride_updates" joined on 2026-09-18: the Mopedu customer flow ships only in Momentum.
+        // "live" joined on 2026-10-02: "{creator} is live".
         assertThat(NotificationChannelSpec.MOMENTUM.map { it.id })
-            .containsExactly("calls", "messages", "social", "new_videos", "account", "dating", "ride_updates")
+            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates")
     }
 
     @Test
@@ -44,6 +45,6 @@ class MomentumChannelSetTest {
 
         NotificationChannelSpec.createAll(context, NotificationChannelSpec.MOMENTUM)
         assertThat(manager.notificationChannels.map { it.id })
-            .containsExactly("calls", "messages", "social", "new_videos", "account", "dating", "ride_updates")
+            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates")
     }
 }

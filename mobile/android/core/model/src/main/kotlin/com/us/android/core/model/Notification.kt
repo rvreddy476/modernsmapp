@@ -107,6 +107,12 @@ sealed interface NotificationKind {
     /** A subscribed channel posted a reel. `entity_id` is the post; the row opens Reels on it. */
     data object CreatorUploadedFlick : NotificationKind
 
+    /**
+     * A creator the viewer follows started a live stream (2026-10-02).
+     * `entity_id` is the stream; the row opens the live viewer on it.
+     */
+    data object CreatorWentLive : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
@@ -130,6 +136,7 @@ sealed interface NotificationKind {
             "follow_request_accepted" -> FollowRequestAccepted
             "creator_uploaded_video" -> CreatorUploadedVideo
             "creator_uploaded_flick" -> CreatorUploadedFlick
+            "creator_went_live" -> CreatorWentLive
             else -> Unknown(raw)
         }
     }
@@ -179,6 +186,15 @@ sealed interface NotificationTarget {
     /** A reel, opened on the Reels tab: `/reels/{id}`. */
     data class Reel(val postId: String) : NotificationTarget
 
+    /**
+     * A live stream on the live viewer (2026-10-02): `/posttube/live/{id}`
+     * for a landscape stream, `/reels/live/{id}` for a portrait one, and the
+     * older `/live/{id}`. One target for all three because the viewer screen
+     * is the same and reads the stream's shape from the server. Built through
+     * [liveOf], so a parsed [Live] always carries a UUID.
+     */
+    data class Live(val streamId: String) : NotificationTarget
+
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget
 
@@ -221,10 +237,34 @@ sealed interface NotificationTarget {
                 segments.size == 3 && segments[0] in VIDEO_PREFIXES && segments[1] == "watch" ->
                     Video(segments[2])
 
+                // Live (2026-10-02). These sit ABOVE the reel branch on
+                // purpose: `/reels/live` is the live rail, not a reel whose
+                // id is "live", and must not open Reels on a post that does
+                // not exist.
+                segments.size == 3 && segments[0] in LIVE_PREFIXES && segments[1] == LIVE_SEGMENT ->
+                    liveOf(segments[2])
+
+                segments.size == 2 && segments[0] == LIVE_SEGMENT -> liveOf(segments[1])
+
+                segments.size == 2 && segments[0] == "reels" && segments[1] == LIVE_SEGMENT -> None
+
                 segments.size == 2 && segments[0] == "reels" -> Reel(segments[1])
 
                 else -> None
             }
+        }
+
+        /**
+         * The live target for a stream id, or [None] when the id is not a
+         * UUID. Stricter than the post targets because the id goes straight
+         * into the join request: a stream id is always a UUID, so anything
+         * else is a malformed or forged link and opens nothing. Shared with
+         * the push fallback so a tap in the shade and a tap on the inbox row
+         * apply the same rule.
+         */
+        fun liveOf(streamId: String): NotificationTarget {
+            val id = streamId.trim()
+            return if (UUID_SHAPE.matches(id)) Live(id) else None
         }
 
         /** The contract is an absolute path; anything else is not a route. */
@@ -232,6 +272,14 @@ sealed interface NotificationTarget {
 
         /** The first segment of a watch link: today's `tube`, and the legacy `posttube` still in inboxes. */
         private val VIDEO_PREFIXES = setOf("tube", "posttube")
+
+        /** The surfaces a live link is filed under: Tube (landscape) and Reels (portrait). */
+        private val LIVE_PREFIXES = setOf("posttube", "reels")
+
+        private const val LIVE_SEGMENT = "live"
+
+        /** 8-4-4-4-12 hex, either case. */
+        private val UUID_SHAPE = Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
         private fun queryValue(query: String, key: String): String? = query
             .split('&')

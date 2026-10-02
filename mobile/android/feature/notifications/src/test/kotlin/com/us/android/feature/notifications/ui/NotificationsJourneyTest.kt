@@ -152,6 +152,9 @@ class NotificationsJourneyTest {
                                     is NotificationTarget.Profile -> navController.navigate(ProfileStub)
                                     is NotificationTarget.Conversation,
                                     is NotificationTarget.MessageRequest,
+                                    is NotificationTarget.Video,
+                                    is NotificationTarget.Reel,
+                                    is NotificationTarget.Live,
                                     NotificationTarget.None,
                                     -> Unit
                                 }

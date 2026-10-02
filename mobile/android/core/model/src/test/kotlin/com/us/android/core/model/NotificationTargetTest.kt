@@ -153,6 +153,87 @@ class NotificationTargetTest {
         assertThat(NotificationKind.fromWire("creator_uploaded_flick")).isEqualTo(NotificationKind.CreatorUploadedFlick)
     }
 
+    // ── A followed creator went live (2026-10-02) ───────────────────────
+
+    /**
+     * The three shapes a live link has had: Tube's for a landscape stream,
+     * Reels' for a portrait one, and the older bare one. All open the same
+     * viewer, so all resolve to the same target.
+     */
+    @Test
+    fun `every live link form targets the live viewer`() {
+        val links = listOf("/posttube/live/$STREAM", "/reels/live/$STREAM", "/live/$STREAM", "/live/$STREAM?from=push")
+        for (link in links) {
+            assertThat(NotificationTarget.parse(link)).isEqualTo(NotificationTarget.Live(STREAM))
+        }
+    }
+
+    /** A stream id is a UUID and goes into the join request, so nothing else is accepted. */
+    @Test
+    fun `a live link whose id is not a uuid resolves to no target`() {
+        val unroutable = listOf(
+            "/posttube/live/stream-1",
+            "/reels/live/123",
+            "/live/abc",
+            "/posttube/live/${STREAM}x",
+            "/reels/live/${STREAM.dropLast(1)}",
+            "/live/${STREAM.replace('-', '_')}",
+            "/posttube/live/%20",
+        )
+        for (link in unroutable) {
+            assertThat(NotificationTarget.parse(link)).isEqualTo(NotificationTarget.None)
+        }
+    }
+
+    /**
+     * `/reels/live` is the live rail. Read by the reel branch it would be a
+     * reel whose id is "live", and a tap would open Reels on nothing.
+     */
+    @Test
+    fun `a live path with no id resolves to no target and is never a reel`() {
+        for (link in listOf("/posttube/live", "/posttube/live/", "/reels/live", "/reels/live/", "/live", "/live/")) {
+            assertThat(NotificationTarget.parse(link)).isEqualTo(NotificationTarget.None)
+        }
+    }
+
+    @Test
+    fun `a live link with a host, no leading slash or an unknown surface resolves to no target`() {
+        val unroutable = listOf(
+            "https://atpost.app/posttube/live/$STREAM",
+            "https://atpost.app/reels/live/$STREAM",
+            "posttube/live/$STREAM",
+            "/tube/live/$STREAM",
+            "/shop/live/$STREAM",
+            "/posttube/live/$STREAM/chat",
+        )
+        for (link in unroutable) {
+            assertThat(NotificationTarget.parse(link)).isEqualTo(NotificationTarget.None)
+        }
+    }
+
+    /** The live branches sit above the video and reel ones; neither may change what it reads. */
+    @Test
+    fun `video and reel links parse as before, even with a uuid id`() {
+        assertThat(NotificationTarget.parse("/posttube/watch/$STREAM")).isEqualTo(NotificationTarget.Video(STREAM))
+        assertThat(NotificationTarget.parse("/tube/watch/$STREAM")).isEqualTo(NotificationTarget.Video(STREAM))
+        assertThat(NotificationTarget.parse("/reels/$STREAM")).isEqualTo(NotificationTarget.Reel(STREAM))
+        assertThat(NotificationTarget.parse("/reels/p2")).isEqualTo(NotificationTarget.Reel("p2"))
+    }
+
+    @Test
+    fun `liveOf trims the id and refuses anything that is not a uuid`() {
+        assertThat(NotificationTarget.liveOf(" $STREAM ")).isEqualTo(NotificationTarget.Live(STREAM))
+        assertThat(NotificationTarget.liveOf(STREAM.uppercase())).isEqualTo(NotificationTarget.Live(STREAM.uppercase()))
+        for (id in listOf("", " ", "stream-1", "../$STREAM", "$STREAM/extra")) {
+            assertThat(NotificationTarget.liveOf(id)).isEqualTo(NotificationTarget.None)
+        }
+    }
+
+    @Test
+    fun `the went-live type maps to its kind`() {
+        assertThat(NotificationKind.fromWire("creator_went_live")).isEqualTo(NotificationKind.CreatorWentLive)
+    }
+
     // ── Kind mapping ────────────────────────────────────────────────────
 
     @Test
@@ -191,5 +272,10 @@ class NotificationTargetTest {
     fun `an unknown type is preserved rather than discarded`() {
         assertThat(NotificationKind.fromWire("commerce.order.shipped"))
             .isEqualTo(NotificationKind.Unknown("commerce.order.shipped"))
+    }
+
+    private companion object {
+        /** A stream id as live-service-v2 mints them. */
+        const val STREAM = "3f2b8c1e-7a4d-4e9b-9c55-0d1e2f3a4b5c"
     }
 }
