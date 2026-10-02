@@ -262,6 +262,8 @@ fun GoLiveScreen(
     onClose: () -> Unit,
     /** The "not yet" screen's "Create a post": `:app` opens the create flow. */
     onCreatePost: () -> Unit,
+    /** The "not yet" screen's "Verify email": `:app` opens the account screen. */
+    onVerifyEmail: () -> Unit,
     /** The "not yet" screen's "Verify phone number": `:app` opens the account screen. */
     onVerifyPhone: () -> Unit,
     viewModel: GoLiveViewModel = hiltViewModel(),
@@ -290,6 +292,7 @@ fun GoLiveScreen(
     val onGateAction: (LiveGateAction) -> Unit = { action ->
         when (action) {
             LiveGateAction.CreatePost -> onCreatePost()
+            LiveGateAction.VerifyEmail -> onVerifyEmail()
             LiveGateAction.VerifyPhone -> onVerifyPhone()
             LiveGateAction.CheckAgain -> viewModel.onCheckAgain()
         }

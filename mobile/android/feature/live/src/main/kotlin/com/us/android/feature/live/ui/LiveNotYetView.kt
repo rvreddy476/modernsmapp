@@ -178,7 +178,7 @@ private fun LiveNotYetViewPreview() {
             LiveNotYetView(
                 gate = LiveGate.NotYet(
                     requirements = listOf(
-                        LiveRequirementDto(key = "phone_verified", met = true),
+                        LiveRequirementDto(key = "email_verified", met = true),
                         LiveRequirementDto(key = "adult", met = null),
                         LiveRequirementDto(key = "account_age", met = false, current = 2, needed = 7, unit = "days"),
                         LiveRequirementDto(

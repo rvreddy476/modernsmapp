@@ -40,6 +40,22 @@ class LiveGateWordsTest {
     }
 
     @Test
+    fun `the email row reads verified, to verify, or could not be checked`() {
+        assertThat(line(LiveRequirementDto(key = "email_verified", met = true)).text).isEqualTo("Email verified")
+        assertThat(line(LiveRequirementDto(key = "email_verified", met = false)).text)
+            .isEqualTo("Verify your email address")
+        assertThat(line(LiveRequirementDto(key = "email_verified", met = null)).text)
+            .isEqualTo("Email address: we couldn't check this just now")
+        assertThat(line(LiveRequirementDto(key = "email_verified")).state).isEqualTo(RequirementState.Unknown)
+    }
+
+    @Test
+    fun `Learn more asks for a verified email address, not a phone number`() {
+        assertThat(LIVE_GATE_LEARN_MORE).contains("a verified email address")
+        assertThat(LIVE_GATE_LEARN_MORE.lowercase()).doesNotContain("phone")
+    }
+
+    @Test
     fun `account age counts what is left, in the server's unit, singular for one`() {
         fun age(current: Int, needed: Int, unit: String = "days") =
             line(LiveRequirementDto(key = "account_age", met = false, current = current, needed = needed, unit = unit))
@@ -71,7 +87,7 @@ class LiveGateWordsTest {
 
     @Test
     fun `every known requirement has a met line, a needed line and a could-not-check line`() {
-        val keys = listOf("phone_verified", "adult", "account_age", "activity", "good_standing")
+        val keys = listOf("email_verified", "phone_verified", "adult", "account_age", "activity", "good_standing")
 
         for (key in keys) {
             val met = line(LiveRequirementDto(key = key, met = true))
@@ -112,6 +128,7 @@ class LiveGateWordsTest {
     @Test
     fun `each action has its own button label`() {
         assertThat(gateActionLabel(LiveGateAction.CreatePost)).isEqualTo("Create a post")
+        assertThat(gateActionLabel(LiveGateAction.VerifyEmail)).isEqualTo("Verify email")
         assertThat(gateActionLabel(LiveGateAction.VerifyPhone)).isEqualTo("Verify phone number")
         assertThat(gateActionLabel(LiveGateAction.CheckAgain)).isEqualTo("Check again")
     }

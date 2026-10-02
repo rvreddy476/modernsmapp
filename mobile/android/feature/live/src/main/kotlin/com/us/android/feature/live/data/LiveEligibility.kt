@@ -11,7 +11,12 @@ import kotlinx.serialization.json.Json
  * what is still needed.
  */
 
-/** The requirement keys the contract names. An unknown key is still shown, in general words. */
+/**
+ * The requirement keys the contract names. An unknown key is still shown, in general words.
+ * Verification is by email (founder, 2026-10-02): the server lists `email_verified` first and
+ * normally no longer sends `phone_verified`, which is still read if it appears.
+ */
+const val REQ_EMAIL_VERIFIED = "email_verified"
 const val REQ_PHONE_VERIFIED = "phone_verified"
 const val REQ_ADULT = "adult"
 const val REQ_ACCOUNT_AGE = "account_age"
@@ -41,6 +46,9 @@ val LiveRequirementDto.state: RequirementState
 enum class LiveGateAction {
     /** `activity` is unmet: open the create flow. */
     CreatePost,
+
+    /** `email_verified` is unmet: open the account screen that shows the email address and its state. */
+    VerifyEmail,
 
     /** `phone_verified` is unmet: open the account screen that shows the phone number. */
     VerifyPhone,
@@ -98,6 +106,7 @@ fun gateActionFor(requirements: List<LiveRequirementDto>): LiveGateAction =
         .filter { it.state == RequirementState.Unmet }
         .mapNotNull { requirement ->
             when (requirement.key) {
+                REQ_EMAIL_VERIFIED -> LiveGateAction.VerifyEmail
                 REQ_PHONE_VERIFIED -> LiveGateAction.VerifyPhone
                 REQ_ACTIVITY -> LiveGateAction.CreatePost
                 else -> null

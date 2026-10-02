@@ -20,6 +20,7 @@ import com.us.android.feature.live.data.REQ_ACCOUNT_AGE
 import com.us.android.feature.live.data.REQ_ACTIVITY
 import com.us.android.feature.live.data.REQ_ADULT
 import com.us.android.feature.live.data.REQ_GOOD_STANDING
+import com.us.android.feature.live.data.REQ_EMAIL_VERIFIED
 import com.us.android.feature.live.data.REQ_PHONE_VERIFIED
 import com.us.android.feature.live.data.RequirementState
 import com.us.android.feature.live.data.chatAuthorName
@@ -180,7 +181,7 @@ const val LIVE_GATE_DETAIL = "Finish what's left below and you can start streami
 
 /** What "Learn more" unfolds, in place. */
 const val LIVE_GATE_LEARN_MORE =
-    "Live video reaches people as it happens, so we ask for a few things first: a verified phone number, " +
+    "Live video reaches people as it happens, so we ask for a few things first: a verified email address, " +
         "being 18 or older, an account that has been around for a little while, and some posts or followers. " +
         "They keep live safe for the people watching. This list updates as soon as you meet them."
 
@@ -191,6 +192,7 @@ fun viewerCapNote(cap: Int): String? =
 /** The primary button's label. */
 fun gateActionLabel(action: LiveGateAction): String = when (action) {
     LiveGateAction.CreatePost -> "Create a post"
+    LiveGateAction.VerifyEmail -> "Verify email"
     LiveGateAction.VerifyPhone -> "Verify phone number"
     LiveGateAction.CheckAgain -> "Check again"
 }
@@ -216,6 +218,7 @@ private fun requirementText(requirement: LiveRequirementDto): String? = when (re
 }
 
 private fun metText(key: String): String? = when (key) {
+    REQ_EMAIL_VERIFIED -> "Email verified"
     REQ_PHONE_VERIFIED -> "Phone number verified"
     REQ_ADULT -> "You're 18 or older"
     REQ_ACCOUNT_AGE -> "Your account is old enough"
@@ -225,6 +228,7 @@ private fun metText(key: String): String? = when (key) {
 }
 
 private fun neededText(requirement: LiveRequirementDto): String = when (requirement.key) {
+    REQ_EMAIL_VERIFIED -> "Verify your email address"
     REQ_PHONE_VERIFIED -> "Verify your phone number"
     REQ_ADULT -> "You must be 18 or older to go live"
     REQ_ACCOUNT_AGE -> accountAgeText(requirement)
@@ -234,6 +238,7 @@ private fun neededText(requirement: LiveRequirementDto): String = when (requirem
 }
 
 private fun topicOf(key: String): String = when (key) {
+    REQ_EMAIL_VERIFIED -> "Email address"
     REQ_PHONE_VERIFIED -> "Phone number"
     REQ_ADULT -> "Your age"
     REQ_ACCOUNT_AGE -> "Account age"

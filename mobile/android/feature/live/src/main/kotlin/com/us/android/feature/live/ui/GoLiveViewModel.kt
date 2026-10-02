@@ -202,7 +202,7 @@ class GoLiveViewModel @Inject constructor(
 
     /**
      * "Check again", and the screen coming back to the front: the user may
-     * have just published a post or verified a phone number. Asks only while
+     * have just published a post or verified an email address. Asks only while
      * the list is showing.
      */
     fun onCheckAgain() {

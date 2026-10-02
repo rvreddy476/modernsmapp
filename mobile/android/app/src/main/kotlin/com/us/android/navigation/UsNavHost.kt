@@ -699,10 +699,14 @@ private fun NavGraphBuilder.tabDestinations(
         onWatch = { streamId -> navController.navigateToLiveWatch(streamId) },
         // Go live's "not yet" screen (2026-10-02). "Create a post" opens the
         // Create hub on Text; Back from it (or from the new post) returns to
-        // the screen, which asks the server again. "Verify phone number" opens
-        // Manage account, the one screen that shows the phone and its state:
-        // the app has no phone-verification flow of its own yet.
+        // the screen, which asks the server again. "Verify email" (and "Verify
+        // phone number", should the server still send that row) opens Manage
+        // account, the one screen that shows the email, the phone and their
+        // state. The emailed-code screen cannot be opened from here: it and
+        // resend-verification work only with the verification token that
+        // register or a refused sign-in issues, and a signed-in account has none.
         onCreatePost = { navController.navigateToCreate(CreateSurface.Text) },
+        onVerifyEmail = { navController.navigateToManageAccount() },
         onVerifyPhone = { navController.navigateToManageAccount() },
     )
 

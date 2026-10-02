@@ -104,6 +104,61 @@ class LiveEligibilityTest {
     }
 
     @Test
+    fun `an unmet email row offers Verify email, and the first actionable unmet row wins`() {
+        val table = listOf(
+            // The server lists email first: it is the one the button helps.
+            listOf(requirement(REQ_EMAIL_VERIFIED, false), requirement(REQ_ACTIVITY, false)) to
+                LiveGateAction.VerifyEmail,
+            listOf(requirement(REQ_EMAIL_VERIFIED, false), requirement(REQ_PHONE_VERIFIED, false)) to
+                LiveGateAction.VerifyEmail,
+            // Order decides, not the key: whichever actionable row comes first.
+            listOf(requirement(REQ_ACTIVITY, false), requirement(REQ_EMAIL_VERIFIED, false)) to
+                LiveGateAction.CreatePost,
+            listOf(requirement(REQ_PHONE_VERIFIED, false), requirement(REQ_EMAIL_VERIFIED, false)) to
+                LiveGateAction.VerifyPhone,
+            // Rows with no action ahead of it do not hide it.
+            listOf(requirement(REQ_ACCOUNT_AGE, false), requirement(REQ_EMAIL_VERIFIED, false)) to
+                LiveGateAction.VerifyEmail,
+            // A verified or an unchecked email is not something to act on.
+            listOf(requirement(REQ_EMAIL_VERIFIED, true), requirement(REQ_ACTIVITY, false)) to
+                LiveGateAction.CreatePost,
+            listOf(requirement(REQ_EMAIL_VERIFIED, null), requirement(REQ_ACTIVITY, false)) to
+                LiveGateAction.CreatePost,
+            listOf(requirement(REQ_EMAIL_VERIFIED, null)) to LiveGateAction.CheckAgain,
+            listOf(requirement(REQ_EMAIL_VERIFIED, true), requirement(REQ_ADULT, false)) to
+                LiveGateAction.CheckAgain,
+        )
+
+        for ((requirements, expected) in table) {
+            assertThat(gateActionFor(requirements)).isEqualTo(expected)
+        }
+    }
+
+    @Test
+    fun `a refused create listing email and no phone is read whole, email first`() {
+        val error = AppError.Forbidden(
+            code = CODE_LIVE_NOT_ELIGIBLE,
+            details = mapOf(
+                "requirements" to
+                    """[{"key":"email_verified","met":false},{"key":"adult","met":true},""" +
+                    """{"key":"account_age","met":false,"current":2,"needed":7,"unit":"days"},""" +
+                    """{"key":"activity","met":false},{"key":"good_standing","met":null}]""",
+            ),
+        )
+
+        val gate = notYetFromRefusal(error, json)
+
+        assertThat(gate?.requirements?.map { it.key to it.met }).containsExactly(
+            "email_verified" to false,
+            "adult" to true,
+            "account_age" to false,
+            "activity" to false,
+            "good_standing" to null,
+        ).inOrder()
+        assertThat(gate?.action).isEqualTo(LiveGateAction.VerifyEmail)
+    }
+
+    @Test
     fun `met is read as true, false, or unknown when null or absent`() {
         assertThat(requirement("k", true).state).isEqualTo(RequirementState.Met)
         assertThat(requirement("k", false).state).isEqualTo(RequirementState.Unmet)

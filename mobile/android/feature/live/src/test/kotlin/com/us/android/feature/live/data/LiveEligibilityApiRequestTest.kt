@@ -95,6 +95,27 @@ class LiveEligibilityApiRequestTest {
     }
 
     @Test
+    fun `a list with email first and no phone decodes whole, and offers Verify email`() {
+        enqueue(
+            body = """{"data":{"mode":"open","eligible":false,
+             "requirements":[{"key":"email_verified","met":false},
+              {"key":"adult","met":true},
+              {"key":"account_age","met":false,"current":2,"needed":7,"unit":"days"},
+              {"key":"activity","met":false,"posts":{"current":1,"needed":3},"followers":{"current":4,"needed":10}},
+              {"key":"good_standing","met":true}]}}""",
+        )
+
+        val answer = runBlocking { api.eligibility() }.data!!
+
+        assertThat(answer.requirements.map { it.key })
+            .containsExactly("email_verified", "adult", "account_age", "activity", "good_standing").inOrder()
+        assertThat(answer.requirements.first().state).isEqualTo(RequirementState.Unmet)
+        val gate = liveGateOf(answer) as LiveGate.NotYet
+        assertThat(gate.requirements.map { it.key }).doesNotContain("phone_verified")
+        assertThat(gate.action).isEqualTo(LiveGateAction.VerifyEmail)
+    }
+
+    @Test
     fun `met null is could-not-check, and absent fields are their empty values`() {
         enqueue(
             body = """{"data":{"mode":"open","eligible":false,"requirements":[
