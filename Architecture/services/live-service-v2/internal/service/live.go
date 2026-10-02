@@ -3,7 +3,8 @@
 // The flow (truthful lifecycle, 1 Oct 2026 — see lifecycle.go):
 //
 //  1. CreateStream — DB row in 'scheduled', LiveKit room name reserved.
-//     Pilot allowlist and platform live bans gate it (fail closed).
+//     LIVE_ACCESS_MODE (the pilot allowlist, or the going-live requirements
+//     of eligibility.go) and platform live bans gate it (fail closed).
 //  2. StartStream  — LiveKit room created, status 'starting', publisher
 //     token returned. Nothing says 'live' yet.
 //  3. LiveKit webhook track_published by the HOST identity -> 'live'
@@ -183,6 +184,10 @@ type Store interface {
 	BadgesFor(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID][]string, error)
 	ListBadges(ctx context.Context, userID uuid.UUID) ([]postgres.Badge, error)
 	AdminRevokeBadge(ctx context.Context, userID uuid.UUID, badge, reason string, audit postgres.AuditEntry) (bool, error)
+
+	// Going-live eligibility (store/postgres/eligibility.go).
+	CountCompletedStreams(ctx context.Context, creatorID uuid.UUID, minLive time.Duration) (int, error)
+	IsViewerPresent(ctx context.Context, streamID, userID uuid.UUID) (bool, error)
 }
 
 // Service is the live-service-v2 business layer.
@@ -223,6 +228,11 @@ type Service struct {
 	catalog    categoryCache
 	hearts     *heartState // built on first use (heartState())
 	heartsOnce sync.Once
+
+	// Going-live eligibility and the new-streamer viewer cap
+	// (eligibility.go). The zero value is pilot mode with no cap.
+	elig      EligibilityConfig
+	eligFacts eligCache
 }
 
 // Config carries the service's settings.
@@ -255,6 +265,11 @@ type Config struct {
 	Profiles   ProfileSource
 	Categories CategorySource
 	Following  FollowingSource
+
+	// Eligibility is LIVE_ACCESS_MODE, the going-live requirements and the
+	// new-streamer viewer cap (eligibility.go). The zero value is pilot mode,
+	// no cap: who may go live is PilotUserIDs alone.
+	Eligibility EligibilityConfig
 }
 
 // Default timeouts.
@@ -300,6 +315,7 @@ func New(store Store, lk livekit.Client, graph GraphClient, rdb *redis.Client, c
 		profiles:               cfg.Profiles,
 		categories:             cfg.Categories,
 		following:              cfg.Following,
+		elig:                   cfg.Eligibility,
 	}
 	s.heartsOnce.Do(func() { s.hearts = newHeartState(rdb, s.clock) })
 	return s
@@ -331,21 +347,8 @@ func ParsePilotUserIDs(raw string) (ids []uuid.UUID, invalid []string) {
 	return ids, invalid
 }
 
-// requireMayGoLive is the gate on create and start: the pilot allowlist
-// (empty = nobody) and the platform live ban.
-func (s *Service) requireMayGoLive(ctx context.Context, userID uuid.UUID) error {
-	if userID == uuid.Nil || !s.pilot[userID] {
-		return ErrLiveNotEnabled
-	}
-	banned, err := s.store.IsPlatformBanned(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("check live ban: %w", err)
-	}
-	if banned {
-		return ErrLiveBanned
-	}
-	return nil
-}
+// requireMayGoLive, the gate on create, start and ingress, is in
+// eligibility.go.
 
 // CreateStreamParams is the input to CreateStream.
 type CreateStreamParams struct {
@@ -408,7 +411,7 @@ func (s *Service) CreateStream(ctx context.Context, creatorID uuid.UUID, p Creat
 	if err != nil {
 		return nil, err
 	}
-	return s.withCreator(ctx, withHasIngress(st)), nil
+	return s.withViewerCap(ctx, creatorID, []*postgres.LiveStream{s.withCreator(ctx, withHasIngress(st))})[0], nil
 }
 
 // StartStreamResult is what we hand back to the broadcaster client. The
@@ -429,7 +432,7 @@ type StartStreamResult struct {
 // Calling it again while starting/live/reconnecting re-issues the publisher
 // token (a host rejoining) without touching the status.
 func (s *Service) StartStream(ctx context.Context, streamID, creatorID uuid.UUID) (*StartStreamResult, error) {
-	if err := s.requireMayGoLive(ctx, creatorID); err != nil {
+	if err := s.requireMayContinue(ctx, streamID, creatorID); err != nil {
 		return nil, err
 	}
 	st, err := s.store.GetByID(ctx, streamID)
@@ -451,7 +454,7 @@ func (s *Service) StartStream(ctx context.Context, streamID, creatorID uuid.UUID
 		return nil, err
 	}
 	out := &StartStreamResult{
-		Stream:    s.withCreator(ctx, withHasIngress(res.Next)),
+		Stream:    s.withViewerCap(ctx, creatorID, []*postgres.LiveStream{s.withCreator(ctx, withHasIngress(res.Next))})[0],
 		Room:      res.Next.LiveKitRoom,
 		ServerURL: s.livekit.ServerURL(),
 		Source:    res.Next.Source,
@@ -513,6 +516,10 @@ func (s *Service) IssueViewerToken(ctx context.Context, streamID, viewerID uuid.
 	}
 	if !onAir(st.Status) {
 		return nil, ErrStreamNotLive
+	}
+	// The new-streamer viewer cap: a full room takes no NEW viewer.
+	if err := s.checkViewerCap(ctx, st, viewerID); err != nil {
+		return nil, err
 	}
 	token, err := s.livekit.IssueViewerToken(ctx, st.LiveKitRoom, viewerID.String(), viewerTokenTTL)
 	if err != nil {
@@ -972,11 +979,11 @@ const (
 // Rate-limited 20/60s/user. Fail-CLOSED on Redis error for the rate
 // check — easy to overload chat with a hostile client otherwise.
 func (s *Service) SendChat(ctx context.Context, streamID, userID uuid.UUID, text string) (*postgres.ChatMessage, error) {
-	text = strings.TrimSpace(text)
+	text = cleanChatText(text)
 	if text == "" {
 		return nil, fmt.Errorf("invalid: message text is required")
 	}
-	if utf8.RuneCountInString(text) > 500 {
+	if utf8.RuneCountInString(text) > MaxChatChars {
 		return nil, fmt.Errorf("invalid: message exceeds 500 chars")
 	}
 	st, err := s.store.GetByID(ctx, streamID)
@@ -1033,7 +1040,9 @@ func (s *Service) SendChat(ctx context.Context, streamID, userID uuid.UUID, text
 	if err != nil {
 		return nil, err
 	}
-	// The same row shape GET /chat returns.
+	// The same row shape GET /chat returns, author included. The lookup
+	// never fails the send: without it the author is the user id and role.
+	s.withAuthors(ctx, st, []*postgres.ChatMessage{msg})
 	s.publish(ctx, streamID, EventChatMessage, msg)
 	return msg, nil
 }
@@ -1049,7 +1058,12 @@ func (s *Service) ListChat(ctx context.Context, streamID, viewerID uuid.UUID, li
 	if err := s.authorizeViewer(ctx, st, viewerID); err != nil {
 		return nil, err
 	}
-	return s.store.ListRecentChatMessages(ctx, streamID, limit)
+	msgs, err := s.store.ListRecentChatMessages(ctx, streamID, limit)
+	if err != nil {
+		return nil, err
+	}
+	s.withAuthors(ctx, st, msgs)
+	return msgs, nil
 }
 
 // --- Chat moderation (Phase B) ---
@@ -1127,7 +1141,8 @@ func (s *Service) AddWordFilter(ctx context.Context, streamID, hostID uuid.UUID,
 		return err
 	}
 	w := strings.ToLower(strings.TrimSpace(word))
-	if w == "" || len(w) > 100 {
+	// Characters, not bytes: 100 bytes is 33 characters of Telugu or Hindi.
+	if w == "" || utf8.RuneCountInString(w) > postgres.MaxWordFilterChars {
 		return ErrInvalidWord
 	}
 	if err := s.store.AddWordFilter(ctx, streamID, w, hostID); err != nil {
@@ -1219,8 +1234,14 @@ func (s *Service) UnpinMessage(ctx context.Context, streamID, hostID, messageID 
 // GetPinnedMessage returns the current pin (or nil) without a
 // creator check — viewers need to see the pinned banner too.
 func (s *Service) GetPinnedMessage(ctx context.Context, streamID uuid.UUID) (*postgres.ChatMessage, error) {
-	if _, err := s.store.GetByID(ctx, streamID); err != nil {
+	st, err := s.store.GetByID(ctx, streamID)
+	if err != nil {
 		return nil, mapStoreErr(err)
 	}
-	return s.store.GetPinnedMessage(ctx, streamID)
+	pinned, err := s.store.GetPinnedMessage(ctx, streamID)
+	if err != nil || pinned == nil {
+		return pinned, err
+	}
+	s.withAuthors(ctx, st, []*postgres.ChatMessage{pinned})
+	return pinned, nil
 }

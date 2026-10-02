@@ -111,12 +111,16 @@ const (
 	cardCacheTTL   = 60 * time.Second
 	cardCacheMax   = 20000
 	profileTimeout = 2 * time.Second
+	// cardRetryAfter spaces the lookups while the directory is failing.
+	cardRetryAfter = 5 * time.Second
 )
 
 // cardCache remembers profile lookups (found or not) for cardCacheTTL.
 type cardCache struct {
 	mu sync.Mutex
 	m  map[uuid.UUID]cardEntry
+	// failedAt is when the last lookup failed (zero after one succeeded).
+	failedAt time.Time
 }
 
 type cardEntry struct {
@@ -131,6 +135,14 @@ type cardEntry struct {
 // shows at once). A failed profile lookup leaves the cards with the user id
 // only; it is never an error.
 func (s *Service) userCards(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]*postgres.UserCard {
+	return s.userCardsWith(ctx, ids, false)
+}
+
+// userCardsWith is userCards; with spare set, a lookup is skipped for
+// cardRetryAfter after one failed. Chat sets it: every message hydrates its
+// author, and a directory that is down must not add its timeout to each
+// message sent. Creator cards do not: their next read asks again at once.
+func (s *Service) userCardsWith(ctx context.Context, ids []uuid.UUID, spare bool) map[uuid.UUID]*postgres.UserCard {
 	out := make(map[uuid.UUID]*postgres.UserCard, len(ids))
 	uniq := make([]uuid.UUID, 0, len(ids))
 	for _, id := range ids {
@@ -155,14 +167,23 @@ func (s *Service) userCards(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]
 		applyProfile(out[id], e)
 	}
 	s.cards.mu.Unlock()
-	if len(missing) > 0 && s.profiles != nil {
+	// spare: after a failed lookup the directory is left alone for
+	// cardRetryAfter.
+	s.cards.mu.Lock()
+	backoff := spare && !s.cards.failedAt.IsZero() && now.Sub(s.cards.failedAt) < cardRetryAfter
+	s.cards.mu.Unlock()
+	if len(missing) > 0 && s.profiles != nil && !backoff {
 		pctx, cancel := context.WithTimeout(ctx, profileTimeout)
 		found, err := s.profiles.Profiles(pctx, missing)
 		cancel()
 		if err != nil {
 			slog.Warn("live-v2: profile lookup failed; cards carry the user id only", "users", len(missing), "err", err)
+			s.cards.mu.Lock()
+			s.cards.failedAt = now
+			s.cards.mu.Unlock()
 		} else {
 			s.cards.mu.Lock()
+			s.cards.failedAt = time.Time{}
 			if s.cards.m == nil || len(s.cards.m) > cardCacheMax {
 				s.cards.m = map[uuid.UUID]cardEntry{}
 			}
@@ -223,9 +244,10 @@ func (s *Service) withCreator(ctx context.Context, st *postgres.LiveStream) *pos
 }
 
 // decorate is what every listed or read row gets: moderator_user_ids and
-// has_ingress for the host and moderators, and the host card for everyone.
+// has_ingress for the host and moderators, the host card for everyone, and
+// viewer_cap for the host of a stream the new-streamer cap applies to.
 func (s *Service) decorate(ctx context.Context, viewerID uuid.UUID, rows []*postgres.LiveStream) []*postgres.LiveStream {
-	return s.hydrateCreators(ctx, s.decorateModerators(ctx, viewerID, rows))
+	return s.withViewerCap(ctx, viewerID, s.hydrateCreators(ctx, s.decorateModerators(ctx, viewerID, rows)))
 }
 
 // withReminders sets reminder_count on every row and reminder_set for a

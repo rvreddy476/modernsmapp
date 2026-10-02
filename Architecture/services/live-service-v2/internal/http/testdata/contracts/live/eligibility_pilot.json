@@ -1,0 +1,41 @@
+{
+  "data": {
+    "mode": "pilot",
+    "eligible": false,
+    "requirements": [
+      {
+        "key": "phone_verified",
+        "met": true
+      },
+      {
+        "key": "adult",
+        "met": true
+      },
+      {
+        "key": "account_age",
+        "met": true,
+        "current": 30,
+        "needed": 7,
+        "unit": "days"
+      },
+      {
+        "key": "activity",
+        "met": true,
+        "posts": {
+          "current": 5,
+          "needed": 3
+        },
+        "followers": {
+          "current": 0,
+          "needed": 10
+        }
+      },
+      {
+        "key": "good_standing",
+        "met": true
+      }
+    ],
+    "pilot_only": true,
+    "viewer_cap": 200
+  }
+}

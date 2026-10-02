@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -68,8 +69,12 @@ type LiveStream struct {
 	// layer): the count for everyone, reminder_set for a signed-in caller.
 	ReminderSet   *bool `json:"reminder_set,omitempty"`
 	ReminderCount *int  `json:"reminder_count,omitempty"`
-	CreatedAt                time.Time `json:"created_at"`
-	UpdatedAt                time.Time `json:"updated_at"`
+	// ViewerCap is the new-streamer limit on concurrent viewers (service
+	// layer): on the host's own row of a stream that has not ended, while the
+	// cap applies to them; absent for everyone else.
+	ViewerCap *int      `json:"viewer_cap,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 var ErrNotFound = errors.New("live stream not found")
@@ -319,6 +324,30 @@ type ChatMessage struct {
 	// RemovedAt is set once a host, moderator or admin removed the message.
 	// Viewer reads never return removed rows, so it is not on the wire.
 	RemovedAt *time.Time `json:"-"`
+	// Author is who wrote the message (service layer): user_id and role
+	// always, the rest when the profile lookup answered.
+	Author *ChatAuthor `json:"author,omitempty"`
+}
+
+// Chat author roles.
+const (
+	ChatRoleHost      = "host"
+	ChatRoleModerator = "moderator"
+	ChatRoleViewer    = "viewer"
+)
+
+// ChatAuthor is the writer of a chat message as every chat row shows them.
+// Only user_id and role are guaranteed; name, handle and avatar_url are left
+// off when the profile lookup did not answer. badges is always a list.
+type ChatAuthor struct {
+	UserID    uuid.UUID `json:"user_id"`
+	Name      string    `json:"name,omitempty"`
+	Handle    string    `json:"handle,omitempty"`
+	AvatarURL string    `json:"avatar_url,omitempty"`
+	Badges    []string  `json:"badges"`
+	// Role is the author's role in the stream when the row was read:
+	// host | moderator | viewer.
+	Role string `json:"role"`
 }
 
 // InsertChatMessage persists a message + returns the generated id +
@@ -427,7 +456,9 @@ func (s *Store) AddWordFilter(ctx context.Context, streamID uuid.UUID, word stri
 	if w == "" {
 		return fmt.Errorf("word is required")
 	}
-	if len(w) > 100 {
+	// Characters, not bytes: the column's CHECK is char_length, and a word in
+	// Telugu or Hindi is three bytes a character.
+	if utf8.RuneCountInString(w) > MaxWordFilterChars {
 		return fmt.Errorf("word exceeds 100 chars")
 	}
 	const q = `
@@ -470,23 +501,35 @@ func (s *Store) ListWordFilters(ctx context.Context, streamID uuid.UUID) ([]stri
 	return out, rows.Err()
 }
 
+// MaxWordFilterChars is the longest filter word, in characters.
+const MaxWordFilterChars = 100
+
+// WordFilterMatches reports whether any of words (stored lowercased) is a
+// substring of text, ignoring case. It is the one rule both stores use.
+func WordFilterMatches(words []string, text string) bool {
+	lt := strings.ToLower(text)
+	for _, w := range words {
+		if w != "" && strings.Contains(lt, w) {
+			return true
+		}
+	}
+	return false
+}
+
 // MatchesWordFilter reports true if any configured filter word for the
-// stream is a substring of `text` (case-insensitive). Matches v1
-// behaviour: ILIKE '%word%'. The DB-side check keeps the substring
-// loop close to the filter rows and avoids shuttling the whole list
-// to Go for each chat message.
+// stream is a substring of `text` (case-insensitive).
+//
+// The words are read and compared in Go (WordFilterMatches). The comparison
+// used to be `$2 ILIKE '%' || word || '%'` in SQL, which read `%` and `_` in
+// a filter word as wildcards — a host who blocked "_" or "%" blocked every
+// message, emoji and all — and lowercased by the database's collation rather
+// than the way the words were lowercased when they were stored.
 func (s *Store) MatchesWordFilter(ctx context.Context, streamID uuid.UUID, text string) (bool, error) {
-	const q = `
-        SELECT EXISTS(
-            SELECT 1 FROM live_chat_word_filters
-            WHERE stream_id = $1
-              AND $2 ILIKE '%' || word || '%'
-        )`
-	var exists bool
-	if err := s.db.QueryRow(ctx, q, streamID, text).Scan(&exists); err != nil {
+	words, err := s.ListWordFilters(ctx, streamID)
+	if err != nil {
 		return false, err
 	}
-	return exists, nil
+	return WordFilterMatches(words, text), nil
 }
 
 // PinMessage atomically clears any existing pin on the stream and
