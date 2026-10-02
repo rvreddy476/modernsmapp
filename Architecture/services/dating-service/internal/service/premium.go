@@ -255,6 +255,14 @@ func (s *Service) MyPremium(ctx context.Context, userID uuid.UUID) (*MyPremiumRe
 // announces; the entitlement change already committed.
 func (s *Service) OnPremiumPaymentApplied(ctx context.Context, a payments.Applied) {
 	product, _ := payments.LookupProduct(a.Product)
+	// Mechanic M9: a pass granted, extended or cut short moves the
+	// read-receipt until-time chat holds.
+	if product.Kind == payments.KindPass {
+		switch a.Decision.Effect {
+		case payments.EffectGrant, payments.EffectRevoke, payments.EffectPartialRevoke:
+			s.syncReadReceipts(ctx, a.UserID)
+		}
+	}
 	switch a.Decision.Effect {
 	case payments.EffectGrant:
 		if err := s.store.RecordConsent(ctx, a.UserID, "payments", true, s.consentPolicy()); err != nil {

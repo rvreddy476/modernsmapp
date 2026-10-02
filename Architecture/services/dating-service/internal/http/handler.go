@@ -145,6 +145,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/travel", h.GetTravel)
 		dating.PUT("/travel", h.PutTravel)
 		dating.DELETE("/travel", h.DeleteTravel)
+		// Mechanic M9 — read receipts (pass holders opt in).
+		dating.GET("/read-receipts", h.GetReadReceipts)
+		dating.PUT("/read-receipts", h.PutReadReceipts)
 		// Mechanic M4 — who sparked the caller, as a grid; locked without a
 		// pass while DATING_LIKED_YOU_GATE_ENABLED is on.
 		dating.GET("/liked-you", fpMW, h.GetLikedYou)
@@ -473,6 +476,11 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
+		return
+	}
+	// Mechanic M9 — read receipts.
+	if errors.Is(err, service.ErrReadReceiptsRequirePass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "READ_RECEIPTS_REQUIRE_PASS", "read receipts come with a pass", nil)
 		return
 	}
 	// Mechanic M8 — travel mode.

@@ -53,6 +53,13 @@ type MechanicsConfig struct {
 	// Travel (DATING_TRAVEL_ENABLED): a pass holder browses another city for
 	// up to seven days.
 	Travel bool
+
+	// ReadReceipts (DATING_READ_RECEIPTS_ENABLED): pass holders may opt in
+	// to read receipts in their match chats.
+	ReadReceipts bool
+	// CallAfterExchange (DATING_CALL_AFTER_EXCHANGE_ENABLED): a match may
+	// call only once both people have sent a message.
+	CallAfterExchange bool
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.

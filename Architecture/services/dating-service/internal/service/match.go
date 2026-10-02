@@ -44,6 +44,10 @@ type CreateConversationRequest struct {
 	// FirstMoverIDs (mechanic M5): who may send the first message. Empty:
 	// anyone.
 	FirstMoverIDs []string `json:"first_mover_ids,omitempty"`
+	// ReceiptsGated / CallAfterExchange (mechanic M9): the conversation's
+	// read-receipt and call rules.
+	ReceiptsGated     bool `json:"receipts_gated,omitempty"`
+	CallAfterExchange bool `json:"call_after_exchange,omitempty"`
 }
 
 // CreateConversationResponse is what message-service returns. We accept both
@@ -86,11 +90,14 @@ func (c *httpMessageClient) CreateConversation(ctx context.Context, body CreateC
 		return nil, fmt.Errorf("dating match requires exactly 2 participants, got %d", len(body.Participants))
 	}
 	dm := struct {
-		UserA         string   `json:"user_a"`
-		UserB         string   `json:"user_b"`
-		MatchID       string   `json:"match_id"`
-		FirstMoverIDs []string `json:"first_mover_ids,omitempty"`
-	}{UserA: body.Participants[0], UserB: body.Participants[1], MatchID: body.ContextID, FirstMoverIDs: body.FirstMoverIDs}
+		UserA             string   `json:"user_a"`
+		UserB             string   `json:"user_b"`
+		MatchID           string   `json:"match_id"`
+		FirstMoverIDs     []string `json:"first_mover_ids,omitempty"`
+		ReceiptsGated     bool     `json:"receipts_gated,omitempty"`
+		CallAfterExchange bool     `json:"call_after_exchange,omitempty"`
+	}{UserA: body.Participants[0], UserB: body.Participants[1], MatchID: body.ContextID, FirstMoverIDs: body.FirstMoverIDs,
+		ReceiptsGated: body.ReceiptsGated, CallAfterExchange: body.CallAfterExchange}
 	buf, err := json.Marshal(dm)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -180,6 +187,67 @@ func (c *httpMessageClient) SendOpeningAnswer(ctx context.Context, matchID, send
 	return &CreateConversationResponse{ConversationID: env.Data.ConversationID}, nil
 }
 
+// SetReadReceipts pushes a member's read-receipt until-time (mechanic M9);
+// nil switches receipts off.
+func (c *httpMessageClient) SetReadReceipts(ctx context.Context, matchID, userID uuid.UUID, until *time.Time) error {
+	body := map[string]string{"match_id": matchID.String(), "user_id": userID.String()}
+	if until != nil {
+		body["until"] = until.UTC().Format(time.RFC3339)
+	}
+	_, status, err := c.postInternal(ctx, "/internal/v1/chat/conversations/dating-match/read-receipts", body)
+	if err != nil {
+		return err
+	}
+	if status >= 400 {
+		return fmt.Errorf("chat read receipts: status %d", status)
+	}
+	return nil
+}
+
+// MatchCallable asks chat whether the pair may call now (mechanic M9): the
+// same open-match answer graph-service grants calls on.
+func (c *httpMessageClient) MatchCallable(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
+	raw, status, err := c.postInternal(ctx, "/internal/v1/chat/dating-match/state", map[string]string{"user_a": userA.String(), "user_b": userB.String()})
+	if err != nil {
+		return false, err
+	}
+	if status >= 400 {
+		return false, fmt.Errorf("chat match state: status %d", status)
+	}
+	var env struct {
+		Data struct {
+			OpenMatch bool `json:"open_match"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false, fmt.Errorf("chat match state: %w", err)
+	}
+	return env.Data.OpenMatch, nil
+}
+
+// postInternal posts a JSON body to a chat-service internal route.
+func (c *httpMessageClient) postInternal(ctx context.Context, path string, body any) ([]byte, int, error) {
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(buf))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.internalKey != "" {
+		req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return raw, resp.StatusCode, nil
+}
+
 // SetMessageClient wires the saga's external dependency. main.go calls this
 // after constructing the http client; tests inject fakes.
 func (s *Service) SetMessageClient(c MessageServiceClient) {
@@ -247,10 +315,12 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 		client = NewHTTPMessageClient()
 	}
 	convResp, mErr := client.CreateConversation(ctx, CreateConversationRequest{
-		Participants:  []string{userA.String(), userB.String()},
-		Type:          "dating_match",
-		ContextID:     matchID.String(),
-		FirstMoverIDs: uuidStrings(movers),
+		Participants:      []string{userA.String(), userB.String()},
+		Type:              "dating_match",
+		ContextID:         matchID.String(),
+		FirstMoverIDs:     uuidStrings(movers),
+		ReceiptsGated:     s.mechanics.ReadReceipts,
+		CallAfterExchange: s.mechanics.CallAfterExchange,
 	})
 	if mErr != nil {
 		// P0-9: don't hard-delete the pending match. Keep it in status
@@ -290,6 +360,8 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 	if err != nil {
 		return nil, err
 	}
+	// Mechanic M9: tell chat who may see read receipts in this match.
+	s.syncMatchReadReceipts(ctx, match)
 	if s.producer != nil {
 		if perr := s.producer.PublishMatchFormed(ctx, matchID, match.UserA, match.UserB, conversationID); perr != nil {
 			slog.Warn("publish match.formed failed", "match_id", matchID, "error", perr)

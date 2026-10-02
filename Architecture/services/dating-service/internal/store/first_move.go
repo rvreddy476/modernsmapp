@@ -235,3 +235,46 @@ func (s *Store) FreeExtendMatch(ctx context.Context, userID, matchID uuid.UUID, 
 	}
 	return expires, nil
 }
+
+// ReadReceiptsEnabled is the user's read-receipts opt-in (mechanic M9);
+// false without a profile.
+func (s *Store) ReadReceiptsEnabled(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var on bool
+	err := s.db.QueryRow(ctx, `
+        SELECT read_receipts_enabled FROM dating_profiles WHERE user_id = $1 AND deleted_at IS NULL`, userID).Scan(&on)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read receipts setting: %w", err)
+	}
+	return on, nil
+}
+
+// SetReadReceiptsEnabled writes the opt-in. ErrProfileNotFound without a
+// profile.
+func (s *Store) SetReadReceiptsEnabled(ctx context.Context, userID uuid.UUID, on bool) error {
+	tag, err := s.db.Exec(ctx, `
+        UPDATE dating_profiles SET read_receipts_enabled = $2, updated_at = now()
+        WHERE user_id = $1 AND deleted_at IS NULL`, userID, on)
+	if err != nil {
+		return fmt.Errorf("set read receipts: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrProfileNotFound
+	}
+	return nil
+}
+
+// OpenMatchesWithConversation lists the user's open matches that have a chat
+// conversation.
+func (s *Store) OpenMatchesWithConversation(ctx context.Context, userID uuid.UUID) ([]*Match, error) {
+	rows, err := s.db.Query(ctx, `
+        SELECT `+matchSelectCols+` FROM dating_matches
+        WHERE (user_a = $1 OR user_b = $1) AND status IN `+openMatchStatuses+` AND conversation_id IS NOT NULL`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("open matches: %w", err)
+	}
+	defer rows.Close()
+	return collectMatches(rows)
+}

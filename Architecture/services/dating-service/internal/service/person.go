@@ -443,6 +443,10 @@ type MatchWithPerson struct {
 	// FirstMove (mechanic M5) is present while the match waits for its
 	// first message under the first-move rule.
 	FirstMove *FirstMoveView `json:"first_move,omitempty"`
+	// CanCall (mechanic M9, single match view only): the pair may start a
+	// voice or video call now — both have written. Omitted while the
+	// mechanic is off.
+	CanCall *bool `json:"can_call,omitempty"`
 }
 
 // SparkWithPerson is an incoming spark plus the sender's compact card.
@@ -500,5 +504,5 @@ func (s *Service) GetMatchViewForUser(ctx context.Context, matchID, userID uuid.
 		return nil, err
 	}
 	other := otherParticipant(m, userID)
-	return &MatchWithPerson{Match: m, Person: s.personCards(ctx, userID, []uuid.UUID{other})[other], FirstMove: s.firstMoveView(ctx, m, userID)}, nil
+	return &MatchWithPerson{Match: m, Person: s.personCards(ctx, userID, []uuid.UUID{other})[other], FirstMove: s.firstMoveView(ctx, m, userID), CanCall: s.canCall(ctx, m)}, nil
 }

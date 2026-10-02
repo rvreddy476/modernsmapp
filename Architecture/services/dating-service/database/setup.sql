@@ -1657,3 +1657,14 @@ CREATE TABLE IF NOT EXISTS dating_travel (
 );
 CREATE INDEX IF NOT EXISTS idx_dating_travel_geohash
     ON dating_travel(geohash) WHERE ended_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M9 — in-match extras.
+--
+-- dating_profiles.read_receipts_enabled: the opt-in to read receipts
+--   (DATING_READ_RECEIPTS_ENABLED). It applies only while the user holds a
+--   pass; chat-service enforces it from the until-time dating pushes.
+-- Calls after an exchange (DATING_CALL_AFTER_EXCHANGE_ENABLED) keep their
+-- state in chat-service (conversation_members.first_sent_at).
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN NOT NULL DEFAULT false;

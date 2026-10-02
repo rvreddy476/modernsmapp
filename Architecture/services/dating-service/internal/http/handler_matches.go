@@ -215,3 +215,41 @@ func (h *Handler) MatchFirstMessage(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"recorded": true}, nil)
 }
+
+// readReceiptsRequest is the body of PUT /read-receipts.
+type readReceiptsRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// GetReadReceipts — GET /v1/dating/read-receipts (mechanic M9).
+func (h *Handler) GetReadReceipts(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetReadReceipts(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// PutReadReceipts — PUT /v1/dating/read-receipts {enabled} (mechanic M9).
+func (h *Handler) PutReadReceipts(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body readReceiptsRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.PutReadReceipts(c.Request.Context(), userID, body.Enabled)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
