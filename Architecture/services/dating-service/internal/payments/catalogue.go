@@ -46,7 +46,21 @@ const (
 	FeatureDailyBoost = "daily_boost"
 )
 
-// PassFeatures is every feature a pass unlocks, in display order.
+// Features a pass unlocks through the Pulse mechanics. Each is listed only
+// while its mechanic is on (service.passFeatures), so a client never
+// advertises something the server does not do.
+const (
+	FeatureMoreDailyCards   = "more_daily_cards"  // M1: the larger deck allowance
+	FeatureUnlimitedRewinds = "unlimited_rewinds" // M2
+	FeatureMoreSuperSparks  = "more_super_sparks" // M3: the larger daily allowance
+	FeatureSeeWhoSparked    = "see_who_sparked"   // M4
+	FeatureAdvancedFilters  = "advanced_filters"  // M6
+	FeatureTravelMode       = "travel_mode"       // M8
+	FeatureReadReceipts     = "read_receipts"     // M9
+)
+
+// PassFeatures is every feature a pass unlocks without a mechanic flag, in
+// display order.
 var PassFeatures = []string{FeatureMatchExtend, FeatureDailyBoost}
 
 // CurrencyINR is the only currency sold.

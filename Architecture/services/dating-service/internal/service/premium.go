@@ -79,10 +79,39 @@ func (s *Service) consentPolicy() string {
 // PremiumCatalogue is GET /v1/dating/premium/catalogue.
 func (s *Service) PremiumCatalogue() []payments.Product {
 	all := payments.Catalogue()
+	features := s.passFeatures()
 	out := make([]payments.Product, 0, len(all))
 	for _, p := range all {
-		if s.productOnSale(p) {
-			out = append(out, p)
+		if !s.productOnSale(p) {
+			continue
+		}
+		if p.Kind == payments.KindPass {
+			p.Features = append([]string(nil), features...)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// passFeatures is what a pass unlocks right now (mechanic M10): the
+// features every pass has, plus each mechanic's while its flag is on.
+func (s *Service) passFeatures() []string {
+	out := append([]string(nil), payments.PassFeatures...)
+	m := s.mechanics
+	for _, f := range []struct {
+		on      bool
+		feature string
+	}{
+		{m.DeckRefill, payments.FeatureMoreDailyCards},
+		{m.Rewind, payments.FeatureUnlimitedRewinds},
+		{m.SuperSpark, payments.FeatureMoreSuperSparks},
+		{m.LikedYouGate, payments.FeatureSeeWhoSparked},
+		{m.FiltersV2, payments.FeatureAdvancedFilters},
+		{m.Travel, payments.FeatureTravelMode},
+		{m.ReadReceipts, payments.FeatureReadReceipts},
+	} {
+		if f.on {
+			out = append(out, f.feature)
 		}
 	}
 	return out
@@ -245,7 +274,7 @@ func (s *Service) MyPremium(ctx context.Context, userID uuid.UUID) (*MyPremiumRe
 		expires = &e
 		out.Pass = &PremiumPassView{Product: ent.PassProduct, Active: active, ExpiresAt: e}
 	}
-	for _, f := range payments.PassFeatures {
+	for _, f := range s.passFeatures() {
 		out.Entitlements = append(out.Entitlements, PremiumFeatureEntitlement{Feature: f, Active: active, ExpiresAt: expires})
 	}
 	return out, nil
