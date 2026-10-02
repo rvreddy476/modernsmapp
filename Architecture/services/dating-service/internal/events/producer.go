@@ -124,11 +124,22 @@ type SparkMatchedPayload struct {
 	MatchedAt time.Time `json:"matched_at"`
 }
 
-func (p *Producer) PublishSparkCreated(ctx context.Context, sparkID, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) error {
-	return p.publish(ctx, events.EventDatingSparkCreated, &fromUserID, SparkCreatedPayload{
-		SparkID: sparkID.String(), FromUserID: fromUserID.String(), ToUserID: toUserID.String(),
-		TargetKind: targetKind, TargetRef: targetRef, Note: note, CreatedAt: time.Now(),
-	})
+// PublishSparkCreated emits dating.spark.created. revealSender false (the
+// recipient may not see who sparked them, mechanic M4) leaves the sender,
+// the note and the envelope actor out, so the notification has no actor to
+// name.
+func (p *Producer) PublishSparkCreated(ctx context.Context, sparkID, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, revealSender bool) error {
+	payload := SparkCreatedPayload{
+		SparkID: sparkID.String(), ToUserID: toUserID.String(),
+		TargetKind: targetKind, TargetRef: targetRef, CreatedAt: time.Now(),
+	}
+	actor := (*uuid.UUID)(nil)
+	if revealSender {
+		payload.FromUserID = fromUserID.String()
+		payload.Note = note
+		actor = &fromUserID
+	}
+	return p.publish(ctx, events.EventDatingSparkCreated, actor, payload)
 }
 
 func (p *Producer) PublishSparkMatched(ctx context.Context, matchID, userA, userB uuid.UUID) error {

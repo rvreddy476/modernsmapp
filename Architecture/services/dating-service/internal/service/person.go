@@ -318,12 +318,16 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 	if matched {
 		return true, nil
 	}
-	sparked, err := s.store.HasIncomingSparkFrom(ctx, viewerID, targetID)
-	if err != nil {
-		return false, err
-	}
-	if sparked {
-		return true, nil
+	// An incoming spark opens the card only when the viewer may see who
+	// sparked them (mechanic M4).
+	if s.likedYouUnlocked(ctx, viewerID) {
+		sparked, err := s.store.HasIncomingSparkFrom(ctx, viewerID, targetID)
+		if err != nil {
+			return false, err
+		}
+		if sparked {
+			return true, nil
+		}
 	}
 	return s.inCurrentDeck(ctx, viewerID, targetID)
 }

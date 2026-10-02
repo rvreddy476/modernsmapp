@@ -217,7 +217,10 @@ func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 
 	// Always emit spark.created.
 	if s.producer != nil {
-		if perr := s.producer.PublishSparkCreated(ctx, sp.ID, fromUserID, toUserID, targetKind, targetRef, note); perr != nil {
+		// Mechanic M4: the notification names its actor, so a recipient the
+		// gate locks gets the event without the sender.
+		reveal := s.likedYouUnlocked(ctx, toUserID)
+		if perr := s.producer.PublishSparkCreated(ctx, sp.ID, fromUserID, toUserID, targetKind, targetRef, note, reveal); perr != nil {
 			slog.Warn("publish spark.created failed", "spark_id", sp.ID, "error", perr)
 		}
 	}
@@ -314,6 +317,12 @@ func (s *Service) AcceptSpark(ctx context.Context, sparkID, recipientID uuid.UUI
 	}
 	if sp.ToUserID != recipientID || sp.DeclinedAt != nil {
 		return nil, nil, store.ErrSparkNotFound
+	}
+	// Mechanic M4: accepting forms a match, which would reveal who sent a
+	// spark the caller may not see. They can still spark that person when
+	// they meet them in the deck.
+	if !s.likedYouUnlocked(ctx, recipientID) {
+		return nil, nil, ErrLikedYouLocked
 	}
 	out, matchID, err := s.createSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "", false)
 	if err == nil && s.mechanics.DeckRefill {

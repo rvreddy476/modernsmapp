@@ -64,12 +64,54 @@ func (h *Handler) ListIncomingSparks(c *gin.Context) {
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	out, err := h.svc.ListIncomingSparks(c.Request.Context(), userID, limit, offset)
+	out, err := h.svc.IncomingSparksView(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// GetLikedYou — GET /v1/dating/liked-you?limit=&offset=
+//
+// Mechanic M4: the people who sparked the caller as a grid, with the total.
+// Locked (gate on, no pass): no names, ids, notes or full images.
+func (h *Handler) GetLikedYou(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	out, err := h.svc.LikedYou(c.Request.Context(), userID, limit, offset)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// GetLikedYouPhoto — GET /v1/dating/liked-you/:sparkId/photo
+//
+// Mechanic M4: redirects the recipient to the server-blurred image of the
+// sender's primary photo. Never the full image, whoever asks.
+func (h *Handler) GetLikedYouPhoto(c *gin.Context) {
+	viewerID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	sparkID, ok := parseUUID(c, "sparkId")
+	if !ok {
+		return
+	}
+	u, err := h.svc.LikedYouPhotoURL(c.Request.Context(), viewerID, sparkID)
+	if err != nil {
+		h.respondPhotoError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	c.Header("Cache-Control", "private, max-age=60")
+	c.Header("Vary", "X-User-Id")
+	c.Redirect(http.StatusTemporaryRedirect, u)
 }
 
 // RevokeSpark — DELETE /v1/dating/sparks/:id.

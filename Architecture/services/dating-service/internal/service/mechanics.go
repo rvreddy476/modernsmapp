@@ -34,6 +34,10 @@ type MechanicsConfig struct {
 	SuperSpark               bool
 	SuperSparkDailyLimitFree int
 	SuperSparkDailyLimitPass int
+
+	// LikedYouGate (DATING_LIKED_YOU_GATE_ENABLED): only a pass holder sees
+	// who sparked them; everyone else gets the count and blurred cards.
+	LikedYouGate bool
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.

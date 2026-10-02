@@ -137,6 +137,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Mechanic M10 — every daily allowance the caller has; a mechanic
 		// whose flag is off is absent.
 		dating.GET("/allowances", h.GetAllowances)
+		// Mechanic M4 — who sparked the caller, as a grid; locked without a
+		// pass while DATING_LIKED_YOU_GATE_ENABLED is on.
+		dating.GET("/liked-you", fpMW, h.GetLikedYou)
+		dating.GET("/liked-you/:sparkId/photo", h.GetLikedYouPhoto)
 
 		// Sprint 3 — Sparks
 		dating.POST("/sparks", fpMW, h.CreateSpark)
@@ -456,6 +460,10 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
+		return
+	}
+	if errors.Is(err, service.ErrLikedYouLocked) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKED_YOU_LOCKED", "a pass is needed to see who sparked you", nil)
 		return
 	}
 	var superLimited *service.SuperSparkLimitError

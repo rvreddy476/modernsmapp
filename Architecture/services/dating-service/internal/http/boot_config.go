@@ -441,6 +441,7 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_SUPER_SPARK_ENABLED          Super Spark and its packs (M3)
 //	DATING_SUPER_SPARK_DAILY_LIMIT_FREE 1-50,  default 1 per rolling 24h
 //	DATING_SUPER_SPARK_DAILY_LIMIT_PASS 1-100, default 5 for pass holders
+//	DATING_LIKED_YOU_GATE_ENABLED       who sparked you is for pass holders (M4)
 //
 // Any malformed value is an error, on which main refuses to start.
 func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig, error) {
@@ -469,6 +470,9 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 		return cfg, err
 	}
 	if err := envIntIn(getenv, "DATING_SUPER_SPARK_DAILY_LIMIT_PASS", 1, 100, &cfg.SuperSparkDailyLimitPass); err != nil {
+		return cfg, err
+	}
+	if cfg.LikedYouGate, err = envFlag(getenv, "DATING_LIKED_YOU_GATE_ENABLED", def); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
