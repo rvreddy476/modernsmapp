@@ -186,6 +186,10 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 		}
 		s.InvalidatePulseCache(ctx, targetUserID)
 		s.InvalidateDecksForCandidate(ctx, targetUserID)
+		// Mechanic M17: a suspension for scam behaviour warns their matches.
+		if profileEvent == store.ProfileEventSuspend && report.Category == "scam" && s.mechanics.ScamAlert {
+			s.queueScamAlerts(ctx, targetUserID, report.ReporterID)
+		}
 	}
 
 	if err := s.store.SetReportStatus(ctx, reportID, newStatus); err != nil {

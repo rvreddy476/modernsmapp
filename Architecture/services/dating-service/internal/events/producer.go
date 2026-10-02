@@ -795,3 +795,46 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		Value: envelopeBytes,
 	})
 }
+
+// ScamAlertPayload is dating.safety.scam_alert (mechanic M17): one per
+// recipient. notification-service renders it as a safety notice.
+type ScamAlertPayload struct {
+	RecipientID      string    `json:"recipient_id"`
+	MatchID          string    `json:"match_id"`
+	RemovedFirstName string    `json:"removed_first_name"`
+	IssuedAt         time.Time `json:"issued_at"`
+}
+
+// PublishScamAlert warns recipientID that someone they matched with
+// (matchID) was suspended for scam behaviour. The envelope actor is the
+// recipient, as for the safe-meet notices; the removed person is named only
+// by first name in the payload.
+func (p *Producer) PublishScamAlert(ctx context.Context, recipientID, matchID uuid.UUID, removedFirstName string) error {
+	return p.publish(ctx, events.EventDatingScamAlert, &recipientID, ScamAlertPayload{
+		RecipientID: recipientID.String(), MatchID: matchID.String(),
+		RemovedFirstName: removedFirstName, IssuedAt: time.Now().UTC(),
+	})
+}
+
+// DateCheckinDuePayload is dating.date_checkin.due (mechanic M14): ask the
+// recipient how a date went.
+type DateCheckinDuePayload struct {
+	RecipientID   string    `json:"recipient_id"`
+	MatchID       string    `json:"match_id"`
+	MeetID        string    `json:"meet_id"`
+	WithFirstName string    `json:"with_first_name"`
+	DueAt         time.Time `json:"due_at"`
+}
+
+// PublishDateCheckinDue asks recipientID how their date in matchID went.
+// meetID may be uuid.Nil (no planned meet); withFirstName may be "".
+func (p *Producer) PublishDateCheckinDue(ctx context.Context, recipientID, matchID, meetID uuid.UUID, withFirstName string, dueAt time.Time) error {
+	meet := ""
+	if meetID != uuid.Nil {
+		meet = meetID.String()
+	}
+	return p.publish(ctx, events.EventDatingDateCheckinDue, &recipientID, DateCheckinDuePayload{
+		RecipientID: recipientID.String(), MatchID: matchID.String(), MeetID: meet,
+		WithFirstName: withFirstName, DueAt: dueAt.UTC(),
+	})
+}

@@ -628,6 +628,29 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 		return nil, err
 	}
 
+	// 3b) Scam alerts (M17) are a safety record and stay: the purged person
+	//     becomes their subject token, an unsent warning to them is
+	//     cancelled, and a warning about them no longer names them.
+	if err := exec(`
+        UPDATE dating_scam_alerts
+        SET cancelled_at = CASE WHEN recipient_id = $1 AND sent_at IS NULL THEN COALESCE(cancelled_at, now()) ELSE cancelled_at END,
+            first_name   = CASE WHEN subject_id = $1 THEN NULL ELSE first_name END,
+            subject_id   = CASE WHEN subject_id = $1 THEN $2::uuid ELSE subject_id END,
+            recipient_id = CASE WHEN recipient_id = $1 THEN $2::uuid ELSE recipient_id END
+        WHERE subject_id = $1 OR recipient_id = $1`, userID, token); err != nil {
+		return nil, err
+	}
+
+	// 3c) Date check-in answers (M14) are safety evidence and stay: the
+	//     purged person becomes their subject token on either side.
+	if err := exec(`
+        UPDATE dating_date_feedback
+        SET user_id  = CASE WHEN user_id = $1 THEN $2::uuid ELSE user_id END,
+            other_id = CASE WHEN other_id = $1 THEN $2::uuid ELSE other_id END
+        WHERE user_id = $1 OR other_id = $1`, userID, token); err != nil {
+		return nil, err
+	}
+
 	// 4) Vouches: outstanding entries (sent or received) are revoked.
 	if err := exec(`
         UPDATE dating_vouches

@@ -449,6 +449,9 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_PICKS_EXPOSURE_CAP           1-10000, default 30 picks per person a day
 //	DATING_FAIR_TURN_ENABLED            no new sparks while owing replies (M11)
 //	DATING_FAIR_TURN_LIMIT              1-100, default 6 matches waiting on you
+//	DATING_PAST_MATCH_REPORT_ENABLED    ended matches, to report (M19)
+//	DATING_SCAM_ALERT_ENABLED           warn matches of a suspended scammer (M17)
+//	DATING_DATE_CHECKIN_ENABLED         how did the date go (M14)
 //	DATING_DEALBREAKERS_ENABLED         dealbreakers apply both ways (M12)
 //	DATING_TRAVEL_ENABLED               travel mode (M8)
 //	DATING_READ_RECEIPTS_ENABLED        read receipts for pass holders (M9)
@@ -505,6 +508,15 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 		return cfg, err
 	}
 	if err := envIntIn(getenv, "DATING_FAIR_TURN_LIMIT", 1, 100, &cfg.FairTurnLimit); err != nil {
+		return cfg, err
+	}
+	if cfg.PastMatchReport, err = envFlag(getenv, "DATING_PAST_MATCH_REPORT_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.ScamAlert, err = envFlag(getenv, "DATING_SCAM_ALERT_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.DateCheckin, err = envFlag(getenv, "DATING_DATE_CHECKIN_ENABLED", def); err != nil {
 		return cfg, err
 	}
 	if cfg.Dealbreakers, err = envFlag(getenv, "DATING_DEALBREAKERS_ENABLED", def); err != nil {

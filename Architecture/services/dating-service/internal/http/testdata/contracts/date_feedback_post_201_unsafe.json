@@ -1,0 +1,10 @@
+{
+  "data": {
+    "match_id": "<match>",
+    "met": "yes",
+    "again": "no",
+    "felt_safe": false,
+    "created_at": "<timestamp>",
+    "offer_report": true
+  }
+}

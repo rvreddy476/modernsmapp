@@ -173,6 +173,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Sprint 3 — Matches
 		dating.GET("/matches", h.ListMatches)
 		dating.GET("/matches/:id", h.GetMatch)
+		// Mechanic M19: matches that ended in the last 30 days, to report.
+		dating.GET("/past-matches", h.GetPastMatches)
+		// Mechanic M14: how did the date go.
+		dating.POST("/matches/:id/date-feedback", h.PostDateFeedback)
+		dating.GET("/date-checkins", h.GetDateCheckins)
 		dating.POST("/matches/:id/close", h.CloseMatch)
 		dating.POST("/matches/:id/extend", h.ExtendMatch)
 		// Mechanic M5 — the waiting person's answer to an opening question.
@@ -578,6 +583,10 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	}
 	if errors.Is(err, service.ErrLikedYouLocked) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKED_YOU_LOCKED", "a pass is needed to see who sparked you", nil)
+		return
+	}
+	if errors.Is(err, service.ErrDateFeedbackLimit) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "DATE_FEEDBACK_LIMIT", "enough answers about this match", nil)
 		return
 	}
 	var fairTurn *service.FairTurnError

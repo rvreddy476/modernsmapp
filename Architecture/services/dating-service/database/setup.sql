@@ -1679,3 +1679,53 @@ ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLE
 -- ---------------------------------------------------------------------------
 ALTER TABLE dating_preferences
     ADD COLUMN IF NOT EXISTS dealbreakers TEXT[] NOT NULL DEFAULT '{}';
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M17 — scam alerts (DATING_SCAM_ALERT_ENABLED).
+--
+-- The outbox of warnings to people who matched with someone suspended on a
+-- scam report: one row per (subject, recipient), sent once. A safety record,
+-- never deleted; a purge swaps the purged id for its subject token.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_scam_alerts (
+    subject_id   UUID        NOT NULL,
+    recipient_id UUID        NOT NULL,
+    match_id     UUID        NOT NULL,
+    first_name   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at      TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
+    attempts     INT         NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    PRIMARY KEY (subject_id, recipient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_scam_alerts_pending
+    ON dating_scam_alerts(created_at) WHERE sent_at IS NULL AND cancelled_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_scam_alerts_recipient
+    ON dating_scam_alerts(recipient_id);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M14 — after-date check-ins (DATING_DATE_CHECKIN_ENABLED).
+--
+-- dating_meets.date_checkin_asked_at: the meet's check-in was sent (once).
+-- dating_date_feedback: the answers, append-only. A "did not feel safe"
+-- answer is safety evidence: never deleted; a purge swaps the purged id for
+-- its subject token.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_meets ADD COLUMN IF NOT EXISTS date_checkin_asked_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS dating_date_feedback (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id   UUID        NOT NULL,
+    user_id    UUID        NOT NULL,
+    other_id   UUID        NOT NULL,
+    met        TEXT        NOT NULL CHECK (met IN ('yes','no','not_yet')),
+    again      TEXT        CHECK (again IN ('yes','no','unsure')),
+    felt_safe  BOOLEAN,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_date_feedback_match_user
+    ON dating_date_feedback(match_id, user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_date_feedback_other
+    ON dating_date_feedback(other_id);
+CREATE INDEX IF NOT EXISTS idx_dating_meets_checkin_due
+    ON dating_meets(scheduled_at) WHERE date_checkin_asked_at IS NULL;

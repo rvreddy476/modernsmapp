@@ -60,6 +60,18 @@ type MechanicsConfig struct {
 	FairTurn      bool
 	FairTurnLimit int
 
+	// PastMatchReport (DATING_PAST_MATCH_REPORT_ENABLED): the caller's
+	// matches that ended in the last 30 days, to report (past_matches.go).
+	PastMatchReport bool
+
+	// ScamAlert (DATING_SCAM_ALERT_ENABLED): suspending someone on a scam
+	// report warns their matches of the last 90 days (scam_alert.go).
+	ScamAlert bool
+
+	// DateCheckin (DATING_DATE_CHECKIN_ENABLED): ask how a planned date
+	// went, and take the answer (date_checkin.go).
+	DateCheckin bool
+
 	// Dealbreakers (DATING_DEALBREAKERS_ENABLED): preferences marked as
 	// dealbreakers apply both ways (dealbreakers.go).
 	Dealbreakers bool

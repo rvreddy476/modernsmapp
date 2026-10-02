@@ -151,6 +151,20 @@ func (s *Service) runSweeperOnce(ctx context.Context, cfg SweeperConfig) {
 		}
 	}
 
+	// 4b. Mechanic M17: send scam alerts that did not reach Kafka yet.
+	if n, err := s.SendPendingScamAlerts(ctx); err != nil {
+		slog.Warn("sweeper: SendPendingScamAlerts failed", "error", err)
+	} else if n > 0 {
+		slog.Info("sweeper: scam alerts sent", "count", n)
+	}
+
+	// 4c. Mechanic M14: ask how planned dates went.
+	if n, err := s.SendDueDateCheckins(ctx, cfg.BatchLimit); err != nil {
+		slog.Warn("sweeper: SendDueDateCheckins failed", "error", err)
+	} else if n > 0 {
+		slog.Info("sweeper: date check-ins sent", "count", n)
+	}
+
 	// 5. §P0-7 Phase A: recompute risk for users whose row is older
 	// than `RiskStaleAfter`. Idempotent — re-running on the same user
 	// just refreshes the row. Capped at `RiskRecomputeBatch` per tick

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -249,6 +250,64 @@ func (h *Handler) PutReadReceipts(c *gin.Context) {
 	out, err := h.svc.PutReadReceipts(c.Request.Context(), userID, body.Enabled)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// GetPastMatches — GET /v1/dating/past-matches (mechanic M19): the caller's
+// matches that ended in the last 30 days, each reportable through
+// POST /v1/dating/safety/report. 404 MECHANIC_NOT_ENABLED while the flag is off.
+func (h *Handler) GetPastMatches(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.PastMatches(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// PostDateFeedback — POST /v1/dating/matches/:id/date-feedback (mechanic
+// M14): how the date went. 201 with offer_report when the caller did not
+// feel safe; 400 INVALID_DATE_FEEDBACK; 404 for someone else's match;
+// 429 DATE_FEEDBACK_LIMIT.
+func (h *Handler) PostDateFeedback(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	matchID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid match id", nil)
+		return
+	}
+	var body service.DateFeedbackInput
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.PostDateFeedback(c.Request.Context(), userID, matchID, body)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "DATE_FEEDBACK_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, out, nil)
+}
+
+// GetDateCheckins — GET /v1/dating/date-checkins (mechanic M14): the asks
+// still waiting for the caller's answer.
+func (h *Handler) GetDateCheckins(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.DateCheckins(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
