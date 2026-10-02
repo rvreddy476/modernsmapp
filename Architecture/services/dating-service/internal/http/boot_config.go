@@ -435,6 +435,9 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_DECK_REFILL_ENABLED     the refilling swipe deck (M1)
 //	DATING_DECK_DAILY_LIMIT_FREE   1-500,  default 25 cards per rolling 24h
 //	DATING_DECK_DAILY_LIMIT_PASS   1-2000, default 100 for pass holders
+//	DATING_REWIND_ENABLED          undo the last pass (M2)
+//	DATING_REWIND_DAILY_LIMIT_FREE 1-100,  default 1 per rolling 24h (pass
+//	                               holders are not limited)
 //
 // Any malformed value is an error, on which main refuses to start.
 func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig, error) {
@@ -448,6 +451,12 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 		return cfg, err
 	}
 	if err := envIntIn(getenv, "DATING_DECK_DAILY_LIMIT_PASS", 1, 2000, &cfg.DeckDailyLimitPass); err != nil {
+		return cfg, err
+	}
+	if cfg.Rewind, err = envFlag(getenv, "DATING_REWIND_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_REWIND_DAILY_LIMIT_FREE", 1, 100, &cfg.RewindDailyLimitFree); err != nil {
 		return cfg, err
 	}
 	return cfg, nil

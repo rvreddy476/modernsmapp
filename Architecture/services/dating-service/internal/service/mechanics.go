@@ -22,6 +22,11 @@ type MechanicsConfig struct {
 	DeckRefill         bool
 	DeckDailyLimitFree int
 	DeckDailyLimitPass int
+
+	// Rewind (DATING_REWIND_ENABLED): undo the last pass. Free users get
+	// RewindDailyLimitFree per rolling 24 hours; a pass holder is not limited.
+	Rewind               bool
+	RewindDailyLimitFree int
 }
 
 // DefaultMechanicsConfig is every mechanic off, with the default limits.
@@ -29,6 +34,8 @@ func DefaultMechanicsConfig() MechanicsConfig {
 	return MechanicsConfig{
 		DeckDailyLimitFree: DefaultDeckDailyLimitFree,
 		DeckDailyLimitPass: DefaultDeckDailyLimitPass,
+
+		RewindDailyLimitFree: DefaultRewindDailyLimitFree,
 	}
 }
 
@@ -41,6 +48,9 @@ func (s *Service) SetMechanicsConfig(cfg MechanicsConfig) {
 	}
 	if cfg.DeckDailyLimitPass <= 0 {
 		cfg.DeckDailyLimitPass = d.DeckDailyLimitPass
+	}
+	if cfg.RewindDailyLimitFree <= 0 {
+		cfg.RewindDailyLimitFree = d.RewindDailyLimitFree
 	}
 	s.mechanics = cfg
 }

@@ -1,0 +1,46 @@
+{
+  "data": {
+    "rewound": true,
+    "candidate_id": "<candidate>",
+    "card": {
+      "candidate_id": "<candidate>",
+      "score": 0,
+      "match_reasons": [],
+      "profile": {
+        "user_id": "<candidate>",
+        "first_name": "Asha",
+        "age": 30,
+        "intent": "casual",
+        "city": "Hyderabad",
+        "distance_bucket": "lt_5_km",
+        "distance_label": "\u003c 5 km",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "primary_photo_blurred": false,
+        "tune_summary": {},
+        "trust_tier": "phone",
+        "last_active_bucket": "today",
+        "last_active_label": "Active today",
+        "detail": {
+          "photos": [
+            {
+              "id": "<uuid>",
+              "url": "/v1/dating/photos/<uuid>/full",
+              "state": "full"
+            }
+          ]
+        }
+      },
+      "echoes": {
+        "top_qa_answer_id": null,
+        "top_reel_id": null,
+        "top_community": null,
+        "recent_post_id": null
+      }
+    },
+    "allowance": {
+      "unlimited": false,
+      "daily_limit": 1,
+      "resets_at": "<timestamp>"
+    }
+  }
+}

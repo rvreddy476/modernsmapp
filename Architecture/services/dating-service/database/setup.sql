@@ -1481,3 +1481,23 @@ CREATE TABLE IF NOT EXISTS dating_deck_ledger (
 );
 CREATE INDEX IF NOT EXISTS idx_dating_deck_ledger_user
     ON dating_deck_ledger(user_id, acted_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M2 — rewind (DATING_REWIND_ENABLED): undo the last pass.
+--
+-- dating_passes.rewound_at: set by a rewind. A rewound pass no longer keeps
+--   the candidate out of the deck; passing them again clears it. The row is
+--   never deleted by a rewind.
+-- dating_rewind_ledger: one row per rewind. The free daily allowance counts
+--   the rows of the last 24 hours, and its newest row is the point a later
+--   rewind cannot reach behind.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_passes ADD COLUMN IF NOT EXISTS rewound_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS dating_rewind_ledger (
+    user_id      UUID        NOT NULL,
+    candidate_id UUID        NOT NULL,
+    rewound_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_rewind_ledger_user
+    ON dating_rewind_ledger(user_id, rewound_at DESC);

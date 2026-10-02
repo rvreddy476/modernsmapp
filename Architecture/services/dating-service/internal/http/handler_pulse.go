@@ -127,6 +127,25 @@ func (h *Handler) PassCandidate(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
 }
 
+// RewindLastPass — POST /v1/dating/pulse/rewind
+//
+// Mechanic M2: undoes the caller's most recent pass and returns that card.
+// 409 REWIND_NOTHING_TO_UNDO when the last deck action is not an undoable
+// pass, 429 REWIND_LIMIT_REACHED when the free allowance is spent, 404
+// CANDIDATE_UNAVAILABLE when the person can no longer be shown.
+func (h *Handler) RewindLastPass(c *gin.Context) {
+	viewerID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.RewindLastPass(c.Request.Context(), viewerID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "REWIND_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
 // parseQueryInt is a forgiving helper — falls back to fallback on any parse
 // problem instead of erroring.
 func parseQueryInt(c *gin.Context, key string, fallback int) int {

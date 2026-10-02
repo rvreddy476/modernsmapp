@@ -291,6 +291,7 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		args = append(args, PassCooldown.Seconds())
 		where = append(where, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM dating_passes dp
 		    WHERE dp.user_id = $1 AND dp.candidate_id = p.user_id
+		      AND dp.rewound_at IS NULL
 		      AND dp.passed_at > now() - make_interval(secs => $%d))`, len(args)))
 	}
 
@@ -535,6 +536,9 @@ const PassCooldown = 30 * 24 * time.Hour
 // inside the cooldown changes nothing; a repeat after it re-arms the
 // cooldown. Returns the passed_at that now stands.
 //
+// Mechanic M2: a pass that was rewound (rewound_at set) is not standing, so
+// passing the person again re-arms it too and clears rewound_at.
+//
 // The cooldown cutoff is computed with the database clock (now()), the same
 // clock that stamps passed_at. It used to be the app host's time.Now(), so a
 // host/DB clock skew moved the cooldown edge (and made the store test depend
@@ -555,8 +559,9 @@ func (s *Store) RecordPass(ctx context.Context, userID, candidateID uuid.UUID, r
         INSERT INTO dating_passes (user_id, candidate_id, reason)
         VALUES ($1, $2, $3)
         ON CONFLICT (user_id, candidate_id) DO UPDATE
-            SET passed_at = CASE WHEN dating_passes.passed_at <= now() - make_interval(secs => $4) THEN now() ELSE dating_passes.passed_at END,
-                reason    = CASE WHEN dating_passes.passed_at <= now() - make_interval(secs => $4) THEN EXCLUDED.reason ELSE dating_passes.reason END
+            SET passed_at = CASE WHEN dating_passes.rewound_at IS NOT NULL OR dating_passes.passed_at <= now() - make_interval(secs => $4) THEN now() ELSE dating_passes.passed_at END,
+                reason    = CASE WHEN dating_passes.rewound_at IS NOT NULL OR dating_passes.passed_at <= now() - make_interval(secs => $4) THEN EXCLUDED.reason ELSE dating_passes.reason END,
+                rewound_at = NULL
         RETURNING passed_at`, userID, candidateID, reasonPtr, PassCooldown.Seconds()).Scan(&passedAt)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("record pass: %w", err)
@@ -578,6 +583,7 @@ func (s *Store) ListPassedCandidates(ctx context.Context, userID uuid.UUID, limi
         SELECT dp.candidate_id, dp.passed_at, dp.reason
         FROM dating_passes dp
         WHERE dp.user_id = $1
+          AND dp.rewound_at IS NULL
           AND NOT `+blockedPairPredicate("dp.user_id", "dp.candidate_id")+`
           AND `+visibleProfilePredicate("dp.candidate_id")+`
         ORDER BY dp.passed_at DESC

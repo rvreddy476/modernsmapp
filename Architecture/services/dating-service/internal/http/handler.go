@@ -131,6 +131,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/pulse/:targetUserId/explain", fpMW, h.ExplainPulseCandidate)
 		// Lane D3 — pass on a deck candidate (idempotent, 30-day cooldown).
 		dating.POST("/pulse/:candidateId/pass", fpMW, h.PassCandidate)
+		// Mechanic M2 — undo the caller's last pass (one step, never a
+		// spark). 404 MECHANIC_NOT_ENABLED while DATING_REWIND_ENABLED is off.
+		dating.POST("/pulse/rewind", fpMW, h.RewindLastPass)
 
 		// Sprint 3 — Sparks
 		dating.POST("/sparks", fpMW, h.CreateSpark)
@@ -424,6 +427,24 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	if errors.Is(err, store.ErrSparkRateLimited) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SPARK_RATE_LIMITED", "spark limit reached; try again later",
 			map[string]any{"limit": service.DefaultSparkDailyLimit, "window_hours": int(store.SparkQuotaWindow.Hours())})
+		return
+	}
+	// Pulse mechanics: a route whose flag is off, and the rewind refusals.
+	if errors.Is(err, service.ErrMechanicDisabled) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "MECHANIC_NOT_ENABLED", "this feature is not available", nil)
+		return
+	}
+	if errors.Is(err, service.ErrNothingToRewind) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REWIND_NOTHING_TO_UNDO", "there is no pass to undo", nil)
+		return
+	}
+	var rewindLimited *service.RewindLimitError
+	if errors.As(err, &rewindLimited) {
+		details := map[string]any{"limit": rewindLimited.Limit, "window_hours": int(store.RewindQuotaWindow.Hours())}
+		if rewindLimited.ResetsAt != nil {
+			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
 		return
 	}
 	if errors.Is(err, service.ErrSparkNoteRefused) {
