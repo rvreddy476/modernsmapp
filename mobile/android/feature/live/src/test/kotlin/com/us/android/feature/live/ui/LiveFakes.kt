@@ -11,6 +11,7 @@ import com.us.android.feature.live.data.CreateStreamRequest
 import com.us.android.feature.live.data.EndStreamDto
 import com.us.android.feature.live.data.LiveApi
 import com.us.android.feature.live.data.LiveChatMessageDto
+import com.us.android.feature.live.data.LiveEligibilityDto
 import com.us.android.feature.live.data.LiveReportRequest
 import com.us.android.feature.live.data.LiveRoomFactory
 import com.us.android.feature.live.data.LiveRoomSession
@@ -32,10 +33,11 @@ import retrofit2.HttpException
 import retrofit2.Response
 
 /** An HTTP failure exactly as Retrofit throws it, with the platform's error envelope. */
-fun httpError(status: Int, code: String): HttpException = HttpException(
+fun httpError(status: Int, code: String, details: String? = null): HttpException = HttpException(
     Response.error<Any>(
         status,
-        """{"error":{"code":"$code","message":"m"}}""".toResponseBody("application/json".toMediaType()),
+        ("""{"error":{"code":"$code","message":"m"""" + (details?.let { ""","details":$it""" } ?: "") + "}}")
+            .toResponseBody("application/json".toMediaType()),
     ),
 )
 
@@ -57,6 +59,10 @@ class FakeLiveApi : LiveApi {
     var chat: List<LiveChatMessageDto> = emptyList()
     var sentReply = LiveChatMessageDto(id = "mine", userId = "me", text = "hi")
 
+    /** Eligible unless a test says otherwise, so the host tests reach the form. */
+    var eligibility = LiveEligibilityDto(mode = "open", eligible = true)
+    val sentChat = mutableListOf<String>()
+
     val bans = mutableListOf<BanUserRequest>()
     val moderatorPuts = mutableListOf<List<String>>()
     val reports = mutableListOf<LiveReportRequest>()
@@ -67,6 +73,11 @@ class FakeLiveApi : LiveApi {
     }
 
     fun count(call: String): Int = calls.count { it == call }
+
+    override suspend fun eligibility(): ApiEnvelope<LiveEligibilityDto> {
+        record("GET eligibility")
+        return ApiEnvelope(data = eligibility)
+    }
 
     override suspend fun createStream(body: CreateStreamRequest): ApiEnvelope<LiveStreamDto> {
         record("POST create")
@@ -100,6 +111,7 @@ class FakeLiveApi : LiveApi {
 
     override suspend fun sendChat(id: String, body: SendChatRequest): ApiEnvelope<LiveChatMessageDto> {
         record("POST chat")
+        sentChat += body.text
         return ApiEnvelope(data = sentReply.copy(text = body.text))
     }
 

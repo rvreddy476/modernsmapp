@@ -22,7 +22,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -56,10 +55,10 @@ fun ScreenTimeGuardHost(
     ModalBottomSheet(
         onDismissRequest = viewModel::dismiss,
         sheetState = sheetState,
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
     ) {
         Column(
@@ -134,7 +133,7 @@ private fun GuardAction(label: String, primary: Boolean, onClick: () -> Unit) {
             text = label,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.SemiBold,
-            color = if (primary) Color.White else UsTheme.extended.textPrimary,
+            color = if (primary) UsTheme.extended.onAccent else UsTheme.extended.textPrimary,
         )
     }
 }
@@ -151,7 +150,6 @@ private fun ScreenTimeGuardMessage.body(): String = when (this) {
         "This is inside the sleep hours you set. Nothing is locked — this is a reminder."
 }
 
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private val SHEET_RADIUS = 28.dp
 private val CONTENT_PADDING = 20.dp

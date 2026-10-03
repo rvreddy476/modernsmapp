@@ -188,7 +188,30 @@ func newHTTPAuthorizer(baseURL, path, internalKey string, client *http.Client, a
 // question here since 2026-09-29 (founder decision 2: public videos play
 // without sign-in) — it is sent as viewer_id "" and post-service decides.
 func NewHTTPContentAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
-	return newHTTPAuthorizer(baseURL, "/v1/internal/media-access", internalKey, client, anonymousAsEmpty)
+	return newHTTPAuthorizer(baseURL, postMediaAccessPath, internalKey, client, anonymousAsEmpty)
+}
+
+// postMediaAccessPath is post-service's media-access route.
+const postMediaAccessPath = "/v1/internal/media-access"
+
+// PurposePoster is the `purpose` post-service is sent when a read named a
+// thumbnail still of an asset (post-service service.MediaAccessPurposePoster).
+// Absent, the question is playback.
+const PurposePoster = "poster"
+
+// IsPosterVariant reports the variants that are a still of the asset and
+// nothing more: the thumbnails the pipeline derives (thumb_150, thumb_300).
+// A rendition, the HLS graph, the original, an audio track and the
+// storyboard (a contact sheet of the WHOLE video) are not.
+func IsPosterVariant(variant string) bool {
+	return strings.HasPrefix(variant, "thumb_")
+}
+
+// posterContentAuthorizer is implemented by an authorizer that can ask the
+// poster question (AuthorizePoster). One that does not is asked the ordinary,
+// stricter one.
+type posterContentAuthorizer interface {
+	AuthorizePoster(ctx context.Context, viewerID, mediaID string) error
 }
 
 // NewHTTPChatAuthorizer asks chat-service. Chat attachments have no
@@ -232,6 +255,22 @@ func (a *HTTPContentAuthorizer) wireViewer(viewerID string) (string, error) {
 }
 
 func (a *HTTPContentAuthorizer) Authorize(ctx context.Context, viewerID, mediaID string) error {
+	return a.authorize(ctx, viewerID, mediaID, "")
+}
+
+// AuthorizePoster is Authorize for a read that named a thumbnail still
+// (IsPosterVariant). Only post-service is told: it is the one authority with
+// a rule that differs for a still (a members-only post shows its poster to a
+// signed-in non-member and its video to members). Every other authority is
+// asked the ordinary question.
+func (a *HTTPContentAuthorizer) AuthorizePoster(ctx context.Context, viewerID, mediaID string) error {
+	if a != nil && a.path == postMediaAccessPath {
+		return a.authorize(ctx, viewerID, mediaID, PurposePoster)
+	}
+	return a.authorize(ctx, viewerID, mediaID, "")
+}
+
+func (a *HTTPContentAuthorizer) authorize(ctx context.Context, viewerID, mediaID, purpose string) error {
 	if a == nil || a.baseURL == "" {
 		return fmt.Errorf("%w: no content authorizer configured", ErrDeliveryUnresolved)
 	}
@@ -240,7 +279,11 @@ func (a *HTTPContentAuthorizer) Authorize(ctx context.Context, viewerID, mediaID
 		return err
 	}
 
-	body, err := json.Marshal(map[string]string{"viewer_id": viewerID, "media_id": mediaID})
+	payload := map[string]string{"viewer_id": viewerID, "media_id": mediaID}
+	if purpose != "" {
+		payload["purpose"] = purpose
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("%w: encode request: %v", ErrDeliveryUnresolved, err)
 	}
@@ -288,7 +331,7 @@ func (a *HTTPContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID str
 	if a == nil || a.baseURL == "" {
 		return nil, fmt.Errorf("%w: no content authorizer configured", ErrDeliveryUnresolved)
 	}
-	if a.path != "/v1/internal/media-access" {
+	if a.path != postMediaAccessPath {
 		return nil, errBatchUnsupported
 	}
 	viewerID, err := a.wireViewer(viewerID)
@@ -350,6 +393,16 @@ func (a *HTTPContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID str
 type AnyContentAuthorizer []ContentAuthorizer
 
 func (authorizers AnyContentAuthorizer) Authorize(ctx context.Context, viewerID, mediaID string) error {
+	return authorizers.authorize(ctx, viewerID, mediaID, false)
+}
+
+// AuthorizePoster is Authorize for a read that named a thumbnail still: each
+// authority that can tell the difference is asked the poster question.
+func (authorizers AnyContentAuthorizer) AuthorizePoster(ctx context.Context, viewerID, mediaID string) error {
+	return authorizers.authorize(ctx, viewerID, mediaID, true)
+}
+
+func (authorizers AnyContentAuthorizer) authorize(ctx context.Context, viewerID, mediaID string, poster bool) error {
 	if len(authorizers) == 0 {
 		return fmt.Errorf("%w: no content authorities configured", ErrDeliveryUnresolved)
 	}
@@ -359,7 +412,12 @@ func (authorizers AnyContentAuthorizer) Authorize(ctx context.Context, viewerID,
 			unresolved = true
 			continue
 		}
-		err := authorizer.Authorize(ctx, viewerID, mediaID)
+		var err error
+		if p, ok := authorizer.(posterContentAuthorizer); ok && poster {
+			err = p.AuthorizePoster(ctx, viewerID, mediaID)
+		} else {
+			err = authorizer.Authorize(ctx, viewerID, mediaID)
+		}
 		if err == nil {
 			return nil
 		}

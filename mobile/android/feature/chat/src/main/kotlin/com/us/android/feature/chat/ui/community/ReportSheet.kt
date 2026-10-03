@@ -42,7 +42,7 @@ internal fun ReportSheet(
     var details by rememberSaveable { mutableStateOf("") }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         modifier = Modifier.testTag("chat_report_sheet"),
     ) {
         Column(

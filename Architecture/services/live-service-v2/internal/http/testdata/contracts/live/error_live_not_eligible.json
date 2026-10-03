@@ -1,0 +1,30 @@
+{
+  "error": {
+    "code": "LIVE_NOT_ELIGIBLE",
+    "message": "you do not meet the requirements to go live yet",
+    "details": {
+      "requirements": [
+        {
+          "key": "account_age",
+          "met": false,
+          "current": 2,
+          "needed": 7,
+          "unit": "days"
+        },
+        {
+          "key": "activity",
+          "met": false,
+          "posts": {
+            "current": 1,
+            "needed": 3
+          },
+          "followers": {
+            "current": 4,
+            "needed": 10
+          }
+        }
+      ]
+    }
+  },
+  "meta": {}
+}

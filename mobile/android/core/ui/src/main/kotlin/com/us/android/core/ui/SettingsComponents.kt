@@ -179,5 +179,5 @@ fun UsSettingsSelectRow(
 @Composable
 fun usSwitchColors(): SwitchColors = SwitchDefaults.colors(
     checkedTrackColor = UsTheme.extended.chatAccent,
-    checkedThumbColor = androidx.compose.ui.graphics.Color.White,
+    checkedThumbColor = UsTheme.extended.onAccent,
 )

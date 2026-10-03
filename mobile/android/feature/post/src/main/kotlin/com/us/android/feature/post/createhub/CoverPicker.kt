@@ -40,7 +40,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -177,7 +176,7 @@ private fun FramePreview(kind: PublishKind, bitmap: Bitmap?, seeking: Boolean) {
             }
             if (seeking) {
                 CircularProgressIndicator(
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                     strokeWidth = SPINNER_STROKE,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -259,7 +258,7 @@ private fun FilmstripTimeline(
                 .width(HANDLE_WIDTH)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(UsTheme.radii.small))
-                .border(HANDLE_STROKE, Color.White, RoundedCornerShape(UsTheme.radii.small))
+                .border(HANDLE_STROKE, UsTheme.extended.onMedia, RoundedCornerShape(UsTheme.radii.small))
                 .testTag("cover-handle"),
         )
     }

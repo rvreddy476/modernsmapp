@@ -30,6 +30,8 @@ dependencies {
     implementation(projects.core.datastore)
     // The You page's own name and avatar.
     implementation(projects.core.profile)
+    // The header bell's unread count: the one Home's bell shows.
+    implementation(projects.core.notifications)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)

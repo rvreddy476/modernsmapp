@@ -1,0 +1,56 @@
+[
+  {
+    "post_id": "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1",
+    "content_type": "flick",
+    "expires_at": "2026-10-27T12:01:00Z",
+    "recheck_after_seconds": 172800,
+    "title": "Monsoon walk, my take",
+    "channel_name": "Raghu Builds",
+    "duration_ms": 28400,
+    "poster_path": "/v1/media/a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2/serve/thumb_300",
+    "media": {
+      "media_id": "a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2",
+      "variant": "480p",
+      "mime": "video/mp4",
+      "size_bytes": 6144000
+    },
+    "captions": [
+      {
+        "lang": "en",
+        "label": "English",
+        "path": "/v1/subtitles/a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2/track/en.vtt"
+      }
+    ],
+    "sound": {
+      "path": "/v1/audio/cccccccc-cccc-4ccc-8ccc-cccccccccccc/serve",
+      "mime": "audio/mp4",
+      "start_ms": 1500,
+      "original_volume": 0,
+      "overlay_volume": 1
+    }
+  },
+  {
+    "post_id": "11111111-1111-4111-8111-111111111111",
+    "content_type": "long_video",
+    "expires_at": "2026-10-27T12:00:00Z",
+    "recheck_after_seconds": 172800,
+    "title": "Friday build",
+    "channel_name": "Raghu Builds",
+    "duration_ms": 725000,
+    "poster_path": "/v1/media/55555555-5555-4555-8555-555555555555/serve",
+    "media": {
+      "media_id": "44444444-4444-4444-8444-444444444444",
+      "variant": "720p",
+      "mime": "video/mp4",
+      "size_bytes": 184320000
+    },
+    "captions": [
+      {
+        "lang": "en",
+        "label": "English",
+        "path": "/v1/subtitles/44444444-4444-4444-8444-444444444444/track/en.vtt"
+      }
+    ],
+    "sound": null
+  }
+]

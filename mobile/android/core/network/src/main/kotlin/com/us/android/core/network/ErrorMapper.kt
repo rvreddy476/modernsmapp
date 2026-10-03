@@ -2,7 +2,9 @@ package com.us.android.core.network
 
 import com.us.android.core.common.error.AppError
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import retrofit2.HttpException
 import java.io.IOException
@@ -57,7 +59,7 @@ class ErrorMapper @Inject constructor(
             // the code must survive the mapping intact.
             e.code() == HTTP_FORBIDDEN && code != null -> AppError.Forbidden(
                 code = code,
-                details = extractFieldErrors(errorBody),
+                details = extractDetails(errorBody),
                 requestId = requestId,
             )
 
@@ -91,6 +93,24 @@ class ErrorMapper @Inject constructor(
         val details = error?.details as? JsonObject ?: return emptyMap()
         return details.mapNotNull { (key, value) ->
             runCatching { key to value.jsonPrimitive.content }.getOrNull()
+        }.toMap()
+    }
+
+    /**
+     * A 403's `details`, whole (2026-10-02). A primitive is its content, as
+     * [extractFieldErrors] reads it; an array or an object is kept as its JSON
+     * TEXT, for the feature that owns the code to decode. `LIVE_NOT_ELIGIBLE`
+     * carries `details.requirements` as an array, and dropping it left the
+     * client with a refusal it could not explain.
+     */
+    private fun extractDetails(error: ApiErrorBody?): Map<String, String> {
+        val details = error?.details as? JsonObject ?: return emptyMap()
+        return details.mapNotNull { (key, value) ->
+            when (value) {
+                is JsonNull -> null
+                is JsonPrimitive -> key to value.content
+                else -> key to value.toString()
+            }
         }.toMap()
     }
 

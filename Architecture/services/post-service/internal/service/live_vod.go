@@ -147,6 +147,11 @@ func (s *Service) CreateLiveVODPost(ctx context.Context, in LiveVODInput) (*Live
 		// verdict has not landed; the transcode consumer releases it.
 		reviewStatus = "pending"
 	}
+	// AllowDownload is false (founder decision, 2 Oct 2026): a recording
+	// starts as "viewers can't save this offline", like an ordinary upload;
+	// the creator switches it on from the edit screen. The creator's own copy
+	// never needed the switch (offline_copies.go, rule 4). Migration 061 did
+	// the same for the recordings that already existed.
 	post := &postgres.Post{
 		ID:                  uuid.New(),
 		AuthorID:            in.CreatorID,
@@ -159,7 +164,7 @@ func (s *Service) CreateLiveVODPost(ctx context.Context, in LiveVODInput) (*Live
 		ShareToPostbook:     false,
 		PublishToFeed:       true,
 		AllowEmbedding:      true,
-		AllowDownload:       true,
+		AllowDownload:       false,
 		ReviewStatus:        reviewStatus,
 		Title:               title,
 		CreatedAt:           now,

@@ -37,11 +37,15 @@ import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.engagement.data.likeCountOr
+import com.us.android.core.feed.data.VideoLibraryState
 import com.us.android.core.feed.data.offersSubscribe
+import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.media.PlaybackKind
+import com.us.android.core.media.ui.CaptionsOverlay
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
@@ -49,9 +53,13 @@ import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.UsLongVideoMoreState
+import com.us.android.core.ui.UsPostDeleteState
+import com.us.android.core.ui.UsReelMoreState
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.tube.data.SeriesInfo
+import com.us.android.feature.tube.ui.collections.CollectionPickerSheet
 
 /**
  * The watch screen (Tube, 2026-09-05): the 16:9 player pinned at the top,
@@ -73,6 +81,8 @@ import com.us.android.feature.tube.data.SeriesInfo
 fun WatchScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    /** The More sheet's "Offline": the list of what this device keeps. */
+    onOpenOffline: () -> Unit,
     viewModel: WatchViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
 ) {
@@ -86,6 +96,9 @@ fun WatchScreen(
     val subscribeBusy by viewModel.subscribeBusy.collectAsStateWithLifecycle()
     val ended by viewModel.ended.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
+    val library by viewModel.library.collectAsStateWithLifecycle()
+    val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
+    val offlineState by viewModel.offlineState.collectAsStateWithLifecycle()
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     val sheets = remember { WatchSheets() }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -111,16 +124,18 @@ fun WatchScreen(
             onBack = { if (fullscreen) fullscreen = false else onBack() },
         )
     }
-    val actions = remember(viewModel, onOpenAuthor, onShare) {
+    val actions = remember(viewModel, onOpenAuthor) {
         WatchDetailsActions(
             onOpenAuthor = onOpenAuthor,
             onSubscribe = viewModel::onSubscribe,
             onUnsubscribe = viewModel::onUnsubscribe,
             onToggleNotify = viewModel::onToggleNotify,
             onReact = viewModel::onReact,
+            onDislike = viewModel::onDislike,
+            onWatchLater = viewModel::onWatchLater,
+            onAddToCollection = { sheets.collectionFor = it.id },
             onBookmark = viewModel::onBookmark,
             onComment = { sheets.commentsFor = it },
-            onShare = onShare,
             onMore = { sheets.moreFor = it },
             onOpenVideo = { viewModel.open(it.id) },
             onOpenEpisode = viewModel::open,
@@ -143,12 +158,21 @@ fun WatchScreen(
             countdown = countdown,
             ended = ended,
             overlays = overlays,
+            library = library,
             subscriptionEdges = subscriptionEdges,
             subscribeBusy = subscribeBusy,
+            offlineState = offlineState,
             viewModel = viewModel,
             actions = actions,
         )
-        UsMessageHost(message = moreMessage, onDismiss = more::dismissMessage)
+        // A refused Like, Dislike, Watch later or Save first; else what the More sheet left behind.
+        UsMessageHost(
+            message = actionMessage ?: moreMessage,
+            onDismiss = {
+                viewModel.dismissActionMessage()
+                more.dismissMessage()
+            },
+        )
     }
 
     WatchSheetsHost(
@@ -159,6 +183,8 @@ fun WatchScreen(
         overlays = overlays,
         followEdges = followEdges,
         onShare = onShare,
+        onOpenOffline = onOpenOffline,
+        onBack = onBack,
     )
 }
 
@@ -174,9 +200,12 @@ private class WatchSheets {
     var settingsOpen by mutableStateOf(false)
     var commentsFor by mutableStateOf<String?>(null)
     var moreFor by mutableStateOf<FeedItem?>(null)
+
+    /** The post the "Add to collection" sheet is open for. */
+    var collectionFor by mutableStateOf<String?>(null)
 }
 
-/** The three sheets, mounted over the screen when asked for. */
+/** The four sheets, mounted over the screen when asked for. */
 @Suppress("LongParameterList")
 @Composable
 private fun WatchSheetsHost(
@@ -187,10 +216,14 @@ private fun WatchSheetsHost(
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
     onShare: (FeedItem) -> Unit,
+    onOpenOffline: () -> Unit,
+    onBack: () -> Unit,
 ) {
     val quality by viewModel.quality.collectAsStateWithLifecycle()
     val speed by viewModel.speed.collectAsStateWithLifecycle()
     val autoplayNext by viewModel.autoplayNext.collectAsStateWithLifecycle()
+    val captions by viewModel.captions.collectAsStateWithLifecycle()
+    val captionLanguage by viewModel.captionLanguage.collectAsStateWithLifecycle()
     val trackHeights = rememberVideoHeights(viewModel.player)
     if (sheets.settingsOpen) {
         val playback = (content as? WatchContent.Ready)?.playback
@@ -199,9 +232,12 @@ private fun WatchSheetsHost(
             selectedQuality = quality,
             speed = speed,
             autoplayNext = autoplayNext,
+            captions = captions,
+            captionLanguage = captionLanguage,
             onSelectQuality = viewModel::selectQuality,
             onSelectSpeed = viewModel::selectSpeed,
             onAutoplayNextChange = viewModel::setAutoplayNext,
+            onSelectCaption = viewModel::selectCaption,
             onDismiss = { sheets.settingsOpen = false },
         )
     }
@@ -215,11 +251,40 @@ private fun WatchSheetsHost(
             followEdge = followEdges[item.author.id],
             ownUserId = viewModel.ownUserId,
             onShare = onShare,
-            onDismiss = { sheets.moreFor = null },
+            onDismiss = {
+                sheets.moreFor = null
+                // The viewer's own video was deleted from the sheet: nothing is left to watch.
+                if (more.delete.value == UsPostDeleteState.Deleted) onBack()
+            },
             viewModel = more,
             suggested = false,
             surface = AnalyticsSurface.POSTTUBE,
+            // The SAME rows as a reel's More (founder, 2026-10-02). The video
+            // group feeds Description and Quality: the caption the details
+            // show, and the ladder and the choice the gear's sheet has.
+            reel = UsReelMoreState(
+                description = item.text,
+                fullMode = false,
+                qualities = reelQualityOptions(
+                    heights = trackHeights,
+                    adaptive = (content as? WatchContent.Ready)?.playback?.kind == PlaybackKind.Hls,
+                ),
+                selected = quality,
+                shareHidden = item.controls.hideShare,
+            ),
+            onSelectQuality = viewModel::selectQuality,
+            // What makes it the long video's: the words that say "video", and the channel a block names.
+            longVideo = UsLongVideoMoreState(
+                channelName = item.creatorName,
+                shareHidden = item.controls.hideShare,
+            ),
+            // A blocked channel's video is left, as the web leaves it.
+            onBlocked = onBack,
+            onOpenOffline = onOpenOffline,
         )
+    }
+    sheets.collectionFor?.let { postId ->
+        CollectionPickerSheet(postId = postId, onDismiss = { sheets.collectionFor = null })
     }
 }
 
@@ -236,8 +301,10 @@ private fun WatchBody(
     countdown: Countdown?,
     ended: Boolean,
     overlays: Map<String, EngagementOverlay>,
+    library: VideoLibraryState,
     subscriptionEdges: Map<String, ChannelSubscription>,
     subscribeBusy: Boolean,
+    offlineState: OfflineState,
     viewModel: WatchViewModel,
     actions: WatchDetailsActions,
 ) {
@@ -272,14 +339,21 @@ private fun WatchBody(
         val item = (content as? WatchContent.Ready)?.item ?: return
         val channelId = subscribeRef(item)
         val edge = subscriptionEdges[channelId]
+        val overlay = overlays[item.id] ?: EngagementOverlay()
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("watch_details"),
         ) {
+            // An offline copy says so, and one being saved shows how far it is (2026-10-02).
+            watchOfflineStatusItem(
+                offlineCopy = (content as? WatchContent.Ready)?.offlineCopy == true,
+                entry = offlineState.copies[item.id],
+            )
             watchDetails(
                 item = item,
-                overlay = overlays[item.id] ?: EngagementOverlay(),
+                likes = overlay.likeCountOr(item.counts.likes, item.viewer.hasReacted),
+                viewer = watchViewerState(item, overlay, library),
                 subscription = WatchSubscription(
                     edge = edge,
                     offersSubscribe = offersSubscribe(viewModel.ownUserId, channelId, edge),
@@ -347,6 +421,8 @@ private fun PlayerOrState(
                     transport = transport,
                     modifier = Modifier.fillMaxSize(),
                 )
+                // The stored caption track the viewer turned on; nothing is drawn while it is off.
+                CaptionsOverlay(player = viewModel.player)
                 if (ended) EndedPoster(thumb = viewModel.thumb(content.item))
                 when {
                     countdown != null -> NextEpisodeCountdown(

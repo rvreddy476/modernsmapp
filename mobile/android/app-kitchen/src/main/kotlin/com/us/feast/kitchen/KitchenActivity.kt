@@ -19,10 +19,10 @@ class KitchenActivity : ComponentActivity() {
     lateinit var sessionStateProvider: SessionStateProvider
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Navy whatever the device's night mode, so the bars draw light glyphs.
+        // The theme follows the device's light / dark setting (2026-10-02), and so do the bars' glyphs.
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
         setContent {

@@ -16,6 +16,7 @@ import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -28,6 +29,13 @@ import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.soundRefusalMessage
 import com.us.android.core.feed.data.videoThumb
+import com.us.android.core.feed.offline.OfflineCopy
+import com.us.android.core.feed.offline.OfflineLibrary
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.playback
+import com.us.android.core.feed.offline.posterModel
+import com.us.android.core.feed.offline.soundTrack
+import com.us.android.core.feed.offline.toFeedItem
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ReelsEntry
@@ -37,6 +45,7 @@ import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.media.publish.playsInReels
+import com.us.android.core.media.sound.SoundTrack
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
@@ -226,6 +235,8 @@ class ReelsViewModel @Inject constructor(
     private val sounds: SoundsRepository,
     private val soundEntry: SoundEntry,
     private val soundStore: ReelsSoundStore,
+    /** Offline copies (2026-10-02): a stored reel plays from the device, and opens with no network. */
+    private val offline: OfflineLibrary,
     hidden: HiddenPosts,
 ) : ViewModel() {
 
@@ -381,7 +392,12 @@ class ReelsViewModel @Inject constructor(
                     _live.value = result.data
                     _entryTarget.value = postId
                 }
-                is AppResult.Failure -> Unit
+                // No network, or the post is gone from the server: a copy kept on this
+                // device still opens, from what was stored with it (2026-10-02).
+                is AppResult.Failure -> offline.playable(postId)?.let { copy ->
+                    _live.value = copy.toFeedItem()
+                    _entryTarget.value = postId
+                }
             }
         }
     }
@@ -512,14 +528,46 @@ class ReelsViewModel @Inject constructor(
      * itself — the server's `playback_url`, a ready asset's `hls_url`, a
      * processing asset's original — is [playbackFor].
      */
-    fun playback(item: FeedItem): Playback? = urlResolver.playbackFor(item)
+    fun playback(item: FeedItem): Playback? =
+        reelPlayback(storedCopy(item.id)?.playback(), urlResolver.playbackFor(item))
+
+    /**
+     * The copy of a reel that plays from the device, or null when it plays
+     * from the network.
+     *
+     * Decided ONCE per reel for this visit ([offlinePinned]): a copy that
+     * finishes saving while its reel is on screen must not swap the source
+     * under a playing reel (the pool re-prepares when a page's playback
+     * changes, and the reel would start again from the top). A copy that is
+     * removed or expires mid-visit is let go at once, and the reel goes back
+     * to the network.
+     */
+    private fun storedCopy(postId: String): OfflineCopy? {
+        val copy = offline.playable(postId)
+        val pinned = offlinePinned.getOrPut(postId) { copy != null }
+        return copy.takeIf { pinned }
+    }
+
+    /** Post id → whether its copy was on the device when the reel was first asked for. Main thread only. */
+    private val offlinePinned = mutableMapOf<String, Boolean>()
+
+    /**
+     * What the sound player is handed for [item]: the reel's added sound,
+     * from the copy stored with it when the reel plays from the device.
+     */
+    fun soundTrack(item: FeedItem): SoundTrack? =
+        reelSoundTrack(item.soundTrack(), storedCopy(item.id)?.soundTrack())
+
+    /** Where each reel's offline copy stands, for the ring while one is being saved. */
+    val offlineState: StateFlow<OfflineState> = offline.state
 
     /**
      * The still frame to show before the first video frame decodes: the
      * cover the author chose when the row carries one (the cover fix,
      * 2026-09-05), else the transcode's own still — the same rule as Tube's.
      */
-    fun posterUrl(item: FeedItem): String? = urlResolver.videoThumb(item).url
+    fun posterUrl(item: FeedItem): String? =
+        urlResolver.videoThumb(item).url ?: offline.playable(item.id)?.posterModel()
 
     // ── Engagement ──────────────────────────────────────────────────────
 
@@ -537,11 +585,38 @@ class ReelsViewModel @Inject constructor(
         // given rather than the running net.
         if (!serverReacted) recordEngagement(postId, AnalyticsEventType.LIKE)
         engagement.toggleReaction(postId, serverReacted)
+        sayIfRefused(postId, EngagementAction.REACTION)
     }
 
     fun onBookmark(postId: String, serverBookmarked: Boolean) = viewModelScope.launch {
         if (!serverBookmarked) recordEngagement(postId, AnalyticsEventType.SAVE)
         engagement.toggleBookmark(postId, serverBookmarked)
+        sayIfRefused(postId, EngagementAction.BOOKMARK)
+    }
+
+    private val _engagementMessage = MutableStateFlow<UsMessage?>(null)
+
+    /**
+     * A like or a save the server refused, in one line over the reel
+     * (2026-10-02). The store has already put the rail's glyph back; before
+     * this the rollback was silent, so a failed Save read as a button that
+     * did nothing. Nothing else on this screen showed the store's failures.
+     */
+    val engagementMessage: StateFlow<UsMessage?> = _engagementMessage.asStateFlow()
+
+    fun dismissEngagementMessage() {
+        _engagementMessage.value = null
+    }
+
+    /**
+     * Called once the store's write has settled. The failure is taken off
+     * the shared list as it is said, so the Home feed's failure bar does not
+     * show a reel's refusal later.
+     */
+    private fun sayIfRefused(postId: String, action: EngagementAction) {
+        if (engagement.failures.value.none { it.postId == postId && it.action == action }) return
+        _engagementMessage.value = UsMessage(reelEngagementRefusal(action))
+        engagement.clearFailure(postId, action)
     }
 
     /** Recorded AFTER the chooser was launched; a failed count is not the viewer's problem. */
@@ -719,4 +794,11 @@ class ReelsViewModel @Inject constructor(
         const val LIVE_FETCH_ATTEMPTS = 3
         const val LIVE_FETCH_RETRY_MILLIS = 1_000L
     }
+}
+
+/** What the reel says when a rail action was refused: the action, never the transport. */
+fun reelEngagementRefusal(action: EngagementAction): String = when (action) {
+    EngagementAction.REACTION -> "Couldn't save your like. Try again."
+    EngagementAction.BOOKMARK -> "Couldn't save this reel. Try again."
+    EngagementAction.REPOST -> "Couldn't repost that. Try again."
 }

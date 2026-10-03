@@ -35,7 +35,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
@@ -115,16 +114,16 @@ fun CreateSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         // The handle is drawn inside the content so it sits under the rim
         // highlight rather than above it.
         dragHandle = null,
         modifier = Modifier.testTag("create-sheet"),
     ) {
-        val rim = Color.White.copy(alpha = RIM_ALPHA)
+        val rim = UsTheme.extended.glassBorder
         val rimWidth = with(LocalDensity.current) { HAIRLINE.toPx() }
         Column(
             modifier = Modifier
@@ -263,7 +262,7 @@ private fun CreateTile(surface: CreateSurface, onClick: () -> Unit, modifier: Mo
             }
             .height(TILE_HEIGHT)
             .clip(shape)
-            .background(Color.White.copy(alpha = TILE_FILL_ALPHA))
+            .background(UsTheme.extended.bgCard)
             .border(HAIRLINE, UsTheme.extended.borderSubtle, shape)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .semantics {
@@ -300,7 +299,7 @@ private fun GoLiveRow(onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
-            .background(Color.White.copy(alpha = TILE_FILL_ALPHA))
+            .background(UsTheme.extended.bgCard)
             .border(HAIRLINE, UsTheme.extended.borderSubtle, shape)
             .clickable(onClick = onClick)
             .padding(horizontal = LIVE_PADDING_H, vertical = LIVE_PADDING_V)
@@ -405,10 +404,7 @@ private val CreateSurface.icon: ImageVector
 // ── Metrics ─────────────────────────────────────────────────────────────
 
 private const val COLUMNS = 4
-private const val SCRIM_ALPHA = 0.55f
-private const val RIM_ALPHA = 0.08f
 private const val HANDLE_ALPHA = 0.35f
-private const val TILE_FILL_ALPHA = 0.04f
 private const val BADGE_FILL_ALPHA = 0.18f
 private const val PRESS_SCALE = 0.95f
 private const val PRESS_STIFFNESS = 900f

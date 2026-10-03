@@ -185,3 +185,28 @@ func TestContentDispositionAttachmentIsHeaderSafe(t *testing.T) {
 		t.Fatalf("empty name: %s", got)
 	}
 }
+
+// Playback is not a download: the URL the /serve routes redirect to is
+// signed by SignProtected, which never carries a disposition. Only the
+// download route's signature does, and the two cannot be confused because
+// the disposition is inside what is signed.
+func TestPlaybackSignatureNeverCarriesADisposition(t *testing.T) {
+	s := gateSigner(t)
+	now := time.Unix(1_700_000_000, 0)
+	play, err := s.SignProtected("uploads/u1/m1/720p", MaxProtectedTTL, now)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if strings.Contains(strings.ToLower(play), "disposition") || strings.Contains(strings.ToLower(play), "attachment") {
+		t.Fatalf("a playback URL is marked as an attachment: %s", play)
+	}
+	download, err := s.SignProtectedDownload("uploads/u1/m1/720p", MaxProtectedTTL, now, "m1.mp4")
+	if err != nil {
+		t.Fatalf("sign download: %v", err)
+	}
+	pu, _ := url.Parse(play)
+	du, _ := url.Parse(download)
+	if pu.Query().Get("Signature") == du.Query().Get("Signature") {
+		t.Fatal("the attachment URL and the playback URL share a signature: the disposition is not signed")
+	}
+}

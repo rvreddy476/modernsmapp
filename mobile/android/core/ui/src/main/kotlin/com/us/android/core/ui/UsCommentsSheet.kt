@@ -44,7 +44,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
@@ -105,10 +104,10 @@ fun UsCommentsSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         // Drawn inside the content, in the Create sheet's proportions, rather
         // than Material's default pill.
         dragHandle = null,
@@ -537,7 +536,7 @@ private fun SendButton(enabled: Boolean, onClick: () -> Unit) {
         Icon(
             imageVector = UsIcons.Send,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.onAccent,
             modifier = Modifier.size(SEND_ICON_SIZE),
         )
     }
@@ -595,7 +594,6 @@ private const val CODE_COMMENTS_RESTRICTED = "COMMENTS_RESTRICTED"
 
 /** The sheet's share of the window: the post stays visible above it. */
 private const val SHEET_HEIGHT_FRACTION = 0.66f
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private const val PRESS_SCALE = 0.85f
 private const val PRESS_STIFFNESS = 1200f

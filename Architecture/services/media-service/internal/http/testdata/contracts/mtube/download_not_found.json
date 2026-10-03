@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Media not found"
+  },
+  "meta": {}
+}

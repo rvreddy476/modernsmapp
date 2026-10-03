@@ -53,6 +53,10 @@ func parseMediaAccessViewer(raw string) (uuid.UUID, bool) {
 type mediaAccessRequest struct {
 	ViewerID string `json:"viewer_id"`
 	MediaID  string `json:"media_id"`
+	// Purpose is optional. "poster" (service.MediaAccessPurposePoster) is a
+	// read of a thumbnail still, which a members-only post shows a signed-in
+	// non-member; anything else, and its absence, is playback.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 type mediaAccessResponse struct {
@@ -142,7 +146,7 @@ func (h *Handler) MediaAccess(c *gin.Context) {
 		return
 	}
 
-	res, err := h.svc.ViewerMayAccessMedia(c.Request.Context(), viewerID, mediaID)
+	res, err := h.svc.ViewerMayAccessMediaFor(c.Request.Context(), viewerID, mediaID, strings.TrimSpace(req.Purpose))
 	if err != nil {
 		if errors.Is(err, service.ErrStoryPolicyUnresolved) {
 			// Unresolved, not denied. The caller must retry rather than cache

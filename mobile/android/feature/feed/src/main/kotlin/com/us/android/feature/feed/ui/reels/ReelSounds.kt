@@ -2,6 +2,7 @@ package com.us.android.feature.feed.ui.reels
 
 import com.us.android.core.feed.data.originalSoundLabel
 import com.us.android.core.media.ChosenSound
+import com.us.android.core.media.Playback
 import com.us.android.core.media.sound.SoundMix
 import com.us.android.core.media.sound.SoundTrack
 import com.us.android.core.model.FeedItem
@@ -102,3 +103,18 @@ fun reelHashtags(item: FeedItem): List<String> = item.hashtags
  * once, as the caption.
  */
 fun reelTitle(item: FeedItem): String? = item.title.trim().takeIf { it.isNotEmpty() && it != item.text.trim() }
+
+/**
+ * What a reel's page plays (offline copies, 2026-10-02): the copy stored on
+ * the device when there is one, the network's rendition otherwise.
+ */
+fun reelPlayback(stored: Playback?, network: Playback?): Playback? = stored ?: network
+
+/**
+ * The sound a reel's page plays beside its video. The reel decides WHETHER
+ * a sound plays ([fromItem]: the row's own, null when it has none or the
+ * server withheld it); a copy stored with the reel only changes WHERE it is
+ * read from, and keeps the row's sound id for the sound line.
+ */
+fun reelSoundTrack(fromItem: SoundTrack?, stored: SoundTrack?): SoundTrack? =
+    fromItem?.copy(stored = stored?.stored)

@@ -19,7 +19,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -111,7 +110,7 @@ private fun RequestsDoor(count: Int, onClick: () -> Unit) {
             Icon(
                 imageVector = UsIcons.UserPlus,
                 contentDescription = null,
-                tint = Color.White,
+                tint = UsTheme.extended.onAccent,
                 modifier = Modifier.size(DOOR_GLYPH)
             )
         }

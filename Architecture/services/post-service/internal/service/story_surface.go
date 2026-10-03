@@ -287,6 +287,19 @@ func EvaluateMediaAccessFacts(viewerID, uploaderID uuid.UUID, processingStatus, 
 // 2): stories have no anonymous reading, a channel avatar is public, and a
 // post plays only under anonymousMayAccessPost (media_access.go).
 func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (MediaAccessResult, error) {
+	return s.ViewerMayAccessMediaFor(ctx, viewerID, mediaID, "")
+}
+
+// ViewerMayAccessMediaFor is ViewerMayAccessMedia for a read that says what
+// it is for. purpose MediaAccessPurposePoster is a thumbnail still of the
+// asset: the one thing a members-only post shows a signed-in viewer who is
+// not a member (the join card's poster). Every other purpose is playback and
+// answers to the membership clause; a signed-out viewer is refused a
+// members-only post's media whatever the purpose.
+//
+// A members-only asset whose membership lookup did not answer is refused
+// with ErrStoryPolicyUnresolved (503 on the wire): retryable, never cached.
+func (s *Service) ViewerMayAccessMediaFor(ctx context.Context, viewerID, mediaID uuid.UUID, purpose string) (MediaAccessResult, error) {
 	if mediaID == uuid.Nil {
 		return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "nil_id"}, nil
 	}
@@ -355,12 +368,21 @@ func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uu
 		}
 	}
 
-	postVisible, err := s.viewerMayAccessPostMedia(ctx, viewerID, mediaID)
+	answer, err := s.viewerMayAccessPostMedia(ctx, viewerID, mediaID, purpose == MediaAccessPurposePoster)
 	if err != nil {
 		return MediaAccessResult{}, err
 	}
-	if postVisible {
+	switch answer {
+	case postMediaPlays:
 		return postMediaVerdict(ctx, viewerID, mediaID, facts.ProcessingStatus), nil
+	case postMediaMembersOnly:
+		return membersOnlyDenied(ctx, viewerID, mediaID), nil
+	case postMediaMembershipUnresolved:
+		slog.WarnContext(ctx, "media access unresolved: membership lookup did not answer",
+			"viewer_id", viewerID,
+			"media_id", mediaID,
+			"reason", "membership_unresolved")
+		return MediaAccessResult{}, fmt.Errorf("%w: membership lookup did not answer", ErrStoryPolicyUnresolved)
 	}
 	return noVisibleContent(ctx, viewerID, mediaID), nil
 }
@@ -414,7 +436,7 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 	}
 	// One resolution of the account gate, relationships, shares and age for
 	// the whole page.
-	judge, err := s.postMediaJudge(ctx, viewerID, candidates)
+	decision, err := s.postMediaDecisions(ctx, viewerID, candidates)
 	if err != nil {
 		return nil, err
 	}
@@ -495,18 +517,22 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 			}
 		}
 
-		postAllowed := false
+		// A page has no variant to name, so nothing here is a poster read;
+		// a cover is still recognised as a cover (postCoverOnly).
+		carrying := make([]*postgres.Post, 0, len(postIDsByMedia[mediaID]))
 		for _, postID := range postIDsByMedia[mediaID] {
-			if judge(postsByID[postID]) {
-				postAllowed = true
-				break
-			}
+			carrying = append(carrying, postsByID[postID])
 		}
-		if postAllowed {
+		switch decision.judgePostMedia(carrying, mediaID, false) {
+		case postMediaPlays:
 			results[mediaID] = postMediaVerdict(ctx, viewerID, mediaID, facts.ProcessingStatus)
-			continue
+		case postMediaMembersOnly:
+			results[mediaID] = membersOnlyDenied(ctx, viewerID, mediaID)
+		case postMediaMembershipUnresolved:
+			results[mediaID] = membershipUnresolvedDenied(ctx, viewerID, mediaID)
+		default:
+			results[mediaID] = noVisibleContent(ctx, viewerID, mediaID)
 		}
-		results[mediaID] = noVisibleContent(ctx, viewerID, mediaID)
 	}
 	return results, nil
 }

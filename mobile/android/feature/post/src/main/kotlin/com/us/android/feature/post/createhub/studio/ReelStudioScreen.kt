@@ -40,7 +40,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -130,7 +129,7 @@ internal fun ReelStudioScreen(
                 modifier = Modifier.weight(1f),
             )
             edit == null -> Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color.White, strokeWidth = SPINNER_STROKE)
+                CircularProgressIndicator(color = UsTheme.extended.textPrimary, strokeWidth = SPINNER_STROKE)
             }
             else -> StudioBody(edit = edit, state = state, actions = actions)
         }
@@ -245,7 +244,7 @@ private fun StudioPreview(
                 .fillMaxSize()
                 .aspectRatio(ReelFrame.ASPECT, matchHeightConstraintsFirst = true)
                 .clip(shape)
-                .background(Color.Black)
+                .background(UsTheme.extended.stage)
                 .testTag("studio-preview"),
         ) {
             val density = LocalDensity.current
@@ -266,7 +265,7 @@ private fun StudioPreview(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = FIT_DIM)),
+                        .background(UsTheme.extended.stage.copy(alpha = FIT_DIM)),
                 )
             }
             AndroidView(
@@ -298,7 +297,7 @@ private fun StudioPreview(
                 Icon(
                     imageVector = UsIcons.Play,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = UsTheme.extended.onMedia,
                     modifier = Modifier
                         .align(Alignment.Center)
                         .size(PLAY_GLYPH),
@@ -372,6 +371,10 @@ private fun TextPillOverlay(
     val textSize = with(density) { (boxW * PILL_TEXT_FRACTION).toSp() }
     val latestMove by rememberUpdatedState(onMove)
     val latestPill by rememberUpdatedState(pill)
+    // The creator's content, burned into the video: not themed. The exporter paints the same two.
+    val white = pill.style == TextPillStyle.WHITE
+    val pillFill = if (white) UsTheme.extended.pillWhite else UsTheme.extended.pillNavy
+    val pillInk = if (white) UsTheme.extended.pillNavy else UsTheme.extended.pillWhite
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -380,7 +383,7 @@ private fun TextPillOverlay(
                 // Centre the pill on its point: the layout's own size is only known after measure.
                 .then(CentreOnPoint)
                 .clip(CircleShape)
-                .background(if (pill.style == TextPillStyle.WHITE) Color.White else UsTheme.extended.brandNavy)
+                .background(pillFill)
                 .pointerInput(draggable, boxW, boxH) {
                     if (!draggable) return@pointerInput
                     detectDragGestures { change, drag ->
@@ -397,7 +400,7 @@ private fun TextPillOverlay(
                 text = pill.text,
                 style = MaterialTheme.typography.titleMedium.copy(fontSize = textSize),
                 fontWeight = FontWeight.Bold,
-                color = if (pill.style == TextPillStyle.WHITE) UsTheme.extended.brandNavy else Color.White,
+                color = pillInk,
                 maxLines = 1,
             )
         }
@@ -431,7 +434,7 @@ private fun ToolRail(selected: StudioTool, onSelect: (StudioTool) -> Unit) {
 @Composable
 private fun ToolTab(tool: StudioTool, selected: Boolean, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
-    val tint = if (selected) Color.White else UsTheme.extended.textMuted
+    val tint = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.textMuted
     Column(
         modifier = Modifier
             .clip(RoundedCornerShape(UsTheme.radii.medium))

@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,12 +49,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsBadgedIcon
+import com.us.android.core.designsystem.component.UsHeaderCorner
+import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.usNotificationsDescription
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.icon.VIDEO_MARK_BODY
 import com.us.android.core.designsystem.icon.VIDEO_MARK_PLAY
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
+import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.ui.home.TubeChip
 
@@ -67,7 +75,7 @@ import com.us.android.feature.tube.ui.home.TubeChip
  * every Tube route is a pushed screen, not a tab root, so this bar is the
  * only one on screen.
  *
- * The header's More (≡) opens [TubeMenuSheet] over the page — the frame
+ * The header's More (⋮) opens [TubeMenuSheet] over the page — the frame
  * owns that state, so every page gets the same sheet from the same glyph
  * and none has to mount it — and a "Create your channel" row from it
  * opens the create sheet once the menu has left.
@@ -81,17 +89,22 @@ fun TubePage(
     selected: TubeTab?,
     destinations: TubeDestinations,
     onBack: (() -> Unit)? = null,
+    // The same count Home's bell shows: one singleton behind both, refreshed when the page appears.
+    badge: UnreadBadgeViewModel = hiltViewModel(),
     content: @Composable (PaddingValues) -> Unit,
 ) {
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var createOpen by rememberSaveable { mutableStateOf(false) }
+    val unread by badge.count.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { badge.refresh() }
     UsScaffold(
         applyPageGutter = false,
         topBar = {
             TubeHeader(
+                unreadCount = unread,
                 onOpenMenu = { menuOpen = true },
                 onOpenSearch = destinations.onOpenSearch,
-                onCreate = destinations.onCreateVideo,
+                onOpenNotifications = destinations.onOpenNotifications,
                 onBack = onBack,
             )
         },
@@ -129,29 +142,28 @@ fun TubePage(
  * Tube's header (founder, 2026-09-05): the video mark — Momentum's
  * camera-and-play glyph on a raised tile, no name yet ("remove the name,
  * we think of a better one later") — on the left, and at the right corner
- * the create "+", the More hamburger and Search, in the same Material bar
- * so the glyphs sit at the same size and spacing. No bell and no avatar
- * (You is on the bar), and no search pill under it: the glyph is the one
- * way into search. [onBack] adds the back glyph before the mark on a page
- * pushed inside Tube; Tube's own roots have none, the system Back is the
- * way out.
+ * Search, the bell, then the three-dots More, in the same Material bar so
+ * the glyphs sit at the same size and spacing. No avatar (You is on the
+ * bar), and no search pill under it: the glyph is the one way into search.
+ * [onBack] adds the back glyph before the mark on a page pushed inside
+ * Tube; Tube's own roots have none, the system Back is the way out.
  *
- * ## WHY THE "+" IS UP HERE (founder, 2026-09-06)
+ * ## THE CORNER (founder, 2026-10-02)
  *
- * "When in Tube, at the top give a plus button to create new videos."
- * Tube's create affordance existed already — but only as the unlabelled
- * raised tile in the MIDDLE OF THE BOTTOM BAR, identical to the shell's,
- * which reads as the app's create rather than "post a video here", and is
- * the last place a reader looks for it. So the same action is offered at
- * the top, on a raised tile of its own so it reads as a button rather than
- * a third grey glyph. The bar's tile stays: both open the same sheet.
+ * Search, Notifications, then More at the corner, the same as every page
+ * but Home: the corner is drawn from [UsHeaderCorner]. It was "+", the
+ * hamburger, Search. The "+" (added 2026-09-06) is gone: Create is the
+ * bar's centre tile, which opens the same sheet, and a second one up here
+ * only duplicated it. The bell carries [unreadCount], the count Home's bell
+ * shows, and opens the notification list the menu's row opens.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TubeHeader(
+    unreadCount: Int,
     onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
-    onCreate: () -> Unit,
+    onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
 ) {
@@ -163,9 +175,31 @@ fun TubeHeader(
             }
         },
         actions = {
-            HeaderCreate(onClick = onCreate)
-            HeaderAction(icon = UsIcons.Menu, description = "More", onClick = onOpenMenu, tag = "tube_menu")
-            HeaderAction(icon = UsIcons.Search, description = "Search", onClick = onOpenSearch, tag = "tube_search")
+            UsHeaderCorner.forEach { action ->
+                when (action) {
+                    UsHeaderCornerAction.SEARCH -> HeaderAction(
+                        icon = action.icon,
+                        description = action.description,
+                        onClick = onOpenSearch,
+                        tag = "tube_search",
+                    )
+                    UsHeaderCornerAction.NOTIFICATIONS -> HeaderAction(
+                        icon = action.icon,
+                        description = usNotificationsDescription(unreadCount),
+                        onClick = onOpenNotifications,
+                        tag = "tube_notifications",
+                        badge = unreadCount,
+                    )
+                    // Home's alone; the standard corner never carries it.
+                    UsHeaderCornerAction.MESSAGES -> Unit
+                    UsHeaderCornerAction.MORE -> HeaderAction(
+                        icon = action.icon,
+                        description = action.description,
+                        onClick = onOpenMenu,
+                        tag = "tube_menu",
+                    )
+                }
+            }
         },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = Color.Transparent,
@@ -176,46 +210,24 @@ fun TubeHeader(
 }
 
 /**
- * The header's "+": the plus on a raised tile with a hairline glass edge —
- * the wordmark badge's idiom, so it reads as a control and not as another
- * bare glyph beside More and Search. Same 48dp target as its neighbours.
+ * One of the header's glyphs: a 48dp target, the icon in white, no ripple — a dip on press.
+ * [badge] is the bell's unread count; zero draws the bare icon.
  */
 @Composable
-private fun HeaderCreate(onClick: () -> Unit) {
-    val shape = RoundedCornerShape(CREATE_RADIUS)
-    HeaderGlyph(
-        onClick = onClick,
-        description = "Create video",
-        size = ACTION_TARGET,
-        modifier = Modifier.testTag("tube_create"),
-    ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(CREATE_TILE)
-                .background(UsTheme.extended.bgRaised, shape)
-                .border(BADGE_HAIRLINE, UsTheme.extended.glassBorder, shape),
-        ) {
-            Icon(
-                imageVector = UsIcons.Create,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(CREATE_GLYPH),
-            )
-        }
-    }
-}
-
-/** One of the header's glyphs: a 48dp target, the icon in white, no ripple — a dip on press. */
-@Composable
-private fun HeaderAction(icon: ImageVector, description: String, onClick: () -> Unit, tag: String) {
+private fun HeaderAction(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    tag: String,
+    badge: Int = 0,
+) {
     HeaderGlyph(
         onClick = onClick,
         description = description,
         size = ACTION_TARGET,
         modifier = Modifier.testTag(tag),
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = Color.White)
+        UsBadgedIcon(icon = icon, count = badge, tint = UsTheme.extended.textPrimary)
     }
 }
 
@@ -259,6 +271,8 @@ internal fun TubeWordmark(modifier: Modifier = Modifier) {
 @Composable
 private fun VideoMark(modifier: Modifier = Modifier) {
     val launcher = UsTheme.extended.launcher
+    // The mark is drawn in the text colour, so it reads on either theme's header.
+    val ink = UsTheme.extended.textPrimary
     val sweep = Brush.linearGradient(listOf(launcher.chat.glow, launcher.shop.glow))
     val body = remember { PathParser().parsePathString(VIDEO_MARK_BODY).toPath() }
     val play = remember { PathParser().parsePathString(VIDEO_MARK_PLAY).toPath() }
@@ -267,7 +281,7 @@ private fun VideoMark(modifier: Modifier = Modifier) {
         scale(scaleX = s, scaleY = s, pivot = Offset.Zero) {
             drawPath(
                 path = body,
-                color = Color.White,
+                color = ink,
                 style = Stroke(width = MARK_STROKE, cap = StrokeCap.Round, join = StrokeJoin.Round),
             )
             drawPath(path = play, brush = sweep)
@@ -328,8 +342,8 @@ fun TubeChipRail(
 @Composable
 private fun TubeChipPill(chip: TubeChip, active: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(UsTheme.radii.full)
-    val fill = if (active) Color.White else UsTheme.extended.glassBg
-    val outline = if (active) Color.White else UsTheme.extended.glassBorder
+    val fill = if (active) UsTheme.extended.textPrimary else UsTheme.extended.glassBg
+    val outline = if (active) UsTheme.extended.textPrimary else UsTheme.extended.glassBorder
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -349,7 +363,7 @@ private fun TubeChipPill(chip: TubeChip, active: Boolean, onClick: () -> Unit) {
             style = MaterialTheme.typography.labelLarge,
             fontSize = CHIP_TEXT,
             fontWeight = FontWeight.SemiBold,
-            color = if (active) UsTheme.extended.brandNavy else UsTheme.extended.textPrimary,
+            color = if (active) UsTheme.extended.bgCardSolid else UsTheme.extended.textPrimary,
             maxLines = 1,
         )
     }
@@ -361,9 +375,6 @@ private val BADGE_SIZE = 36.dp
 private val BADGE_RADIUS = 11.dp
 private val BADGE_HAIRLINE = 1.dp
 private val BADGE_GLYPH = 24.dp
-private val CREATE_TILE = 32.dp
-private val CREATE_RADIUS = 10.dp
-private val CREATE_GLYPH = 20.dp
 private val GLYPH_TARGET = 40.dp
 
 /** The Reels header's target: Material's icon button, 48dp around a 24dp glyph. */

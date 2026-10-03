@@ -280,7 +280,7 @@ private fun FollowRequestsPanel(count: Int, hasUnread: Boolean, onClick: () -> U
             Icon(
                 imageVector = UsIcons.Requests,
                 contentDescription = null,
-                tint = Color.White,
+                tint = UsTheme.extended.onAccent,
                 modifier = Modifier.size(ROW_BADGE_GLYPH),
             )
         }
@@ -575,7 +575,7 @@ private fun MissedCallBadge() {
         modifier = Modifier
             .size(UsAvatarSize.Post.diameter)
             .clip(CircleShape)
-            .background(MISSED_CALL_BAND),
+            .background(UsTheme.extended.statusDanger.copy(alpha = MISSED_CALL_BAND_ALPHA)),
     ) {
         Icon(
             imageVector = UsIcons.Phone,
@@ -681,6 +681,5 @@ private val SECTION_SIZE = 14.sp
 private val PANEL_TITLE_SIZE = 14.sp
 private val PANEL_SUBTITLE_SIZE = 12.sp
 
-/** The red-tinted badge fill behind a missed call. */
-@Suppress("MagicNumber")
-private val MISSED_CALL_BAND = Color(0x1FFF3B30)
+/** How much of the danger colour the badge fill behind a missed call is. */
+private const val MISSED_CALL_BAND_ALPHA = 0.12f

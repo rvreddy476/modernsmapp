@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -24,72 +25,112 @@ data class UsExtendedColors(
     val textDim: Color,
     val textDimmest: Color,
     val textGhost: Color,
+    /** The text colour at 4% and 6%: a quiet wash under a tile or a pressed row. */
     val bgCard: Color,
     val bgCardHover: Color,
     /**
-     * Momentum: the SOLID card surface (`#0B1B2E`) and its canvas
-     * (`#041122`), plus the body-text step the feed card uses between
-     * textPrimary and textMuted.
+     * The SOLID card surface (the web's `brand-card`: white, black on dark)
+     * and the page behind it (the web's `canvas`), plus the body-text step
+     * the feed card uses between textPrimary and textMuted.
      */
     val bgCardSolid: Color,
     val bgCanvas: Color,
     val textBody: Color,
     val borderSubtle: Color,
+    /** The web's one border (`brand-divider`). */
     val borderMedium: Color,
     val glassBg: Color,
     val glassBorder: Color,
-    /** The "at" logo square and its glyph — white/black dark, cream/ink light. */
+    /** The legacy "at" logo square and its glyph. */
     val brandChip: Color,
     val onBrandChip: Color,
     /** Chat's green identity: outgoing bubbles, send, unread badges. */
     val chatAccent: Color,
     val chatOnline: Color,
+    /** Presence: the web's success. */
     val onlineGreen: Color,
+    /** A lit like, a live mark and a destructive row: the web's danger. */
     val liveRed: Color,
     val statusWarning: Color,
     val statusSuccess: Color,
     /**
      * Destructive and blocking copy: "Remove", "Cancel order", a form's
-     * failure line, a stock warning that stops a sale.
+     * failure line, a stock warning that stops a sale. The web's danger.
      *
      * Its own token rather than `MaterialTheme.colorScheme.error`, because a
      * feature reaching into an M3 slot for a brand colour is how the palette
-     * drifts — and because ember is reserved for PRIMARY actions, so a
-     * destructive one must not borrow it. Shared across themes, like the
-     * other status colours: danger does not invert.
+     * drifts.
      */
     val statusDanger: Color,
+    /** The web's info: a neutral notice. */
+    val statusInfo: Color,
+    /**
+     * A label or glyph ON a status fill (a success pill, a danger badge): the
+     * web's `on-primary`, white on light and ink on dark, where the status
+     * colours are bright.
+     */
+    val onStatus: Color,
     val postbookGradient: Brush,
     val postgramGradient: Brush,
     val posttubeGradient: Brush,
     val storyRingGradient: Brush,
-    /** Momentum's orange→red accent gradient. The CTA fill, and every other gradient use. */
-    val ctaGradient: Brush,
     /**
-     * The unread/highlight row surface (Momentum: `#072440` dark, `#FFF4EC`
-     * light) — notification and message rows sit on this while unread.
+     * The fill of a primary button, as a brush: [accentStrong], flat.
+     *
+     * It was Momentum's orange to red gradient. The web's primary button is a
+     * flat fill of the ink; its one gradient (`bg-primary-grad`, lift to
+     * deep) is NOT ported, because white on its light stop is 2.6:1. The name
+     * and the type are kept so every caller keeps compiling.
      */
+    val ctaGradient: Brush,
+    /** An unread or selected row: the web's `brand-tint`. */
     val unreadRow: Color,
     /**
-     * Momentum's solid accent orange (`#FB923C`), for the places the design
-     * uses a flat colour rather than the gradient: the active tab label and
-     * icon, and header text links like "Mark all read".
+     * The accent where it is READ: a lit tab's label and glyph, a text link
+     * like "Mark all read". The web's `brand-ink`, which clears 4.5:1 on the
+     * ground in both themes. (Named "solid" from when it was the flat end of
+     * the ember gradient.)
      */
     val accentSolid: Color,
-    /**
-     * The deep end of the accent gradient (`#DC2626`): the create button's
-     * drop shadow and the count inside the header's white badge.
-     */
+    /** The fill while pressed, and the deeper stop where one is wanted: the web's `brand-ink-hover`. */
     val accentDeep: Color,
     /**
-     * Brand navy for text ON a white control — the Follow button. A step
-     * lighter than the ground so it reads as navy blue, not black, on white
-     * (founder, 2026-09-05). Identical in both themes: it is a brand colour,
-     * not a surface.
+     * The brand accent itself (the web's `brand-accent`): a ring, a border, a
+     * glyph, a focus outline. NOT for text: it is 4.06:1 on the light ground.
+     */
+    val accent: Color,
+    /**
+     * What a FILLED control sits on, under [onAccent]. White on it clears
+     * 4.5:1 in both themes; see `UsColorTokens` for why the dark value is the
+     * web's deeper stop rather than its ink.
+     */
+    val accentStrong: Color,
+    /** The label on [accentStrong]: white, in both themes. */
+    val onAccent: Color,
+    /** An accent-coloured outline: the web's `brand-outline`. */
+    val accentOutline: Color,
+    /** The keyboard-focus ring: the web outlines focus in `brand-accent`. */
+    val focusRing: Color,
+    /**
+     * Ink for text ON A WHITE control, and the deep fill some tiles use: the
+     * web's deep cerulean (`brand-ink-hover` on light), a visible blue rather
+     * than black, 7:1 against white. Identical in both themes, because the
+     * white control it sits on is white in both. (It was Momentum's navy,
+     * and keeps the name for its callers.)
      */
     val brandNavy: Color,
-    /** The raised inline-panel surface (`#071D33` dark, `#EEF3F9` light). */
+    /** The sunken or raised inline surface: the web's `brand-secondary`. */
     val bgRaised: Color,
+    /** The text colour at 6% and 12%: a pill's fill, and the same pill lit or pressed (the web's `/ .06`, `/ .12`). */
+    val fillSubtle: Color,
+    val fillStrong: Color,
+    /** What a sheet or a dialog dims the page with. The same in both themes. */
+    val scrim: Color,
+    /**
+     * What is behind a video (the web's `reel-stage`), the same in BOTH
+     * themes: a player's letterbox, the reel's page, the fullscreen ground.
+     */
+    val stage: Color,
     /**
      * Text and glyphs drawn OVER media, on its scrim: a reel's title, its
      * hashtags and its sound line (2026-09-30). White in both themes — what is
@@ -99,6 +140,45 @@ data class UsExtendedColors(
      */
     val onMedia: Color,
     val onMediaMuted: Color,
+    /**
+     * Over media, like [onMedia], and fixed in both themes for the same
+     * reason (2026-10-02): the dark plate behind a glyph or a short label on
+     * a photo, the hairline round it, a progress track, and the dimmed white
+     * of a disabled or unselected label on the stage.
+     */
+    val mediaPlate: Color,
+    val mediaRim: Color,
+    val mediaTrack: Color,
+    val onMediaDim: Color,
+    /** The glyph on a per-type tile gradient (Create, the launcher): white in both themes, as the tile is. */
+    val onTile: Color,
+    /**
+     * A SELECTED pill and its label: the web's inverse highlight
+     * (`brand-highlight` under `brand-bg`), ink on the light theme and
+     * near-white on the dark one. It replaces the white pill with
+     * [brandNavy] text, which was white on white on the light theme.
+     */
+    val selectedPill: Color,
+    val onSelectedPill: Color,
+    /**
+     * What a sheet, a dialog or a menu is made of: the card on light, the
+     * RAISED surface on dark, where the card is as black as the page.
+     * Material's `surfaceContainer*` roles carry the same value, so a
+     * Material sheet that names no colour gets it too.
+     */
+    val bgSheet: Color,
+    /** Chat's green where it is READ (an unread time, a link): 4.5:1 on the ground in each theme. */
+    val chatAccentText: Color,
+    /** The glyph or count drawn ON [chatAccent]: dark ink, in both themes. */
+    val onChatAccent: Color,
+    /** The reel studio's text pill, as it is burned into the video: see [UsContentColors]. Not themed. */
+    val pillNavy: Color,
+    val pillWhite: Color,
+    /** Your own chat bubble and its ink: a brand identity, the same in both themes. */
+    val chatBubbleOwn: Color,
+    val onChatBubbleOwn: Color,
+    /** Per-sender name colours in a group thread, readable on the incoming bubble of each theme. */
+    val chatSenders: List<Color>,
     /** The Create sheet's per-type circle gradients. See [UsCreateColors]. */
     val create: UsCreateColors,
     /** The Explore launcher's per-app tile gradients. See [UsLauncherColors]. */
@@ -206,48 +286,76 @@ internal val LocalUsRadii = staticCompositionLocalOf { UsRadii() }
 internal val LocalUsSpacing = staticCompositionLocalOf { UsSpacing() }
 
 /**
- * Momentum's brand identity: the centre create button, primary pills, avatar
- * rings, the unread dot and the Text/Go Live create circles all pull from
- * this one gradient. Declared BEFORE the palettes that read it — top-level
- * properties initialise in file order.
+ * Ember, orange to red: the colour of the Text and Go Live create tiles and
+ * of the launcher's Live tile. It was the whole app's accent under Momentum;
+ * it is now only these tiles' own identity.
  */
 private val EmberGradient: Brush = Brush.horizontalGradient(
-    listOf(UsColorTokens.AccentOrange, UsColorTokens.AccentRed),
+    listOf(UsColorTokens.CreateEmberLight, UsColorTokens.CreateEmberDeep),
 )
 
 /** A create tile: light at the top, deep at the bottom, glowing in the deep. */
 private fun createSwatch(light: Color, deep: Color): UsCreateSwatch =
     UsCreateSwatch(brush = Brush.verticalGradient(listOf(light, deep)), glow = deep)
 
-/** Ember for Text and Live: the accent brush, glowing in the accent red. */
-private val EmberSwatch = UsCreateSwatch(brush = EmberGradient, glow = UsColorTokens.AccentRed)
+/** Ember for Text and Live, glowing in its deep end. */
+private val EmberSwatch = UsCreateSwatch(brush = EmberGradient, glow = UsColorTokens.CreateEmberDeep)
 
+/** The per-type tiles: identities of their own, the same in both themes. */
+private val CreateColors = UsCreateColors(
+    text = EmberSwatch,
+    photo = createSwatch(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
+    reel = createSwatch(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
+    audio = createSwatch(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
+    poll = createSwatch(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
+    article = createSwatch(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
+    live = EmberSwatch,
+)
+
+private val LauncherColors = UsLauncherColors(
+    chat = createSwatch(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
+    friends = createSwatch(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
+    alerts = createSwatch(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
+    live = EmberSwatch,
+    shop = createSwatch(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
+    match = createSwatch(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
+    ask = createSwatch(UsColorTokens.LaunchAskLight, UsColorTokens.LaunchAskDeep),
+    feast = createSwatch(UsColorTokens.LaunchFeastLight, UsColorTokens.LaunchFeastDeep),
+    tube = createSwatch(UsColorTokens.LaunchTubeLight, UsColorTokens.LaunchTubeDeep),
+)
+
+/** A flat fill, as the brush the primary button's `background` takes. */
+private fun flat(color: Color): Brush = SolidColor(color)
+
+/** The dark theme: the web's `.dark` block. */
 internal val DarkExtendedColors = UsExtendedColors(
-    textPrimary = UsColorTokens.TextPrimary,
-    textSecondary = UsColorTokens.TextSecondary,
-    textTertiary = UsColorTokens.TextTertiary,
-    textMuted = UsColorTokens.TextMuted,
-    textDim = UsColorTokens.TextDim,
-    textDimmest = UsColorTokens.TextDimmest,
-    textGhost = UsColorTokens.TextGhost,
-    bgCard = UsColorTokens.BgCard,
-    bgCardHover = UsColorTokens.BgCardHover,
-    bgCardSolid = UsColorTokens.FeedCard,
-    bgCanvas = UsColorTokens.FeedCanvas,
-    textBody = UsColorTokens.TextBody,
-    borderSubtle = UsColorTokens.BorderSubtle,
-    borderMedium = UsColorTokens.BorderMedium,
-    glassBg = UsColorTokens.GlassBg,
-    glassBorder = UsColorTokens.GlassBorder,
+    textPrimary = UsColorTokens.Dark.TextPrimary,
+    textSecondary = UsColorTokens.Dark.TextSecondary,
+    textTertiary = UsColorTokens.Dark.TextTertiary,
+    textMuted = UsColorTokens.Dark.TextMuted,
+    textDim = UsColorTokens.Dark.TextDim,
+    textDimmest = UsColorTokens.Dark.TextDimmest,
+    textGhost = UsColorTokens.Dark.TextGhost,
+    bgCard = UsColorTokens.Dark.Wash,
+    bgCardHover = UsColorTokens.Dark.FillSubtle,
+    bgCardSolid = UsColorTokens.Dark.Card,
+    bgCanvas = UsColorTokens.Dark.Canvas,
+    textBody = UsColorTokens.Dark.TextSecondary,
+    borderSubtle = UsColorTokens.Dark.BorderSubtle,
+    borderMedium = UsColorTokens.Dark.Border,
+    glassBg = UsColorTokens.Dark.GlassBg,
+    glassBorder = UsColorTokens.Dark.GlassBorder,
     brandChip = UsColorTokens.BrandChip,
     onBrandChip = UsColorTokens.OnBrandChip,
     chatAccent = UsColorTokens.ChatAccent,
     chatOnline = UsColorTokens.ChatOnline,
-    onlineGreen = UsColorTokens.OnlineGreen,
-    liveRed = UsColorTokens.LiveRed,
-    statusWarning = UsColorTokens.StatusWarning,
-    statusSuccess = UsColorTokens.StatusSuccess,
-    statusDanger = UsColorTokens.StatusError,
+    onlineGreen = UsColorTokens.Dark.Success,
+    liveRed = UsColorTokens.Dark.Danger,
+    statusWarning = UsColorTokens.Dark.Warning,
+    statusSuccess = UsColorTokens.Dark.Success,
+    statusDanger = UsColorTokens.Dark.Danger,
+    statusInfo = UsColorTokens.Dark.Info,
+    onStatus = UsColorTokens.Dark.OnPrimary,
     postbookGradient = Brush.horizontalGradient(
         listOf(UsColorTokens.PostbookPrimary, UsColorTokens.PostbookSecondary),
     ),
@@ -265,40 +373,48 @@ internal val DarkExtendedColors = UsExtendedColors(
             UsColorTokens.PostbookPrimary,
         ),
     ),
-    ctaGradient = EmberGradient,
-    unreadRow = UsColorTokens.UnreadRow,
-    accentSolid = UsColorTokens.AccentOrange,
-    accentDeep = UsColorTokens.AccentRed,
-    brandNavy = UsColorTokens.BrandNavy,
-    bgRaised = UsColorTokens.BgTertiary,
+    ctaGradient = flat(UsColorTokens.Dark.AccentFill),
+    unreadRow = UsColorTokens.Dark.AccentTint,
+    accentSolid = UsColorTokens.Dark.AccentText,
+    accentDeep = UsColorTokens.Dark.AccentPressed,
+    accent = UsColorTokens.Dark.Accent,
+    accentStrong = UsColorTokens.Dark.AccentFill,
+    onAccent = UsColorTokens.OnAccentFill,
+    accentOutline = UsColorTokens.Dark.AccentOutline,
+    focusRing = UsColorTokens.Dark.Accent,
+    brandNavy = UsColorTokens.InkOnWhite,
+    bgRaised = UsColorTokens.Dark.Sunken,
+    fillSubtle = UsColorTokens.Dark.FillSubtle,
+    fillStrong = UsColorTokens.Dark.FillStrong,
+    scrim = UsColorTokens.Scrim,
+    stage = UsColorTokens.Stage,
     onMedia = UsColorTokens.OnMedia,
     onMediaMuted = UsColorTokens.OnMediaMuted,
-    create = UsCreateColors(
-        text = EmberSwatch,
-        photo = createSwatch(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
-        reel = createSwatch(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
-        audio = createSwatch(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
-        poll = createSwatch(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
-        article = createSwatch(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
-        live = EmberSwatch,
-    ),
-    launcher = UsLauncherColors(
-        chat = createSwatch(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
-        friends = createSwatch(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
-        alerts = createSwatch(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
-        live = EmberSwatch,
-        shop = createSwatch(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
-        match = createSwatch(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
-        ask = createSwatch(UsColorTokens.LaunchAskLight, UsColorTokens.LaunchAskDeep),
-        feast = createSwatch(UsColorTokens.LaunchFeastLight, UsColorTokens.LaunchFeastDeep),
-        tube = createSwatch(UsColorTokens.LaunchTubeLight, UsColorTokens.LaunchTubeDeep),
-    ),
+    mediaPlate = UsColorTokens.MediaPlate,
+    mediaRim = UsColorTokens.MediaRim,
+    mediaTrack = UsColorTokens.MediaTrack,
+    onMediaDim = UsColorTokens.OnMediaDim,
+    onTile = UsColorTokens.OnTile,
+    selectedPill = UsColorTokens.Dark.SelectedPill,
+    onSelectedPill = UsColorTokens.Dark.OnSelectedPill,
+    bgSheet = UsColorTokens.Dark.Sheet,
+    chatAccentText = UsColorTokens.Dark.ChatAccentText,
+    onChatAccent = UsColorTokens.OnChatAccent,
+    pillNavy = UsColorTokens.PillNavy,
+    pillWhite = UsColorTokens.PillWhite,
+    chatBubbleOwn = UsColorTokens.ChatBubbleOwn,
+    onChatBubbleOwn = UsColorTokens.OnChatBubbleOwn,
+    chatSenders = UsColorTokens.Dark.ChatSenders,
+    create = CreateColors,
+    launcher = LauncherColors,
 )
 
 /**
- * The light palette — derived, since Momentum's Figma is dark-only. Brand
- * gradients and presence/status colours are shared with dark — the surfaces
- * and text ramp invert, the identity does not.
+ * The light theme: the web's `:root` block. Every themed value is restated
+ * (the web's own rule for its dark block, for the same reason: a value left
+ * to inherit silently reads wrong on the other ground). What is shared is
+ * what does not belong to a theme: the scrim, the stage, the over-media
+ * whites and the per-type tile identities.
  */
 internal val LightExtendedColors = DarkExtendedColors.copy(
     textPrimary = UsColorTokens.Light.TextPrimary,
@@ -308,17 +424,38 @@ internal val LightExtendedColors = DarkExtendedColors.copy(
     textDim = UsColorTokens.Light.TextDim,
     textDimmest = UsColorTokens.Light.TextDimmest,
     textGhost = UsColorTokens.Light.TextGhost,
-    bgCard = UsColorTokens.Light.BgCard,
-    bgCardHover = UsColorTokens.Light.BgCardHover,
-    bgCardSolid = UsColorTokens.Light.FeedCard,
-    bgCanvas = UsColorTokens.Light.FeedCanvas,
-    textBody = UsColorTokens.Light.TextBody,
+    bgCard = UsColorTokens.Light.Wash,
+    bgCardHover = UsColorTokens.Light.FillSubtle,
+    bgCardSolid = UsColorTokens.Light.Card,
+    bgCanvas = UsColorTokens.Light.Canvas,
+    textBody = UsColorTokens.Light.TextSecondary,
     borderSubtle = UsColorTokens.Light.BorderSubtle,
-    borderMedium = UsColorTokens.Light.BorderMedium,
+    borderMedium = UsColorTokens.Light.Border,
     glassBg = UsColorTokens.Light.GlassBg,
     glassBorder = UsColorTokens.Light.GlassBorder,
-    brandChip = UsColorTokens.Light.BrandChip,
-    onBrandChip = UsColorTokens.Light.OnBrandChip,
-    unreadRow = UsColorTokens.Light.UnreadRow,
-    bgRaised = UsColorTokens.Light.BgTertiary,
+    brandChip = UsColorTokens.BrandChipLight,
+    onBrandChip = UsColorTokens.OnBrandChip,
+    onlineGreen = UsColorTokens.Light.Success,
+    liveRed = UsColorTokens.Light.Danger,
+    statusWarning = UsColorTokens.Light.Warning,
+    statusSuccess = UsColorTokens.Light.Success,
+    statusDanger = UsColorTokens.Light.Danger,
+    statusInfo = UsColorTokens.Light.Info,
+    onStatus = UsColorTokens.Light.OnPrimary,
+    ctaGradient = flat(UsColorTokens.Light.AccentFill),
+    unreadRow = UsColorTokens.Light.AccentTint,
+    accentSolid = UsColorTokens.Light.AccentText,
+    accentDeep = UsColorTokens.Light.AccentPressed,
+    accent = UsColorTokens.Light.Accent,
+    accentStrong = UsColorTokens.Light.AccentFill,
+    accentOutline = UsColorTokens.Light.AccentOutline,
+    focusRing = UsColorTokens.Light.Accent,
+    bgRaised = UsColorTokens.Light.Sunken,
+    fillSubtle = UsColorTokens.Light.FillSubtle,
+    fillStrong = UsColorTokens.Light.FillStrong,
+    selectedPill = UsColorTokens.Light.SelectedPill,
+    onSelectedPill = UsColorTokens.Light.OnSelectedPill,
+    bgSheet = UsColorTokens.Light.Sheet,
+    chatAccentText = UsColorTokens.Light.ChatAccentText,
+    chatSenders = UsColorTokens.Light.ChatSenders,
 )

@@ -180,6 +180,20 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 			return nil, fmt.Errorf("emit search eligibility on edit: %w", err)
 		}
 	}
+	// Offline copies (2026-10-02, offline_copies.go), in this transaction:
+	// turning downloads off revokes every viewer's copy, and making the post
+	// private revokes the copies of everyone it is not shared with. The
+	// owner's own copies stay either way.
+	if _, changed := changes["allow_download"]; changed && !after.AllowDownload {
+		if err := RevokePostOfflineCopiesTx(ctx, tx, []uuid.UUID{postID}, OfflineRevokeNotAllowed, actorID, false); err != nil {
+			return nil, err
+		}
+	}
+	if _, changed := changes["visibility"]; changed && after.Visibility == "private" {
+		if err := RevokePostOfflineCopiesTx(ctx, tx, []uuid.UUID{postID}, OfflineRevokePrivate, actorID, true); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

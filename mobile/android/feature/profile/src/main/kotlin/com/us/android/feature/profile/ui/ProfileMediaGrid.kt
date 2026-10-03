@@ -238,14 +238,14 @@ internal fun PublishSuccessBanner(
             Icon(
                 imageVector = UsIcons.Check,
                 contentDescription = null,
-                tint = UsTheme.extended.brandNavy,
+                tint = UsTheme.extended.onStatus,
                 modifier = Modifier.size(SUCCESS_GLYPH),
             )
             Text(
                 text = message,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.brandNavy,
+                color = UsTheme.extended.onStatus,
                 maxLines = 1,
             )
         }
@@ -275,8 +275,12 @@ private fun GridTabs(selected: ProfileGridTab, onSelect: (ProfileGridTab) -> Uni
                 modifier = Modifier
                     .height(TAB_HEIGHT)
                     .clip(shape)
-                    .background(if (active) Color.White else UsTheme.extended.glassBg)
-                    .border(HAIRLINE, if (active) Color.White else UsTheme.extended.glassBorder, shape)
+                    .background(if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBg)
+                    .border(
+                        HAIRLINE,
+                        if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder,
+                        shape,
+                    )
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -293,7 +297,7 @@ private fun GridTabs(selected: ProfileGridTab, onSelect: (ProfileGridTab) -> Uni
                     text = tab.label,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (active) UsTheme.extended.brandNavy else UsTheme.extended.textPrimary,
+                    color = if (active) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
                     maxLines = 1,
                 )
             }
@@ -442,7 +446,7 @@ private fun MediaTile(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, mo
             Icon(
                 imageVector = UsIcons.Play,
                 contentDescription = null,
-                tint = Color.White,
+                tint = UsTheme.extended.onMedia,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(UsTheme.spacing.s)
@@ -510,7 +514,7 @@ private fun ScheduledTileView(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = SCRIM_ALPHA))))
+                .background(Brush.verticalGradient(listOf(Color.Transparent, UsTheme.extended.scrim)))
                 .padding(horizontal = UsTheme.spacing.s, vertical = UsTheme.spacing.s),
         ) {
             Text(
@@ -518,7 +522,7 @@ private fun ScheduledTileView(
                 style = MaterialTheme.typography.labelSmall,
                 fontSize = SCHEDULE_LABEL_SIZE,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -534,14 +538,14 @@ private fun ClockBadge(modifier: Modifier = Modifier) {
             .padding(UsTheme.spacing.s)
             .size(BADGE_SIZE)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = PLATE_ALPHA))
+            .background(UsTheme.extended.mediaPlate)
             .testTag("profile_clock"),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = UsIcons.Clock,
             contentDescription = "Scheduled",
-            tint = Color.White,
+            tint = UsTheme.extended.onMedia,
             modifier = Modifier.size(BADGE_GLYPH),
         )
     }
@@ -589,7 +593,7 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = if (failed) FAILED_DIM else PENDING_DIM)),
+                .background(UsTheme.extended.stage.copy(alpha = if (failed) FAILED_DIM else PENDING_DIM)),
         )
         if (tile.publishAt != null) ClockBadge(modifier = Modifier.align(Alignment.TopStart))
         if (failed) {
@@ -597,14 +601,14 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
                 Icon(
                     imageVector = UsIcons.RotateCcw,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = UsTheme.extended.onMedia,
                     modifier = Modifier.size(FAILED_GLYPH),
                 )
                 Text(
                     text = "Couldn't post",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                     modifier = Modifier.padding(top = UsTheme.spacing.xs),
                 )
             }
@@ -627,7 +631,7 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
 @Composable
 internal fun PublishRingView(ring: PublishRing, label: String?, modifier: Modifier = Modifier) {
     val played = UsTheme.extended.ctaGradient
-    val track = Color.White.copy(alpha = TRACK_ALPHA)
+    val track = UsTheme.extended.mediaTrack
     val spin = rememberInfiniteTransition(label = "publishSpin")
     val angle by spin.animateFloat(
         initialValue = 0f,
@@ -644,7 +648,7 @@ internal fun PublishRingView(ring: PublishRing, label: String?, modifier: Modifi
     Box(
         modifier = modifier
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = PLATE_ALPHA))
+            .background(UsTheme.extended.mediaPlate)
             .drawBehind { rotate(rotation) { drawRing(track, played, sweep) } }
             .testTag("profile_pending_ring"),
         contentAlignment = Alignment.Center,
@@ -655,7 +659,7 @@ internal fun PublishRingView(ring: PublishRing, label: String?, modifier: Modifi
                 style = MaterialTheme.typography.labelSmall,
                 fontSize = RING_LABEL_SIZE,
                 fontWeight = FontWeight.Bold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 1,
                 modifier = Modifier.testTag("profile_pending_percent"),
             )
@@ -702,10 +706,10 @@ private fun PublishFailureSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         modifier = Modifier.testTag("profile_pending_sheet"),
     ) {
         Column(
@@ -762,13 +766,10 @@ private const val LANDSCAPE = 16f / 9f
 private const val TEXT_TILE_LINES = 4
 private const val PENDING_DIM = 0.35f
 private const val FAILED_DIM = 0.6f
-private const val TRACK_ALPHA = 0.25f
-private const val PLATE_ALPHA = 0.45f
 private const val START_ANGLE = -90f
 private const val FULL_SWEEP = 360f
 private const val INDETERMINATE_SWEEP = 100f
 private const val SPIN_MILLIS = 1_100
-private const val SCRIM_ALPHA = 0.55f
 private val HAIRLINE = 1.dp
 private val GRID_GAP = 3.dp
 private val TAB_HEIGHT = 34.dp

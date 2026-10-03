@@ -139,7 +139,7 @@ private fun GroupsEmptyState(searching: Boolean, onCreateGroup: () -> Unit) {
             Icon(
                 imageVector = UsIcons.Friends,
                 contentDescription = null,
-                tint = Color.White,
+                tint = UsTheme.extended.onTile,
                 modifier = Modifier.size(EMPTY_GLYPH)
             )
         }

@@ -226,7 +226,7 @@ private fun PersonRow(person: TaggedUser, tagged: Boolean, enabled: Boolean, onC
             modifier = Modifier
                 .size(RING_SIZE)
                 .clip(CircleShape)
-                .background(if (tagged) UsTheme.extended.accentSolid else Color.Transparent)
+                .background(if (tagged) UsTheme.extended.accentStrong else Color.Transparent)
                 .border(RING_STROKE, if (tagged) Color.Transparent else UsTheme.extended.borderMedium, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
@@ -234,7 +234,7 @@ private fun PersonRow(person: TaggedUser, tagged: Boolean, enabled: Boolean, onC
                 Icon(
                     imageVector = UsIcons.Check,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = UsTheme.extended.onAccent,
                     modifier = Modifier.size(RING_GLYPH),
                 )
             }

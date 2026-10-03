@@ -4,6 +4,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.us.android.core.designsystem.theme.UsColorTokens
 
 /**
  * Darkens the area behind text that sits on top of media.
@@ -29,8 +30,8 @@ fun Modifier.usMediaScrim(): Modifier = drawBehind {
         brush = Brush.verticalGradient(
             colorStops = arrayOf(
                 0f to Color.Transparent,
-                SCRIM_RAMP_START to Color.Black.copy(alpha = SCRIM_MID_ALPHA),
-                1f to Color.Black.copy(alpha = SCRIM_MAX_ALPHA),
+                SCRIM_RAMP_START to UsColorTokens.Stage.copy(alpha = SCRIM_MID_ALPHA),
+                1f to UsColorTokens.Stage.copy(alpha = SCRIM_MAX_ALPHA),
             ),
             startY = 0f,
             endY = size.height,

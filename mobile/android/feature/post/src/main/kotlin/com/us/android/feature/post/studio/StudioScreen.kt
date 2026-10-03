@@ -75,6 +75,7 @@ import com.us.android.core.creator.model.Crop
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.creator.CreatorFonts
+import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.photoeditor.rememberPhotoEditor
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -152,13 +153,18 @@ fun StudioScreen(
     }
 
     when (state.step) {
-        StudioViewModel.Step.Edit -> EditStep(
-            state = state,
-            viewModel = viewModel,
-            onClose = onClose,
-            onAddPhotos = launchPicker,
-            onEditPhoto = editPhoto,
-        )
+        // 2026-10-02: the edit canvas is a stage (media first), dark in BOTH themes, so its
+        // chrome and its Material controls take the dark theme whatever the device says.
+        StudioViewModel.Step.Edit -> UsTheme(darkTheme = true) {
+            LightSystemBarGlyphs()
+            EditStep(
+                state = state,
+                viewModel = viewModel,
+                onClose = onClose,
+                onAddPhotos = launchPicker,
+                onEditPhoto = editPhoto,
+            )
+        }
         StudioViewModel.Step.Share -> ShareStep(state = state, viewModel = viewModel)
     }
     SnackbarHost(hostState = snackbar)
@@ -196,7 +202,7 @@ private fun EditStep(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(CANVAS_BLACK)
+            .background(UsTheme.extended.stage)
             .testTag("studio"),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -319,20 +325,20 @@ private fun EditTopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onClose) {
-            Icon(UsIcons.Close, contentDescription = "Close the studio", tint = Color.White)
+            Icon(UsIcons.Close, contentDescription = "Close the studio", tint = UsTheme.extended.onMedia)
         }
         if (onEditPhoto != null) {
             AdvancedEditPill(onClick = onEditPhoto)
         }
         Spacer(Modifier.weight(1f))
         TextButton(onClick = onUndo, enabled = canUndo) {
-            Text("Undo", color = if (canUndo) Color.White else ON_BLACK_DIM)
+            Text("Undo", color = if (canUndo) UsTheme.extended.onMedia else UsTheme.extended.onMediaDim)
         }
         TextButton(onClick = onRedo, enabled = canRedo) {
-            Text("Redo", color = if (canRedo) Color.White else ON_BLACK_DIM)
+            Text("Redo", color = if (canRedo) UsTheme.extended.onMedia else UsTheme.extended.onMediaDim)
         }
         TextButton(onClick = onReset, enabled = canUndo) {
-            Text("Reset", color = if (canUndo) Color.White else ON_BLACK_DIM)
+            Text("Reset", color = if (canUndo) UsTheme.extended.onMedia else UsTheme.extended.onMediaDim)
         }
     }
 }
@@ -355,7 +361,7 @@ private fun AdvancedEditPill(onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(TOOL_CHIP_BG)
+            .background(UsTheme.extended.mediaRim)
             .clickable(onClick = onClick)
             .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs)
             .semantics { contentDescription = "Edit this photo in the advanced editor" }
@@ -366,10 +372,10 @@ private fun AdvancedEditPill(onClick: () -> Unit) {
         Icon(
             UsIcons.Sliders,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.onMedia,
             modifier = Modifier.size(PILL_ICON),
         )
-        Text("Edit", style = MaterialTheme.typography.labelLarge, color = Color.White)
+        Text("Edit", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.onMedia)
     }
 }
 
@@ -383,7 +389,7 @@ private fun PageCanvas(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(CANVAS_ASPECT)
-            .background(Color.Black)
+            .background(UsTheme.extended.stage)
             .clipToBounds()
             .testTag("studio-preview"),
     ) {
@@ -430,7 +436,7 @@ private fun adjustmentsMatrix(adjustments: Adjustments): ColorMatrix =
     ColorMatrix(AdjustmentsMath.matrix(adjustments))
 
 private fun parseArgb(argb: String): Color =
-    runCatching { Color(android.graphics.Color.parseColor(argb)) }.getOrDefault(Color.White)
+    runCatching { Color(android.graphics.Color.parseColor(argb)) }.getOrDefault(Color.Unspecified)
 
 // ── Tool chips ──────────────────────────────────────────────────────────
 
@@ -447,7 +453,7 @@ private fun ToolChipsRow(tools: List<StudioTool>, onOpen: (StudioTool) -> Unit) 
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(UsTheme.radii.medium))
-                    .background(TOOL_CHIP_BG)
+                    .background(UsTheme.extended.mediaRim)
                     .clickable { onOpen(tool) }
                     .padding(vertical = UsTheme.spacing.m)
                     .testTag("studio-tool-${tool.label.lowercase()}"),
@@ -456,7 +462,7 @@ private fun ToolChipsRow(tools: List<StudioTool>, onOpen: (StudioTool) -> Unit) 
                 Text(
                     tool.label,
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                 )
             }
         }
@@ -473,18 +479,18 @@ private fun SheetHeader(title: String, onCancel: (() -> Unit)?, onDone: () -> Un
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onCancel != null) {
-            TextButton(onClick = onCancel) { Text("Cancel", color = Color.White) }
+            TextButton(onClick = onCancel) { Text("Cancel", color = UsTheme.extended.onMedia) }
         }
         Spacer(Modifier.weight(1f))
         Text(
             title,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
         )
         Spacer(Modifier.weight(1f))
         TextButton(onClick = onDone, modifier = Modifier.testTag("studio-sheet-done")) {
-            Text("Done", color = Color.White, fontWeight = FontWeight.Bold)
+            Text("Done", color = UsTheme.extended.onMedia, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -524,7 +530,7 @@ private fun FilterSheet(
                     Text(
                         name,
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (selected) Color.White else ON_BLACK_DIM,
+                        color = if (selected) UsTheme.extended.onMedia else UsTheme.extended.onMediaDim,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                     )
                     Spacer(Modifier.height(UsTheme.spacing.xs))
@@ -536,7 +542,7 @@ private fun FilterSheet(
                                 if (selected) {
                                     Modifier.border(
                                         2.dp,
-                                        Color.White,
+                                        UsTheme.extended.onMedia,
                                         RoundedCornerShape(UsTheme.radii.small),
                                     )
                                 } else {
@@ -615,7 +621,7 @@ private fun AdjustSheet(
                 TextButton(onClick = { selected = candidate }) {
                     Text(
                         candidate.label,
-                        color = if (selected == candidate) Color.White else ON_BLACK_DIM,
+                        color = if (selected == candidate) UsTheme.extended.onMedia else UsTheme.extended.onMediaDim,
                         fontWeight = if (selected == candidate) FontWeight.Bold else FontWeight.Normal,
                     )
                 }
@@ -663,12 +669,12 @@ private fun RowScope.RatioOption(
         modifier = Modifier
             .weight(1f)
             .clip(RoundedCornerShape(UsTheme.radii.medium))
-            .background(TOOL_CHIP_BG)
+            .background(UsTheme.extended.mediaRim)
             .clickable(onClick = onClick)
             .padding(vertical = UsTheme.spacing.m),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = Color.White)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.onMedia)
     }
 }
 
@@ -706,7 +712,7 @@ private fun AltSheet(
                 modifier = Modifier.testTag("studio-decorative"),
             )
             Spacer(Modifier.width(UsTheme.spacing.s))
-            Text("This photo is decorative", color = Color.White)
+            Text("This photo is decorative", color = UsTheme.extended.onMedia)
         }
     }
 }
@@ -730,7 +736,7 @@ private fun TextOverlayEditor(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(TEXT_EDITOR_SCRIM)
+            .background(UsTheme.extended.stage.copy(alpha = TEXT_EDITOR_SCRIM_ALPHA))
             .testTag("studio-text-editor"),
     ) {
         SheetHeader(
@@ -749,7 +755,7 @@ private fun TextOverlayEditor(
             OutlinedTextField(
                 value = draftText,
                 onValueChange = { draftText = it },
-                placeholder = { Text("Type something…", color = ON_BLACK_DIM) },
+                placeholder = { Text("Type something…", color = UsTheme.extended.onMediaDim) },
                 textStyle = MaterialTheme.typography.headlineSmall.copy(
                     color = parseArgb(color.second),
                     fontSize = (sizeMicros / TEXT_SIZE_DIVISOR).sp,
@@ -796,7 +802,7 @@ private fun TextOverlayEditor(
                             color = if (color == candidate) {
                                 MaterialTheme.colorScheme.primary
                             } else {
-                                Color.White
+                                UsTheme.extended.onMedia
                             },
                             shape = CircleShape,
                         )
@@ -823,7 +829,7 @@ private fun TextOverlayEditor(
                     .fillMaxWidth()
                     .padding(horizontal = UsTheme.spacing.m),
             ) {
-                Text(layer.value, color = Color.White, modifier = Modifier.weight(1f))
+                Text(layer.value, color = UsTheme.extended.onMedia, modifier = Modifier.weight(1f))
                 TextButton(onClick = { viewModel.onRemoveTextLayer(layer.layerId) }) {
                     Text("Remove")
                 }
@@ -882,13 +888,13 @@ private fun ThumbStripRow(
                         modifier = Modifier
                             .size(THUMB_SIZE)
                             .clip(RoundedCornerShape(UsTheme.radii.medium))
-                            .background(TOOL_CHIP_BG)
+                            .background(UsTheme.extended.mediaRim)
                             .clickable(onClick = onAddPhotos)
                             .semantics { contentDescription = "Add photos" }
                             .testTag("studio-add-photos"),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(UsIcons.Create, contentDescription = null, tint = Color.White)
+                        Icon(UsIcons.Create, contentDescription = null, tint = UsTheme.extended.onMedia)
                     }
                 }
             }
@@ -922,7 +928,7 @@ private fun ThumbTile(
             .clip(RoundedCornerShape(UsTheme.radii.medium))
             .then(
                 if (selected || dragging) {
-                    Modifier.border(2.dp, Color.White, RoundedCornerShape(UsTheme.radii.medium))
+                    Modifier.border(2.dp, UsTheme.extended.onMedia, RoundedCornerShape(UsTheme.radii.medium))
                 } else {
                     Modifier
                 },
@@ -945,10 +951,10 @@ private fun ThumbTile(
             Text(
                 "ALT",
                 style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onError,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .background(Color(ALT_BADGE_COLOR))
+                    .background(MaterialTheme.colorScheme.error)
                     .padding(horizontal = 4.dp),
             )
         }
@@ -961,7 +967,7 @@ private fun ThumbTile(
                     .padding(2.dp)
                     .size(REMOVE_BADGE)
                     .clip(CircleShape)
-                    .background(SCRIM)
+                    .background(UsTheme.extended.mediaPlate)
                     .clickable(onClick = onRemove)
                     .semantics { contentDescription = "Remove page ${position + 1}" },
                 contentAlignment = Alignment.Center,
@@ -969,7 +975,7 @@ private fun ThumbTile(
                 Icon(
                     UsIcons.Close,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = UsTheme.extended.onMedia,
                     modifier = Modifier.size(REMOVE_ICON),
                 )
             }
@@ -983,7 +989,7 @@ private fun EmptyStudio(onAddPhotos: () -> Unit) {
         Text(
             "Up to ten photos, in your order.",
             style = MaterialTheme.typography.titleMedium,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
         )
         Spacer(Modifier.height(UsTheme.spacing.m))
         Button(onClick = onAddPhotos, modifier = Modifier.testTag("studio-empty-add")) {
@@ -1072,12 +1078,12 @@ private fun ShareStep(
                         Text(
                             "${state.pages.size}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
+                            color = UsTheme.extended.onMedia,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(UsTheme.spacing.xs)
                                 .clip(CircleShape)
-                                .background(SCRIM)
+                                .background(UsTheme.extended.mediaPlate)
                                 .padding(
                                     horizontal = UsTheme.spacing.s,
                                     vertical = UsTheme.spacing.xs,
@@ -1275,7 +1281,6 @@ private const val DEG_MICROS = 1_000_000
 private const val CANVAS_ASPECT = 1080f / 1350f
 private const val PORTRAIT_ASPECT = 1080f / 1350f
 private const val TEXT_SIZE_DIVISOR = 2_000
-private const val ALT_BADGE_COLOR = 0xCCB3261E.toInt()
 private const val RECOVERY_PREVIEW_CHARS = 80
 private const val DEFAULT_TEXT_SIZE = 52_000
 private const val TEXT_SIZE_MIN = 24_000f
@@ -1291,18 +1296,8 @@ private val COLOR_SWATCH = 32.dp
 private val SHARE_THUMB_W = 180.dp
 private val LANGUAGE_FIELD = 96.dp
 
-/** The edit canvas is BLACK by design, in both themes — media first. */
-private const val CANVAS_BLACK_ARGB = 0xFF000000
-private const val TOOL_CHIP_BG_ARGB = 0x33FFFFFF
-private const val ON_BLACK_DIM_ARGB = 0x80FFFFFF
-private const val SCRIM_ALPHA = 0.6f
+// The edit canvas is the STAGE in both themes (media first): EditStep runs inside the dark theme.
 private const val TEXT_EDITOR_SCRIM_ALPHA = 0.88f
-
-private val CANVAS_BLACK = Color(CANVAS_BLACK_ARGB)
-private val TOOL_CHIP_BG = Color(TOOL_CHIP_BG_ARGB)
-private val ON_BLACK_DIM = Color(ON_BLACK_DIM_ARGB)
-private val SCRIM = Color.Black.copy(alpha = SCRIM_ALPHA)
-private val TEXT_EDITOR_SCRIM = Color.Black.copy(alpha = TEXT_EDITOR_SCRIM_ALPHA)
 
 // The preset values ARE the definition of each look — a named constant per
 // number would just restate the label sitting beside it. Every look is a

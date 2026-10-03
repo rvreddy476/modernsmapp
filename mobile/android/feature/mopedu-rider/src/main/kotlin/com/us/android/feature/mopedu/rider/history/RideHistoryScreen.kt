@@ -102,7 +102,7 @@ fun RideHistoryScreen(
     }
 
     if (state.showOutstanding) {
-        ModalBottomSheet(onDismissRequest = viewModel::closeOutstanding, containerColor = UsTheme.extended.bgCardSolid) {
+        ModalBottomSheet(onDismissRequest = viewModel::closeOutstanding, containerColor = UsTheme.extended.bgSheet) {
             OutstandingSheet(
                 charges = state.outstanding,
                 payment = state.payment,

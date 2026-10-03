@@ -510,15 +510,28 @@ func (m *MemStore) InsertChatMessage(_ context.Context, streamID, userID uuid.UU
 	return &cp, nil
 }
 
-func (m *MemStore) ListRecentChatMessages(_ context.Context, streamID uuid.UUID, _ int) ([]*postgres.ChatMessage, error) {
+func (m *MemStore) ListRecentChatMessages(_ context.Context, streamID uuid.UUID, limit int) ([]*postgres.ChatMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
 	out := []*postgres.ChatMessage{}
 	for _, msg := range m.Messages {
 		if msg.StreamID == streamID && msg.RemovedAt == nil {
 			cp := *msg
 			out = append(out, &cp)
 		}
+	}
+	// Newest first, as the SQL orders (the id only steadies equal times).
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID.String() > out[j].ID.String()
+	})
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -622,13 +635,31 @@ func (m *MemStore) ListWordFilters(_ context.Context, streamID uuid.UUID) ([]str
 func (m *MemStore) MatchesWordFilter(_ context.Context, streamID uuid.UUID, text string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	lt := strings.ToLower(text)
+	words := make([]string, 0, len(m.WordFilters[streamID]))
 	for w := range m.WordFilters[streamID] {
-		if strings.Contains(lt, w) {
-			return true, nil
+		words = append(words, w)
+	}
+	return postgres.WordFilterMatches(words, text), nil
+}
+
+// --- going-live eligibility (store/postgres/eligibility.go) ---
+
+func (m *MemStore) CountCompletedStreams(_ context.Context, creatorID uuid.UUID, minLive time.Duration) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, st := range m.Streams {
+		if st.CreatorUserID == creatorID && postgres.CompletedStream(st, minLive) {
+			n++
 		}
 	}
-	return false, nil
+	return n, nil
+}
+
+func (m *MemStore) IsViewerPresent(_ context.Context, streamID, userID uuid.UUID) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Presence[streamID][userID], nil
 }
 
 func (m *MemStore) PinMessage(_ context.Context, streamID, messageID uuid.UUID) error {

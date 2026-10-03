@@ -85,10 +85,14 @@ data class CommentsUiState(
  * against pasting a novel into a comment box, not a mirror of a known server
  * limit — no maximum was observed in the captures, so this is deliberately
  * generous.
+ *
+ * The cap counts CODE POINTS, not UTF-16 units (2026-10-02): an emoji is one
+ * character to the person typing it and to the server, and two or more to
+ * `String.length`, which made a comment of emoji run out at half the cap.
  */
 fun String.isValidComment(): Boolean {
     val trimmed = trim()
-    return trimmed.isNotEmpty() && trimmed.length <= MAX_COMMENT_LENGTH
+    return trimmed.isNotEmpty() && trimmed.codePointCount(0, trimmed.length) <= MAX_COMMENT_LENGTH
 }
 
 const val MAX_COMMENT_LENGTH = 2_000

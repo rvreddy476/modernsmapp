@@ -181,6 +181,7 @@ private fun InboxHeader(
                 if (pending > 0) {
                     Badge(
                         containerColor = UsTheme.extended.chatAccent,
+                        contentColor = UsTheme.extended.onChatAccent,
                         modifier = Modifier.align(Alignment.TopEnd),
                     ) { Text(pending.toString()) }
                 }
@@ -317,7 +318,10 @@ private fun SegmentTab(
                 },
             )
             if (count > 0) {
-                Badge(containerColor = UsTheme.extended.chatAccent) {
+                Badge(
+                    containerColor = UsTheme.extended.chatAccent,
+                    contentColor = UsTheme.extended.onChatAccent,
+                ) {
                     Text(count.toString())
                 }
             }
@@ -745,7 +749,7 @@ private fun ConversationPreview(conversation: Conversation, viewerId: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodySmall,
-        color = if (conversation.isMissedCall) MISSED_CALL_RED else UsTheme.extended.textMuted,
+        color = if (conversation.isMissedCall) UsTheme.extended.statusDanger else UsTheme.extended.textMuted,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
     )
@@ -781,7 +785,7 @@ private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
                 style = MaterialTheme.typography.labelSmall,
                 // Chat green while unread, muted once read — the same accent
                 // the badge uses, so the two halves of "needs you" agree.
-                color = if (unread) UsTheme.extended.chatAccent else UsTheme.extended.textMuted,
+                color = if (unread) UsTheme.extended.chatAccentText else UsTheme.extended.textMuted,
                 maxLines = 1,
             )
         }
@@ -789,10 +793,6 @@ private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
 }
 
 // ── The Figma messages-inbox frame (136:86) ────────────────────────────
-
-/** The design's one red line: a call that was missed (136:193). */
-@Suppress("MagicNumber")
-private val MISSED_CALL_RED = Color(0xFFEF5350)
 
 private val ROW_MARGIN = 12.dp
 private val ROW_PADDING = 12.dp

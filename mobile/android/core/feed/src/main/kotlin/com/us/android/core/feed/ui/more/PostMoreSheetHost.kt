@@ -8,8 +8,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
+import com.us.android.core.feed.offline.offlineMoreState
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.ui.UsLongVideoMoreState
+import com.us.android.core.ui.UsOfflineMoreState
 import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostDontRecommendState
 import com.us.android.core.ui.UsPostMoreCallbacks
@@ -39,9 +42,13 @@ fun PostMoreSheetHost(
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
     viewModel: PostMoreViewModel,
-    /** Set by Reels alone: the group above the rows, and the two things only a reel can do. */
+    /**
+     * Set by the two VIDEO hosts, Reels and Tube's watch screen (2026-10-02:
+     * one menu for both): what Description unfolds and what Quality offers.
+     */
     reel: UsReelMoreState? = null,
     onClearScreen: () -> Unit = {},
+    /** A rendition was picked from the Quality row; the host applies it to its player. */
     onSelectQuality: (UsReelQuality) -> Unit = {},
     /** Set by Reels alone: "Use this sound" was tapped on [item]. */
     onUseSound: (FeedItem) -> Unit = {},
@@ -61,16 +68,44 @@ fun PostMoreSheetHost(
      * "not interested" on a long video into the feed's numbers.
      */
     surface: AnalyticsSurface = AnalyticsSurface.FEED,
+    /**
+     * Set by Tube's watch screen alone (2026-10-02): the sheet then says
+     * "video" where it says "reel" or "post", and names the channel in the
+     * block confirmation. The ROWS are the reel's.
+     */
+    longVideo: UsLongVideoMoreState? = null,
+    /**
+     * A block was confirmed and sent. The watch screen leaves the video, as
+     * the web does; every other host has nothing to add.
+     */
+    onBlocked: () -> Unit = {},
+    /**
+     * Set by the two VIDEO hosts (2026-10-02): opens the Offline page. Its
+     * presence is also what turns the offline rows on: a host that cannot
+     * open the list of copies does not offer to make one.
+     */
+    onOpenOffline: (() -> Unit)? = null,
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
     val dontRecommend by viewModel.dontRecommend.collectAsStateWithLifecycle()
+    val offlineState by viewModel.offlineState.collectAsStateWithLifecycle()
+    val offlineRefusal by viewModel.offlineRefusal.collectAsStateWithLifecycle()
     LaunchedEffect(item.id, surface) {
         viewModel.onSurface(surface)
         viewModel.opened()
     }
 
-    val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality, onUseSound) {
+    val callbacks = remember(
+        item,
+        viewModel,
+        onShare,
+        onClearScreen,
+        onSelectQuality,
+        onUseSound,
+        onBlocked,
+        onOpenOffline,
+    ) {
         UsPostMoreCallbacks(
             onToggleSave = { viewModel.toggleSave(item) },
             onShare = { onShare(item) },
@@ -79,16 +114,42 @@ fun PostMoreSheetHost(
             onDontRecommend = { viewModel.dontRecommend(item) },
             onFollow = { viewModel.follow(item.author.id) },
             onUnfollow = { viewModel.unfollow(item.author.id) },
-            onBlock = { viewModel.block(item) },
+            onBlock = {
+                viewModel.block(item)
+                onBlocked()
+            },
             onReport = { reason, details -> viewModel.report(item, reason, details) },
             onDelete = { viewModel.delete(item) },
             onClearScreen = onClearScreen,
             onSelectQuality = onSelectQuality,
             onUseSound = { onUseSound(item) },
+            onSaveOffline = { viewModel.saveOffline(item) },
+            onRemoveOffline = { viewModel.removeOffline(item) },
+            onOpenOffline = { onOpenOffline?.invoke() },
         )
     }
     UsPostMoreSheet(
-        state = item.toMoreState(overlay, followEdge, ownUserId, report, delete, reel, dontRecommend, suggested),
+        state = item.toMoreState(
+            overlay = overlay,
+            followEdge = followEdge,
+            ownUserId = ownUserId,
+            report = report,
+            delete = delete,
+            reel = reel,
+            dontRecommend = dontRecommend,
+            suggested = suggested,
+            longVideo = longVideo,
+            // A video, on a host that can open the Offline page: the offline rows.
+            offline = if (reel != null && onOpenOffline != null) {
+                offlineMoreState(
+                    item = item,
+                    isOwn = ownUserId.isNotBlank() && item.author.id == ownUserId,
+                    entry = offlineState.copies[item.id],
+                ).copy(refusal = offlineRefusal)
+            } else {
+                null
+            },
+        ),
         callbacks = callbacks,
         onDismiss = onDismiss,
     )
@@ -108,6 +169,8 @@ fun FeedItem.toMoreState(
     reel: UsReelMoreState? = null,
     dontRecommend: UsPostDontRecommendState = UsPostDontRecommendState.Idle,
     suggested: Boolean? = null,
+    longVideo: UsLongVideoMoreState? = null,
+    offline: UsOfflineMoreState? = null,
 ): UsPostMoreState {
     val own = ownUserId.isNotBlank() && author.id == ownUserId
     return UsPostMoreState(
@@ -126,6 +189,8 @@ fun FeedItem.toMoreState(
         delete = delete,
         dontRecommend = dontRecommend,
         reel = reel,
+        longVideo = longVideo,
+        offline = offline,
     )
 }
 

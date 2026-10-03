@@ -121,6 +121,14 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 		return 0, fmt.Errorf("emit PostDeleted: %w", err)
 	}
 
+	// Offline copies (2026-10-02, offline_copies.go): a deleted video is
+	// nobody's to keep, the owner's own copies included. Same transaction,
+	// so there is no moment where the post is gone and a copy still reads
+	// as granted.
+	if err := RevokePostOfflineCopiesTx(ctx, tx, []uuid.UUID{postID}, OfflineRevokeDeleted, uuid.Nil, false); err != nil {
+		return 0, err
+	}
+
 	// Cascade-delete crosspost links (table may not exist yet — use savepoint)
 	cascadeCount := 0
 	_, _ = tx.Exec(ctx, "SAVEPOINT crosspost_cascade")

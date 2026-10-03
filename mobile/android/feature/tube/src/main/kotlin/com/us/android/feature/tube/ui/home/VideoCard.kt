@@ -224,10 +224,10 @@ internal fun DurationBadge(text: String, modifier: Modifier = Modifier) {
         text = text,
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.SemiBold,
-        color = Color.White,
+        color = UsTheme.extended.onMedia,
         modifier = modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(Color.Black.copy(alpha = BADGE_PLATE_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = BADGE_PLATE_ALPHA))
             .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs)
             .semantics { contentDescription = "Length $text" }
             .testTag("tube_duration"),

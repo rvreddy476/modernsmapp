@@ -79,6 +79,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	if h.internalKey != "" {
 		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
+	// May the caller go live, and what is still missing (eligibility.go).
+	v1.GET("/eligibility", h.GetEligibility)
 	v1.POST("/streams", h.CreateStream)
 	v1.POST("/streams/:id/start", h.StartStream)
 	v1.POST("/streams/:id/end", h.EndStream)
@@ -164,6 +166,25 @@ func (h *Handler) CreateStream(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, stream, nil)
+}
+
+// GetEligibility — GET /v1/livestream/eligibility
+//
+// {"data":{"mode":"pilot|open","eligible":bool,"requirements":[...],
+// "pilot_only":true?,"viewer_cap":200?}}. Signed in only (401 otherwise). It
+// never answers 403 or 503 itself: a requirement that could not be checked
+// is listed with "met": null and eligible is false.
+func (h *Handler) GetEligibility(c *gin.Context) {
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	res, err := h.svc.Eligibility(c.Request.Context(), userID)
+	if err != nil {
+		writeServiceErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, res, nil)
 }
 
 func (h *Handler) StartStream(c *gin.Context) {
@@ -310,7 +331,21 @@ func requireUUID(c *gin.Context, name string) (uuid.UUID, bool) {
 }
 
 func writeServiceErr(c *gin.Context, err error) {
+	// Open mode's refusal carries what is missing: details.requirements is
+	// the eligibility list, the requirements that are not met.
+	var notEligible *service.NotEligibleError
+	if errors.As(err, &notEligible) {
+		reqs := notEligible.Requirements
+		if reqs == nil {
+			reqs = []service.Requirement{}
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIVE_NOT_ELIGIBLE", err.Error(),
+			map[string]any{"requirements": reqs})
+		return
+	}
 	switch {
+	case errors.Is(err, service.ErrStreamFull):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "STREAM_FULL", err.Error(), nil)
 	case errors.Is(err, service.ErrStreamNotFound):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, service.ErrNotCreator):

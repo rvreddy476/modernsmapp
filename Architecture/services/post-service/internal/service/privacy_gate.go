@@ -94,9 +94,20 @@ func (s *Service) privacyClock() time.Time {
 // per-call ceiling and serving fresh answers from the short cache. The result
 // has an entry for EVERY requested target; unresolved ones are false.
 func (s *Service) graphCan(ctx context.Context, viewerID uuid.UUID, action string, targetIDs []uuid.UUID) map[uuid.UUID]bool {
+	out, _ := s.graphCanResolved(ctx, viewerID, action, targetIDs)
+	return out
+}
+
+// graphCanResolved is graphCan plus whether every answer is a real one:
+// false when at least one chunk was denied because graph-service could not
+// be asked. The answers are the same fail-closed ones either way; the flag
+// exists for the one caller that must not act on a denial produced by an
+// outage (the offline-copy check, which tells a client to delete a file).
+func (s *Service) graphCanResolved(ctx context.Context, viewerID uuid.UUID, action string, targetIDs []uuid.UUID) (map[uuid.UUID]bool, bool) {
 	out := make(map[uuid.UUID]bool, len(targetIDs))
+	resolved := true
 	if len(targetIDs) == 0 {
-		return out
+		return out, resolved
 	}
 	if s.graphServiceURL == "" {
 		// No policy configured — the same "no graph, no gate" rule the
@@ -104,7 +115,7 @@ func (s *Service) graphCan(ctx context.Context, viewerID uuid.UUID, action strin
 		for _, id := range targetIDs {
 			out[id] = true
 		}
-		return out
+		return out, resolved
 	}
 
 	now := s.privacyClock()
@@ -129,7 +140,7 @@ func (s *Service) graphCan(ctx context.Context, viewerID uuid.UUID, action strin
 	s.privacyMu.Unlock()
 
 	if len(pending) == 0 {
-		return out
+		return out, resolved
 	}
 
 	client := s.privacyGraphClient()
@@ -149,6 +160,7 @@ func (s *Service) graphCan(ctx context.Context, viewerID uuid.UUID, action strin
 			// retries rather than serving three seconds of denial after a
 			// blip has cleared.
 			log.Printf("Warning: privacy gate %s unresolved for %d authors; denying: %v", action, len(chunk), err)
+			resolved = false
 			for _, id := range chunk {
 				out[id] = false
 			}
@@ -174,7 +186,7 @@ func (s *Service) graphCan(ctx context.Context, viewerID uuid.UUID, action strin
 		}
 		s.privacyMu.Unlock()
 	}
-	return out
+	return out, resolved
 }
 
 // canViewPosts reports, per author, whether viewerID may read that author's
@@ -189,21 +201,31 @@ func (s *Service) graphCan(ctx context.Context, viewerID uuid.UUID, action strin
 // by-author listing, GetRecentPosts, comments, etc. — picks this up for
 // free because they all funnel through this one function.
 func (s *Service) canViewPosts(ctx context.Context, viewerID *uuid.UUID, authorIDs []uuid.UUID) map[uuid.UUID]bool {
+	out, _ := s.canViewPostsResolved(ctx, viewerID, authorIDs)
+	return out
+}
+
+// canViewPostsResolved is canViewPosts plus whether both lookups behind it
+// (graph-service and the hidden-author list) actually answered. See
+// graphCanResolved for why a caller would want to know.
+func (s *Service) canViewPostsResolved(ctx context.Context, viewerID *uuid.UUID, authorIDs []uuid.UUID) (map[uuid.UUID]bool, bool) {
 	viewer := anonymousViewerID
 	if viewerID != nil {
 		viewer = *viewerID
 	}
-	out := s.graphCan(ctx, viewer, graphclient.ActionViewPosts, authorIDs)
-	return s.denyHiddenAuthors(ctx, viewer, out)
+	out, graphResolved := s.graphCanResolved(ctx, viewer, graphclient.ActionViewPosts, authorIDs)
+	out, hiddenResolved := s.denyHiddenAuthors(ctx, viewer, out)
+	return out, graphResolved && hiddenResolved
 }
 
 // denyHiddenAuthors forces false onto every target in `answers` whose author
 // is currently hidden, leaving self-view (viewer == author) untouched. Same
 // fail-closed shape as graphCan: a lookup error denies the checked authors
-// rather than silently falling back to the graph's answer.
-func (s *Service) denyHiddenAuthors(ctx context.Context, viewer uuid.UUID, answers map[uuid.UUID]bool) map[uuid.UUID]bool {
+// rather than silently falling back to the graph's answer. The second
+// result is false when that lookup failed.
+func (s *Service) denyHiddenAuthors(ctx context.Context, viewer uuid.UUID, answers map[uuid.UUID]bool) (map[uuid.UUID]bool, bool) {
 	if s.hiddenAuthors == nil || len(answers) == 0 {
-		return answers
+		return answers, true
 	}
 	toCheck := make([]uuid.UUID, 0, len(answers))
 	for id := range answers {
@@ -213,7 +235,7 @@ func (s *Service) denyHiddenAuthors(ctx context.Context, viewer uuid.UUID, answe
 		toCheck = append(toCheck, id)
 	}
 	if len(toCheck) == 0 {
-		return answers
+		return answers, true
 	}
 	hidden, err := s.hiddenAuthors.AnyHidden(ctx, toCheck)
 	if err != nil {
@@ -221,12 +243,12 @@ func (s *Service) denyHiddenAuthors(ctx context.Context, viewer uuid.UUID, answe
 		for _, id := range toCheck {
 			answers[id] = false
 		}
-		return answers
+		return answers, false
 	}
 	for id := range hidden {
 		answers[id] = false
 	}
-	return answers
+	return answers, true
 }
 
 // canViewAuthor is the single-author form of canViewPosts.

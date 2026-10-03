@@ -6,14 +6,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsHomeHeaderCorner
 import com.us.android.core.designsystem.component.UsMomentumHeader
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 
 /**
  * The Momentum header with its live unread count, for Home — the one feed
- * page that still wears the full header (Reels has its hamburger-and-search
- * header, Friends a titled bar, since 2026-09-05). The pure layout is
+ * page that still wears the full header (Reels has its own glyphs over the
+ * video, Friends a titled bar, since 2026-09-05). The pure layout is
  * [UsMomentumHeader]; this only binds the badge.
+ *
+ * founder, 2026-10-02: Home keeps its own corner, [UsHomeHeaderCorner]
+ * (Messages, the bell, Search, More). Every other header draws the standard
+ * one (Search, the bell, More), so this is the one place that names Home's.
  *
  * ## WHY THE BADGE IS A COUNT AND NOT A DOT
  *
@@ -31,6 +36,8 @@ internal fun MomentumHeader(
     onOpenSearch: () -> Unit,
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
+    /** The three dots at the corner: the page's own menu. */
+    onOpenMore: () -> Unit,
     modifier: Modifier = Modifier,
     translucent: Boolean = false,
     showWordmark: Boolean = true,
@@ -44,11 +51,13 @@ internal fun MomentumHeader(
     UsMomentumHeader(
         unreadCount = count,
         onSearch = onOpenSearch,
-        onMessages = onOpenMessages,
         onNotifications = onOpenNotifications,
         modifier = modifier,
+        corner = UsHomeHeaderCorner,
+        onMessages = onOpenMessages,
         onHomeClick = onHomeClick,
         translucent = translucent,
         showWordmark = showWordmark,
+        onMore = onOpenMore,
     )
 }

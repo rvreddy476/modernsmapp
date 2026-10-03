@@ -9,7 +9,10 @@ import androidx.navigation.compose.composable
 import com.us.android.feature.tube.ui.TubeBarAction
 import com.us.android.feature.tube.ui.TubeTab
 import com.us.android.feature.tube.ui.channel.ChannelScreen
+import com.us.android.feature.tube.ui.collections.CollectionScreen
+import com.us.android.feature.tube.ui.collections.CollectionsScreen
 import com.us.android.feature.tube.ui.home.TubeHomeScreen
+import com.us.android.feature.tube.ui.offline.OfflineScreen
 import com.us.android.feature.tube.ui.saved.SavedVideosScreen
 import com.us.android.feature.tube.ui.scheduled.ScheduledPostsScreen
 import com.us.android.feature.tube.ui.subscriptions.SubscriptionsScreen
@@ -48,6 +51,29 @@ data object TubeScheduledRoute
 @Serializable
 data object TubeSavedRoute
 
+/** The collections the viewer made (header More → "Collections", 2026-10-02). */
+@Serializable
+data object TubeCollectionsRoute
+
+/**
+ * One collection'"'"'s videos (2026-10-02). [collectionId] is a collection the
+ * viewer made, or [WATCH_LATER] for the Watch later list, which the server
+ * keeps under an id the app only learns by asking for the list.
+ */
+@Serializable
+data class TubeCollectionRoute(val collectionId: String) {
+    companion object {
+        const val WATCH_LATER = "watch_later"
+    }
+}
+
+/**
+ * The offline copies on this device (header More → "Offline", 2026-10-02):
+ * what is kept to watch with no network, and the ways to let it go.
+ */
+@Serializable
+data object TubeOfflineRoute
+
 /** One video, playing. Pushed over a Tube page; [postId] is the post to open on. */
 @Serializable
 data class WatchRoute(val postId: String)
@@ -76,7 +102,8 @@ data class TubeDestinations(
      */
     val onOpenReels: () -> Unit,
     /**
-     * The "+" — the header's (2026-09-06) and the bar's alike. `:app` opens
+     * The bar's "+" (the header had one too from 2026-09-06 until 2026-10-02,
+     * when the founder removed it as a duplicate). `:app` opens
      * the Create sheet SCOPED TO TUBE: post a video, post a reel, go live,
      * and nothing else (founder, 2026-09-06: "only that plus button should
      * change according to the app we are on"). Which set that is belongs to
@@ -93,6 +120,19 @@ data class TubeDestinations(
     val onOpenScheduled: () -> Unit,
     /** The More sheet's "Saved videos": `:app` pushes [TubeSavedRoute]. */
     val onOpenSaved: () -> Unit,
+    /** The More sheet'"'"'s "Collections": `:app` pushes [TubeCollectionsRoute]. */
+    val onOpenCollections: () -> Unit,
+    /**
+     * One collection: a row of the Collections page, or the More sheet'"'"'s
+     * "Watch later" with [TubeCollectionRoute.WATCH_LATER]. `:app` pushes
+     * [TubeCollectionRoute].
+     */
+    val onOpenCollection: (collectionId: String) -> Unit,
+    /**
+     * The More sheet's "Offline", and the same row on a video's More sheet:
+     * `:app` pushes [TubeOfflineRoute].
+     */
+    val onOpenOffline: () -> Unit,
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {
@@ -103,7 +143,7 @@ data class TubeDestinations(
     }
 }
 
-/** Registers Tube's seven destinations. */
+/** Registers Tube'"'"'s ten destinations. */
 fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeHomeRoute> { TubeHomeScreen(destinations = destinations) }
     composable<TubeSubscriptionsRoute> { SubscriptionsScreen(destinations = destinations) }
@@ -111,10 +151,14 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeChannelRoute> { ChannelScreen(destinations = destinations) }
     composable<TubeScheduledRoute> { ScheduledPostsScreen(destinations = destinations) }
     composable<TubeSavedRoute> { SavedVideosScreen(destinations = destinations) }
+    composable<TubeCollectionsRoute> { CollectionsScreen(destinations = destinations) }
+    composable<TubeCollectionRoute> { CollectionScreen(destinations = destinations) }
+    composable<TubeOfflineRoute> { OfflineScreen(destinations = destinations) }
     composable<WatchRoute> {
         WatchScreen(
             onBack = destinations.onBack,
             onOpenAuthor = destinations.onOpenAuthor,
+            onOpenOffline = destinations.onOpenOffline,
         )
     }
 }
@@ -130,6 +174,16 @@ fun NavController.navigateToTubeChannel(userId: String) = navigate(TubeChannelRo
 
 /** The scheduled list, pushed over whichever Tube page opened the More sheet; single-top. */
 fun NavController.navigateToTubeScheduled() = navigate(TubeScheduledRoute) { launchSingleTop = true }
+
+/** The viewer'"'"'s collections, pushed the same way. */
+fun NavController.navigateToTubeCollections() = navigate(TubeCollectionsRoute) { launchSingleTop = true }
+
+/** One collection (or Watch later), pushed over whatever asked for it. */
+fun NavController.navigateToTubeCollection(collectionId: String) =
+    navigate(TubeCollectionRoute(collectionId)) { launchSingleTop = true }
+
+/** The offline copies, pushed the same way. */
+fun NavController.navigateToTubeOffline() = navigate(TubeOfflineRoute) { launchSingleTop = true }
 
 /** The saved videos, pushed the same way. */
 fun NavController.navigateToTubeSaved() = navigate(TubeSavedRoute) { launchSingleTop = true }

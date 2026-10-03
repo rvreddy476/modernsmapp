@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -218,7 +219,7 @@ internal fun ContinueCard(
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = RING_PLATE_ALPHA)),
+                            .background(UsTheme.extended.stage.copy(alpha = RING_PLATE_ALPHA)),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
@@ -227,14 +228,14 @@ internal fun ContinueCard(
                             style = MaterialTheme.typography.labelMedium,
                             fontSize = RING_TIME_SIZE,
                             fontWeight = FontWeight.Bold,
-                            color = Color.White,
+                            color = UsTheme.extended.onMedia,
                             maxLines = 1,
                         )
                         Text(
                             text = "left",
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = RING_LEFT_SIZE,
-                            color = Color.White.copy(alpha = META_ALPHA),
+                            color = UsTheme.extended.onMedia.copy(alpha = META_ALPHA),
                             maxLines = 1,
                         )
                     }
@@ -351,13 +352,13 @@ private fun ReelCard(item: FeedItem, thumb: VideoThumb, width: Dp, onClick: () -
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .height(REEL_SCRIM_HEIGHT)
-                .background(BottomScrim),
+                .background(bottomScrim()),
         )
         Text(
             text = item.displayTitle,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
             maxLines = TITLE_LINES,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
@@ -416,11 +417,11 @@ internal fun GridCard(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .height(TILE_SCRIM_HEIGHT)
-                .background(BottomScrim),
+                .background(bottomScrim()),
         )
         MoreGlyph(
             onClick = onMore,
-            tint = Color.White,
+            tint = UsTheme.extended.onMedia,
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(UsTheme.spacing.xs)
@@ -446,7 +447,7 @@ internal fun GridCard(
                 style = MaterialTheme.typography.labelLarge,
                 fontSize = TILE_TITLE_SIZE,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = TITLE_LINES,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -467,7 +468,7 @@ private fun CreatorLine(item: FeedItem) {
             text = item.creatorName,
             style = MaterialTheme.typography.labelSmall,
             fontSize = TINY_META_SIZE,
-            color = Color.White.copy(alpha = META_ALPHA),
+            color = UsTheme.extended.onMedia.copy(alpha = META_ALPHA),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false),
@@ -496,7 +497,7 @@ private fun TinyAvatar(name: String, url: String?) {
                 style = MaterialTheme.typography.labelSmall,
                 fontSize = TINY_INITIAL_SIZE,
                 fontWeight = FontWeight.Bold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
             )
         } else {
             AsyncImage(
@@ -540,9 +541,11 @@ internal fun SectionTitle(title: String, modifier: Modifier = Modifier) {
     )
 }
 
-/** Black at 70% on the bottom edge, gone at the top of the ramp. */
-private val BottomScrim: Brush = Brush.verticalGradient(
-    listOf(Color.Transparent, Color.Black.copy(alpha = 0.72f)),
+/** The stage at 72% on the bottom edge, gone at the top of the ramp: what a tile's title sits on. */
+@Composable
+@ReadOnlyComposable
+private fun bottomScrim(): Brush = Brush.verticalGradient(
+    listOf(Color.Transparent, UsTheme.extended.stage.copy(alpha = 0.72f)),
 )
 
 private const val PORTRAIT = 9f / 16f

@@ -6,7 +6,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -26,13 +25,14 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,9 +41,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsMessage
@@ -53,15 +53,18 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.live.data.EndedReason
 import com.us.android.feature.live.data.LiveChatMessageDto
+import com.us.android.feature.live.data.LiveGateAction
 import com.us.android.feature.live.data.LiveStatus
 import com.us.android.feature.live.data.LiveStreamDto
 import com.us.android.feature.live.data.hostMessageActions
 import com.us.android.feature.live.data.liveStatusOf
+import com.us.android.feature.live.data.overlayComments
 import com.us.android.feature.live.data.showsLiveBadge
 import com.us.android.feature.live.data.showsViewerCount
 import com.us.android.feature.live.data.viewerMessageActions
@@ -86,6 +89,8 @@ fun LiveHubScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     UsTheme(darkTheme = true) {
+        // 2026-10-02: the room is dark on a light device too, so both system bars keep light glyphs.
+        LightSystemBarGlyphs()
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -255,13 +260,17 @@ fun StatusBanner(copy: StatusCopy, modifier: Modifier = Modifier, busy: Boolean 
 @Composable
 fun GoLiveScreen(
     onClose: () -> Unit,
+    /** The "not yet" screen's "Create a post": `:app` opens the create flow. */
+    onCreatePost: () -> Unit,
+    /** The "not yet" screen's "Verify email": `:app` opens the account screen. */
+    onVerifyEmail: () -> Unit,
+    /** The "not yet" screen's "Verify phone number": `:app` opens the account screen. */
+    onVerifyPhone: () -> Unit,
     viewModel: GoLiveViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var permissionsGranted by remember { mutableStateOf(false) }
-    var confirmEnd by remember { mutableStateOf(false) }
-    var toolsOpen by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<LiveChatMessageDto?>(null) }
+    val panels = remember { HostPanels() }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants -> permissionsGranted = grants.values.all { it } }
@@ -269,14 +278,29 @@ fun GoLiveScreen(
     // On air, leaving asks first: a stray back press must not end a broadcast.
     val requestClose: () -> Unit = {
         if (state.isOnAir) {
-            confirmEnd = true
+            panels.confirmEnd = true
         } else {
             onClose()
         }
     }
-    BackHandler(enabled = state.isOnAir) { confirmEnd = true }
+    BackHandler(enabled = state.isOnAir) { panels.confirmEnd = true }
+    // Back from the create flow or the account screen: the answer may have changed.
+    LifecycleResumeEffect(viewModel) {
+        viewModel.onCheckAgain()
+        onPauseOrDispose {}
+    }
+    val onGateAction: (LiveGateAction) -> Unit = { action ->
+        when (action) {
+            LiveGateAction.CreatePost -> onCreatePost()
+            LiveGateAction.VerifyEmail -> onVerifyEmail()
+            LiveGateAction.VerifyPhone -> onVerifyPhone()
+            LiveGateAction.CheckAgain -> viewModel.onCheckAgain()
+        }
+    }
 
     UsTheme(darkTheme = true) {
+        // 2026-10-02: the room is dark on a light device too, so both system bars keep light glyphs.
+        LightSystemBarGlyphs()
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -289,11 +313,7 @@ fun GoLiveScreen(
                         if (showsViewerCount(status)) ViewerCountLabel(state.viewerCount)
                         LiveStatusPill(status)
                     }
-                    if (state.isOnAir) {
-                        IconButton(onClick = { toolsOpen = true }, modifier = Modifier.testTag("live-host-tools")) {
-                            Icon(UsIcons.Sliders, contentDescription = "Moderation", tint = UsTheme.extended.onMedia)
-                        }
-                    }
+                    if (state.isOnAir) HostBarActions(panels)
                 }
                 GoLivePhase(
                     state = state,
@@ -302,8 +322,9 @@ fun GoLiveScreen(
                     onRequestPermissions = {
                         permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
                     },
-                    onSelectMessage = { selected = it },
-                    onEnd = { confirmEnd = true },
+                    onOpenChat = { panels.chatOpen = true },
+                    onGateAction = onGateAction,
+                    onEnd = { panels.confirmEnd = true },
                 )
             }
             UsMessageHost(
@@ -312,38 +333,68 @@ fun GoLiveScreen(
             )
         }
 
-        if (confirmEnd) {
-            EndStreamDialog(
-                onConfirm = {
-                    confirmEnd = false
-                    viewModel.onEndStream()
-                },
-                onDismiss = { confirmEnd = false },
-            )
-        }
-        HostSheets(
-            state = state,
-            viewModel = viewModel,
-            selected = selected,
-            onClearSelected = { selected = null },
-            toolsOpen = toolsOpen,
-            onCloseTools = { toolsOpen = false },
-        )
+        HostSheets(state = state, viewModel = viewModel, panels = panels)
     }
 }
 
-/** The host's per-message menu and the moderators-and-bans sheet. */
-@Suppress("LongParameterList")
+/**
+ * What is open over the host's screen: the End confirmation, the full chat,
+ * the moderation tools, and the message whose menu is up. One holder rather
+ * than four screen locals, so the bar and the sheets can open and close them
+ * without the screen function growing a line per panel. Screen-local: a
+ * sheet does not need to outlive the process.
+ */
+@Stable
+private class HostPanels {
+    var confirmEnd by mutableStateOf(false)
+    var toolsOpen by mutableStateOf(false)
+    var chatOpen by mutableStateOf(false)
+    var selected by mutableStateOf<LiveChatMessageDto?>(null)
+}
+
+/** On air, the bar offers the full chat and the moderation tools. */
 @Composable
-private fun HostSheets(
-    state: GoLiveViewModel.UiState,
-    viewModel: GoLiveViewModel,
-    selected: LiveChatMessageDto?,
-    onClearSelected: () -> Unit,
-    toolsOpen: Boolean,
-    onCloseTools: () -> Unit,
-) {
-    selected?.let { message ->
+private fun HostBarActions(panels: HostPanels) {
+    IconButton(onClick = { panels.chatOpen = true }, modifier = Modifier.testTag("live-host-chat")) {
+        Icon(UsIcons.Comment, contentDescription = "Chat", tint = UsTheme.extended.onMedia)
+    }
+    IconButton(onClick = { panels.toolsOpen = true }, modifier = Modifier.testTag("live-host-tools")) {
+        Icon(UsIcons.Sliders, contentDescription = "Moderation", tint = UsTheme.extended.onMedia)
+    }
+}
+
+/** The End confirmation, the full chat, the host's per-message menu and the moderators-and-bans sheet. */
+@Composable
+private fun HostSheets(state: GoLiveViewModel.UiState, viewModel: GoLiveViewModel, panels: HostPanels) {
+    if (panels.confirmEnd) {
+        EndStreamDialog(
+            onConfirm = {
+                panels.confirmEnd = false
+                viewModel.onEndStream()
+            },
+            onDismiss = { panels.confirmEnd = false },
+        )
+    }
+    if (panels.chatOpen && state.isOnAir) {
+        LiveChatSheet(
+            chat = ChatSheetState(
+                messages = state.chat.messages,
+                hostId = state.hostId,
+                moderators = state.moderators,
+                hint = "Tap a message to moderate it.",
+                draft = state.draft,
+                sending = state.sending,
+                canChat = true,
+            ),
+            onMessageClick = { panels.selected = it },
+            onMessageLongClick = { panels.selected = it },
+            onDraftChanged = viewModel::onDraftChanged,
+            onSend = viewModel::onSendChat,
+            onDismiss = { panels.chatOpen = false },
+        )
+    }
+    val onClearSelected = { panels.selected = null }
+    panels.selected?.let { message ->
         HostMessageSheet(
             message = message,
             actions = hostMessageActions(message, state.hostId, state.moderators, state.banned),
@@ -354,13 +405,14 @@ private fun HostSheets(
             onDismiss = onClearSelected,
         )
     }
-    if (toolsOpen) {
+    if (panels.toolsOpen) {
         HostToolsSheet(
             moderators = state.moderators,
             banned = state.banned,
+            people = state.people,
             onRemoveModerator = viewModel::onRemoveModerator,
             onUnban = viewModel::onUnban,
-            onDismiss = onCloseTools,
+            onDismiss = { panels.toolsOpen = false },
         )
     }
 }
@@ -372,14 +424,24 @@ private fun GoLivePhase(
     permissionsGranted: Boolean,
     viewModel: GoLiveViewModel,
     onRequestPermissions: () -> Unit,
-    onSelectMessage: (LiveChatMessageDto) -> Unit,
+    onOpenChat: () -> Unit,
+    onGateAction: (LiveGateAction) -> Unit,
     onEnd: () -> Unit,
 ) {
     when (val phase = state.phase) {
+        GoLiveViewModel.Phase.Checking -> UsLoadingState(label = "Checking")
+
+        is GoLiveViewModel.Phase.NotYet -> LiveNotYetView(
+            gate = phase.gate,
+            busy = state.rechecking,
+            onAction = onGateAction,
+        )
+
         GoLiveViewModel.Phase.Setup -> GoLiveSetup(
             title = state.title,
             canGoLive = state.canGoLive && permissionsGranted,
             permissionsGranted = permissionsGranted,
+            viewerCap = state.viewerCap,
             onTitleChanged = viewModel::onTitleChanged,
             onRequestPermissions = onRequestPermissions,
             onGoLive = viewModel::onGoLive,
@@ -410,13 +472,18 @@ private fun GoLivePhase(
                         modifier = Modifier.background(UsTheme.extended.glassBg),
                     )
                 }
+                // The latest comments over the picture, so the host reads the
+                // room without leaving the camera (founder, 2026-10-02). A
+                // tap opens the full chat, where the host answers and moderates.
+                LiveChatOverlay(
+                    messages = state.chat.overlayComments(),
+                    hostId = state.hostId,
+                    moderators = state.moderators,
+                    onClick = onOpenChat,
+                    emptyHint = "No comments yet. Tap to open chat.",
+                    modifier = Modifier.align(Alignment.BottomStart),
+                )
             }
-            ChatList(
-                messages = state.chat.messages,
-                onMessageClick = onSelectMessage,
-                onMessageLongClick = onSelectMessage,
-                hint = "Tap a message to moderate it.",
-            )
             UsSecondaryButton(
                 text = "End stream",
                 onClick = onEnd,
@@ -477,6 +544,7 @@ private fun GoLiveSetup(
     title: String,
     canGoLive: Boolean,
     permissionsGranted: Boolean,
+    viewerCap: Int,
     onTitleChanged: (String) -> Unit,
     onRequestPermissions: () -> Unit,
     onGoLive: () -> Unit,
@@ -514,6 +582,15 @@ private fun GoLiveSetup(
                 .fillMaxWidth()
                 .testTag("live-start"),
         )
+        viewerCapNote(viewerCap)?.let { note ->
+            Spacer(Modifier.height(UsTheme.spacing.m))
+            Text(
+                note,
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.onMediaMuted,
+                modifier = Modifier.testTag("live-viewer-cap"),
+            )
+        }
     }
 }
 
@@ -525,8 +602,13 @@ fun LiveWatchScreen(
     viewModel: LiveWatchViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // Full screen (2026-10-02): the chat list steps aside and the latest
+    // comments float over the video instead. A tap on them brings the list back.
+    var fullScreen by rememberSaveable { mutableStateOf(false) }
 
     UsTheme(darkTheme = true) {
+        // 2026-10-02: the room is dark on a light device too, so both system bars keep light glyphs.
+        LightSystemBarGlyphs()
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -538,9 +620,11 @@ fun LiveWatchScreen(
                 LiveTopBar(title = state.title, onClose = onClose) {
                     if (showsViewerCount(state.status)) ViewerCountLabel(state.viewerCount)
                     LiveStatusPill(state.status)
-                    IconButton(onClick = viewModel::onReportStream, modifier = Modifier.testTag("live-report-stream")) {
-                        Icon(UsIcons.Flag, contentDescription = "Report stream", tint = UsTheme.extended.onMedia)
-                    }
+                    WatchBarActions(
+                        fullScreen = fullScreen,
+                        onToggleFullScreen = { fullScreen = !fullScreen },
+                        onReport = viewModel::onReportStream,
+                    )
                 }
                 Box(
                     modifier = Modifier
@@ -548,10 +632,22 @@ fun LiveWatchScreen(
                         .weight(1f),
                 ) {
                     WatchStage(state = state, viewModel = viewModel)
+                    if (fullScreen && chatShown(state)) {
+                        LiveChatOverlay(
+                            messages = state.chat.overlayComments(),
+                            hostId = state.hostId,
+                            moderators = state.moderators,
+                            onClick = { fullScreen = false },
+                            emptyHint = null,
+                            modifier = Modifier.align(Alignment.BottomStart),
+                        )
+                    }
                 }
-                if (!state.loading && state.joinError == null) {
-                    ChatList(
+                if (!fullScreen && chatShown(state)) {
+                    LiveChatList(
                         messages = state.chat.messages,
+                        hostId = state.hostId,
+                        moderators = state.moderators,
                         onMessageClick = null,
                         onMessageLongClick = viewModel::onMessageLongPress,
                         hint = if (state.canModerate) {
@@ -562,8 +658,9 @@ fun LiveWatchScreen(
                     )
                 }
                 if (state.canChat) {
-                    ChatComposer(
+                    LiveChatComposer(
                         draft = state.draft,
+                        sending = state.sending,
                         onDraftChanged = viewModel::onDraftChanged,
                         onSend = viewModel::onSendChat,
                     )
@@ -575,24 +672,48 @@ fun LiveWatchScreen(
             )
         }
 
-        state.selected?.let { message ->
-            ViewerMessageSheet(
-                message = message,
-                actions = viewerMessageActions(message, state.hostId, state.canModerate),
-                onAction = { action -> viewModel.onViewerAction(message, action) },
-                onDismiss = viewModel::onDismissMessage,
-            )
-        }
-        state.reportTarget?.let { target ->
-            LiveReportSheet(
-                aboutMessage = target is LiveWatchViewModel.ReportTarget.Message,
-                report = state.report,
-                onSubmit = viewModel::onSubmitReport,
-                onDismiss = viewModel::onDismissReport,
-            )
-        }
+        WatchSheets(state = state, viewModel = viewModel)
     }
 }
+
+/** Full screen (or back to the chat), and Report. */
+@Composable
+private fun WatchBarActions(fullScreen: Boolean, onToggleFullScreen: () -> Unit, onReport: () -> Unit) {
+    IconButton(onClick = onToggleFullScreen, modifier = Modifier.testTag("live-full-screen")) {
+        Icon(
+            if (fullScreen) UsIcons.Minimize else UsIcons.Maximize,
+            contentDescription = if (fullScreen) "Show chat" else "Full screen",
+            tint = UsTheme.extended.onMedia,
+        )
+    }
+    IconButton(onClick = onReport, modifier = Modifier.testTag("live-report-stream")) {
+        Icon(UsIcons.Flag, contentDescription = "Report stream", tint = UsTheme.extended.onMedia)
+    }
+}
+
+/** A moderator's menu for one message, and the report sheet. */
+@Composable
+private fun WatchSheets(state: LiveWatchViewModel.UiState, viewModel: LiveWatchViewModel) {
+    state.selected?.let { message ->
+        ViewerMessageSheet(
+            message = message,
+            actions = viewerMessageActions(message, state.hostId, state.canModerate),
+            onAction = { action -> viewModel.onViewerAction(message, action) },
+            onDismiss = viewModel::onDismissMessage,
+        )
+    }
+    state.reportTarget?.let { target ->
+        LiveReportSheet(
+            aboutMessage = target is LiveWatchViewModel.ReportTarget.Message,
+            report = state.report,
+            onSubmit = viewModel::onSubmitReport,
+            onDismiss = viewModel::onDismissReport,
+        )
+    }
+}
+
+/** The chat exists once the join has succeeded: no list and no overlay over a loader or a failure. */
+private fun chatShown(state: LiveWatchViewModel.UiState): Boolean = !state.loading && state.joinError == null
 
 /** The picture, or the truthful sentence about why there is none. */
 @Composable
@@ -626,93 +747,6 @@ private fun BoxScope.WatchStage(state: LiveWatchViewModel.UiState, viewModel: Li
     }
 }
 
-/**
- * The chat, newest at the bottom. `GET …/chat` is newest first, which is
- * exactly what a reversed layout wants at index 0 — no re-reversing.
- */
-@Composable
-private fun ChatList(
-    messages: List<LiveChatMessageDto>,
-    onMessageClick: ((LiveChatMessageDto) -> Unit)?,
-    onMessageLongClick: (LiveChatMessageDto) -> Unit,
-    hint: String,
-) {
-    if (messages.isEmpty()) {
-        Text(
-            "No messages yet.",
-            style = MaterialTheme.typography.bodySmall,
-            color = UsTheme.extended.onMediaMuted,
-            modifier = Modifier.padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.s),
-        )
-        return
-    }
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(CHAT_HEIGHT)
-            .testTag("live-chat"),
-        contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.s),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-        reverseLayout = true,
-    ) {
-        items(messages, key = { it.id }) { message ->
-            ChatRow(
-                message = message,
-                onClick = onMessageClick?.let { { it(message) } },
-                onLongClick = { onMessageLongClick(message) },
-            )
-        }
-        item(key = "hint") {
-            Text(hint, style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.onMediaMuted)
-        }
-    }
-}
-
-@Composable
-private fun ChatRow(message: LiveChatMessageDto, onClick: (() -> Unit)?, onLongClick: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick)
-            .testTag("live-chat-row"),
-    ) {
-        Text(
-            shortUserLabel(message.userId),
-            style = MaterialTheme.typography.labelSmall,
-            color = UsTheme.extended.onMediaMuted,
-        )
-        Text(message.text, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.onMedia)
-    }
-}
-
-@Composable
-private fun ChatComposer(draft: String, onDraftChanged: (String) -> Unit, onSend: () -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.m),
-    ) {
-        OutlinedTextField(
-            value = draft,
-            onValueChange = onDraftChanged,
-            placeholder = { Text("Say something…", style = MaterialTheme.typography.bodyMedium) },
-            textStyle = MaterialTheme.typography.bodyMedium,
-            singleLine = true,
-            modifier = Modifier
-                .weight(1f)
-                .testTag("live-chat-input"),
-        )
-        IconButton(
-            onClick = onSend,
-            modifier = Modifier.testTag("live-chat-send"),
-        ) {
-            Icon(UsIcons.Send, contentDescription = "Send", tint = UsTheme.extended.onMedia)
-        }
-    }
-}
-
 // ── Rendering ───────────────────────────────────────────────────────────
 
 /**
@@ -742,8 +776,6 @@ private fun VideoSurface(room: Room?, track: VideoTrack?, modifier: Modifier = M
         modifier = modifier,
     )
 }
-
-private val CHAT_HEIGHT = 160.dp
 
 // ── Previews ────────────────────────────────────────────────────────────
 
@@ -792,25 +824,6 @@ private fun RefusalViewPreview() {
     UsTheme(darkTheme = true) {
         Box(Modifier.background(MaterialTheme.colorScheme.scrim)) {
             RefusalView(refusal = GoLiveRefusal(LIVE_PILOT_COPY, canRetry = false), onTryAgain = {})
-        }
-    }
-}
-
-@Preview
-@Composable
-private fun ChatListPreview() {
-    UsTheme(darkTheme = true) {
-        Column(Modifier.background(MaterialTheme.colorScheme.scrim)) {
-            ChatList(
-                messages = listOf(
-                    LiveChatMessageDto(id = "2", userId = "aa11bb22", text = "newest"),
-                    LiveChatMessageDto(id = "1", userId = "cc33dd44", text = "older"),
-                ),
-                onMessageClick = null,
-                onMessageLongClick = {},
-                hint = "Press and hold a message to report it.",
-            )
-            ChatComposer(draft = "", onDraftChanged = {}, onSend = {})
         }
     }
 }

@@ -119,6 +119,7 @@ import com.us.android.feature.feed.navigation.navigateToHashtagPosts
 import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.feed.navigation.soundScreen
+import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.live.navigation.LiveWatchRoute
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
@@ -178,6 +179,9 @@ import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
+import com.us.android.feature.tube.navigation.navigateToTubeCollection
+import com.us.android.feature.tube.navigation.navigateToTubeCollections
+import com.us.android.feature.tube.navigation.navigateToTubeOffline
 import com.us.android.feature.tube.navigation.navigateToTubeSaved
 import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
@@ -646,6 +650,14 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenSearch = { navController.navigateToSearch(SearchOrigin.HOME) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenReels = onOpenReels,
+        // Home's More menu (2026-10-02): three screens that already exist.
+        onOpenMenuRow = { row ->
+            when (row) {
+                HomeMenuRow.FRIENDS -> navController.navigate(FriendsFeedRoute)
+                HomeMenuRow.LIVE -> navController.navigateToLiveHub()
+                HomeMenuRow.SETTINGS -> navController.navigateToSettings()
+            }
+        },
     )
 
     // The Friends feed: the same feed narrowed to mutual follows. A root
@@ -691,6 +703,17 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         onGoLive = { navController.navigateToGoLive() },
         onWatch = { streamId -> navController.navigateToLiveWatch(streamId) },
+        // Go live's "not yet" screen (2026-10-02). "Create a post" opens the
+        // Create hub on Text; Back from it (or from the new post) returns to
+        // the screen, which asks the server again. "Verify email" (and "Verify
+        // phone number", should the server still send that row) opens Manage
+        // account, the one screen that shows the email, the phone and their
+        // state. The emailed-code screen cannot be opened from here: it and
+        // resend-verification work only with the verification token that
+        // register or a refused sign-in issues, and a signed-in account has none.
+        onCreatePost = { navController.navigateToCreate(CreateSurface.Text) },
+        onVerifyEmail = { navController.navigateToManageAccount() },
+        onVerifyPhone = { navController.navigateToManageAccount() },
     )
 
     // Commerce — the buyer journey: catalogue → product → cart → address →
@@ -946,6 +969,9 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenSound = { soundId -> navController.navigateToSound(soundId) },
         onCreateWithSound = onCreateWithSound,
+        // The Offline page lives in Tube's graph; a reel's More sheet opens the same one.
+        onOpenOffline = { navController.navigateToTubeOffline() },
+        onOpenNotifications = { navController.navigateToNotifications() },
     )
     // A sound's page, pushed over Reels. A tile opens its reel in the Reels
     // TAB (the page has left the id in ReelsEntry, as the feeds do).
@@ -974,17 +1000,22 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenNotifications = { navController.navigateToNotifications() },
             onOpenReels = onOpenReels,
-            // Tube's "+" — the header's and the bar's — opens the Create
+            // Tube's "+" (the bar's; the header's was removed 2026-10-02) opens the Create
             // sheet scoped to Tube: video, reel, live (founder, 2026-09-06).
             // It used to jump straight into the video composer, which is why
             // there was nothing to find at the top and no way to start a reel
             // from inside the video app.
             onCreateVideo = { onOpenCreate(CreateScope.Tube) },
-            onOpenExplore = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
+            // The launcher itself, not "the Explore tab as it was left": the
+            // tab switch restored Tube on top of it. See navigateToLauncher.
+            onOpenExplore = { navController.navigateToLauncher() },
             onOpenTab = { tab -> navController.navigateToTubeTab(tab) },
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
             onOpenScheduled = { navController.navigateToTubeScheduled() },
             onOpenSaved = { navController.navigateToTubeSaved() },
+            onOpenCollections = { navController.navigateToTubeCollections() },
+            onOpenCollection = { id -> navController.navigateToTubeCollection(id) },
+            onOpenOffline = { navController.navigateToTubeOffline() },
         ),
     )
 

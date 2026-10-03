@@ -30,6 +30,12 @@ import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.PollVoteRequest
 import com.us.android.core.feed.data.dto.FeedAuthorDto
 import com.us.android.core.feed.data.dto.FeedItemDto
+import com.us.android.core.feed.offline.NoOfflineLibrary
+import com.us.android.core.feed.offline.OfflineCopy
+import com.us.android.core.feed.offline.OfflineLibrary
+import com.us.android.core.feed.offline.OfflineSaveResult
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.SAVES_ON_WIFI
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.feed.ui.more.moreFollowRow
 import com.us.android.core.feed.ui.more.toMoreState
@@ -45,6 +51,8 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.core.ui.UsOfflineAction
+import com.us.android.core.ui.UsOfflineMoreState
 import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostDontRecommendState
 import com.us.android.core.ui.UsPostMoreFollowRow
@@ -57,6 +65,8 @@ import com.us.android.feature.feed.ui.FeedTabState
 import com.us.android.feature.feed.ui.FeedViewModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -236,7 +246,7 @@ class PostMoreViewModelTest {
         val lifecycleApi = FakeLifecycleApi()
     }
 
-    private fun viewModel(h: Harness): PostMoreViewModel {
+    private fun viewModel(h: Harness, offline: OfflineLibrary = NoOfflineLibrary): PostMoreViewModel {
         val mapper = ErrorMapper(json)
         return PostMoreViewModel(
             engagement = EngagementStore(AcceptingWrites()),
@@ -248,6 +258,7 @@ class PostMoreViewModelTest {
             hidden = h.hidden,
             lifecycle = PostLifecycleRepository(h.lifecycleApi, mapper),
             analytics = NoOpAnalyticsRecorder,
+            offline = offline,
         )
     }
 
@@ -572,5 +583,104 @@ class PostMoreViewModelTest {
         assertThat(state.isBookmarked).isTrue()
         assertThat(state.isOwnPost).isFalse()
         assertThat(state.link).isEqualTo("https://momentum.app/p/p1")
+    }
+
+    // ── Offline copies (2026-10-02) ─────────────────────────────────────
+
+    /** The library, scripted: what the next save answers, and what it was asked. */
+    private class ScriptedOffline(var answer: OfflineSaveResult = OfflineSaveResult.Started) : OfflineLibrary {
+        val saved = mutableListOf<String>()
+        val removed = mutableListOf<String>()
+        override val state = MutableStateFlow(OfflineState(loaded = true))
+        override val notices = MutableSharedFlow<String>(extraBufferCapacity = 1)
+        override val wifiOnly = MutableStateFlow(true)
+        override suspend fun setWifiOnly(enabled: Boolean) = Unit
+        override suspend fun ensureLoaded() = Unit
+        override suspend fun save(item: FeedItem): OfflineSaveResult {
+            saved += item.id
+            return answer
+        }
+        override suspend fun remove(postId: String) {
+            removed += postId
+        }
+        override suspend fun removeAll() = Unit
+        override suspend fun refresh(force: Boolean) = Unit
+        override fun playable(postId: String): OfflineCopy? = null
+    }
+
+    @Test
+    fun `save offline asks the library for this post and a started save says nothing`() = runTest {
+        val offline = ScriptedOffline()
+        val vm = viewModel(Harness(emptyList()), offline)
+
+        vm.saveOffline(item("p1", "someone"))
+        advanceUntilIdle()
+
+        assertThat(offline.saved).containsExactly("p1")
+        assertThat(vm.offlineRefusal.value).isNull()
+        assertThat(vm.message.value).isNull()
+    }
+
+    /** The sheet stays open on Save offline, so the reason is read where the viewer is looking. */
+    @Test
+    fun `a refused save is read on the sheet, and opening the sheet again forgets it`() = runTest {
+        val offline = ScriptedOffline(OfflineSaveResult.Refused("The creator hasn't allowed saving this offline."))
+        val vm = viewModel(Harness(emptyList()), offline)
+
+        vm.saveOffline(item("p1", "someone"))
+        advanceUntilIdle()
+
+        assertThat(vm.offlineRefusal.value).isEqualTo("The creator hasn't allowed saving this offline.")
+
+        vm.opened()
+
+        assertThat(vm.offlineRefusal.value).isNull()
+    }
+
+    @Test
+    fun `a save held for wifi says so, and names where the switch is`() = runTest {
+        val vm = viewModel(Harness(emptyList()), ScriptedOffline(OfflineSaveResult.WaitingForWifi))
+
+        vm.saveOffline(item("p1", "someone"))
+        advanceUntilIdle()
+
+        assertThat(vm.message.value?.text).isEqualTo(SAVES_ON_WIFI)
+        assertThat(vm.message.value?.text).contains("Offline page")
+        assertThat(vm.offlineRefusal.value).isNull()
+    }
+
+    @Test
+    fun `cancel and remove both take the copy off the device`() = runTest {
+        val offline = ScriptedOffline()
+        val vm = viewModel(Harness(emptyList()), offline)
+
+        vm.removeOffline(item("p1", "someone"))
+        advanceUntilIdle()
+
+        assertThat(offline.removed).containsExactly("p1")
+    }
+
+    @Test
+    fun `a copy that went on its own is said in one quiet line`() = runTest {
+        val offline = ScriptedOffline()
+        val vm = viewModel(Harness(emptyList()), offline)
+        advanceUntilIdle()
+
+        offline.notices.emit("An offline copy was removed because it is no longer available.")
+        advanceUntilIdle()
+
+        assertThat(vm.message.value?.text).isEqualTo("An offline copy was removed because it is no longer available.")
+        assertThat(vm.message.value?.type).isEqualTo(UsMessageType.Info)
+    }
+
+    @Test
+    fun `the offline state handed to the sheet reaches its state, and a feed card has none`() {
+        val offline = UsOfflineMoreState(UsOfflineAction.SAVE)
+        val card = item("p1", "someone").toMoreState(EngagementOverlay(), FollowStatus.NONE, ownUserId = "me")
+        val video = item("p1", "someone")
+            .toMoreState(EngagementOverlay(), FollowStatus.NONE, ownUserId = "me", offline = offline)
+
+        assertThat(card.offline).isNull()
+        assertThat(video.offline).isEqualTo(offline)
     }
 }

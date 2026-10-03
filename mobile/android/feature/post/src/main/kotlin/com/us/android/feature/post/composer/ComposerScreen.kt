@@ -529,7 +529,7 @@ private fun ImageCard(
                     .padding(UsTheme.spacing.s)
                     .size(OVERLAY_BUTTON)
                     .clip(CircleShape)
-                    .background(SCRIM)
+                    .background(UsTheme.extended.mediaPlate)
                     .clickable(enabled = !state.isBusy, onClick = onRemove)
                     .semantics { contentDescription = "Remove photo" },
                 contentAlignment = Alignment.Center,
@@ -537,7 +537,7 @@ private fun ImageCard(
                 Icon(
                     imageVector = UsIcons.Close,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = UsTheme.extended.onMedia,
                     modifier = Modifier.size(OVERLAY_ICON),
                 )
             }
@@ -597,7 +597,7 @@ private fun AltChip(decided: Boolean, modifier: Modifier, onClick: () -> Unit) {
     Box(
         modifier = modifier
             .clip(shape)
-            .background(if (decided) SCRIM else MaterialTheme.colorScheme.error)
+            .background(if (decided) UsTheme.extended.mediaPlate else MaterialTheme.colorScheme.error)
             .clickable(onClick = onClick)
             .padding(horizontal = UsTheme.spacing.s, vertical = UsTheme.spacing.xs),
     ) {
@@ -605,7 +605,7 @@ private fun AltChip(decided: Boolean, modifier: Modifier, onClick: () -> Unit) {
             text = if (decided) "ALT" else "ALT +",
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
+            color = if (decided) UsTheme.extended.onMedia else MaterialTheme.colorScheme.onError,
         )
     }
 }
@@ -841,7 +841,7 @@ private fun DiscardConfirmation(onConfirm: () -> Unit, onCancel: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(SCRIM_HEAVY)
+            .background(UsTheme.extended.stage.copy(alpha = SCRIM_HEAVY_ALPHA))
             // Swallows taps so the canvas behind cannot be edited while a
             // destructive decision is open.
             .clickable(onClick = onCancel),
@@ -946,13 +946,7 @@ private const val ARTICLE_MIN_LINES = 12
 private const val IMAGE_ASPECT = 4f / 5f
 
 /**
- * Scrims for controls that sit ON a photo.
- *
- * Legible on any image without a border competing with it. The heavier value
- * is for the discard modal, where the surface behind must read as inactive.
+ * How much of the stage the discard modal lays over the canvas, so the surface
+ * behind reads as inactive. A control ON a photo takes the `mediaPlate` token.
  */
-private val SCRIM = Color.Black.copy(alpha = SCRIM_ALPHA)
-private val SCRIM_HEAVY = Color.Black.copy(alpha = SCRIM_HEAVY_ALPHA)
-
-private const val SCRIM_ALPHA = 0.6f
 private const val SCRIM_HEAVY_ALPHA = 0.8f

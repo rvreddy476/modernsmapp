@@ -135,8 +135,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		// Alternate audio tracks (2026-09-27): list is gated like serve, the
 		// writes are owner-only. Playback is /serve/dub_<lang>_<rung>.
 		h.registerAudioTrackRoutes(v1, authMW)
-		// MTube download (2026-09-27): owner, or post-service says the
-		// post allows it. 403 DOWNLOAD_NOT_ALLOWED otherwise.
+		// The one file-download route: the uploader only (2026-10-02);
+		// everyone else gets the 404 of an asset that does not exist.
 		h.registerDownloadRoutes(v1)
 	}
 

@@ -23,9 +23,9 @@ import com.us.android.core.designsystem.theme.UsTheme
 
 @Composable
 fun kitchenSwitchColors(): SwitchColors = SwitchDefaults.colors(
-    checkedThumbColor = Color.White,
-    checkedTrackColor = UsTheme.extended.accentSolid,
-    checkedBorderColor = UsTheme.extended.accentSolid,
+    checkedThumbColor = UsTheme.extended.onAccent,
+    checkedTrackColor = UsTheme.extended.accentStrong,
+    checkedBorderColor = UsTheme.extended.accentStrong,
     uncheckedThumbColor = UsTheme.extended.textMuted,
     uncheckedTrackColor = UsTheme.extended.bgRaised,
     uncheckedBorderColor = UsTheme.extended.borderMedium,

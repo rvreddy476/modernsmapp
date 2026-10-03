@@ -529,7 +529,7 @@ private fun EventBlock(event: CommunityEvent) {
                 .size(EVENT_TILE)
                 .background(UsTheme.extended.ctaGradient, RoundedCornerShape(UsTheme.radii.medium)),
         ) {
-            Icon(imageVector = UsIcons.Clock, contentDescription = null, tint = Color.White)
+            Icon(imageVector = UsIcons.Clock, contentDescription = null, tint = UsTheme.extended.onAccent)
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LINE_GAP)) {
             Text(
@@ -600,12 +600,14 @@ private fun ReactionBar(
             update.reactions.sortedByDescending { it.count }.take(MAX_REACTION_CHIPS).forEach { reaction ->
                 val mine = reaction.emoji == update.viewerReaction
                 val shape = RoundedCornerShape(UsTheme.radii.full)
+                val chipFill = if (mine) UsTheme.extended.selectedPill else UsTheme.extended.glassBg
+                val chipLine = if (mine) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
                     modifier = Modifier
-                        .background(if (mine) Color.White else UsTheme.extended.glassBg, shape)
-                        .border(HAIRLINE, if (mine) Color.White else UsTheme.extended.glassBorder, shape)
+                        .background(chipFill, shape)
+                        .border(HAIRLINE, chipLine, shape)
                         .pressScale({ onReact(reaction.emoji) })
                         .padding(horizontal = CHIP_HORIZONTAL, vertical = CHIP_VERTICAL)
                         .testTag("community_reaction:${update.id}:${reaction.emoji}"),
@@ -615,7 +617,7 @@ private fun ReactionBar(
                         text = reaction.count.toString(),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (mine) UsTheme.extended.brandNavy else UsTheme.extended.textPrimary,
+                        color = if (mine) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
                     )
                 }
             }
@@ -650,7 +652,7 @@ private fun ReactionBar(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .size(STRIP_TARGET)
-                            .background(if (mine) Color.White else Color.Transparent, CircleShape)
+                            .background(if (mine) UsTheme.extended.fillStrong else Color.Transparent, CircleShape)
                             .pressScale({ onReact(emoji) })
                             .testTag("community_strip:${update.id}:$emoji"),
                     ) {
@@ -685,7 +687,7 @@ private fun ComposeFab(onClick: () -> Unit, modifier: Modifier = Modifier) {
             .pressScale(onClick)
             .testTag("community_compose"),
     ) {
-        Icon(imageVector = UsIcons.Create, contentDescription = "Post an update", tint = Color.White)
+        Icon(imageVector = UsIcons.Create, contentDescription = "Post an update", tint = UsTheme.extended.onAccent)
     }
 }
 

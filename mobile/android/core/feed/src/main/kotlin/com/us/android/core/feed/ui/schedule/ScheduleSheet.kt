@@ -40,7 +40,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -85,10 +84,10 @@ fun ScheduleSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = Modifier.testTag("schedule-sheet"),
     ) {
@@ -109,12 +108,12 @@ fun ScheduleSheet(
                     title = null,
                     headline = null,
                     showModeToggle = false,
-                    colors = DatePickerDefaults.colors(containerColor = UsTheme.extended.bgCardSolid),
+                    colors = DatePickerDefaults.colors(containerColor = UsTheme.extended.bgSheet),
                 )
                 Step.TIME -> Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     TimePicker(
                         state = timeState,
-                        colors = TimePickerDefaults.colors(containerColor = UsTheme.extended.bgCardSolid),
+                        colors = TimePickerDefaults.colors(containerColor = UsTheme.extended.bgSheet),
                     )
                 }
             }
@@ -250,7 +249,6 @@ private fun Handle() {
 
 /** Where the picker opens by default: an hour ahead, on the hour's minute. */
 private const val DEFAULT_AHEAD_MILLIS = 60L * 60L * 1_000L
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private val SHEET_RADIUS = 28.dp
 private val HANDLE_WIDTH = 32.dp

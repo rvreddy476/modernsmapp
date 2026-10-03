@@ -29,7 +29,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -210,7 +209,7 @@ private fun CenterCreateButton(
         modifier = modifier
             .size(CENTER_BUTTON)
             .rotate(rotation)
-            .background(Color.White.copy(alpha = fill), shape)
+            .background(UsTheme.extended.textPrimary.copy(alpha = fill), shape)
             .border(CENTER_OUTLINE, muted.copy(alpha = 1f - fill), shape)
             .clickable(onClick = onClick)
             .semantics {
@@ -221,7 +220,7 @@ private fun CenterCreateButton(
         Icon(
             imageVector = UsIcons.Create,
             contentDescription = null,
-            tint = lerp(muted, CREATE_GLYPH_NAVY, fill),
+            tint = lerp(muted, UsTheme.extended.bgCardSolid, fill),
             modifier = Modifier.size(CENTER_GLYPH),
         )
     }
@@ -229,9 +228,6 @@ private fun CenterCreateButton(
 
 /** A quarter-turn less a bit: "+" read as "×". */
 private const val CENTER_ACTIVE_ROTATION = 45f
-
-/** Momentum ground navy; the plus reads as a cut-out in the white tile. */
-private val CREATE_GLYPH_NAVY = Color(0xFF041122)
 
 /**
  * The full five-tab bar, for the previews below.

@@ -162,10 +162,10 @@ fun UsPostMoreSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         dragHandle = null,
         modifier = modifier.testTag("post_more_sheet:${state.postId}"),
     ) {
@@ -209,7 +209,7 @@ private fun MoreConfirmations(
 ) {
     if (ui.confirmBlock) {
         ConfirmDialog(
-            title = "Block @${state.username}?",
+            title = state.blockConfirmTitle(),
             body = "They won't be able to see your posts or message you.",
             confirmLabel = "Block",
             testTag = "post_more_block_dialog",
@@ -225,7 +225,7 @@ private fun MoreConfirmations(
         // The sheet stays: the host answers through state.delete, and the
         // confirmation or the refusal is shown where the viewer is looking.
         ConfirmDialog(
-            title = "Delete post?",
+            title = state.deleteConfirmTitle(),
             body = "It will be removed from your profile and feeds. " +
                 "You can restore it from Recently deleted for 30 days.",
             confirmLabel = "Delete",
@@ -280,6 +280,10 @@ private class MorePresentation {
             UsPostMoreRow.SHOW_CONTROLS,
             UsPostMoreRow.QUALITY,
             UsPostMoreRow.USE_SOUND,
+            UsPostMoreRow.SAVE_OFFLINE,
+            UsPostMoreRow.CANCEL_OFFLINE,
+            UsPostMoreRow.REMOVE_OFFLINE,
+            UsPostMoreRow.OFFLINE_PAGE,
             -> onReelRow(row, callbacks, leaveThen)
             UsPostMoreRow.SAVE, UsPostMoreRow.UNSAVE -> callbacks.onToggleSave()
             UsPostMoreRow.COPY_LINK -> {
@@ -303,6 +307,10 @@ private class MorePresentation {
      * The reel's rows: Description and Quality unfold in place; Clear screen
      * leaves and then clears; Use this sound leaves and then asks — a refusal
      * is then read over the reel, not under a sheet that is going away.
+     *
+     * And a video's offline rows (2026-10-02): Save offline, Cancel and
+     * Remove STAY on the sheet, where the row turns into the save's progress
+     * or a refusal is read; Offline leaves and then opens the list.
      */
     private fun onReelRow(row: UsPostMoreRow, callbacks: UsPostMoreCallbacks, leaveThen: (() -> Unit) -> Unit) {
         when (row) {
@@ -310,6 +318,9 @@ private class MorePresentation {
             UsPostMoreRow.QUALITY -> qualityOpen = !qualityOpen
             UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS -> leaveThen(callbacks.onClearScreen)
             UsPostMoreRow.USE_SOUND -> leaveThen(callbacks.onUseSound)
+            UsPostMoreRow.SAVE_OFFLINE -> callbacks.onSaveOffline()
+            UsPostMoreRow.CANCEL_OFFLINE, UsPostMoreRow.REMOVE_OFFLINE -> callbacks.onRemoveOffline()
+            UsPostMoreRow.OFFLINE_PAGE -> leaveThen(callbacks.onOpenOffline)
             else -> error("not a reel row: $row")
         }
     }
@@ -330,9 +341,10 @@ private fun MoreMenu(
     val rowsEnabled = !state.busy &&
         delete != UsPostDeleteState.Deleting &&
         dontRecommend != UsPostDontRecommendState.Sending
-    // The one refusal the sheet can be showing: a delete's, or a "don't recommend"'s.
+    // The one refusal the sheet can be showing: a delete's, a "don't recommend"'s, or a Save offline's.
     val refusal = (delete as? UsPostDeleteState.Failed)?.message
         ?: (dontRecommend as? UsPostDontRecommendState.Failed)?.message
+        ?: state.offline?.refusal
     Box(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // One list, already in order: no groups, so no dividers between them.
@@ -373,13 +385,13 @@ private fun MoreMenu(
         )
         StatusPill(
             visible = delete == UsPostDeleteState.Deleted,
-            text = "Post deleted",
+            text = state.deletedText(),
             testTag = "post_more_deleted",
             modifier = Modifier.align(Alignment.TopCenter),
         )
         StatusPill(
             visible = dontRecommend == UsPostDontRecommendState.Done,
-            text = "We won't recommend posts from @${state.username}",
+            text = state.dontRecommendDoneText(),
             testTag = "post_more_dont_recommend_done",
             modifier = Modifier.align(Alignment.TopCenter),
         )
@@ -402,7 +414,7 @@ private fun MenuRow(
     onClick: () -> Unit,
     onSelectQuality: (UsReelQuality) -> Unit,
 ) {
-    val label = row.menuLabel(state.username)
+    val label = state.labelOf(row)
     val tint = if (row.isDestructive) UsTheme.extended.liveRed else UsTheme.extended.textPrimary
     val reel = state.reel
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -422,6 +434,9 @@ private fun MenuRow(
                 UsPostMoreRow.QUALITY -> {
                     { QualityValue(reel = reel, open = ui.qualityOpen) }
                 }
+                UsPostMoreRow.CANCEL_OFFLINE -> {
+                    { OfflineProgressValue(state.offline) }
+                }
                 else -> null
             },
             testTag = "post_more_row:${row.name.lowercase()}",
@@ -430,7 +445,7 @@ private fun MenuRow(
             UsPostMoreRow.WHY -> Unfolded(open = ui.reasonOpen, text = state.reasonText, testTag = "post_more_reason")
             UsPostMoreRow.DESCRIPTION -> Unfolded(
                 open = ui.descriptionOpen,
-                text = reel?.description.orEmpty(),
+                text = reel?.description.orEmpty().ifBlank { NO_DESCRIPTION },
                 testTag = "post_more_description",
             )
             UsPostMoreRow.QUALITY -> AnimatedVisibility(
@@ -443,6 +458,17 @@ private fun MenuRow(
             else -> Unit
         }
     }
+}
+
+/** How far the offline save is, at the right of its row: "42%", or what it is held for. */
+@Composable
+private fun OfflineProgressValue(offline: UsOfflineMoreState?) {
+    Text(
+        text = offlineProgressText(offline),
+        style = MaterialTheme.typography.bodyMedium,
+        color = UsTheme.extended.textMuted,
+        modifier = Modifier.testTag("post_more_offline_progress"),
+    )
 }
 
 /** Report and Delete are red: the two rows that cannot be taken back from the sheet. */
@@ -543,6 +569,10 @@ private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.SHOW_CONTROLS -> UsIcons.Minimize
     UsPostMoreRow.QUALITY -> UsIcons.Sliders
     UsPostMoreRow.USE_SOUND -> UsIcons.Music
+    UsPostMoreRow.SAVE_OFFLINE -> UsIcons.Download
+    UsPostMoreRow.CANCEL_OFFLINE -> UsIcons.Close
+    UsPostMoreRow.REMOVE_OFFLINE -> UsIcons.Trash
+    UsPostMoreRow.OFFLINE_PAGE -> UsIcons.ArrowDownToLine
     else -> null
 }
 
@@ -562,6 +592,10 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.SHOW_CONTROLS,
     UsPostMoreRow.QUALITY,
     UsPostMoreRow.USE_SOUND,
+    UsPostMoreRow.SAVE_OFFLINE,
+    UsPostMoreRow.CANCEL_OFFLINE,
+    UsPostMoreRow.REMOVE_OFFLINE,
+    UsPostMoreRow.OFFLINE_PAGE,
     -> error("a reel row: $this")
     UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK ->
         error("a row about the author: $this")
@@ -571,7 +605,7 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.SHARE -> UsIcons.Share
     UsPostMoreRow.WHY -> UsIcons.Info
     UsPostMoreRow.INTERESTED -> UsIcons.ThumbsUp
-    UsPostMoreRow.NOT_INTERESTED -> UsIcons.ThumbsDown
+    UsPostMoreRow.NOT_INTERESTED -> UsIcons.CircleSlash
     UsPostMoreRow.REPORT -> UsIcons.Flag
     UsPostMoreRow.DELETE -> UsIcons.Trash
 }
@@ -647,7 +681,7 @@ private fun ConfirmDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(DIALOG_RADIUS))
-                .background(UsTheme.extended.bgCardSolid)
+                .background(UsTheme.extended.bgSheet)
                 .padding(DIALOG_PADDING)
                 .testTag(testTag),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
@@ -796,7 +830,6 @@ internal fun Modifier.sheetPressScale(interaction: MutableInteractionSource, sca
 private const val CLIP_LABEL = "Post link"
 private const val LINK_COPIED_MILLIS = 2_000L
 private const val REPORT_LINGER_MILLIS = 1_400L
-private const val SCRIM_ALPHA = 0.55f
 private const val HANDLE_ALPHA = 0.35f
 private const val PRESS_SCALE = 0.85f
 private const val ROW_PRESS_SCALE = 0.97f
@@ -824,3 +857,13 @@ private val DIALOG_RADIUS = 20.dp
 private val DIALOG_PADDING = 22.dp
 private val DIALOG_TITLE_SIZE = 18.sp
 private val DIALOG_ACTION_SIZE = 14.sp
+
+/**
+ * What "Don't recommend" says once the server has it: the handle on a feed
+ * post, the channel on a long video (the web's sentence), the creator's
+ * handle on a reel.
+ */
+internal fun UsPostMoreState.dontRecommendDoneText(): String {
+    val channel = longVideo?.channelName?.takeIf { it.isNotBlank() }
+    return if (channel != null) "We won't recommend $channel any more" else "We won't recommend posts from @$username"
+}

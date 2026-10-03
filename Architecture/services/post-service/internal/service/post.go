@@ -226,6 +226,14 @@ type Service struct {
 	feedMedia       feedMediaSource
 	feedEnclosureMu sync.Mutex
 	feedEnclosures  map[uuid.UUID]feedEnclosureEntry
+
+	// Offline copies (offline_copies.go, 2026-10-02), each nil-safe: the
+	// store slice (nil = the Postgres store), the caption-track list (nil =
+	// media-service asked as the viewer) and the members-only answer (nil =
+	// CheckEntitlement). The media record comes from feedMedia above.
+	offline              offlineStore
+	offlineCaptionTracks offlineCaptionSource
+	offlineEntitlement   func(ctx context.Context, viewerID uuid.UUID, p *postgres.Post) (bool, error)
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {

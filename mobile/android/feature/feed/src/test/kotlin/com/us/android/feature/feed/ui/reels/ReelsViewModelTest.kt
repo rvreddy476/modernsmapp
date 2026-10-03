@@ -12,6 +12,7 @@ import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.datastore.ReelsSoundStore
+import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -30,6 +31,14 @@ import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedMediaDto
 import com.us.android.core.feed.data.dto.FeedSoundDto
+import com.us.android.core.feed.offline.NoOfflineLibrary
+import com.us.android.core.feed.offline.OfflineCopy
+import com.us.android.core.feed.offline.OfflineKind
+import com.us.android.core.feed.offline.OfflineLibrary
+import com.us.android.core.feed.offline.OfflineSaveResult
+import com.us.android.core.feed.offline.OfflineSound
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.OfflineStream
 import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.PlaybackKind
@@ -62,6 +71,7 @@ import com.us.android.feature.feed.data.subscriptionGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
@@ -257,12 +267,14 @@ class ReelsViewModelTest {
         val soundEntry: SoundEntry = SoundEntry(),
         val soundStore: FakeSoundStore = FakeSoundStore(),
         val watch: VideoWatchTracker = VideoWatchTracker.disabled(),
+        val writes: EngagementWrites = AcceptingWrites(),
+        val offline: OfflineLibrary = NoOfflineLibrary,
     )
 
-    private fun viewModel(h: Harness = Harness()) = ReelsViewModel(
+    private fun viewModel(h: Harness = Harness(), store: EngagementStore = EngagementStore(h.writes)) = ReelsViewModel(
         repository = FeedRepository(h.api, ErrorMapper(json)) { it },
         urlResolver = resolver,
-        engagement = EngagementStore(AcceptingWrites()),
+        engagement = store,
         shares = EngagementRepository(UnusedEngagementApi(), ErrorMapper(json)),
         tracker = h.tracker,
         publishActions = h.actions,
@@ -274,6 +286,7 @@ class ReelsViewModelTest {
         sounds = SoundsRepository(h.sounds, ErrorMapper(json)) { it },
         soundEntry = h.soundEntry,
         soundStore = h.soundStore,
+        offline = h.offline,
         hidden = HiddenPosts(),
     )
 
@@ -960,6 +973,145 @@ class ReelsViewModelTest {
         assertThat(h.entry.requested.value).isNull()
     }
 
+    // ── Offline copies (2026-10-02) ─────────────────────────────────────
+
+    /** Copies "on this device", scripted: what is playable right now, by post. */
+    private class StoredCopies(vararg copies: OfflineCopy) : OfflineLibrary {
+        val held = copies.associateBy { it.postId }.toMutableMap()
+        override val state = MutableStateFlow(OfflineState(loaded = true))
+        override val notices = MutableSharedFlow<String>()
+        override val wifiOnly = MutableStateFlow(true)
+        override suspend fun setWifiOnly(enabled: Boolean) = Unit
+        override suspend fun ensureLoaded() = Unit
+        override suspend fun save(item: FeedItem): OfflineSaveResult = OfflineSaveResult.Started
+        override suspend fun remove(postId: String) {
+            held -= postId
+        }
+        override suspend fun removeAll() = Unit
+        override suspend fun refresh(force: Boolean) = Unit
+        override fun playable(postId: String): OfflineCopy? = held[postId]
+    }
+
+    private fun storedCopy(postId: String = "p", withSound: Boolean = false) = OfflineCopy(
+        postId = postId,
+        kind = OfflineKind.REEL,
+        title = "Kept reel",
+        channelName = "Ada",
+        durationMs = 28_400L,
+        expiresAtMs = Long.MAX_VALUE,
+        recheckAfterSeconds = 172_800L,
+        grantedAtMs = 0L,
+        lastCheckedAtMs = 0L,
+        stored = true,
+        video = OfflineStream("$postId/video", "http://127.0.0.1:8080/v1/media/m/serve/480p", "video/mp4", 100L),
+        sound = if (withSound) {
+            OfflineSound(
+                stream = OfflineStream("$postId/sound", "http://127.0.0.1:8080/v1/audio/s1/serve", "audio/mp4", 0L),
+                startMs = 1_500L,
+                soundId = "s1",
+            )
+        } else {
+            null
+        },
+    )
+
+    private val addedSound = ReelSound(
+        id = "s1",
+        title = "Monsoon",
+        artist = "Ada",
+        startMs = 1_500L,
+        durationMs = 28_400L,
+        useCount = 0,
+        sourcePostId = null,
+        creatorUserId = null,
+    )
+
+    @Test
+    fun `a reel with a copy on the device plays the copy, not the network`() {
+        val vm = viewModel(Harness(offline = StoredCopies(storedCopy())))
+        val reel = item(video())
+
+        val playback = vm.playback(reel)!!
+
+        assertThat(playback.kind).isEqualTo(PlaybackKind.Offline)
+        assertThat(playback.cacheKey).isEqualTo("p/video")
+    }
+
+    @Test
+    fun `a reel with no copy plays from the network, as before`() {
+        val vm = viewModel(Harness(offline = StoredCopies()))
+        val reel = item(video())
+
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+    }
+
+    /** The pool re-prepares a page whose playback changes; a swap would restart the reel from the top. */
+    @Test
+    fun `a copy that finishes saving mid-visit does not swap the source under the reel`() {
+        val copies = StoredCopies()
+        val vm = viewModel(Harness(offline = copies))
+        val reel = item(video())
+        val before = vm.playback(reel)
+
+        copies.held["p"] = storedCopy()
+
+        assertThat(vm.playback(reel)).isEqualTo(before)
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+    }
+
+    @Test
+    fun `a copy removed mid-visit sends the reel back to the network`() {
+        val copies = StoredCopies(storedCopy())
+        val vm = viewModel(Harness(offline = copies))
+        val reel = item(video())
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Offline)
+
+        copies.held.clear()
+
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+    }
+
+    /** No network, or a post the server no longer serves: the copy kept on the device still opens. */
+    @Test
+    fun `an entry that cannot be fetched opens from the copy kept on the device`() = runTest {
+        val h = Harness(offline = StoredCopies(storedCopy("kept")))
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        h.entry.open("kept")
+
+        vm.resolveEntry(emptyList())
+        advanceUntilIdle()
+
+        val head = vm.head.value as ReelsHead.Live
+        assertThat(head.item.id).isEqualTo("kept")
+        assertThat(head.item.title).isEqualTo("Kept reel")
+        assertThat(vm.entryTarget.value).isEqualTo("kept")
+        assertThat(vm.playback(head.item)!!.kind).isEqualTo(PlaybackKind.Offline)
+    }
+
+    @Test
+    fun `a stored reel's added sound is played from the device, where the row says it starts`() {
+        val vm = viewModel(Harness(offline = StoredCopies(storedCopy(withSound = true))))
+        val reel = item(video()).copy(sound = addedSound)
+
+        val track = vm.soundTrack(reel)!!
+
+        assertThat(track.id).isEqualTo("s1")
+        assertThat(track.startMs).isEqualTo(1_500L)
+        assertThat(track.stored!!.kind).isEqualTo(PlaybackKind.Offline)
+        assertThat(track.stored!!.cacheKey).isEqualTo("p/sound")
+    }
+
+    @Test
+    fun `a sound is played from the network when the reel has no copy, and not at all when the row has none`() {
+        val online = viewModel(Harness(offline = StoredCopies()))
+        val stored = viewModel(Harness(offline = StoredCopies(storedCopy(withSound = true))))
+
+        assertThat(online.soundTrack(item(video()).copy(sound = addedSound))!!.stored).isNull()
+        // The row decides WHETHER a sound plays; the copy only decides where it is read from.
+        assertThat(stored.soundTrack(item(video()))).isNull()
+    }
+
     /** An entry that is already the head — tapped twice from the feed — is a scroll to page 0, no fetch. */
     @Test
     fun `an entry that is already the head is not fetched again`() = runTest {
@@ -1218,6 +1370,101 @@ class ReelsViewModelTest {
 
         assertThat(h.api.postRequests).containsExactly("post-9", "post-9", "post-9")
         assertThat(h.actions.calls).containsExactly("dismiss:key-1")
+    }
+
+    // ── Save on the rail (2026-10-02) ───────────────────────────────────
+
+    /** A server for the rail's writes that keeps its truth and can refuse. */
+    private class RailServer : EngagementWrites {
+        var saved = false
+        var liked = false
+        var refuse = false
+        val calls = mutableListOf<String>()
+
+        private fun answer(name: String, apply: () -> Unit): AppResult<Unit> {
+            calls += name
+            if (refuse) return AppResult.Failure(com.us.android.core.common.error.AppError.NoNetwork())
+            apply()
+            return AppResult.Success(Unit)
+        }
+
+        override suspend fun react(postId: String, reaction: String) = answer("POST reactions") { liked = true }
+        override suspend fun unreact(postId: String) = answer("DELETE reactions") { liked = false }
+        override suspend fun setBookmarked(postId: String, bookmarked: Boolean) =
+            answer(if (bookmarked) "POST bookmark" else "DELETE bookmark") { saved = bookmarked }
+        override suspend fun repost(postId: String) = answer("POST repost") {}
+        override suspend fun removeRepost(postId: String) = answer("DELETE repost") {}
+    }
+
+    @Test
+    fun `saving a reel lights the rail, reaches the server, and a second tap removes it`() {
+        val server = RailServer()
+        val viewModel = viewModel(Harness(writes = server))
+
+        viewModel.onBookmark("p", serverBookmarked = false)
+
+        assertThat(viewModel.overlays.value["p"]?.bookmarked).isTrue()
+        assertThat(server.saved).isTrue()
+        assertThat(viewModel.engagementMessage.value).isNull()
+
+        viewModel.onBookmark("p", serverBookmarked = false)
+
+        assertThat(viewModel.overlays.value["p"]?.bookmarked).isFalse()
+        assertThat(server.saved).isFalse()
+        assertThat(server.calls).containsExactly("POST bookmark", "DELETE bookmark").inOrder()
+    }
+
+    /** Before 2026-10-02 this rollback was silent: the glyph went back and the reel said nothing. */
+    @Test
+    fun `a refused save puts the rail back and says so over the reel`() {
+        val server = RailServer().apply { refuse = true }
+        val viewModel = viewModel(Harness(writes = server))
+
+        viewModel.onBookmark("p", serverBookmarked = false)
+
+        assertThat(viewModel.overlays.value["p"]?.bookmarked).isFalse()
+        assertThat(viewModel.engagementMessage.value?.text).isEqualTo("Couldn't save this reel. Try again.")
+
+        viewModel.dismissEngagementMessage()
+        assertThat(viewModel.engagementMessage.value).isNull()
+    }
+
+    @Test
+    fun `a refused like puts the heart back and says so`() {
+        val server = RailServer().apply { refuse = true }
+        val viewModel = viewModel(Harness(writes = server))
+
+        viewModel.onReact("p", serverReacted = false)
+
+        assertThat(viewModel.overlays.value["p"]?.reacted).isFalse()
+        assertThat(viewModel.engagementMessage.value?.text).isEqualTo("Couldn't save your like. Try again.")
+    }
+
+    /**
+     * The reel is saved, Reels is left, and the same reel comes round again
+     * from a page that still says "not saved": a second screen over the same
+     * store shows it saved, and its tap un-saves rather than saving twice.
+     */
+    @Test
+    fun `a saved reel is still saved when the reels screen is opened again`() {
+        val server = RailServer()
+        val store = EngagementStore(server)
+        val first = viewModel(Harness(), store)
+        first.onBookmark("p", serverBookmarked = false)
+
+        val reopened = viewModel(Harness(), store)
+
+        assertThat(reopened.overlays.value["p"]?.bookmarked).isTrue()
+        reopened.onBookmark("p", serverBookmarked = false)
+        assertThat(server.saved).isFalse()
+        assertThat(server.calls).containsExactly("POST bookmark", "DELETE bookmark").inOrder()
+    }
+
+    @Test
+    fun `each rail action is worded by what it was`() {
+        assertThat(reelEngagementRefusal(EngagementAction.BOOKMARK)).isEqualTo("Couldn't save this reel. Try again.")
+        assertThat(reelEngagementRefusal(EngagementAction.REACTION)).isEqualTo("Couldn't save your like. Try again.")
+        assertThat(reelEngagementRefusal(EngagementAction.REPOST)).isEqualTo("Couldn't repost that. Try again.")
     }
 
     // ── The rail ────────────────────────────────────────────────────────

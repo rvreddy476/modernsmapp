@@ -33,7 +33,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
@@ -212,21 +211,21 @@ private fun TrimShade(startX: Float, endX: Float, widthPx: Float) {
         modifier = Modifier
             .fillMaxHeight()
             .width(with(density) { startX.toDp() })
-            .background(Color.Black.copy(alpha = OUTSIDE_DIM)),
+            .background(UsTheme.extended.stage.copy(alpha = OUTSIDE_DIM)),
     )
     Box(
         modifier = Modifier
             .fillMaxHeight()
             .offset { IntOffset(endX.roundToInt(), 0) }
             .width(with(density) { (widthPx - endX).coerceAtLeast(0f).toDp() })
-            .background(Color.Black.copy(alpha = OUTSIDE_DIM)),
+            .background(UsTheme.extended.stage.copy(alpha = OUTSIDE_DIM)),
     )
     Box(
         modifier = Modifier
             .offset { IntOffset(startX.roundToInt(), 0) }
             .width(with(density) { (endX - startX).coerceAtLeast(0f).toDp() })
             .fillMaxHeight()
-            .border(HANDLE_STROKE, Color.White, RoundedCornerShape(UsTheme.radii.small)),
+            .border(HANDLE_STROKE, UsTheme.extended.onMedia, RoundedCornerShape(UsTheme.radii.small)),
     )
 }
 
@@ -239,7 +238,7 @@ private fun TrimHandle(x: Float, testTag: String) {
             .fillMaxHeight()
             .padding(vertical = HANDLE_INSET)
             .clip(RoundedCornerShape(UsTheme.radii.small))
-            .background(Color.White)
+            .background(UsTheme.extended.onMedia)
             .testTag(testTag),
         contentAlignment = Alignment.Center,
     ) {
@@ -247,7 +246,7 @@ private fun TrimHandle(x: Float, testTag: String) {
             modifier = Modifier
                 .size(width = HANDLE_GRIP_WIDTH, height = HANDLE_GRIP_HEIGHT)
                 .clip(RoundedCornerShape(UsTheme.radii.full))
-                .background(UsTheme.extended.brandNavy.copy(alpha = GRIP_ALPHA)),
+                .background(UsTheme.extended.stage.copy(alpha = GRIP_ALPHA)),
         )
     }
 }
@@ -316,7 +315,7 @@ private fun LookTile(
                 .background(UsTheme.extended.bgCard)
                 .border(
                     width = if (selected) LOOK_STROKE else HAIRLINE,
-                    color = if (selected) Color.White else UsTheme.extended.borderSubtle,
+                    color = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.borderSubtle,
                     shape = shape,
                 ),
         ) {
@@ -335,7 +334,7 @@ private fun LookTile(
             style = MaterialTheme.typography.labelSmall,
             fontSize = LOOK_LABEL_SIZE,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            color = if (selected) Color.White else UsTheme.extended.textMuted,
+            color = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.textMuted,
         )
     }
 }
@@ -416,8 +415,8 @@ internal fun StudioChip(label: String, selected: Boolean, onClick: () -> Unit, e
     Box(
         modifier = Modifier
             .clip(shape)
-            .background(if (selected) Color.White else UsTheme.extended.glassBg)
-            .border(HAIRLINE, if (selected) Color.White else UsTheme.extended.glassBorder, shape)
+            .background(if (selected) UsTheme.extended.selectedPill else UsTheme.extended.glassBg)
+            .border(HAIRLINE, if (selected) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder, shape)
             .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
             .pressDim(interaction)
             .padding(horizontal = CHIP_PAD_H, vertical = CHIP_PAD_V)
@@ -433,7 +432,7 @@ internal fun StudioChip(label: String, selected: Boolean, onClick: () -> Unit, e
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
             color = when {
-                selected -> UsTheme.extended.brandNavy
+                selected -> UsTheme.extended.onSelectedPill
                 enabled -> UsTheme.extended.textPrimary
                 else -> UsTheme.extended.textGhost
             },

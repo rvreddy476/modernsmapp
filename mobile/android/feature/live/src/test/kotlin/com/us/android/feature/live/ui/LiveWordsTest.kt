@@ -105,9 +105,4 @@ class LiveWordsTest {
         assertThat(reportStateFor(AppError.Unknown(code = null, statusCode = 400))).isEqualTo(UsPostReportState.Failed)
         assertThat(reportStateFor(AppError.RateLimited(retryAfterSeconds = null))).isEqualTo(UsPostReportState.Failed)
     }
-
-    @Test
-    fun `a user is labelled by the first six characters of their id`() {
-        assertThat(shortUserLabel("5f0c2a9e-1111-2222")).isEqualTo("user 5f0c2a")
-    }
 }

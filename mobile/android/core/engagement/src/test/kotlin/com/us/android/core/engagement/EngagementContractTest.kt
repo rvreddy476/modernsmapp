@@ -97,14 +97,20 @@ class EngagementContractTest {
      * to work and unsaving would silently re-save.
      */
     @Test
-    fun `saving sends POST and unsaving sends DELETE`() = runTest {
+    fun `saving sends POST and unsaving sends DELETE, both to the post's bookmark`() = runTest {
         enqueue(200, """{"data":{"bookmarked":true}}""")
         assertThat(repository.setBookmarked("p", true)).isInstanceOf(AppResult.Success::class.java)
-        assertThat(server.takeRequest().method).isEqualTo("POST")
+        val save = server.takeRequest()
+        assertThat(save.method).isEqualTo("POST")
+        // The path the web's Save calls, on a reel and on a post alike (2026-10-02: pinned).
+        assertThat(save.target).isEqualTo("/v1/posts/p/bookmark")
+        assertThat(save.body?.size ?: 0).isEqualTo(0)
 
         enqueue(200, """{"data":{"bookmarked":false}}""")
         assertThat(repository.setBookmarked("p", false)).isInstanceOf(AppResult.Success::class.java)
-        assertThat(server.takeRequest().method).isEqualTo("DELETE")
+        val unsave = server.takeRequest()
+        assertThat(unsave.method).isEqualTo("DELETE")
+        assertThat(unsave.target).isEqualTo("/v1/posts/p/bookmark")
     }
 
     /** Both directions are idempotent: repeating a call repeats the result. */

@@ -39,11 +39,85 @@ data class UsPostMoreState(
     /** True while a one-shot action (block) is on the wire; the rows go inert. */
     val busy: Boolean = false,
     /**
-     * Present when the sheet was opened from a REEL: the group that goes
-     * above everything else (founder, 2026-09-04, from YouTube Shorts). Null
-     * on a feed card, and the card's sheet is exactly what it was.
+     * What a VIDEO's rows need: the caption Description unfolds, the Quality
+     * picker's options, whether "Use this sound" is offered. Set by Reels
+     * (founder, 2026-09-04) and, since 2026-10-02, by the long video's watch
+     * screen too — the two share one menu ([videoRows]). Null on a feed card,
+     * and the card's sheet is exactly what it was. The name is historical.
      */
     val reel: UsReelMoreState? = null,
+    /**
+     * Present when the sheet was opened from a LONG VIDEO (2026-10-02). It
+     * no longer changes WHICH rows are shown — a long video's are a reel's —
+     * only the words that say "video" and the channel a block names. Null on
+     * a feed card and on a reel.
+     */
+    val longVideo: UsLongVideoMoreState? = null,
+    /**
+     * Offline copies (2026-10-02), on a VIDEO's sheet whose host keeps them:
+     * which of Save offline / Cancel / Remove this video offers, and the
+     * "Offline" row that opens the list. Null where the host has no offline
+     * copies to offer (a feed card), and the sheet is then exactly what it was.
+     */
+    val offline: UsOfflineMoreState? = null,
+) {
+    /** Which of the three menus this is. A long video wins over a reel; a sheet is never both. */
+    val surface: UsPostMoreSurface
+        get() = when {
+            longVideo != null -> UsPostMoreSurface.LONG_VIDEO
+            reel != null -> UsPostMoreSurface.REEL
+            else -> UsPostMoreSurface.POST
+        }
+}
+
+/**
+ * Where the sheet was opened from. A feed post has its own list of rows; a
+ * reel and a long video share one (founder, 2026-10-02: "More options must
+ * be the same in Reels and in long videos").
+ */
+enum class UsPostMoreSurface { POST, REEL, LONG_VIDEO }
+
+/**
+ * What the sheet offers about an offline copy of this video (2026-10-02).
+ *
+ * founder, 2026-10-02: "Keep a copy is not direct download. It should be
+ * like to see offline in the app only." So the row never says "download"
+ * and never leads to a file: it asks the app to keep the video inside
+ * itself, and the Offline page is where it is watched.
+ */
+@Immutable
+data class UsOfflineMoreState(
+    val action: UsOfflineAction,
+    /** While [UsOfflineAction.CANCEL]: how far the save is, 0..1; null while the length is not known. */
+    val progress: Float? = null,
+    /** While [UsOfflineAction.CANCEL]: what the save is held for ("Waiting for Wi-Fi"), in place of a percentage. */
+    val waiting: String? = null,
+    /** Why the last Save offline was refused, shown under the rows; null when there is nothing to say. */
+    val refusal: String? = null,
+)
+
+/** Which offline row a video shows. The host decides; the sheet only draws it. */
+enum class UsOfflineAction {
+    /** Nothing to offer: the creator has not allowed it and the video is not the viewer's own. */
+    NONE,
+
+    /** No copy on this device: "Save offline". */
+    SAVE,
+
+    /** A save is in flight: "Cancel offline save", with its progress at the right. */
+    CANCEL,
+
+    /** A copy is stored: "Remove offline copy". */
+    REMOVE,
+}
+
+/** What the long video's menu needs beyond the post's own state. */
+@Immutable
+data class UsLongVideoMoreState(
+    /** The channel's name: what the block confirmation names ("Block Clee Builds?"). */
+    val channelName: String,
+    /** The creator turned sharing off (`hide_share`): no Share row. */
+    val shareHidden: Boolean = false,
 )
 
 /**
@@ -67,6 +141,8 @@ data class UsReelMoreState(
      * draws the row.
      */
     val canUseSound: Boolean = false,
+    /** The creator turned sharing off (`hide_share`): no Share row, as the rail has no share glyph. */
+    val shareHidden: Boolean = false,
 ) {
     /**
      * Auto alone means there is nothing to pick — the reel plays its original
@@ -151,7 +227,7 @@ sealed interface UsPostDontRecommendState {
 
 /** One row of the sheet's menu. The order they are DRAWN in is [rows]'s: alphabetical, by the label shown. */
 enum class UsPostMoreRow(val label: String) {
-    /** Reels only: the full caption, unfolded inline. */
+    /** Videos (a reel, a long video): the full caption, unfolded inline. */
     DESCRIPTION("Description"),
 
     /** Reels only: full mode — the header and the bar go, the reel stays. */
@@ -160,11 +236,23 @@ enum class UsPostMoreRow(val label: String) {
     /** Reels only: [CLEAR_SCREEN]'s other face, while full mode is on. */
     SHOW_CONTROLS("Show controls"),
 
-    /** Reels only: the rendition picker, the current choice at the right. */
+    /** Videos (a reel, a long video): the rendition picker, the current choice at the right. */
     QUALITY("Quality"),
 
     /** Reels only: make a reel with this reel's sound. */
     USE_SOUND("Use this sound"),
+
+    /** Videos: keep this video inside the app, to watch with no network. Never a file download. */
+    SAVE_OFFLINE("Save offline"),
+
+    /** Videos: [SAVE_OFFLINE]'s face while the save is in flight; the progress sits at the right. */
+    CANCEL_OFFLINE("Cancel offline save"),
+
+    /** Videos: a copy is stored on this device. */
+    REMOVE_OFFLINE("Remove offline copy"),
+
+    /** Videos: the list of what is kept on this device. */
+    OFFLINE_PAGE("Offline"),
     SAVE("Save"),
     UNSAVE("Unsave"),
     COPY_LINK("Copy link"),
@@ -190,17 +278,26 @@ enum class UsPostMoreRow(val label: String) {
  * like the web, wherever the sheet is used — feed posts, reels and long
  * video. It replaces the three groups taken from the Instagram capture
  * (2026-09-04) and the reel's own group above them (YouTube Shorts,
- * 2026-09-04). The order is by the label actually SHOWN ([menuLabel]), so
+ * 2026-09-04). The order is by the label actually SHOWN ([labelOf]), so
  * "Don't recommend @user" sorts under D and "Unfollow @user" under U.
  *
- * WHICH rows appear is unchanged, and is [offeredRows]'s decision.
+ * WHICH rows appear is [offeredRows]'s decision.
  */
 fun UsPostMoreState.rows(): List<UsPostMoreRow> =
-    offeredRows().sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.menuLabel(username) })
+    offeredRows().sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { labelOf(it) })
 
 /**
  * Which rows this post offers this viewer, in no particular order — [rows]
- * orders them.
+ * orders them. A feed post has its own list; a reel and a long video share
+ * ONE ([videoRows]).
+ */
+internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = when (surface) {
+    UsPostMoreSurface.LONG_VIDEO, UsPostMoreSurface.REEL -> videoRows()
+    UsPostMoreSurface.POST -> postRows()
+}
+
+/**
+ * A feed post:
  *
  *  - Always: Save or Unsave, Copy link, Share.
  *  - OTHER people's posts: "Why you're seeing this post" only when the
@@ -211,18 +308,8 @@ fun UsPostMoreState.rows(): List<UsPostMoreRow> =
  *  - The viewer's own post: "Delete post" — a soft delete with a 30-day
  *    restore window (founder, 2026-09-04) — and none of the rows that act on
  *    "the author".
- *  - A REEL adds "Description" when there is a caption to unfold, "Clear
- *    screen" or "Show controls" by the mode, "Quality", and "Use this sound"
- *    when the host says it is offered. Own reel or not, these are the same:
- *    they are about the frame and the sound, not the author.
  */
-internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = buildList {
-    reel?.let { reel ->
-        if (reel.description.isNotBlank()) add(UsPostMoreRow.DESCRIPTION)
-        add(if (reel.fullMode) UsPostMoreRow.SHOW_CONTROLS else UsPostMoreRow.CLEAR_SCREEN)
-        add(UsPostMoreRow.QUALITY)
-        if (reel.canUseSound) add(UsPostMoreRow.USE_SOUND)
-    }
+private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
     add(if (isBookmarked) UsPostMoreRow.UNSAVE else UsPostMoreRow.SAVE)
     add(UsPostMoreRow.COPY_LINK)
     add(UsPostMoreRow.SHARE)
@@ -249,9 +336,147 @@ internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = buildList {
 }
 
 /**
- * What the row prints, and therefore what it is sorted by: the rows that act
- * on the author carry the handle — "Unfollow @user", "Block @user", "Don't
- * recommend @user" — the rest their own label.
+ * A VIDEO — a reel and a long video ALIKE (founder, 2026-10-02: "More options
+ * must be the same in Reels and in long videos"). One function, so the two
+ * cannot drift again; [rows] puts it in alphabetical order:
+ *
+ *   Block channel · Copy link · Description · Don't recommend this channel ·
+ *   Not interested · Quality · Report · Share
+ *
+ * Only two things may differ, and both are about the content, not the surface:
+ *
+ *  - "Use this sound": a reel whose sound may be reused ([UsReelMoreState.canUseSound]).
+ *  - The owner's rows: on the viewer's OWN video, Delete stands in for the four
+ *    rows that act on "the channel" or judge the video (Block, Don't recommend,
+ *    Not interested, Report) — nobody blocks or reports themselves.
+ *
+ * And one rule that is the creator's, the same on both: Share is withheld
+ * when they turned sharing off (`hide_share`), as the reel's rail already
+ * withholds its share glyph.
+ *
+ * Description and Quality are always listed, so the list does not change
+ * shape from one video to the next: a video with no caption unfolds "No
+ * description", and Quality with Auto alone is shown but inert.
+ *
+ * What it replaced (the same day's earlier split, copied from the web's two
+ * menus): the reel had no Block, Copy link or Share and no Delete on the
+ * owner's own reel; the long video had no Copy link, Description or Quality.
+ * Save, Watch later and "Add to collection" stay where they were: on the
+ * reel's rail and on the action row under a long video.
+ */
+internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
+    add(UsPostMoreRow.COPY_LINK)
+    add(UsPostMoreRow.DESCRIPTION)
+    add(UsPostMoreRow.QUALITY)
+    if (!shareHidden) add(UsPostMoreRow.SHARE)
+    if (reel?.canUseSound == true) add(UsPostMoreRow.USE_SOUND)
+    addAll(offlineRows())
+    if (isOwnPost) {
+        add(UsPostMoreRow.DELETE)
+        return@buildList
+    }
+    add(UsPostMoreRow.BLOCK)
+    add(UsPostMoreRow.DONT_RECOMMEND)
+    add(UsPostMoreRow.NOT_INTERESTED)
+    add(UsPostMoreRow.REPORT)
+}
+
+/**
+ * A video's offline rows (2026-10-02), the same on a reel and a long video,
+ * for the owner and for everyone else:
+ *
+ *  - "Offline", the list of what this device keeps, whenever the host keeps
+ *    offline copies at all: it is how a copy is found again, and it must be
+ *    reachable from a video that cannot itself be saved;
+ *  - ONE of "Save offline", "Cancel offline save" or "Remove offline copy",
+ *    by what the host says of this video ([UsOfflineAction]); none when the
+ *    creator has not allowed it.
+ *
+ * Nothing when the host passed no offline state: the list is then the
+ * eight rows it was.
+ */
+internal fun UsPostMoreState.offlineRows(): List<UsPostMoreRow> {
+    val state = offline ?: return emptyList()
+    return buildList {
+        add(UsPostMoreRow.OFFLINE_PAGE)
+        when (state.action) {
+            UsOfflineAction.SAVE -> add(UsPostMoreRow.SAVE_OFFLINE)
+            UsOfflineAction.CANCEL -> add(UsPostMoreRow.CANCEL_OFFLINE)
+            UsOfflineAction.REMOVE -> add(UsPostMoreRow.REMOVE_OFFLINE)
+            UsOfflineAction.NONE -> Unit
+        }
+    }
+}
+
+/** What sits at the right of "Cancel offline save": what the save waits for, else how far it is. */
+fun offlineProgressText(offline: UsOfflineMoreState?): String {
+    val waiting = offline?.waiting?.takeIf { it.isNotBlank() }
+    val progress = offline?.progress
+    return when {
+        waiting != null -> waiting
+        progress == null -> "Starting"
+        else -> "${(progress.coerceIn(0f, 1f) * PERCENT).toInt()}%"
+    }
+}
+
+private const val PERCENT = 100
+
+/** The creator turned sharing off for this video, whichever surface it is on. */
+private val UsPostMoreState.shareHidden: Boolean
+    get() = reel?.shareHidden == true || longVideo?.shareHidden == true
+
+/**
+ * What the row prints on THIS sheet, and therefore what it is sorted by.
+ *
+ * On a feed post the rows that act on the author carry the handle
+ * ([menuLabel]). On a video — a reel and a long video alike (2026-10-02) —
+ * the words are fixed: "Block channel", "Don't recommend this channel" and a
+ * plain "Delete". Fixed, not "Block <name>", so the list reads the same, in
+ * the same order, on every video; WHO is blocked is named where it is
+ * confirmed ([blockConfirmTitle]).
+ */
+fun UsPostMoreState.labelOf(row: UsPostMoreRow): String = when (surface) {
+    UsPostMoreSurface.POST -> row.menuLabel(username)
+    UsPostMoreSurface.REEL, UsPostMoreSurface.LONG_VIDEO -> when (row) {
+        UsPostMoreRow.BLOCK -> BLOCK_CHANNEL
+        UsPostMoreRow.DONT_RECOMMEND -> DONT_RECOMMEND_CHANNEL
+        UsPostMoreRow.DELETE -> "Delete"
+        else -> row.label
+    }
+}
+
+/** "Block <who>?": the confirmation names the channel a video's "Block channel" row did not. */
+fun UsPostMoreState.blockConfirmTitle(): String = when (surface) {
+    UsPostMoreSurface.POST -> "${labelOf(UsPostMoreRow.BLOCK)}?"
+    UsPostMoreSurface.REEL, UsPostMoreSurface.LONG_VIDEO ->
+        "Block ${longVideo?.channelName?.takeIf { it.isNotBlank() } ?: "@$username"}?"
+}
+
+/** What the delete confirmation asks, by what is being deleted. */
+fun UsPostMoreState.deleteConfirmTitle(): String = "Delete ${thingName()}?"
+
+/** The pill a landed delete shows. */
+fun UsPostMoreState.deletedText(): String = "${thingName().replaceFirstChar { it.uppercase() }} deleted"
+
+private fun UsPostMoreState.thingName(): String = when (surface) {
+    UsPostMoreSurface.POST -> "post"
+    UsPostMoreSurface.REEL -> "reel"
+    UsPostMoreSurface.LONG_VIDEO -> "video"
+}
+
+/** What a video with no caption unfolds under Description. */
+const val NO_DESCRIPTION = "No description"
+
+/** A video's Block row, on a reel and a long video alike. */
+private const val BLOCK_CHANNEL = "Block channel"
+
+/** A video's "Don't recommend" row, on a reel and a long video alike. */
+private const val DONT_RECOMMEND_CHANNEL = "Don't recommend this channel"
+
+/**
+ * What the row prints on a feed post: the rows that act on the author carry
+ * the handle — "Unfollow @user", "Block @user", "Don't recommend @user" — the
+ * rest their own label. [labelOf] is what the sheet draws and sorts by.
  */
 fun UsPostMoreRow.menuLabel(username: String): String = when (this) {
     UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK -> "$label @$username"

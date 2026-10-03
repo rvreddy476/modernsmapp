@@ -368,6 +368,22 @@ object UsIcons {
             "a2 2 0 0 0 2 2Z",
     )
 
+    /** Lucide `folder-plus`: "Add to collection" on the long-video watch screen, as on the web. */
+    val FolderPlus: ImageVector = lucideStroked(
+        "FolderPlus",
+        "M12 10v6",
+        "M9 13h6",
+        "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13" +
+            "a2 2 0 0 0 2 2Z",
+    )
+
+    /** Lucide `circle-slash`: "Not interested" on a reel and a long video, as on the web. */
+    val CircleSlash: ImageVector = lucideStroked(
+        "CircleSlash",
+        "M12,12 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0",
+        "M9 15l6-6",
+    )
+
     /** Lucide `film` — a reel, on the Create sheet. */
     val Film: ImageVector = lucideStroked(
         "Film",
@@ -645,6 +661,26 @@ object UsIcons {
     /** Lucide `check` — a chosen option. */
     val Check: ImageVector = lucideStroked("Check", "M20 6 9 17l-5-5")
 
+    /**
+     * Lucide `download`: "Save offline" on a video's More sheet (2026-10-02).
+     * The arrow into a tray reads as "keep this here"; the row never leads to
+     * a file.
+     */
+    val Download: ImageVector = lucideStroked(
+        "Download",
+        "M12 15V3",
+        "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",
+        "m7 10 5 5 5-5",
+    )
+
+    /** Lucide `arrow-down-to-line`: the Offline page, in the menus that open it (2026-10-02). */
+    val ArrowDownToLine: ImageVector = lucideStroked(
+        "ArrowDownToLine",
+        "M12 17V3",
+        "m6 11 6 6 6-6",
+        "M19 21H5",
+    )
+
     // ── The post "more" sheet (2026-09-04) ──────────────────────────────
 
     /** Lucide `link` — copy the post's link. */
@@ -867,6 +903,17 @@ object UsIcons {
         "AtSign",
         "M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
         "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8",
+    )
+
+    /** Lucide `circle` — an open requirement: not met yet (the live "not yet" list, 2026-10-02). */
+    val Circle: ImageVector = lucideStroked("Circle", "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0")
+
+    /** Lucide `award` — the Founding creator badge beside a name in live chat (2026-10-02). */
+    val Award: ImageVector = lucideStroked(
+        "Award",
+        "m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469" +
+            "l1.514-8.526",
+        "M18 8A6 6 0 1 1 6 8a6 6 0 0 1 12 0",
     )
 
     /** Lucide `clock` — a scheduled post: the Schedule button and the tile's badge. */

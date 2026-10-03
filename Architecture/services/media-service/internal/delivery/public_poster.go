@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // Signed-out reads of post media (2026-09-29, founder decision 2).
@@ -34,14 +35,28 @@ import (
 // (retryable) to a crawler instead of consulting a weaker local rule;
 // crawlers retry a 5xx and cache a 404, so that is the better failure too.
 
-// URLForVariant is URLFor for a read that named a variant. Kept as the
-// call site's entry point (service.deliveryURLForVariant); the variant no
-// longer changes the decision, because there is no longer a stills-only
-// authority behind it.
+// URLForVariant is URLFor for a read that named a variant (the call site's
+// entry point is service.deliveryURLForVariant).
+//
+// There is still no second authority here. What the variant changes
+// (2026-10-02) is the QUESTION the same authority is asked: a thumbnail still
+// (IsPosterVariant) is sent to post-service with purpose "poster", because
+// post-service's own rule differs for it — a members-only post shows its
+// poster to a signed-in viewer who is not a member (the join card), and its
+// video only to members. The answer is post-service's and it is final, as
+// for every other read; a signed-out viewer is still refused a members-only
+// post's stills, by post-service. Every other variant, and an authorizer
+// that cannot ask the poster question, gets the ordinary decision.
 func (g *Gate) URLForVariant(ctx context.Context, viewerID, mediaID, variant, objectKey string) (string, error) {
 	if g == nil || g.signer == nil {
 		return "", fmt.Errorf("%w: delivery gate not configured", ErrDeliveryUnresolved)
 	}
-	_ = variant
-	return g.URLFor(ctx, viewerID, mediaID, objectKey)
+	poster, ok := g.authz.(posterContentAuthorizer)
+	if !ok || !IsPosterVariant(variant) || ClassForKey(objectKey) == ClassPublic {
+		return g.URLFor(ctx, viewerID, mediaID, objectKey)
+	}
+	if err := poster.AuthorizePoster(ctx, viewerID, mediaID); err != nil {
+		return "", err
+	}
+	return g.signer.SignProtected(objectKey, MaxProtectedTTL, time.Now())
 }

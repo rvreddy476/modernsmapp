@@ -154,7 +154,7 @@ func ingressOpen(status string) bool { return status != stEnded }
 // and live-ban gate as start; the stream must be an encoder stream that has
 // not ended.
 func (s *Service) CreateIngress(ctx context.Context, streamID, hostID uuid.UUID) (*IngressResult, error) {
-	if err := s.requireMayGoLive(ctx, hostID); err != nil {
+	if err := s.requireMayContinue(ctx, streamID, hostID); err != nil {
 		return nil, err
 	}
 	st, err := s.requireCreator(ctx, streamID, hostID)

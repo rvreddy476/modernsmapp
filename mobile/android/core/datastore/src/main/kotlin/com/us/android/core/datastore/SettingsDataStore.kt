@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import java.io.IOException
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -205,6 +206,34 @@ class SettingsDataStore @Inject constructor(
         store.edit { it[KEY_REELS_SOUND_ON] = on }
     }
 
+    /**
+     * "Save on Wi-Fi only" for offline copies (2026-10-02). On by default: a
+     * long video is hundreds of megabytes, and nobody should find that on a
+     * mobile bill because they tapped Save offline on the bus.
+     */
+    val offlineWifiOnly: Flow<Boolean> = store.data
+        .safe()
+        .map { it[KEY_OFFLINE_WIFI_ONLY] ?: true }
+
+    suspend fun setOfflineWifiOnly(enabled: Boolean) {
+        store.edit { it[KEY_OFFLINE_WIFI_ONLY] = enabled }
+    }
+
+    /**
+     * This install's id for offline copies (2026-10-02): random, made once,
+     * and sent as `device_id` so post-service can tell this phone's copies
+     * from the same account's copies on another. It names no hardware and no
+     * person; see [offlineDeviceIdOr].
+     */
+    suspend fun offlineDeviceId(): String {
+        var id = ""
+        store.edit { prefs ->
+            id = offlineDeviceIdOr(prefs[KEY_OFFLINE_DEVICE_ID]) { UUID.randomUUID().toString() }
+            prefs[KEY_OFFLINE_DEVICE_ID] = id
+        }
+        return id
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -229,6 +258,8 @@ class SettingsDataStore @Inject constructor(
         val KEY_WELLBEING_GUARD_CACHE = stringPreferencesKey("wellbeing_guard_cache")
         val KEY_AUTOPLAY_NEXT_EPISODE = booleanPreferencesKey("autoplay_next_episode")
         val KEY_REELS_SOUND_ON = booleanPreferencesKey("reels_sound_on")
+        val KEY_OFFLINE_WIFI_ONLY = booleanPreferencesKey("offline_wifi_only")
+        val KEY_OFFLINE_DEVICE_ID = stringPreferencesKey("offline_device_id")
         const val KEYWORD_SEPARATOR = ","
     }
 }

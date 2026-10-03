@@ -31,7 +31,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -234,7 +233,7 @@ private fun SearchField(
     LaunchedEffect(Unit) { focus.requestFocus() }
 }
 
-/** A square target, the icon in white, no ripple — a dip on press. */
+/** A square target, the icon in the text colour, no ripple — a dip on press. */
 @Composable
 private fun Glyph(
     icon: ImageVector,
@@ -255,7 +254,12 @@ private fun Glyph(
             }
             .testTag(tag),
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(glyph))
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = UsTheme.extended.textPrimary,
+            modifier = Modifier.size(glyph),
+        )
     }
 }
 
@@ -280,8 +284,8 @@ private fun ScopeChips(scopes: List<SearchScope>, selected: SearchScope, onSelec
 @Composable
 private fun ScopeChip(scope: SearchScope, active: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(UsTheme.radii.full)
-    val fill = if (active) Color.White else UsTheme.extended.glassBg
-    val outline = if (active) Color.White else UsTheme.extended.glassBorder
+    val fill = if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBg
+    val outline = if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -301,7 +305,7 @@ private fun ScopeChip(scope: SearchScope, active: Boolean, onClick: () -> Unit) 
             style = MaterialTheme.typography.labelLarge,
             fontSize = CHIP_TEXT,
             fontWeight = FontWeight.SemiBold,
-            color = if (active) UsTheme.extended.brandNavy else UsTheme.extended.textPrimary,
+            color = if (active) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
             maxLines = 1,
         )
     }

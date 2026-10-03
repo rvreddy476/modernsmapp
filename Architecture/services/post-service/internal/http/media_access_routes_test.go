@@ -171,3 +171,91 @@ func TestMediaAccessUnwiredIsUnresolved(t *testing.T) {
 		t.Fatalf("got %d %s", w.Code, w.Body.String())
 	}
 }
+
+// Members-only videos on the wire (2026-10-02). A signed-in viewer who is
+// not a member is refused with the same 403 body shape as every other
+// denial; a member is answered 200; a poster read (purpose "poster") is
+// allowed for a non-member; and a membership lookup that does not answer is
+// a 503 on the single route (retryable, nothing to cache) and a refusal of
+// that one asset on the page route.
+func TestMediaAccessMembersOnlyOnTheWire(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &routeMediaStore{media: uuid.New(), author: uuid.New()}
+	tier := uuid.New()
+	store.post = &postgres.Post{ID: uuid.New(), AuthorID: store.author, Visibility: "public", ReviewStatus: "approved", TierRequiredID: &tier,
+		Media: []postgres.PostMedia{{MediaID: store.media, Kind: "video"}}}
+	member, stranger := uuid.New(), uuid.New()
+	var down bool
+	r := gin.New()
+	h := New(service.NewForHandlerTests(service.HandlerTestDeps{
+		MediaAccess: store, Relationships: &offlineRouteGraph{rels: map[string]service.ViewerRelationship{}},
+		OfflineEntitlement: func(_ context.Context, viewer uuid.UUID, _ *postgres.Post) (bool, error) {
+			if down {
+				return false, context.DeadlineExceeded
+			}
+			return viewer == member, nil
+		},
+	}), nil).WithInternalKey(mediaAccessTestKey)
+	h.RegisterRoutes(r)
+
+	ask := func(viewer uuid.UUID, purpose string) *httptest.ResponseRecorder {
+		body := `{"viewer_id":"` + viewer.String() + `","media_id":"` + store.media.String() + `"`
+		if purpose != "" {
+			body += `,"purpose":"` + purpose + `"`
+		}
+		return postMediaAccess(r, "/v1/internal/media-access", body+`}`)
+	}
+	type answer struct {
+		Allowed  *bool  `json:"allowed"`
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	read := func(w *httptest.ResponseRecorder) answer {
+		var a answer
+		_ = json.Unmarshal(w.Body.Bytes(), &a)
+		return a
+	}
+
+	w := ask(stranger, "")
+	if a := read(w); w.Code != http.StatusForbidden || a.Allowed == nil || *a.Allowed || a.Decision != "denied" || a.Reason != "members_only" {
+		t.Fatalf("non-member: %d %s", w.Code, w.Body.String())
+	}
+	w = ask(member, "")
+	if a := read(w); w.Code != http.StatusOK || a.Allowed == nil || !*a.Allowed || a.Reason != "post_allowed" {
+		t.Fatalf("member: %d %s", w.Code, w.Body.String())
+	}
+	w = ask(store.author, "")
+	if a := read(w); w.Code != http.StatusOK || a.Allowed == nil || !*a.Allowed {
+		t.Fatalf("owner: %d %s", w.Code, w.Body.String())
+	}
+	w = ask(stranger, "poster")
+	if a := read(w); w.Code != http.StatusOK || a.Allowed == nil || !*a.Allowed {
+		t.Fatalf("non-member poster: %d %s", w.Code, w.Body.String())
+	}
+	// A signed-out viewer gets no poster of a members-only post.
+	w = postMediaAccess(r, "/v1/internal/media-access", `{"viewer_id":"","media_id":"`+store.media.String()+`","purpose":"poster"}`)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "no_public_post") {
+		t.Fatalf("anonymous poster: %d %s", w.Code, w.Body.String())
+	}
+
+	down = true
+	w = ask(member, "")
+	if a := read(w); w.Code != http.StatusServiceUnavailable || a.Allowed == nil || *a.Allowed || a.Reason != "policy_unresolved" {
+		t.Fatalf("membership outage, single: %d %s", w.Code, w.Body.String())
+	}
+	w = postMediaAccess(r, "/v1/internal/media-access/batch", `{"viewer_id":"`+member.String()+`","media_ids":["`+store.media.String()+`"]}`)
+	var page struct {
+		Allowed map[string]bool   `json:"allowed"`
+		Reasons map[string]string `json:"reasons"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &page)
+	if allowed, said := page.Allowed[store.media.String()]; w.Code != http.StatusOK || !said || allowed || page.Reasons[store.media.String()] != "membership_unresolved" {
+		t.Fatalf("membership outage, batch: %d %s", w.Code, w.Body.String())
+	}
+	down = false
+	w = postMediaAccess(r, "/v1/internal/media-access/batch", `{"viewer_id":"`+stranger.String()+`","media_ids":["`+store.media.String()+`"]}`)
+	_ = json.Unmarshal(w.Body.Bytes(), &page)
+	if w.Code != http.StatusOK || page.Allowed[store.media.String()] || page.Reasons[store.media.String()] != "members_only" {
+		t.Fatalf("non-member, batch: %d %s", w.Code, w.Body.String())
+	}
+}

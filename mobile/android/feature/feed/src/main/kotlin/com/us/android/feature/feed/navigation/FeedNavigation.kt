@@ -11,6 +11,7 @@ import com.us.android.core.media.PlayerPool
 import com.us.android.feature.feed.ui.FeedScreen
 import com.us.android.feature.feed.ui.FriendsFeedScreen
 import com.us.android.feature.feed.ui.HashtagPostsScreen
+import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.feed.ui.reels.ReelsScreen
 import com.us.android.feature.feed.ui.reels.sound.SoundPageScreen
 import kotlinx.serialization.Serializable
@@ -58,6 +59,8 @@ fun NavGraphBuilder.feedScreen(
     onOpenHashtag: (tag: String) -> Unit,
     /** A video was tapped. `:app` switches to the Reels tab. */
     onOpenReels: () -> Unit,
+    /** A row of Home's More menu (Friends, Live, Settings); `:app` opens that screen. */
+    onOpenMenuRow: (HomeMenuRow) -> Unit,
 ) {
     composable<FeedRoute> {
         FeedScreen(
@@ -67,6 +70,7 @@ fun NavGraphBuilder.feedScreen(
             onOpenSearch = onOpenSearch,
             onOpenHashtag = onOpenHashtag,
             onOpenReels = onOpenReels,
+            onOpenMenuRow = onOpenMenuRow,
         )
     }
 }
@@ -139,6 +143,13 @@ fun NavGraphBuilder.reelsScreen(
      * ship by omission.
      */
     onCreateWithSound: () -> Unit,
+    /**
+     * "Offline", from a reel's More sheet (2026-10-02): `:app` pushes the page
+     * of what this device keeps. Required for the same reason.
+     */
+    onOpenOffline: () -> Unit,
+    /** The header's bell (2026-10-02): `:app` pushes the notification list, as Home's bell does. */
+    onOpenNotifications: () -> Unit,
 ) {
     composable<ReelsRoute> {
         ReelsScreen(
@@ -148,6 +159,8 @@ fun NavGraphBuilder.reelsScreen(
             onOpenHashtag = onOpenHashtag,
             onOpenSound = onOpenSound,
             onCreateWithSound = onCreateWithSound,
+            onOpenOffline = onOpenOffline,
+            onOpenNotifications = onOpenNotifications,
         )
     }
 }

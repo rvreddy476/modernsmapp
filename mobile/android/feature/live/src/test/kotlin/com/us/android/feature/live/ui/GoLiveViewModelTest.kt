@@ -31,14 +31,17 @@ class GoLiveViewModelTest {
     @get:Rule
     val mainRule = MainDispatcherRule(dispatcher)
 
+    private val json = NetworkModule.provideJson()
     private val api = FakeLiveApi()
     private val rooms = FakeRoomFactory()
     private val vms = HeldViewModels()
 
     private fun viewModel(factory: FakeRoomFactory = rooms) =
-        vms.hold { GoLiveViewModel(api, ErrorMapper(NetworkModule.provideJson()), factory) }
+        vms.hold { GoLiveViewModel(api, ErrorMapper(json), factory, json) }
 
     private fun TestScope.goLive(vm: GoLiveViewModel) {
+        // The eligibility answer lands first: the form is not offered before it.
+        runCurrent()
         vm.onTitleChanged("Hello")
         vm.onGoLive()
         runCurrent()

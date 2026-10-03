@@ -28,8 +28,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -195,17 +193,10 @@ private fun LoadedPost(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(cardShape)
-                .background(
-                    brush = Brush.verticalGradient(
-                        listOf(
-                            Color(0xFF18181D),
-                            Color(0xFF121215),
-                        ),
-                    ),
-                )
+                .background(UsTheme.extended.bgCardSolid)
                 .border(
                     width = HAIRLINE,
-                    color = Color(0x1FFFFFFF),
+                    color = UsTheme.extended.borderMedium,
                     shape = cardShape,
                 )
                 .padding(UsTheme.spacing.xxl),
@@ -506,7 +497,7 @@ private fun AuthorHeader(
                 .clip(CircleShape)
                 .border(
                     width = HAIRLINE,
-                    color = Color(0x26FFFFFF),
+                    color = UsTheme.extended.borderMedium,
                     shape = CircleShape,
                 ),
         ) {

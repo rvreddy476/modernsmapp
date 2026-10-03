@@ -22,7 +22,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -32,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.PlaybackCaption
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.UsSettingsSwitchRow
 
@@ -61,14 +61,22 @@ fun WatchSettingsSheet(
     onSelectSpeed: (Float) -> Unit,
     onAutoplayNextChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * The caption tracks stored with an offline copy (2026-10-02). Empty for
+     * a video played from the network, and the group is then not drawn.
+     */
+    captions: List<PlaybackCaption> = emptyList(),
+    /** The track that is on, by language; null is off. */
+    captionLanguage: String? = null,
+    onSelectCaption: (String?) -> Unit = {},
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = UsTheme.extended.bgCardSolid,
+        containerColor = UsTheme.extended.bgSheet,
         contentColor = UsTheme.extended.textPrimary,
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        scrimColor = UsTheme.extended.scrim,
         modifier = Modifier.testTag("watch_settings_sheet"),
     ) {
         Column(
@@ -96,6 +104,24 @@ fun WatchSettingsSheet(
                     onClick = { onSelectSpeed(option) },
                     tag = "watch_speed:${speedLabel(option)}",
                 )
+            }
+            if (captions.isNotEmpty()) {
+                Spacer(Modifier.height(UsTheme.spacing.xl))
+                GroupTitle(icon = UsIcons.FileText, text = "Captions")
+                OptionRow(
+                    label = "Off",
+                    selected = captionLanguage == null,
+                    onClick = { onSelectCaption(null) },
+                    tag = "watch_captions:off",
+                )
+                captions.forEach { caption ->
+                    OptionRow(
+                        label = caption.label,
+                        selected = caption.language == captionLanguage,
+                        onClick = { onSelectCaption(caption.language) },
+                        tag = "watch_captions:${caption.language}",
+                    )
+                }
             }
             Spacer(Modifier.height(UsTheme.spacing.xl))
             GroupTitle(icon = UsIcons.ListVideo, text = "Autoplay")
@@ -166,6 +192,5 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit, tag
     }
 }
 
-private const val SCRIM_ALPHA = 0.55f
 private val SHEET_RADIUS = 28.dp
 private val GLYPH = 18.dp

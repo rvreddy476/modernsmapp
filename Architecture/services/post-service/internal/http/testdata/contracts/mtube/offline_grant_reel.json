@@ -1,0 +1,31 @@
+{
+  "post_id": "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1",
+  "content_type": "flick",
+  "expires_at": "2026-10-27T12:01:00Z",
+  "recheck_after_seconds": 172800,
+  "title": "Monsoon walk, my take",
+  "channel_name": "Raghu Builds",
+  "duration_ms": 28400,
+  "poster_path": "/v1/media/a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2/serve/thumb_300",
+  "media": {
+    "media_id": "a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2",
+    "variant": "480p",
+    "path": "/v1/media/a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2/serve/480p",
+    "mime": "video/mp4",
+    "size_bytes": 6144000
+  },
+  "captions": [
+    {
+      "lang": "en",
+      "label": "English",
+      "path": "/v1/subtitles/a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2/track/en.vtt"
+    }
+  ],
+  "sound": {
+    "path": "/v1/audio/cccccccc-cccc-4ccc-8ccc-cccccccccccc/serve",
+    "mime": "audio/mp4",
+    "start_ms": 1500,
+    "original_volume": 0,
+    "overlay_volume": 1
+  }
+}

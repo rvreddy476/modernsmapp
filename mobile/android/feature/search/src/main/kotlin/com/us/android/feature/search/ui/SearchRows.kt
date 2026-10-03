@@ -26,7 +26,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -298,11 +297,11 @@ private fun Thumbnail(url: String?, durationMs: Long, portrait: Boolean) {
                 style = MaterialTheme.typography.labelSmall,
                 fontSize = PILL_TEXT,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(PILL_MARGIN)
-                    .background(Color.Black.copy(alpha = PILL_ALPHA), RoundedCornerShape(PILL_RADIUS))
+                    .background(UsTheme.extended.mediaPlate, RoundedCornerShape(PILL_RADIUS))
                     .padding(horizontal = PILL_PAD_H, vertical = PILL_PAD_V),
             )
         }
@@ -332,7 +331,6 @@ internal fun Modifier.pressScale(onClick: () -> Unit): Modifier {
 
 private const val PRESS_SCALE = 0.97f
 private const val PRESS_STIFFNESS = 1200f
-private const val PILL_ALPHA = 0.7f
 private val THUMB_WIDTH = 120.dp
 private val THUMB_HEIGHT = 68.dp
 private val THUMB_PORTRAIT_WIDTH = 56.dp

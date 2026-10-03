@@ -33,7 +33,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -240,7 +239,7 @@ private fun HeaderMenu(state: ChatHomeUiState, destinations: ChatHomeDestination
     }
 }
 
-/** Momentum's count badge: a white disc, the count in the deep accent. */
+/** The count badge: the inverse highlight disc and its label, in both themes. */
 @Composable
 private fun PendingBadge(pending: Int, modifier: Modifier = Modifier) {
     Box(
@@ -248,7 +247,7 @@ private fun PendingBadge(pending: Int, modifier: Modifier = Modifier) {
         modifier = modifier
             .padding(top = BADGE_INSET, end = BADGE_INSET)
             .size(BADGE_SIZE)
-            .background(Color.White, CircleShape)
+            .background(UsTheme.extended.selectedPill, CircleShape)
             .testTag("chat_home_pending_badge"),
     ) {
         Text(
@@ -256,7 +255,7 @@ private fun PendingBadge(pending: Int, modifier: Modifier = Modifier) {
             fontSize = BADGE_TEXT,
             lineHeight = BADGE_TEXT,
             fontWeight = FontWeight.Bold,
-            color = UsTheme.extended.accentDeep,
+            color = UsTheme.extended.onSelectedPill,
         )
     }
 }

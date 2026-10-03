@@ -17,6 +17,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsColorTokens
 import com.us.android.core.designsystem.theme.UsCreateSwatch
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -43,7 +44,7 @@ fun UsIconSquare(
     val gloss = remember {
         Brush.verticalGradient(
             colorStops = arrayOf(
-                0f to Color.White.copy(alpha = GLOSS_ALPHA),
+                0f to UsColorTokens.OnTile.copy(alpha = GLOSS_ALPHA),
                 GLOSS_END to Color.Transparent,
             ),
         )
@@ -64,7 +65,7 @@ fun UsIconSquare(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsColorTokens.OnTile,
             modifier = Modifier.size(glyph),
         )
     }

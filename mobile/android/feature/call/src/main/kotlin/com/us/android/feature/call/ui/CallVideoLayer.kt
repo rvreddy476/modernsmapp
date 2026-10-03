@@ -10,10 +10,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.us.android.core.call.engine.CallEngine
+import com.us.android.core.designsystem.theme.UsTheme
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
@@ -40,7 +40,7 @@ internal fun CallVideoLayer(
         } else {
             Text(
                 text = "Waiting for video…",
-                color = Color.Gray,
+                color = UsTheme.extended.onMediaMuted,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.align(Alignment.Center),
             )

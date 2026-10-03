@@ -67,3 +67,26 @@ fun speedLabel(speed: Float): String {
     val text = speed.toString().trimEnd('0').trimEnd('.')
     return "${text}x"
 }
+
+/**
+ * The caption track to show, by language, or none (offline copies,
+ * 2026-10-02). Off disables the text renderer outright, so a track that
+ * happens to be flagged default is not drawn against the viewer's choice.
+ * Unlike a quality change this needs no re-prepare: a text track is
+ * switched without touching the video decoder.
+ */
+fun Player.applyCaption(language: String?) {
+    val before = trackSelectionParameters
+    val after = before.buildUpon()
+        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, language == null)
+        .setPreferredTextLanguage(language)
+        .build()
+    if (after != before) trackSelectionParameters = after
+}
+
+/**
+ * The viewer's caption choice carried to the next video: kept when that
+ * video has the same language, off when it does not. Captions never turn
+ * themselves on.
+ */
+fun captionChoice(current: String?, offered: List<String>): String? = current?.takeIf { it in offered }

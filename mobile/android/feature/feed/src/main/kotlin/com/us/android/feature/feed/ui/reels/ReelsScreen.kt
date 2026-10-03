@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -98,15 +99,23 @@ import coil3.compose.AsyncImage
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsBadgedIcon
 import com.us.android.core.designsystem.component.UsFollowButton
+import com.us.android.core.designsystem.component.UsHeaderCorner
+import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.usNotificationsDescription
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
+import com.us.android.core.feed.offline.OfflineEntry
+import com.us.android.core.feed.offline.OfflinePhase
+import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.offline.WAITING_FOR_NETWORK
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
@@ -115,13 +124,18 @@ import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.media.sound.ReelSoundPlayer
+import com.us.android.core.media.sound.SoundTrack
 import com.us.android.core.media.sound.appliedVolume
+import com.us.android.core.media.ui.OfflineCopyBadge
+import com.us.android.core.media.ui.OfflineSaveRing
 import com.us.android.core.media.ui.VideoLoadingIndicator
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.canUseSound
+import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.HideShellBottomBar
+import com.us.android.core.ui.LightStatusBarGlyphs
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -130,15 +144,15 @@ import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.ui.watchProbe
+import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import java.io.File
 
 /**
  * The reels surface: Instagram Reels on Momentum's palette (founder,
  * 2026-09-04). A full-screen vertical pager of short video that fills the
  * frame from the very top (the shell hands this tab no status-bar inset);
- * the header — the hamburger and search, white — translucent over the top
+ * the header — search and More, white — translucent over the top
  * of the video on its own scrim; the right rail — like, comment, share,
  * save, mute — bottom-right; the author, Follow and
  * the caption bottom-left over a bottom scrim. No For You / Following tabs:
@@ -194,15 +208,16 @@ import java.io.File
  * the author row is a 36dp avatar, "@handle" and a white Follow pill; and a
  * 2dp playhead line runs along the bottom of the frame ([ProgressLine]).
  *
- * The header's hamburger (founder, 2026-09-05; it was the rail's ⋮ before)
+ * The header's More (founder, 2026-09-05; the three dots since 2026-10-02; it was the rail's ⋮ before)
  * opens the same "more" sheet the feed card opens ([PostMoreSheetHost]),
  * driven by [more], for the reel the pager has SETTLED on, with the reel's
  * own group on top — Description, Clear screen / Show controls, Quality (the
  * HLS ladder the settled player reports; the pick is held for the session
  * by the ViewModel and applied to every page's player). What the sheet
  * leaves behind ("We'll show you fewer posts like this") is shown over the
- * reel once it has gone. The header's only other glyph is search, which
- * opens Explore; no wordmark, no messages, no bell over a reel.
+ * reel once it has gone. The header's other glyphs are search and, since
+ * 2026-10-02, the bell with the unread count Home's bell shows; no wordmark
+ * and no messages over a reel.
  */
 @Composable
 fun ReelsScreen(
@@ -216,10 +231,18 @@ fun ReelsScreen(
     onOpenSound: (soundId: String) -> Unit,
     /** "Use this sound": the sound is already in `SoundEntry`; `:app` opens the reel create flow. */
     onCreateWithSound: () -> Unit,
+    /** "Offline", from the More sheet: `:app` pushes the page of what this device keeps. */
+    onOpenOffline: () -> Unit,
+    /** The header's bell. Required for the reason [onOpenSearch] is. */
+    onOpenNotifications: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     sound: ReelSoundViewModel = hiltViewModel(),
+    // The same count Home's bell shows: one singleton behind both, refreshed when the page appears.
+    badge: UnreadBadgeViewModel = hiltViewModel(),
 ) {
+    val unread by badge.count.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { badge.refresh() }
     val head by viewModel.head.collectAsStateWithLifecycle()
     val view = rememberReelsViewState(viewModel)
     val chrome = view.chrome
@@ -230,9 +253,9 @@ fun ReelsScreen(
     val pagerState = rememberReelsPager(viewModel, items, head)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
-    // The reel the pager has settled on — what the header's hamburger opens
+    // The reel the pager has settled on — what the header's More opens
     // the more sheet FOR. Null over the pending head, where there is no
-    // reel yet to describe or report; the hamburger then does nothing.
+    // reel yet to describe or report; More then does nothing.
     var settledReel by remember { mutableStateOf<FeedItem?>(null) }
     // The player of the page the pager has settled on — what the more
     // sheet's Quality row reads its ladder from. Screen state, never the
@@ -260,6 +283,9 @@ fun ReelsScreen(
     // mode lands on a Home with its bar, and the next visit to Reels opens
     // in normal mode with a moving reel.
     HideShellBottomBar(hidden = !chrome.showBottomBar)
+    // The reel runs under the status bar and is a dark stage on either theme,
+    // so the bar's glyphs stay light here whatever the device's setting.
+    LightStatusBarGlyphs()
     // Back in full mode brings the controls back; it never leaves the tab.
     // Without this the system Back reached the root and closed the app
     // from a screen that had hidden every other way out (founder, 2026-09-04).
@@ -271,7 +297,7 @@ fun ReelsScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(UsTheme.extended.bgCanvas),
+            .background(UsTheme.extended.stage),
     ) {
         ReelsBody(
             items = items,
@@ -285,6 +311,7 @@ fun ReelsScreen(
             subscriptionEdges = subscriptionEdges,
             ownUserId = viewModel.ownUserId,
             playbackFor = viewModel::playback,
+            soundTrackFor = viewModel::soundTrack,
             actions = reelActions(
                 viewModel = viewModel,
                 onOpenAuthor = onOpenAuthor,
@@ -299,8 +326,12 @@ fun ReelsScreen(
         ScreenChrome(
             paused = view.paused,
             showHeader = chrome.showHeader,
-            onOpenMenu = { settledReel?.let { moreFor = it } },
+            // With no reel to open the sheet for (the feed did not load, as with no
+            // network), More goes straight to what the device keeps.
+            onOpenMenu = { settledReel?.let { moreFor = it } ?: onOpenOffline() },
             onOpenSearch = onOpenSearch,
+            unreadCount = unread,
+            onOpenNotifications = onOpenNotifications,
         )
         ReelsMessages(viewModel = viewModel, more = more)
     }
@@ -319,6 +350,7 @@ fun ReelsScreen(
             trackHeights = trackHeights,
             onShare = onShare,
             onDismiss = { moreFor = null },
+            onOpenOffline = onOpenOffline,
         )
     }
 }
@@ -338,6 +370,7 @@ private fun ReelMoreSheet(
     trackHeights: List<Int>,
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
+    onOpenOffline: () -> Unit,
 ) {
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
@@ -362,6 +395,7 @@ private fun ReelMoreSheet(
         onClearScreen = viewModel::toggleMode,
         onSelectQuality = viewModel::selectQuality,
         onUseSound = { reel -> viewModel.onUseSound(reel, SoundIntent.CREATE) },
+        onOpenOffline = onOpenOffline,
     )
 }
 
@@ -373,6 +407,7 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
     val paused by viewModel.paused.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
+    val offline by viewModel.offlineState.collectAsStateWithLifecycle()
     return ReelsViewState(
         muted = muted,
         paused = paused,
@@ -380,6 +415,7 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
         quality = quality,
         soundChoiceRead = soundChoiceRead,
         fullMode = mode == ReelsMode.FULL,
+        offline = offline,
     )
 }
 
@@ -387,11 +423,13 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
 @Composable
 private fun BoxScope.ReelsMessages(viewModel: ReelsViewModel, more: PostMoreViewModel) {
     val soundMessage by viewModel.soundMessage.collectAsStateWithLifecycle()
+    val engagementMessage by viewModel.engagementMessage.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
     UsMessageHost(
-        message = soundMessage ?: moreMessage,
+        message = soundMessage ?: engagementMessage ?: moreMessage,
         onDismiss = {
             viewModel.dismissSoundMessage()
+            viewModel.dismissEngagementMessage()
             more.dismissMessage()
         },
     )
@@ -488,6 +526,8 @@ private fun reelMoreState(
     qualities = reelQualityOptions(heights = trackHeights, adaptive = playback?.kind == PlaybackKind.Hls),
     selected = quality,
     canUseSound = canUseSound,
+    // The creator turned sharing off: the rail has no share glyph, and the sheet no Share row.
+    shareHidden = item.controls.hideShare,
 )
 
 /**
@@ -575,6 +615,8 @@ internal data class ReelsViewState(
     val soundChoiceRead: Boolean = true,
     /** Full mode is on: Back brings the controls back rather than leaving the tab. */
     val fullMode: Boolean = false,
+    /** Where each reel's offline copy stands on this device (2026-10-02). */
+    val offline: OfflineState = OfflineState(),
 ) {
     /** The settled reel may run: not paused, and the viewer's choice of sound is known. */
     val mayPlay: Boolean get() = reelMayPlay(paused, soundChoiceRead)
@@ -588,7 +630,7 @@ internal data class ReelsViewState(
  * the pager and below the header so it never covers a control, and it is not
  * itself tappable — the video under it is.
  *
- * The header — the hamburger and search, nothing else (founder, 2026-09-05)
+ * The header — search, the bell and More (founder, 2026-10-02)
  * — rides its own top scrim and pads itself under the status bar the shell
  * left uncovered. It leaves upward in full mode, the same 200ms as the bar
  * leaves down.
@@ -599,6 +641,8 @@ private fun BoxScope.ScreenChrome(
     showHeader: Boolean,
     onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
+    unreadCount: Int,
+    onOpenNotifications: () -> Unit,
 ) {
     AnimatedVisibility(
         visible = paused,
@@ -616,25 +660,31 @@ private fun BoxScope.ScreenChrome(
         exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
     ) {
         ReelsHeader(
+            unreadCount = unreadCount,
             onOpenMenu = onOpenMenu,
             onOpenSearch = onOpenSearch,
+            onOpenNotifications = onOpenNotifications,
             modifier = Modifier.testTag("reels_header"),
         )
     }
 }
 
 /**
- * Two white glyphs over the translucent top scrim (founder, 2026-09-05):
- * the hamburger, which opens the settled reel's More sheet — the sheet the
- * rail's ⋮ used to open — and then search, which opens Explore. No wordmark
- * (over a video the brand is the video), no messages, no bell: those stay
- * on Home's full header. The same [UsHomeTopBar] as Home so the scrim, the
- * height and the status-bar padding are one drawing, not two.
+ * Three white glyphs over the translucent top scrim: search, the bell with
+ * its unread count, and then, at the corner, the three-dots More, which
+ * opens the settled reel's More sheet. The order and the glyphs are
+ * [UsHeaderCorner]'s (founder, 2026-10-02: Search, Notifications, More at
+ * the corner, the same on every page but Home). No wordmark (over a video
+ * the brand is the video) and no messages: that one stays on Home's
+ * header. The same [UsHomeTopBar] as Home so the scrim, the height and the
+ * status-bar padding are one drawing, not two.
  */
 @Composable
 private fun ReelsHeader(
+    unreadCount: Int,
     onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     UsHomeTopBar(
@@ -642,11 +692,32 @@ private fun ReelsHeader(
         translucent = true,
         showWordmark = false,
         actions = {
-            IconButton(onClick = onOpenMenu, modifier = Modifier.testTag("reels_header:menu")) {
-                Icon(imageVector = UsIcons.Menu, contentDescription = "More", tint = Color.White)
-            }
-            IconButton(onClick = onOpenSearch, modifier = Modifier.testTag("reels_header:search")) {
-                Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = Color.White)
+            UsHeaderCorner.forEach { action ->
+                val (onClick, tag) = when (action) {
+                    UsHeaderCornerAction.SEARCH -> onOpenSearch to "reels_header:search"
+                    UsHeaderCornerAction.NOTIFICATIONS -> onOpenNotifications to "reels_header:notifications"
+                    UsHeaderCornerAction.MORE -> onOpenMenu to "reels_header:menu"
+                    // Home's alone; the standard corner never carries it.
+                    UsHeaderCornerAction.MESSAGES -> return@forEach
+                }
+                if (action == UsHeaderCornerAction.NOTIFICATIONS) {
+                    IconButton(
+                        onClick = onClick,
+                        modifier = Modifier
+                            .testTag(tag)
+                            .semantics { contentDescription = usNotificationsDescription(unreadCount) },
+                    ) {
+                        UsBadgedIcon(icon = action.icon, count = unreadCount, tint = UsTheme.extended.onMedia)
+                    }
+                } else {
+                    IconButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
+                        Icon(
+                            imageVector = action.icon,
+                            contentDescription = action.description,
+                            tint = UsTheme.extended.onMedia,
+                        )
+                    }
+                }
             }
         },
     )
@@ -699,7 +770,7 @@ internal class ReelActions(
  * The bundle for [ReelsScreen]: everything the ViewModel answers directly,
  * plus the five things only the screen can do — push a profile, open the
  * system share sheet, open the comments sheet, and hold the settled reel
- * and its player (the hamburger's more sheet opens on the former, reads its
+ * and its player (the header's more sheet opens on the former, reads its
  * ladder from the latter).
  */
 private fun reelActions(
@@ -749,6 +820,8 @@ private fun ReelsBody(
     subscriptionEdges: Map<String, ChannelSubscription>,
     ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
+    /** The added sound a reel's page plays, from its stored copy when the reel plays from the device. */
+    soundTrackFor: (FeedItem) -> SoundTrack?,
     actions: ReelActions,
 ) {
     val refresh = items.loadState.refresh
@@ -778,6 +851,7 @@ private fun ReelsBody(
             subscriptionEdges = subscriptionEdges,
             ownUserId = ownUserId,
             playbackFor = playbackFor,
+            soundTrackFor = soundTrackFor,
             actions = actions,
         )
     }
@@ -797,6 +871,8 @@ private fun ReelsPager(
     subscriptionEdges: Map<String, ChannelSubscription>,
     ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
+    /** The added sound a reel's page plays, from its stored copy when the reel plays from the device. */
+    soundTrackFor: (FeedItem) -> SoundTrack?,
     actions: ReelActions,
 ) {
     val pageCount = pagerState.pageCount
@@ -818,7 +894,7 @@ private fun ReelsPager(
         // The added sound serves the settled page and no other. It is
         // attached BEFORE the video is told to play, so the first frame
         // already has the creator's mix; a reel without one lets it go.
-        val track = reel?.soundTrack()
+        val track = reel?.let(soundTrackFor)
         if (player != null && track != null) sound.attach(player, track, reel.soundMix()) else sound.detach()
         reel?.let { actions.onShown(it, player?.let(::watchProbe), current) }
         // The pause is the reel's it was made on, and onShown has cleared
@@ -843,7 +919,7 @@ private fun ReelsPager(
         beyondViewportPageCount = 1,
         modifier = Modifier
             .fillMaxSize()
-            .background(UsTheme.extended.bgCanvas),
+            .background(UsTheme.extended.stage),
     ) { page ->
         when (val content = pageAt(page, head, items, load = true)) {
             null -> Unit
@@ -926,7 +1002,7 @@ private fun PendingReelPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(UsTheme.extended.bgCanvas)
+            .background(UsTheme.extended.stage)
             // The same double-tap as a real reel, so full mode is one gesture
             // wherever the pager is; the cover has no rail to hide.
             .pointerInput(onToggleMode) { detectTapGestures(onDoubleTap = { onToggleMode() }) }
@@ -943,8 +1019,8 @@ private fun PendingReelPage(
         BottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
         if (head.failure == null) {
             CircularProgressIndicator(
-                color = Color.White,
-                trackColor = Color.White.copy(alpha = LOADER_TRACK_ALPHA),
+                color = UsTheme.extended.onMedia,
+                trackColor = UsTheme.extended.onMedia.copy(alpha = LOADER_TRACK_ALPHA),
                 strokeWidth = LOADER_STROKE,
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -967,7 +1043,7 @@ private fun PendingReelPage(
                 Text(
                     text = head.caption,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
+                    color = UsTheme.extended.onMedia,
                     maxLines = CAPTION_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -985,7 +1061,7 @@ private fun PublishFailureStrip(
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(Color.Black.copy(alpha = STRIP_PLATE_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = STRIP_PLATE_ALPHA))
             .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
             .testTag("reel_pending_failure"),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
@@ -995,7 +1071,7 @@ private fun PublishFailureStrip(
             text = "Couldn't post",
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
-            color = Color.White,
+            color = UsTheme.extended.onMedia,
             modifier = Modifier.semantics { contentDescription = "Couldn't post. ${failure.message}" },
         )
         if (failure.retryable) {
@@ -1012,7 +1088,7 @@ private fun StripDot() {
     Text(
         text = "·",
         style = MaterialTheme.typography.labelLarge,
-        color = Color.White.copy(alpha = DIM_ALPHA),
+        color = UsTheme.extended.onMedia.copy(alpha = DIM_ALPHA),
     )
 }
 
@@ -1063,10 +1139,7 @@ private fun ReelPage(
             // has — so a double-tap is one mode change, not a pause and a
             // mode change.
             .pointerInput(actions) {
-                detectTapGestures(
-                    onTap = { actions.onTogglePause() },
-                    onDoubleTap = { actions.onToggleMode() },
-                )
+                detectTapGestures(onTap = { actions.onTogglePause() }, onDoubleTap = { actions.onToggleMode() })
             },
     ) {
         if (playback != null) {
@@ -1078,6 +1151,7 @@ private fun ReelPage(
                 page = page,
                 polling = settled && !view.paused,
                 view = view,
+                offline = view.offline.copies[item.id],
                 onProgress = { progress = it },
             )
         } else {
@@ -1174,6 +1248,8 @@ private fun ReelVideo(
     page: Int,
     polling: Boolean,
     view: ReelsViewState,
+    /** Where this reel's offline copy stands, for the mark at the top left of the page. */
+    offline: OfflineEntry?,
     onProgress: (Float) -> Unit,
 ) {
     val player = remember(page, playback) { pool.acquire(page, playback) }
@@ -1200,6 +1276,8 @@ private fun ReelVideo(
     // playWhenReady false, and a paused reel shows the play glyph
     // instead. Retry re-prepares the player where it stands.
     VideoLoadingIndicator(player = player, onRetry = player::prepare)
+    // An offline copy says so, and one being saved shows how far it is (2026-10-02).
+    ReelOfflineStatus(playsOffline = playback.kind == PlaybackKind.Offline, entry = offline)
     // The same four-a-second poll is the sound's running clock: a
     // drift too small to hear is left alone, a larger one corrected.
     TrackProgress(player = player, polling = polling) {
@@ -1236,7 +1314,7 @@ private fun TrackProgress(player: Player, polling: Boolean, onProgress: (Float) 
  */
 @Composable
 private fun ProgressRing(progress: Float, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val track = Color.White.copy(alpha = PROGRESS_TRACK_ALPHA)
+    val track = UsTheme.extended.onMedia.copy(alpha = PROGRESS_TRACK_ALPHA)
     val played = UsTheme.extended.ctaGradient
     Box(
         modifier = modifier
@@ -1281,14 +1359,14 @@ private fun PausedGlyph() {
         modifier = Modifier
             .size(PAUSE_DISC)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = PAUSE_DISC_ALPHA))
+            .background(UsTheme.extended.stage.copy(alpha = PAUSE_DISC_ALPHA))
             .semantics { contentDescription = "Paused" }
             .testTag("reel_paused"),
     ) {
         Icon(
             imageVector = UsIcons.Play,
             contentDescription = null,
-            tint = Color.White,
+            tint = UsTheme.extended.onMedia,
             modifier = Modifier.size(PAUSE_GLYPH),
         )
     }
@@ -1301,7 +1379,11 @@ private fun BottomScrim(modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxWidth()
             .fillMaxHeight(SCRIM_FRACTION)
-            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = SCRIM_ALPHA)))),
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.Transparent, UsTheme.extended.stage.copy(alpha = SCRIM_ALPHA)),
+                ),
+            ),
     )
 }
 
@@ -1311,7 +1393,7 @@ private fun BottomScrim(modifier: Modifier = Modifier) {
  * share, save — each glyph with a one-line label under it, the count
  * where there is one (share and save too, when the row carries theirs,
  * 2026-09-30) — then mute on its own, unlabelled. The ⋮ left the
- * rail for the header's hamburger (founder, 2026-09-05). 56dp from the
+ * rail for the header's More (founder, 2026-09-05). 56dp from the
  * bottom, 20dp between controls. Plain white glyphs on the bottom scrim —
  * no discs; the scrim carries the contrast for the whole strip.
  *
@@ -1375,7 +1457,7 @@ private fun RailControlButton(
             icon = if (reacted) UsIcons.HeartFilled else UsIcons.HeartOutline,
             description = if (reacted) "Liked" else "Like",
             label = control.label,
-            tint = if (reacted) UsTheme.extended.liveRed else Color.White,
+            tint = if (reacted) UsTheme.extended.liveRed else UsTheme.extended.onMedia,
             onClick = { actions.onReact(item.id, item.viewer.hasReacted) },
         )
         RailKind.COMMENT -> RailButton(
@@ -1394,7 +1476,7 @@ private fun RailControlButton(
             icon = if (bookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
             description = if (bookmarked) "Saved" else "Save",
             label = control.label,
-            tint = if (bookmarked) UsTheme.extended.statusWarning else Color.White,
+            tint = if (bookmarked) UsTheme.extended.accent else UsTheme.extended.onMedia,
             onClick = { actions.onBookmark(item.id, item.viewer.isBookmarked) },
         )
     }
@@ -1411,7 +1493,7 @@ private fun RailButton(
     description: String,
     label: String?,
     onClick: () -> Unit,
-    tint: Color = Color.White,
+    tint: Color = UsTheme.extended.onMedia,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1440,7 +1522,7 @@ private fun RailButton(
                 style = MaterialTheme.typography.labelMedium,
                 fontSize = RAIL_LABEL_SIZE,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 1,
             )
         }
@@ -1530,7 +1612,7 @@ private fun ReelOverlay(
                 style = MaterialTheme.typography.bodyMedium,
                 fontSize = NAME_SIZE,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = UsTheme.extended.onMedia,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
@@ -1571,7 +1653,7 @@ private fun ReelCaption(item: FeedItem) {
         text = item.text,
         style = MaterialTheme.typography.bodyMedium,
         fontSize = CAPTION_SIZE,
-        color = Color.White,
+        color = UsTheme.extended.onMedia,
         maxLines = if (expanded) Int.MAX_VALUE else CAPTION_LINES,
         overflow = TextOverflow.Ellipsis,
         onTextLayout = { if (!expanded) overflowed = it.hasVisualOverflow },
@@ -1580,7 +1662,7 @@ private fun ReelCaption(item: FeedItem) {
         Text(
             text = if (expanded) "less" else "more",
             style = MaterialTheme.typography.labelLarge,
-            color = Color.White.copy(alpha = DIM_ALPHA),
+            color = UsTheme.extended.onMedia.copy(alpha = DIM_ALPHA),
             modifier = Modifier
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
@@ -1681,7 +1763,7 @@ private fun ReelSoundLine(line: SoundLine, onClick: () -> Unit, modifier: Modifi
 @Composable
 private fun ReelOverlayWithSoundPreview() {
     UsTheme {
-        Box(modifier = Modifier.background(UsTheme.extended.bgCanvas)) {
+        Box(modifier = Modifier.background(UsTheme.extended.stage)) {
             Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
                 ReelHashtags(tags = listOf("reels", "monsoon", "walk"), onOpenHashtag = {})
                 ReelSoundLine(line = SoundLine(label = "Original sound - Asha", added = true), onClick = {})
@@ -1814,3 +1896,28 @@ private const val PAUSE_GLYPH_FROM = 0.8f
 private val LOADER_SIZE = 48.dp
 private val LOADER_STROKE = 3.dp
 private const val LOADER_TRACK_ALPHA = 0.25f
+
+/**
+ * What a reel's page says about its offline copy (2026-10-02), under the
+ * header at the top left: "Offline copy" while the stored copy is what
+ * plays, the save's ring while one is being made, nothing otherwise. The
+ * same two marks as the long video's watch screen.
+ */
+@Composable
+private fun ReelOfflineStatus(playsOffline: Boolean, entry: OfflineEntry?, modifier: Modifier = Modifier) {
+    val place = modifier
+        .statusBarsPadding()
+        .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP)
+    when {
+        playsOffline -> OfflineCopyBadge(modifier = place)
+        entry == null || entry.phase == OfflinePhase.STORED -> Unit
+        else -> OfflineSaveRing(
+            progress = entry.progress,
+            waiting = WAITING_FOR_NETWORK.takeIf { entry.phase == OfflinePhase.WAITING },
+            modifier = place,
+        )
+    }
+}
+
+/** Clear of the header's two glyphs. */
+private val OFFLINE_STATUS_TOP = 56.dp

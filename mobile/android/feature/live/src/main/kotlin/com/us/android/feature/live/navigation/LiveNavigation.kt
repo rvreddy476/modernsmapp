@@ -29,12 +29,21 @@ fun NavGraphBuilder.liveScreens(
     onBack: () -> Unit,
     onGoLive: () -> Unit,
     onWatch: (streamId: String) -> Unit,
+    /** Go live's "not yet" screen: the action that helps. `:app` opens the create flow / the account screen. */
+    onCreatePost: () -> Unit,
+    onVerifyEmail: () -> Unit,
+    onVerifyPhone: () -> Unit,
 ) {
     composable<LiveHubRoute> {
         LiveHubScreen(onClose = onBack, onGoLive = onGoLive, onWatch = onWatch)
     }
     composable<GoLiveRoute> {
-        GoLiveScreen(onClose = onBack)
+        GoLiveScreen(
+            onClose = onBack,
+            onCreatePost = onCreatePost,
+            onVerifyEmail = onVerifyEmail,
+            onVerifyPhone = onVerifyPhone,
+        )
     }
     composable<LiveWatchRoute> {
         LiveWatchScreen(onClose = onBack)

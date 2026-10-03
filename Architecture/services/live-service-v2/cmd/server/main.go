@@ -180,9 +180,56 @@ func main() {
 		os.Exit(1)
 	}
 
+	foundingMinLive := envDuration("LIVE_FOUNDING_MIN_LIVE", pgstore.DefaultFoundingMinLive)
+
+	// Who may go live (2 Oct 2026): LIVE_ACCESS_MODE = pilot (default, the
+	// allowlist above alone) | open (the going-live requirements decide; a
+	// pilot-list user is always eligible). An unknown mode, or a requirement
+	// setting that does not parse, refuses to boot.
+	elig, err := service.EligibilityConfigFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("live-v2: going-live eligibility settings invalid", "error", err)
+		os.Exit(1)
+	}
+	// A stream counts as completed (towards lifting the new-streamer viewer
+	// cap) by the same time on air the founding creator badge asks for.
+	elig.CompletedMinLive = foundingMinLive
+	// The facts, each from a route that already exists. A source that is not
+	// configured makes its requirement unknown: unknown never passes in open
+	// mode. Email verified is identity auth-service's internal contact read;
+	// the phone fact has no route (no SMS is sent), so that requirement is
+	// off unless LIVE_ELIG_REQUIRE_PHONE=true.
+	if c := service.NewHTTPEmails(env("AUTH_SERVICE_URL", "http://identity-auth:8081"), internalKey); c != nil {
+		elig.Emails = c
+	}
+	if c := service.NewHTTPBirthDates(profileURL, internalKey); c != nil {
+		elig.BirthDates = c
+	}
+	if c := service.NewHTTPAccounts(env("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110"), internalKey); c != nil {
+		elig.Accounts = c
+	}
+	if c := service.NewHTTPPostCounts(postURL, internalKey); c != nil {
+		elig.Posts = c
+	}
+	if c := service.NewHTTPFollowerCounts(graphURL, internalKey); c != nil {
+		elig.Followers = c
+	}
+	slog.Info("live-v2: going-live access", "mode", elig.Mode,
+		"require_email", elig.RequireEmail, "require_phone", elig.RequirePhone, "min_account_age", elig.MinAccountAge.String(),
+		"min_posts", elig.MinPosts, "min_followers", elig.MinFollowers,
+		"new_streamer_streams", elig.NewStreamerStreams, "new_streamer_viewer_cap", elig.NewStreamerViewerCap)
+	if elig.Mode == service.AccessModeOpen {
+		if elig.RequirePhone && elig.Phones == nil {
+			slog.Warn("live-v2: open mode requires a verified phone but no internal route exposes phone_verified — nobody outside the pilot list can go live (503 AUTHORITY_UNAVAILABLE) until a source exists or LIVE_ELIG_REQUIRE_PHONE=false")
+		}
+		if (elig.RequireEmail && elig.Emails == nil) || elig.Accounts == nil || elig.BirthDates == nil || (elig.MinPosts > 0 && elig.Posts == nil) || (elig.MinFollowers > 0 && elig.Followers == nil) {
+			slog.Warn("live-v2: open mode with an eligibility source not configured — its requirement is unknown and blocks going live")
+		}
+	}
+
 	store := pgstore.New(dbPool)
 	store.SetFoundingRule(pgstore.FoundingRule{
-		MinLive: envDuration("LIVE_FOUNDING_MIN_LIVE", pgstore.DefaultFoundingMinLive),
+		MinLive: foundingMinLive,
 		Until:   foundingUntil,
 	})
 	svc := service.New(store, lk, graph, rdb, service.Config{
@@ -198,6 +245,7 @@ func main() {
 		Profiles:               profiles,
 		Categories:             categories,
 		Following:              following,
+		Eligibility:            elig,
 	})
 	// Timeouts by the database clock, LiveKit reconcile, recording imports.
 	go svc.RunSweeper(bgCtx, service.SweepInterval)

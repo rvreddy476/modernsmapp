@@ -11,9 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// MTube download: the decision, exercised against a real delivery.Gate and
-// a real asset row with only the post-service answer faked.
+// The file-download route's decision (owner only since 2026-10-02): the
+// uploader, and nobody else, whatever the post says. The route end to end
+// over a real store is download_integration_test.go.
 
+// fakeDownloadAuthority is post-service's old "does the post allow
+// download" answer. It is wired to the gate in these tests exactly as
+// cmd/server wires it, so a test can prove it is never asked.
 type fakeDownloadAuthority struct {
 	err   error
 	asked []string
@@ -31,6 +35,14 @@ func (noopSigner) SignProtected(key string, _ time.Duration, _ time.Time) (strin
 	return "https://cdn/" + key + "?sig", nil
 }
 
+// attachmentSigner is noopSigner that can also mark a URL as an attachment
+// (delivery.DownloadSigner), the way both production signers can.
+type attachmentSigner struct{ noopSigner }
+
+func (attachmentSigner) SignProtectedDownload(key string, _ time.Duration, _ time.Time, filename string) (string, error) {
+	return "https://cdn/" + key + "?sig&response-content-disposition=attachment%3B+filename%3D%22" + filename + "%22", nil
+}
+
 func downloadAsset(owner uuid.UUID) *postgres.MediaAsset {
 	return &postgres.MediaAsset{
 		ID: uuid.New(), UploaderID: owner, FileType: "video",
@@ -44,41 +56,19 @@ func downloadAsset(owner uuid.UUID) *postgres.MediaAsset {
 	}
 }
 
-func TestDownloadVerdictOwnerNeverAsksPostService(t *testing.T) {
-	owner := uuid.New()
-	authority := &fakeDownloadAuthority{err: delivery.ErrDeliveryDenied}
-	gate := delivery.NewGate(noopSigner{}, nil).WithDownloadAuthorizer(authority)
-	if err := downloadVerdict(context.Background(), gate, downloadAsset(owner), owner); err != nil {
-		t.Fatalf("owner refused: %v", err)
-	}
-	if len(authority.asked) != 0 {
-		t.Fatalf("post-service was asked about the owner's own upload: %v", authority.asked)
-	}
-}
-
-func TestDownloadVerdictViewerFollowsPostService(t *testing.T) {
-	owner, viewer := uuid.New(), uuid.New()
+func TestDownloadVerdictIsTheUploaderAndNobodyElse(t *testing.T) {
+	owner, stranger := uuid.New(), uuid.New()
 	media := downloadAsset(owner)
-	cases := map[string]struct {
-		answer error
-		want   error
-	}{
-		"allowed":    {nil, nil},
-		"denied":     {delivery.ErrDeliveryDenied, delivery.ErrDeliveryDenied},
-		"unresolved": {delivery.ErrDeliveryUnresolved, delivery.ErrDeliveryUnresolved},
+	if err := downloadVerdict(media, owner); err != nil {
+		t.Fatalf("the uploader was refused their own upload: %v", err)
 	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			authority := &fakeDownloadAuthority{err: tc.answer}
-			gate := delivery.NewGate(noopSigner{}, nil).WithDownloadAuthorizer(authority)
-			err := downloadVerdict(context.Background(), gate, media, viewer)
-			if !errors.Is(err, tc.want) && !(tc.want == nil && err == nil) {
-				t.Fatalf("got %v, want %v", err, tc.want)
-			}
-			if len(authority.asked) != 1 || authority.asked[0] != viewer.String()+"/"+media.ID.String() {
-				t.Fatalf("asked %v, want exactly one question about this viewer and asset", authority.asked)
-			}
-		})
+	for name, viewer := range map[string]uuid.UUID{"a stranger": stranger, "anonymous": uuid.Nil} {
+		if err := downloadVerdict(media, viewer); !errors.Is(err, delivery.ErrDeliveryDenied) {
+			t.Fatalf("%s: got %v, want denied", name, err)
+		}
+	}
+	if err := downloadVerdict(nil, owner); !errors.Is(err, delivery.ErrDeliveryDenied) {
+		t.Fatalf("no asset: got %v, want denied", err)
 	}
 }
 
@@ -86,31 +76,28 @@ func TestDownloadVerdictAnonymousIsNeverAnOwner(t *testing.T) {
 	// An asset whose uploader is the nil id (a scrubbed/anonymised row)
 	// must not make every anonymous caller its owner.
 	media := downloadAsset(uuid.Nil)
-	authority := &fakeDownloadAuthority{err: delivery.ErrDeliveryDenied}
-	gate := delivery.NewGate(noopSigner{}, nil).WithDownloadAuthorizer(authority)
-	if err := downloadVerdict(context.Background(), gate, media, uuid.Nil); !errors.Is(err, delivery.ErrDeliveryDenied) {
+	if err := downloadVerdict(media, uuid.Nil); !errors.Is(err, delivery.ErrDeliveryDenied) {
 		t.Fatalf("anonymous viewer of a nil-uploader asset: got %v, want denied", err)
-	}
-}
-
-func TestDownloadVerdictFailsClosedWithoutAGate(t *testing.T) {
-	owner, viewer := uuid.New(), uuid.New()
-	err := downloadVerdict(context.Background(), nil, downloadAsset(owner), viewer)
-	if !errors.Is(err, delivery.ErrDeliveryUnresolved) {
-		t.Fatalf("no gate: got %v, want unresolved", err)
-	}
-	if err := downloadVerdict(context.Background(), nil, nil, owner); !errors.Is(err, delivery.ErrDeliveryDenied) {
-		t.Fatalf("no asset: got %v, want denied", err)
 	}
 }
 
 func TestDownloadVerdictRefusesScopedAssetsEvenToTheOwner(t *testing.T) {
 	owner := uuid.New()
-	gate := delivery.NewGate(noopSigner{}, nil).WithDownloadAuthorizer(&fakeDownloadAuthority{})
 	anon := downloadAsset(owner)
 	anon.AccessScope = postgres.AccessScopeAnonymous
-	if err := downloadVerdict(context.Background(), gate, anon, owner); !errors.Is(err, delivery.ErrDeliveryDenied) {
+	if err := downloadVerdict(anon, owner); !errors.Is(err, delivery.ErrDeliveryDenied) {
 		t.Fatalf("anonymous-scope asset: got %v, want denied", err)
+	}
+	if !downloadScopeDenies(anon, uuid.Nil) {
+		t.Fatal("an anonymous-scope asset is a download for a service caller")
+	}
+	dating := downloadAsset(owner)
+	dating.AccessScope = postgres.AccessScopeDatingPhoto
+	if !downloadScopeDenies(dating, uuid.Nil) {
+		t.Fatal("a dating photo is a download for a service caller")
+	}
+	if downloadScopeDenies(downloadAsset(owner), uuid.Nil) {
+		t.Fatal("an ordinary video is refused to a service caller by scope")
 	}
 }
 
@@ -126,5 +113,24 @@ func TestPickDownloadObjectPrefers720Then480ThenOriginal(t *testing.T) {
 	media.Variants = media.Variants[:2] // thumb, 360p — no preferred rung
 	if key, v := pickDownloadObject(media); key != media.StorageKey || v != "original" {
 		t.Fatalf("got %s (%s), want the original", key, v)
+	}
+}
+
+// signDownload is the only place the route's URL is made: it is an
+// attachment, and a signer that cannot mark one is an outage, never a plain
+// playback URL handed out as a download.
+func TestSignDownloadIsAnAttachmentOrNothing(t *testing.T) {
+	media := downloadAsset(uuid.New())
+	s := &Service{gate: delivery.NewGate(attachmentSigner{}, nil)}
+	url, err := s.signDownload(media)
+	if err != nil || url != "https://cdn/k/720p?sig&response-content-disposition=attachment%3B+filename%3D%22"+media.ID.String()+".mp4%22" {
+		t.Fatalf("url=%q err=%v", url, err)
+	}
+	s = &Service{gate: delivery.NewGate(noopSigner{}, nil)}
+	if _, err := s.signDownload(media); !errors.Is(err, delivery.ErrDeliveryUnresolved) {
+		t.Fatalf("a signer without attachment support: %v, want unresolved", err)
+	}
+	if _, err := (&Service{}).signDownload(media); !errors.Is(err, delivery.ErrDeliveryUnresolved) {
+		t.Fatalf("no gate: %v, want unresolved", err)
 	}
 }
