@@ -69,15 +69,20 @@ externalSecret:
     - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
     - { secretKey: SERVICE_CALLER_FOOD_SERVICE_PUBKEY, remoteRef: caller_food_pubkey }
     - { secretKey: SERVICE_CALLER_FOOD_SERVICE_KID, remoteRef: caller_food_kid }
-    # dating-service (migration 011), rider-service (012 + 013) and
-    # admin-service are NOT enabled: each needs its public key stored
-    # first, these lines uncommented, then its name added to SERVICE_CALLERS
-    # — in that order. A listed caller with no KID/PUBKEY refuses boot and
-    # takes every payment down.
+    # dating-service (migration 011), rider-service (012 + 013),
+    # doorstep-service (015) and admin-service are NOT enabled: each needs
+    # its public key stored first, these lines uncommented, then its name
+    # added to SERVICE_CALLERS — in that order. A listed caller with no
+    # KID/PUBKEY refuses boot and takes every payment down.
     # - { secretKey: SERVICE_CALLER_DATING_SERVICE_PUBKEY, remoteRef: caller_dating_pubkey }
     # - { secretKey: SERVICE_CALLER_DATING_SERVICE_KID, remoteRef: caller_dating_kid }
     # - { secretKey: SERVICE_CALLER_RIDER_SERVICE_PUBKEY, remoteRef: caller_rider_pubkey }
     # - { secretKey: SERVICE_CALLER_RIDER_SERVICE_KID, remoteRef: caller_rider_kid }
+    # doorstep-service (Doorstep, migration 015): the private half goes to
+    # doorstep-service only. 015 must have seeded `doorstep` before
+    # doorstep-service joins SERVICE_CALLERS, or production refuses to boot.
+    # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY, remoteRef: caller_doorstep_pubkey }
+    # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_KID, remoteRef: caller_doorstep_kid }
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
 
@@ -106,6 +111,9 @@ env:
   # SERVICE_CALLER_RIDER_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
   # SERVICE_CALLER_RIDER_SERVICE_REFTYPES: 'mopedu_ride,mopedu_subscription'
   # SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS: 'mopedu'
+  # SERVICE_CALLER_DOORSTEP_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  # SERVICE_CALLER_DOORSTEP_SERVICE_REFTYPES: 'doorstep_booking,doorstep_extras'
+  # SERVICE_CALLER_DOORSTEP_SERVICE_APPLICATIONS: 'doorstep'
   # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'payments:stats.read,payments:refunds.read,payments:refund.issue,payments:intents.read,payments:reconciliation.read,payments:applications.read,payments:applications.manage,payments:audit.read,payments:offers.manage'
 
   # LB-9 — reconciliation.
@@ -147,6 +155,7 @@ networkPolicy:
     - podSelector: { matchLabels: { app.kubernetes.io/name: food-service } }
     - podSelector: { matchLabels: { app.kubernetes.io/name: dating-service } }
     - podSelector: { matchLabels: { app.kubernetes.io/name: rider-service } }
+    - podSelector: { matchLabels: { app.kubernetes.io/name: doorstep-service } }
     - podSelector: { matchLabels: { app.kubernetes.io/name: admin-service } }
     - podSelector: { matchLabels: { app.kubernetes.io/name: api-gateway } }
     - ingressController: true # the webhook path only (ALB ENIs in the VPC)
