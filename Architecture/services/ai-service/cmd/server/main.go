@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/atpost/ai-service/database"
@@ -28,6 +30,14 @@ func main() {
 
 	// 2. Config
 	port := env("HTTP_PORT", "8098")
+	internalKey, err := internalKeyFromEnv()
+	if err != nil {
+		slog.Error("ai-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if internalKey == "" {
+		slog.Warn("ai-service: INTERNAL_SERVICE_KEY not set — every /v1/ai endpoint is unauthenticated. Do not run this configuration in production.")
+	}
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := env("REDIS_ADDR", "localhost:6379")
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -116,18 +126,11 @@ func main() {
 	}))
 
 	// 10. HTTP server
-	handler := aihttp.New(aiSvc)
-
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	r.Use(gin.Recovery())
-	r.Use(middleware.RequestID())
-	r.Use(middleware.Logger())
-	r.Use(middleware.Metrics(httpMetrics))
-
-	checker.RegisterRoutes(r)
-	r.GET("/metrics", metrics.Handler())
-	handler.RegisterRoutes(r)
+	r := newRouter(aihttp.New(aiSvc), internalKey, middleware.Metrics(httpMetrics), func(r *gin.Engine) {
+		checker.RegisterRoutes(r)
+		r.GET("/metrics", metrics.Handler())
+	})
 
 	slog.Info("ai-service starting", "port", port)
 
@@ -144,6 +147,49 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// newRouter builds the engine. registerOpen adds the health, readiness and
+// metrics routes BEFORE the handler installs RequireInternalKey: gin fixes a
+// route's handler chain at registration, so those stay open while every
+// /v1/ai route demands X-Internal-Service-Key (the gateway stamps it, see
+// internalroutes.StampPolicy). The handler always had WithInternalKey, but
+// main never called it, so /v1/ai answered anyone who could reach the pod.
+func newRouter(h *aihttp.Handler, internalKey string, metricsMW gin.HandlerFunc, registerOpen func(*gin.Engine)) *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	if metricsMW != nil {
+		r.Use(metricsMW)
+	}
+	registerOpen(r)
+	h.WithInternalKey(internalKey).RegisterRoutes(r)
+	return r
+}
+
+// internalKeyFromEnv reads INTERNAL_SERVICE_KEY and fails closed in
+// production, where an empty key would leave every /v1/ai route open.
+func internalKeyFromEnv() (string, error) {
+	key := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY"))
+	if key == "" && isProduction() {
+		return "", errors.New("INTERNAL_SERVICE_KEY is required in production; /v1/ai would otherwise be unauthenticated")
+	}
+	return key, nil
+}
+
+func isProduction() bool {
+	for _, key := range []string{"APP_ENV", "ENVIRONMENT", "ENV"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+		case "prod", "production":
+			return true
+		case "":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func env(key, fallback string) string {
