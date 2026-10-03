@@ -14,10 +14,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
-	"os"
+	"net/url"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/dating-service/internal/store"
@@ -232,107 +235,149 @@ func (s *Service) ListVouchesSent(ctx context.Context, voucherID uuid.UUID) ([]*
 	return s.store.ListVouchesSentVisible(ctx, voucherID)
 }
 
-// httpGraphServiceClient calls graph-service /v1/graph/follows/mutual.
+// httpGraphServiceClient reads graph-service /v1/graph/relationship.
 type httpGraphServiceClient struct {
 	baseURL string
+	key     string
 	client  *http.Client
 }
 
-// NewHTTPGraphServiceClient configures from GRAPH_SERVICE_URL.
-func NewHTTPGraphServiceClient() GraphServiceClient {
-	base := os.Getenv("GRAPH_SERVICE_URL")
-	if base == "" {
-		base = "http://graph-service:8108"
+// NewHTTPGraphServiceClient reads graph-service's relationship route with
+// the internal key (no user identity), like NewHTTPConnectionChecker. An
+// empty baseURL falls back to the docker-compose address.
+func NewHTTPGraphServiceClient(baseURL, internalKey string, c *http.Client) GraphServiceClient {
+	if baseURL == "" {
+		baseURL = "http://graph-service:8083"
 	}
-	return &httpGraphServiceClient{baseURL: base, client: &http.Client{Timeout: 3 * time.Second}}
+	if c == nil {
+		c = &http.Client{Timeout: 3 * time.Second}
+	}
+	return &httpGraphServiceClient{baseURL: strings.TrimRight(baseURL, "/"), key: internalKey, client: c}
 }
 
-// IsMutualFollow asks graph-service whether a follows b AND b follows a.
-// On any error we deny — failing closed on a safety/eligibility-adjacent
-// signal is the right default (rule #6).
+// IsMutualFollow asks graph-service whether a follows b AND b follows a,
+// with no block in either direction. Any non-2xx is an error, never a quiet
+// "not mutual": a wrong route or a missing key must not read as an answer.
 func (c *httpGraphServiceClient) IsMutualFollow(ctx context.Context, a, b uuid.UUID) (bool, error) {
-	url := fmt.Sprintf("%s/v1/graph/follows/mutual?a=%s&b=%s", c.baseURL, a.String(), b.String())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	q := url.Values{"user_id": {a.String()}, "other_id": {b.String()}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/graph/relationship?"+q.Encode(), nil)
 	if err != nil {
-		return false, fmt.Errorf("build request: %w", err)
+		return false, fmt.Errorf("build relationship request: %w", err)
+	}
+	if c.key != "" {
+		req.Header.Set(internalKeyHeader, c.key)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("graph-service unreachable: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return false, nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("graph-service relationship status %d", resp.StatusCode)
 	}
-	if resp.StatusCode >= 400 {
-		return false, fmt.Errorf("graph-service status %d", resp.StatusCode)
-	}
-	var envelope struct {
+	var env struct {
 		Data struct {
-			Mutual bool `json:"mutual"`
+			Follows    bool `json:"follows"`
+			FollowedBy bool `json:"followed_by"`
+			Blocked    bool `json:"blocked"`
+			BlockedBy  bool `json:"blocked_by"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return false, fmt.Errorf("decode mutual: %w", err)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&env); err != nil {
+		return false, fmt.Errorf("decode relationship: %w", err)
 	}
-	return envelope.Data.Mutual, nil
+	d := env.Data
+	return d.Follows && d.FollowedBy && !d.Blocked && !d.BlockedBy, nil
 }
+
+// community-service pages /v1/communities/my at most 100 per request.
+const (
+	communityPageSize = 100
+	communityMaxPages = 10
+)
 
 // httpCommunityServiceClient verifies shared community membership.
 type httpCommunityServiceClient struct {
 	baseURL string
+	key     string
 	client  *http.Client
 }
 
-// NewHTTPCommunityServiceClient configures from COMMUNITY_SERVICE_URL.
-func NewHTTPCommunityServiceClient() CommunityServiceClient {
-	base := os.Getenv("COMMUNITY_SERVICE_URL")
-	if base == "" {
-		base = "http://community-service:8109"
+// NewHTTPCommunityServiceClient reads community-service with the internal
+// key. An empty baseURL falls back to the docker-compose address.
+func NewHTTPCommunityServiceClient(baseURL, internalKey string, c *http.Client) CommunityServiceClient {
+	if baseURL == "" {
+		baseURL = "http://community-service:8107"
 	}
-	return &httpCommunityServiceClient{baseURL: base, client: &http.Client{Timeout: 3 * time.Second}}
+	if c == nil {
+		c = &http.Client{Timeout: 3 * time.Second}
+	}
+	return &httpCommunityServiceClient{baseURL: strings.TrimRight(baseURL, "/"), key: internalKey, client: c}
 }
 
-// UsersShareCommunity reads /v1/communities/:id/members?ids=a,b and returns
-// true if both ids appear. We pass user identity via X-User-ID for the
-// caller side; the server-to-server inspection uses a service auth header.
+// UsersShareCommunity reports whether a and b are both active members of
+// communityID. community-service has no per-user membership read, so this
+// walks each user's GET /v1/communities/my (X-User-Id names the user; the
+// list already excludes banned and pending members). Any non-2xx is an
+// error, never a quiet "not a member".
 func (c *httpCommunityServiceClient) UsersShareCommunity(ctx context.Context, a, b uuid.UUID, communityID uuid.UUID) (bool, error) {
-	url := fmt.Sprintf("%s/v1/communities/%s/members?ids=%s,%s", c.baseURL, communityID.String(), a.String(), b.String())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false, fmt.Errorf("build request: %w", err)
+	for _, u := range []uuid.UUID{a, b} {
+		ok, err := c.isMember(ctx, u, communityID)
+		if err != nil || !ok {
+			return false, err
+		}
 	}
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		req.Header.Set("X-Internal-Key", key)
+	return true, nil
+}
+
+func (c *httpCommunityServiceClient) isMember(ctx context.Context, userID, communityID uuid.UUID) (bool, error) {
+	want := communityID.String()
+	for page := 0; page < communityMaxPages; page++ {
+		ids, err := c.myCommunities(ctx, userID, page*communityPageSize)
+		if err != nil {
+			return false, err
+		}
+		for _, id := range ids {
+			if id == want {
+				return true, nil
+			}
+		}
+		if len(ids) < communityPageSize {
+			return false, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *httpCommunityServiceClient) myCommunities(ctx context.Context, userID uuid.UUID, offset int) ([]string, error) {
+	q := url.Values{"limit": {strconv.Itoa(communityPageSize)}, "offset": {strconv.Itoa(offset)}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/communities/my?"+q.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build communities request: %w", err)
+	}
+	req.Header.Set("X-User-Id", userID.String())
+	if c.key != "" {
+		req.Header.Set(internalKeyHeader, c.key)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("community-service unreachable: %w", err)
+		return nil, fmt.Errorf("community-service unreachable: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return false, fmt.Errorf("community-service status %d", resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("community-service communities status %d", resp.StatusCode)
 	}
-	var envelope struct {
-		Data struct {
-			Members []struct {
-				UserID string `json:"user_id"`
-			} `json:"members"`
+	var env struct {
+		Data []struct {
+			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return false, fmt.Errorf("decode members: %w", err)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&env); err != nil {
+		return nil, fmt.Errorf("decode communities: %w", err)
 	}
-	seenA, seenB := false, false
-	aStr, bStr := a.String(), b.String()
-	for _, m := range envelope.Data.Members {
-		if m.UserID == aStr {
-			seenA = true
-		}
-		if m.UserID == bStr {
-			seenB = true
-		}
+	ids := make([]string, 0, len(env.Data))
+	for _, d := range env.Data {
+		ids = append(ids, d.ID)
 	}
-	return seenA && seenB, nil
+	return ids, nil
 }
-

@@ -284,6 +284,7 @@ func main() {
 	graphProvider := matcher.NewHTTPGraphProvider(
 		os.Getenv("GRAPH_SERVICE_URL"),
 		os.Getenv("COMMUNITY_SERVICE_URL"),
+		internalKey,
 	)
 	datingSvc.SetGraphProvider(graphProvider)
 
@@ -365,8 +366,10 @@ func main() {
 	}
 
 	// Sprint 4: graph + community clients for vouching eligibility checks.
-	datingSvc.SetGraphServiceClient(service.NewHTTPGraphServiceClient())
-	datingSvc.SetCommunityServiceClient(service.NewHTTPCommunityServiceClient())
+	datingSvc.SetGraphServiceClient(service.NewHTTPGraphServiceClient(
+		strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")), internalKey, nil))
+	datingSvc.SetCommunityServiceClient(service.NewHTTPCommunityServiceClient(
+		strings.TrimSpace(os.Getenv("COMMUNITY_SERVICE_URL")), internalKey, nil))
 
 	// Sprint 4: feature flag client for moderation strict-mode gate.
 	// SHADOW MODE (default): pulse_moderation_strict=false → no user
