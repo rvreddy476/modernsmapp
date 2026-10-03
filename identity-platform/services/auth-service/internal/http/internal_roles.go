@@ -44,14 +44,15 @@ import (
 //
 // WHAT THEY MAY DO
 //
-// Only the four ecosystem roles. Enforced in service.GrantEcosystemRole, not
-// here, so it holds for every caller of the service layer.
+// Only the ecosystem roles (roles.Ecosystem()). Enforced in
+// service.GrantEcosystemRole, not here, so it holds for every caller of the
+// service layer.
 
 type internalRoleRequest struct {
 	// UserID is the account the role is granted to or revoked from.
 	UserID string `json:"user_id" binding:"required"`
 	// Role must be one of: seller, restaurant_owner, delivery_partner,
-	// rider_partner.
+	// rider_partner, service_professional.
 	Role string `json:"role" binding:"required"`
 	// Service names the caller for the audit trail — "commerce-service",
 	// "food-service", "rider-service". Required: the audit row records this as

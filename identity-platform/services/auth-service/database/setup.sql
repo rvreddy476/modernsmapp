@@ -100,7 +100,8 @@ CREATE TABLE IF NOT EXISTS auth.user_roles (
     role       TEXT NOT NULL CHECK (role IN (
                    'superadmin','admin','moderator',
                    'finance','support','kyc_reviewer','auditor',
-                   'seller','restaurant_owner','delivery_partner','rider_partner'
+                   'seller','restaurant_owner','delivery_partner','rider_partner',
+                   'service_professional'
                )),
     granted_by UUID,
     granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -110,11 +111,16 @@ CREATE TABLE IF NOT EXISTS auth.user_roles (
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON auth.user_roles(user_id);
 
--- Identity is the whole ecosystem's SSO, so the four ecosystem roles live here
+-- Identity is the whole ecosystem's SSO, so the ecosystem roles live here
 -- too: seller (commerce), restaurant_owner + delivery_partner (food),
--- rider_partner (rider). They used to be rows in those services' own
--- databases, which meant the access token could not carry them and answering
--- "what is this person allowed to be" required calling four services.
+-- rider_partner (rider), service_professional (doorstep, added 4 Oct 2026).
+-- The first four used to be rows in those services' own databases, which
+-- meant the access token could not carry them and answering "what is this
+-- person allowed to be" required calling four services.
+--
+-- Adding a role: list it in BOTH the inline CHECK above (fresh databases) and
+-- the ALTER below (every existing database), then roll out every auth-service
+-- replica together — see the note on the ALTER.
 --
 -- There is deliberately NO 'customer' value and one must never be added: every
 -- account is a customer, so the absence of a role IS the customer state.
@@ -137,7 +143,8 @@ ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_role_check;
 ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_role_check CHECK (role IN (
     'superadmin','admin','moderator',
     'finance','support','kyc_reviewer','auditor',
-    'seller','restaurant_owner','delivery_partner','rider_partner'
+    'seller','restaurant_owner','delivery_partner','rider_partner',
+    'service_professional'
 ));
 
 -- Per-application admin roles (admin console, Wave 0 A1).
@@ -169,7 +176,7 @@ ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_pkey;
 ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_app_check;
 ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_app_check CHECK (app IS NULL OR app IN (
     'dating','food','commerce','monetization','payments','wallet','social',
-    'tube','qa','chat','live','rider','trust_safety','platform'
+    'tube','qa','chat','live','rider','doorstep','trust_safety','platform'
 ));
 -- superadmin is platform-wide by definition, and the ecosystem roles belong to
 -- no admin app. The service refuses both; the database refuses them too.

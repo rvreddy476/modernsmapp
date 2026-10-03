@@ -16,6 +16,8 @@
 // Answering "what is this person allowed to be" therefore meant fanning out to
 // four services, and no token carried the answer. Those four are now roles in
 // auth.user_roles, resolved into the token's `scopes` claim like any other.
+// doorstep-service's professionals (service_professional, October 2026) were
+// born into this model: identity is that role's only home from day one.
 //
 // The vocabulary used to be spelled out as string literals in three places
 // that had to be kept in agreement by hand — the auth.user_roles CHECK
@@ -42,16 +44,22 @@ const (
 
 // The ecosystem roles. A service grants these when it approves someone —
 // commerce when a seller application passes, food when a restaurant or
-// delivery partner is onboarded, rider when a fleet partner is approved.
+// delivery partner is onboarded, rider when a fleet partner is approved,
+// doorstep when a home-services professional is created (revoked when the
+// professional is rejected or blocked, kept while suspended).
 //
 // They imply NOTHING and are implied by NOTHING. A superadmin is not
 // automatically a seller; a restaurant owner is not a delivery partner. See
 // Expand and TestEcosystemRolesImplyNothing.
+//
+// Each string must stay identical to its shared/identityroles constant, which
+// is what the granting services send.
 const (
-	Seller          = "seller"
-	RestaurantOwner = "restaurant_owner"
-	DeliveryPartner = "delivery_partner"
-	RiderPartner    = "rider_partner"
+	Seller              = "seller"
+	RestaurantOwner     = "restaurant_owner"
+	DeliveryPartner     = "delivery_partner"
+	RiderPartner        = "rider_partner"
+	ServiceProfessional = "service_professional"
 )
 
 // The staff roles (admin console). Granted by a superadmin through the same
@@ -80,7 +88,7 @@ var staff = []string{Finance, Support, KYCReviewer, Auditor}
 // platform: the internal grant endpoint is allowed to write only this list, so
 // a compromised commerce-service cannot mint an admin. See
 // service.GrantEcosystemRole.
-var ecosystem = []string{Seller, RestaurantOwner, DeliveryPartner, RiderPartner}
+var ecosystem = []string{Seller, RestaurantOwner, DeliveryPartner, RiderPartner, ServiceProfessional}
 
 // Platform returns the privilege-ladder roles in canonical order.
 func Platform() []string { return append([]string(nil), platform...) }
@@ -140,7 +148,7 @@ func Valid(r string) bool {
 	return false
 }
 
-// IsEcosystem reports whether r is one of the four roles a service may grant
+// IsEcosystem reports whether r is one of the five roles a service may grant
 // over the internal API. This is the security boundary of that endpoint.
 func IsEcosystem(r string) bool {
 	for _, known := range ecosystem {
@@ -168,7 +176,7 @@ func IsPlatform(r string) bool {
 //
 //	superadmin ⊇ admin ⊇ moderator
 //
-// The four ecosystem roles pass through untouched. They neither imply nor are
+// The five ecosystem roles pass through untouched. They neither imply nor are
 // implied by anything, in either direction — being a superadmin does not make
 // you a seller, and being a seller does not make you a moderator. Adding an
 // implication here would silently hand one product's authority to another
@@ -227,6 +235,8 @@ func Label(r string) string {
 		return "Delivery partner"
 	case RiderPartner:
 		return "Rider partner"
+	case ServiceProfessional:
+		return "Service professional"
 	}
 	return r
 }

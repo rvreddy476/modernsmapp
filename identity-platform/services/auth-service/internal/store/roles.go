@@ -99,7 +99,8 @@ func ValidRole(r string) bool { return roles.Valid(r) }
 
 // ValidEcosystemRole reports whether r is one of the four roles a SERVICE may
 // grant over the internal API (seller, restaurant_owner, delivery_partner,
-// rider_partner). A service must never be able to mint admin or superadmin.
+// rider_partner, service_professional). A service must never be able to mint
+// admin or superadmin.
 func ValidEcosystemRole(r string) bool { return roles.IsEcosystem(r) }
 
 // GrantRole grants role to a user. Idempotent: re-granting is a no-op.

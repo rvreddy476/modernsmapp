@@ -110,7 +110,7 @@ func TestInternalGrantRefusesPlatformRoles(t *testing.T) {
 			t.Fatalf("grant %q: code=%q want ROLE_NOT_GRANTABLE", role, env.Error.Code)
 		}
 		if len(env.Error.Details.GrantableRoles) != len(roles.Ecosystem()) {
-			t.Fatalf("grant %q: grantable_roles=%v want the four ecosystem roles",
+			t.Fatalf("grant %q: grantable_roles=%v want every ecosystem role",
 				role, env.Error.Details.GrantableRoles)
 		}
 	}

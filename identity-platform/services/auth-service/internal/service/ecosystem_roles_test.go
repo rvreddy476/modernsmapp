@@ -244,6 +244,45 @@ func TestServiceRoleAuditNamesTheService(t *testing.T) {
 	}
 }
 
+// TestDoorstepGrantsAndRevokesServiceProfessional — doorstep-service grants
+// service_professional when a professional is created and revokes it when
+// they are rejected or blocked. Both are audited under doorstep-service, and
+// the role reaches the token's scopes as itself and nothing more.
+func TestDoorstepGrantsAndRevokesServiceProfessional(t *testing.T) {
+	st := newEcosystemStore()
+	svc := newEcosystemSvc(t, st)
+	target := uuid.New()
+
+	if err := svc.GrantEcosystemRole(context.Background(), "doorstep-service", target, roles.ServiceProfessional, "professional created"); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if !st.granted[target]["service_professional"] {
+		t.Fatal("service_professional did not reach the store")
+	}
+	if got := roles.Expand([]string{"service_professional"}); !reflect.DeepEqual(got, []string{"service_professional"}) {
+		t.Fatalf("Expand(service_professional) = %v, want exactly itself", got)
+	}
+	if err := svc.RevokeEcosystemRole(context.Background(), "doorstep-service", target, roles.ServiceProfessional, "professional blocked"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if st.granted[target]["service_professional"] {
+		t.Fatal("service_professional still granted after revoke")
+	}
+	want := []string{
+		"doorstep-service|role.grant|role=service_professional reason=professional created|ok",
+		"doorstep-service|role.revoke|role=service_professional reason=professional blocked|ok",
+	}
+	if !reflect.DeepEqual(st.svcAudits, want) {
+		t.Fatalf("svcAudits=%v want %v", st.svcAudits, want)
+	}
+	// Near-misses a hand-typed caller would send are refused and audited.
+	for _, bad := range []string{"service-professional", "professional", "doorstep_pro", "Service_Professional"} {
+		if err := svc.GrantEcosystemRole(context.Background(), "doorstep-service", target, bad, ""); !errors.Is(err, ErrRoleNotGrantableByService) {
+			t.Fatalf("grant %q: got %v, want ErrRoleNotGrantableByService", bad, err)
+		}
+	}
+}
+
 // TestEcosystemRoleRequiresCallingService — the service name is what the audit
 // row records as the actor, so a blank one would produce an unattributable
 // row. Refused before anything is written.
@@ -326,7 +365,7 @@ func TestCapabilitiesForUser(t *testing.T) {
 	}
 	// One per token role — the shape that existed before staff roles, kept
 	// unchanged. Staff hats are expressed only in caps.Admin.
-	if len(caps.Capabilities) != len(roles.TokenRoles()) || len(caps.Capabilities) != 7 {
+	if len(caps.Capabilities) != len(roles.TokenRoles()) || len(caps.Capabilities) != 8 {
 		t.Fatalf("capabilities has %d entries, want one per token role (%d) so a client "+
 			"never has to know which roles exist", len(caps.Capabilities), len(roles.TokenRoles()))
 	}
@@ -344,7 +383,7 @@ func TestCapabilitiesForUser(t *testing.T) {
 	for role, want := range map[string]bool{
 		"seller": true, "moderator": true,
 		"superadmin": false, "admin": false, "restaurant_owner": false,
-		"delivery_partner": false, "rider_partner": false,
+		"delivery_partner": false, "rider_partner": false, "service_professional": false,
 	} {
 		if caps.Capabilities[role] != want {
 			t.Fatalf("capabilities[%q]=%v want %v", role, caps.Capabilities[role], want)

@@ -445,7 +445,8 @@ func (h *Handler) Me(c *gin.Context) {
 //	  "capabilities": {
 //	    "superadmin": false, "admin": false, "moderator": true,
 //	    "seller": true, "restaurant_owner": false,
-//	    "delivery_partner": false, "rider_partner": false
+//	    "delivery_partner": false, "rider_partner": false,
+//	    "service_professional": false
 //	  },
 //	  "switcher": [
 //	    {"role":"customer","label":"Customer"},

@@ -45,6 +45,7 @@ const (
 	AppChat         = "chat"
 	AppLive         = "live"
 	AppRider        = "rider"
+	AppDoorstep     = "doorstep"
 	AppTrustSafety  = "trust_safety"
 	AppPlatform     = "platform"
 )
@@ -55,7 +56,8 @@ const AllAppsAuditRead = "*:audit.read"
 // apps is the canonical order. The auth.user_roles app CHECK lists exactly these.
 var apps = []string{
 	AppDating, AppFood, AppCommerce, AppMonetization, AppPayments, AppWallet,
-	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppTrustSafety, AppPlatform,
+	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppDoorstep, AppTrustSafety,
+	AppPlatform,
 }
 
 // confinedPayments is the payments view of ONE product application, held under
@@ -350,6 +352,45 @@ var catalogue = map[string][]entry{
 		// reports.read includes the revenue report, so it is money: finance,
 		// never moderator, like food.
 		p("reports.read", fin),
+		p("audit.read", audr),
+	},
+	// Doorstep dashboard (doorstep-service /internal/admin, home services),
+	// modelled on Mopedu. Moderator holds the professional and booking reads,
+	// safety triage, tickets and rating moderation, never money, approvals,
+	// suspensions or cancellations. Support is the operations seat: reads plus
+	// tickets, incidents and re-running dispatch, but no refund and no cancel
+	// (an ops cancellation refunds the customer, so it is a money decision).
+	// Finance holds refunds and settlements. KYC reviewer holds the document
+	// and police-certificate queue plus the professional read it needs.
+	// Catalogue, config, approval and suspension are admin only.
+	AppDoorstep: {
+		// catalogue.read: services, options and city prices; no personal data.
+		p("catalogue.read", mod, fin, sup),
+		p("catalogue.write"),
+		// config.write: cancellation fees, commission, rework windows, caps.
+		p("config.write"),
+		p("pros.read", mod, sup, kyc),
+		p("pros.approve"),
+		// pros.suspend: suspend and block, an account action like
+		// partners.suspend: admin only.
+		p("pros.suspend"),
+		// documents.review: DigiLocker, selfie and police clearance certificates.
+		p("documents.review", kyc),
+		p("bookings.read", mod, fin, sup),
+		p("bookings.cancel"),
+		// bookings.redispatch: re-run dispatch excluding a professional, never
+		// a hand-picked one. Operations, not money.
+		p("bookings.redispatch", sup),
+		// refunds.issue: step-up at the BFF.
+		p("refunds.issue", fin),
+		p("incidents.read", mod, sup),
+		p("incidents.act", mod, sup),
+		p("tickets.act", mod, sup),
+		p("ratings.moderate", mod),
+		p("settlements.read", fin),
+		// stats.read includes GMV and outstanding totals: finance and support,
+		// never moderator, matching rider and food.
+		p("stats.read", fin, sup),
 		p("audit.read", audr),
 	},
 	AppTrustSafety: {

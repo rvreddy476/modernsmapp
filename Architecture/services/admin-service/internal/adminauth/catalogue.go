@@ -47,6 +47,7 @@ const (
 	AppChat         = "chat"
 	AppLive         = "live"
 	AppRider        = "rider"
+	AppDoorstep     = "doorstep"
 	AppTrustSafety  = "trust_safety"
 	AppPlatform     = "platform"
 )
@@ -98,7 +99,8 @@ var adminRoles = []RoleInfo{
 
 var apps = []string{
 	AppDating, AppFood, AppCommerce, AppMonetization, AppPayments, AppWallet,
-	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppTrustSafety, AppPlatform,
+	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppDoorstep, AppTrustSafety,
+	AppPlatform,
 }
 
 // entry is one permission of an app and the roles that hold it besides the
@@ -321,6 +323,30 @@ var catalogue = map[string][]entry{
 		p("cities.manage"),
 		p("fares.manage"),
 		p("reports.read", fin),
+		p("audit.read", audr),
+	},
+	// Doorstep (home services): moderator triages, support runs operations
+	// (tickets, incidents, re-dispatch) without refunds or cancellation,
+	// finance holds refunds and settlements, KYC reviewer the document queue;
+	// catalogue, config, approval, suspension and cancellation are admin only.
+	AppDoorstep: {
+		p("catalogue.read", mod, fin, sup),
+		p("catalogue.write"),
+		p("config.write"),
+		p("pros.read", mod, sup, kyc),
+		p("pros.approve"),
+		p("pros.suspend"),
+		p("documents.review", kyc),
+		p("bookings.read", mod, fin, sup),
+		p("bookings.cancel"),
+		p("bookings.redispatch", sup),
+		p("refunds.issue", fin),
+		p("incidents.read", mod, sup),
+		p("incidents.act", mod, sup),
+		p("tickets.act", mod, sup),
+		p("ratings.moderate", mod),
+		p("settlements.read", fin),
+		p("stats.read", fin, sup),
 		p("audit.read", audr),
 	},
 	AppTrustSafety: {

@@ -163,6 +163,28 @@ func TestForTable(t *testing.T) {
 		{name: "rider admin holds the console permissions", role: roles.Admin, app: AppRider,
 			has: []string{"rider:stats.read", "rider:partners.suspend", "rider:vehicles.review", "rider:payments.reject", "rider:rides.cancel",
 				"rider:ratings.moderate", "rider:incidents.act", "rider:incidents.reveal", "rider:cities.manage", "rider:reports.read"}, noOther: true},
+		// Doorstep dashboard (home services).
+		{name: "doorstep moderator triages, sees no money or account actions", role: roles.Moderator, app: AppDoorstep,
+			has: []string{"doorstep:catalogue.read", "doorstep:pros.read", "doorstep:bookings.read", "doorstep:incidents.read",
+				"doorstep:incidents.act", "doorstep:tickets.act", "doorstep:ratings.moderate"},
+			hasNot: []string{"doorstep:stats.read", "doorstep:settlements.read", "doorstep:refunds.issue", "doorstep:pros.approve",
+				"doorstep:pros.suspend", "doorstep:bookings.cancel", "doorstep:bookings.redispatch", "doorstep:documents.review",
+				"doorstep:catalogue.write", "doorstep:config.write"}, noOther: true},
+		{name: "doorstep support runs operations but never money", role: roles.Support, app: AppDoorstep,
+			has: []string{"doorstep:stats.read", "doorstep:catalogue.read", "doorstep:pros.read", "doorstep:bookings.read",
+				"doorstep:bookings.redispatch", "doorstep:incidents.read", "doorstep:incidents.act", "doorstep:tickets.act"},
+			hasNot: []string{"doorstep:refunds.issue", "doorstep:bookings.cancel", "doorstep:settlements.read", "doorstep:pros.approve",
+				"doorstep:pros.suspend", "doorstep:documents.review", "doorstep:ratings.moderate"}, noOther: true},
+		{name: "doorstep finance holds refunds and settlements", role: roles.Finance, app: AppDoorstep,
+			has: []string{"doorstep:stats.read", "doorstep:catalogue.read", "doorstep:bookings.read", "doorstep:refunds.issue",
+				"doorstep:settlements.read"},
+			hasNot: []string{"doorstep:pros.read", "doorstep:bookings.cancel", "doorstep:incidents.read", "doorstep:config.write"}, noOther: true},
+		{name: "doorstep kyc reviewer reviews documents", role: roles.KYCReviewer, app: AppDoorstep,
+			has:    []string{"doorstep:documents.review", "doorstep:pros.read"},
+			hasNot: []string{"doorstep:pros.approve", "doorstep:bookings.read", "doorstep:stats.read"}, noOther: true},
+		{name: "doorstep admin holds the console permissions", role: roles.Admin, app: AppDoorstep,
+			has: []string{"doorstep:catalogue.write", "doorstep:config.write", "doorstep:pros.approve", "doorstep:pros.suspend",
+				"doorstep:bookings.cancel", "doorstep:bookings.redispatch", "doorstep:refunds.issue", "doorstep:audit.read"}, noOther: true},
 		{name: "support has no money or bans", role: roles.Support, app: "",
 			has:    []string{"food:orders.read", "platform:users.read"},
 			hasNot: []string{"payments:refund.issue", "dating:users.ban", "platform:users.suspend", "commerce:kyc.reveal"}},
@@ -316,6 +338,103 @@ var consolePermissionHolders = map[string][]string{
 	"rider:fares.manage":     nil,
 	"rider:reports.read":     {roles.Finance},
 	"rider:audit.read":       {roles.Auditor},
+	// Doorstep dashboard: the whole doorstep:* list pinned by the Doorstep
+	// contract (doorstep-service /internal/admin, admin-service BFF).
+	"doorstep:catalogue.read":      {roles.Moderator, roles.Finance, roles.Support},
+	"doorstep:catalogue.write":     nil,
+	"doorstep:config.write":        nil,
+	"doorstep:pros.read":           {roles.Moderator, roles.Support, roles.KYCReviewer},
+	"doorstep:pros.approve":        nil,
+	"doorstep:pros.suspend":        nil,
+	"doorstep:documents.review":    {roles.KYCReviewer},
+	"doorstep:bookings.read":       {roles.Moderator, roles.Finance, roles.Support},
+	"doorstep:bookings.cancel":     nil,
+	"doorstep:bookings.redispatch": {roles.Support},
+	"doorstep:refunds.issue":       {roles.Finance},
+	"doorstep:incidents.read":      {roles.Moderator, roles.Support},
+	"doorstep:incidents.act":       {roles.Moderator, roles.Support},
+	"doorstep:tickets.act":         {roles.Moderator, roles.Support},
+	"doorstep:ratings.moderate":    {roles.Moderator},
+	"doorstep:settlements.read":    {roles.Finance},
+	"doorstep:stats.read":          {roles.Finance, roles.Support},
+	"doorstep:audit.read":          {roles.Auditor},
+}
+
+// doorstepContractPermissions is the exact permission list the Doorstep
+// contract pins (scratchpad doorstep-contract.md, "Identity"). The catalogue
+// must hold these and nothing else under doorstep:.
+var doorstepContractPermissions = []string{
+	"catalogue.read", "catalogue.write", "config.write", "pros.read", "pros.approve", "pros.suspend",
+	"documents.review", "bookings.read", "bookings.cancel", "bookings.redispatch", "refunds.issue",
+	"incidents.read", "incidents.act", "tickets.act", "ratings.moderate", "settlements.read",
+	"stats.read", "audit.read",
+}
+
+// TestDoorstepCatalogueIsTheContractList: no permission missing, none extra.
+func TestDoorstepCatalogueIsTheContractList(t *testing.T) {
+	got := map[string]bool{}
+	for _, e := range catalogue[AppDoorstep] {
+		got[e.action] = true
+		if e.superOnly {
+			t.Errorf("doorstep:%s is superadmin-only; the contract gives every doorstep permission to the app admin", e.action)
+		}
+	}
+	if len(got) != len(doorstepContractPermissions) {
+		t.Errorf("doorstep has %d permissions, contract lists %d", len(got), len(doorstepContractPermissions))
+	}
+	for _, a := range doorstepContractPermissions {
+		if !got[a] {
+			t.Errorf("doorstep:%s missing from the catalogue", a)
+		}
+		if _, ok := consolePermissionHolders["doorstep:"+a]; !ok {
+			t.Errorf("doorstep:%s has no pinned holders in consolePermissionHolders", a)
+		}
+	}
+}
+
+// TestDoorstepScopedRolesStayInDoorstep: a role granted doorstep alone never
+// gains another app's permission (not even rider's, its closest sibling), and
+// support's doorstep grant is reads plus its three operations acts.
+func TestDoorstepScopedRolesStayInDoorstep(t *testing.T) {
+	supportActs := map[string]bool{
+		"doorstep:incidents.act": true, "doorstep:tickets.act": true, "doorstep:bookings.redispatch": true,
+	}
+	for _, role := range roles.AdminRoles() {
+		if role == roles.Superadmin {
+			continue
+		}
+		perms, err := For(role, AppDoorstep)
+		if errors.Is(err, ErrNoPermissionsInApp) {
+			t.Errorf("%s holds nothing in doorstep", role)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("For(%q,%q): %v", role, AppDoorstep, err)
+		}
+		for _, p := range perms {
+			if appOf(p) != AppDoorstep {
+				t.Errorf("%s scoped to doorstep holds %q", role, p)
+			}
+			if role == roles.Support && !strings.HasSuffix(p, ".read") && !supportActs[p] {
+				t.Errorf("doorstep support holds write permission %q", p)
+			}
+			if role == roles.Auditor && p != "doorstep:audit.read" {
+				t.Errorf("doorstep auditor holds %q; auditors are read-only", p)
+			}
+		}
+	}
+	got := Resolve([]Grant{{Role: roles.Support, App: AppDoorstep}}, time.Now())
+	if !got.Has("doorstep:bookings.redispatch") || got.Has("doorstep:refunds.issue") || got.Has("doorstep:bookings.cancel") {
+		t.Fatalf("doorstep support resolved to %+v", got)
+	}
+	for _, other := range []string{"rider:rides.read", "food:orders.read", "payments:refunds.read", "platform:users.read"} {
+		if got.Has(other) {
+			t.Errorf("doorstep support holds %q", other)
+		}
+	}
+	if len(got.Apps) != 1 || len(got.Platform) != 0 {
+		t.Errorf("doorstep support resolved into %d apps, %d platform: %+v", len(got.Apps), len(got.Platform), got)
+	}
 }
 
 // TestConsolePermissionsExactHolders: each new permission resolves for its
@@ -368,9 +487,16 @@ func TestModeratorNeverHoldsMoneyOrReview(t *testing.T) {
 		"rider:vehicles.review", "rider:documents.review", "rider:kyc.reveal", "rider:cities.manage", "rider:fares.manage",
 		// Live: stopping a stream and the live ban are admin actions.
 		"live:streams.stop", "live:users.ban",
+		// Doorstep: stats and settlements carry revenue, refunds are money,
+		// approval, suspension and cancellation are account actions, documents
+		// are identity proof, catalogue and config are admin only, and dispatch
+		// is the support seat.
+		"doorstep:stats.read", "doorstep:settlements.read", "doorstep:refunds.issue", "doorstep:pros.approve",
+		"doorstep:pros.suspend", "doorstep:bookings.cancel", "doorstep:bookings.redispatch", "doorstep:documents.review",
+		"doorstep:catalogue.write", "doorstep:config.write",
 	}
 	scopes := [][]string{mustFor(t, roles.Moderator, "")}
-	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety, AppSocial, AppRider, AppLive} {
+	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety, AppSocial, AppRider, AppLive, AppDoorstep} {
 		scopes = append(scopes, mustFor(t, roles.Moderator, app))
 	}
 	for _, perms := range scopes {
@@ -398,9 +524,13 @@ func TestModeratorHoldsNoMoneyApp(t *testing.T) {
 }
 
 // TestSupportHoldsNoWrites: support's only non-read permissions are the two
-// ticket/complaint handling actions it already had; nothing new is a write.
+// ticket/complaint handling actions it already had, plus Doorstep's operations
+// seat (tickets, incidents, re-running dispatch; never a refund or a cancel).
 func TestSupportHoldsNoWrites(t *testing.T) {
-	allowedActs := map[string]bool{"food:tickets.act": true, "rider:complaints.act": true}
+	allowedActs := map[string]bool{
+		"food:tickets.act": true, "rider:complaints.act": true,
+		"doorstep:tickets.act": true, "doorstep:incidents.act": true, "doorstep:bookings.redispatch": true,
+	}
 	for _, p := range mustFor(t, roles.Support, "") {
 		// .search is a read (platform:users.search returns id, masked email, handle).
 		if strings.HasSuffix(p, ".read") || strings.HasSuffix(p, ".search") || allowedActs[p] {

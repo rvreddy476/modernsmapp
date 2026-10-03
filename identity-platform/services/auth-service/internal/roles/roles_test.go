@@ -7,7 +7,7 @@ import (
 
 // TestVocabulary pins the exact set of assignable roles.
 //
-// Eleven, and only eleven. If someone adds a twelfth this fails, which is the
+// Twelve, and only twelve. If someone adds a thirteenth this fails, which is the
 // point: the CHECK constraint in database/setup.sql is a copy of this list that
 // Go cannot import, and the two must not drift.
 func TestVocabulary(t *testing.T) {
@@ -15,6 +15,7 @@ func TestVocabulary(t *testing.T) {
 		"superadmin", "admin", "moderator",
 		"finance", "support", "kyc_reviewer", "auditor",
 		"seller", "restaurant_owner", "delivery_partner", "rider_partner",
+		"service_professional",
 	}
 	if got := All(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("All() = %v, want %v", got, want)
@@ -28,6 +29,7 @@ func TestVocabulary(t *testing.T) {
 	tokenWant := []string{
 		"superadmin", "admin", "moderator",
 		"seller", "restaurant_owner", "delivery_partner", "rider_partner",
+		"service_professional",
 	}
 	if got := TokenRoles(); !reflect.DeepEqual(got, tokenWant) {
 		t.Fatalf("TokenRoles() = %v, want %v", got, tokenWant)
@@ -53,6 +55,7 @@ func TestUnknownRolesRejected(t *testing.T) {
 	for _, r := range []string{
 		"", " ", "bogus", "SELLER", "Seller", "seller ", "super-admin",
 		"restaurantowner", "restaurant-owner", "rider", "partner",
+		"service-professional", "serviceprofessional", "professional", "doorstep", "pro",
 		// "customer" is NOT a role and must never become one. Every account is
 		// a customer; the ABSENCE of a role is the customer state. Granting it
 		// would say nothing, and failing to grant it would wrongly imply a
@@ -66,10 +69,10 @@ func TestUnknownRolesRejected(t *testing.T) {
 }
 
 // TestEcosystemSet is the security boundary of the internal grant endpoint:
-// exactly these four are grantable by a service, and the privilege ladder is
+// exactly these five are grantable by a service, and the privilege ladder is
 // not.
 func TestEcosystemSet(t *testing.T) {
-	want := []string{"seller", "restaurant_owner", "delivery_partner", "rider_partner"}
+	want := []string{"seller", "restaurant_owner", "delivery_partner", "rider_partner", "service_professional"}
 	if got := Ecosystem(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Ecosystem() = %v, want %v", got, want)
 	}

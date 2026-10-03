@@ -135,8 +135,9 @@ func TestMeCapabilities(t *testing.T) {
 	if !containsStr(env.Data.Admin.Apps["dating"], "dating:reports.act") || env.Data.Admin.Platform == nil {
 		t.Fatalf("admin=%+v (body %s)", env.Data.Admin, resp.Body.String())
 	}
-	// Pre-existing keys unchanged: exactly the seven token roles.
-	if len(env.Data.Capabilities) != 7 || len(env.Data.Capabilities) != len(roles.TokenRoles()) {
+	// One key per token role: the seven that predate Doorstep plus
+	// service_professional.
+	if len(env.Data.Capabilities) != 8 || len(env.Data.Capabilities) != len(roles.TokenRoles()) {
 		t.Fatalf("capabilities=%v want one entry per role", env.Data.Capabilities)
 	}
 	if _, ok := env.Data.Capabilities["customer"]; ok {
@@ -145,7 +146,7 @@ func TestMeCapabilities(t *testing.T) {
 	if !env.Data.Capabilities["seller"] || !env.Data.Capabilities["moderator"] {
 		t.Fatalf("capabilities=%v", env.Data.Capabilities)
 	}
-	if env.Data.Capabilities["admin"] || env.Data.Capabilities["restaurant_owner"] {
+	if env.Data.Capabilities["admin"] || env.Data.Capabilities["restaurant_owner"] || env.Data.Capabilities["service_professional"] {
 		t.Fatalf("capabilities=%v — unheld roles must be explicitly false", env.Data.Capabilities)
 	}
 	if len(env.Data.Switcher) != 3 || env.Data.Switcher[0].Role != "customer" {

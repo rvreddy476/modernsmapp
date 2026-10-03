@@ -532,8 +532,8 @@ func (s *Service) RecordEnvBootstrap(ctx context.Context) error {
 // compromised commerce-service can do is make someone a seller.
 var ErrRoleNotGrantableByService = errors.New(
 	"a service may grant only ecosystem roles (seller, restaurant_owner, " +
-		"delivery_partner, rider_partner); admin and superadmin are granted by a " +
-		"superadmin through POST /v1/auth/admin/roles")
+		"delivery_partner, rider_partner, service_professional); admin and " +
+		"superadmin are granted by a superadmin through POST /v1/auth/admin/roles")
 
 // ErrCallingServiceRequired is returned when the internal role API is called
 // without naming the calling service. The name is what the audit trail records

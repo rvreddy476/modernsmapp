@@ -1,5 +1,5 @@
 // Command identityrolebackfill grants ecosystem roles in identity to people
-// who already have a seller / restaurant / delivery / rider record.
+// who already have a seller / restaurant / delivery / rider / doorstep record.
 //
 // It is ALSO the reconciler. Every operation it performs is idempotent, so it
 // is safe to re-run — on a schedule, or after fixing whatever caused a batch
@@ -32,7 +32,7 @@
 // identity lives in `identity_db` and commerce in `commerce_db` — different
 // databases on the same server, so there is no join to write. food and rider
 // live in `app`, which is a different database again from identity's. Going
-// over the internal HTTP API is what makes one tool work for all four sources,
+// over the internal HTTP API is what makes one tool work for every source,
 // and it has the side benefit of exercising the same contract the services
 // use, with the same key.
 //
@@ -131,6 +131,19 @@ var sources = map[string]source{
 		mirrors: "services/rider-service/internal/store/identity_roles.go",
 		db:      "app",
 	},
+	"doorstep": {
+		name: "doorstep",
+		role: identityroles.RoleServiceProfessional,
+		// Doorstep grants service_professional when a professional is created,
+		// revokes it on 'rejected' and 'blocked' (terminal), and KEEPS it while
+		// 'suspended' — a suspended professional is still a professional.
+		query: `SELECT user_id::text, status::text
+		          FROM doorstep.professionals
+		         WHERE status NOT IN ('rejected','blocked')
+		         ORDER BY created_at`,
+		mirrors: "services/doorstep-service/internal/store/identity_roles.go",
+		db:      "app",
+	},
 }
 
 type candidate struct {
@@ -151,7 +164,7 @@ type tally struct {
 
 func main() {
 	var (
-		srcName     = flag.String("source", "", "one of: commerce, food-restaurant, food-delivery, rider")
+		srcName     = flag.String("source", "", "one of: commerce, doorstep, food-restaurant, food-delivery, rider")
 		dsn         = flag.String("dsn", "", "Postgres DSN for the SERVICE's database (not identity's)")
 		identityURL = flag.String("identity-url", "http://127.0.0.1:8081", "identity-auth-service base URL")
 		key         = flag.String("key", "", "internal service key; defaults to $INTERNAL_SERVICE_KEY")
@@ -159,7 +172,7 @@ func main() {
 		limit       = flag.Int("limit", 0, "stop after N candidates (0 = all)")
 		verbose     = flag.Bool("v", false, "list the ids behind each skip category")
 		requeueDead = flag.Bool("requeue-dead", false, "clear dead_lettered_at on this service's identity_role_intents so the worker retries them, then exit")
-		schema      = flag.String("intents-schema", "", "schema holding identity_role_intents for -requeue-dead (rider uses \"rider\"; commerce and food use the default, public)")
+		schema      = flag.String("intents-schema", "", "schema holding identity_role_intents for -requeue-dead (rider uses \"rider\", doorstep \"doorstep\"; commerce and food use the default, public)")
 		pause       = flag.Duration("pause", 0, "sleep between candidates; use to be gentle on identity")
 	)
 	flag.Parse()

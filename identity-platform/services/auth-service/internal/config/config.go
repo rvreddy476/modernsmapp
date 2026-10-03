@@ -135,7 +135,8 @@ type Config struct {
 // allowlists (the bootstrap source of truth, alongside the DB roles table).
 //
 // Only the privilege ladder is bootstrappable from the environment. The four
-// ecosystem roles (seller, restaurant_owner, delivery_partner, rider_partner)
+// ecosystem roles (seller, restaurant_owner, delivery_partner, rider_partner,
+// service_professional)
 // deliberately have NO env allowlist: they are granted by the owning service
 // when it approves someone, and an env var that could mint a seller would be a
 // second, unaudited source of truth for exactly the thing this work is
