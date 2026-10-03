@@ -71,18 +71,19 @@ func TestCaptionReadLocalVerdict_DatingClip(t *testing.T) {
 	}
 }
 
-// A download authority that says yes to everyone does not reach a clip.
+// A dating clip is never downloadable by anyone but its owner.
 func TestDownloadVerdict_DatingClipRefusedToOthers(t *testing.T) {
 	owner, stranger := uuid.New(), uuid.New()
-	auth := &fakeDownloadAuthority{}
-	gate := delivery.NewGate(noopSigner{}, nil).WithDownloadAuthorizer(auth)
 	clip := downloadAsset(owner)
 	clip.AccessScope = postgres.AccessScopeDatingClip
-	if err := downloadVerdict(context.Background(), gate, clip, stranger); !errors.Is(err, delivery.ErrDeliveryDenied) {
+	if err := downloadVerdict(clip, stranger); !errors.Is(err, delivery.ErrDeliveryDenied) {
 		t.Fatalf("stranger: got %v, want denied", err)
 	}
-	if len(auth.asked) != 0 {
-		t.Fatalf("the download authority was asked %v; the scope is settled before it", auth.asked)
+	if err := downloadVerdict(clip, uuid.Nil); !errors.Is(err, delivery.ErrDeliveryDenied) {
+		t.Fatalf("signed-out: got %v, want denied", err)
+	}
+	if err := downloadVerdict(clip, owner); err != nil {
+		t.Fatalf("owner: got %v, want allowed", err)
 	}
 }
 
