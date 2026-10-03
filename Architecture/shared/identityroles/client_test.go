@@ -22,7 +22,7 @@ func newTestClient(srv *httptest.Server) *Client {
 func TestEcosystemRoleList(t *testing.T) {
 	// Guards the copy of auth-service's internal/roles.Ecosystem(). If that
 	// list ever changes, this fails and points at the file to update.
-	want := []string{"seller", "restaurant_owner", "delivery_partner", "rider_partner"}
+	want := []string{"seller", "restaurant_owner", "delivery_partner", "rider_partner", "service_professional"}
 	got := Ecosystem()
 	if len(got) != len(want) {
 		t.Fatalf("Ecosystem() = %v, want %v", got, want)
@@ -32,8 +32,39 @@ func TestEcosystemRoleList(t *testing.T) {
 			t.Fatalf("Ecosystem()[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
+	for _, r := range got {
+		if !IsEcosystemRole(r) {
+			t.Fatalf("IsEcosystemRole(%q) = false for a listed ecosystem role", r)
+		}
+	}
 	if IsEcosystemRole("admin") || IsEcosystemRole("superadmin") || IsEcosystemRole("customer") {
 		t.Fatal("a platform role must never be reported as service-grantable")
+	}
+}
+
+// Doorstep's role reaches identity (it is not refused locally) and passes
+// intent validation, so doorstep-service can enqueue it.
+func TestServiceProfessionalIsGrantable(t *testing.T) {
+	if RoleServiceProfessional != "service_professional" || !IsEcosystemRole(RoleServiceProfessional) {
+		t.Fatal("service_professional must be an ecosystem role")
+	}
+	if err := (Intent{Op: OpGrant, UserID: testUser, Role: RoleServiceProfessional}).validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	var gotRole string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b mutateBody
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &b)
+		gotRole = b.Role
+		_, _ = w.Write([]byte(`{"data":{"status":"granted"}}`))
+	}))
+	defer srv.Close()
+	if err := newTestClient(srv).Grant(context.Background(), testUser, RoleServiceProfessional, "professional created"); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if gotRole != "service_professional" {
+		t.Fatalf("role on the wire = %q", gotRole)
 	}
 }
 

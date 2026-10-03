@@ -391,13 +391,18 @@ const (
 // Reference types. `order` belongs to commerce; `food_order` to food;
 // `dating_premium` (a one-off Premium pass or Boost) to dating;
 // `mopedu_ride` (one ride's fare) and `mopedu_subscription` (one captain
-// plan period) to rider-service (Mopedu).
+// plan period) to rider-service (Mopedu); `doorstep_booking` (one booking,
+// paid in full at checkout; reference_id = booking id) and `doorstep_extras`
+// (one extras bill raised during the visit; reference_id = extras bill id) to
+// doorstep-service (Doorstep).
 const (
 	RefOrder              = "order"
 	RefFoodOrder          = "food_order"
 	RefDatingPremium      = "dating_premium"
 	RefMopeduRide         = "mopedu_ride"
 	RefMopeduSubscription = "mopedu_subscription"
+	RefDoorstepBooking    = "doorstep_booking"
+	RefDoorstepExtras     = "doorstep_extras"
 )
 
 // AudiencePayments is the audience string payments-service accepts.

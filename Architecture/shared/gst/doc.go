@@ -1,6 +1,7 @@
-// Package gst computes Indian GST on a food order: restaurant supplies, the
-// platform's own fees, and delivery. Every amount is integer paise; no float
-// touches a money path.
+// Package gst computes Indian GST on an order placed through the platform:
+// restaurant supplies, the platform's own fees and delivery (Feast), ride
+// fares (Mopedu), and home services supplied by a service professional
+// (Doorstep). Every amount is integer paise; no float touches a money path.
 //
 // # What this package decides and what it does not
 //

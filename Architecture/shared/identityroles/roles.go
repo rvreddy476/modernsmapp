@@ -1,6 +1,6 @@
 // Package identityroles is the ONE way a service tells identity that somebody
-// has become — or stopped being — a seller, restaurant owner, delivery partner
-// or rider partner.
+// has become — or stopped being — a seller, restaurant owner, delivery partner,
+// rider partner or Doorstep service professional.
 //
 // # WHY THIS PACKAGE EXISTS
 //
@@ -46,7 +46,8 @@
 // # WHEN THE ROLE IS REVOKED
 //
 // Revocation follows from the same rule: you leave the journey, not merely
-// pause on it. The three services MUST agree on this table.
+// pause on it. Every granting service (commerce, food, rider, doorstep) MUST
+// agree on this table.
 //
 //	record created (draft / pending / PENDING_REVIEW)  ->  GRANT
 //	approved                                           ->  GRANT (idempotent;
@@ -80,7 +81,7 @@
 // worker.go for the durability argument and its honest failure modes.
 package identityroles
 
-// The four ecosystem roles. This list must equal
+// The five ecosystem roles. This list must equal
 // identity-platform/services/auth-service/internal/roles.Ecosystem(); the
 // grant endpoint rejects anything else with 403 ROLE_NOT_GRANTABLE, which this
 // package surfaces as ErrNotGrantable — a permanent error that is never
@@ -89,17 +90,22 @@ package identityroles
 // They are duplicated rather than imported because auth-service is a separate
 // Go module in a separate repository tree, with no dependency edge to
 // Architecture/shared and no reason to grow one. TestEcosystemRoleList guards
-// the copy by asserting the exact four strings.
+// the copy by asserting the exact five strings.
+//
+// RoleServiceProfessional is the Doorstep (home services) professional,
+// granted by doorstep-service when a professional record is created, revoked
+// on rejected/blocked, kept on suspended — the same table as above.
 const (
-	RoleSeller          = "seller"
-	RoleRestaurantOwner = "restaurant_owner"
-	RoleDeliveryPartner = "delivery_partner"
-	RoleRiderPartner    = "rider_partner"
+	RoleSeller              = "seller"
+	RoleRestaurantOwner     = "restaurant_owner"
+	RoleDeliveryPartner     = "delivery_partner"
+	RoleRiderPartner        = "rider_partner"
+	RoleServiceProfessional = "service_professional"
 )
 
-// Ecosystem returns the four grantable roles in canonical order.
+// Ecosystem returns the five grantable roles in canonical order.
 func Ecosystem() []string {
-	return []string{RoleSeller, RoleRestaurantOwner, RoleDeliveryPartner, RoleRiderPartner}
+	return []string{RoleSeller, RoleRestaurantOwner, RoleDeliveryPartner, RoleRiderPartner, RoleServiceProfessional}
 }
 
 // IsEcosystemRole reports whether role is one identity will accept from a
@@ -107,7 +113,7 @@ func Ecosystem() []string {
 // round trip to be told 403.
 func IsEcosystemRole(role string) bool {
 	switch role {
-	case RoleSeller, RoleRestaurantOwner, RoleDeliveryPartner, RoleRiderPartner:
+	case RoleSeller, RoleRestaurantOwner, RoleDeliveryPartner, RoleRiderPartner, RoleServiceProfessional:
 		return true
 	}
 	return false
@@ -132,7 +138,7 @@ type Intent struct {
 	// — this is the single most common wiring mistake, because food's
 	// :partnerId and rider's :id are both local primary keys, not user ids.
 	UserID string
-	// Role is one of the four ecosystem roles.
+	// Role is one of the five ecosystem roles.
 	Role string
 	// Reason is free text recorded in identity's audit row.
 	Reason string

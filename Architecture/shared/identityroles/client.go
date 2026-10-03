@@ -28,7 +28,7 @@ const DefaultTimeout = 5 * time.Second
 // would only bury the real problem under a retry loop.
 var (
 	// ErrNotGrantable is identity's 403 ROLE_NOT_GRANTABLE — the role is
-	// outside the four ecosystem roles. PERMANENT: a caller bug, not an
+	// outside the five ecosystem roles. PERMANENT: a caller bug, not an
 	// outage. Retrying cannot fix a misspelled role name.
 	ErrNotGrantable = errors.New("identityroles: role is not service-grantable")
 

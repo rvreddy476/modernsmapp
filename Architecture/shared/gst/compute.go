@@ -50,6 +50,11 @@ type Input struct {
 	// Driver is the ride-hailing driver (Mopedu). Only read for
 	// CategoryPassengerTransportViaECO lines.
 	Driver Party
+	// ServiceProfessional is the Doorstep (home services) professional. Only
+	// read for SERVICE_PROFESSIONAL lines: on a _REGISTERED line its GSTIN is
+	// required (it is the liable party); on a _VIA_ECO line it must have NO
+	// GSTIN (the s.9(5) shift applies only to an unregistered professional).
+	ServiceProfessional Party
 
 	// PlaceOfSupplyState is the two-digit GST state code the caller has
 	// determined as the place of supply. The package does not guess it.
@@ -194,7 +199,7 @@ func Compute(table *RateTable, in Input) (*Result, error) {
 	parties := map[SupplierRole]resolvedParty{}
 	for role, p := range map[SupplierRole]Party{
 		SupplierRestaurant: in.Restaurant, SupplierPlatform: in.Platform, SupplierDeliveryPartner: in.DeliveryPartner,
-		SupplierDriver: in.Driver,
+		SupplierDriver: in.Driver, SupplierServiceProfessional: in.ServiceProfessional,
 	} {
 		rp, err := resolveParty(role, p)
 		if err != nil {
@@ -232,6 +237,15 @@ func Compute(table *RateTable, in Input) (*Result, error) {
 		}
 		if row.Supplier == SupplierDriver && liability != LiabilityECOSection95 {
 			return nil, fmt.Errorf("%w: line %d: driver supply outside s.9(5) is not modelled", ErrUnsupportedSupply, i)
+		}
+		// The service professional is deliberately NOT refused outside s.9(5):
+		// a registered professional is liable for its own supply, and the
+		// GSTIN check below then requires its GSTIN. What IS refused is a
+		// professional with a GSTIN on a s.9(5) category: the shift to the ECO
+		// is for an unregistered professional only, so the caller has picked
+		// the wrong category and the ECO would pay tax that is not its own.
+		if row.Supplier == SupplierServiceProfessional && row.ECOSection95 && parties[SupplierServiceProfessional].gstin != "" {
+			return nil, fmt.Errorf("%w: line %d: a professional with a GSTIN is not under s.9(5); use the _REGISTERED category", ErrUnsupportedSupply, i)
 		}
 		liable := row.Supplier
 		if liability == LiabilityECOSection95 {

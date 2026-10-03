@@ -35,6 +35,38 @@ const (
 	// s.9(5). The platform's own convenience fee on a ride is
 	// CategoryPlatformFee, as for food.
 	CategoryPassengerTransportViaECO Category = "PASSENGER_TRANSPORT_VIA_ECO"
+
+	// Doorstep (home services), supplied by a gig service professional
+	// through the platform. Each family has two categories and the CALLER
+	// picks one from the professional's registration, exactly as it picks
+	// "specified premises" for food:
+	//
+	//   <FAMILY>_VIA_ECO     the professional has no GSTIN. Housekeeping-type
+	//                        services are notified under s.9(5) except where the
+	//                        supplier is liable for registration under s.22(1),
+	//                        so through the platform the ECO is liable. Compute
+	//                        refuses a _VIA_ECO line when the professional HAS a
+	//                        GSTIN (ErrUnsupportedSupply): that line belongs on
+	//                        _REGISTERED.
+	//   <FAMILY>_REGISTERED  the professional is registered and liable; the line
+	//                        needs the professional's GSTIN, else
+	//                        ErrLiablePartyUnregistered. Through the platform it
+	//                        carries the ECOCollectsTCS marker (s.52).
+	//
+	// Beauty / salon is NOT a s.9(5) service, so it has only _REGISTERED. An
+	// unregistered beautician's supply cannot be computed by this package; how
+	// it is invoiced is an open adviser question (docs/DOORSTEP-TAX-ADVISER-REVIEW.md).
+	CategoryHomeCleaningViaECO           Category = "HOME_CLEANING_VIA_ECO"
+	CategoryHomeCleaningRegistered       Category = "HOME_CLEANING_REGISTERED"
+	CategoryPestControlViaECO            Category = "PEST_CONTROL_VIA_ECO"
+	CategoryPestControlRegistered        Category = "PEST_CONTROL_REGISTERED"
+	CategoryApplianceRepairViaECO        Category = "APPLIANCE_REPAIR_VIA_ECO"
+	CategoryApplianceRepairRegistered    Category = "APPLIANCE_REPAIR_REGISTERED"
+	CategoryInstallationRepairViaECO     Category = "INSTALLATION_REPAIR_VIA_ECO"
+	CategoryInstallationRepairRegistered Category = "INSTALLATION_REPAIR_REGISTERED"
+	CategoryPaintingViaECO               Category = "PAINTING_VIA_ECO"
+	CategoryPaintingRegistered           Category = "PAINTING_REGISTERED"
+	CategoryBeautySalonRegistered        Category = "BEAUTY_SALON_REGISTERED"
 )
 
 // SupplierRole is who makes the supply (and who is liable, when not s.9(5)).
@@ -47,6 +79,12 @@ const (
 	// SupplierDriver is the ride-hailing driver (motorcycle, auto or cab)
 	// supplying passenger transport through the platform.
 	SupplierDriver SupplierRole = "DRIVER"
+	// SupplierServiceProfessional is the Doorstep (home services) gig
+	// professional — cleaner, technician, painter, beautician — supplying
+	// through the platform. Unlike the delivery partner and the driver it is
+	// modelled OUTSIDE s.9(5) too: a registered professional is liable for
+	// its own supply (the _REGISTERED categories).
+	SupplierServiceProfessional SupplierRole = "SERVICE_PROFESSIONAL"
 )
 
 // Liability is who pays the tax to the government.
@@ -125,7 +163,8 @@ type RateTable struct {
 }
 
 func validSupplier(s SupplierRole) bool {
-	return s == SupplierRestaurant || s == SupplierPlatform || s == SupplierDeliveryPartner || s == SupplierDriver
+	return s == SupplierRestaurant || s == SupplierPlatform || s == SupplierDeliveryPartner || s == SupplierDriver ||
+		s == SupplierServiceProfessional
 }
 
 func sixDigits(s string) bool {
@@ -263,9 +302,69 @@ func DefaultRateTable() *RateTable {
 		{Category: CategoryPassengerTransportViaECO, Supplier: SupplierDriver, ECOSection95: true, RateBP: 500, ITCAvailable: false, SAC: "996412", EffectiveFrom: d, NeedsAdviserConfirmation: true,
 			Note: "Passenger transport by motorcycle, auto-rickshaw or motor cab through the ECO (Mopedu ride fare): 5% without ITC, notified under s.9(5), so the ECO is liable; the 12%-with-ITC option for cabs is not modelled." + adviserNote},
 	}
+	rows = append(rows, doorstepRows(d)...)
 	t, err := NewRateTable(rows)
 	if err != nil {
 		panic("gst: seeded rate table is invalid: " + err.Error())
 	}
 	return t
+}
+
+// doorstepRows are the Doorstep (home services) rows: one _VIA_ECO and one
+// _REGISTERED row per family, plus beauty (registered only).
+//
+// SAC choices (the team's reading; the adviser confirms each):
+//
+//   - cleaning 998533 "general cleaning services" and pest control 998531
+//     "disinfecting and exterminating services", both in heading 9985
+//     (support services);
+//   - appliance repair (AC, RO, washing machine, refrigerator) 998715
+//     "maintenance and repair of electrical household appliances", heading
+//     9987;
+//   - installation and repair (electrician, plumber, carpenter) 995469 "repair
+//     services related to installations", heading 9954. 9954 was chosen over
+//     9987 because the subject of these jobs is a fixture of the building —
+//     wiring, pipes, fittings, woodwork — which the SAC scheme classes as
+//     installation and building-completion services, whereas 9987 covers
+//     repair of goods (machinery, appliances). Narrower alternatives exist per
+//     trade (995461 electrical, 995462 plumbing, 995476 carpentry); one
+//     family-level code is used until the adviser says invoices need the
+//     trade-level code;
+//   - painting 995473 "painting services", heading 9954 (building
+//     completion and finishing);
+//   - beauty / salon at home 999722 "cosmetic treatment, manicuring and
+//     pedicuring services", heading 9997; men's haircuts are strictly 999721
+//     "hairdressing and barbers services".
+//
+// Rates: 18% (the residual services rate) for every family except beauty,
+// which the 22 Sep 2025 rationalisation moved to 5% without ITC. _VIA_ECO rows
+// carry ITCAvailable = false: the professional is unregistered and the ECO
+// discharges a s.9(5) liability in cash.
+func doorstepRows(d time.Time) []RateRow {
+	const viaECO = " Through the platform the ECO is liable under s.9(5) (housekeeping services, Notification 17/2017-CT(Rate) as amended), only where the professional is NOT liable to register under s.22(1); a professional with a GSTIN must use the _REGISTERED category."
+	const registered = " The registered professional is liable and must supply its GSTIN; through the platform the ECO collects TCS under s.52 (marker only)."
+	type fam struct {
+		via, reg Category
+		sac      string
+		what     string
+	}
+	fams := []fam{
+		{CategoryHomeCleaningViaECO, CategoryHomeCleaningRegistered, "998533", "Home cleaning (bathroom, kitchen, full home, sofa/carpet), SAC 998533 general cleaning, 18%."},
+		{CategoryPestControlViaECO, CategoryPestControlRegistered, "998531", "Pest control, SAC 998531 disinfecting and exterminating, 18%; whether pest control is 'housekeeping' under s.9(5) is for the adviser."},
+		{CategoryApplianceRepairViaECO, CategoryApplianceRepairRegistered, "998715", "Appliance repair (AC, RO, washing machine), SAC 998715 repair of electrical household appliances, 18%; whether appliance repair is 'housekeeping' under s.9(5) is for the adviser; parts are not modelled."},
+		{CategoryInstallationRepairViaECO, CategoryInstallationRepairRegistered, "995469", "Electrician, plumber, carpenter, SAC 995469 repair services related to installations (9954 chosen over 9987: the subject is a building fixture), 18%; parts are not modelled."},
+		{CategoryPaintingViaECO, CategoryPaintingRegistered, "995473", "Painting, SAC 995473 painting services, 18%; paint supplied by the professional may make this a works contract, which is not modelled."},
+	}
+	rows := make([]RateRow, 0, 2*len(fams)+1)
+	for _, f := range fams {
+		rows = append(rows,
+			RateRow{Category: f.via, Supplier: SupplierServiceProfessional, ECOSection95: true, RateBP: 1800, ITCAvailable: false, SAC: f.sac, EffectiveFrom: d, NeedsAdviserConfirmation: true,
+				Note: f.what + viaECO + adviserNote},
+			RateRow{Category: f.reg, Supplier: SupplierServiceProfessional, ECOSection95: false, RateBP: 1800, ITCAvailable: true, SAC: f.sac, EffectiveFrom: d, NeedsAdviserConfirmation: true,
+				Note: f.what + registered + adviserNote},
+		)
+	}
+	rows = append(rows, RateRow{Category: CategoryBeautySalonRegistered, Supplier: SupplierServiceProfessional, ECOSection95: false, RateBP: 500, ITCAvailable: false, SAC: "999722", EffectiveFrom: d, NeedsAdviserConfirmation: true,
+		Note: "Salon at home (women and men), SAC 999722 cosmetic treatment (haircuts strictly 999721): beauty and physical well-being services at 5% without ITC from 22 Sep 2025; NOT notified under s.9(5), so only a registered professional's supply is computed." + registered + adviserNote})
+	return rows
 }
