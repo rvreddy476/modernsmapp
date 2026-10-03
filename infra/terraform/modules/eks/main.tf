@@ -16,7 +16,7 @@ module "eks" {
   version = "~> 20.29"
 
   cluster_name    = "atpost-${var.environment}"
-  cluster_version = "1.31"
+  cluster_version = var.cluster_version
 
   # API endpoint: public + private. Public limited to operator CIDRs via
   # cluster_endpoint_public_access_cidrs (prod restricts further). Going
@@ -87,7 +87,7 @@ module "eks" {
   eks_managed_node_groups = {
     general = {
       name           = "atpost-${var.environment}-general"
-      instance_types = ["m7g.large"]
+      instance_types = [var.general_node_instance_type]
       min_size       = var.general_node_min
       max_size       = var.general_node_max
       desired_size   = var.general_node_desired
@@ -119,10 +119,10 @@ module "eks" {
 
     system = {
       name           = "atpost-${var.environment}-system"
-      instance_types = ["m7g.medium"]
-      min_size       = 3 # one per AZ for ingress HA
-      max_size       = 6
-      desired_size   = 3
+      instance_types = [var.system_node_instance_type]
+      min_size       = var.system_node_min # 3 = one per AZ for ingress HA; 2 in the lean profile
+      max_size       = var.system_node_max
+      desired_size   = var.system_node_desired
       labels = {
         workload = "system"
       }

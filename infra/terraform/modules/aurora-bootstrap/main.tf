@@ -63,6 +63,14 @@ locals {
     %{for db in var.databases~}
     SELECT 'CREATE DATABASE ${db}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${db}')\gexec
     %{endfor~}
+    %{for db in var.databases~}
+    %{if length(var.extensions) > 0~}
+    \connect ${db}
+    %{for ext in var.extensions~}
+    CREATE EXTENSION IF NOT EXISTS "${ext}";
+    %{endfor~}
+    %{endif~}
+    %{endfor~}
   SQL
 }
 
@@ -89,7 +97,7 @@ resource "kubernetes_job" "bootstrap" {
   }
 
   spec {
-    backoff_limit = 3
+    backoff_limit              = 3
     ttl_seconds_after_finished = 86400 # auto-cleanup after a day
 
     template {

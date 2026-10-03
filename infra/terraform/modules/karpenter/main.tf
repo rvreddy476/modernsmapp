@@ -26,8 +26,8 @@ module "karpenter" {
 
   cluster_name = var.cluster_name
 
-  enable_irsa             = true
-  irsa_oidc_provider_arn  = var.oidc_provider_arn
+  enable_irsa                     = true
+  irsa_oidc_provider_arn          = var.oidc_provider_arn
   irsa_namespace_service_accounts = ["karpenter:karpenter"]
 
   # Node role attaches the standard EKS worker policies + CNI + ECR
@@ -148,7 +148,7 @@ resource "kubernetes_manifest" "node_pool_general" {
       template = {
         metadata = {
           labels = {
-            workload = "general"
+            workload    = "general"
             provisioner = "karpenter"
           }
         }

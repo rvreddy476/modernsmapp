@@ -27,3 +27,28 @@ variable "tfstate_lock_table_arn" {
   description = "DynamoDB table ARN for Terraform state lock."
   type        = string
 }
+
+variable "ci_github_subjects" {
+  description = <<EOT
+Exact GitHub OIDC `sub` patterns (StringLike) allowed to assume the CI role.
+When non-empty this REPLACES the any-branch `repo:<org>/<repo>:*` shape
+built from github_repos. Prod example:
+  ["repo:ORG/atpost:ref:refs/heads/main",
+   "repo:ORG/atpost:ref:refs/heads/release/prod",
+   "repo:ORG/atpost:environment:prod"]
+EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "create_terraform_apply_role" {
+  description = "Create the Terraform apply role (AdministratorAccess + guard-rail denies) assumable only by apply_github_subjects."
+  type        = bool
+  default     = false
+}
+
+variable "apply_github_subjects" {
+  description = "Exact GitHub OIDC `sub` values (StringEquals) that may assume the apply role. Prod: [\"repo:ORG/atpost:environment:prod\"]."
+  type        = list(string)
+  default     = []
+}

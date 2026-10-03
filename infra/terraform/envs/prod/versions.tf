@@ -37,6 +37,24 @@ provider "aws" {
   }
 }
 
+# CloudFront only accepts ACM certificates issued in us-east-1, so the media
+# CDN certificate is created through this aliased provider (certificates.tf).
+# Everything else stays in ap-south-1.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "atpost"
+      ManagedBy   = "terraform"
+      Environment = var.environment
+    }
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
 # See envs/staging/versions.tf for the two-apply bootstrap explanation.
 data "aws_eks_cluster_auth" "this" {
   name = module.eks.cluster_name

@@ -46,6 +46,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "loki" {
   rule {
     id     = "log-retention"
     status = "Enabled"
+    filter {}
 
     expiration {
       days = var.retention_days
@@ -159,9 +160,9 @@ resource "helm_release" "loki" {
       singleBinary = {
         replicas = 1
         persistence = {
-          enabled          = true
-          storageClass     = "gp3"
-          size             = "50Gi"
+          enabled      = true
+          storageClass = "gp3"
+          size         = "50Gi"
         }
         nodeSelector = {
           workload = "system"
@@ -179,21 +180,21 @@ resource "helm_release" "loki" {
       # Disable the distributor/ingester/querier-Distinct deployments;
       # SingleBinary covers all of them. Without this the chart still
       # tries to create those as zero-replica StatefulSets.
-      backend       = { replicas = 0 }
-      read          = { replicas = 0 }
-      write         = { replicas = 0 }
-      ingester      = { replicas = 0 }
-      querier       = { replicas = 0 }
-      queryFrontend = { replicas = 0 }
-      queryScheduler = { replicas = 0 }
-      distributor   = { replicas = 0 }
-      compactor     = { replicas = 0 }
-      indexGateway  = { replicas = 0 }
-      memcached     = { enabled = false }
+      backend           = { replicas = 0 }
+      read              = { replicas = 0 }
+      write             = { replicas = 0 }
+      ingester          = { replicas = 0 }
+      querier           = { replicas = 0 }
+      queryFrontend     = { replicas = 0 }
+      queryScheduler    = { replicas = 0 }
+      distributor       = { replicas = 0 }
+      compactor         = { replicas = 0 }
+      indexGateway      = { replicas = 0 }
+      memcached         = { enabled = false }
       memcachedExporter = { enabled = false }
-      gateway       = { enabled = false }
+      gateway           = { enabled = false }
 
-      test = { enabled = false }
+      test       = { enabled = false }
       lokiCanary = { enabled = false }
     })
   ]
@@ -236,7 +237,7 @@ resource "helm_release" "alloy" {
     yamlencode({
       alloy = {
         configMap = {
-          create = true
+          create  = true
           content = <<-RIVER
             // Scrape all container stdout/stderr via the kubelet.
             discovery.kubernetes "pods" {

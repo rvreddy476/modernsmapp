@@ -106,41 +106,66 @@ two-pass approach is simpler and harder to misuse.
 
 ## What's NOT in this scaffold (yet)
 
+> 3 Oct 2026 — the prod environment was reshaped for the first production
+> deployment (docs/runbooks/aws-first-production-deployment.md, workstreams
+> W1 + W2). `envs/prod/README.md` has the exact first-apply sequence; the
+> bullets below describe the modules after that change.
+
 - **EKS cluster + node groups** — landed (Phase 2, see `modules/eks/`).
-  Cluster 1.31, IRSA enabled, three node groups (general / memory /
-  system), EBS CSI + VPC CNI add-ons via IRSA.
-- **Aurora PostgreSQL Multi-AZ** — landed (Phase 2, see
-  `modules/aurora/`). Aurora PG 16.4, writer + reader in prod, single
-  writer in staging. KMS-encrypted, IAM database auth enabled,
-  Performance Insights on, master in Secrets Manager. Logical DBs
-  (`app`, `identity_db`, `chat_db`, `commerce_db`, `feed_db`) are
-  created by a post-create kubernetes Job — pending follow-up.
-- **MSK Serverless** — landed (Phase 2, see `modules/msk/`). IAM-auth
-  only (port 9098). Shared client IAM policy exported as
-  `msk_client_iam_policy_arn` — attach to every service's IRSA role
-  to grant produce/consume. Topics are managed explicitly per service
-  (not auto-create) so partitions + retention are reviewable in PR.
-- **ElastiCache Valkey 7.2** — landed (Phase 2, see
-  `modules/elasticache/`). Replication group across 3 AZs (1 primary
-  + 2 replicas prod, +1 replica staging). Multi-AZ failover on,
-  encryption at rest (KMS) + in transit (TLS) + AUTH token in
-  Secrets Manager. Cluster-mode-disabled — key-namespace sharding in
-  the app is the escape hatch if a hot key ever shows up.
+  Version is a variable (staging default 1.31; prod 1.36 — the newest
+  version every pinned add-on supports; Karpenter 1.14.1 LTS in prod),
+  IRSA enabled, three node groups (general / memory / system) with
+  instance types and counts as variables, EBS CSI + VPC CNI add-ons via
+  IRSA.
+- **Aurora PostgreSQL** — landed (Phase 2, see `modules/aurora/`).
+  Aurora PG 16.15 (16.4 was deprecated by AWS). Prod lean: Serverless v2
+  0.5–4 ACU, single instance; `serverless_enabled=false` gives the
+  provisioned writer(+reader) shape. KMS-encrypted, IAM database auth
+  enabled, Performance Insights on, master in Secrets Manager. Logical DBs
+  and extensions are created by `modules/aurora-bootstrap/` (prod: `app`,
+  `identity_db`, `chat_db`, `call_db`, `commerce_db` with postgis,
+  pg_trgm, pgcrypto).
+- **MSK Provisioned** — see `modules/msk/`. The services' Kafka client
+  speaks PLAIN/SCRAM only, so the Serverless (IAM-only) cluster was
+  replaced by Provisioned brokers (prod lean: 2 × kafka.t3.small, Kafka
+  3.9.x) with SASL/SCRAM-SHA-512 over TLS on 9096; the SCRAM user lives in
+  the AWS-mandated `AmazonMSK_*` secret. `auto.create.topics.enable` is
+  off; `modules/msk/topics-job/` is the one-shot Kubernetes Job that
+  creates every topic (the AWS provider has no topic resource). IAM auth
+  (and the old client IAM policy) is behind `enable_iam_auth` — on in
+  staging, off in prod.
+- **ElastiCache Valkey** — landed (Phase 2, see `modules/elasticache/`).
+  Engine version is a variable (staging 7.2, prod 8.1); prod lean is
+  1 primary + 1 replica `cache.t4g.small`. Multi-AZ failover on,
+  encryption at rest (KMS) + in transit (TLS) + AUTH token in Secrets
+  Manager. Cluster-mode-disabled.
 - **OpenSearch Service** — landed (Phase 2, see `modules/opensearch/`).
-  OpenSearch 2.13, 3 data + 3 master nodes (prod), 1 data + no
-  masters (staging). KMS-encrypted, node-to-node encryption on,
-  fine-grained access control with IAM auth, VPC-only (no public
-  endpoint). Slow-query + app logs to CloudWatch. Auto-Tune enabled
-  with a nightly maintenance window.
+  OpenSearch 2.19 (variable). Prod lean: one `t3.small.search` node,
+  single AZ, no dedicated masters (zone awareness and Auto-Tune switch
+  themselves off for 1-node / burstable shapes). KMS-encrypted,
+  node-to-node encryption on, fine-grained access control with an
+  internal master user (search-service uses basic auth), VPC-only.
 - **S3 media bucket + CloudFront** — landed (Phase 2, see
-  `modules/media/`). KMS-encrypted bucket with public access blocked,
-  versioning + lifecycle (cold-transcodes → IA after 60d, expire
-  noncurrent after 90d, abort orphan multipart). CloudFront fronts via
-  Origin Access Control (OAC) — direct s3:// access is blocked at the
-  bucket policy. Cloudflare stays as the public DNS edge per the
-  Phase-2 decision; CloudFront's *.cloudfront.net hostname goes
-  behind a Cloudflare CNAME at cutover.
-- **WAF + Shield** — Phase 5 (hardening).
+  `modules/media/`). KMS-encrypted bucket (key policy lets the
+  distribution's OAC decrypt), versioning + lifecycle, OAC-only access.
+  `public/*` is served unsigned; every other path requires a CloudFront
+  signed URL from the key group the module creates (signing key pair in
+  `atpost/<env>/media/cloudfront-signing`). Custom domain
+  `media.cleestudio.com` + us-east-1 certificate are wired in prod behind
+  `media_custom_domain_enabled`.
+- **Service buckets** — `modules/private-bucket/`: live-recordings,
+  commerce-invoices, food-files (prod), each with read/write and
+  read-only client policies.
+- **Certificates, SES, secrets, ops** (prod only) — `modules/public-cert/`
+  (ACM, Cloudflare-validated; outputs the records), `modules/ses/`
+  (domain identity + DKIM + MAIL FROM + configuration set + bounce events
+  to SNS), `modules/service-secrets/` (empty `atpost/prod/<name>` shells
+  the seeder fills), `modules/ops-baseline/` (ops SNS topic → email, AWS
+  Backup for Aurora, CloudTrail, GuardDuty, Budgets),
+  `modules/metrics-server/`.
+- **WAF** — `modules/waf/`, regional ACL per name: `edge` for the API/web
+  ALBs and `psp-webhook` for the payments webhook ingress. Shield
+  Advanced not enabled.
 - **ArgoCD** — landed (Phase 2, see `modules/argocd/`). HA install
   (2 replicas of every component), ALB Ingress with cert from the
   dns module, admin password mirrored to Secrets Manager, AppProject
@@ -159,12 +184,12 @@ two-pass approach is simpler and harder to misuse.
   gp3 made the cluster-default StorageClass.
 - **Aurora bootstrap Job** — landed (Phase 2, see
   `modules/aurora-bootstrap/`). One-shot kubernetes Job that
-  CREATEs the 5 logical databases (app, identity_db, chat_db,
-  commerce_db, feed_db) once Aurora + ESO are ready. Idempotent;
+  CREATEs the logical databases (prod: app, identity_db, chat_db,
+  call_db, commerce_db + postgis, pg_trgm, pgcrypto) once Aurora + ESO are ready. Idempotent;
   re-runs on database-list changes.
 - **Helm umbrella chart + per-service Applications** — Phase 3.
 - **Secrets Manager + External Secrets Operator** — Phase 2, after EKS.
-- **AWS Backup + Config + Security Hub + GuardDuty** — Phase 5.
+- **AWS Backup + CloudTrail + GuardDuty + Budgets** — prod via `modules/ops-baseline/` (3 Oct 2026); Config + Security Hub still Phase 5.
 
 See `~/.claude/plans/dazzling-weaving-hartmanis.md` §4 for the phasing.
 
@@ -173,7 +198,7 @@ See `~/.claude/plans/dazzling-weaving-hartmanis.md` §4 for the phasing.
 Five items from the plan need answers before Phase 2:
 
 1. Aurora PostgreSQL **Multi-AZ** vs RDS Postgres Multi-AZ.
-2. MSK **Provisioned (3 brokers)** vs MSK Serverless.
+2. ~~MSK Provisioned vs Serverless~~ — decided 3 Oct 2026: Provisioned with SCRAM (the client cannot do IAM auth).
 3. **Scylla on EKS** vs DynamoDB hot-path migration (recommendation: stay).
 4. **ArgoCD** vs Flux CD.
 5. CDN tier: **CloudFront only** vs CloudFront-behind-Cloudflare.

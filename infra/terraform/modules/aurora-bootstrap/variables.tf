@@ -3,7 +3,7 @@ variable "environment" {
 }
 
 variable "master_secret_name" {
-  description = "Name (key) of the master credentials in AWS Secrets Manager. From the aurora module: atpost/${env}/aurora/master."
+  description = "Name (key) of the master credentials in AWS Secrets Manager. From the aurora module: atpost/<env>/aurora/master."
   type        = string
 }
 
@@ -23,4 +23,10 @@ variable "databases" {
     "commerce_db",
     "feed_db",
   ]
+}
+
+variable "extensions" {
+  description = "PostgreSQL extensions to CREATE IF NOT EXISTS in every database (rds_superuser may create trusted extensions such as postgis, pg_trgm, pgcrypto)."
+  type        = list(string)
+  default     = []
 }

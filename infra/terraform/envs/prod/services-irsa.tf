@@ -1,48 +1,85 @@
 # Per-service IRSA roles — prod. Mirror of envs/staging/services-irsa.tf
-# by design; structural drift between envs is regret.
+# in shape; the policy sets are what each service's code actually calls
+# (plan W2, 3 Oct 2026):
+#
+#   identity-auth-service   SES send (no-reply@cleestudio.com, one config set)
+#   media-service           media bucket + KMS, Rekognition, READ on live-recordings
+#                           (the worker shares media-service's ServiceAccount)
+#   commerce-service        commerce PII KMS key, commerce-invoices bucket
+#   food-service            food-files bucket
+#   live-service-v2         live-recordings bucket
+#   search-service          nothing (OpenSearch basic auth over the VPC)
+#   everyone else           nothing — Kafka is SASL/SCRAM, so the old
+#                           MSK IAM client policy is gone (no port 9098)
+#
+# Every service still gets a role so the chart's serviceAccount.irsaRoleArn
+# is uniform and a future grant is a one-line change here.
+
+# Rekognition has no resource-level permissions for the Detect*/Compare
+# APIs; the action list is the whole scope.
+data "aws_iam_policy_document" "rekognition" {
+  statement {
+    sid    = "MediaModerationAndFaces"
+    effect = "Allow"
+    actions = [
+      "rekognition:DetectModerationLabels",
+      "rekognition:DetectFaces",
+      "rekognition:CompareFaces",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "rekognition" {
+  name        = "atpost-prod-rekognition"
+  description = "DetectModerationLabels, DetectFaces, CompareFaces for media-service and media-worker."
+  policy      = data.aws_iam_policy_document.rekognition.json
+}
 
 locals {
-  policies_msk_only = [
-    module.msk.client_iam_policy_arn,
-  ]
-  policies_msk_and_media = [
-    module.msk.client_iam_policy_arn,
+  policies_none = []
+
+  policies_media = [
     module.media.client_iam_policy_arn,
+    aws_iam_policy.rekognition.arn,
+    module.bucket_live_recordings.reader_iam_policy_arn, # imports recordings into videos
   ]
 
   service_irsa_map = {
-    "post-service"         = local.policies_msk_only
-    "user-service"         = local.policies_msk_only
-    "feed-service"         = local.policies_msk_only
-    "media-service"        = local.policies_msk_and_media
-    "commerce-service"     = local.policies_msk_only
-    "payments-service"     = local.policies_msk_only
-    "notification-service" = local.policies_msk_only
-    "search-service"       = local.policies_msk_only
-    "analytics-service"    = local.policies_msk_only
-    "graph-service"        = local.policies_msk_only
-    "trust-safety-service" = local.policies_msk_only
-    "monetization-service" = local.policies_msk_only
-    "community-service"    = local.policies_msk_only
-    "channel-service"      = local.policies_msk_only
-    "group-service"        = local.policies_msk_only
-    "qa-service"           = local.policies_msk_only
-    "live-service-v2"      = local.policies_msk_only
-    "admin-service"        = local.policies_msk_only
-    "ai-service"           = local.policies_msk_only
-    "bill-pay-service"     = local.policies_msk_only
-    "dating-service"       = local.policies_msk_only
-    "rider-service"        = local.policies_msk_only
-    "wallet-service"       = local.policies_msk_only
-    "api-gateway"          = local.policies_msk_only
+    "post-service"         = local.policies_none
+    "user-service"         = local.policies_none
+    "feed-service"         = local.policies_none
+    "media-service"        = local.policies_media
+    "commerce-service"     = [module.bucket_commerce_invoices.client_iam_policy_arn]
+    "food-service"         = [module.bucket_food_files.client_iam_policy_arn]
+    "payments-service"     = local.policies_none
+    "notification-service" = local.policies_none
+    "search-service"       = local.policies_none
+    "suggestion-service"   = local.policies_none
+    "analytics-service"    = local.policies_none
+    "graph-service"        = local.policies_none
+    "trust-safety-service" = local.policies_none
+    "monetization-service" = local.policies_none
+    "community-service"    = local.policies_none
+    "channel-service"      = local.policies_none
+    "group-service"        = local.policies_none
+    "qa-service"           = local.policies_none
+    "live-service-v2"      = [module.bucket_live_recordings.client_iam_policy_arn]
+    "admin-service"        = local.policies_none
+    "ai-service"           = local.policies_none
+    "bill-pay-service"     = local.policies_none
+    "dating-service"       = local.policies_none
+    "rider-service"        = local.policies_none
+    "wallet-service"       = local.policies_none
+    "api-gateway"          = local.policies_none
 
-    "identity-auth-service"    = local.policies_msk_only
-    "identity-user-service"    = local.policies_msk_only
-    "identity-profile-service" = local.policies_msk_only
+    "identity-auth-service"    = [module.ses.send_policy_arn]
+    "identity-user-service"    = local.policies_none
+    "identity-profile-service" = local.policies_none
 
-    "chat-message-service" = local.policies_msk_only
-    "chat-call-service"    = local.policies_msk_only
-    "chat-ws-gateway"      = local.policies_msk_only
+    "chat-message-service" = local.policies_none
+    "chat-call-service"    = local.policies_none
+    "chat-ws-gateway"      = local.policies_none
   }
 }
 
@@ -59,7 +96,14 @@ module "service_irsa" {
   policy_arns         = each.value
 }
 
+# The commerce PII key policy names the commerce role as its principal
+# (main.tf, module.commerce_pii_kms); this attaches the identity-side half.
+resource "aws_iam_role_policy_attachment" "commerce_pii_kms" {
+  role       = module.service_irsa["commerce-service"].role_name
+  policy_arn = module.commerce_pii_kms.client_policy_arn
+}
+
 output "service_irsa_role_arns" {
-  description = "Map of service name → IRSA role ARN. Wire into deploy/services/<svc>/values-prod.yaml::serviceAccount.irsaRoleArn."
+  description = "Map of service name → IRSA role ARN. Wire into deploy/services/<svc>/values-prod.yaml::serviceAccount.irsaRoleArn (the media worker runs under media-service's ServiceAccount)."
   value       = { for k, m in module.service_irsa : k => m.role_arn }
 }

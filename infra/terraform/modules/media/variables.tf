@@ -21,3 +21,27 @@ EOT
   type        = string
   default     = "PriceClass_200"
 }
+
+variable "custom_domain" {
+  description = "Custom host name for the distribution (media.cleestudio.com). Null → *.cloudfront.net only. Requires acm_certificate_arn_us_east_1."
+  type        = string
+  default     = null
+}
+
+variable "acm_certificate_arn_us_east_1" {
+  description = "ISSUED ACM certificate in us-east-1 covering custom_domain. CloudFront accepts certificates from us-east-1 only. Null until the Cloudflare validation record exists."
+  type        = string
+  default     = null
+}
+
+variable "manage_signing_key" {
+  description = "Generate the CloudFront signing key pair in Terraform (private key lands in state, like auth-keys). false → pass signing_public_key_pem and keep the private key out of state."
+  type        = bool
+  default     = true
+}
+
+variable "signing_public_key_pem" {
+  description = "PEM public key for the CloudFront key group when manage_signing_key=false."
+  type        = string
+  default     = null
+}

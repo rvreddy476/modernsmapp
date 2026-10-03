@@ -48,6 +48,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "tempo" {
   rule {
     id     = "trace-retention"
     status = "Enabled"
+    filter {}
 
     expiration {
       days = var.retention_days

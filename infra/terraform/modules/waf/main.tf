@@ -19,8 +19,8 @@
 # false positives bite a launch.
 
 resource "aws_wafv2_web_acl" "this" {
-  name        = "atpost-${var.environment}-edge"
-  description = "Edge WAF for the api-gateway ALB (${var.environment})"
+  name        = "atpost-${var.environment}-${var.name}"
+  description = "WAF ${var.name} (${var.environment})"
   scope       = "REGIONAL"
 
   default_action {
@@ -41,7 +41,7 @@ resource "aws_wafv2_web_acl" "this" {
     }
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "atpost-${var.environment}-common"
+      metric_name                = "atpost-${var.environment}-${var.name}-common"
       sampled_requests_enabled   = true
     }
   }
@@ -60,7 +60,7 @@ resource "aws_wafv2_web_acl" "this" {
     }
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "atpost-${var.environment}-known-bad-inputs"
+      metric_name                = "atpost-${var.environment}-${var.name}-known-bad-inputs"
       sampled_requests_enabled   = true
     }
   }
@@ -79,7 +79,7 @@ resource "aws_wafv2_web_acl" "this" {
     }
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "atpost-${var.environment}-ip-reputation"
+      metric_name                = "atpost-${var.environment}-${var.name}-ip-reputation"
       sampled_requests_enabled   = true
     }
   }
@@ -98,18 +98,18 @@ resource "aws_wafv2_web_acl" "this" {
     }
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "atpost-${var.environment}-rate-limit"
+      metric_name                = "atpost-${var.environment}-${var.name}-rate-limit"
       sampled_requests_enabled   = true
     }
   }
 
   visibility_config {
     cloudwatch_metrics_enabled = true
-    metric_name                = "atpost-${var.environment}-edge"
+    metric_name                = "atpost-${var.environment}-${var.name}"
     sampled_requests_enabled   = true
   }
 
   tags = {
-    Name = "atpost-${var.environment}-edge"
+    Name = "atpost-${var.environment}-${var.name}"
   }
 }

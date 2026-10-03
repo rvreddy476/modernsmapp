@@ -1,22 +1,116 @@
+# Copy to `prod.tfvars` (gitignored) and fill in every CHANGEME. Pass with
+# `terraform plan -var-file=prod.tfvars`. Every other variable has the LEAN
+# default from variables.tf; the commented lines show the knob and its
+# default so growing later is a one-line change here.
+
+# ─── REQUIRED ────────────────────────────────────────────────────────────
+
+# From `terraform output` in bootstrap/ (state bucket + lock table).
 tfstate_bucket_arn     = "arn:aws:s3:::atpost-tfstate-CHANGEME"
 tfstate_lock_table_arn = "arn:aws:dynamodb:ap-south-1:CHANGEME:table/atpost-tfstate-locks"
 
-github_repos = [
-  "CHANGEME/atpost",
-  "CHANGEME/postbook-ui",
-]
+# Receives budget, backup, GuardDuty and SES bounce alerts. SNS emails a
+# confirmation link on the first apply — click it or nothing arrives.
+ops_alert_email = "CHANGEME@example.com"
 
-# REQUIRED. CIDRs allowed to reach the prod EKS public API endpoint.
-# Default 0.0.0.0/0 lights up the API to the internet (still IAM-gated,
-# but exposed). Narrow to office IPs + VPN + on-call addresses.
+# CIDRs allowed to reach the prod EKS public API endpoint. Narrow to the
+# office / VPN / on-call addresses. Never 0.0.0.0/0 in prod.
 cluster_endpoint_public_access_cidrs = [
-  "203.0.113.0/24", # CHANGEME — example office CIDR
-  # "198.51.100.5/32",  # CHANGEME — on-call laptop
+  "203.0.113.0/24", # CHANGEME — office
+  # "198.51.100.5/32", # CHANGEME — on-call laptop
 ]
 
-# REQUIRED at first prod apply. IAM principals that get cluster-admin on
-# EKS access entries — break-glass + on-call. The CI role does NOT need
-# admin; it gets a narrower role separately.
+# IAM principals that get cluster-admin on EKS access entries (break-glass +
+# on-call). The CI role does NOT need admin.
 cluster_admin_arns = [
   "arn:aws:iam::CHANGEME:role/AdminBreakGlass",
 ]
+
+# GitHub OIDC trust. Replace ORG with the GitHub organisation / user that
+# owns the repositories.
+github_repos = ["ORG/atpost"] # only used if ci_github_subjects is empty
+ci_github_subjects = [
+  "repo:ORG/atpost:ref:refs/heads/main",
+  "repo:ORG/atpost:ref:refs/heads/release/prod",
+  "repo:ORG/atpost:pull_request", # terraform plan on PRs (read-only + state)
+]
+# The Terraform APPLY role: only a job in the GitHub environment `prod`.
+# Create that environment with "Deployment branches: main" and a required
+# reviewer — GitHub enforces the branch before minting the token.
+terraform_apply_github_subjects = ["repo:ORG/atpost:environment:prod"]
+# create_terraform_apply_role = true
+
+# ─── Hosts and email ─────────────────────────────────────────────────────
+# domain                      = "cleestudio.com"
+# public_subdomains           = ["api", "ws", "app", "admin"]
+# media_subdomain             = "media"
+# ses_from_address            = "no-reply@cleestudio.com"
+# ses_configuration_set_name  = "atpost-prod-transactional"
+# dmarc_report_address        = null  # → ops_alert_email
+
+# Flip to true ONLY after `aws acm describe-certificate --region us-east-1`
+# shows ISSUED for media.cleestudio.com (its validation CNAME is in the
+# cloudflare_dns_records output). Then apply again: the distribution gains
+# the alias and the certificate.
+media_custom_domain_enabled = false
+
+# ─── Lean profile (defaults shown; uncomment to grow) ────────────────────
+# single_nat_gateway           = true          # false → one NAT per AZ
+
+# eks_cluster_version          = "1.36"
+# general_node_instance_type   = "m7g.xlarge"
+# general_node_min             = 3
+# general_node_max             = 8
+# general_node_desired         = 3
+# system_node_instance_type    = "m7g.medium"
+# system_node_min              = 2
+# system_node_max              = 3
+# system_node_desired          = 2
+# memory_node_instance_type    = "m7g.large"   # r7g.xlarge in the full design
+# memory_node_min              = 3
+# memory_node_max              = 3
+# memory_node_desired          = 3
+# karpenter_chart_version      = "1.14.1"
+# karpenter_capacity_types     = ["on-demand"] # ["spot","on-demand"] once SLOs allow
+
+# scylla_cpu_per_replica       = "1500m"
+# scylla_memory_per_replica    = "5Gi"         # 28Gi on r7g.xlarge
+# scylla_storage_per_replica   = "100Gi"
+
+# aurora_engine_version        = "16.15"
+# aurora_serverless_enabled    = true
+# aurora_min_acu               = 0.5
+# aurora_max_acu               = 4
+# aurora_instance_class        = "db.r7g.large" # used when serverless is off
+# aurora_create_reader         = false
+# aurora_backup_retention_days = 7
+# aurora_databases             = ["app", "identity_db", "chat_db", "call_db", "commerce_db"]
+# aurora_extensions            = ["postgis", "pg_trgm", "pgcrypto"]
+
+# msk_kafka_version            = "3.9.x"
+# msk_broker_instance_type     = "kafka.t3.small"
+# msk_number_of_broker_nodes   = 2
+# msk_broker_ebs_volume_size_gb = 100
+# msk_topic_partitions         = 6
+
+# elasticache_engine_version   = "8.1"
+# elasticache_node_type        = "cache.t4g.small"
+# elasticache_num_replicas     = 1
+
+# opensearch_engine_version    = "OpenSearch_2.19"
+# opensearch_data_instance_type = "t3.small.search"
+# opensearch_data_instance_count = 1
+# opensearch_dedicated_master_enabled = false
+# opensearch_ebs_volume_size_gb = 30
+
+# ─── Operations ──────────────────────────────────────────────────────────
+# budget_thresholds_usd        = [500, 1000, 1500]
+# backup_retention_days        = 14
+# cloudtrail_retention_days    = 90
+# secret_recovery_window_days  = 30
+
+# ─── Images ──────────────────────────────────────────────────────────────
+# service_names      = [...]                     # variables.tf — keep in sync with deploy/services/
+# worker_image_names = ["media-worker"]
+# web_image_names    = ["web", "admin-console"]
+# web_zone_names     = []                        # the 11 retired Multi-Zone apps

@@ -19,7 +19,7 @@ resource "kubernetes_namespace" "observability" {
       # The atpost-service chart's ServiceMonitor sets
       # `release: prometheus` so kube-prometheus-stack picks them up
       # without needing per-service prometheus rules.
-      "monitoring"                   = "enabled"
+      "monitoring" = "enabled"
     }
   }
 }
@@ -72,9 +72,9 @@ resource "helm_release" "kube_prometheus_stack" {
       # ─── Prometheus ───────────────────────────────────────────────
       prometheus = {
         prometheusSpec = {
-          retention            = var.prometheus_retention
-          retentionSize        = var.prometheus_retention_size
-          replicas             = var.prometheus_replicas
+          retention     = var.prometheus_retention
+          retentionSize = var.prometheus_retention_size
+          replicas      = var.prometheus_replicas
           # Storage: gp3 (made cluster default by the scylla module).
           # 100GB prod / 30GB staging — sized for the retention above.
           storageSpec = {

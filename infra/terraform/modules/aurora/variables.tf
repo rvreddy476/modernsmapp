@@ -51,3 +51,27 @@ variable "apply_immediately" {
   type        = bool
   default     = false
 }
+
+variable "engine_version" {
+  description = "Aurora PostgreSQL engine version. 16.4 (the original pin) is deprecated by AWS; 16.15 is the newest 16.x on 3 Oct 2026 (17.11 and 18.6 exist — dev runs PostgreSQL 16, so prod stays on 16). Must match the parameter-group family (aurora-postgresql16)."
+  type        = string
+  default     = "16.15"
+}
+
+variable "serverless_enabled" {
+  description = "Aurora Serverless v2: every instance becomes db.serverless and scales between the ACU bounds. The lean prod profile; false keeps instance_class."
+  type        = bool
+  default     = false
+}
+
+variable "serverless_min_acu" {
+  description = "Serverless v2 minimum ACUs (0.5 is the floor; one ACU ≈ 2 GB)."
+  type        = number
+  default     = 0.5
+}
+
+variable "serverless_max_acu" {
+  description = "Serverless v2 maximum ACUs."
+  type        = number
+  default     = 4
+}

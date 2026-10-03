@@ -11,3 +11,9 @@ EOT
   type        = number
   default     = 2000
 }
+
+variable "name" {
+  description = "ACL name suffix: `edge` → atpost-<env>-edge (the API/web ALBs); `psp-webhook` → atpost-<env>-psp-webhook (the payments webhook ingress)."
+  type        = string
+  default     = "edge"
+}

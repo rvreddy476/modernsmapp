@@ -86,10 +86,18 @@ resource "aws_kms_alias" "elasticache" {
   target_key_id = aws_kms_key.elasticache.key_id
 }
 
+locals {
+  valkey_family = "valkey${split(".", var.engine_version)[0]}"
+}
+
 resource "aws_elasticache_parameter_group" "valkey" {
-  name        = "atpost-${var.environment}-valkey"
-  family      = "valkey7" # corresponds to Valkey 7.2
+  name        = "atpost-${var.environment}-${local.valkey_family}"
+  family      = local.valkey_family # valkey7 for 7.2, valkey8 for 8.x
   description = "atpost-${var.environment} Valkey parameters"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   # maxmemory-policy: allkeys-lru. The cache is opportunistic — we don't
   # want OOM-kill behaviour on a hot moment. allkeys-lru evicts the
@@ -106,7 +114,7 @@ resource "aws_elasticache_replication_group" "this" {
   description          = "atpost ${var.environment} Valkey"
 
   engine               = "valkey"
-  engine_version       = "7.2"
+  engine_version       = var.engine_version
   node_type            = var.node_type
   num_cache_clusters   = var.num_replicas + 1 # primary + N replicas
   parameter_group_name = aws_elasticache_parameter_group.valkey.name

@@ -10,15 +10,23 @@
 # media bucket. Two cache layers, two WAFs — redundancy not waste.
 # This module only owns the AWS half; the Cloudflare CNAME / page
 # rules stay in Cloudflare's dashboard.
+#
+# Delivery contract (media-service internal/delivery/signer.go):
+#   public/*     stable unsigned URLs (avatars, public post media)
+#   everything else is PROTECTED and only reachable through a CloudFront
+#   signed URL (≤ 5 minutes) that media-service issues after content
+#   authorization. The distribution enforces that split: the `public/*`
+#   behaviour has no key group, the default behaviour requires one.
+#
+# Custom domain: pass `custom_domain` + `acm_certificate_arn_us_east_1`
+# (an ISSUED us-east-1 certificate) to put media.cleestudio.com on the
+# distribution. Leave both null on the first apply, add the ACM validation
+# CNAME at Cloudflare, then set them — CloudFront refuses a pending cert.
 
 # ─── Media bucket ───────────────────────────────────────────────────
 #
-# Objects: post images / video transcodes / avatars / story media.
-# Per-prefix structure:
-#   users/<user_id>/avatar/...
-#   posts/<post_id>/media/...
-#   stories/<story_id>/...
-#   transcodes/<post_id>/<rendition>/...
+# Objects: post images / video transcodes / avatars / story media, under
+# the public/ and protected/ prefixes above.
 
 resource "aws_s3_bucket" "media" {
   bucket = "atpost-${var.environment}-media-${random_id.bucket_suffix.hex}"
@@ -75,6 +83,51 @@ resource "aws_kms_alias" "media" {
   target_key_id = aws_kms_key.media.key_id
 }
 
+data "aws_caller_identity" "current" {}
+
+# Key policy. Objects are SSE-KMS, so CloudFront's origin access control
+# must be able to DECRYPT with this key or every GET returns 403 (the
+# bucket policy alone is not enough — the audit's "KMS key without a
+# CloudFront-readable policy"). The root statement keeps IAM policies
+# (media-service, media-worker, External Secrets) working as before.
+data "aws_iam_policy_document" "media_key" {
+  statement {
+    sid       = "AccountAdministration"
+    effect    = "Allow"
+    actions   = ["kms:*"]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+  }
+
+  statement {
+    sid    = "CloudFrontDecrypt"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey*",
+    ]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [aws_cloudfront_distribution.media.arn]
+    }
+  }
+}
+
+resource "aws_kms_key_policy" "media" {
+  key_id = aws_kms_key.media.id
+  policy = data.aws_iam_policy_document.media_key.json
+}
+
 # Lifecycle: noncurrent versions (objects replaced or deleted) move to
 # Standard-IA after 30 days and expire after 90. Current versions of
 # `transcodes/` move to IA after 60 days since they're cold compared
@@ -85,6 +138,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "media" {
   rule {
     id     = "noncurrent-versions"
     status = "Enabled"
+    filter {}
 
     noncurrent_version_transition {
       noncurrent_days = 30
@@ -115,6 +169,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "media" {
   rule {
     id     = "abort-incomplete-multipart"
     status = "Enabled"
+    filter {}
 
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
@@ -134,6 +189,70 @@ resource "aws_s3_bucket_cors_configuration" "media" {
     allowed_origins = var.cors_allowed_origins
     expose_headers  = ["ETag", "x-amz-version-id"]
     max_age_seconds = 3000
+  }
+}
+
+# ─── CloudFront signing key pair ────────────────────────────────────
+#
+# media-service refuses to start in production without a key pair id and
+# the matching private key (cmd/server/main.go buildDeliveryGate). The
+# public half is registered with CloudFront; the private half goes to
+# Secrets Manager (atpost/<env>/media/cloudfront-signing) for the seeder
+# to copy into the media-service secret as media_cloudfront_private_key.
+#
+# Like modules/auth-keys with manage_values=true, a key generated here
+# lands in Terraform state. To keep it out, set manage_signing_key=false,
+# generate the pair offline (`openssl genrsa -out cf.pem 2048`) and pass
+# the public key PEM in signing_public_key_pem.
+resource "tls_private_key" "signing" {
+  count     = var.manage_signing_key ? 1 : 0
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+locals {
+  signing_public_key_pem = var.manage_signing_key ? tls_private_key.signing[0].public_key_pem : var.signing_public_key_pem
+  custom_domain_enabled  = var.custom_domain != null && var.acm_certificate_arn_us_east_1 != null
+}
+
+resource "aws_cloudfront_public_key" "signing" {
+  name        = "atpost-${var.environment}-media-signing"
+  comment     = "media-service protected-delivery signing key"
+  encoded_key = local.signing_public_key_pem
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_cloudfront_key_group" "signing" {
+  name    = "atpost-${var.environment}-media-signing"
+  comment = "Key group trusted by the protected media behaviour"
+  items   = [aws_cloudfront_public_key.signing.id]
+}
+
+resource "aws_secretsmanager_secret" "signing" {
+  name                    = "atpost/${var.environment}/media/cloudfront-signing"
+  description             = "CloudFront key pair id + private key for media-service protected delivery. The seeder copies both into atpost/${var.environment}/media-service."
+  recovery_window_in_days = 7
+  kms_key_id              = aws_kms_key.media.arn
+
+  tags = {
+    Name = "atpost-${var.environment}-media-cloudfront-signing"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "signing" {
+  count     = var.manage_signing_key ? 1 : 0
+  secret_id = aws_secretsmanager_secret.signing.id
+  secret_string = jsonencode({
+    media_cloudfront_key_pair_id = aws_cloudfront_public_key.signing.id
+    media_cloudfront_private_key = tls_private_key.signing[0].private_key_pem
+    media_cdn_base_url           = local.custom_domain_enabled ? "https://${var.custom_domain}" : "https://${aws_cloudfront_distribution.media.domain_name}"
+  })
+
+  lifecycle {
+    ignore_changes = [secret_string]
   }
 }
 
@@ -158,6 +277,7 @@ resource "aws_cloudfront_distribution" "media" {
   http_version    = "http2and3"
   comment         = "atpost-${var.environment} media CDN"
   price_class     = var.cloudfront_price_class
+  aliases         = local.custom_domain_enabled ? [var.custom_domain] : []
 
   origin {
     origin_id                = "s3-media"
@@ -165,18 +285,36 @@ resource "aws_cloudfront_distribution" "media" {
     origin_access_control_id = aws_cloudfront_origin_access_control.media.id
   }
 
-  default_cache_behavior {
+  # public/* — stable, unsigned, long-cached.
+  ordered_cache_behavior {
+    path_pattern           = "public/*"
     target_origin_id       = "s3-media"
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
     compress               = true
 
+    cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
+    origin_request_policy_id   = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.media.id
+  }
+
+  # Everything else is protected: a valid signature from the key group is
+  # required or CloudFront answers 403 before touching S3.
+  default_cache_behavior {
+    target_origin_id       = "s3-media"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+    trusted_key_groups     = [aws_cloudfront_key_group.signing.id]
+
     # AWS-managed CachingOptimized policy: 24h default TTL, includes
     # gzip + brotli encoding variants in the cache key. Image / video
-    # workload, so this is the right shape.
-    cache_policy_id          = "658327ea-f89d-4fab-a63d-7e88639e58f6"
-    origin_request_policy_id = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
+    # workload, so this is the right shape. Signature query parameters are
+    # consumed by CloudFront and are not part of the cache key.
+    cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+    origin_request_policy_id   = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
     response_headers_policy_id = aws_cloudfront_response_headers_policy.media.id
   }
 
@@ -187,11 +325,10 @@ resource "aws_cloudfront_distribution" "media" {
   }
 
   viewer_certificate {
-    # No custom domain wired in this commit; CloudFront's
-    # *.cloudfront.net cert is used until the Route 53 + Cloudflare DNS
-    # cutover happens (Phase 5 / 6). Wire wildcard_cert_arn from the
-    # dns module in a follow-up.
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = local.custom_domain_enabled ? null : true
+    acm_certificate_arn            = local.custom_domain_enabled ? var.acm_certificate_arn_us_east_1 : null
+    ssl_support_method             = local.custom_domain_enabled ? "sni-only" : null
+    minimum_protocol_version       = local.custom_domain_enabled ? "TLSv1.2_2021" : "TLSv1"
   }
 
   tags = {
@@ -261,30 +398,60 @@ data "aws_iam_policy_document" "media_bucket" {
       values   = [aws_cloudfront_distribution.media.arn]
     }
   }
+
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    resources = [
+      aws_s3_bucket.media.arn,
+      "${aws_s3_bucket.media.arn}/*",
+    ]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
 }
 
 resource "aws_s3_bucket_policy" "media" {
   bucket = aws_s3_bucket.media.id
   policy = data.aws_iam_policy_document.media_bucket.json
+
+  depends_on = [aws_s3_bucket_public_access_block.media]
 }
 
-# Client IAM policy emitted for media-service (uploads, listing,
-# deletes). Attach to media-service's IRSA role.
+# Client IAM policy emitted for media-service and media-worker (uploads,
+# listing, deletes, multipart). Attach to both IRSA roles.
 data "aws_iam_policy_document" "media_client" {
   statement {
     sid    = "MediaBucketObjectOps"
     effect = "Allow"
     actions = [
       "s3:GetObject",
+      "s3:GetObjectVersion",
       "s3:PutObject",
       "s3:DeleteObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
+    ]
+    resources = ["${aws_s3_bucket.media.arn}/*"]
+  }
+
+  statement {
+    sid    = "MediaBucketOps"
+    effect = "Allow"
+    actions = [
       "s3:ListBucket",
-      "s3:GetObjectVersion",
+      "s3:GetBucketLocation",
+      "s3:ListBucketMultipartUploads",
     ]
-    resources = [
-      aws_s3_bucket.media.arn,
-      "${aws_s3_bucket.media.arn}/*",
-    ]
+    resources = [aws_s3_bucket.media.arn]
   }
 
   statement {
@@ -302,6 +469,6 @@ data "aws_iam_policy_document" "media_client" {
 
 resource "aws_iam_policy" "media_client" {
   name        = "atpost-${var.environment}-media-client"
-  description = "Standard media-bucket client policy. Attach to media-service IRSA role."
+  description = "Standard media-bucket client policy. Attach to the media-service and media-worker IRSA roles."
   policy      = data.aws_iam_policy_document.media_client.json
 }

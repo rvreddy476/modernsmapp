@@ -1,10 +1,19 @@
-# GitHub Actions OIDC + a CI role scoped to ECR push.
+# GitHub Actions OIDC + a CI role scoped to ECR push + plan, and an
+# optional Terraform APPLY role for the production environment.
 #
 # IAM Identity Center (the human-access SSO story) is account-level
 # infra and lives in the master account, not per-env. This module
 # covers the workload-account pieces: the OIDC provider GitHub uses
-# to assume roles, and a CI role with just-enough permissions to
-# push images and run plans.
+# to assume roles, and roles with just-enough permissions.
+#
+# Trust shapes (GitHub's `sub` claim):
+#   repo:ORG/REPO:ref:refs/heads/main      push / workflow_dispatch on main
+#   repo:ORG/REPO:environment:prod         a job that declares `environment: prod`
+#   repo:ORG/REPO:pull_request             PR-triggered workflows
+# When a job uses an environment, the sub carries the environment and NOT
+# the ref; branch restriction for the apply role therefore comes from the
+# GitHub environment's "deployment branches" rule (main only), which GitHub
+# enforces before the token is minted. Document that rule in the repo.
 
 data "aws_caller_identity" "current" {}
 
@@ -21,9 +30,13 @@ resource "aws_iam_openid_connect_provider" "github" {
   }
 }
 
+locals {
+  # Explicit subjects win; otherwise any branch/PR of each repo (staging).
+  ci_subjects = length(var.ci_github_subjects) > 0 ? var.ci_github_subjects : [for r in var.github_repos : "repo:${r}:*"]
+}
+
 # CI role: trusted to be assumed only by the GitHub OIDC provider, only
-# from workflows in our org/repo. The `repo:...:ref:refs/heads/main`
-# condition prevents PRs from a fork from impersonating prod CI.
+# from the subjects above.
 data "aws_iam_policy_document" "ci_trust" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -43,7 +56,7 @@ data "aws_iam_policy_document" "ci_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [for r in var.github_repos : "repo:${r}:*"]
+      values   = local.ci_subjects
     }
   }
 }
@@ -77,6 +90,7 @@ data "aws_iam_policy_document" "ci_ecr_push" {
       "ecr:UploadLayerPart",
       "ecr:DescribeRepositories",
       "ecr:DescribeImages",
+      "ecr:BatchGetImage",
     ]
     resources = [
       for r in var.ecr_repository_arns : r
@@ -91,8 +105,7 @@ resource "aws_iam_role_policy" "ci_ecr_push" {
 }
 
 # Plan-only role for `terraform plan` from CI on PRs. Apply lives
-# behind a separate manually-triggered workflow and a stricter role —
-# see PR-#TODO for the apply role.
+# behind the stricter role below.
 data "aws_iam_policy_document" "ci_terraform_plan" {
   statement {
     sid = "TerraformPlanReadOnly"
@@ -140,4 +153,118 @@ resource "aws_iam_role_policy" "ci_terraform_plan" {
   name   = "terraform-plan"
   role   = aws_iam_role.ci.id
   policy = data.aws_iam_policy_document.ci_terraform_plan.json
+}
+
+# ─── Terraform apply role ───────────────────────────────────────────
+#
+# Assumed only by the subjects in `apply_github_subjects` (prod: the
+# `environment:prod` subject of this repo — the GitHub environment pins the
+# branch to main and requires a reviewer). It carries AdministratorAccess
+# because this configuration creates IAM roles, KMS keys and every managed
+# service; the explicit denies below stop it from leaving the account or
+# removing its own guard rails. Session duration is capped at one hour.
+
+data "aws_iam_policy_document" "apply_trust" {
+  count = var.create_terraform_apply_role ? 1 : 0
+
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = var.apply_github_subjects
+    }
+  }
+}
+
+resource "aws_iam_role" "terraform_apply" {
+  count = var.create_terraform_apply_role ? 1 : 0
+
+  name                 = "atpost-${var.environment}-terraform-apply"
+  assume_role_policy   = data.aws_iam_policy_document.apply_trust[0].json
+  max_session_duration = 3600
+
+  tags = {
+    Name = "atpost-${var.environment}-terraform-apply"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "terraform_apply_admin" {
+  count = var.create_terraform_apply_role ? 1 : 0
+
+  role       = aws_iam_role.terraform_apply[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
+data "aws_iam_policy_document" "apply_guardrails" {
+  count = var.create_terraform_apply_role ? 1 : 0
+
+  statement {
+    sid    = "NeverLeaveTheAccount"
+    effect = "Deny"
+    actions = [
+      "organizations:*",
+      "account:CloseAccount",
+      "account:PutAlternateContact",
+      "iam:CreateUser",
+      "iam:CreateAccessKey",
+      "iam:CreateLoginProfile",
+      "sts:AssumeRole",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "KeepTheGuardRails"
+    effect = "Deny"
+    actions = [
+      "iam:DeleteOpenIDConnectProvider",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:DeleteRole",
+      "iam:DeleteRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:PutRolePermissionsBoundary",
+      "iam:DeleteRolePermissionsBoundary",
+    ]
+    resources = [
+      aws_iam_openid_connect_provider.github.arn,
+      aws_iam_role.ci.arn,
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/atpost-${var.environment}-terraform-apply",
+    ]
+  }
+
+  statement {
+    sid    = "StateBucketStays"
+    effect = "Deny"
+    actions = [
+      "s3:DeleteBucket",
+      "s3:PutBucketVersioning",
+      "dynamodb:DeleteTable",
+    ]
+    resources = [
+      var.tfstate_bucket_arn,
+      var.tfstate_lock_table_arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "apply_guardrails" {
+  count = var.create_terraform_apply_role ? 1 : 0
+
+  name   = "guardrails"
+  role   = aws_iam_role.terraform_apply[0].id
+  policy = data.aws_iam_policy_document.apply_guardrails[0].json
 }

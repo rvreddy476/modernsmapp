@@ -11,3 +11,8 @@ output "ci_role_name" {
   value       = aws_iam_role.ci.name
   description = "CI role name — for attaching extra policies (e.g. CodeArtifact)."
 }
+
+output "terraform_apply_role_arn" {
+  value       = var.create_terraform_apply_role ? aws_iam_role.terraform_apply[0].arn : null
+  description = "Set as repository secret AWS_TERRAFORM_APPLY_ROLE_ARN; the apply workflow assumes it from the `prod` GitHub environment."
+}

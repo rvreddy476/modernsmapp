@@ -73,3 +73,41 @@ variable "memory_node_desired" {
   type    = number
   default = 3
 }
+
+# ─── Versions and instance shapes ───────────────────────────────────────
+variable "cluster_version" {
+  description = <<EOT
+Kubernetes version. Default stays at the original 1.31 for staging; prod
+passes the newest version that every pinned add-on supports (1.36 on
+3 Oct 2026 — 1.37 is in standard support but Karpenter's compatibility
+matrix stops at 1.36). Check https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-standard.html
+and https://karpenter.sh/docs/upgrading/compatibility/ before bumping.
+EOT
+  type        = string
+  default     = "1.31"
+}
+
+variable "general_node_instance_type" {
+  description = "General node group instance type. m7g.large default; m7g.xlarge (4 vCPU, 16 GB) in the prod lean profile."
+  type        = string
+  default     = "m7g.large"
+}
+
+variable "system_node_instance_type" {
+  description = "System node group instance type (ingress, ArgoCD, ESO, Karpenter controller)."
+  type        = string
+  default     = "m7g.medium"
+}
+
+variable "system_node_min" {
+  type    = number
+  default = 3
+}
+variable "system_node_max" {
+  type    = number
+  default = 6
+}
+variable "system_node_desired" {
+  type    = number
+  default = 3
+}

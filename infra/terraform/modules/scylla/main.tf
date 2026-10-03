@@ -95,7 +95,7 @@ resource "kubernetes_manifest" "scylla_cluster" {
       namespace = kubernetes_namespace.scylla.metadata[0].name
     }
     spec = {
-      version = var.scylla_version
+      version      = var.scylla_version
       agentVersion = var.scylla_agent_version
 
       developerMode = false
@@ -104,9 +104,9 @@ resource "kubernetes_manifest" "scylla_cluster" {
         name = "ap-south-1"
         racks = [
           for az in var.availability_zones : {
-            name    = az
-            members = 1
-            scyllaConfig = "scylla-config"
+            name              = az
+            members           = 1
+            scyllaConfig      = "scylla-config"
             scyllaAgentConfig = "scylla-agent-config"
 
             # Land on the memory node group only. Without the
@@ -120,7 +120,7 @@ resource "kubernetes_manifest" "scylla_cluster" {
                       key      = "workload"
                       operator = "In"
                       values   = ["memory"]
-                    }, {
+                      }, {
                       key      = "topology.kubernetes.io/zone"
                       operator = "In"
                       values   = [az]

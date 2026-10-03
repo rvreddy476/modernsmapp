@@ -39,3 +39,9 @@ variable "apply_immediately" {
   type        = bool
   default     = false
 }
+
+variable "engine_version" {
+  description = "Valkey engine version. 7.2 was the original pin; prod passes 8.1 (newest on 3 Oct 2026, cheaper per node-hour, parameter family valkey8). The parameter-group family is derived from the major version."
+  type        = string
+  default     = "7.2"
+}

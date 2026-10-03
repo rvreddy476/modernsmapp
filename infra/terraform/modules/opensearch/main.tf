@@ -94,25 +94,37 @@ resource "aws_iam_service_linked_role" "opensearch" {
   description      = "Required for OpenSearch domain VPC integration"
 }
 
+locals {
+  # Zone awareness needs at least one data node per AZ: 3+ nodes → 3 AZs,
+  # 2 → 2 AZs, 1 (lean) → single AZ with one subnet.
+  az_count       = var.data_instance_count >= 3 ? 3 : (var.data_instance_count == 2 ? 2 : 1)
+  zone_awareness = local.az_count > 1
+  # Auto-Tune is not offered on burstable (t2/t3) instance types.
+  burstable = startswith(var.data_instance_type, "t2.") || startswith(var.data_instance_type, "t3.")
+}
+
 resource "aws_opensearch_domain" "this" {
   domain_name    = "atpost-${var.environment}"
-  engine_version = "OpenSearch_2.13"
+  engine_version = var.engine_version
 
   cluster_config {
     instance_type            = var.data_instance_type
     instance_count           = var.data_instance_count
     dedicated_master_enabled = var.dedicated_master_enabled
-    dedicated_master_type    = var.master_instance_type
-    dedicated_master_count   = var.dedicated_master_enabled ? 3 : 0
+    dedicated_master_type    = var.dedicated_master_enabled ? var.master_instance_type : null
+    dedicated_master_count   = var.dedicated_master_enabled ? 3 : null
 
-    zone_awareness_enabled = true
-    zone_awareness_config {
-      availability_zone_count = 3
+    zone_awareness_enabled = local.zone_awareness
+    dynamic "zone_awareness_config" {
+      for_each = local.zone_awareness ? [1] : []
+      content {
+        availability_zone_count = local.az_count
+      }
     }
   }
 
   vpc_options {
-    subnet_ids         = slice(var.isolated_subnet_ids, 0, 3)
+    subnet_ids         = slice(var.isolated_subnet_ids, 0, local.az_count)
     security_group_ids = [aws_security_group.opensearch.id]
   }
 
@@ -120,8 +132,8 @@ resource "aws_opensearch_domain" "this" {
     ebs_enabled = true
     volume_type = "gp3"
     volume_size = var.ebs_volume_size_gb
-    throughput  = 250
-    iops        = 3000
+    throughput  = var.ebs_throughput_mibps
+    iops        = var.ebs_iops
   }
 
   encrypt_at_rest {
@@ -167,15 +179,19 @@ resource "aws_opensearch_domain" "this" {
   # Auto-Tune handles the heap + shard-sizing settings most folks forget.
   # Off-peak window is ap-south-1 night.
   auto_tune_options {
-    desired_state = "ENABLED"
+    desired_state       = local.burstable ? "DISABLED" : "ENABLED"
+    rollback_on_disable = "NO_ROLLBACK"
 
-    maintenance_schedule {
-      start_at = "2026-06-15T18:00:00Z" # 23:30 IST
-      duration {
-        value = 2
-        unit  = "HOURS"
+    dynamic "maintenance_schedule" {
+      for_each = local.burstable ? [] : [1]
+      content {
+        start_at = "2026-11-01T18:00:00Z" # 23:30 IST
+        duration {
+          value = 2
+          unit  = "HOURS"
+        }
+        cron_expression_for_recurrence = "cron(0 18 * * ? *)" # nightly 23:30 IST
       }
-      cron_expression_for_recurrence = "cron(0 18 * * ? *)" # nightly 23:30 IST
     }
   }
 

@@ -158,12 +158,12 @@ module "aurora" {
   source  = "terraform-aws-modules/rds-aurora/aws"
   version = "~> 9.10"
 
-  name                   = "atpost-${var.environment}-aurora"
-  engine                 = "aurora-postgresql"
-  engine_version         = "16.4"
-  database_name          = "postgres"
-  master_username        = var.master_username
-  master_password        = random_password.master.result
+  name                        = "atpost-${var.environment}-aurora"
+  engine                      = "aurora-postgresql"
+  engine_version              = var.engine_version
+  database_name               = "postgres"
+  master_username             = var.master_username
+  master_password             = random_password.master.result
   manage_master_user_password = false # we manage it in Secrets Manager ourselves
 
   vpc_id                 = var.vpc_id
@@ -203,22 +203,31 @@ module "aurora" {
 
   # Cluster parameter group + instance parameter group. Module wants
   # both — instance-level can stay default for now.
-  db_cluster_parameter_group_name = aws_rds_cluster_parameter_group.aurora.name
+  db_cluster_parameter_group_name   = aws_rds_cluster_parameter_group.aurora.name
   create_db_cluster_parameter_group = false
+
+  # Serverless v2 (lean prod): instances are db.serverless and the cluster
+  # scales between the ACU bounds. Switching a running cluster between
+  # serverless and provisioned instance classes is an in-place instance
+  # modification, not a rebuild.
+  serverlessv2_scaling_configuration = var.serverless_enabled ? {
+    min_capacity = var.serverless_min_acu
+    max_capacity = var.serverless_max_acu
+  } : {}
 
   # Writer + (optional) reader. The map shape is the v9+ contract;
   # earlier major versions used a list.
   instances = var.create_reader ? {
     writer = {
-      instance_class = var.instance_class
+      instance_class = var.serverless_enabled ? "db.serverless" : var.instance_class
     }
     reader = {
-      instance_class      = var.instance_class
-      promotion_tier      = 1 # first to be promoted on writer failure
+      instance_class = var.serverless_enabled ? "db.serverless" : var.instance_class
+      promotion_tier = 1 # first to be promoted on writer failure
     }
-  } : {
+    } : {
     writer = {
-      instance_class = var.instance_class
+      instance_class = var.serverless_enabled ? "db.serverless" : var.instance_class
     }
   }
 

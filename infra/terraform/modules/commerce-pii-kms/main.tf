@@ -22,6 +22,13 @@
 # without touching invoice history. Review §5-D8 is explicit that order
 # snapshots may be legally required for years and must NOT be shredded on a
 # product default.
+#
+# Principals (3 Oct 2026): a Kubernetes ServiceAccount carries exactly ONE
+# IRSA role annotation, and commerce-service's role (envs/*/services-irsa.tf)
+# also needs the invoices bucket. So the key policy admits the role ARNs in
+# `principal_role_arns`, and the managed `client_policy_arn` is attached to
+# that role by the env. The module's own role is kept behind
+# `create_irsa_role` for environments that want the original one-role shape.
 
 variable "env" {
   description = "Environment name (prod, staging, smoke)."
@@ -29,12 +36,12 @@ variable "env" {
 }
 
 variable "cluster_oidc_provider_arn" {
-  description = "EKS OIDC provider ARN, for the IRSA trust policy."
+  description = "EKS OIDC provider ARN, for the IRSA trust policy (only used when create_irsa_role)."
   type        = string
 }
 
 variable "cluster_oidc_issuer" {
-  description = "EKS OIDC issuer host/path, without the https:// prefix."
+  description = "EKS OIDC issuer host/path, without the https:// prefix (only used when create_irsa_role)."
   type        = string
 }
 
@@ -42,6 +49,18 @@ variable "namespace" {
   description = "Kubernetes namespace the commerce service account lives in."
   type        = string
   default     = "atpost"
+}
+
+variable "create_irsa_role" {
+  description = "Create the module's own IRSA role bound to the commerce-service ServiceAccount. false when the env's service-irsa role is the principal (pass it in principal_role_arns)."
+  type        = bool
+  default     = true
+}
+
+variable "principal_role_arns" {
+  description = "Additional IAM role ARNs allowed to wrap/unwrap under this key (the env's commerce-service IRSA role). Everyone else is denied by the key policy."
+  type        = list(string)
+  default     = []
 }
 
 variable "deletion_window_days" {
@@ -55,6 +74,14 @@ variable "deletion_window_days" {
   EOT
   type        = number
   default     = 30
+}
+
+locals {
+  principal_arns = concat(
+    var.create_irsa_role ? [aws_iam_role.commerce_pii[0].arn] : [],
+    var.principal_role_arns,
+  )
+  scopes = ["profile", "order_snapshot", "kyc"]
 }
 
 resource "aws_kms_key" "commerce_pii" {
@@ -118,7 +145,7 @@ data "aws_iam_policy_document" "key_policy" {
     resources = ["*"]
     principals {
       type        = "AWS"
-      identifiers = [aws_iam_role.commerce_pii.arn]
+      identifiers = local.principal_arns
     }
     # `kyc` (commerce migration 035) seals seller bank account numbers and
     # PANs. It MUST be applied before an image that probes the kyc scope at
@@ -126,7 +153,7 @@ data "aws_iam_policy_document" "key_policy" {
     condition {
       test     = "StringEquals"
       variable = "kms:EncryptionContext:scope"
-      values   = ["profile", "order_snapshot", "kyc"]
+      values   = local.scopes
     }
     # B3: purpose and environment are pinned too. Scope alone would let a
     # blob from another environment decrypt under this key if the ARN ever
@@ -158,15 +185,15 @@ data "aws_iam_policy_document" "key_policy" {
     condition {
       test     = "ArnNotEquals"
       variable = "aws:PrincipalArn"
-      values = [
-        aws_iam_role.commerce_pii.arn,
-        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
-      ]
+      values = concat(
+        local.principal_arns,
+        ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"],
+      )
     }
   }
 }
 
-# IRSA role for the commerce service account.
+# IRSA role for the commerce service account (optional, see header).
 #
 # Note what this role is and is not. The review corrected a misconception in
 # the v1 plan: IRSA authorises AWS API calls, and does NOT authenticate an
@@ -174,6 +201,8 @@ data "aws_iam_policy_document" "key_policy" {
 # authentication is the Ed25519 token in shared/servicetoken; this role only
 # lets commerce talk to KMS.
 resource "aws_iam_role" "commerce_pii" {
+  count = var.create_irsa_role ? 1 : 0
+
   name = "atpost-${var.env}-commerce-pii-kms"
 
   assume_role_policy = jsonencode({
@@ -199,38 +228,57 @@ resource "aws_iam_role" "commerce_pii" {
   }
 }
 
-resource "aws_iam_role_policy" "commerce_pii" {
-  name = "commerce-pii-kms"
-  role = aws_iam_role.commerce_pii.id
+# Identity-side policy — the same least-privilege grant as the key policy,
+# as a managed policy so the env can attach it to whichever role is the
+# principal.
+data "aws_iam_policy_document" "client" {
+  statement {
+    sid    = "CommercePiiEnvelope"
+    effect = "Allow"
+    # B3 — least privilege, and only what the adapter actually calls.
+    #
+    # DescribeKey was removed: internal/kmsclient makes exactly two calls,
+    # GenerateDataKey and Decrypt. A granted permission nothing uses is a
+    # permission nobody will notice being used.
+    actions = [
+      "kms:GenerateDataKey",
+      "kms:Decrypt",
+    ]
+    resources = [aws_kms_key.commerce_pii.arn]
+    # All three context fields the application sets are pinned. The
+    # environment binding is what stops a staging role, if it ever
+    # obtained this key ARN, from unwrapping a production blob: KMS
+    # verifies the context byte-for-byte, so a prod ciphertext simply
+    # does not decrypt under a staging context.
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:purpose"
+      values   = ["commerce-pii"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:environment"
+      values   = [var.env]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:scope"
+      values   = local.scopes
+    }
+  }
+}
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      # B3 — least privilege, and only what the adapter actually calls.
-      #
-      # DescribeKey was removed: internal/kmsclient makes exactly two calls,
-      # GenerateDataKey and Decrypt. A granted permission nothing uses is a
-      # permission nobody will notice being used.
-      Action = [
-        "kms:GenerateDataKey",
-        "kms:Decrypt",
-      ]
-      Resource = aws_kms_key.commerce_pii.arn
-      Condition = {
-        StringEquals = {
-          # All three context fields the application sets are pinned. The
-          # environment binding is what stops a staging role, if it ever
-          # obtained this key ARN, from unwrapping a production blob: KMS
-          # verifies the context byte-for-byte, so a prod ciphertext simply
-          # does not decrypt under a staging context.
-          "kms:EncryptionContext:purpose"     = "commerce-pii"
-          "kms:EncryptionContext:environment" = var.env
-          "kms:EncryptionContext:scope"       = ["profile", "order_snapshot", "kyc"]
-        }
-      }
-    }]
-  })
+resource "aws_iam_policy" "client" {
+  name        = "atpost-${var.env}-commerce-pii-kms-client"
+  description = "GenerateDataKey/Decrypt on the commerce PII key under the pinned encryption context. Attach to the commerce-service IRSA role."
+  policy      = data.aws_iam_policy_document.client.json
+}
+
+resource "aws_iam_role_policy_attachment" "commerce_pii" {
+  count = var.create_irsa_role ? 1 : 0
+
+  role       = aws_iam_role.commerce_pii[0].name
+  policy_arn = aws_iam_policy.client.arn
 }
 
 output "key_id" {
@@ -243,16 +291,22 @@ output "key_arn" {
 }
 
 output "irsa_role_arn" {
-  description = "Role ARN for the commerce-service ServiceAccount annotation."
-  value       = aws_iam_role.commerce_pii.arn
+  description = "Role ARN for the commerce-service ServiceAccount annotation when create_irsa_role is true; null otherwise (use the env's service-irsa role)."
+  value       = var.create_irsa_role ? aws_iam_role.commerce_pii[0].arn : null
+}
+
+output "client_policy_arn" {
+  description = "Managed policy to attach to the role that is the key principal."
+  value       = aws_iam_policy.client.arn
 }
 
 output "policy_arn_note" {
   description = <<-EOT
-    The commerce IRSA role in services-irsa.tf must ALSO carry this role's
-    permissions, or be replaced by it. Address decryption fails closed: the
-    service refuses to start in prod without a usable key, so a missing grant
-    is a failed rollout rather than a silent plaintext fallback.
+    The commerce IRSA role in services-irsa.tf must carry client_policy_arn
+    AND be listed in principal_role_arns, or be replaced by this module's
+    role. Address decryption fails closed: the service refuses to start in
+    prod without a usable key, so a missing grant is a failed rollout rather
+    than a silent plaintext fallback.
   EOT
-  value       = aws_iam_role.commerce_pii.arn
+  value       = aws_iam_policy.client.arn
 }
