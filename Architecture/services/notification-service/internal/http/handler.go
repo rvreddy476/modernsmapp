@@ -281,7 +281,9 @@ type RegisterDeviceRequest struct {
 	// which is what every client registered before Feast Kitchen and Feast
 	// Rider existed (migration 007). mopedu_captain is the Mopedu Captain
 	// app (migration 009); the Mopedu customer flow registers as momentum.
-	App string `json:"app" binding:"omitempty,oneof=momentum feast_kitchen feast_rider mopedu_captain"`
+	// doorstep_pro is the Doorstep professional app (migration 013); the
+	// Doorstep customer flow registers as momentum.
+	App string `json:"app" binding:"omitempty,oneof=momentum feast_kitchen feast_rider mopedu_captain doorstep_pro"`
 }
 
 func (h *Handler) RegisterDevice(c *gin.Context) {
@@ -470,6 +472,7 @@ type UpdateNotifPreferencesRequest struct {
 	PushNewVideos         *bool `json:"push_new_videos"`
 	PushFoodOrders        *bool `json:"push_food_orders"`
 	PushOrders            *bool `json:"push_orders"`
+	PushDoorstep          *bool `json:"push_doorstep"`
 
 	InappLikes             *bool `json:"inapp_likes"`
 	InappSuperLikes        *bool `json:"inapp_super_likes"`
@@ -492,6 +495,7 @@ type UpdateNotifPreferencesRequest struct {
 	InappNewVideos         *bool `json:"inapp_new_videos"`
 	InappFoodOrders        *bool `json:"inapp_food_orders"`
 	InappOrders            *bool `json:"inapp_orders"`
+	InappDoorstep          *bool `json:"inapp_doorstep"`
 
 	EmailDigest *string `json:"email_digest"`
 }
@@ -537,6 +541,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.PushNewVideos, req.PushNewVideos)
 	setBool(&current.PushFoodOrders, req.PushFoodOrders)
 	setBool(&current.PushOrders, req.PushOrders)
+	setBool(&current.PushDoorstep, req.PushDoorstep)
 
 	setBool(&current.InappLikes, req.InappLikes)
 	setBool(&current.InappSuperLikes, req.InappSuperLikes)
@@ -559,6 +564,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.InappNewVideos, req.InappNewVideos)
 	setBool(&current.InappFoodOrders, req.InappFoodOrders)
 	setBool(&current.InappOrders, req.InappOrders)
+	setBool(&current.InappDoorstep, req.InappDoorstep)
 
 	if req.EmailDigest != nil {
 		current.EmailDigest = *req.EmailDigest

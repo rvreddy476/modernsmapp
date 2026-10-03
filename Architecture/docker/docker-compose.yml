@@ -1072,6 +1072,10 @@ services:
       DATING_SERVICE_URL: http://dating-service:8112
       DATING_SAFETY_RESPONDER_USER_IDS: ${DATING_SAFETY_RESPONDER_USER_IDS:-}
       DATING_SAFETY_OPS_EMAIL: ${DATING_SAFETY_OPS_EMAIL:-}
+      # Doorstep incident paging (doorstep.incident.raised), same mechanism;
+      # blank falls back to the DATING_SAFETY_* values above.
+      DOORSTEP_SAFETY_RESPONDER_USER_IDS: ${DOORSTEP_SAFETY_RESPONDER_USER_IDS:-}
+      DOORSTEP_SAFETY_OPS_EMAIL: ${DOORSTEP_SAFETY_OPS_EMAIL:-}
       IDENTITY_AUTH_URL: http://identity-auth:8081
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:

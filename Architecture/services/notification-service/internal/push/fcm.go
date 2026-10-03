@@ -101,6 +101,9 @@ var highPriorityTypes = map[string]bool{
 	"food_delivery_offer": true,
 	"captain.offer":       true, // Mopedu Captain, channel captain_offer
 	"ride.arrived":        true, // Mopedu customer, channel ride_updates
+	// Doorstep professional job offer, channel doorstep_pro_offers: the offer
+	// window is minutes (contract x-push-types priority: high).
+	"doorstep.pro.offer.new": true,
 }
 
 // BuildFCMMessage shapes one FCM v1 `message` object. Exported (and pure) so

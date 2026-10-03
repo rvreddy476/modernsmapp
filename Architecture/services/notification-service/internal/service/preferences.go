@@ -161,6 +161,7 @@ const (
 	catNewVideos  // creator uploads on subscribed channels (Tube long video, flicks)
 	catFoodOrders // Feast customer order updates (migration 007)
 	catOrders     // MStore order updates, buyer and seller (migration 010)
+	catDoorstep   // Doorstep customer booking updates (migration 013)
 )
 
 // categoryForEvent maps every event type this service delivers — both the
@@ -248,6 +249,16 @@ func categoryForEvent(eventType string) prefCategory {
 	case DatingScamAlertType:
 		return catAlwaysOn
 	}
+	// Doorstep (doorstep_push.go): the customer's booking updates sit in the
+	// doorstep category; the professional's pushes go to the doorstep_pro
+	// install and never consult Momentum preferences (catAlwaysOn only so
+	// nothing category-gates them if they are ever resolved).
+	if spec, ok := doorstepPushSpecs[eventType]; ok {
+		if spec.App == AppMomentum {
+			return catDoorstep
+		}
+		return catAlwaysOn
+	}
 	if len(eventType) > 5 && eventType[:5] == "live." {
 		return catLive
 	}
@@ -300,6 +311,8 @@ func pushCategoryAllowed(p *postgres.NotificationPreferences, eventType string) 
 		return p.PushFoodOrders
 	case catOrders:
 		return p.PushOrders
+	case catDoorstep:
+		return p.PushDoorstep
 	default: // catDefault, catAlwaysOn
 		return true
 	}
@@ -351,6 +364,8 @@ func inappCategoryAllowed(p *postgres.NotificationPreferences, eventType string)
 		return p.InappFoodOrders
 	case catOrders:
 		return p.InappOrders
+	case catDoorstep:
+		return p.InappDoorstep
 	default: // catDefault, catAlwaysOn
 		return true
 	}

@@ -428,6 +428,51 @@ func main() {
 	go foodConsumer.Start(ctx)
 	slog.Info("kafka food consumer started", "topic", foodTopic)
 
+	// Doorstep (home services) events — a dedicated DoorstepConsumer (lane
+	// L-E), own group. Customer booking updates go to the Momentum install,
+	// professional pushes to the doorstep_pro install (contract x-push-types).
+	// doorstep.incident.raised pages staff responders through the same
+	// mechanism as dating panics: DOORSTEP_SAFETY_RESPONDER_USER_IDS (each
+	// re-checked for an admin/moderator role in identity), falling back to
+	// the dating responder list when unset, so an incident never pages fewer
+	// people than a dating panic would. Ops email: DOORSTEP_SAFETY_OPS_EMAIL,
+	// falling back to DATING_SAFETY_OPS_EMAIL.
+	doorstepTopic := env("KAFKA_DOORSTEP_TOPIC", events.DoorstepTopic)
+	doorstepResponderIDs, invalidDoorstepResponders := events.ParseResponderIDs(os.Getenv("DOORSTEP_SAFETY_RESPONDER_USER_IDS"))
+	if len(invalidDoorstepResponders) > 0 {
+		slog.Error("DOORSTEP_SAFETY_RESPONDER_USER_IDS has invalid entries; they are ignored", "count", len(invalidDoorstepResponders))
+	}
+	doorstepResponderSource := "DOORSTEP_SAFETY_RESPONDER_USER_IDS"
+	if len(doorstepResponderIDs) == 0 {
+		doorstepResponderIDs = responderIDs
+		doorstepResponderSource = "DATING_SAFETY_RESPONDER_USER_IDS (fallback)"
+	}
+	var doorstepResponderDir *events.ResponderDirectory
+	if identityURL := strings.TrimSpace(os.Getenv("IDENTITY_AUTH_URL")); identityURL != "" {
+		doorstepResponderDir = events.NewResponderDirectory(doorstepResponderIDs, identityroles.NewClient(identityURL, internalKey, "notification-service"))
+	} else {
+		doorstepResponderDir = events.NewResponderDirectory(doorstepResponderIDs, nil)
+	}
+	if len(doorstepResponderIDs) == 0 {
+		slog.Error("no Doorstep safety responders configured: incidents page NO responder (ops alert + ERROR log only)")
+	}
+	doorstepOpsEmail := strings.TrimSpace(os.Getenv("DOORSTEP_SAFETY_OPS_EMAIL"))
+	if doorstepOpsEmail == "" {
+		doorstepOpsEmail = strings.TrimSpace(os.Getenv("DATING_SAFETY_OPS_EMAIL"))
+	}
+	doorstepConsumer := events.NewDoorstepConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-doorstep-group",
+		doorstepTopic,
+		notifSvc,
+		kafkaDialer,
+	).WithSafety(events.NewDoorstepSafetyAdapter(notifSvc, doorstepResponderDir, doorstepOpsEmail))
+	defer doorstepConsumer.Close()
+	go doorstepConsumer.Start(ctx)
+	slog.Info("kafka doorstep consumer started", "topic", doorstepTopic,
+		"responders", len(doorstepResponderIDs), "responder_source", doorstepResponderSource,
+		"ops_email_configured", doorstepOpsEmail != "")
+
 	// 9a. Account control (auth-service 30-day deletion): suppress deliveries
 	// on user.deactivated / user.deletion_scheduled, lift on the reverse,
 	// and on user.purge_requested erase the inbox partitions + Postgres rows

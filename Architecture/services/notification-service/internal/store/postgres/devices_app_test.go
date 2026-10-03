@@ -16,7 +16,7 @@ func TestDeviceApp_OmittedMeansMomentum(t *testing.T) {
 	if NormalizeDeviceApp("") != AppMomentum {
 		t.Fatal("an omitted app must register for Momentum (every pre-Feast client)")
 	}
-	for _, app := range []string{AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain} {
+	for _, app := range []string{AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain, AppDoorstepPro} {
 		if !ValidDeviceApp(app) || NormalizeDeviceApp(app) != app {
 			t.Fatalf("%q rejected or rewritten", app)
 		}
@@ -24,7 +24,7 @@ func TestDeviceApp_OmittedMeansMomentum(t *testing.T) {
 	if AppMopeduCaptain != "mopedu_captain" {
 		t.Fatalf("captain app = %q; the Mopedu Captain app registers as mopedu_captain (PushApp.MOPEDU_CAPTAIN)", AppMopeduCaptain)
 	}
-	for _, app := range []string{"", "feast", "MOMENTUM", "kitchen", "captain", "mopedu"} {
+	for _, app := range []string{"", "feast", "MOMENTUM", "kitchen", "captain", "mopedu", "doorstep", "pro"} {
 		if ValidDeviceApp(app) {
 			t.Fatalf("%q accepted", app)
 		}
@@ -81,6 +81,9 @@ func TestDevicesIntegration_PushTargetsAreScopedToTheirApp(t *testing.T) {
 	if _, err := store.RegisterDevice(ctx, user, "android", "rider-"+suffix, AppFeastRider); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.RegisterDevice(ctx, user, "android", "doorstep-pro-"+suffix, AppDoorstepPro); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.RegisterDevice(ctx, user, "android", "captain-"+suffix, AppMopeduCaptain); err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +102,7 @@ func TestDevicesIntegration_PushTargetsAreScopedToTheirApp(t *testing.T) {
 		AppFeastKitchen:  "kitchen-" + suffix,
 		AppFeastRider:    "rider-" + suffix,
 		AppMopeduCaptain: "captain-" + suffix,
+		AppDoorstepPro:   "doorstep-pro-" + suffix,
 	} {
 		got, err := store.GetUserDevicesForApp(ctx, user, app)
 		if err != nil {
@@ -177,5 +181,45 @@ func TestPreferencesIntegration_FoodOrdersRoundTrip(t *testing.T) {
 	}
 	if got.PushFoodOrders || !got.InappFoodOrders {
 		t.Fatalf("stored food_orders = push %v inapp %v", got.PushFoodOrders, got.InappFoodOrders)
+	}
+}
+
+// Migration 013: the doorstep category defaults on and round-trips, and the
+// device CHECK accepts doorstep_pro.
+func TestPreferencesIntegration_DoorstepRoundTrip(t *testing.T) {
+	pool := notificationTestPool(t)
+	store := New(pool)
+	ctx := context.Background()
+	user := uuid.New().String()
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM notification_preferences WHERE user_id::text = $1`, user)
+	})
+
+	defaults, err := store.GetNotificationPreferences(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaults.PushDoorstep || !defaults.InappDoorstep {
+		t.Fatalf("doorstep defaults = push %v inapp %v", defaults.PushDoorstep, defaults.InappDoorstep)
+	}
+	defaults.PushDoorstep = false
+	if err := store.UpdateNotificationPreferences(ctx, defaults); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetNotificationPreferences(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PushDoorstep || !got.InappDoorstep || !got.PushFoodOrders || !got.PushOrders {
+		t.Fatalf("stored doorstep = push %v inapp %v (food %v orders %v)", got.PushDoorstep, got.InappDoorstep, got.PushFoodOrders, got.PushOrders)
+	}
+	var columnDefault bool
+	fresh := uuid.New()
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM notification_preferences WHERE user_id = $1`, fresh)
+	})
+	if err := pool.QueryRow(ctx, `INSERT INTO notification_preferences (user_id) VALUES ($1)
+		ON CONFLICT (user_id) DO NOTHING RETURNING push_doorstep`, fresh).Scan(&columnDefault); err != nil || !columnDefault {
+		t.Fatalf("column default push_doorstep = %v, %v", columnDefault, err)
 	}
 }

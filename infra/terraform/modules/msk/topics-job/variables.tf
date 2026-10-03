@@ -49,6 +49,7 @@ EOT
     # Used by code but missing from the script
     "platform.purge-acks.v1",
     "food-events",
+    "doorstep.events",
     "channel-events",
     "community-events",
     "group-events",

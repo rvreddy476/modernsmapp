@@ -23,12 +23,17 @@ const (
 	// 2026-09-18). Ride offers and payment notices go here; the customer's
 	// ride updates go to Momentum, which hosts the Mopedu customer flow.
 	AppMopeduCaptain = "mopedu_captain"
+	// AppDoorstepPro is the Doorstep professional app (migration 013,
+	// 2026-10-04). Job offers, job changes and account notices go here; the
+	// customer's booking updates go to Momentum, which hosts the Doorstep
+	// customer flow.
+	AppDoorstepPro = "doorstep_pro"
 )
 
 // ValidDeviceApp reports whether app is a known install target.
 func ValidDeviceApp(app string) bool {
 	switch app {
-	case AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain:
+	case AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain, AppDoorstepPro:
 		return true
 	}
 	return false
@@ -49,7 +54,7 @@ type UserDevice struct {
 	UserID    uuid.UUID `json:"user_id"`
 	Platform  string    `json:"platform"` // ios, android, web
 	PushToken string    `json:"push_token"`
-	App       string    `json:"app"` // momentum, feast_kitchen, feast_rider, mopedu_captain
+	App       string    `json:"app"` // momentum, feast_kitchen, feast_rider, mopedu_captain, doorstep_pro
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -124,8 +129,9 @@ func (s *Store) DeactivateDeviceTokens(ctx context.Context, userID uuid.UUID) er
 }
 
 // GetUserDevices returns the user's active MOMENTUM devices — the target of
-// every social, chat, call and upload push. Feast Kitchen, Feast Rider and
-// Mopedu Captain installs are reached only through GetUserDevicesForApp.
+// every social, chat, call and upload push. Feast Kitchen, Feast Rider,
+// Mopedu Captain and Doorstep Pro installs are reached only through
+// GetUserDevicesForApp.
 func (s *Store) GetUserDevices(ctx context.Context, userID uuid.UUID) ([]UserDevice, error) {
 	return s.GetUserDevicesForApp(ctx, userID, AppMomentum)
 }
