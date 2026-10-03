@@ -11,6 +11,10 @@ on:
       - 'Architecture/**'
       - 'identity-platform/**'
       - 'chat-service/**'
+      - 'tools/prodsecrets/**'
+      - 'deploy/services/**'
+      - 'deploy/web/**'
+      - 'infra/terraform/**'
       - '.github/workflows/go-ci.yml'
   push:
     branches: [main]
@@ -70,3 +74,24 @@ jobs:
         run: cd chat-service && go build ./...
       - name: go test
         run: cd chat-service && go test -race -count=1 ./...
+
+  # The production secrets seeder (tools/prodsecrets, stdlib only). Its tests
+  # include the drift guards: every externalSecret remoteRef in
+  # deploy/{services,web}/*/values-prod.yaml has a key in manifest.yaml, and
+  # the manifest matches Terraform's secret shells, outputs and generated
+  # source fields. That is why deploy/ and infra/terraform/ are trigger paths.
+  # go.mod says go 1.24; 1.25 is what every other job here uses.
+  prodsecrets:
+    name: tools/prodsecrets (build / vet / test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: go vet
+        run: cd tools/prodsecrets && go vet ./...
+      - name: go test
+        run: cd tools/prodsecrets && go test -race -count=1 ./...

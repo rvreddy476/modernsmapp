@@ -4,15 +4,39 @@ name: Terraform
 #  1) validate  — runs on every PR/push touching infra/terraform. fmt + validate
 #     only (init -backend=false), so it needs NO AWS creds and gates HCL errors.
 #  2) plan-apply — MANUAL (workflow_dispatch). Pick environment + command
-#     (plan|apply). Uses GitHub-OIDC into a privileged Terraform role and the S3
+#     (plan|apply). Uses GitHub-OIDC into the Terraform role and the S3
 #     backend. Never runs automatically — no unattended applies.
 #
+# Production gate (3 Oct 2026, W5): the plan-apply job runs in the GitHub
+# environment named after the input (`prod`). Configure that environment with
+# REQUIRED REVIEWERS in repo settings → Environments → prod: the job then waits
+# for a human approval before it gets credentials, and `apply` additionally
+# demands the literal confirmation input "apply prod". The apply itself is a
+# saved plan (`terraform plan -out` then `terraform apply <planfile>`), so what
+# is applied is exactly what was shown in the log, and -auto-approve is never
+# passed on prod outside that gated job.
+#
+# Variables: envs/prod/prod.tfvars stays gitignored (it carries the account
+# id, admin ARNs and office CIDRs; infra/terraform/.gitignore). CI writes it
+# from the `prod` ENVIRONMENT secret TF_PROD_TFVARS (the whole file's text,
+# from prod.tfvars.example with every CHANGEME filled), so it only exists
+# inside the approved job. No secret VALUE ever reaches Terraform: service
+# secrets are seeded into Secrets Manager by tools/prodsecrets after apply.
+#
+# The first two applies (pass 1 targeted, pass 2 full; envs/prod/README.md)
+# are run by the lead from a workstation, because pass 2 needs the
+# kubernetes provider against a cluster pass 1 creates. This workflow is for
+# plans and later changes.
+#
+# Only prod is validated and planned: one environment is built (contract,
+# 3 Oct 2026); envs/staging and envs/smoke are kept but not maintained.
+#
 # Required for plan-apply (repo settings):
-#   secret AWS_TERRAFORM_ROLE_ARN   — role with permissions to manage the stack
+#   secret AWS_TERRAFORM_ROLE_ARN   — envs/prod output terraform_apply_role_arn
 #   var    TF_STATE_BUCKET          — atpost-tfstate-<account-id>
 #   var    TF_LOCK_TABLE            — atpost-tfstate-locks
-#   a non-secret envs/<env>/<env>.tfvars (or TF_VAR_* env) supplying the
-#   required variables (github_repos, cluster CIDRs, tfstate arns, …).
+#   environment `prod`: required reviewers, deployment branches = main,
+#                       environment secret TF_PROD_TFVARS
 
 on:
   pull_request:
@@ -25,17 +49,25 @@ on:
       environment:
         description: "Which env"
         type: choice
-        options: [staging, prod]
-        default: staging
+        options: [prod]
+        default: prod
       command:
         description: "plan or apply"
         type: choice
         options: [plan, apply]
         default: plan
+      confirm:
+        description: "For command=apply on prod, type exactly: apply prod"
+        required: false
+        default: ""
 
 permissions:
   contents: read
   id-token: write # OIDC (only used by plan-apply)
+
+env:
+  TF_VERSION: "1.9.8"
+  AWS_REGION: ap-south-1
 
 jobs:
   validate:
@@ -44,12 +76,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [staging, prod]
+        env: [prod]
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: ${{ env.TF_VERSION }}
       - name: fmt
         run: terraform -chdir=infra/terraform fmt -check -recursive
       - name: init (no backend) + validate
@@ -61,32 +93,94 @@ jobs:
     name: ${{ github.event.inputs.command }} (${{ github.event.inputs.environment }})
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }} # enables required reviewers
+    # The environment's required reviewers are the production approval.
+    environment: ${{ github.event.inputs.environment }}
+    concurrency:
+      group: terraform-${{ github.event.inputs.environment }}
+      cancel-in-progress: false
+    env:
+      TF_ENV: ${{ github.event.inputs.environment }}
+      TF_COMMAND: ${{ github.event.inputs.command }}
+      TF_CONFIRM: ${{ github.event.inputs.confirm }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Guard the production apply
+        run: |
+          if [[ "$TF_COMMAND" == "apply" && "$TF_ENV" == "prod" && "$TF_CONFIRM" != "apply prod" ]]; then
+            echo "::error ::refusing to apply prod: set the confirm input to exactly 'apply prod' (and the prod environment must have required reviewers)"
+            exit 1
+          fi
+
+      - name: Write the tfvars from the environment secret
+        env:
+          TFVARS: ${{ secrets.TF_PROD_TFVARS }}
+        run: |
+          VARFILE="infra/terraform/envs/$TF_ENV/$TF_ENV.tfvars"
+          if [[ -z "$TFVARS" ]]; then
+            echo "::error ::environment secret TF_PROD_TFVARS is empty (the text of $VARFILE, from prod.tfvars.example)"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$TFVARS" > "$VARFILE"
+          if grep -qiE 'CHANGEME|REPLACE_ME' "$VARFILE"; then
+            echo "::error ::TF_PROD_TFVARS still contains placeholders"
+            exit 1
+          fi
+
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
-          aws-region: ap-south-1
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: init (S3 backend)
         working-directory: infra/terraform/envs/${{ github.event.inputs.environment }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=envs/${{ github.event.inputs.environment }}/terraform.tfstate" \
-            -backend-config="region=ap-south-1" \
+            -backend-config="key=envs/$TF_ENV/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
             -backend-config="dynamodb_table=${{ vars.TF_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
-      - name: ${{ github.event.inputs.command }}
+
+      - name: plan
         working-directory: infra/terraform/envs/${{ github.event.inputs.environment }}
         run: |
           VARFILE=""
-          [ -f "${{ github.event.inputs.environment }}.tfvars" ] && VARFILE="-var-file=${{ github.event.inputs.environment }}.tfvars"
-          if [ "${{ github.event.inputs.command }}" = "apply" ]; then
-            terraform apply -input=false -auto-approve $VARFILE
-          else
-            terraform plan -input=false -no-color $VARFILE
+          [[ -f "$TF_ENV.tfvars" ]] && VARFILE="-var-file=$TF_ENV.tfvars"
+          # Exit code 2 = changes present; that is the normal case, not a failure.
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode -out=tfplan $VARFILE
+          rc=$?
+          set -e
+          case $rc in
+            0) echo "No changes." ;;
+            2) echo "Changes present (saved to tfplan)." ;;
+            *) echo "::error ::terraform plan failed"; exit $rc ;;
+          esac
+          echo "plan_rc=$rc" >> "$GITHUB_ENV"
+
+      - name: apply (saved plan)
+        if: ${{ github.event.inputs.command == 'apply' }}
+        working-directory: infra/terraform/envs/${{ github.event.inputs.environment }}
+        run: |
+          if [[ "$plan_rc" == "0" ]]; then
+            echo "Nothing to apply."; exit 0
           fi
+          # Applying the saved plan needs no -auto-approve: the plan IS the approval,
+          # and this step only runs inside the gated environment with the
+          # literal confirmation above.
+          terraform apply -input=false -no-color tfplan
+
+      - name: outputs (names only)
+        if: ${{ github.event.inputs.command == 'apply' }}
+        working-directory: infra/terraform/envs/${{ github.event.inputs.environment }}
+        run: |
+          # Values stay out of the log; the lead exports them locally with
+          # scripts/prodsecrets.sh export-outputs.
+          terraform output -json | jq -r 'to_entries[] | "\(.key)\(if .value.sensitive then " (sensitive)" else "" end)"'

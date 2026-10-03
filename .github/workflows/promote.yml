@@ -1,14 +1,24 @@
-# Promote staging → prod for one or more services.
+# Promote to production: a values-only PR against release/prod.
 #
 # Manually dispatched only — promotion is a deliberate human action.
-# Reads image.tag from deploy/services/<svc>/values-staging.yaml,
-# writes that same SHA into values-prod.yaml on a new branch, opens a
-# PR against release/prod for review.
 #
-# The image already exists in ECR (the build-push workflow tagged it
-# :<sha> at build time), so promotion is purely a values-file edit.
-# No rebuild. No re-test. The SHA promoted to prod is bit-identical to
-# what staging is running.
+# Services: reads image.tag (and worker.image.tag) from
+# deploy/services/<svc>/values-staging.yaml — the candidate build-push.yml
+# writes on every main build — and copies them into values-prod.yaml.
+#
+# Web: build-web.yml prints the commit shas it pushed (atpost/web from
+# postbook-ui, atpost/admin-console from atpost-web-ui). Pass them as
+# web_tag / admin_console_tag and they are written into
+# deploy/web/app/values-prod.yaml and deploy/web/admin-console/values-prod.yaml.
+#
+# The images already exist in ECR (tagged :<sha> at build time), so
+# promotion is purely a values-file edit. No rebuild. The sha promoted to
+# prod is bit-identical to what was built and tested from main.
+#
+# release/prod is created by the lead at deploy time (git branch from main);
+# until it exists this workflow fails at `git fetch origin release/prod`.
+# Production ArgoCD is MANUAL sync: merging the PR changes the desired
+# state only; the lead syncs each app.
 
 name: promote
 
@@ -16,8 +26,16 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: "Comma-separated services to promote (or 'all')"
-        required: true
+        description: "Comma-separated service names to promote, 'all', or blank for web only"
+        required: false
+        default: ""
+      web_tag:
+        description: "atpost/web tag (postbook-ui commit sha from build-web), blank = unchanged"
+        required: false
+        default: ""
+      admin_console_tag:
+        description: "atpost/admin-console tag (atpost-web-ui commit sha from build-web), blank = unchanged"
+        required: false
         default: ""
       reason:
         description: "Short reason for the promotion (lands in PR body)"
@@ -37,25 +55,41 @@ jobs:
           fetch-depth: 0
 
       - name: Validate inputs
+        env:
+          SERVICES: ${{ github.event.inputs.services }}
+          WEB_TAG: ${{ github.event.inputs.web_tag }}
+          ADMIN_TAG: ${{ github.event.inputs.admin_console_tag }}
+          REASON: ${{ github.event.inputs.reason }}
         run: |
-          if [[ -z "${{ github.event.inputs.services }}" ]]; then
-            echo "::error ::services input required"
+          if [[ -z "$SERVICES" && -z "$WEB_TAG" && -z "$ADMIN_TAG" ]]; then
+            echo "::error ::nothing to promote: give services, web_tag or admin_console_tag"
             exit 1
           fi
-          if [[ -z "${{ github.event.inputs.reason }}" ]]; then
+          if [[ -z "$REASON" ]]; then
             echo "::error ::reason input required (lands in the PR body)"
             exit 1
           fi
+          # Web tags are full commit shas (build-web tags with the checkout's
+          # commit); anything else is a typo that would fail the image pull.
+          for t in "$WEB_TAG" "$ADMIN_TAG"; do
+            if [[ -n "$t" && ! "$t" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error ::'$t' is not a 40-character commit sha"
+              exit 1
+            fi
+          done
 
       - name: Resolve service list
         id: list
+        env:
+          REQUESTED: ${{ github.event.inputs.services }}
         run: |
-          if [[ "${{ github.event.inputs.services }}" == "all" ]]; then
-            ALL=$(ls -d deploy/services/*/ | xargs -I{} basename {} | sort -u | paste -sd, -)
-            echo "services=$ALL" >> "$GITHUB_OUTPUT"
+          if [[ "$REQUESTED" == "all" ]]; then
+            LIST=$(ls -d deploy/services/*/ | xargs -I{} basename {} | sort -u | paste -sd, -)
           else
-            echo "services=${{ github.event.inputs.services }}" >> "$GITHUB_OUTPUT"
+            LIST="$(printf '%s' "$REQUESTED" | tr -d ' ')"
           fi
+          echo "services=$LIST" >> "$GITHUB_OUTPUT"
+          echo "Promoting services: ${LIST:-none}"
 
       - name: Configure git
         run: |
@@ -66,37 +100,52 @@ jobs:
         id: branch
         run: |
           BRANCH="promote/$(date -u +%Y%m%d-%H%M%S)"
-          # The tag helper comes from THIS checkout (main), not from
-          # release/prod, which may not carry it yet.
+          # Candidate tags and the tag helper come from THIS checkout (main);
+          # release/prod may not carry the helper yet.
           cp scripts/ci/values-tag.sh "$RUNNER_TEMP/values-tag.sh"
-          # Start from release/prod so we're only ahead by the values
-          # bump, not by anything else that's been merged to main.
+          mkdir -p "$RUNNER_TEMP/staging"
+          for d in deploy/services/*/; do
+            svc=$(basename "$d")
+            [[ -f "$d/values-staging.yaml" ]] && cp "$d/values-staging.yaml" "$RUNNER_TEMP/staging/$svc.yaml"
+          done
+          # Start from release/prod so the PR is only the values bump, not
+          # anything else merged to main since.
           git fetch origin release/prod
           git checkout -b "$BRANCH" origin/release/prod
           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Promote tags
+        id: promote
         env:
           SERVICES: ${{ steps.list.outputs.services }}
-        id: promote
+          WEB_TAG: ${{ github.event.inputs.web_tag }}
+          ADMIN_TAG: ${{ github.event.inputs.admin_console_tag }}
         run: |
-          IFS=, read -ra SVCS <<< "$SERVICES"
+          vt="$RUNNER_TEMP/values-tag.sh"
           PROMOTED=()
+          if [[ -n "$SERVICES" ]]; then
+            IFS=, read -ra SVCS <<< "$SERVICES"
+          else
+            SVCS=()
+          fi
           for svc in "${SVCS[@]}"; do
-            staging="deploy/services/$svc/values-staging.yaml"
+            staging="$RUNNER_TEMP/staging/$svc.yaml"
             prod="deploy/services/$svc/values-prod.yaml"
             if [[ ! -f "$staging" || ! -f "$prod" ]]; then
               echo "::warning ::$svc missing values files — skipping"
               continue
             fi
             # Key-specific (P-17): image.tag, and worker.image.tag when the
-            # staging file has one — each copied from its own staging key, so
-            # a worker tag is never overwritten with the server's.
-            vt="$RUNNER_TEMP/values-tag.sh"
+            # candidate has one — each copied from its own key, so a worker
+            # tag is never overwritten with the server's.
             staging_tag=$(bash "$vt" get "$staging" image.tag)
             prod_tag=$(bash "$vt" get "$prod" image.tag)
             staging_worker_tag=$(bash "$vt" get "$staging" worker.image.tag 2>/dev/null || true)
             prod_worker_tag=$(bash "$vt" get "$prod" worker.image.tag 2>/dev/null || true)
+            if [[ -z "$staging_tag" || "$staging_tag" == "latest" ]]; then
+              echo "::warning ::$svc has no built candidate tag yet — skipping"
+              continue
+            fi
             if [[ "$staging_tag" == "$prod_tag" && "$staging_worker_tag" == "$prod_worker_tag" ]]; then
               echo "::notice ::$svc already at $staging_tag in prod"
               continue
@@ -106,15 +155,31 @@ jobs:
               bash "$vt" set "$prod" worker.image.tag "$staging_worker_tag"
             fi
             git add "$prod"
-            PROMOTED+=("$svc:$prod_tag→$staging_tag")
+            PROMOTED+=("$svc:${prod_tag:-none}→$staging_tag")
           done
+          web() {
+            local name="$1" tag="$2" prod="deploy/web/$1/values-prod.yaml"
+            [[ -n "$tag" ]] || return 0
+            [[ -f "$prod" ]] || { echo "::error ::$prod missing on release/prod"; exit 1; }
+            local old
+            old=$(bash "$vt" get "$prod" image.tag)
+            if [[ "$old" == "$tag" ]]; then
+              echo "::notice ::$name already at $tag in prod"
+              return 0
+            fi
+            bash "$vt" set "$prod" image.tag "$tag"
+            git add "$prod"
+            PROMOTED+=("web/$name:${old:-none}→$tag")
+          }
+          web app "$WEB_TAG"
+          web admin-console "$ADMIN_TAG"
           if [[ ${#PROMOTED[@]} -eq 0 ]]; then
             echo "::notice ::Nothing to promote — exit clean."
             echo "promoted=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           printf 'promoted=%s\n' "${PROMOTED[*]}" >> "$GITHUB_OUTPUT"
-          git commit -m "chore(deploy): promote ${#PROMOTED[@]} service(s) to prod"
+          git commit -m "chore(deploy): promote ${#PROMOTED[@]} image(s) to prod"
           git push origin "${{ steps.branch.outputs.name }}"
 
       - name: Open promotion PR
@@ -123,35 +188,36 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROMOTED: ${{ steps.promote.outputs.promoted }}
           REASON: ${{ github.event.inputs.reason }}
+          ACTOR: ${{ github.actor }}
+          BRANCH: ${{ steps.branch.outputs.name }}
         run: |
-          # PROMOTED is space-separated tokens of form svc:oldtag→newtag.
+          # PROMOTED is space-separated tokens of form name:oldtag→newtag.
           {
             echo "## Promotion"
             echo
             echo "**Reason:** $REASON"
             echo
-            echo "**Triggered by:** @${{ github.actor }}"
+            echo "**Triggered by:** @$ACTOR"
             echo
-            echo "### Services"
+            echo "### Images"
             echo
             for tok in $PROMOTED; do
-              svc=${tok%%:*}
-              versions=${tok#*:}
-              echo "- \`$svc\`: $versions"
+              echo "- \`${tok%%:*}\`: ${tok#*:}"
             done
             echo
             echo "### Verify before merge"
             echo
-            echo "- [ ] Staging has been running these tags for the soak window."
-            echo "- [ ] ArgoCD shows \`staging-<svc>\` healthy."
+            echo "- [ ] Each tag was built from main (build-push / build-web run is green)."
+            echo "- [ ] Dev has been running the same code for the soak window."
             echo "- [ ] No open prod incidents."
             echo
-            echo "Merging this PR triggers ArgoCD to start syncing prod (manual"
-            echo "sync — \`automated.prune: false\` on the prod ApplicationSet)."
-          } > /tmp/pr-body.md
+            echo "Production ArgoCD is MANUAL sync: merging this PR only changes the"
+            echo "desired state. After merging, sync each promoted app in ArgoCD"
+            echo "and watch it become Healthy."
+          } > "$RUNNER_TEMP/pr-body.md"
 
           gh pr create \
             --base release/prod \
-            --head "${{ steps.branch.outputs.name }}" \
-            --title "promote: $(echo "$PROMOTED" | wc -w | tr -d ' ') service(s) → prod" \
-            --body-file /tmp/pr-body.md
+            --head "$BRANCH" \
+            --title "promote: $(echo "$PROMOTED" | wc -w | tr -d ' ') image(s) → prod" \
+            --body-file "$RUNNER_TEMP/pr-body.md"

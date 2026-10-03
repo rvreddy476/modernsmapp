@@ -1,19 +1,32 @@
 # Build + push service images to ECR, then bump the tag in the
-# deploy/services/<svc>/values-<env>.yaml file. ArgoCD's auto-sync
-# (staging) or manual sync (prod) picks the new tag up.
+# deploy/services/<svc>/values-staging.yaml file (the promotion candidate).
 #
-# Trigger model:
-#   push to main           → build all changed services → push :sha,
-#                            bump values-staging.yaml,
-#                            commit + push back.
-#   push to release/prod   → build all changed services → push :sha,
-#                            bump values-prod.yaml,
-#                            commit + push back.
+# Trigger model (3 Oct 2026, aws-first-production-deployment W5):
+#   push to main       → build the changed services → push :<git sha> →
+#                        bump values-staging.yaml → commit + push back.
+#   workflow_dispatch  → 'all' or a comma list of DEPLOY names.
 #
-# `Changed services` = the set of services whose code-under-test
-# changed in the push range. Inferred from the diff via the
-# detect-changes job. Falls back to ALL services on a workflow_dispatch
-# / manual run.
+# release/prod is deliberately NOT a trigger: production runs the exact image
+# built from main, promoted by promote.yml as a values-only change, so the sha
+# in prod is bit-identical to what was tested. Nothing is ever rebuilt on
+# promote.
+#
+# Image names use the DEPLOY convention (= ECR repo atpost/<name> = the
+# deploy/services/<name> dir = Terraform service_names):
+#   Architecture/services/<s>      → <s>
+#   identity-platform/services/<s> → identity-<s>   (identity-auth-service, …)
+#   chat-service/services/<s>      → chat-<s>       (chat-message-service, chat-ws-gateway, chat-call-service)
+# This mirrors build-push-acr.yml, which was the only workflow that had the
+# identity/chat names right; the old ECR workflow built them under the source
+# dir name, so no registry ever held them.
+#
+# A service with a Dockerfile.worker gets a second image <name>-worker from
+# the same context (media-service → atpost/media-worker).
+#
+# Not built (retired or never deployed; the gateway answers 404/410 for them):
+#   memories-service, feature-flag-service, reviewer-service, live-service (v1).
+# food-service and suggestion-service ARE built (they have ECR repos, roles and
+# values since 3 Oct).
 
 name: build-push
 
@@ -21,24 +34,27 @@ on:
   push:
     branches:
       - main
-      - release/prod
     paths:
       - "Architecture/services/**"
-      - "identity-platform/services/**"
-      - "chat-service/services/**"
-      - "deploy/services/**"
+      - "Architecture/shared/**"
+      - "Architecture/vendor/**"
+      - "identity-platform/**"
+      - "chat-service/**"
+      # NOT deploy/services/**: the bump job commits there, and a values-only
+      # change needs no new image (ArgoCD reads the values directly).
       - ".github/workflows/build-push.yml"
   workflow_dispatch:
     inputs:
       services:
-        description: "Comma-separated services to rebuild (or 'all')"
+        description: "Comma-separated DEPLOY names to rebuild (e.g. post-service,identity-auth-service) or 'all'"
         required: true
         default: "all"
 
 env:
   AWS_REGION: ap-south-1
-  # ECR repo prefix. Filled in by the per-env account ID below.
   ECR_PREFIX: atpost
+  # Source directories that are never built. Matched against the deploy name.
+  EXCLUDED_SERVICES: "memories-service feature-flag-service reviewer-service live-service"
 
 permissions:
   contents: write        # needed to push the bumped values file back
@@ -51,58 +67,71 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       services: ${{ steps.set.outputs.services }}
-      env_name: ${{ steps.env.outputs.env_name }}
+      matrix: ${{ steps.set.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Pick environment from branch
-        id: env
-        run: |
-          if [[ "${{ github.ref_name }}" == "release/prod" ]]; then
-            echo "env_name=prod" >> "$GITHUB_OUTPUT"
-          else
-            echo "env_name=staging" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Detect changed services
         id: set
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED: ${{ github.event.inputs.services }}
+          BEFORE: ${{ github.event.before }}
         run: |
-          # workflow_dispatch with 'all' → every service.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.services }}" != "all" ]]; then
-            echo "services=${{ github.event.inputs.services }}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            ALL=$(ls -d Architecture/services/*/ identity-platform/services/*/ chat-service/services/*/ 2>/dev/null \
-              | xargs -I{} basename {} | sort -u | grep -v '^_archived' | paste -sd, -)
-            echo "services=$ALL" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Otherwise diff against the previous push (or default branch
-          # ancestor on PR-derived pushes).
-          BASE="${{ github.event.before }}"
-          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
-            BASE=$(git merge-base HEAD origin/main || echo HEAD~1)
-          fi
-          # Map each changed path to a service name. Code under a
-          # service dir = that service. A change under deploy/services/
-          # <svc> also triggers that service (in case only the values
-          # file changed and we want to re-tag).
-          CHANGED=$(git diff --name-only "$BASE" HEAD \
-            | awk -F/ '
-                /^Architecture\/services\// && NF >= 3 { print $3 }
-                /^identity-platform\/services\// && NF >= 3 { print $3 }
-                /^chat-service\/services\// && NF >= 3 { print $3 }
-                /^deploy\/services\// && NF >= 3 { print $3 }
-              ' \
-            | sort -u | grep -v '^_archived' | paste -sd, -)
-          if [[ -z "$CHANGED" ]]; then
-            echo "No service changes detected; nothing to do."
-            echo "services=" >> "$GITHUB_OUTPUT"
+          # Resolve the service set (comma-separated deploy names), then emit it
+          # two ways: services= (CSV, for the if-guards + bump job) and matrix=
+          # (JSON array; Actions expressions have no split(), so jq builds it).
+          exclude() {
+            grep -v '_archived' | while read -r s; do
+              skip=0
+              for x in $EXCLUDED_SERVICES; do [[ "$s" == "$x" ]] && skip=1; done
+              [[ $skip -eq 0 ]] && echo "$s"
+            done
+          }
+          all_services() {
+            for d in Architecture/services/*/;     do echo "$(basename "$d")"; done
+            for d in identity-platform/services/*/; do echo "identity-$(basename "$d")"; done
+            for d in chat-service/services/*/;      do echo "chat-$(basename "$d")"; done
+          }
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$REQUESTED" != "all" ]]; then
+            SVCS="$(printf '%s' "$REQUESTED" | tr ',' '\n' | sed 's/ //g' | exclude | sort -u | paste -sd, -)"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            SVCS="$(all_services | exclude | sort -u | paste -sd, -)"
           else
-            echo "services=$CHANGED" >> "$GITHUB_OUTPUT"
+            BASE="$BEFORE"
+            if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]] || ! git cat-file -e "$BASE" 2>/dev/null; then
+              BASE=$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)
+            fi
+            CHANGED="$(git diff --name-only "$BASE" HEAD)"
+            # A change to a workspace's shared code or vendor tree rebuilds every
+            # service in that workspace; a change inside one service rebuilds
+            # that service only.
+            SVCS=$( {
+              printf '%s\n' "$CHANGED" | awk -F/ '
+                /^Architecture\/services\// && NF >= 3 { print $3 }
+                /^identity-platform\/services\// && NF >= 3 { print "identity-" $3 }
+                /^chat-service\/services\// && NF >= 3 { print "chat-" $3 }
+              '
+              if printf '%s\n' "$CHANGED" | grep -qE '^Architecture/(shared|vendor)/'; then
+                for d in Architecture/services/*/; do echo "$(basename "$d")"; done
+              fi
+              if printf '%s\n' "$CHANGED" | grep -qE '^identity-platform/(shared|vendor)/'; then
+                for d in identity-platform/services/*/; do echo "identity-$(basename "$d")"; done
+              fi
+              if printf '%s\n' "$CHANGED" | grep -qE '^chat-service/(shared|vendor)/'; then
+                for d in chat-service/services/*/; do echo "chat-$(basename "$d")"; done
+              fi
+            } | exclude | sort -u | paste -sd, -)
+          fi
+          echo "services=$SVCS" >> "$GITHUB_OUTPUT"
+          if [[ -z "$SVCS" ]]; then
+            echo "No service changes detected; nothing to do."
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building: $SVCS"
+            echo "matrix=$(printf '%s' "$SVCS" | jq -R -c 'split(",")')" >> "$GITHUB_OUTPUT"
           fi
 
   # ─── Job 2: matrixed build + push ────────────────────────────────
@@ -113,35 +142,40 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Build each service in parallel. Comma-split happens inline
-        # so the matrix can grow without a separate fanout step.
-        service: ${{ fromJson(format('[{0}]', join(split(needs.detect-changes.outputs.services, ','), '","'))) }}
+        service: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve service path
         id: path
+        env:
+          SVC: ${{ matrix.service }}
         run: |
-          for prefix in Architecture/services identity-platform/services chat-service/services; do
-            if [[ -d "$prefix/${{ matrix.service }}" ]]; then
-              echo "service_path=$prefix/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
-              echo "workspace_root=$prefix" >> "$GITHUB_OUTPUT"
-              # A service that ships a Dockerfile.worker gets a SECOND image,
-              # <name>-worker (media-service -> atpost/media-worker), built
-              # below from the same context. Empty when there is none.
-              if [[ -f "$prefix/${{ matrix.service }}/Dockerfile.worker" ]]; then
-                svc="${{ matrix.service }}"
-                echo "worker_dockerfile=$prefix/$svc/Dockerfile.worker" >> "$GITHUB_OUTPUT"
-                echo "worker_image=${svc%-service}-worker" >> "$GITHUB_OUTPUT"
-              else
-                echo "worker_dockerfile=" >> "$GITHUB_OUTPUT"
-                echo "worker_image=" >> "$GITHUB_OUTPUT"
-              fi
-              exit 0
-            fi
-          done
-          echo "::error ::service '${{ matrix.service }}' not found under any workspace"
-          exit 1
+          # Map the deploy name back to its source dir. workspace_root = the Go
+          # workspace root (go.work + vendor/ + shared/ + services/) and is the
+          # Docker build CONTEXT; the image keeps the deploy name (SVC).
+          if [[ -d "Architecture/services/$SVC" ]]; then
+            root=Architecture; src="$SVC"
+          elif [[ "$SVC" == identity-* && -d "identity-platform/services/${SVC#identity-}" ]]; then
+            root=identity-platform; src="${SVC#identity-}"
+          elif [[ "$SVC" == chat-* && -d "chat-service/services/${SVC#chat-}" ]]; then
+            root=chat-service; src="${SVC#chat-}"
+          else
+            echo "::error ::service '$SVC' not found under any workspace (use the deploy name: identity-auth-service, chat-message-service, …)"; exit 1
+          fi
+          [[ -f "$root/services/$src/Dockerfile" ]] || { echo "::error ::$root/services/$src has no Dockerfile"; exit 1; }
+          echo "service_path=$root/services/$src" >> "$GITHUB_OUTPUT"
+          echo "workspace_root=$root" >> "$GITHUB_OUTPUT"
+          # A service that ships a Dockerfile.worker gets a SECOND image,
+          # <name>-worker (media-service -> atpost/media-worker), built below
+          # from the same context. Empty when there is none.
+          if [[ -f "$root/services/$src/Dockerfile.worker" ]]; then
+            echo "worker_dockerfile=$root/services/$src/Dockerfile.worker" >> "$GITHUB_OUTPUT"
+            echo "worker_image=${SVC%-service}-worker" >> "$GITHUB_OUTPUT"
+          else
+            echo "worker_dockerfile=" >> "$GITHUB_OUTPUT"
+            echo "worker_image=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -152,6 +186,11 @@ jobs:
       - name: Login to ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      # The EKS node groups are Graviton (arm64); the runner is x86, so the
+      # build runs under QEMU unless the Dockerfile cross-compiles.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -168,19 +207,15 @@ jobs:
             ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
-          # Linux/arm64 because the EKS node groups are Graviton.
           platforms: linux/arm64
           provenance: false
 
       # P-17 (docs/designs/copyright-match-plan.md §4): the transcode worker is
       # its own image — Dockerfile.worker carries ffmpeg and cmd/worker, the
-      # server image carries neither — and until this step nothing built or
-      # pushed it, so worker.image.tag pointed at a sha no registry held.
-      # Same context (the Go workspace root: go.work, vendor/, shared/,
-      # services/), same platform, its own repository and cache scope. It is
-      # tagged with the same commit sha the server image gets, which is what
-      # bump-tag writes into worker.image.tag. The ECR repository
-      # atpost/<name>-worker must exist (infra/terraform envs: worker_image_names).
+      # server image carries neither. Same context, same platform, its own
+      # repository and cache scope, the same commit sha that bump-tag writes
+      # into worker.image.tag. The ECR repository atpost/<name>-worker must
+      # exist (infra/terraform envs: worker_image_names).
       - name: Build + push worker image
         if: ${{ steps.path.outputs.worker_dockerfile != '' }}
         uses: docker/build-push-action@v6
@@ -195,7 +230,10 @@ jobs:
           platforms: linux/arm64
           provenance: false
 
-  # ─── Job 3: bump tag in the values file + push back ──────────────
+  # ─── Job 3: bump tag in the staging values file + push back ──────
+  # values-staging.yaml is the promotion candidate: promote.yml copies its
+  # image.tag into values-prod.yaml on a PR against release/prod. The staging
+  # cluster itself is not built (one environment only, 3 Oct 2026).
   bump-tag:
     needs: [detect-changes, build-push]
     if: ${{ needs.detect-changes.outputs.services != '' }}
@@ -214,7 +252,7 @@ jobs:
 
       - name: Bump image.tag per service
         env:
-          ENV_NAME: ${{ needs.detect-changes.outputs.env_name }}
+          ENV_NAME: staging
           SERVICES: ${{ needs.detect-changes.outputs.services }}
           SHA: ${{ github.sha }}
         run: |
@@ -227,16 +265,15 @@ jobs:
             fi
             # Key-specific: image.tag always; worker.image.tag only when a
             # worker image was pushed at this sha (Dockerfile.worker) or the
-            # worker runs from the server image. The old `sed` over every
-            # `tag:` line set worker.image.tag to a sha never pushed for the
-            # worker (P-17). Tested by scripts/ci/values-tag-test.sh.
+            # worker runs from the server image. Tested by scripts/ci/values-tag-test.sh.
             bash scripts/ci/bump-service-tags.sh "$svc" "$f" "$SHA"
             git add "$f"
           done
           # No-op when there was nothing to commit (e.g. the only
           # changes were the values files themselves).
           if ! git diff --cached --quiet; then
-            git commit -m "ci(deploy): bump $ENV_NAME image tags to $SHA"
+            # [skip ci]: the bump commit must never start another build.
+            git commit -m "ci(deploy): bump $ENV_NAME image tags to $SHA [skip ci]"
             git push
           else
             echo "No values changes to commit."

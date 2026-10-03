@@ -1,0 +1,9 @@
+# The seeder works outside the repository by default (~/.atpost/prodsecrets/prod)
+# and refuses an --out inside a checkout, except this one. Payloads, fetched
+# secret values, roles.sql, Terraform outputs and state: never committed.
+out/
+# Build artifacts of `go build` in this directory.
+prodsecrets
+prodsecrets.exe
+*.exe
+*.test

@@ -1,0 +1,725 @@
+# Production secrets manifest for tools/prodsecrets (W3 of
+# docs/runbooks/aws-first-production-deployment.md).
+#
+# One Secrets Manager secret per deployable, <prefix>/<name>, each a flat JSON
+# object. Terraform creates every one as an EMPTY shell (envs/prod/secrets.tf,
+# output service_secret_names: the 32 services + web + admin-console) so
+# External Secrets can reference it; this tool fills them. Key names are the
+# `remoteRef` properties in deploy/services/<svc>/values-prod.yaml and
+# deploy/web/app/values-prod.yaml; manifest_test.go fails on any drift from
+# those files and on any difference from Terraform's list. Keys the values
+# files carry only commented out (admin-console callers, providers that are
+# off at launch) are filled too, so enabling one is uncommenting two lines.
+#
+# Production values are freshly generated, typed by the founder, or read
+# from what Terraform generated. Dev values are never reused.
+#
+# File format: a strict YAML subset parsed by manifest.go: nested mappings of
+# scalars, two-space indentation, full-line comments. No lists, anchors,
+# trailing comments or multi-line scalars.
+#
+# Value specs (kind:argument), grouped as the runbook counts them:
+#   generate   generate:hex32            32 hex characters (16 random bytes)
+#              generate:hex64            64 hex characters (32 random bytes)
+#              generate:totp-hex64       64 hex characters, AES-256 key for TOTP at rest
+#              generate:password         32 characters from [A-Za-z0-9]
+#              generate:pii-keyring      "v1:<base64 of 32 random bytes>"
+#              generate:ed25519-keypair  (shared only) base64 32-byte seed + base64 public key
+#              generate:rsa2048-pem      (shared only) PKCS1 private PEM + PKIX public PEM
+#   prompt     prompt:<label>            typed by the founder, never echoed, required
+#              prompt-optional:<label>   may stay empty at launch (the feature is off)
+#              prompt-file:<label>       the founder types a PATH; the file's contents are the value
+#   terraform  tf:<output>               a `terraform output -json` value (not secret)
+#   derive     derive:<template>         {tf:<output>} and {copy:<source>#<field>} substituted
+#              dsn:<database>/<role>     postgres://<role>:<pw>@<tf:aurora_cluster_endpoint>:5432/<database>?sslmode=require
+#                                        one generated password per role; CREATE ROLE/GRANT SQL in roles.sql
+#              shared:<name>             the same value in every secret that names it
+#              shared-private:<name>     private half of a shared keypair (the CALLER)
+#              shared-public:<name>      public half of the same keypair (every RECEIVER)
+#   copy       copy:<source>#<field>     a field of a secret Terraform generated (see sources)
+#   literal    const:<value>             literal, may be empty (an empty "previous" slot)
+
+version: 1
+prefix: atpost/prod
+
+# Secrets this tool READS and never writes. Terraform generates them; their
+# values are copied into the per-service secrets, never re-generated.
+sources:
+  # modules/auth-keys: jwt_secret, jwt_kid, internal_service_key,
+  # jwt_private_key_pem, jwt_public_key_pem, jwt_rs256_kid.
+  platform-auth: atpost/prod/platform-auth
+  # modules/elasticache: auth_token, primary_endpoint, reader_endpoint, port.
+  elasticache-auth: atpost/prod/elasticache/auth
+  # modules/opensearch: username, password, endpoint. This is the internal
+  # MASTER user of fine-grained access control; search-service uses it until
+  # a least-privilege OpenSearch user is created inside the domain.
+  opensearch-master: atpost/prod/opensearch/master
+  # modules/msk: username, password (the AmazonMSK_ name is AWS-mandated).
+  msk-scram: tf:msk_scram_secret_name
+  # modules/media: media_cloudfront_key_pair_id, media_cloudfront_private_key,
+  # media_cdn_base_url. Terraform generates the CloudFront signing key pair.
+  cloudfront-signing: atpost/prod/media/cloudfront-signing
+
+shared:
+  # A fresh deployment has no previous key. External Secrets needs the
+  # property to exist, so it is written empty; the first rotation fills it.
+  jwt_secret_previous: const:
+  jwt_kid_previous: const:
+  # chat-message-service and chat-ws-gateway entitlement HMAC.
+  chat_entitlement_secret: generate:hex64
+  # notification-service verifies the realtime tokens rider and food mint.
+  realtime_token_secret: generate:hex64
+  # Moderation capabilities: issued by trust-safety-service, verified by
+  # post-service; byte-identical in both secrets.
+  story_moderation_hmac_key: generate:hex64
+  story_moderation_hmac_key_previous: const:
+  post_moderation_hmac_key: generate:hex64
+  post_moderation_hmac_key_previous: const:
+  post_restriction_hmac_key: generate:hex64
+  post_restriction_hmac_key_previous: const:
+  # Service-to-service tokens (Ed25519). The private seed signs in the
+  # CALLER; the public half is SERVICE_CALLER_<NAME>_PUBKEY in every
+  # RECEIVER, with the same kid. The tool refuses to emit a pair whose
+  # halves do not match.
+  svc_admin: generate:ed25519-keypair
+  svc_admin_kid: const:admin-1
+  svc_commerce: generate:ed25519-keypair
+  svc_commerce_kid: const:commerce-1
+  svc_food: generate:ed25519-keypair
+  svc_food_kid: const:food-1
+  svc_dating: generate:ed25519-keypair
+  svc_dating_kid: const:dating-1
+  svc_rider: generate:ed25519-keypair
+  svc_rider_kid: const:rider-1
+  svc_post: generate:ed25519-keypair
+  svc_post_kid: const:post-1
+  svc_trust_safety: generate:ed25519-keypair
+  svc_trust_safety_kid: const:trust-safety-1
+  svc_live: generate:ed25519-keypair
+  svc_live_kid: const:live-1
+  # identity-auth mini-app session signer (RS256).
+  mini_app_session_rs256: generate:rsa2048-pem
+  # Third parties, typed once, used by several services.
+  razorpay_key_id: prompt:Razorpay LIVE key id (rzp_live_...)
+  razorpay_key_secret: prompt:Razorpay LIVE key secret
+  razorpay_webhook_secret: prompt:Razorpay webhook secret (dashboard webhook to https://api.cleestudio.com/v1/payments/webhook)
+  livekit_url: prompt:LiveKit Cloud PRODUCTION project URL (wss://<project>.livekit.cloud)
+  livekit_public_url: prompt:LiveKit Cloud URL devices dial (wss://...; the same as the project URL on Cloud)
+  livekit_api_key: prompt:LiveKit Cloud PRODUCTION API key
+  livekit_api_secret: prompt:LiveKit Cloud PRODUCTION API secret
+
+secrets:
+
+  api-gateway:
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
+
+  identity-auth-service:
+    postgres_dsn: dsn:identity_db/identity_auth
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # RS256 access-token signing key (Terraform-generated, platform-auth).
+    jwt_private_key_pem: copy:platform-auth#jwt_private_key_pem
+    totp_encryption_key: generate:totp-hex64
+    # Without a stable key every pod and restart signs mini-app sessions
+    # with its own ephemeral key (mini_app_sessions.go falls back silently).
+    mini_app_session_private_key_pem: shared-private:mini_app_session_rs256
+    mini_app_session_key_id: const:miniapp-1
+    # Sign-in with Google/Apple/GitHub is off at launch (OAUTH_NEW_ACCOUNT_ENABLED=false).
+    oauth_google_client_id: prompt-optional:Google OAuth client id (empty until the production OAuth app exists)
+    oauth_google_client_secret: prompt-optional:Google OAuth client secret
+    oauth_apple_client_id: prompt-optional:Apple Sign-in client id
+    oauth_apple_client_secret: prompt-optional:Apple Sign-in client secret
+    oauth_github_client_id: prompt-optional:GitHub OAuth client id
+    oauth_github_client_secret: prompt-optional:GitHub OAuth client secret
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  identity-user-service:
+    postgres_dsn: dsn:identity_db/identity_user
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+
+  identity-profile-service:
+    postgres_dsn: dsn:identity_db/identity_profile
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+
+  user-service:
+    postgres_dsn: dsn:app/user_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  graph-service:
+    postgres_dsn: dsn:app/graph_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # Blocks recorded by the retired profile service live in identity_db.
+    legacy_profile_blocks_dsn: dsn:identity_db/graph_service
+
+  group-service:
+    postgres_dsn: dsn:app/group_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  post-service:
+    postgres_dsn: dsn:app/post_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    story_moderation_hmac_key: shared:story_moderation_hmac_key
+    story_moderation_hmac_key_previous: shared:story_moderation_hmac_key_previous
+    post_moderation_hmac_key: shared:post_moderation_hmac_key
+    post_moderation_hmac_key_previous: shared:post_moderation_hmac_key_previous
+    post_restriction_hmac_key: shared:post_restriction_hmac_key
+    post_restriction_hmac_key_previous: shared:post_restriction_hmac_key_previous
+    post_service_token_key: shared-private:svc_post
+    post_service_token_kid: shared:svc_post_kid
+    caller_trust_safety_pubkey: shared-public:svc_trust_safety
+    caller_trust_safety_kid: shared:svc_trust_safety_kid
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  feed-service:
+    postgres_dsn: dsn:app/feed_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+
+  media-service:
+    postgres_dsn: dsn:app/media_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
+    # CloudFront signed URLs: Terraform generated the key pair.
+    media_cdn_base_url: copy:cloudfront-signing#media_cdn_base_url
+    media_cloudfront_key_pair_id: copy:cloudfront-signing#media_cloudfront_key_pair_id
+    media_cloudfront_private_key: copy:cloudfront-signing#media_cloudfront_private_key
+    caller_commerce_pubkey: shared-public:svc_commerce
+    caller_commerce_kid: shared:svc_commerce_kid
+    # SERVICE_CALLER_LIVE_SERVICE_V2_PUBKEY: live-service-v2's recording import.
+    caller_live_pubkey: shared-public:svc_live
+    caller_live_kid: shared:svc_live_kid
+    # Dubbing and auto-captions are off at launch (MEDIA_DUBBING_BACKEND unset).
+    openai_api_key: prompt-optional:OpenAI API key for media dubbing and captions (empty at launch)
+
+  notification-service:
+    postgres_dsn: dsn:app/notification_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    realtime_token_secret: shared:realtime_token_secret
+    fcm_project_id: prompt:Firebase PRODUCTION project id
+    fcm_service_account_key: prompt-file:Path to the Firebase PRODUCTION service-account JSON
+    # iOS push is off until APNS_TEAM_ID is set.
+    apns_team_id: prompt-optional:APNs team id (iOS push; empty until the iOS app ships)
+    apns_key_id: prompt-optional:APNs key id
+    apns_private_key: prompt-optional:APNs .p8 private key contents
+    apns_bundle_id: prompt-optional:APNs bundle id
+    smtp_host: prompt-optional:SES SMTP host (email-smtp.ap-south-1.amazonaws.com) if notification mail is wanted
+    smtp_username: prompt-optional:SES SMTP username
+    smtp_password: prompt-optional:SES SMTP password
+
+  search-service:
+    postgres_dsn: dsn:app/search_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    opensearch_url: derive:https://{tf:opensearch_endpoint}
+    opensearch_username: copy:opensearch-master#username
+    opensearch_password: copy:opensearch-master#password
+
+  trust-safety-service:
+    postgres_dsn: dsn:app/trust_safety_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    story_moderation_hmac_key: shared:story_moderation_hmac_key
+    story_moderation_blocklist: prompt:Story moderation blocklist, comma-separated terms (required in production)
+    post_moderation_hmac_key: shared:post_moderation_hmac_key
+    post_restriction_hmac_key: shared:post_restriction_hmac_key
+    trust_safety_service_token_key: shared-private:svc_trust_safety
+    trust_safety_service_token_kid: shared:svc_trust_safety_kid
+    caller_post_pubkey: shared-public:svc_post
+    caller_post_kid: shared:svc_post_kid
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  chat-message-service:
+    postgres_dsn: dsn:chat_db/chat_message
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
+    chat_entitlement_secret: shared:chat_entitlement_secret
+
+  chat-ws-gateway:
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
+    chat_entitlement_secret: shared:chat_entitlement_secret
+
+  chat-call-service:
+    postgres_dsn: dsn:call_db/chat_call
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
+    # Calls are off at launch (CALLS_ENABLED=false); present so enabling is a flag flip.
+    livekit_api_key: shared:livekit_api_key
+    livekit_api_secret: shared:livekit_api_secret
+    cloudflare_turn_key_id: prompt-optional:Managed TURN key id (calls are off at launch)
+    cloudflare_turn_api_token: prompt-optional:Managed TURN API token (calls are off at launch)
+
+  monetization-service:
+    postgres_dsn: dsn:app/monetization_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    monetization_bank_details_key: generate:hex64
+    razorpay_key_id: shared:razorpay_key_id
+    razorpay_key_secret: shared:razorpay_key_secret
+    # Payouts are off at launch (MONETIZATION_PAYOUTS_ENABLED=false).
+    razorpayx_account_number: prompt-optional:RazorpayX account number (payouts; empty at launch)
+    razorpayx_webhook_secret: prompt-optional:RazorpayX webhook secret (payouts; empty at launch)
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  analytics-service:
+    postgres_dsn: dsn:app/analytics_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+
+  ai-service:
+    postgres_dsn: dsn:app/ai_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    anthropic_api_key: prompt-optional:Anthropic API key for ai-service (empty runs the stub provider)
+
+  admin-service:
+    postgres_dsn: dsn:app/admin_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # The ONE admin key: private half here, public half in every product as
+    # caller_admin_pubkey. Generated by this tool, never by hand.
+    admin_service_token_key: shared-private:svc_admin
+    admin_service_token_kid: shared:svc_admin_kid
+
+  payments-service:
+    postgres_dsn: dsn:commerce_db/payments_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    razorpay_key_id: shared:razorpay_key_id
+    razorpay_key_secret: shared:razorpay_key_secret
+    razorpay_webhook_secret: shared:razorpay_webhook_secret
+    caller_commerce_pubkey: shared-public:svc_commerce
+    caller_commerce_kid: shared:svc_commerce_kid
+    caller_food_pubkey: shared-public:svc_food
+    caller_food_kid: shared:svc_food_kid
+    caller_dating_pubkey: shared-public:svc_dating
+    caller_dating_kid: shared:svc_dating_kid
+    caller_rider_pubkey: shared-public:svc_rider
+    caller_rider_kid: shared:svc_rider_kid
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  suggestion-service:
+    postgres_dsn: dsn:app/suggestion_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    identity_postgres_dsn: dsn:identity_db/suggestion_service
+
+  commerce-service:
+    postgres_dsn: dsn:commerce_db/commerce_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    commerce_service_token_key: shared-private:svc_commerce
+    commerce_service_token_kid: shared:svc_commerce_kid
+    commerce_kms_key_id: tf:commerce_pii_kms_key_id
+    commerce_pii_lookup_salt: generate:hex64
+    # Courier booking stays manual until the Shiprocket production account
+    # exists. To switch: change this to const:shiprocket, fill the four
+    # prompts below, and run apply --rotate commerce-service/courier_provider.
+    courier_provider: const:stub
+    shiprocket_email: prompt-optional:Shiprocket production account email
+    shiprocket_password: prompt-optional:Shiprocket production account password
+    shiprocket_webhook_token: prompt-optional:Shiprocket webhook token
+    shiprocket_webhook_hmac: prompt-optional:Shiprocket webhook HMAC secret
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  food-service:
+    postgres_dsn: dsn:app/food_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    food_pii_keys: generate:pii-keyring
+    food_pii_lookup_salt: generate:hex64
+    food_service_token_key: shared-private:svc_food
+    food_service_token_kid: shared:svc_food_kid
+    realtime_token_secret: shared:realtime_token_secret
+    # Food is off at the gateway at launch.
+    food_platform_gstin: prompt-optional:Feast platform GSTIN, e-commerce operator s.9(5) (food is off at launch)
+    digilocker_client_id: prompt-optional:DigiLocker partner client id (food; off at launch)
+    digilocker_client_secret: prompt-optional:DigiLocker partner client secret (food; off at launch)
+    google_maps_server_key: prompt-optional:Google Maps server key for Feast routing (empty uses straight-line distance)
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  channel-service:
+    postgres_dsn: dsn:app/channel_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  community-service:
+    postgres_dsn: dsn:app/community_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  qa-service:
+    postgres_dsn: dsn:app/qa_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  dating-service:
+    postgres_dsn: dsn:app/dating_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    dating_evidence_hmac_key: generate:hex64
+    dating_pii_keys: generate:pii-keyring
+    dating_pii_lookup_salt: generate:hex64
+    dating_service_token_key: shared-private:svc_dating
+    dating_service_token_kid: shared:svc_dating_kid
+    # Dating is off at the gateway at launch.
+    digilocker_api_key: prompt-optional:DigiLocker API key (dating; off at launch)
+    digilocker_client_id: prompt-optional:DigiLocker client id (dating; off at launch)
+    llm_moderation_api_key: prompt-optional:LLM moderation API key (dating; off at launch)
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  wallet-service:
+    postgres_dsn: dsn:app/wallet_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # BANK_PARTNER=mock at launch.
+    icici_api_key: prompt-optional:ICICI partner API key (wallet; off at launch)
+
+  bill-pay-service:
+    postgres_dsn: dsn:app/bill_pay_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    # Bill pay is off at the gateway; Setu stays in mock mode.
+    setu_client_id: prompt-optional:Setu client id (bill pay; empty at launch)
+    setu_client_secret: prompt-optional:Setu client secret (bill pay; empty at launch)
+    setu_webhook_secret: prompt-optional:Setu webhook secret (bill pay; empty at launch)
+
+  rider-service:
+    postgres_dsn: dsn:app/rider_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    rider_pii_keys: generate:pii-keyring
+    # Rides are off at the gateway at launch.
+    mopedu_platform_gstin: prompt-optional:Mopedu platform GSTIN (rides are off at launch)
+    google_maps_server_key: prompt-optional:Google Maps server key for Mopedu routing (rides are off at launch)
+    digilocker_api_key: prompt-optional:DigiLocker API key (rides are off at launch)
+    digilocker_client_id: prompt-optional:DigiLocker client id (rides are off at launch)
+    rider_service_token_key: shared-private:svc_rider
+    rider_service_token_kid: shared:svc_rider_kid
+    realtime_token_secret: shared:realtime_token_secret
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  live-service-v2:
+    postgres_dsn: dsn:app/live_service_v2
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    jwt_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+    jwt_secret_previous: shared:jwt_secret_previous
+    jwt_kid_previous: shared:jwt_kid_previous
+    livekit_url: shared:livekit_url
+    livekit_public_url: shared:livekit_public_url
+    livekit_api_key: shared:livekit_api_key
+    livekit_api_secret: shared:livekit_api_secret
+    # Egress upload credentials for the recordings bucket: the IAM user
+    # created by hand after Terraform (envs/prod/README.md section 5).
+    live_egress_s3_access_key_id: prompt:LiveKit egress IAM user access key id (atpost-prod-livekit-egress)
+    live_egress_s3_secret_access_key: prompt:LiveKit egress IAM user secret access key
+    live_service_token_privkey: shared-private:svc_live
+    live_service_token_kid: shared:svc_live_kid
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  # postbook-ui (atpost/web). The chat proxy signs HS256 tokens that
+  # chat-message-service and chat-ws-gateway verify with JWT_SECRET, so it
+  # MUST be the platform jwt_secret (route.ts says so), never a fresh value.
+  web:
+    chat_proxy_signing_secret: copy:platform-auth#jwt_secret
+    jwt_kid: copy:platform-auth#jwt_kid
+
+  # atpost-web-ui apps/admin (atpost/admin-console) reads only URLs today,
+  # all values. The shell is filled with {} so an ExternalSecret can exist.
+  admin-console:

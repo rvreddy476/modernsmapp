@@ -1,5 +1,8 @@
 name: Terraform (Azure)
 
+# DISABLED 3 Oct 2026 (aws-first-production-deployment W5): production is AWS only; both jobs
+# carry `if: false` so this never runs or fails on push. Kept for a future cloud switch.
+#
 # Azure twin of terraform.yml. validate runs on every PR (no creds); plan-apply
 # is MANUAL (workflow_dispatch) via GitHub-OIDC → Entra. AWS terraform.yml is
 # untouched.
@@ -32,6 +35,7 @@ permissions:
 
 jobs:
   validate:
+    if: false # Azure is switched off (see header)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -48,7 +52,7 @@ jobs:
           terraform -chdir=infra/azure/envs/${{ matrix.env }} validate
 
   plan-apply:
-    if: github.event_name == 'workflow_dispatch'
+    if: false # Azure is switched off (see header); was github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment }}
     env:

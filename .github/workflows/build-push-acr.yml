@@ -1,3 +1,6 @@
+# DISABLED 3 Oct 2026 (aws-first-production-deployment W5): production is AWS only; every job
+# carries `if: false` so this never runs or fails on push. Kept for a future cloud switch.
+#
 # Azure twin of build-push.yml: build + push service images to ACR, then bump the
 # tag in deploy/services/<svc>/values-azure-<env>.yaml. The AKS-side ArgoCD picks
 # it up. AWS build-push.yml (ECR) is untouched — run both to keep images
@@ -42,6 +45,7 @@ permissions:
 jobs:
   # ─── Job 1: figure out which services to build ───────────────────
   detect-changes:
+    if: false # Azure is switched off (see header)
     runs-on: ubuntu-latest
     outputs:
       services: ${{ steps.set.outputs.services }}
@@ -106,7 +110,7 @@ jobs:
   # ─── Job 2: matrixed build + push to ACR ─────────────────────────
   build-push:
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.services != '' }}
+    if: false # Azure is switched off (see header)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -210,7 +214,7 @@ jobs:
   # ─── Job 3: bump tag in the -azure values file + push back ───────
   bump-tag:
     needs: [detect-changes, build-push]
-    if: ${{ needs.detect-changes.outputs.services != '' }}
+    if: false # Azure is switched off (see header)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

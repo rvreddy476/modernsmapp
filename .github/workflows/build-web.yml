@@ -1,0 +1,203 @@
+# Build + push the two web images to ECR from the sibling repositories:
+#   atpost/web            ← postbook-ui (the app on app.cleestudio.com)
+#   atpost/admin-console  ← atpost-web-ui apps/admin (admin.cleestudio.com)
+#
+# Manual only (workflow_dispatch). The sibling repos are checked out at pinned
+# refs held in repository VARIABLES so a production image is always traceable
+# to a commit the founder chose, never to whatever a branch head happened to be:
+#   vars.WEB_REPO    e.g. <owner>/postbook-ui       vars.WEB_REF    a sha, tag or branch
+#   vars.ADMIN_REPO  e.g. <owner>/atpost-web-ui     vars.ADMIN_REF  a sha, tag or branch
+# The dispatch inputs override the refs for a one-off build (still recorded in
+# the image tag). Private repos need secrets.WEB_REPO_TOKEN (a fine-grained
+# PAT or GitHub App token with contents:read on both); public ones do not.
+#
+# NEXT_PUBLIC_* values are inlined into the browser bundle at build time, so
+# they are build args, taken from repository variables of the SAME NAME:
+#   NEXT_PUBLIC_API_BASE_URL   NEXT_PUBLIC_WS_BASE_URL   NEXT_PUBLIC_SITE_URL
+#   NEXT_PUBLIC_RAZORPAY_KEY_ID (the LIVE key id is public by design)
+#   NEXT_PUBLIC_ENABLE_STUB_PAYMENTS (must be "false" for production)
+#   ADMIN_BASE_PATH ("/" on admin.cleestudio.com)   NEXT_PUBLIC_ADMIN_SIGN_IN_URL
+#   NEXT_PUBLIC_ADMIN_API_ORIGIN   ADMIN_IMAGE_ORIGINS
+# Changing one means a rebuild, not a restart. Runtime values (API_GATEWAY_URL,
+# AUTH_SERVICE_URL, CHAT_BACKEND_URL, CHAT_PROXY_SIGNING_SECRET, …) come from
+# the chart values and the atpost/prod/web secret instead.
+#
+# Tags = the git sha of the WEB repo commit that was built (not this repo's).
+# Nothing is committed: the job summary prints both tags, and promote.yml
+# (inputs web_tag, admin_console_tag) writes them into
+# deploy/web/app/values-prod.yaml and deploy/web/admin-console/values-prod.yaml
+# on a PR against release/prod. Production never builds; it pins these shas.
+
+name: build-web
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which image(s) to build"
+        type: choice
+        options: [both, web, admin-console]
+        default: both
+      web_ref:
+        description: "postbook-ui ref to build (blank = vars.WEB_REF)"
+        required: false
+        default: ""
+      admin_ref:
+        description: "atpost-web-ui ref to build (blank = vars.ADMIN_REF)"
+        required: false
+        default: ""
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_PREFIX: atpost
+
+permissions:
+  contents: read
+  id-token: write        # OIDC → CI role
+
+jobs:
+  web:
+    name: atpost/web (postbook-ui)
+    if: ${{ inputs.target == 'both' || inputs.target == 'web' }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.src.outputs.commit }}
+    steps:
+      - name: Check configuration
+        env:
+          WEB_REPO: ${{ vars.WEB_REPO }}
+          WEB_REF: ${{ inputs.web_ref || vars.WEB_REF }}
+          STUB: ${{ vars.NEXT_PUBLIC_ENABLE_STUB_PAYMENTS }}
+        run: |
+          [[ -n "$WEB_REPO" ]] || { echo "::error ::repository variable WEB_REPO is not set (owner/postbook-ui)"; exit 1; }
+          [[ -n "$WEB_REF" ]]  || { echo "::error ::repository variable WEB_REF is not set and no web_ref input given"; exit 1; }
+          if [[ "${STUB:-false}" != "false" ]]; then
+            echo "::error ::NEXT_PUBLIC_ENABLE_STUB_PAYMENTS must be \"false\" for a production web image (it is '${STUB}')"; exit 1
+          fi
+
+      - name: Checkout postbook-ui
+        id: src
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.WEB_REPO }}
+          ref: ${{ inputs.web_ref || vars.WEB_REF }}
+          token: ${{ secrets.WEB_REPO_TOKEN || github.token }}
+          path: web-src
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push atpost/web
+        uses: docker/build-push-action@v6
+        with:
+          context: web-src
+          file: web-src/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/web:${{ steps.src.outputs.commit }}
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+            NEXT_PUBLIC_WS_BASE_URL=${{ vars.NEXT_PUBLIC_WS_BASE_URL }}
+            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL || 'https://app.cleestudio.com' }}
+            NEXT_PUBLIC_ENABLE_STUB_PAYMENTS=false
+            NEXT_PUBLIC_RAZORPAY_KEY_ID=${{ vars.NEXT_PUBLIC_RAZORPAY_KEY_ID }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+          platforms: linux/arm64
+          provenance: false
+
+  admin-console:
+    name: atpost/admin-console (atpost-web-ui apps/admin)
+    if: ${{ inputs.target == 'both' || inputs.target == 'admin-console' }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.src.outputs.commit }}
+    steps:
+      - name: Check configuration
+        env:
+          ADMIN_REPO: ${{ vars.ADMIN_REPO }}
+          ADMIN_REF: ${{ inputs.admin_ref || vars.ADMIN_REF }}
+        run: |
+          [[ -n "$ADMIN_REPO" ]] || { echo "::error ::repository variable ADMIN_REPO is not set (owner/atpost-web-ui)"; exit 1; }
+          [[ -n "$ADMIN_REF" ]]  || { echo "::error ::repository variable ADMIN_REF is not set and no admin_ref input given"; exit 1; }
+
+      - name: Checkout atpost-web-ui
+        id: src
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.ADMIN_REPO }}
+          ref: ${{ inputs.admin_ref || vars.ADMIN_REF }}
+          token: ${{ secrets.WEB_REPO_TOKEN || github.token }}
+          path: admin-src
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The monorepo Dockerfile builds one zone per image (ZONE build arg).
+      - name: Build + push atpost/admin-console
+        uses: docker/build-push-action@v6
+        with:
+          context: admin-src
+          file: admin-src/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/admin-console:${{ steps.src.outputs.commit }}
+          build-args: |
+            ZONE=admin
+            ADMIN_BASE_PATH=${{ vars.ADMIN_BASE_PATH || '/' }}
+            NEXT_PUBLIC_ADMIN_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_ADMIN_SIGN_IN_URL }}
+            NEXT_PUBLIC_ADMIN_API_ORIGIN=${{ vars.NEXT_PUBLIC_ADMIN_API_ORIGIN }}
+            ADMIN_IMAGE_ORIGINS=${{ vars.ADMIN_IMAGE_ORIGINS || 'https://*.cleestudio.com' }}
+          cache-from: type=gha,scope=admin-console
+          cache-to: type=gha,mode=max,scope=admin-console
+          platforms: linux/arm64
+          provenance: false
+
+  # ─── record what was built ───────────────────────────────────────
+  # Nothing is committed here: the tags go to production only through
+  # promote.yml (inputs web_tag / admin_console_tag), as a reviewed PR
+  # against release/prod that edits deploy/web/<app|admin-console>/values-prod.yaml.
+  summary:
+    needs: [web, admin-console]
+    if: ${{ always() && needs.web.result != 'failure' && needs.admin-console.result != 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Built tags
+        env:
+          WEB_TAG: ${{ needs.web.outputs.tag }}
+          ADMIN_TAG: ${{ needs.admin-console.outputs.tag }}
+        run: |
+          {
+            echo "## Web images pushed"
+            echo
+            [[ -n "$WEB_TAG" ]]   && echo "- atpost/web: \`$WEB_TAG\`"
+            [[ -n "$ADMIN_TAG" ]] && echo "- atpost/admin-console: \`$ADMIN_TAG\`"
+            echo
+            echo "Promote with the promote workflow: web_tag=${WEB_TAG:-<unchanged>} admin_console_tag=${ADMIN_TAG:-<unchanged>}"
+          } >> "$GITHUB_STEP_SUMMARY"
