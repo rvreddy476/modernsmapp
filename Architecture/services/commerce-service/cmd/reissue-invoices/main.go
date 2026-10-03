@@ -20,8 +20,9 @@
 //	POSTGRES_DSN=... ENV=dev COMMERCE_PII_LOOKUP_SALT=... COMMERCE_PII_DEV_KEY_*=... \
 //	  go run ./cmd/reissue-invoices --allow-db=commerce_db
 //
-// --apply writes (MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY,
-// MINIO_USE_SSL and COMMERCE_INVOICE_BUCKET as the server reads them):
+// --apply writes (COMMERCE_BLOB_BACKEND, COMMERCE_BLOB_BUCKET or
+// COMMERCE_INVOICE_BUCKET, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY
+// and MINIO_USE_SSL as the server reads them; see internal/store/blob):
 //
 //	go run ./cmd/reissue-invoices --allow-db=commerce_db --apply
 //
@@ -90,7 +91,7 @@ func main() {
 		fail(err)
 	}
 	if *apply {
-		b, bucket, err := blobFromEnv()
+		b, bucket, err := blobFromEnv(ctx)
 		if err != nil {
 			fail(err)
 		}
@@ -143,24 +144,27 @@ func attachPII(svc *service.Service) error {
 }
 
 // blobFromEnv builds the invoice blob store from the same variables and
-// defaults as cmd/server.
-func blobFromEnv() (*blob.Store, string, error) {
-	endpoint := envOr("MINIO_ENDPOINT", "minio:9000")
-	bucket := envOr("COMMERCE_INVOICE_BUCKET", "commerce-invoices")
-	b, err := blob.New(endpoint,
-		envOr("MINIO_ACCESS_KEY", "minioadmin"), envOr("MINIO_SECRET_KEY", "minioadmin"),
-		bucket, envOr("MINIO_USE_SSL", "false") == "true", os.Getenv("MINIO_PUBLIC_ENDPOINT"))
+// defaults as cmd/server (blob.ConfigFromEnv).
+func blobFromEnv(ctx context.Context) (*blob.Store, string, error) {
+	cfg, err := blobConfig(os.Getenv, os.Getenv("ENV"))
 	if err != nil {
-		return nil, "", fmt.Errorf("invoice blob store at %s: %w", endpoint, err)
+		return nil, "", err
 	}
-	return b, bucket, nil
+	b, err := blob.Open(ctx, cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("invoice blob store (%s): %w", cfg.Backend, err)
+	}
+	return b, cfg.Bucket, nil
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
+// blobConfig is cmd/server's blob configuration under this tool's
+// environment rule: checkTarget has already refused every ENV outside the
+// development list, and that same list is the only one that may use MinIO
+// with static keys. An ENV outside it is production for the store too, so
+// a bypassed guard still cannot reach a static-key MinIO.
+func blobConfig(getenv func(string) string, env string) (blob.Config, error) {
+	production := !developmentEnvironments[strings.ToLower(strings.TrimSpace(env))]
+	return blob.ConfigFromEnv(getenv, production)
 }
 
 func rupees(p int64) string {

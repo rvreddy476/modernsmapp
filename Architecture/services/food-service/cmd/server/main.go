@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -313,27 +314,32 @@ func main() {
 	defer paymentConsumer.Close()
 	slog.Info("payment event consumer started", "topic", "social.events.v1", "group", "food-payments")
 
-	// MinIO for settlement-file offload. Optional — when the env is
-	// absent or the client fails to connect, settlement files keep
-	// living inline in food.settlement_files.body and the download
-	// handler streams from there. See internal/store/blob/store.go.
-	if minioEndpoint := os.Getenv("MINIO_ENDPOINT"); minioEndpoint != "" {
-		bucket := env("FOOD_BLOB_BUCKET", "food")
-		useSSL := strings.EqualFold(env("MINIO_USE_SSL", "false"), "true")
-		blobStore, err := blob.New(
-			minioEndpoint,
-			os.Getenv("MINIO_ACCESS_KEY"),
-			os.Getenv("MINIO_SECRET_KEY"),
-			bucket,
-			useSSL,
-			os.Getenv("MINIO_PUBLIC_ENDPOINT"),
-		)
-		if err != nil {
-			slog.Warn("food-service: MinIO unavailable, settlement files stay inline",
-				"endpoint", minioEndpoint, "error", err)
+	// Object store for settlement-file offload: MinIO with static keys on
+	// the dev stack, S3 through IRSA everywhere else (FOOD_BLOB_BACKEND,
+	// internal/store/blob). The production verdict is foodpii.IsProduction's,
+	// the same one the PII, pricing and payments rules use. In development
+	// the store is optional — unset, or failing to connect, settlement
+	// files keep living inline in food.settlement_files.body and the
+	// download handler streams from there. In production a misconfigured
+	// or unreachable store refuses to start.
+	blobCfg, err := blob.ConfigFromEnv(os.Getenv, foodpii.IsProduction(os.Getenv("ENV")))
+	switch {
+	case errors.Is(err, blob.ErrNotConfigured):
+		slog.Info("food-service: no object store configured; settlement files stay inline")
+	case err != nil:
+		slog.Error("food-service: settlement blob store configuration refused", "error", err)
+		os.Exit(1)
+	default:
+		if blobStore, err := blob.Open(ctx, blobCfg); err != nil {
+			if blobCfg.Production {
+				slog.Error("food-service: settlement blob store unavailable; refusing to start without it", "error", err)
+				os.Exit(1)
+			}
+			slog.Warn("food-service: object store unavailable, settlement files stay inline",
+				"backend", string(blobCfg.Backend), "error", err)
 		} else {
 			svc.WithBlobStore(blobStore)
-			slog.Info("food-service: MinIO wired", "bucket", bucket)
+			slog.Info("food-service: object store wired", "backend", string(blobCfg.Backend), "bucket", blobCfg.Bucket)
 		}
 	}
 

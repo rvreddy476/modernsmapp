@@ -143,18 +143,25 @@ func main() {
 	svc.WithMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
 	svc.WithInternalServiceKey(env("INTERNAL_SERVICE_KEY", ""))
 
-	// MinIO for invoice HTML storage.
-	minioEndpoint := env("MINIO_ENDPOINT", "minio:9000")
-	minioAccess := env("MINIO_ACCESS_KEY", "minioadmin")
-	minioSecret := env("MINIO_SECRET_KEY", "minioadmin")
-	minioBucket := env("COMMERCE_INVOICE_BUCKET", "commerce-invoices")
-	minioSSL := env("MINIO_USE_SSL", "false") == "true"
-	minioPublic := os.Getenv("MINIO_PUBLIC_ENDPOINT")
-	if blobStore, err := blob.New(minioEndpoint, minioAccess, minioSecret, minioBucket, minioSSL, minioPublic); err != nil {
+	// Object store for invoice HTML/PDF and bulk-import CSVs: MinIO with
+	// static keys on the dev stack, S3 through IRSA everywhere else. The
+	// production verdict is the PII classifier's — anything that is not a
+	// development environment is production here, so an unknown ENV cannot
+	// pick up the static-key path before buildPIICipher refuses it.
+	blobCfg, err := blob.ConfigFromEnv(os.Getenv, blobProduction(os.Getenv("ENV")))
+	if err != nil {
+		slog.Error("commerce: invoice blob store configuration refused", "error", err)
+		os.Exit(1)
+	}
+	if blobStore, err := blob.Open(ctx, blobCfg); err != nil {
+		if blobCfg.Production {
+			slog.Error("commerce: invoice blob store unavailable; refusing to start without it", "error", err)
+			os.Exit(1)
+		}
 		slog.Warn("invoice blob store unavailable; invoices will fail until fixed", "error", err)
 	} else {
 		svc.WithBlob(blobStore)
-		slog.Info("invoice blob store ready", "bucket", minioBucket)
+		slog.Info("invoice blob store ready", "backend", string(blobCfg.Backend), "bucket", blobCfg.Bucket)
 	}
 
 	// Auth-service client for resolving buyer email in commerce events.
@@ -705,6 +712,14 @@ func classifyPIIEnvironment(raw string) piiEnvironment {
 	default:
 		return piiEnvUnknown
 	}
+}
+
+// blobProduction is the object store's production verdict: only a
+// development environment may use MinIO with static keys. Managed AND
+// unknown environments count as production, so a blank or mistyped ENV
+// fails closed on the storage side as well as on the PII side.
+func blobProduction(rawEnv string) bool {
+	return classifyPIIEnvironment(rawEnv) != piiEnvLocal
 }
 
 // canonicalPIIEnvironment normalises ENV into the value that goes into the KMS
