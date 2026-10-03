@@ -231,8 +231,11 @@ module "argocd" {
 
   # Apply the multi-doc ApplicationSet so per-service Applications
   # land on the first reconcile. Relative path from this dir.
-  applicationset_manifest_path = "${path.root}/../../../deploy/argocd/applicationset.yaml"
+  applicationset_manifest_path = "${path.root}/../../../deploy/argocd/applicationset-staging.yaml"
+  aws_account_id               = data.aws_caller_identity.current.account_id
 }
+
+data "aws_caller_identity" "current" {}
 
 module "aurora_bootstrap" {
   source = "../../modules/aurora-bootstrap"

@@ -1,0 +1,146 @@
+{{- if .Values.migrationJob.enabled }}
+{{/*
+W4 (3 Oct 2026) — the pre-sync migration Job.
+
+Values files had carried `migrationJob:` since commerce A7 and the chart had no
+template for it, so Helm ignored the block and commerce migrations never ran on
+EKS. The whole file is inside `if .Values.migrationJob.enabled`: a service that
+does not opt in renders exactly what it rendered before (render_test.sh).
+
+WHY A JOB AND NOT BOOT-TIME MIGRATION
+
+Replicas must not race the schema or each other (COMMERCE_SKIP_BOOT_MIGRATIONS).
+ArgoCD runs this Job in the PreSync phase, waits for it to succeed, and only
+then applies the Deployment; a failed migration fails the sync visibly and the
+old pods keep serving.
+
+SAME IMAGE, SAME ENV, SAME SECRET
+
+The migrator ships in the server image and reads the server's DSN, so the Job
+reuses image, commonEnv/env, envFrom and the ExternalSecret-minted Secret. The
+schema-dependency gate (schemaDependencies) is applied here too: a tier-2
+migration cannot run before its parents' tables exist.
+*/}}
+{{- $hook := .Values.migrationJob.hook | default "PreSync" }}
+{{- if eq (lower $hook) "pre-sync" }}{{ $hook = "PreSync" }}{{ end }}
+{{- if eq (lower $hook) "presync" }}{{ $hook = "PreSync" }}{{ end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "atpost-service.name" . }}-migrate
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    # ArgoCD resource hook: run before the sync, delete the previous run before
+    # creating a new one so the Job name can be reused across syncs.
+    argocd.argoproj.io/hook: {{ $hook }}
+    argocd.argoproj.io/hook-delete-policy: {{ .Values.migrationJob.hookDeletePolicy | default "BeforeHookCreation" }}
+    atpost.io/image-tag: {{ .Values.image.tag | quote }}
+spec:
+  backoffLimit: {{ .Values.migrationJob.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrationJob.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migrationJob.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      # NOT the selector labels: the Service, the PodDisruptionBudget, the
+      # HPA and the Deployment all select on name + instance, and a running
+      # migration pod must not be counted (or routed to) as a server replica.
+      labels:
+        app.kubernetes.io/name: {{ include "atpost-service.name" . }}-migrate
+        app.kubernetes.io/part-of: atpost
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      # The service's own ServiceAccount: the same IRSA identity as the server
+      # (needed when the DSN is resolved through AWS, never broader).
+      serviceAccountName: {{ include "atpost-service.serviceAccountName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.schemaDependencies }}
+      initContainers:
+        - name: await-schema-dependencies
+          image: {{ .Values.schemaDependencyImage | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              deadline=$(( $(date +%s) + {{ .Values.schemaDependencyTimeoutSeconds }} ))
+              while :; do
+                missing=""
+                for t in {{ join " " .Values.schemaDependencies }}; do
+                  if ! psql "$POSTGRES_DSN" -tAc "SELECT to_regclass('$t') IS NOT NULL" 2>/dev/null | grep -q '^t$'; then
+                    missing="$missing $t"
+                  fi
+                done
+                [ -z "$missing" ] && break
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "timed out waiting for schema dependencies:$missing" >&2
+                  exit 1
+                fi
+                echo "waiting for schema dependencies:$missing"
+                sleep 5
+              done
+              echo "all schema dependencies present"
+          {{- $ef := include "atpost-service.envFrom" . }}
+          {{- if $ef }}
+          envFrom:
+            {{- $ef | nindent 12 }}
+          {{- end }}
+          {{- $ev := include "atpost-service.commonAndServiceEnv" . }}
+          {{- if $ev }}
+          env:
+            {{- $ev | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      {{- end }}
+      containers:
+        - name: {{ .Values.service.name }}-migrate
+          image: {{ include "atpost-service.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.migrationJob.command | nindent 12 }}
+          {{- with .Values.migrationJob.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            {{- include "atpost-service.commonAndServiceEnv" . | nindent 12 }}
+            {{- range $k, $v := .Values.migrationJob.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- $ef := include "atpost-service.envFrom" . }}
+          {{- if $ef }}
+          envFrom:
+            {{- $ef | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.migrationJob.resources | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ .Values.securityContext.runAsUser | default 1000 }}
+            runAsGroup: {{ .Values.securityContext.runAsGroup | default 1000 }}
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

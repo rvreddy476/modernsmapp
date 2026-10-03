@@ -1,0 +1,59 @@
+{{- if .Values.webhookIngress.enabled }}
+{{/*
+W4 (3 Oct 2026) — the webhook Ingress.
+
+The PSP webhook (payments-service, LB-1) is the one public path a third party
+calls directly: /v1/payments/* is not proxied by the API gateway at all, and
+the webhook authenticates by signature. It needs its own Ingress on the SAME
+public host as the API, so it joins the API ALB ingress group with a lower
+order than the gateway's catch-all `/`.
+
+Values files referenced `webhookIngress` before this template existed and were
+silently ignored: the webhook entry did not exist on EKS. Whole file inside the
+enable guard; render_test.sh asserts the no-op for ordinary services.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "atpost-service.name" . }}-webhook
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    {{- with .Values.webhookIngress.groupName }}
+    # Shares the API load balancer: one ALB per host name.
+    alb.ingress.kubernetes.io/group.name: {{ . | quote }}
+    alb.ingress.kubernetes.io/group.order: {{ $.Values.webhookIngress.groupOrder | quote }}
+    {{- end }}
+    # The webhook path has its own readiness: the ALB health check must hit the
+    # service's readiness route, not the webhook (which 4xx's a bare GET).
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.readinessProbe.path | quote }}
+    {{- with .Values.webhookIngress.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ tpl . $ | quote }}
+    {{- end }}
+    {{- with .Values.webhookIngress.wafAclArn }}
+    # WAF is a load-balancer attribute: every member of the ingress group must
+    # name the SAME ACL. Scope webhook-specific rules inside it.
+    alb.ingress.kubernetes.io/wafv2-acl-arn: {{ tpl . $ | quote }}
+    {{- end }}
+    {{- with .Values.webhookIngress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.webhookIngress.className | default "alb" }}
+  rules:
+    - host: {{ .Values.webhookIngress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.webhookIngress.path }}
+            pathType: {{ .Values.webhookIngress.pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "atpost-service.name" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

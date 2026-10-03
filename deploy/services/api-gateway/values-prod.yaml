@@ -1,4 +1,10 @@
-# api-gateway overrides for prod.
+# api-gateway overrides for prod (AWS ap-south-1).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service `api-gateway`,
+# translated to production. Secrets by reference only (Secrets Manager
+# atpost/prod/api-gateway through ExternalSecret). Infrastructure addresses
+# are __TF_*__ placeholders the lead fills from Terraform outputs
+# (deploy/README.md; deploy/fill-tf-outputs.sh does it in one go).
 
 service:
   name: api-gateway
@@ -6,22 +12,23 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/api-gateway'
-  tag: latest
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 6
+# Lean first stage (plan §2.1): two copies of the edge, autoscaling.
+replicaCount: 2
 hpa:
   enabled: true
-  minReplicas: 6
-  maxReplicas: 30
+  minReplicas: 2
+  maxReplicas: 8
   targetCPUUtilizationPercentage: 60
 
 resources:
   requests:
-    cpu: 500m
-    memory: 512Mi
+    cpu: 250m
+    memory: 256Mi
   limits:
-    cpu: 2
-    memory: 2Gi
+    cpu: "1"
+    memory: 1Gi
 
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-api-gateway-irsa'
@@ -35,50 +42,65 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
-    # RS256 verification (public key). Verifies RS256 tokens auth-service mints;
-    # HS256 stays accepted in parallel. Safe to ship before signing flips on.
+    # RS256 verification (public key). In production the gateway accepts RS256
+    # ONLY and refuses to start without this.
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
-    # Rate-limiter Redis → provisioned ElastiCache (addr + AUTH token from the
-    # secret, matching the post-service convention). Populate redis_addr with
-    # the ElastiCache primary endpoint and redis_password with its AUTH token.
+    # ElastiCache AUTH token (the address is a value below, not a secret).
     - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
     - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
 
 env:
   ENV: prod
   LOG_LEVEL: info
-  REVIEWER_PUBLIC_ENABLED: "false"
-  # Mopedu's /v1/rider stays closed at the edge until a working client ships.
-  # See docs/adr/adr-dormant-products.md.
-  RIDER_PUBLIC_ENABLED: "false"
-  # Dating's /v1/dating stays closed at the edge. The pilot allowlist is empty
-  # on purpose: empty lets nobody through. See docs/adr/adr-dormant-products.md.
-  DATING_PUBLIC_ENABLED: "false"
-  DATING_PILOT_USER_IDS: ""
-  # ── Module 3 SR-1: edge token identity ──────────────────────────────────
-  # APP_ENV is what the gateway reads to decide whether to apply production
-  # token rules. It is set explicitly here rather than relying on ENV so the
-  # intent is unambiguous; the gateway accepts both.
-  #
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+
+  # ── Managed stores ────────────────────────────────────────────────────────
+  # Session revocation (sess_revoked:<sid>) and the rate limiter share this
+  # client. ElastiCache Valkey: TLS + AUTH (contract).
+  REDIS_TLS_ENABLED: "true"
+  # RATE_LIMIT_IP_PER_SEC / RATE_LIMIT_USER_PER_SEC deliberately UNSET: unset
+  # means the production values (compose leaves the same note).
+
+  # ── Module 3 SR-1: edge token identity ───────────────────────────────────
   # In production the gateway REFUSES TO START without JWT_ISSUER,
-  # JWT_AUDIENCE and JWT_PUBLIC_KEY_PEM, and it accepts RS256 only. These two
-  # values MUST match identity-auth-service's JWT_ISSUER / JWT_AUDIENCE
-  # exactly, or every token minted by auth-service is rejected at the edge.
+  # JWT_AUDIENCE and JWT_PUBLIC_KEY_PEM, and accepts RS256 only. These MUST
+  # match identity-auth-service's values exactly.
   APP_ENV: "production"
   JWT_ISSUER: auth-service
   JWT_AUDIENCE: "atpost-api"
-  # Paths allowed to carry a token in the query string. Query tokens leak
-  # through access logs, browser history and Referer headers, so this is an
-  # explicit allowlist matched on exact path or path-segment boundary — never
-  # a raw prefix. Realtime upgrades cannot set an Authorization header; every
-  # REST route must.
-  GATEWAY_QUERY_TOKEN_PATHS: /v1/ws
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
-  # RS256 key id — must match auth-service's JWT_RS256_KID.
   JWT_RS256_KID: rsa-1
-  CORS_ORIGINS: https://cleestudio.com,https://app.cleestudio.com
+  # Paths allowed to carry a token in the query string (realtime upgrades
+  # cannot set an Authorization header). Exact allowlist, never a prefix.
+  GATEWAY_QUERY_TOKEN_PATHS: /v1/ws
+  CORS_ORIGINS: https://app.cleestudio.com,https://cleestudio.com,https://admin.cleestudio.com
+
+  # ── Launch switches (plan §3, contract) ──────────────────────────────────
+  # Groups ship with chat (core). Communities stay an invite-only pilot
+  # behind a named moderation owner: closed at the edge.
+  GROUPS_PUBLIC_ENABLED: "true"
+  COMMUNITIES_PUBLIC_ENABLED: "false"
+  # Reviewer programme, Mopedu and Dating: closed at the edge. The dating
+  # pilot allowlist is EMPTY on purpose: empty lets nobody through.
+  REVIEWER_PUBLIC_ENABLED: "false"
+  RIDER_PUBLIC_ENABLED: "false"
+  DATING_PUBLIC_ENABLED: "false"
+  DATING_PILOT_USER_IDS: ""
+  # W7b: prefixes whose upstream is NOT deployed on AWS answer a clean
+  # "not available" instead of a 502 (memories, feature flags, reviewer).
+  # Wallet and bill pay have no production provider (BANK_PARTNER=mock,
+  # SETU_MODE=mock) and no edge gate of their own, so they are closed the
+  # same way until a provider exists. Feast (/v1/food) stays routed: it is
+  # deployed and gated inside food-service.
+  GATEWAY_DISABLED_PREFIXES: /v1/memories,/v1/flags,/v1/admin/flags,/v1/reviewer,/v1/wallet,/v1/billpay
+
+  # ── Upstreams (cluster DNS; ports are each service's values-prod port) ──
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  # Privacy settings (/v1/users/me/settings, modules, region) are owned by the
+  # IDENTITY user-service on 8110 (compose and Helm now agree); everything
+  # else under /v1/users goes to the app user-service on 8082.
+  IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
   USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
@@ -94,17 +116,25 @@ env:
   ADMIN_SERVICE_URL: http://admin-service.atpost.svc.cluster.local:8096
   CALL_SERVICE_URL: http://chat-call-service.atpost.svc.cluster.local:8097
   MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
+  SUGGESTION_SERVICE_URL: http://suggestion-service.atpost.svc.cluster.local:8100
+  # /v1/payments is NOT proxied (LB-1); the PSP webhook has its own ingress.
+  # The variable stays for the gateway's internal routes only.
   PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
   CHANNEL_SERVICE_URL: http://channel-service.atpost.svc.cluster.local:8106
   COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
   QA_SERVICE_URL: http://qa-service.atpost.svc.cluster.local:8108
   COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
   DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  FOOD_SERVICE_URL: http://food-service.atpost.svc.cluster.local:8113
   WALLET_SERVICE_URL: http://wallet-service.atpost.svc.cluster.local:8114
   BILL_PAY_SERVICE_URL: http://bill-pay-service.atpost.svc.cluster.local:8115
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  # /v1/live (v1) is retired: the gateway answers 410 LIVE_V1_RETIRED and
+  # proxies nothing, so there is no LIVE_SERVICE_URL. Only v2 (LiveKit).
   LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
-  AI_SERVICE_URL: http://ai-service.atpost.svc.cluster.local:8098
+  # ai-service moved to 8121: 8098 was identity-profile's port and 8117 (the
+  # compose port) is live-service-v2's in Helm.
+  AI_SERVICE_URL: http://ai-service.atpost.svc.cluster.local:8121
 
 ingress:
   enabled: true
@@ -112,11 +142,18 @@ ingress:
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
+    # The API load balancer. payments-service's webhook ingress joins this
+    # group with a lower order so /v1/payments/webhook matches before `/`.
+    alb.ingress.kubernetes.io/group.name: atpost-prod-api
+    alb.ingress.kubernetes.io/group.order: "100"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/CHANGEME
     alb.ingress.kubernetes.io/ssl-redirect: "443"
-    # Edge WAF — fill from `terraform output waf_web_acl_arn` (modules/waf).
-    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:ap-south-1:123456789012:regional/webacl/atpost-prod-edge/CHANGEME
+    alb.ingress.kubernetes.io/healthcheck-path: /readyz
+    # ACM certificate covering api.cleestudio.com (the W1 public certificate).
+    alb.ingress.kubernetes.io/certificate-arn: "__TF_PUBLIC_EDGE_CERTIFICATE_ARN__" # from terraform output public_edge_certificate_arn
+    # Edge WAF (modules/waf). One ACL per load balancer: the webhook ingress
+    # must name the same one.
+    alb.ingress.kubernetes.io/wafv2-acl-arn: "__TF_WAF_WEB_ACL_ARN__" # from terraform output waf_web_acl_arn
   hosts:
     - host: api.cleestudio.com
       paths:
@@ -124,4 +161,4 @@ ingress:
 
 pdb:
   enabled: true
-  minAvailable: 4
+  minAvailable: 1

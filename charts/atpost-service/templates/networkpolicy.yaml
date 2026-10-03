@@ -1,0 +1,53 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+W4 (3 Oct 2026) — ingress NetworkPolicy.
+
+Only the listed peers may open a connection to this service's pods on the
+service port; Prometheus may scrape from the monitoring namespace. Egress is
+not restricted here. Values files referenced `networkPolicy` before this
+template existed and were silently ignored. Whole file inside the enable
+guard; render_test.sh asserts the no-op for ordinary services.
+
+Enforcement needs a CNI that implements NetworkPolicy (VPC CNI with network
+policy enabled, or Calico). Without it this object does nothing — verify once
+from a pod that is NOT allowed.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "atpost-service.name" . }}
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "atpost-service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range .Values.networkPolicy.ingressFrom }}
+        {{- if .ingressController }}
+        {{- range $.Values.networkPolicy.ingressControllerCidrs }}
+        # The ALB (target-type ip) connects from its ENIs inside the VPC.
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        - {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+    {{- if .Values.networkPolicy.monitoringNamespace }}
+    # Prometheus scrapes /metrics on the same port from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+    {{- end }}
+{{- end }}

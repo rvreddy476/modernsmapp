@@ -4,9 +4,16 @@ description: |
   Shared Helm chart for atpost Go services. One chart, ~30 instances
   via per-service values files. Owns Deployment + Service +
   ServiceAccount (IRSA-annotated) + optional Ingress / HPA /
-  ExternalSecret / ServiceMonitor.
+  ExternalSecret / ServiceMonitor / pre-sync migration Job / webhook
+  Ingress / NetworkPolicy.
 type: application
-version: 0.1.0
+# 0.2.0 (W4, 3 Oct 2026): migration-job, webhook-ingress and networkpolicy
+# templates (values already referenced them and were silently ignored);
+# global.awsAccountId validated in the chart; commonEnv / extraEnvFrom;
+# per-entry remoteKey on externalSecret.data; unfilled __TF_*__ placeholders
+# and empty image/worker tags refuse to render; extraEmptyDirs for writable
+# paths (the Next.js cache); worker.image.tag no longer defaults to latest.
+version: 0.2.0
 appVersion: "0.1.0"
 maintainers:
   - name: atpost-platform

@@ -1,91 +1,46 @@
-# ApplicationSet — generates one ArgoCD Application per service per
-# environment from the deploy/services/ directory tree.
+# ArgoCD ApplicationSets for PRODUCTION — one Application per deployable.
 #
-# The "git directories" generator walks deploy/services/*/ and emits
-# one Application per match; the values-${env}.yaml file becomes the
-# Helm values source. Adding a new service is just creating the
-# directory + values files; the next ArgoCD reconcile picks it up
-# without a touch to this file.
+# Terraform applies this whole file to the production cluster (envs/prod,
+# module "argocd", applicationset_manifest_path), splitting on `---`; every
+# document below must therefore be a complete manifest. Staging lives in
+# applicationset-staging.yaml and is NOT applied by Terraform (see there).
 #
-# Two ApplicationSet objects below — staging + prod — so the per-env
-# diff stays simple (annotations, project, sync policy can differ
-# per env without templating).
+#   atpost-services-prod   deploy/services/*/values-prod.yaml   release/prod
+#   atpost-web-prod        deploy/web/*/values-prod.yaml        release/prod
+#
+# The git FILES generator (not `directories`) is deliberate: an Application
+# exists only where its values file exists, so a service with prod values and
+# no staging values (food-service) never produces a broken Application.
+# `path.path` is the directory holding the matched file; `path.basename` its
+# name. Parked web zones live in deploy/parked/, outside both patterns: with
+# ArgoCD's default git-file globbing `*` also matches `/`, so anything under
+# deploy/web/ that ends in /values-prod.yaml becomes an Application.
+#
+# AWS ACCOUNT ID. Never committed (new account; contract "never hard-code an
+# account id"). Each ApplicationSet carries a list generator with ONE element,
+# `awsAccountId` holding the Terraform template token for aws_account_id
+# (dollar, brace, name, brace); the matrix generator joins it to every file
+# match and the template passes it to the chart as the Helm parameter
+# global.awsAccountId (forceString). The token is filled at apply time:
+#   - by Terraform: the argocd module reads this file with templatefile and
+#     envs/prod passes data.aws_caller_identity.current.account_id;
+#   - by hand: deploy/argocd/apply-prod-applicationsets.sh <12-digit account id>
+# Applied unfilled, the chart refuses to render (it must be 12 digits), so
+# every Application fails loudly instead of deploying a fake ARN. Apart from
+# the two tokens, this file must contain no dollar-brace or percent-brace
+# sequence, not even in a comment (Terraform template syntax).
+#
+# Prod is MANUAL sync: no `automated` block. Every prod rollout is a click in
+# the ArgoCD UI or `argocd app sync prod-<name>` (plan §5 W4, contract).
+#
+# Repository access: the AppProject `atpost` must allow
+# https://github.com/rvreddy476/modernsmapp.git (Terraform module argocd, allowed_source_repos),
+# and the repo credential Secret is produced by
+# deploy/argocd/repo-credentials.yaml (ExternalSecret → Secret
+# `atpost-repo-modernsmapp`, labelled as an ArgoCD repository). Nothing here
+# carries a token.
 
-# ─── Staging ApplicationSet ────────────────────────────────────────
-apiVersion: argoproj.io/v1alpha1
-kind: ApplicationSet
-metadata:
-  name: atpost-services-staging
-  namespace: argocd
-spec:
-  goTemplate: true
-  goTemplateOptions: ["missingkey=error"]
-
-  generators:
-    - git:
-        repoURL: https://github.com/rvreddy476/modernsmapp.git
-        revision: main
-        directories:
-          # One Application per service directory in deploy/services/.
-          - path: deploy/services/*
-        # The path's basename is the service name; capture it for
-        # the template via `path.basename`.
-
-  template:
-    metadata:
-      name: 'staging-{{.path.basename}}'
-      labels:
-        app.kubernetes.io/part-of: atpost
-        atpost.io/env: staging
-        atpost.io/service: '{{.path.basename}}'
-    spec:
-      project: atpost
-      source:
-        repoURL: https://github.com/rvreddy476/modernsmapp.git
-        targetRevision: main
-        # Inline Helm config — points at the shared chart with the
-        # per-service+env values file as overrides.
-        helm:
-          valueFiles:
-            - $values/{{.path.path}}/values-staging.yaml
-        # Multi-source pattern: chart in one path, values in another
-        # (lets ArgoCD diff the chart + values independently).
-        path: charts/atpost-service
-      # `sources` block for multi-source (chart + values from same
-      # repo, but ArgoCD treats them as separate sources).
-      sources:
-        - repoURL: https://github.com/rvreddy476/modernsmapp.git
-          targetRevision: main
-          path: charts/atpost-service
-          helm:
-            valueFiles:
-              - $values/{{.path.path}}/values-staging.yaml
-        - repoURL: https://github.com/rvreddy476/modernsmapp.git
-          targetRevision: main
-          ref: values
-      destination:
-        server: https://kubernetes.default.svc
-        namespace: atpost
-      syncPolicy:
-        # Auto-sync ON in staging — we want changes to flow without a
-        # manual ArgoCD click. Prune deletes pods/services for files
-        # we delete; selfHeal reverts a kubectl-edit drift.
-        automated:
-          prune: true
-          selfHeal: true
-        syncOptions:
-          - CreateNamespace=true
-          - PrunePropagationPolicy=foreground
-          - PruneLast=true
-        retry:
-          limit: 3
-          backoff:
-            duration: 5s
-            factor: 2
-            maxDuration: 3m
-
----
-# ─── Prod ApplicationSet ───────────────────────────────────────────
+# ─── Services: prod (MANUAL sync) ──────────────────────────────────────────
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -94,17 +49,21 @@ metadata:
 spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
-
   generators:
-    - git:
-        repoURL: https://github.com/rvreddy476/modernsmapp.git
-        # Prod tracks a `release/prod` branch so staging churn doesn't
-        # land in prod until promoted. The promotion flow is `git
-        # merge main` → `release/prod` once staging is green.
-        revision: release/prod
-        directories:
-          - path: deploy/services/*
-
+    - matrix:
+        generators:
+          - list:
+              elements:
+                # Production AWS account id (12 digits), filled at apply time
+                # (header). Unfilled, every render is refused.
+                - awsAccountId: "${aws_account_id}"
+          - git:
+              repoURL: https://github.com/rvreddy476/modernsmapp.git
+              # Prod tracks `release/prod`, created by the lead at deploy time;
+              # promotion is `git merge main` into it once staging/dev is green.
+              revision: release/prod
+              files:
+                - path: "deploy/services/*/values-prod.yaml"
   template:
     metadata:
       name: 'prod-{{.path.basename}}'
@@ -121,20 +80,80 @@ spec:
           helm:
             valueFiles:
               - $values/{{.path.path}}/values-prod.yaml
+            parameters:
+              - name: global.awsAccountId
+                value: '{{.awsAccountId}}'
+                forceString: true
         - repoURL: https://github.com/rvreddy476/modernsmapp.git
           targetRevision: release/prod
           ref: values
       destination:
         server: https://kubernetes.default.svc
         namespace: atpost
+      # PROD: no `automated` block. Nothing rolls out without a person
+      # pressing Sync; drift is reported, not reverted. Pruning is enabled
+      # ONLY for a sync a person requests with --prune.
       syncPolicy:
-        # PROD: no auto-sync. Every prod deploy is a manual click in
-        # ArgoCD UI (or `argocd app sync prod-<svc>`) so a bad commit
-        # on release/prod doesn't auto-roll out. selfHeal stays ON
-        # because reverting drift is always safe.
-        automated:
-          prune: false
-          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 10m
+
+---
+# ─── Web: prod (MANUAL sync) ───────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-web-prod
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                # Same production account id as atpost-services-prod.
+                - awsAccountId: "${aws_account_id}"
+          - git:
+              repoURL: https://github.com/rvreddy476/modernsmapp.git
+              revision: release/prod
+              files:
+                - path: "deploy/web/*/values-prod.yaml"
+  template:
+    metadata:
+      name: 'web-prod-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost-web
+        atpost.io/env: prod
+        atpost.io/app: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: release/prod
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-prod.yaml
+            parameters:
+              - name: global.awsAccountId
+                value: '{{.awsAccountId}}'
+                forceString: true
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: release/prod
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost-web
+      syncPolicy:
         syncOptions:
           - CreateNamespace=true
           - PrunePropagationPolicy=foreground

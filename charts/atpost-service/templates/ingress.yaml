@@ -25,9 +25,19 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
+                {{- if .backend }}
+                {{- /* An ALB action instead of this service, e.g. the
+                       bare-domain → app. redirect declared through an
+                       alb.ingress.kubernetes.io/actions.<name> annotation:
+                       backend: { serviceName: <name>, portName: use-annotation } */}}
+                name: {{ .backend.serviceName }}
+                port:
+                  name: {{ .backend.portName | default "use-annotation" }}
+                {{- else }}
                 name: {{ include "atpost-service.name" $ }}
                 port:
                   number: {{ $.Values.service.port }}
+                {{- end }}
           {{- end }}
     {{- end }}
 {{- end }}

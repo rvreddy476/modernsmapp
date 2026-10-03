@@ -298,6 +298,9 @@ module "argocd" {
   acm_certificate_arn = module.dns.wildcard_cert_arn
 
   applicationset_manifest_path = "${path.root}/../../../deploy/argocd/applicationset.yaml"
+  aws_account_id               = data.aws_caller_identity.current.account_id
+  # Terraform owns AppProject `atpost`; deploy/argocd/project.yaml was removed so there is one owner.
+  allowed_source_repos = ["https://github.com/rvreddy476/modernsmapp.git"]
 }
 
 module "aurora_bootstrap" {

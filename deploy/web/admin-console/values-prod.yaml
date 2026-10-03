@@ -1,0 +1,117 @@
+# The admin console (atpost-web-ui apps/admin, C:\workspace\atpost-web-ui) —
+# prod (W6). Reuses charts/atpost-service: a Next.js standalone server on
+# port 3000 (the runner image's ENV PORT=3000; `next start -p 3002` is the
+# local dev script only).
+#
+# Image: atpost/admin-console, built by .github/workflows/build-web.yml from
+# the atpost-web-ui root Dockerfile with ZONE=admin, checked out at a pinned
+# ref (ADMIN_REPO / ADMIN_REF; W5). Build-time settings (baked into the
+# bundle, not read here):
+#   ADMIN_BASE_PATH=/     serves the console at the root of admin.cleestudio.com
+#                         (apps/admin/next.config.ts resolveAdminBasePath); the
+#                         probes below assume the root — an /admin build fails
+#                         them loudly instead of serving a blank host.
+#   NEXT_PUBLIC_ADMIN_SIGN_IN_URL / NEXT_PUBLIC_ADMIN_API_ORIGIN empty: sign-in
+#                         lives in the console and the API is same-origin
+#                         through its own /v1 → /api/proxy route.
+#
+# Runtime env (packages/api-client/src/proxy.ts, refresh.ts and the console's
+# middleware.ts): the in-cluster gateway and identity-auth. Nothing secret is
+# read at runtime, so no ExternalSecret: the atpost/prod/admin-console shell
+# stays empty (tools/prodsecrets/manifest.yaml says the same).
+
+service:
+  name: admin-console
+  port: 3000
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/admin-console'
+  tag: "" # set by CI (commit sha of atpost-web-ui at ADMIN_REF); empty refuses to render
+
+# A handful of operators: one copy, no autoscaling.
+replicaCount: 1
+hpa:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# The runner image creates nextjs as uid 1001 / group nodejs gid 1001
+# (atpost-web-ui/Dockerfile: addgroup -g 1001, adduser -u 1001).
+securityContext:
+  runAsUser: 1001
+  runAsGroup: 1001
+
+# Next.js image-optimizer / fetch cache; the root filesystem is read-only.
+# The monorepo standalone layout puts the app under apps/admin.
+extraEmptyDirs:
+  - { mountPath: /app/apps/admin/.next/cache, sizeLimit: 512Mi }
+
+# No AWS access: the console talks to the gateway only.
+serviceAccount:
+  irsaRoleArn: ""
+
+externalSecret:
+  enabled: false
+
+env:
+  NODE_ENV: production
+  HOSTNAME: 0.0.0.0
+  PORT: "3000"
+  # The health route's `service` label (packages/api-client/src/health.ts).
+  SERVICE_NAME: admin-console
+  # Server-side /v1 proxy target: the in-cluster gateway (namespace atpost).
+  # Every admin call is gated there (admin roles + X-Admin-MFA from the
+  # admin_mfa claim) and in admin-service.
+  API_GATEWAY_URL: http://api-gateway.atpost.svc.cluster.local:8080
+  # Token refresh goes to identity-auth directly (refresh.ts).
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  # Image origins the page CSP allows (middleware.ts default, made explicit):
+  # media.cleestudio.com (CloudFront) and the API host.
+  ADMIN_IMAGE_ORIGINS: https://*.cleestudio.com
+
+# The console has no /livez or /readyz; /api/health answers 200 without a
+# session (packages/api-client/src/health.ts).
+livenessProbe:
+  path: /api/health
+  initialDelaySeconds: 20
+  periodSeconds: 15
+  failureThreshold: 3
+readinessProbe:
+  path: /api/health
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+
+# Same load balancer as the web app (group atpost-prod-web): one ALB, one
+# certificate (the public edge certificate covers admin.), one WAF ACL — every
+# member of a group must name the same ACL.
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: atpost-prod-web
+    alb.ingress.kubernetes.io/group.order: "200"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health
+    alb.ingress.kubernetes.io/certificate-arn: "__TF_PUBLIC_EDGE_CERTIFICATE_ARN__" # from terraform output public_edge_certificate_arn
+    alb.ingress.kubernetes.io/wafv2-acl-arn: "__TF_WAF_WEB_ACL_ARN__" # from terraform output waf_web_acl_arn
+  hosts:
+    - host: admin.cleestudio.com
+      paths:
+        - { path: /, pathType: Prefix }
+
+pdb:
+  enabled: false # one replica
+
+# /metrics does not exist on the console.
+serviceMonitor:
+  enabled: false

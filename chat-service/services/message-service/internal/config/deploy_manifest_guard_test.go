@@ -52,7 +52,7 @@ func TestAWSManifestsCarryIdentityAuthorityAndEntitlementSecret(t *testing.T) {
 
 	for _, env := range []string{"values-prod.yaml", "values-staging.yaml"} {
 		mustContain(t, filepath.Join(msg, env),
-			"IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8082",
+			"IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110",
 			"without it the policy fetch falls back to a Compose-only default and every "+
 				"unknown policy fails closed in AWS (P0-3)")
 		mustContain(t, filepath.Join(msg, env),

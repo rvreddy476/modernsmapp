@@ -1,4 +1,20 @@
-# live-service-v2 overrides for the prod environment.
+# live-service-v2 overrides for prod (AWS ap-south-1) — W8, live on AWS.
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `live-service-v2`, translated to production: LiveKit CLOUD (a production
+# project; contract §2.2), recordings by LiveKit egress straight into the
+# S3 live-recordings bucket (no minio-edge), imports into media-service with
+# live's own service token, calls stay off. Secrets by reference only
+# (atpost/prod/live-service-v2). __TF_*__ placeholders come from Terraform
+# outputs.
+#
+# LAUNCH: pilot only (LIVE_ACCESS_MODE=pilot). The pilot allowlist admits
+# only the ids listed; empty admits nobody; an invalid entry is ignored with
+# a warning. Open (LIVE_ACCESS_MODE=open) needs a named moderation owner.
+#
+# LiveKit Cloud dashboard: webhook URL
+# https://api.cleestudio.com/v1/livestream/webhooks/livekit (verified as a
+# JWT signed with the project's API key/secret; no separate webhook secret).
 
 service:
   name: live-service-v2
@@ -6,22 +22,22 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/live-service-v2'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+replicaCount: 2
 hpa:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 12
+  minReplicas: 2
+  maxReplicas: 6
   targetCPUUtilizationPercentage: 65
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
-    cpu: 1500m
-    memory: 1Gi
+    cpu: 500m
+    memory: 512Mi
 
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-live-service-v2-irsa'
@@ -30,20 +46,102 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/live-service-v2
   data:
+    # Aurora `app`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # LiveKit Cloud production project (contract: values take these four
+    # from this secret). LIVEKIT_URL is the project's wss:// endpoint the
+    # service calls; LIVEKIT_PUBLIC_URL is what devices dial (the same for
+    # Cloud). Both are non-secret in nature but come with the project, so
+    # the seeder stores them next to the key pair. The webhook is verified
+    # with the key pair — there is no LIVEKIT_WEBHOOK_SECRET.
+    - { secretKey: LIVEKIT_URL, remoteRef: livekit_url }
+    - { secretKey: LIVEKIT_PUBLIC_URL, remoteRef: livekit_public_url }
+    - { secretKey: LIVEKIT_API_KEY, remoteRef: livekit_api_key }
+    - { secretKey: LIVEKIT_API_SECRET, remoteRef: livekit_api_secret }
+    # Egress upload credentials. LiveKit Cloud's egress uploads the MP4 from
+    # LiveKit's infrastructure, so it cannot use this pod's IRSA role: the
+    # service hands it an access key scoped to PutObject on the recordings
+    # bucket (an IAM user created by W1 for exactly this). The variable
+    # names are the compose ones the code reads (MINIO_*); the target is S3.
+    - { secretKey: MINIO_ACCESS_KEY, remoteRef: live_egress_s3_access_key_id }
+    - { secretKey: MINIO_SECRET_KEY, remoteRef: live_egress_s3_secret_access_key }
+    # Live's PRIVATE ed25519 service token for media-service's recording
+    # import (media requires it outside local/dev); media holds the public
+    # half (caller_live_pubkey / caller_live_kid).
+    - { secretKey: LIVE_SERVICE_TOKEN_KID, remoteRef: live_service_token_kid }
+    - { secretKey: LIVE_SERVICE_TOKEN_PRIVKEY, remoteRef: live_service_token_privkey }
+    # Admin console (Live moderation): NOT enabled yet (401 until then). To
+    # enable: the founder's ONE admin key (admin-service values, step 1):
+    # public half → caller_admin_pubkey, kid → caller_admin_kid; uncomment
+    # the two lines below AND the SERVICE_CALLERS lines under env; enable
+    # admin-service's two lines. Setting SERVICE_CALLERS first refuses boot.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
 
 env:
   ENV: prod
   LOG_LEVEL: info
+  AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+
+  # ── Recordings: LiveKit egress → S3 directly (no minio-edge) ────────────
+  # The S3 target sent on every StartRoomCompositeEgress. LIVE_EGRESS_S3_
+  # ENDPOINT is EMPTY (direct S3, contract); the regional S3 endpoint below
+  # is what the code uses in its place, with path style off and TLS on.
+  LIVE_EGRESS_S3_ENDPOINT: ""
+  MINIO_ENDPOINT: https://s3.ap-south-1.amazonaws.com
+  MINIO_USE_SSL: "true"
+  MINIO_REGION: ap-south-1
+  MINIO_BUCKET_LIVE_RECORDINGS: "__TF_LIVE_RECORDINGS_BUCKET_NAME__" # from terraform output live_recordings_bucket_name
+  # Blank = endpoint/bucket/key. Recordings are private; media-service
+  # imports them and serves the result, so no public base URL is needed.
+  LIVE_RECORDING_PUBLIC_BASE_URL: ""
+
+  # ── Who may go live ──────────────────────────────────────────────────────
+  LIVE_ACCESS_MODE: pilot
+  # Identity auth.users ids of the pilot streamers, comma-separated. Empty
+  # = nobody (LIVE_NOT_ENABLED).
+  # CHANGEME: the production pilot streamers' user ids once they have
+  # registered (then sync live-service-v2 again). Empty until then.
+  LIVE_PILOT_USER_IDS: ""
+  # Going-live requirements (apply in `open` mode; a pilot user is always
+  # eligible): verified email yes, phone no (plan: SMS deferred).
+  LIVE_ELIG_REQUIRE_EMAIL: "true"
+  LIVE_ELIG_REQUIRE_PHONE: "false"
+  # Host gone → reconnecting for this long, then ended; no host track for
+  # this long → failed.
+  LIVE_RECONNECT_GRACE: 60s
+  LIVE_START_TIMEOUT: 120s
+
+  # ── Peers (eligibility facts, recordings, viewer checks) ─────────────────
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+
+  # Admin console (see externalSecret above for the order).
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'live:streams.read,live:streams.stop,live:reports.read,live:reports.act,live:chat.moderate,live:users.ban'
+  # Account age for the open-mode requirements (default is the compose name).
+  IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
 
 ingress:
   enabled: false
 
 pdb:
   enabled: true
-  minAvailable: 2
+  minAvailable: 1

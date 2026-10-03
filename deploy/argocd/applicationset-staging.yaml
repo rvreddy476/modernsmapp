@@ -1,0 +1,146 @@
+# ArgoCD ApplicationSets for STAGING — not applied anywhere today.
+#
+# Only production is built now (contract, 3 Oct 2026: "no staging; keep the
+# staging env files but do not extend them"). These two ApplicationSets were
+# split out of deploy/argocd/applicationset.yaml because Terraform applies that
+# whole file to the PRODUCTION cluster (envs/prod, module "argocd",
+# applicationset_manifest_path): staging Applications there would deploy the
+# same Deployment names into the same `atpost` namespace from `main`, with
+# auto-sync and prune, fighting the production Applications.
+#
+# Use this file only against a separate staging cluster, after filling the
+# staging account id below (the chart refuses an empty one):
+#   kubectl apply -f deploy/argocd/applicationset-staging.yaml
+#
+#   atpost-services-staging   deploy/services/*/values-staging.yaml   main
+#   atpost-web-staging        deploy/web/*/values-staging.yaml        main
+
+# ─── Services: staging ─────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-services-staging
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                # Staging AWS account id (12 digits). Set by the lead at deploy
+                # time; empty refuses every render (chart validation).
+                - awsAccountId: ""
+          - git:
+              repoURL: https://github.com/rvreddy476/modernsmapp.git
+              revision: main
+              files:
+                - path: "deploy/services/*/values-staging.yaml"
+  template:
+    metadata:
+      name: 'staging-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost
+        atpost.io/env: staging
+        atpost.io/service: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: main
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-staging.yaml
+            parameters:
+              - name: global.awsAccountId
+                value: '{{.awsAccountId}}'
+                forceString: true
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: main
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+
+---
+# ─── Web: staging ──────────────────────────────────────────────────────────
+# deploy/web/<app>/values-<env>.yaml: the postbook-ui app (deploy/web/app)
+# and the admin console (deploy/web/admin-console). The eleven micro-frontend
+# zones of the other repository are parked under deploy/web/_unused/ and
+# never match this pattern.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-web-staging
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - awsAccountId: ""
+          - git:
+              repoURL: https://github.com/rvreddy476/modernsmapp.git
+              revision: main
+              files:
+                - path: "deploy/web/*/values-staging.yaml"
+  template:
+    metadata:
+      name: 'web-staging-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost-web
+        atpost.io/env: staging
+        atpost.io/app: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: main
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-staging.yaml
+            parameters:
+              - name: global.awsAccountId
+                value: '{{.awsAccountId}}'
+                forceString: true
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: main
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost-web
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+

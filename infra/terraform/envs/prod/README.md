@@ -129,7 +129,8 @@ Run pass 2 with the SAME principal as pass 1 (or one listed in
 | `elasticache_primary_endpoint`, `elasticache_auth_secret_arn` | `REDIS_ADDR` / `REDIS_PASSWORD`, `REDIS_TLS_ENABLED=true` |
 | `opensearch_endpoint`, `opensearch_master_secret_arn` | search-service `OPENSEARCH_URL` + basic auth |
 | `public_edge_certificate_arn` | `alb.ingress.kubernetes.io/certificate-arn` on api-gateway, chat-ws-gateway, web, admin |
-| `waf_web_acl_arn`, `waf_psp_webhook_acl_arn` | api-gateway ingress annotation; payments `webhookIngress.wafAclArn` (note: a WAF ARN ends in `/<name>/<id>` — the values template that builds the ARN from the account id alone must take the output instead) |
+| `waf_web_acl_arn` | every public ingress (api-gateway, chat-ws-gateway, payments webhook, web, admin console). The payments webhook shares the api ALB and the load-balancer controller refuses an ingress group whose members name different ACLs, so it uses this ACL too |
+| `waf_psp_webhook_acl_arn` | not wired yet: either move its rule into the web ACL scoped to the webhook path, or give the webhook its own host and ALB |
 | `commerce_pii_kms_key_id` | commerce `COMMERCE_KMS_KEY_ID` |
 | `ses_configuration_set_name` | identity-auth `SES_CONFIGURATION_SET` (already `atpost-prod-transactional`) |
 | `ci_role_arn`, `terraform_apply_role_arn` | GitHub repository secrets `AWS_CI_ROLE_ARN`, `AWS_TERRAFORM_ROLE_ARN` (+ state bucket / lock table names) |

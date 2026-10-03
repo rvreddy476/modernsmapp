@@ -1,4 +1,18 @@
-# commerce-service overrides for the prod environment.
+# commerce-service overrides for prod (AWS ap-south-1).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `commerce-service`, translated to production: invoices to S3 through the
+# IRSA role (W7a: COMMERCE_BLOB_BACKEND / COMMERCE_BLOB_BUCKET, no MINIO_*),
+# address PII under KMS, Razorpay through payments-service. Secrets by
+# reference only (atpost/prod/commerce-service). __TF_*__ placeholders come
+# from Terraform outputs.
+#
+# Launch (plan §3): MStore takes real money only after Razorpay live-mode
+# approval and the tax adviser's sign-off; shop shipping stays MANUAL until a
+# Shiprocket production account exists (COURIER_PROVIDER left to the seeder:
+# it is read from the secret; empty or `stub` selects the stub courier, which
+# auto-generates AWBs, so the seeder must write `shiprocket` once that account
+# exists and the shop must not take orders before then).
 
 service:
   name: commerce-service
@@ -6,23 +20,25 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/commerce-service'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+replicaCount: 2
 hpa:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 12
+  minReplicas: 2
+  maxReplicas: 6
   targetCPUUtilizationPercentage: 65
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
-    cpu: 1500m
-    memory: 1Gi
+    cpu: 500m
+    memory: 512Mi
 
+# IRSA (W2): s3 on the commerce-invoices bucket, kms Encrypt/Decrypt/
+# GenerateDataKey on the commerce PII key (commerce-pii-kms module), MSK.
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-commerce-service-irsa'
 
@@ -30,10 +46,14 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/commerce-service
   data:
-    # ── Infrastructure (M-10: previously absent entirely) ─────────
+    # ── Infrastructure ────────────────────────────────────────────
+    # Aurora `commerce_db`.
     - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
-    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
 
     # ── Platform identity ─────────────────────────────────────────
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
@@ -43,115 +63,118 @@ externalSecret:
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
 
     # ── Service-to-service identity (A2) ──────────────────────────
-    # Commerce's PRIVATE Ed25519 key. Only commerce holds it; payments holds
-    # the matching public key and can verify but never mint. This replaces
-    # the cluster-wide internal-service key on the payment path, which the
-    # gateway injected into every proxied request — the reason any
-    # authenticated end user arrived at payments with full service authority.
+    # Commerce's PRIVATE ed25519 key; payments-service and media-service
+    # hold the matching public key and can verify but never mint.
     - { secretKey: COMMERCE_SERVICE_TOKEN_KEY, remoteRef: commerce_service_token_key }
     - { secretKey: COMMERCE_SERVICE_TOKEN_KID, remoteRef: commerce_service_token_kid }
 
     # ── Address PII (LB-24) ───────────────────────────────────────
-    # The KMS key id is the key-ENCRYPTING key; no data key is ever stored
-    # here. COMMERCE_PII_LOOKUP_SALT keys the deterministic lookup hash that
-    # lets "do I already have this address?" be answered without decrypting.
+    # The KMS key id is the key-ENCRYPTING key (no data key stored here);
+    # the lookup salt keys the deterministic "do I already have this
+    # address?" hash. The seeder reads the key id from the commerce-pii-kms
+    # Terraform output.
     - { secretKey: COMMERCE_KMS_KEY_ID, remoteRef: commerce_kms_key_id }
     - { secretKey: COMMERCE_PII_LOOKUP_SALT, remoteRef: commerce_pii_lookup_salt }
 
-    # ── Courier (D7 / M-10) ───────────────────────────────────────
-    # Production must not fall back to the stub adapter: it returns a fake
-    # AWB and a made-up rate, which is the "fake dependency in production"
-    # pattern the review called out.
+    # ── Courier (D7) ─────────────────────────────────────────────
+    # COURIER_PROVIDER comes from the secret so the seeder decides:
+    # `shiprocket` once the production account exists (then the four
+    # Shiprocket entries must be real), otherwise shop shipping stays manual.
+    # NOTE: the code does NOT refuse the stub in production (courier.New
+    # falls back to it), so this key is a launch gate the lead checks.
+    - { secretKey: COURIER_PROVIDER, remoteRef: courier_provider }
     - { secretKey: SHIPROCKET_EMAIL, remoteRef: shiprocket_email }
     - { secretKey: SHIPROCKET_PASSWORD, remoteRef: shiprocket_password }
     - { secretKey: SHIPROCKET_WEBHOOK_TOKEN, remoteRef: shiprocket_webhook_token }
     - { secretKey: SHIPROCKET_WEBHOOK_HMAC, remoteRef: shiprocket_webhook_hmac }
-    # Admin console Wave 2: commerce verifies admin-service's service tokens
-    # on /v1/commerce/internal/admin/*. NOT enabled yet: without it the
-    # console's MStore routes are refused (401) once admin-service's key is
-    # enabled. To enable, in this order:
-    #   1. the founder generates admin-service's ed25519 key (one key for
-    #      every product): the private half (base64 32-byte seed) and kid go
-    #      to admin-service's secret store (admin_service_token_key /
-    #      admin_service_token_kid); the public half and the same kid go here
-    #      as caller_admin_pubkey / caller_admin_kid;
-    #   2. uncomment the two lines below AND the SERVICE_CALLERS lines under env;
-    #   3. enable admin-service's two lines (its values file).
-    # Setting SERVICE_CALLERS before the key exists refuses boot.
+    # Admin console Wave 2 (MStore): NOT enabled yet (401 until then). To
+    # enable: the founder's ONE admin key (admin-service values, step 1):
+    # public half → caller_admin_pubkey, kid → caller_admin_kid; uncomment
+    # the two lines below AND the SERVICE_CALLERS lines under env; enable
+    # admin-service's two lines. Setting SERVICE_CALLERS first refuses boot.
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
 
 env:
+  # Commerce treats any ENV outside {dev, development, local, test, ci} as
+  # production (blank included): KMS for PII, S3 for blobs, no stubs.
   ENV: prod
   LOG_LEVEL: info
-  # Admin console Wave 2 (see externalSecret above for the order): uncomment
-  # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
-  # SERVICE_CALLERS: 'admin-service'
-  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'commerce:stats.read,commerce:sellers.read,commerce:seller.approve,commerce:seller.suspend,commerce:products.moderate,commerce:kyc.verify,commerce:payouts.read,commerce:cod.settle,commerce:catalogue.edit,commerce:banners.edit,commerce:jobs.read,commerce:compliance.read,commerce:compliance.sweep'
+  AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
 
-  # Media ownership verification.
-  #
-  # commerce-service stores a media id on twelve columns, every one of them
-  # supplied in a request body: a product's primary image, a seller's logo and
-  # banner, and every row of seller_documents — where a seller's PAN, Aadhaar
-  # and cancelled cheque live. Nothing verified those ids belonged to the
-  # account submitting them, so a seller could attach another person's
-  # identity document to their own KYC and be approved on it.
-  #
-  # NOT optional in a deployed environment: cmd/server exits at boot if it is
-  # absent, and verification fails CLOSED when media-service is unreachable.
-  # Removing this line stops the service starting.
+  # ── Blobs: invoice PDFs to S3 through IRSA (W7a) ─────────────────────────
+  # No MINIO_* and no COMMERCE_S3_ENDPOINT in production: the endpoint is
+  # derived from AWS_REGION and the credentials from the role.
+  COMMERCE_BLOB_BACKEND: s3
+  COMMERCE_BLOB_BUCKET: "__TF_COMMERCE_INVOICES_BUCKET_NAME__" # from terraform output commerce_invoices_bucket_name
+
+  # ── Peers ────────────────────────────────────────────────────────────────
+  # Buyer-email resolution for order events, and the identity role client
+  # (grants `seller`): both identity-auth.
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
+  # Media ownership verification: NOT optional in a deployed environment
+  # (boot exits without it; verification fails CLOSED when unreachable).
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
 
-  # D7 — one courier, configured. `stub` refuses to load when ENV=prod.
-  COURIER_PROVIDER: shiprocket
+  # ── Launch switches ──────────────────────────────────────────────────────
+  # PAYMENTS_ALLOW_STUB deliberately ABSENT (prod leaves it unset).
+  # Platform coupons stay off until the tax adviser confirms GST treatment.
+  COMMERCE_PLATFORM_COUPONS_ENABLED: "false"
+  # Listings are approved by a person in production (compose auto-approves).
+  COMMERCE_PRODUCT_AUTO_APPROVE: "false"
+  # The nickname of the pickup address registered in the Shiprocket account.
+  SHIPROCKET_PICKUP_LOCATION: Primary
 
-  # A7 — migrations run as a one-shot Job (see the pre-sync hook below), not
-  # on pod boot. Replicas must not race the job or each other.
-  COMMERCE_SKIP_BOOT_MIGRATIONS: 'true'
+  # A7 — COMMERCE_SKIP_BOOT_MIGRATIONS is deliberately ABSENT while the
+  # migration Job below is off: the server applies its migrations at boot
+  # (cmd/server BootstrapSchema; the flag is not read by the server today).
+  # Set it to 'true' in the same change that enables migrationJob.
 
-  # A5 / C3-LB-3 — prepaid only, and exactly two methods.
-  #
-  # DOCUMENTATION, not authority. Architecture/shared/paymentmethod is
-  # canonical, no production code reads this variable, and the fence is
-  # enforced in the handler, the service, the store and by the gated CHECK.
-  # It is here so the deployed manifest cannot say something different from
-  # what the service enforces — it used to advertise
-  # 'upi,card,net_banking,wallet', which the server has refused since B6.
-  # A stale claim like that becomes a bug the moment somebody makes it
-  # authoritative. A manifest contract test asserts it matches the Go list.
+  # A5 / C3-LB-3 — prepaid only, exactly two methods. DOCUMENTATION, not
+  # authority (Architecture/shared/paymentmethod is canonical; a manifest
+  # contract test asserts this matches the Go list).
   COMMERCE_PAYMENT_METHODS: 'upi,card'
 
-  # B4/B5 — which half of the two-deploy address-PII cutover this image runs.
-  #
-  #   dual        write ciphertext AND plaintext, read either. Safe against a
-  #               database whose backfill has not finished, and safe to roll
-  #               back from. The backfill runs in this state.
-  #   ciphertext  write and read ciphertext ONLY. Deploy only once the
-  #               backfill reports every table complete with zero failures.
-  #
-  # The gated plaintext scrub (database/gated/1000_*) refuses until this is
-  # 'ciphertext' everywhere AND an operator has recorded the drain.
+  # B4/B5 — which half of the two-deploy address-PII cutover this image
+  # runs: `dual` until the backfill reports every table complete; the gated
+  # scrub refuses until `ciphertext` everywhere. Production starts empty, so
+  # the backfill is trivial, but the order of deploys is unchanged.
   COMMERCE_PII_CUTOVER: 'dual'
-  # Seller KYC identifiers (bank account numbers, PANs; migration 035). A
-  # separate cutover: 'ciphertext' only after `piibackfill -set=kyc` completes.
+  # Seller KYC identifiers (migration 035): a separate cutover.
   COMMERCE_KYC_PII_CUTOVER: 'dual'
+
+  # Admin console Wave 2 (see externalSecret above for the order).
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'commerce:stats.read,commerce:sellers.read,commerce:seller.approve,commerce:seller.suspend,commerce:products.moderate,commerce:kyc.verify,commerce:payouts.read,commerce:cod.settle,commerce:catalogue.edit,commerce:banners.edit,commerce:jobs.read,commerce:compliance.read,commerce:compliance.sweep,commerce:coupons.manage'
 
 ingress:
   enabled: false
 
-# A7 — the migration job. Runs before the rollout, holds the advisory lock,
-# and applies migrations/ only. The gated set (database/gated/999_*) VALIDATEs
-# constraints and tightens columns to NOT NULL; it is run by hand once the
-# fleet is drained and the money comparison has been clean for a business day.
+# A7 — the migration job (charts/atpost-service/templates/migration-job.yaml):
+# an ArgoCD PreSync hook that holds the advisory lock and applies migrations/
+# only. The gated set (database/gated/999_*) is run by hand once the fleet is
+# drained.
+#
+# OFF at the first deployment: the commerce image does not contain the
+# migrator yet (Architecture/services/commerce-service/Dockerfile builds only
+# /server from cmd/server; cmd/migrate is never built), so a PreSync Job
+# would fail with "no such file" and block every commerce sync. To turn it on:
+# build cmd/migrate into the image as /commerce-migrate, then set enabled:
+# true here together with COMMERCE_SKIP_BOOT_MIGRATIONS: 'true' above.
 migrationJob:
-  enabled: true
-  hook: pre-sync
-  command: ['/app/commerce-migrate']
-  # No `-gated` flag. Adding it here would validate constraints against a
-  # fleet that still contains old writers, and the migration would fail.
+  enabled: false
+  hook: PreSync
+  command: ['/commerce-migrate']
+  # No `-gated` flag: that would validate constraints against a fleet that
+  # still contains old writers.
 
 pdb:
   enabled: true
-  minAvailable: 2
+  minAvailable: 1

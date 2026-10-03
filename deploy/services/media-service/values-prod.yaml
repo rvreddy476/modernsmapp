@@ -1,4 +1,11 @@
-# media-service overrides for the prod environment.
+# media-service overrides for prod (AWS ap-south-1): the HTTP server and the
+# transcode worker (worker block at the end).
+#
+# Env contract: Architecture/docker/docker-compose.yml, services
+# `media-service` and `media-worker`, translated to production: S3 through
+# the IRSA role (no MINIO_*), Rekognition scanning, CloudFront signed
+# delivery. Secrets by reference only (atpost/prod/media-service). __TF_*__
+# placeholders come from Terraform outputs.
 
 service:
   name: media-service
@@ -6,13 +13,13 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/media-service'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+replicaCount: 2
 hpa:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 12
+  minReplicas: 2
+  maxReplicas: 6
   targetCPUUtilizationPercentage: 65
 
 resources:
@@ -20,9 +27,11 @@ resources:
     cpu: 250m
     memory: 256Mi
   limits:
-    cpu: 1500m
+    cpu: "1"
     memory: 1Gi
 
+# IRSA (W2): s3 on the media bucket + the live-recordings bucket (read),
+# rekognition:DetectModerationLabels / DetectFaces / CompareFaces, MSK.
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-media-service-irsa'
 
@@ -30,10 +39,14 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/media-service
   data:
+    # Aurora `app`. media-service OWNS media_assets (tier 1: deploy before
+    # post-service).
     - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
     - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
     - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
     - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
@@ -41,64 +54,101 @@ externalSecret:
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
     # RS256 verification (public key); HS256 stays accepted in parallel.
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
-    - { secretKey: MEDIA_CDN_BASE_URL, remoteRef: media_cdn_base_url }
+    # CloudFront signed URLs: the key pair id and private key of the W1
+    # signing key (media-service refuses to start in production without
+    # them). The CDN base URL is a value below, not a secret.
     - { secretKey: MEDIA_CLOUDFRONT_KEY_PAIR_ID, remoteRef: media_cloudfront_key_pair_id }
     - { secretKey: MEDIA_CLOUDFRONT_PRIVATE_KEY, remoteRef: media_cloudfront_private_key }
+    # Seller KYC documents: commerce-service's PUBLIC key (the same one
+    # payments-service verifies), one scope only.
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY, remoteRef: caller_commerce_pubkey }
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
+    # Live recordings import: live-service-v2's PUBLIC key, one scope only.
+    - { secretKey: SERVICE_CALLER_LIVE_SERVICE_V2_PUBKEY, remoteRef: caller_live_pubkey }
+    - { secretKey: SERVICE_CALLER_LIVE_SERVICE_V2_KID, remoteRef: caller_live_kid }
+    # Alternate audio tracks (dubs) need an OpenAI key. NOT at launch:
+    # MEDIA_DUBBING_BACKEND is unset below (DUBBING_UNAVAILABLE); when a key
+    # exists, store openai_api_key, uncomment, and set the backend to openai.
+    # - { secretKey: OPENAI_API_KEY, remoteRef: openai_api_key }
 
 env:
   ENV: prod
-  LOG_LEVEL: info
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
-  # RS256 key id — must match auth-service's JWT_RS256_KID.
-  JWT_RS256_KID: rsa-1
   DEPLOY_ENV: production
+  LOG_LEVEL: info
   AWS_REGION: ap-south-1
   AWS_EC2_METADATA_DISABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  JWT_RS256_KID: rsa-1
+
+  # ── Managed stores ────────────────────────────────────────────────────────
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+
+  # ── Storage: S3 through IRSA, delivery through CloudFront ────────────────
   MEDIA_STORAGE_BACKEND: s3
-  S3_BUCKET: atpost-prod-media
+  S3_BUCKET: "__TF_MEDIA_BUCKET_NAME__" # from terraform output media_bucket_name
+  # Signed delivery base: the custom media host in front of the CloudFront
+  # distribution (contract). Non-secret, so a value rather than a secret.
+  MEDIA_CDN_BASE_URL: https://media.cleestudio.com
+  # Egress MP4s from live-service-v2 are imported from this bucket (read).
+  MEDIA_LIVE_RECORDINGS_BUCKET: "__TF_LIVE_RECORDINGS_BUCKET_NAME__" # from terraform output live_recordings_bucket_name
+
+  # ── Safety: Rekognition, never the mock/stub in production ──────────────
   MEDIA_SCANNER_ENABLED: "true"
   MEDIA_SCANNER_ALLOW_STUB: "false"
   MEDIA_SCANNER_BACKEND: rekognition
-  # Lane D5: internal face comparison for dating selfie verification, on the
-  # same IRSA Rekognition client. The role needs rekognition:DetectFaces and
-  # rekognition:CompareFaces, or every comparison answers 503.
+  # Lane D5: dating / Mopedu selfie liveness + face compare on the same IRSA
+  # Rekognition client (DetectFaces + CompareFaces, or every compare is 503).
   MEDIA_FACE_COMPARE_ENABLED: "true"
   MEDIA_FACE_COMPARE_BACKEND: rekognition
-  # Lane D6: lifetime of the signed dating photo URLs dating-service
-  # redirects viewers to (30-300 seconds; the redirect is cached 60s).
+  # Lane D6: lifetime of the signed dating photo URLs (30-300 s).
   MEDIA_DATING_PHOTO_URL_TTL_SECONDS: "120"
+  # Dubs: unset = none configured (DUBBING_UNAVAILABLE); the stub is refused
+  # in production. See the OPENAI_API_KEY note in externalSecret.
+  # MEDIA_DUBBING_BACKEND: openai
+
+  # ── Peers ────────────────────────────────────────────────────────────────
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
   GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
   CHAT_MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  # Product photos: commerce answers whether a product is live.
+  COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
+
+  # Callers whose service tokens media verifies (one scope each).
+  SERVICE_CALLERS: 'commerce-service,live-service-v2'
+  SERVICE_CALLER_COMMERCE_SERVICE_OPS: 'media:image-bytes.read'
+  SERVICE_CALLER_LIVE_SERVICE_V2_OPS: 'media:recording.import'
+
+  # Copyright Match (founder decision 2026-09-29, approved): SHADOW at
+  # launch — uploads are fingerprinted and compared, matches are recorded
+  # and nothing is shown or held (COPYRIGHT_PAIR_RELAY stays off, backfill
+  # off). The worker reads these too (worker.env inherits env).
+  COPYRIGHT_FINGERPRINT_ENABLED: "true"
+  COPYRIGHT_MATCHING_ENABLED: "true"
 
 ingress:
   enabled: false
 
 pdb:
   enabled: true
-  minAvailable: 2
+  minAvailable: 1
 
-# Module 4 M4-P0-3 — the transcode worker.
-#
-# Before this block the worker was built by Dockerfile.worker and deployed
-# nowhere: the shared chart rendered one container from image.repository, which
-# is the SERVER image. On EKS that meant transcode jobs were produced and never
-# consumed — uploads never became playable, and because media safety is
-# fail-closed they never became publishable either. Silent and total.
+# Module 4 M4-P0-3 — the transcode worker. A DIFFERENT image (ffmpeg + the
+# worker binary); the server image carries neither. Same env + secret as
+# the server, so S3/IRSA, Kafka SASL and the scanner apply unchanged.
 worker:
   enabled: true
-  replicaCount: 3
+  replicaCount: 2
   image:
-    # A DIFFERENT repository from the server. This image carries ffmpeg and the
-    # worker binary; the server image carries neither.
     repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/media-worker'
-    tag: latest # CI overrides via --set worker.image.tag=<sha>
+    tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
   resources:
     requests:
       cpu: "1"
       memory: 1Gi
     limits:
-      cpu: "4"
+      cpu: "3"
       memory: 4Gi
   scratchSizeLimit: 50Gi

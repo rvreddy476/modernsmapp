@@ -1,4 +1,13 @@
-# rider-service overrides for the prod environment.
+# rider-service (Mopedu) overrides for prod (AWS ap-south-1).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `rider-service`. Secrets by reference only (atpost/prod/rider-service).
+# __TF_*__ placeholders come from Terraform outputs.
+#
+# DORMANT (plan §3: Mopedu off). The gateway keeps /v1/rider closed
+# (RIDER_PUBLIC_ENABLED=false). Deployed-but-gated, so the service MUST boot:
+# with ENV=prod it refuses to start without RIDER_PII_KEYS and
+# MOPEDU_PLATFORM_GSTIN (audit finding 5) — both are now in the secret.
 
 service:
   name: rider-service
@@ -6,22 +15,19 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/rider-service'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+replicaCount: 1
 hpa:
-  enabled: true
-  minReplicas: 3
-  maxReplicas: 12
-  targetCPUUtilizationPercentage: 65
+  enabled: false
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 50m
+    memory: 64Mi
   limits:
-    cpu: 1500m
-    memory: 1Gi
+    cpu: 500m
+    memory: 256Mi
 
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-rider-service-irsa'
@@ -30,71 +36,82 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/rider-service
   data:
+    # Aurora `app`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    # Realtime tokens: rider and food mint them, notification verifies them.
+    # One shared key (falls back to INTERNAL_SERVICE_KEY when absent), so all
+    # three mount it or none does.
+    - { secretKey: REALTIME_TOKEN_SECRET, remoteRef: realtime_token_secret }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
-    # Admin console (Mopedu): rider-service verifies admin-service's service
-    # tokens on /v1/rider/internal/admin/*. NOT enabled yet: without it the
-    # console's Mopedu routes are refused (401). To enable, in this order:
-    #   1. the founder generates admin-service's ed25519 key (one key for
-    #      every product): the private half (base64 32-byte seed) and kid go
-    #      to admin-service's secret store (admin_service_token_key /
-    #      admin_service_token_kid); the public half and the same kid go here
-    #      as caller_admin_pubkey / caller_admin_kid;
-    #   2. uncomment the two lines below AND the SERVICE_CALLERS lines under env;
-    #   3. enable admin-service's two lines (its values file).
-    # Setting SERVICE_CALLERS before the key exists refuses boot.
-    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
-    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
-    # Pricing engine secrets. BOTH are required before the next rider-service
-    # deploy: with ENV=prod the service refuses to start without them.
-    #   RIDER_PII_KEYS: ride OTPs sealed at rest (scope rider.ride_otp),
-    #     "v1:<base64 32-byte key>", the FOOD_PII_KEYS format; generate with
-    #     `openssl rand -base64 32`. Never a dev key.
-    #   MOPEDU_PLATFORM_GSTIN: the platform's real e-commerce-operator GSTIN,
-    #     liable for ride-fare GST under s.9(5).
-    #   GOOGLE_MAPS_SERVER_KEY: optional; without it quotes use the haversine
-    #     estimate. Restrict the key to the Routes API and this cluster's egress.
-    # - { secretKey: RIDER_PII_KEYS, remoteRef: rider_pii_keys }
-    # - { secretKey: MOPEDU_PLATFORM_GSTIN, remoteRef: mopedu_platform_gstin }
+    # Pricing engine secrets — BOTH required with ENV=prod (boot refuses):
+    #   RIDER_PII_KEYS: ride OTPs sealed at rest, "v1:<base64 32-byte key>"
+    #     (`openssl rand -base64 32`); never a dev key.
+    #   MOPEDU_PLATFORM_GSTIN: the platform's real e-commerce-operator GSTIN.
+    - { secretKey: RIDER_PII_KEYS, remoteRef: rider_pii_keys }
+    - { secretKey: MOPEDU_PLATFORM_GSTIN, remoteRef: mopedu_platform_gstin }
+    # Optional: Routes API server key (haversine estimate without it).
     # - { secretKey: GOOGLE_MAPS_SERVER_KEY, remoteRef: google_maps_server_key }
-    # Payments lane: rider-service's payments-service token (upi / card ride
-    # fares, application mopedu, reference type mopedu_ride) is NOT enabled
-    # yet. Without it the intent routes answer 503 PAYMENTS_UNAVAILABLE and
-    # cash rides are unaffected; boot is not refused. Enable payments-service
-    # first (caller_rider_pubkey / caller_rider_kid, rider-service in its
-    # SERVICE_CALLERS), then uncomment the two lines below. Never reuse a
-    # staging key here.
+    # Payments lane: rider's payments token is NOT enabled (intent routes
+    # answer 503 PAYMENTS_UNAVAILABLE; cash rides unaffected). Enable
+    # payments-service first (caller_rider_pubkey/kid + SERVICE_CALLERS),
+    # then uncomment.
     # - { secretKey: RIDER_SERVICE_TOKEN_KEY, remoteRef: rider_service_token_key }
     # - { secretKey: RIDER_SERVICE_TOKEN_KID, remoteRef: rider_service_token_kid }
+    # DigiLocker (http mode) partner credentials — only when the mode below
+    # becomes http.
+    # - { secretKey: DIGILOCKER_API_KEY, remoteRef: digilocker_api_key }
+    # Admin console (Mopedu): NOT enabled yet (401 until then). To enable:
+    # the founder's ONE admin key (admin-service values, step 1): public half
+    # → caller_admin_pubkey, kid → caller_admin_kid; uncomment the two lines
+    # below AND the SERVICE_CALLERS lines under env; enable admin-service's
+    # two lines. Setting SERVICE_CALLERS first refuses boot.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
 
 env:
   ENV: prod
   LOG_LEVEL: info
+  AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
-  # Coupons stay off in production until the tax adviser confirms the GST
-  # treatment of a discount (the ride fare is taxed net of the coupon under
-  # s.9(5); the same open question as FOOD_COUPONS_ENABLED). Estimates with
-  # a coupon_code answer 422 COUPONS_DISABLED while this is false.
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TOPIC: rider-events
+  # Partner subscriptions only (rides never touch the wallet).
+  WALLET_SERVICE_URL: http://wallet-service.atpost.svc.cluster.local:8114
+  # identity-auth owns ecosystem roles (rider_partner).
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  # Coupons stay off until the tax adviser confirms the GST treatment.
   MOPEDU_COUPONS_ENABLED: "false"
-  # Demand surge ceiling in basis points (5000 = x1.5); peak / night fare
-  # windows are database rows and are not capped by this.
+  # Demand surge ceiling in basis points (5000 = x1.5).
   MOPEDU_SURGE_CAP_BPS: "5000"
-  # Payments lane (see externalSecret above): unused until
-  # RIDER_SERVICE_TOKEN_KEY / _KID are set.
+  MOPEDU_ROUTING_TIMEOUT_MS: "2000"
+  # Payments lane (see externalSecret): unused until the token is set.
   PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
-  # Launch safety: selfie face compare through media-service (see the
-  # staging values for the rule). MEDIA_SERVICE_URL is REQUIRED in
-  # production — rider-service refuses to start without it; "mock" is
-  # refused here.
+  # Launch safety: selfie face compare through media-service. REQUIRED in
+  # production (boot refuses without MEDIA_SERVICE_URL; "mock" is refused).
   MOPEDU_FACE_COMPARE_MODE: http
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
   MOPEDU_SELFIE_MIN_SIMILARITY: "80"
-  # Admin console (see externalSecret above for the order): uncomment
-  # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID. OPS is rider's
-  # AdminPermissions (rider-service/internal/http/admin_token.go).
+  # Aadhaar via DigiLocker. rider-service knows only `http` and `mock`, and
+  # the mock is refused in production, so `http` is the only mode that boots
+  # here. Without DIGILOCKER_BASE_URL / DIGILOCKER_API_KEY (no partner
+  # contract yet) captain onboarding fails at call time, which is fine for
+  # a product the gateway keeps closed. Fill both when Mopedu opens.
+  DIGILOCKER_MODE: http
+  DIGILOCKER_SANDBOX: "false"
+  DIGILOCKER_BASE_URL: ""
+  DIGILOCKER_REDIRECT_URI: https://api.cleestudio.com/v1/rider/aadhaar/callback
+  # Admin console (see externalSecret above for the order).
   # SERVICE_CALLERS: 'admin-service'
   # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'rider:stats.read,rider:partners.read,rider:partners.approve,rider:partners.suspend,rider:documents.review,rider:vehicles.review,rider:payments.read,rider:payments.settle,rider:payments.reject,rider:rides.read,rider:rides.cancel,rider:ratings.moderate,rider:complaints.act,rider:incidents.read,rider:incidents.act,rider:incidents.reveal,rider:cities.manage,rider:fares.manage,rider:reports.read,rider:audit.read'
 
@@ -102,5 +119,4 @@ ingress:
   enabled: false
 
 pdb:
-  enabled: true
-  minAvailable: 2
+  enabled: false # one replica, dormant

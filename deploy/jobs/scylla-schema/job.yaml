@@ -1,0 +1,93 @@
+# One-shot Job: apply the production Scylla schemas (keyspaces with
+# NetworkTopologyStrategy, replication 3, and every table) to the operator
+# cluster before any Scylla-backed service starts (post, feed, notification,
+# analytics, suggestion, chat-message).
+#
+# The CQL is NOT inlined here: it lives next to the code that owns it and is
+# mounted from a ConfigMap built from those two files, so this Job can never
+# drift from them:
+#   Architecture/docker/scylla/schema.prod.cql                  -> 10-platform.cql
+#   chat-service/services/message-service/scylla/schema.prod.cql -> 20-chat-message.cql
+# Helm cannot read files outside a chart directory and kustomize refuses
+# them by default, so the ConfigMap is created by kubectl; apply.sh does both
+# steps (deploy/README.md, "Scylla schema"):
+#   deploy/jobs/scylla-schema/apply.sh
+#
+# Every statement is IF NOT EXISTS, so re-running is harmless. Image tag =
+# the cluster's Scylla version (infra/terraform/modules/scylla scylla_version)
+# so cqlsh speaks the server's protocol.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: scylla-schema
+  namespace: scylla
+  labels:
+    app.kubernetes.io/name: scylla-schema
+    app.kubernetes.io/part-of: atpost
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 1800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scylla-schema
+    spec:
+      restartPolicy: OnFailure
+      nodeSelector:
+        workload: general
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: cqlsh
+          image: docker.io/scylladb/scylla:6.1.1
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              host="${SCYLLA_HOST}"
+              # Wait for the CQL port: the operator brings nodes up one by one.
+              for i in $(seq 1 60); do
+                if cqlsh "$host" 9042 -e "SELECT release_version FROM system.local" >/dev/null 2>&1; then break; fi
+                echo "waiting for $host:9042 ($i/60)"; sleep 10
+              done
+              for f in /schema/10-platform.cql /schema/20-chat-message.cql; do
+                echo "applying $f"
+                cqlsh "$host" 9042 --request-timeout=60 -f "$f"
+              done
+              echo "keyspaces now present:"
+              cqlsh "$host" 9042 -e "SELECT keyspace_name, replication FROM system_schema.keyspaces"
+          env:
+            # The operator-managed client Service (terraform output of the
+            # scylla module, client_service): atpost-<env>-client.
+            - name: SCYLLA_HOST
+              value: atpost-prod-client.scylla.svc.cluster.local
+            # cqlsh writes history under $HOME; the root filesystem is read-only.
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: schema
+          configMap:
+            name: scylla-schema-prod
+        - name: tmp
+          emptyDir: {}

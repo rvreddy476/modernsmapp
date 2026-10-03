@@ -18,8 +18,10 @@ spec:
     - git:
         repoURL: https://github.com/rvreddy476/modernsmapp.git
         revision: main
-        directories:
-          - path: deploy/web/*
+        # Files generator: an Application exists only where its values file
+        # exists (prod-only services, parked web zones under deploy/parked/).
+        files:
+          - path: "deploy/web/*/values-azure-staging.yaml"
   template:
     metadata:
       name: 'web-azure-staging-{{.path.basename}}'
@@ -72,8 +74,10 @@ spec:
     - git:
         repoURL: https://github.com/rvreddy476/modernsmapp.git
         revision: release/prod
-        directories:
-          - path: deploy/web/*
+        # Files generator: an Application exists only where its values file
+        # exists (prod-only services, parked web zones under deploy/parked/).
+        files:
+          - path: "deploy/web/*/values-azure-prod.yaml"
   template:
     metadata:
       name: 'web-azure-prod-{{.path.basename}}'

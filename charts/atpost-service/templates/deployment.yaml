@@ -99,20 +99,16 @@ spec:
                 sleep 5
               done
               echo "all schema dependencies present"
+          {{- $ef := include "atpost-service.envFrom" . }}
+          {{- if $ef }}
           envFrom:
-            {{- range .Values.envFrom }}
-            - {{ .kind }}Ref:
-                name: {{ .name }}
-            {{- end }}
-            {{- if .Values.externalSecret.enabled }}
-            - secretRef:
-                name: {{ include "atpost-service.name" . }}
-            {{- end }}
+            {{- $ef | nindent 12 }}
+          {{- end }}
+          {{- $ev := include "atpost-service.commonAndServiceEnv" . }}
+          {{- if $ev }}
           env:
-            {{- range $k, $v := .Values.env }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
-            {{- end }}
+            {{- $ev | nindent 12 }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -121,7 +117,7 @@ spec:
       {{- end }}
       containers:
         - name: {{ .Values.service.name }}
-          image: "{{ tpl .Values.image.repository . }}:{{ .Values.image.tag }}"
+          image: {{ include "atpost-service.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -132,21 +128,15 @@ spec:
             # a one-line override, not a two-line one.
             - name: HTTP_PORT
               value: {{ .Values.service.port | quote }}
-            {{- range $k, $v := .Values.env }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
-            {{- end }}
+            {{- include "atpost-service.commonAndServiceEnv" . | nindent 12 }}
+          {{- $ef := include "atpost-service.envFrom" . }}
+          {{- if $ef }}
+          # envFrom + extraEnvFrom, then the ESO-minted Secret named after the
+          # release: the whole thing is mounted as env vars so secretKey names
+          # map to env var names without extra wiring.
           envFrom:
-            {{- range .Values.envFrom }}
-            - {{- toYaml . | nindent 14 }}
-            {{- end }}
-            {{- if .Values.externalSecret.enabled }}
-            # ESO mints a Secret named after the release; mount the
-            # whole thing as env vars so secretKey names map to env
-            # var names without extra wiring.
-            - secretRef:
-                name: {{ include "atpost-service.name" . }}
-            {{- end }}
+            {{- $ef | nindent 12 }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.livenessProbe.path }}
@@ -180,8 +170,17 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- range $i, $d := .Values.extraEmptyDirs }}
+            - name: scratch-{{ $i }}
+              mountPath: {{ $d.mountPath | quote }}
+            {{- end }}
       volumes:
         # Empty-dir at /tmp because readOnlyRootFilesystem=true above
         # would otherwise break anything that writes a temp file.
         - name: tmp
           emptyDir: {}
+        {{- range $i, $d := .Values.extraEmptyDirs }}
+        - name: scratch-{{ $i }}
+          emptyDir:
+            sizeLimit: {{ $d.sizeLimit | default "1Gi" }}
+        {{- end }}

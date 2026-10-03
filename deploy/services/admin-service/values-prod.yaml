@@ -1,4 +1,8 @@
-# admin-service overrides for the prod environment.
+# admin-service overrides for prod (AWS ap-south-1).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `admin-service`. Secrets by reference only (atpost/prod/admin-service).
+# __TF_*__ placeholders come from Terraform outputs.
 
 service:
   name: admin-service
@@ -6,22 +10,22 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/admin-service'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+replicaCount: 1
 hpa:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 12
+  minReplicas: 1
+  maxReplicas: 4
   targetCPUUtilizationPercentage: 65
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
-    cpu: 1500m
-    memory: 1Gi
+    cpu: 500m
+    memory: 512Mi
 
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-admin-service-irsa'
@@ -30,65 +34,62 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/admin-service
   data:
+    # Aurora `app`.
     - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
     - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
     # Admin console Wave 2: admin-service signs a 60 s service token per
-    # product admin call. NOT enabled yet: without it the Dating, Feast,
-    # MStore and Trust & safety dashboard routes answer 503
-    # PRODUCT_UNAVAILABLE; boot is not refused. To enable:
+    # product admin call. NOT enabled yet: without it the product dashboards
+    # answer 503 PRODUCT_UNAVAILABLE; boot is not refused. To enable:
     #   1. the founder generates ONE ed25519 key: the private half (base64
-    #      32-byte seed) goes to admin_service_token_key and its kid to
-    #      admin_service_token_kid here; the public half and the same kid go
-    #      to each product as caller_admin_pubkey / caller_admin_kid
-    #      (dating-service, commerce-service, trust-safety-service, post-service,
-    #      user-service, qa-service, channel-service, group-service,
-    #      community-service; and food-service once it has deploy values);
-    #   2. enable each product first (its values file: two secret lines and
-    #      the SERVICE_CALLERS lines);
+    #      32-byte seed) → admin_service_token_key, its kid →
+    #      admin_service_token_kid here; the public half + the same kid go to
+    #      each product as caller_admin_pubkey / caller_admin_kid
+    #      (identity-auth, dating, commerce, trust-safety, post, user, qa,
+    #      channel, group, community, rider, live-service-v2, payments,
+    #      monetization, food);
+    #   2. enable each product first (its values file: the two secret lines
+    #      and the SERVICE_CALLERS lines);
     #   3. uncomment the two lines below.
-    # MStore: once this key is enabled, /v1/admin/commerce/* stops using the
-    # internal key and needs commerce-service's lines from step 2.
     # - { secretKey: ADMIN_SERVICE_TOKEN_KEY, remoteRef: admin_service_token_key }
     # - { secretKey: ADMIN_SERVICE_TOKEN_KID, remoteRef: admin_service_token_kid }
 
 env:
   ENV: prod
   LOG_LEVEL: info
+  AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  # Every admin route needs X-Admin-MFA=true (the gateway stamps it from the
+  # admin_mfa claim). Never false outside a laptop.
+  ADMIN_REQUIRE_MFA: "true"
+  # Product dashboards (each enabled per its own values file).
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
   DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
   FOOD_SERVICE_URL: http://food-service.atpost.svc.cluster.local:8113
   COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
   TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
-  # Money dashboards, same key: enable monetization-service and
-  # payments-service first (numbered steps in their values files).
   MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
   PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
-  # Content apps (Social and Tube on post-service above, business pages on
-  # user-service, Q&A, and Chat on channel, group and community), same key:
-  # enable each product first (numbered steps in its values file).
   USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
   QA_SERVICE_URL: http://qa-service.atpost.svc.cluster.local:8108
   CHANNEL_SERVICE_URL: http://channel-service.atpost.svc.cluster.local:8106
   GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
   COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
-  # Mopedu (rider-service), same key: enable rider-service first (numbered
-  # steps in its values file).
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
-  # Access page (Wave 1, B4): role management through identity-auth's
-  # token-only admin family, same key (audience "identity"); also the URL of
-  # the permission lookups. Enable identity-auth-service's two commented
-  # lines first (numbered steps in its values file).
+  LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
+  # Access page (Wave 1, B4): identity-auth's token-only admin family.
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
 
 ingress:
   enabled: false
 
 pdb:
-  enabled: true
-  minAvailable: 2
+  enabled: false # one replica at launch

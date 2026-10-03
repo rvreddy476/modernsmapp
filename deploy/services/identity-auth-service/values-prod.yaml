@@ -1,4 +1,12 @@
-# identity-auth-service overrides for the prod environment.
+# identity-auth-service overrides for prod (AWS ap-south-1).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `identity-auth`, translated to production. Secrets by reference only
+# (atpost/prod/identity-auth-service). __TF_*__ placeholders come from
+# Terraform outputs (deploy/README.md).
+#
+# OTP_BYPASS_CODE is deliberately ABSENT: the service refuses to start in
+# production when it is set (W7b). Never add it here.
 
 service:
   name: identity-auth-service
@@ -6,13 +14,14 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/identity-auth-service'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+# Lean first stage: two copies (auth is on the sign-in path).
+replicaCount: 2
 hpa:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 12
+  minReplicas: 2
+  maxReplicas: 6
   targetCPUUtilizationPercentage: 65
 
 resources:
@@ -20,9 +29,10 @@ resources:
     cpu: 250m
     memory: 256Mi
   limits:
-    cpu: 1500m
+    cpu: "1"
     memory: 1Gi
 
+# IRSA: ses:SendEmail on the verified identity (W2), MSK client policy.
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-identity-auth-service-irsa'
 
@@ -30,86 +40,99 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/identity-auth-service
   data:
-    # Datastore connections (were missing — auth-service needs the identity DB,
-    # Redis for rate-limit/revocation cache, Kafka for identity.events.v1).
-    - { secretKey: DATABASE_URL, remoteRef: postgres_dsn }
+    # Aurora `identity_db` (one DSN per service, pointing at the right
+    # database; sslmode=require). The compose name is POSTGRES_DSN; the code
+    # also reads DATABASE_URL — one is enough.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
     - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
     - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    # MSK SASL/SCRAM credentials (seeder copies them from the AmazonMSK_*
+    # secret, or point these two entries at it with a per-entry remoteKey).
     - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
-    # RS256 access-token signing (private key). When present, auth-service signs
-    # RS256; verifiers use the matching public key. Remove to stay on HS256.
+    # RS256 access-token signing (private key). Production REFUSES TO START
+    # without it (HS256 in production would let every verifier mint).
     - { secretKey: JWT_PRIVATE_KEY_PEM, remoteRef: jwt_private_key_pem }
-    # Admin console Wave 1 (the Access page): admin-service calls this
-    # service's token-only /v1/auth/internal/admin/* family (roles, user
-    # search, force-logout, audit) with a 60 s token it signs per call
-    # (audience "identity", scope = the one permission, act = the admin, jti
-    # single-use). NOT enabled yet: without the key the family accepts
-    # nothing (401 SERVICE_TOKEN_CHECK_UNAVAILABLE) and boot is not refused.
-    # To enable, in this order:
-    #   1. the founder's ONE ed25519 key (admin-service values, step 1): its
-    #      PUBLIC half goes to caller_admin_pubkey and the same kid to
-    #      caller_admin_kid in this service's secret store;
-    #   2. uncomment the two lines below (a pubkey without a kid refuses boot);
-    #   3. enable admin-service's two lines (its values file) and point its
-    #      AUTH_SERVICE_URL here (already set).
+    # Encrypts stored TOTP (2FA) secrets: exactly 64 hex chars (AES-256).
+    # Unset, 2FA secrets are stored in plaintext — not acceptable in prod.
+    - { secretKey: TOTP_ENCRYPTION_KEY, remoteRef: totp_encryption_key }
+    # Mini-app session signer (RS256). One shared key for every replica:
+    # unset, each pod signs mini-app sessions with its own throwaway key and
+    # a session minted on one pod fails on the next.
+    - { secretKey: MINI_APP_SESSION_PRIVATE_KEY_PEM, remoteRef: mini_app_session_private_key_pem }
+    - { secretKey: MINI_APP_SESSION_KEY_ID, remoteRef: mini_app_session_key_id }
+    # Admin console Wave 1 (the Access page): admin-service's ed25519 PUBLIC
+    # key + kid. NOT enabled yet (the family answers 401; boot is not
+    # refused). To enable: founder generates the ONE admin key (admin-service
+    # values, step 1); its public half → caller_admin_pubkey, kid →
+    # caller_admin_kid here; uncomment both lines (a pubkey without a kid
+    # refuses boot); enable admin-service's two lines.
     # - { secretKey: ADMIN_SERVICE_TOKEN_PUBKEY, remoteRef: caller_admin_pubkey }
     # - { secretKey: ADMIN_SERVICE_TOKEN_KID, remoteRef: caller_admin_kid }
 
 env:
   ENV: prod
   LOG_LEVEL: info
-  # ── Module 3 SR-6: email delivery via SES ───────────────────────────────
-  # auth-service previously generated verification and password-reset codes
-  # and sent NOTHING — there was no delivery mechanism at all, so "Forgot
-  # password" returned 200 and no code ever arrived. In production the
-  # service now REFUSES TO START without these: a no-op sender returns nil
-  # from every send, so a misconfigured deployment would look healthy while
-  # dropping every recovery email.
-  #
-  # Credentials come from the SDK default chain, which resolves the IRSA web
-  # identity token from serviceAccount.irsaRoleArn above. No static AWS
-  # access key is read, accepted or stored anywhere — the SES role needs
-  # ses:SendEmail on the verified identity.
-  #
-  # SES_FROM_ADDRESS must belong to a VERIFIED SES identity or every send
-  # fails. SES_CONFIGURATION_SET routes bounce and complaint events; without
-  # it, deliverability degrades invisibly until SES throttles the account and
-  # nobody receives a recovery email.
   AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+
+  # ── Managed stores ────────────────────────────────────────────────────────
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+
+  # Per-IP limits key on the real client: the gateway (and the ALB in front
+  # of it) are the only peers, both inside the VPC.
+  TRUSTED_PROXIES: "10.30.0.0/16" # the prod VPC CIDR (infra/terraform/envs/prod/main.tf, module "vpc" vpc_cidr; not an output)
+  RATE_LIMIT_ENABLED: "true"
+
+  # ── Email via Amazon SES (Module 3 SR-6; contract) ───────────────────────
+  # The service REFUSES TO START in production without these. Credentials
+  # come from the SDK default chain (IRSA); no static key anywhere.
+  # SES_FROM_ADDRESS must be a VERIFIED identity; the configuration set
+  # routes bounces and complaints (W1 creates both).
   SES_FROM_ADDRESS: no-reply@cleestudio.com
   SES_CONFIGURATION_SET: atpost-prod-transactional
+
   # ── Module 3 SR-1: access-token minting identity ─────────────────────────
-  # These MUST match api-gateway's JWT_ISSUER / JWT_AUDIENCE exactly. The
-  # gateway pins both and rejects any token that does not carry them, so a
-  # mismatch here is a total authentication outage rather than a degraded
-  # mode. In production the service REFUSES TO START without them and without
-  # JWT_PRIVATE_KEY_PEM — HS256 in production would mean every verifier that
-  # holds the shared secret can mint platform identities.
+  # MUST match api-gateway's JWT_ISSUER / JWT_AUDIENCE exactly.
   APP_ENV: "production"
   JWT_ISSUER: auth-service
   JWT_AUDIENCE: "atpost-api"
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
-  # RS256 key id — must match the verifiers' JWT_RS256_KID.
   JWT_RS256_KID: rsa-1
-  # RBAC bootstrap — server-side source of truth for the first superadmin(s).
-  # REQUIRED: set to the superadmin user UUID(s), comma-separated, or NO ONE can
-  # administer roles in prod. Further admins are then granted via the DB
-  # (/admin/access console).
-  SUPERADMIN_USER_IDS: ""  # CHANGEME e.g. "11111111-1111-1111-1111-111111111111"
+  # Token lifetimes: the service defaults (access 15 min, refresh 30 days).
+  # ACCESS_TOKEN_TTL / REFRESH_TOKEN_TTL deliberately unset — dev's year-long
+  # token must never reach production.
+
+  # ── RBAC bootstrap ───────────────────────────────────────────────────────
+  # The production superadmin's identity user UUID(s), comma-separated.
+  # Empty = NOBODY can administer roles (fail closed).
+  # CHANGEME after the founder registers on production: their identity user
+  # id(s); then sync identity-auth-service again. Empty until then.
+  SUPERADMIN_USER_IDS: ""
   ADMIN_USER_IDS: ""
   MODERATOR_USER_IDS: ""
-  # Require the acting superadmin to have 2FA enabled for role grant/revoke.
+  # Role grant/revoke requires the acting superadmin to have 2FA enrolled.
   REQUIRE_MFA_FOR_PRIVILEGED: "true"
+  # Sign-up with Google/Apple stays off until production OAuth apps exist.
   OAUTH_NEW_ACCOUNT_ENABLED: "false"
+  # Where OAuth sign-in returns the browser (FrontendURL + /auth/callback),
+  # and the provider callbacks registered with Google/Apple/GitHub (sign-up
+  # through them is off; the URLs must still be production, never localhost).
+  FRONTEND_URL: https://app.cleestudio.com
+  OAUTH_GOOGLE_REDIRECT_URL: https://api.cleestudio.com/v1/auth/oauth/google/callback
+  OAUTH_APPLE_REDIRECT_URL: https://api.cleestudio.com/v1/auth/oauth/apple/callback
+  OAUTH_GITHUB_REDIRECT_URL: https://api.cleestudio.com/v1/auth/oauth/github/callback
 
 ingress:
   enabled: false
 
 pdb:
   enabled: true
-  minAvailable: 2
+  minAvailable: 1

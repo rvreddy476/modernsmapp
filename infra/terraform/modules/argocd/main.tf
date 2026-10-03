@@ -205,7 +205,7 @@ resource "kubernetes_manifest" "project_atpost" {
 # iterations.
 locals {
   applicationsets = var.applicationset_manifest_path != "" ? [
-    for doc in split("\n---\n", file(var.applicationset_manifest_path)) :
+    for doc in split("\n---\n", templatefile(var.applicationset_manifest_path, { aws_account_id = var.aws_account_id })) :
     yamldecode(doc) if trimspace(doc) != ""
   ] : []
 }

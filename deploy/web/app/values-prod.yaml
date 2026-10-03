@@ -1,0 +1,150 @@
+# The web app (postbook-ui, C:\workspace\postbook-ui) — prod (W6). Reuses
+# charts/atpost-service: a Next.js standalone server on port 3000.
+#
+# Image: atpost/web, built by a workflow in THIS repo that checks out
+# postbook-ui at a pinned ref (WEB_REPO / WEB_REF; W5) with its Dockerfile.
+# NEXT_PUBLIC_* are BUILD ARGS (inlined into the browser bundle, not read at
+# runtime) — the production build must pass:
+#   NEXT_PUBLIC_API_BASE_URL=""            (browser derives it from window.location;
+#   NEXT_PUBLIC_WS_BASE_URL=""              one image is right on app. and on the bare host)
+#   NEXT_PUBLIC_SITE_URL="https://app.cleestudio.com"
+#   NEXT_PUBLIC_ENABLE_STUB_PAYMENTS="false"
+#   NEXT_PUBLIC_RAZORPAY_KEY_ID="<the Razorpay key id; public by design>"
+#
+# Runtime env below: Architecture/docker/docker-compose.yml, service `web`,
+# translated to production. These are read by the Next route handlers INSIDE
+# the container, so they must be cluster DNS names.
+
+service:
+  name: web
+  port: 3000
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/web'
+  tag: "" # set by CI (commit sha of postbook-ui at WEB_REF); empty refuses to render
+
+replicaCount: 2
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi
+
+# The image's USER nextjs is a SYSTEM user created without a fixed uid
+# (`adduser -S` in postbook-ui/Dockerfile), so its number is not knowable
+# here; the chart pins a non-root uid instead. That works because the copied
+# app files keep their world-readable modes and nothing writes to the image:
+# the root filesystem is read-only, /tmp and the Next cache are emptyDirs.
+securityContext:
+  runAsUser: 1001
+  runAsGroup: 1001
+
+# Next.js writes its image-optimizer and fetch cache under .next/cache; the
+# root filesystem is read-only, so that directory is an emptyDir.
+extraEmptyDirs:
+  - { mountPath: /app/.next/cache, sizeLimit: 1Gi }
+
+# No AWS access: the web talks to the gateway only.
+serviceAccount:
+  irsaRoleArn: ""
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/prod/web
+  data:
+    # Signs the short-lived chat WS token (compose: CHAT_PROXY_SIGNING_SECRET
+    # from the gitignored .env). It IS the platform jwt_secret: the seeder
+    # copies the shared jwt_secret here, because chat-message-service and
+    # chat-ws-gateway verify the token with their JWT_SECRET. Rotate it only
+    # together with jwt_secret.
+    - { secretKey: CHAT_PROXY_SIGNING_SECRET, remoteRef: chat_proxy_signing_secret }
+    # The kid stamped on that token. The chat services pick the verification
+    # key by kid (chat-service/shared/accessauth secretFor): it must equal
+    # THEIR JWT_KID (the shared jwt_kid), or every chat request is a 401.
+    # The route.ts default "v1" is the dev kid and is refused in production.
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+
+env:
+  NODE_ENV: production
+  HOSTNAME: 0.0.0.0
+  PORT: "3000"
+  # Server-side proxy target: the in-cluster gateway.
+  API_GATEWAY_URL: http://api-gateway.atpost.svc.cluster.local:8080
+  # Refresh goes to identity-auth directly (compose does the same).
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  # Absolute host for feed enclosures and artwork: podcast apps fetch files
+  # from the API host directly.
+  FEED_MEDIA_BASE_URL: https://api.cleestudio.com
+  # MEDIA_STORAGE_PUBLIC_ORIGIN / MEDIA_STORAGE_INTERNAL_ORIGIN are
+  # deliberately UNSET. They exist for dev, where the signed storage link
+  # points at this machine's MinIO through a tunnel; the route's own
+  # contract (src/app/api/proxy/_lib/storageRoute.ts) says: unset in
+  # production with S3 or CloudFront, redirects to media.cleestudio.com are
+  # followed by the browser as before.
+  # Chat proxy backend (the message service's /v1/chat).
+  CHAT_BACKEND_URL: http://chat-message-service.atpost.svc.cluster.local:8092/v1/chat
+  # Through the GATEWAY, never the services directly: identity-profile,
+  # graph-service and post-service refuse a direct call with 401 (the
+  # gateway holds the internal key).
+  PROFILE_SERVICE_URL: http://api-gateway.atpost.svc.cluster.local:8080
+  GRAPH_SERVICE_URL: http://api-gateway.atpost.svc.cluster.local:8080
+  POST_SERVICE_URL: http://api-gateway.atpost.svc.cluster.local:8080
+
+# The image's HEALTHCHECK uses /login (public, 200 without a session). The
+# chart's defaults /livez and /readyz do not exist on a Next app.
+livenessProbe:
+  path: /login
+  initialDelaySeconds: 20
+  periodSeconds: 15
+  failureThreshold: 3
+readinessProbe:
+  path: /login
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # One ALB for the web hosts (app., the bare domain and admin.).
+    alb.ingress.kubernetes.io/group.name: atpost-prod-web
+    alb.ingress.kubernetes.io/group.order: "100"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /login
+    # ACM certificate covering app.cleestudio.com, cleestudio.com and
+    # admin.cleestudio.com (the W1 public certificate).
+    alb.ingress.kubernetes.io/certificate-arn: "__TF_PUBLIC_EDGE_CERTIFICATE_ARN__" # from terraform output public_edge_certificate_arn
+    alb.ingress.kubernetes.io/wafv2-acl-arn: "__TF_WAF_WEB_ACL_ARN__" # from terraform output waf_web_acl_arn
+    # The bare domain redirects to app. (contract: cleestudio.com must be
+    # accepted and redirect). An ALB action, referenced by the second host
+    # rule below with port `use-annotation`.
+    alb.ingress.kubernetes.io/actions.redirect-to-app: '{"Type":"redirect","RedirectConfig":{"Host":"app.cleestudio.com","Port":"443","Protocol":"HTTPS","Path":"/#{path}","Query":"#{query}","StatusCode":"HTTP_301"}}'
+  hosts:
+    - host: app.cleestudio.com
+      paths:
+        - { path: /, pathType: Prefix }
+    - host: cleestudio.com
+      paths:
+        - path: /
+          pathType: Prefix
+          backend: { serviceName: redirect-to-app, portName: use-annotation }
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# /metrics does not exist on the web app.
+serviceMonitor:
+  enabled: false

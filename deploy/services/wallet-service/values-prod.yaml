@@ -1,4 +1,14 @@
-# wallet-service overrides for the prod environment.
+# wallet-service overrides for prod (AWS ap-south-1).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `wallet-service`. Secrets by reference only (atpost/prod/wallet-service).
+# __TF_*__ placeholders come from Terraform outputs.
+#
+# DORMANT (plan §3: wallet off — no production provider). There is no
+# partner bank, so BANK_PARTNER stays `mock` and the gateway closes
+# /v1/wallet (GATEWAY_DISABLED_PREFIXES in api-gateway values). Deployed so
+# bill-pay-service and rider-service have the upstream they are configured
+# for; nothing reaches it from the edge.
 
 service:
   name: wallet-service
@@ -6,22 +16,19 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/wallet-service'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+replicaCount: 1
 hpa:
-  enabled: true
-  minReplicas: 3
-  maxReplicas: 12
-  targetCPUUtilizationPercentage: 65
+  enabled: false
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 50m
+    memory: 64Mi
   limits:
-    cpu: 1500m
-    memory: 1Gi
+    cpu: 500m
+    memory: 256Mi
 
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-wallet-service-irsa'
@@ -30,6 +37,13 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/wallet-service
   data:
+    # Aurora `app`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
@@ -39,11 +53,19 @@ externalSecret:
 env:
   ENV: prod
   LOG_LEVEL: info
+  AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TOPIC: wallet-events
+  # No partner bank yet: the mock partner, and a placeholder VPA that can
+  # never receive money. Replace both when a PPI partner is contracted.
+  BANK_PARTNER: mock
+  PARTNER_BANK_VPA: atpostwallet@partnerbank
 
 ingress:
   enabled: false
 
 pdb:
-  enabled: true
-  minAvailable: 2
+  enabled: false # one replica, dormant

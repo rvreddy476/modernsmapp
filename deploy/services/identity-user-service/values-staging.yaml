@@ -7,7 +7,7 @@
 
 service:
   name: identity-user-service
-  port: 8082
+  port: 8110
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/identity-user-service'

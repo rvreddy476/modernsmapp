@@ -102,18 +102,15 @@ spec:
           env:
             - name: TMPDIR
               value: /tmp
-            {{- range $k, $v := .Values.env }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
-            {{- end }}
+            {{- include "atpost-service.commonAndServiceEnv" . | nindent 12 }}
             {{- range $k, $v := .Values.worker.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          {{- if .Values.externalSecret.enabled }}
+          {{- $ef := include "atpost-service.envFrom" . }}
+          {{- if $ef }}
           envFrom:
-            - secretRef:
-                name: {{ include "atpost-service.name" . }}
+            {{- $ef | nindent 12 }}
           {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}

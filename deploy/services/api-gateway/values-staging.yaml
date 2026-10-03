@@ -93,7 +93,7 @@ env:
   BILL_PAY_SERVICE_URL: http://bill-pay-service.atpost.svc.cluster.local:8115
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
   LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
-  AI_SERVICE_URL: http://ai-service.atpost.svc.cluster.local:8098
+  AI_SERVICE_URL: http://ai-service.atpost.svc.cluster.local:8121
 
 # External entry point — ALB Ingress with the wildcard cert from
 # the dns module.

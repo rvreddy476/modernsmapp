@@ -7,8 +7,13 @@
 
 # Service identity.
 global:
-  # Deployment supplies the real 12-digit AWS account ID. Values files use
-  # this in tpl expressions so checked-in manifests never carry a fake ARN.
+  # The real 12-digit AWS account ID. NEVER checked in: the ArgoCD
+  # ApplicationSet passes it as a Helm parameter (deploy/argocd/
+  # applicationset.yaml, list generator element `awsAccountId`), and a local
+  # render passes `--set-string global.awsAccountId=...`. Values files use it
+  # in tpl expressions (image repository, IRSA role ARN) so checked-in
+  # manifests never carry a fake ARN. The chart refuses to render unless it
+  # is exactly 12 digits (atpost-service.validate).
   awsAccountId: ""
 
 service:
@@ -55,6 +60,13 @@ securityContext:
   runAsUser: 1000
   runAsGroup: 1000
 
+# Extra writable directories (the root filesystem is read-only; /tmp is always
+# an emptyDir). Each entry mounts its own emptyDir on the server container:
+#   - { mountPath: /app/.next/cache, sizeLimit: 1Gi }
+# The web apps use it for the Next.js image and fetch cache. Empty = nothing
+# rendered beyond /tmp.
+extraEmptyDirs: []
+
 # Service-account-bound IAM role (IRSA). Set to a role ARN when the
 # service needs AWS API access (S3, MSK IAM auth, etc.). Empty =
 # service-account with no AWS permissions.
@@ -62,11 +74,27 @@ serviceAccount:
   create: true
   irsaRoleArn: ""   # arn:aws:iam::<account>:role/atpost-<env>-<svc>-irsa
 
-# Environment variables. Two paths:
-#   env       inline literal values (PORT, FEATURE_FLAGS, etc.)
-#   envFrom   reference a kubernetes Secret/ConfigMap (DB creds via ESO)
+# Environment variables. Four paths, rendered in this order on the server
+# container, the worker and the migration job (later wins on a duplicate
+# name, because Kubernetes takes the last `env` entry):
+#   commonEnv     per-ENVIRONMENT conventions every service shares: the
+#                 managed-store client flags (REDIS_TLS_ENABLED,
+#                 KAFKA_TLS_ENABLED, KAFKA_SASL_MECHANISM), AWS_REGION, the
+#                 OTLP endpoint. Meant to be set once per env (e.g. an
+#                 ApplicationSet helm.valuesObject); TODAY no ApplicationSet
+#                 sets it and every prod values file carries these flags in
+#                 its own `env`. Overridable per service through `env`. Empty = render exactly what the
+#                 chart rendered before the block existed.
+#   env           per-service literal values
+#   envFrom       references to a Secret/ConfigMap (kind + name, legacy form)
+#   extraEnvFrom  verbatim envFrom entries ({secretRef: {name: ...}} or
+#                 {configMapRef: {name: ...}}), e.g. a platform-wide Secret
+#                 another chart publishes in the namespace
+#   externalSecret (below) — its Secret is mounted as envFrom automatically
+commonEnv: {}
 env: {}
 envFrom: []
+extraEnvFrom: []
 
 # Standard atpost env vars wired by the chart automatically (HTTP_PORT
 # from service.port, etc.) so per-service values don't repeat them.
@@ -81,6 +109,10 @@ externalSecret:
   remoteKey: ""     # e.g. atpost/staging/post-service. REQUIRED when enabled.
   # data: list of remote keys → kubernetes Secret data fields.
   # The chart auto-mounts the resulting Secret as envFrom secretRef.
+  # An entry may name its own `remoteKey` to read ONE property from a
+  # different Secrets Manager secret (the MSK SCRAM credentials live in
+  # AmazonMSK_*; the platform-wide keys in atpost/<env>/platform-auth):
+  #   - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: password, remoteKey: AmazonMSK_atpost-prod-services }
   data: []          # [{ secretKey: "DB_PASSWORD", remoteRef: "password" }]
 
 # Ingress. enabled=false for internal services (most of them). The
@@ -183,3 +215,115 @@ schemaDependencyImage: postgres:16-alpine
 # Bounded wait. Long enough for a cold environment where the owner is still
 # migrating, short enough that a genuinely missing owner fails visibly.
 schemaDependencyTimeoutSeconds: 300
+
+# ─── Pre-sync migration Job (W4, 3 Oct 2026) ─────────────────────────────────
+#
+# Values files referenced `migrationJob` since commerce A7 and the chart had no
+# template for it, so the block was silently ignored: commerce migrations never
+# ran on EKS. This renders a Job carrying the ArgoCD hook annotations
+# (argocd.argoproj.io/hook: PreSync by default) so ArgoCD runs it to
+# completion BEFORE the Deployment is applied and deletes the previous run
+# first (hook-delete-policy BeforeHookCreation). Outside ArgoCD the
+# annotations are inert and the Job is just a Job.
+#
+# The Job runs the SERVICE IMAGE (image.repository:image.tag) with `command`
+# — the migration binary ships in the server image — and gets the same env,
+# envFrom and ExternalSecret as the server, so the DSN it migrates is the DSN
+# the server will use. When schemaDependencies is set, the same wait-for-
+# tables init container gates the migration, so a tier-2 service's migration
+# cannot run before its parents' tables exist.
+#
+# DISABLED BY DEFAULT: a service that does not opt in renders exactly what it
+# rendered before this block existed (asserted by render_test.sh).
+migrationJob:
+  enabled: false
+  # ArgoCD sync phase. "PreSync" (or the lower-case "pre-sync" the values
+  # files already used) — the only phase that makes sense for a migration.
+  hook: PreSync
+  hookDeletePolicy: BeforeHookCreation
+  command: []       # REQUIRED when enabled, e.g. ['/app/commerce-migrate']
+  args: []
+  # Job-only env on top of commonEnv/env (e.g. a flag the migrator reads).
+  env: {}
+  backoffLimit: 2
+  # A migration that runs longer than this is killed and the sync fails
+  # visibly instead of holding the rollout forever.
+  activeDeadlineSeconds: 1800
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# ─── Webhook Ingress (W4) ────────────────────────────────────────────────────
+#
+# A SECOND Ingress for the one path a third party calls directly, bypassing
+# the API gateway: the PSP webhook (payments-service, LB-1). It is
+# authenticated by signature, not by the edge, and it must live on the same
+# public host as the API (Razorpay is given https://api.cleestudio.com/...),
+# so it JOINS the API's ALB ingress group (`groupName`) with a lower
+# `groupOrder` than the gateway's catch-all `/`, which makes the path match
+# first. One ALB per host name is a hard rule of the load-balancer
+# controller: two ingresses with the same host on two groups cannot both be
+# that host.
+#
+# wafAclArn renders the WAF annotation on this ingress. The AWS WAF
+# association is a LOAD-BALANCER attribute, so inside a group every member
+# must name the SAME ACL: the AWS Load Balancer Controller refuses to reconcile
+# a group whose members name different ACLs ("conflicting WAFv2 WebACL ARNs"),
+# which would take the WHOLE API load balancer out of sync, not just the
+# webhook. So a webhook that joins the API group carries the API ACL
+# (waf_web_acl_arn) and its own rate limit / IP rule is a scoped RULE inside
+# that ACL. The separate psp-webhook ACL (waf_psp_webhook_acl_arn) can only
+# be used when groupName is EMPTY, i.e. the webhook gets its own load
+# balancer, which needs its own host name (one ALB per host).
+#
+# groupName empty = a standalone ALB for this ingress alone.
+#
+# DISABLED BY DEFAULT (render regression asserted).
+webhookIngress:
+  enabled: false
+  className: alb
+  host: ""          # REQUIRED when enabled, e.g. api.cleestudio.com
+  path: ""          # REQUIRED when enabled, e.g. /v1/payments/webhook
+  pathType: Prefix
+  groupName: ""     # the API ingress group to join; empty = its own ALB (see above)
+  groupOrder: 10    # lower than the gateway's catch-all (only with groupName)
+  certificateArn: ""
+  wafAclArn: ""
+  annotations: {}   # extra alb.ingress.kubernetes.io/* annotations
+
+# ─── NetworkPolicy (W4) ─────────────────────────────────────────────────────
+#
+# Ingress-only policy: when enabled, the service's pods accept traffic on the
+# service port ONLY from the listed sources. Everything else (including the
+# gateway) is refused, so turn it on for services whose callers are known and
+# few (payments-service: commerce, food, dating and the webhook ALB).
+#
+# Enforcement needs a CNI that implements NetworkPolicy. On EKS that is the
+# VPC CNI with network policy enabled (enableNetworkPolicy=true in the addon
+# config — a Terraform setting) or Calico; without it the object is accepted
+# and does nothing, silently. Verify once with `kubectl exec` from a pod that
+# is NOT allowed.
+#
+# ingressFrom entries, each one peer:
+#   { podSelector: { matchLabels: { app.kubernetes.io/name: commerce-service } } }
+#       pods in THIS namespace with those labels (the chart labels every pod
+#       app.kubernetes.io/name=<service.name>; a bare `app:` label matches
+#       nothing here)
+#   { namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: x } } }
+#   { ingressController: true }
+#       the ALB. With target-type ip the ALB connects from its own ENIs in
+#       the VPC subnets, so this allows ingressControllerCidrs (the VPC CIDR
+#       from Terraform) rather than a controller pod.
+# Prometheus scraping is allowed from monitoringNamespace on the same port.
+#
+# DISABLED BY DEFAULT (render regression asserted).
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+  ingressControllerCidrs: []   # e.g. ["10.0.0.0/16"]  # from terraform output vpc_cidr
+  monitoringNamespace: observability

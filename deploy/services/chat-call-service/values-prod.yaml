@@ -1,4 +1,12 @@
-# chat-call-service overrides for the prod environment.
+# chat-call-service overrides for prod (AWS ap-south-1).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `call-service`. Secrets by reference only (atpost/prod/chat-call-service).
+# __TF_*__ placeholders come from Terraform outputs.
+#
+# CALLS ARE OFF AT LAUNCH (plan §3, contract): CALLS_ENABLED=false until
+# TURN and call push (CALL_PUSH_REQUIRED on notification-service + FCM) are
+# set up. notification-service's manifest test enforces the coupling.
 
 service:
   name: chat-call-service
@@ -6,22 +14,22 @@ service:
 
 image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/chat-call-service'
-  tag: latest # CI overrides via --set image.tag=<sha>
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-replicaCount: 3
+replicaCount: 1
 hpa:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 12
+  minReplicas: 1
+  maxReplicas: 4
   targetCPUUtilizationPercentage: 65
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
-    cpu: 1500m
-    memory: 1Gi
+    cpu: 500m
+    memory: 512Mi
 
 serviceAccount:
   irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-chat-call-service-irsa'
@@ -30,29 +38,54 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/chat-call-service
   data:
+    # Aurora `call_db`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    # LiveKit Cloud production project (same project as live-service-v2) —
+    # unused while CALLS_ENABLED=false, present so enabling is a flag flip.
     - { secretKey: LIVEKIT_API_KEY, remoteRef: livekit_api_key }
     - { secretKey: LIVEKIT_API_SECRET, remoteRef: livekit_api_secret }
+    # Managed TURN for when calls open (Cloudflare Realtime TURN or another
+    # provider): add cloudflare_turn_key_id / cloudflare_turn_api_token and
+    # uncomment. No TURN exists for production today.
+    # - { secretKey: CLOUDFLARE_TURN_KEY_ID, remoteRef: cloudflare_turn_key_id }
+    # - { secretKey: CLOUDFLARE_TURN_API_TOKEN, remoteRef: cloudflare_turn_api_token }
 
 env:
   ENV: prod
   APP_ENV: production
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_ISSUER: auth-service
   JWT_AUDIENCE: atpost-api
   JWT_RS256_KID: rsa-1
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_LIFECYCLE_TOPIC: call.lifecycle
+  KAFKA_NOTIFICATION_TOPIC: call.notifications
+  KAFKA_ANALYTICS_TOPIC: call.analytics
+  # OFF at launch. CALLS_DEV_ALLOW_STUB_MEDIA is deliberately absent (dev
+  # only). When calls open: LIVEKIT_URL (wss://<project>.livekit.cloud),
+  # ICE_SERVERS_JSON or the managed-TURN pair, CALL_PUSH_REQUIRED=true on
+  # notification-service — in that order.
   CALLS_ENABLED: "false"
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
-  LOG_LEVEL: info
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 
 ingress:
   enabled: false
 
+# One replica at launch: a PDB with minAvailable 1 would block node drains.
 pdb:
-  enabled: true
-  minAvailable: 2
+  enabled: false
