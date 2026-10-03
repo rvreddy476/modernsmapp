@@ -494,36 +494,12 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 	// Propagate to graph-service so the graph layer also stops surfacing
 	// the user. Best-effort: log on failure, do not fail the user request.
 	if base := os.Getenv("GRAPH_SERVICE_URL"); base != "" {
+		key := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY"))
 		go func() {
 			ctx2, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			body, _ := json.Marshal(map[string]string{
-				"user_id":    userID.String(),
-				"blocked_id": targetID.String(),
-				"source":     "dating",
-			})
-			req, err := http.NewRequestWithContext(ctx2, http.MethodPost, base+"/v1/graph/blocks", io.NopCloser(bytes.NewReader(body)))
-			if err != nil {
-				slog.Warn("graph block propagation: build req", "error", err)
-				return
-			}
-			req.Header.Set("Content-Type", "application/json")
-			req.ContentLength = int64(len(body))
-			// Module 3 LB-3: attribute this graph mutation. Every approved
-			// caller stamps its OWN reviewed source; the gateway overwrites
-			// any label arriving from a client, so this cannot be forged.
-			req.Header.Set("X-Graph-Write-Source", "dating-service")
-			if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-				req.Header.Set("X-Internal-Key", key)
-			}
-			resp, err := s.graphHTTPClient.Do(req)
-			if err != nil {
+			if err := postGraphBlock(ctx2, s.graphHTTPClient, base, key, userID, targetID); err != nil {
 				slog.Warn("graph block propagation failed", "error", err)
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode >= 400 {
-				slog.Warn("graph block propagation status", "status", resp.StatusCode)
 			}
 		}()
 	}
@@ -544,6 +520,43 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 				slog.Error("publish match.closed after block failed; match closed", "match_id", m.ID, "error", perr)
 			}
 		}
+	}
+	return nil
+}
+
+// graphWriteSource is dating-service's entry in graph-service's
+// pkg/writesource allowlist.
+const graphWriteSource = "dating-service"
+
+// postGraphBlock calls graph-service POST /v1/graph/block, whose contract is
+// the end-user one: the blocker is X-User-Id and the body's user_id is the
+// user being blocked. Any non-2xx is an error.
+func postGraphBlock(ctx context.Context, c *http.Client, base, key string, blockerID, blockedID uuid.UUID) error {
+	body, err := json.Marshal(map[string]string{"user_id": blockedID.String()})
+	if err != nil {
+		return fmt.Errorf("encode block body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/graph/block", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build block request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Id", blockerID.String())
+	// Module 3 LB-3: attribute this graph mutation. Every approved caller
+	// stamps its OWN reviewed source; the gateway overwrites any label
+	// arriving from a client, so this cannot be forged.
+	req.Header.Set("X-Graph-Write-Source", graphWriteSource)
+	if key != "" {
+		req.Header.Set(internalKeyHeader, key)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return fmt.Errorf("graph-service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("graph-service block status %d", resp.StatusCode)
 	}
 	return nil
 }

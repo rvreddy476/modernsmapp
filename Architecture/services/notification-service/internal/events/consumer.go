@@ -60,6 +60,9 @@ type Consumer struct {
 	// orderNotify delivers MStore order notices (commerce_consumer.go); the
 	// service implements it and tests pass a fake.
 	orderNotify orderNotifier
+	// datingNotify delivers Pulse scam alerts and date check-ins
+	// (dating_pulse.go); the service implements it and tests pass a fake.
+	datingNotify datingPulseNotifier
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -101,6 +104,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		// Guarded: a nil *Service stored in the interface would be non-nil.
 		c.ridePush = svc
 		c.orderNotify = svc
+		c.datingNotify = svc
 	}
 	return c
 }

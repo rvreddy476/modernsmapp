@@ -124,11 +124,22 @@ type SparkMatchedPayload struct {
 	MatchedAt time.Time `json:"matched_at"`
 }
 
-func (p *Producer) PublishSparkCreated(ctx context.Context, sparkID, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) error {
-	return p.publish(ctx, events.EventDatingSparkCreated, &fromUserID, SparkCreatedPayload{
-		SparkID: sparkID.String(), FromUserID: fromUserID.String(), ToUserID: toUserID.String(),
-		TargetKind: targetKind, TargetRef: targetRef, Note: note, CreatedAt: time.Now(),
-	})
+// PublishSparkCreated emits dating.spark.created. revealSender false (the
+// recipient may not see who sparked them, mechanic M4) leaves the sender,
+// the note and the envelope actor out, so the notification has no actor to
+// name.
+func (p *Producer) PublishSparkCreated(ctx context.Context, sparkID, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, revealSender bool) error {
+	payload := SparkCreatedPayload{
+		SparkID: sparkID.String(), ToUserID: toUserID.String(),
+		TargetKind: targetKind, TargetRef: targetRef, CreatedAt: time.Now(),
+	}
+	actor := (*uuid.UUID)(nil)
+	if revealSender {
+		payload.FromUserID = fromUserID.String()
+		payload.Note = note
+		actor = &fromUserID
+	}
+	return p.publish(ctx, events.EventDatingSparkCreated, actor, payload)
 }
 
 func (p *Producer) PublishSparkMatched(ctx context.Context, matchID, userA, userB uuid.UUID) error {
@@ -782,5 +793,48 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 	return p.writer.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(envelope.EventID),
 		Value: envelopeBytes,
+	})
+}
+
+// ScamAlertPayload is dating.safety.scam_alert (mechanic M17): one per
+// recipient. notification-service renders it as a safety notice.
+type ScamAlertPayload struct {
+	RecipientID      string    `json:"recipient_id"`
+	MatchID          string    `json:"match_id"`
+	RemovedFirstName string    `json:"removed_first_name"`
+	IssuedAt         time.Time `json:"issued_at"`
+}
+
+// PublishScamAlert warns recipientID that someone they matched with
+// (matchID) was suspended for scam behaviour. The envelope actor is the
+// recipient, as for the safe-meet notices; the removed person is named only
+// by first name in the payload.
+func (p *Producer) PublishScamAlert(ctx context.Context, recipientID, matchID uuid.UUID, removedFirstName string) error {
+	return p.publish(ctx, events.EventDatingScamAlert, &recipientID, ScamAlertPayload{
+		RecipientID: recipientID.String(), MatchID: matchID.String(),
+		RemovedFirstName: removedFirstName, IssuedAt: time.Now().UTC(),
+	})
+}
+
+// DateCheckinDuePayload is dating.date_checkin.due (mechanic M14): ask the
+// recipient how a date went.
+type DateCheckinDuePayload struct {
+	RecipientID   string    `json:"recipient_id"`
+	MatchID       string    `json:"match_id"`
+	MeetID        string    `json:"meet_id"`
+	WithFirstName string    `json:"with_first_name"`
+	DueAt         time.Time `json:"due_at"`
+}
+
+// PublishDateCheckinDue asks recipientID how their date in matchID went.
+// meetID may be uuid.Nil (no planned meet); withFirstName may be "".
+func (p *Producer) PublishDateCheckinDue(ctx context.Context, recipientID, matchID, meetID uuid.UUID, withFirstName string, dueAt time.Time) error {
+	meet := ""
+	if meetID != uuid.Nil {
+		meet = meetID.String()
+	}
+	return p.publish(ctx, events.EventDatingDateCheckinDue, &recipientID, DateCheckinDuePayload{
+		RecipientID: recipientID.String(), MatchID: matchID.String(), MeetID: meet,
+		WithFirstName: withFirstName, DueAt: dueAt.UTC(),
 	})
 }

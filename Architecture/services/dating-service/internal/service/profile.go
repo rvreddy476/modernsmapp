@@ -260,6 +260,11 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 	if p.Gender != nil && !validGender(strings.TrimSpace(*p.Gender)) {
 		return nil, ErrInvalidGender
 	}
+	// Mechanic M6: interests, languages, height and the basics come from
+	// fixed lists.
+	if err := validateProfileFields(p); err != nil {
+		return nil, err
+	}
 	// Lane D9: religion and community need explicit consent (422
 	// CONSENT_REQUIRED), checked before anything is written.
 	if err := s.requireSensitiveProfileConsent(ctx, userID, p); err != nil {

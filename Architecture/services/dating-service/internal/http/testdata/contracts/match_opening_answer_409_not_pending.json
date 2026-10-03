@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FIRST_MOVE_NOT_PENDING",
+    "message": "this match is not waiting for an opening answer from you"
+  },
+  "meta": {}
+}

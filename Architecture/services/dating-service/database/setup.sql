@@ -1464,3 +1464,348 @@ CREATE TABLE IF NOT EXISTS dating_boost_balances (
     balance    INT NOT NULL DEFAULT 0 CHECK (balance >= 0),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M1 — the refilling swipe deck (DATING_DECK_REFILL_ENABLED).
+--
+-- dating_deck_ledger: one row per deck card the user acted on (spark | pass |
+--   super_spark). The daily card allowance counts the rows of the last 24
+--   hours; a rewind (M2) takes its pass row back out. It is a quota ledger,
+--   not a history: a profile purge deletes the user's rows.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_deck_ledger (
+    user_id      UUID        NOT NULL,
+    candidate_id UUID        NOT NULL,
+    action       TEXT        NOT NULL CHECK (action IN ('spark','pass','super_spark')),
+    acted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_deck_ledger_user
+    ON dating_deck_ledger(user_id, acted_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M2 — rewind (DATING_REWIND_ENABLED): undo the last pass.
+--
+-- dating_passes.rewound_at: set by a rewind. A rewound pass no longer keeps
+--   the candidate out of the deck; passing them again clears it. The row is
+--   never deleted by a rewind.
+-- dating_rewind_ledger: one row per rewind. The free daily allowance counts
+--   the rows of the last 24 hours, and its newest row is the point a later
+--   rewind cannot reach behind.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_passes ADD COLUMN IF NOT EXISTS rewound_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS dating_rewind_ledger (
+    user_id      UUID        NOT NULL,
+    candidate_id UUID        NOT NULL,
+    rewound_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_rewind_ledger_user
+    ON dating_rewind_ledger(user_id, rewound_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M3 — Super Spark (DATING_SUPER_SPARK_ENABLED).
+--
+-- dating_sparks.is_super: the spark was sent as a Super Spark. The recipient
+--   sees it marked and first in their incoming list.
+-- dating_super_spark_ledger: one row per Super Spark charged. source 'daily'
+--   rows inside the last 24 hours are the daily allowance used; 'pack' rows
+--   record a purchased one being spent.
+-- dating_super_spark_balances: purchased Super Sparks not yet spent. A paid
+--   pack adds its quantity; a full refund takes back what is still unspent.
+-- dating_premium_purchases.units_granted / units_revoked: what a pack
+--   purchase added and what its refund took back, so a refund can never take
+--   more than that purchase gave.
+-- The product CHECK is widened once to admit the two packs.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_sparks ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS dating_super_spark_ledger (
+    user_id    UUID        NOT NULL,
+    to_user_id UUID        NOT NULL,
+    source     TEXT        NOT NULL CHECK (source IN ('daily','pack')),
+    sent_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_super_spark_ledger_user
+    ON dating_super_spark_ledger(user_id, sent_at DESC);
+
+CREATE TABLE IF NOT EXISTS dating_super_spark_balances (
+    user_id    UUID PRIMARY KEY,
+    balance    INT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE dating_premium_purchases ADD COLUMN IF NOT EXISTS units_granted INT NOT NULL DEFAULT 0;
+ALTER TABLE dating_premium_purchases ADD COLUMN IF NOT EXISTS units_revoked INT NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'dating_premium_purchases'::regclass
+          AND conname = 'dating_premium_purchases_product_check'
+          AND pg_get_constraintdef(oid) LIKE '%super_spark_5%'
+    ) THEN
+        ALTER TABLE dating_premium_purchases DROP CONSTRAINT IF EXISTS dating_premium_purchases_product_check;
+        ALTER TABLE dating_premium_purchases ADD CONSTRAINT dating_premium_purchases_product_check
+            CHECK (product IN ('pass_30d','pass_90d','pass_365d','boost','super_spark_5','super_spark_15'));
+    END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M5 — first move (DATING_FIRST_MOVE_ENABLED).
+--
+-- dating_profiles.first_move_enabled: the per-user opt-in to sending the
+--   first message in every new match.
+-- dating_opening_questions: up to three questions per user that a match may
+--   answer as the first message. Replacing the set archives the old rows;
+--   a profile purge deletes them.
+-- dating_matches.first_mover_ids: snapshot, when the match forms, of who
+--   sends the first message (empty: anyone, the seven-day window).
+-- dating_match_extend_ledger: one row per free 24-hour extend; the free
+--   allowance counts the rows of the last 24 hours.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS first_move_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dating_matches  ADD COLUMN IF NOT EXISTS first_mover_ids UUID[] NOT NULL DEFAULT '{}';
+
+CREATE TABLE IF NOT EXISTS dating_opening_questions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID        NOT NULL,
+    position    INT         NOT NULL CHECK (position BETWEEN 1 AND 3),
+    text        TEXT        NOT NULL CHECK (length(text) BETWEEN 1 AND 600),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    archived_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dating_opening_questions_live
+    ON dating_opening_questions(user_id, position) WHERE archived_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS dating_match_extend_ledger (
+    user_id     UUID        NOT NULL,
+    match_id    UUID        NOT NULL,
+    extended_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_match_extend_ledger_user
+    ON dating_match_extend_ledger(user_id, extended_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M6 — filters (DATING_FILTERS_V2_ENABLED).
+--
+-- dating_profiles.interests: up to ten codes from the fixed interest list
+--   (service/profile_options.go). Height, languages and the lifestyle basics
+--   already have columns; their values are now validated against the same
+--   lists.
+-- dating_preferences: the filters a pass unlocks. They stay stored when a
+--   pass runs out and apply only while the user holds one. language_filter
+--   (already present) is the language filter.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles    ADD COLUMN IF NOT EXISTS interests       TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS verified_only   BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS min_height_cm   INT;
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS max_height_cm   INT;
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS drinking_filter TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS smoking_filter  TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS exercise_filter TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE dating_preferences ADD COLUMN IF NOT EXISTS diet_filter     TEXT[]  NOT NULL DEFAULT '{}';
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M7 — daily picks (DATING_PICKS_ENABLED).
+--
+-- dating_daily_pick_days: one row per user per local date once that day's
+--   selection is made (also when it found nobody), so it is made once.
+-- dating_daily_picks: the day's picks in order. A snapshot only: every read
+--   re-applies visibility, blocks and actions. Purged with the profile.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_daily_pick_days (
+    user_id    UUID        NOT NULL,
+    pick_date  DATE        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, pick_date)
+);
+CREATE TABLE IF NOT EXISTS dating_daily_picks (
+    user_id      UUID        NOT NULL,
+    pick_date    DATE        NOT NULL,
+    candidate_id UUID        NOT NULL,
+    position     INT         NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, pick_date, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_daily_picks_candidate
+    ON dating_daily_picks(candidate_id);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M8 — travel mode (DATING_TRAVEL_ENABLED).
+--
+-- dating_travel: one row per user, the destination city's public centre
+--   (snapped to the location grid, with its geohash) and the trip window.
+--   An active trip (inside the window, not ended, the traveller holding an
+--   unexpired pass) makes the destination the traveller's effective
+--   location in discovery. Ending a trip stamps ended_at. Purged with the
+--   profile.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_travel (
+    user_id    UUID PRIMARY KEY,
+    city_code  TEXT             NOT NULL,
+    city_label TEXT             NOT NULL,
+    latitude   DOUBLE PRECISION NOT NULL,
+    longitude  DOUBLE PRECISION NOT NULL,
+    geohash    TEXT             NOT NULL,
+    starts_at  TIMESTAMPTZ      NOT NULL,
+    ends_at    TIMESTAMPTZ      NOT NULL,
+    ended_at   TIMESTAMPTZ,
+    created_at TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    CHECK (ends_at > starts_at AND ends_at <= starts_at + INTERVAL '7 days 1 minute')
+);
+CREATE INDEX IF NOT EXISTS idx_dating_travel_geohash
+    ON dating_travel(geohash) WHERE ended_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M9 — in-match extras.
+--
+-- dating_profiles.read_receipts_enabled: the opt-in to read receipts
+--   (DATING_READ_RECEIPTS_ENABLED). It applies only while the user holds a
+--   pass; chat-service enforces it from the until-time dating pushes.
+-- Calls after an exchange (DATING_CALL_AFTER_EXCHANGE_ENABLED) keep their
+-- state in chat-service (conversation_members.first_sent_at).
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M12 — dealbreakers (DATING_DEALBREAKERS_ENABLED).
+--
+-- The preferences a user marked as dealbreakers: anyone who fails one is
+-- kept out of that user's deck and picks AND never shown that user.
+-- Codes: age, distance, intent (free); verified, height, languages,
+-- drinking, smoking, exercise, diet (pass).
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_preferences
+    ADD COLUMN IF NOT EXISTS dealbreakers TEXT[] NOT NULL DEFAULT '{}';
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M17 — scam alerts (DATING_SCAM_ALERT_ENABLED).
+--
+-- The outbox of warnings to people who matched with someone suspended on a
+-- scam report: one row per (subject, recipient), sent once. A safety record,
+-- never deleted; a purge swaps the purged id for its subject token.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_scam_alerts (
+    subject_id   UUID        NOT NULL,
+    recipient_id UUID        NOT NULL,
+    match_id     UUID        NOT NULL,
+    first_name   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at      TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
+    attempts     INT         NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    PRIMARY KEY (subject_id, recipient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_scam_alerts_pending
+    ON dating_scam_alerts(created_at) WHERE sent_at IS NULL AND cancelled_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_scam_alerts_recipient
+    ON dating_scam_alerts(recipient_id);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M14 — after-date check-ins (DATING_DATE_CHECKIN_ENABLED).
+--
+-- dating_meets.date_checkin_asked_at: the meet's check-in was sent (once).
+-- dating_date_feedback: the answers, append-only. A "did not feel safe"
+-- answer is safety evidence: never deleted; a purge swaps the purged id for
+-- its subject token.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_meets ADD COLUMN IF NOT EXISTS date_checkin_asked_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS dating_date_feedback (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id   UUID        NOT NULL,
+    user_id    UUID        NOT NULL,
+    other_id   UUID        NOT NULL,
+    met        TEXT        NOT NULL CHECK (met IN ('yes','no','not_yet')),
+    again      TEXT        CHECK (again IN ('yes','no','unsure')),
+    felt_safe  BOOLEAN,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_date_feedback_match_user
+    ON dating_date_feedback(match_id, user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_date_feedback_other
+    ON dating_date_feedback(other_id);
+CREATE INDEX IF NOT EXISTS idx_dating_meets_checkin_due
+    ON dating_meets(scheduled_at) WHERE date_checkin_asked_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M16 — hide from people I know (DATING_HIDE_KNOWN_ENABLED).
+--
+-- dating_hide_known: who has the setting on. dating_known_people: their
+-- accepted Momentum connections, snapshotted from graph-service and
+-- refreshed daily. Either side's setting keeps the pair out of each other's
+-- decks and picks. Purged with the profile.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_hide_known (
+    user_id      UUID        PRIMARY KEY,
+    enabled      BOOLEAN     NOT NULL DEFAULT false,
+    connections  INT         NOT NULL DEFAULT 0,
+    refreshed_at TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS dating_known_people (
+    user_id  UUID NOT NULL,
+    other_id UUID NOT NULL,
+    PRIMARY KEY (user_id, other_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_known_people_other
+    ON dating_known_people(other_id);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M13 — kind messages (DATING_KIND_CHECK_ENABLED).
+--
+-- dating_comment_filters: each user's spark-comment filter (hide unkind
+-- comments, on by default; their own hidden words). Purged with the profile.
+-- dating_message_feedback: "did this message bother you?" answers. Safety
+-- evidence: append-only, never deleted; a purge swaps the purged id for its
+-- subject token. The message text is never stored.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_comment_filters (
+    user_id       UUID        PRIMARY KEY,
+    filter_unkind BOOLEAN     NOT NULL DEFAULT true,
+    words         TEXT[]      NOT NULL DEFAULT '{}',
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS dating_message_feedback (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id   UUID        NOT NULL,
+    user_id    UUID        NOT NULL,
+    other_id   UUID        NOT NULL,
+    bothered   BOOLEAN     NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_message_feedback_other
+    ON dating_message_feedback(other_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Pulse mechanics M15 — voice/video prompt answers (DATING_MEDIA_PROMPTS_ENABLED).
+--
+-- A prompt answer may carry a <=30 s clip held by media-service in the
+-- private dating_clip scope (media's reclaim_policy lists clip_media_id as
+-- a live reference). clip_status: pending (media undecided), pending_review
+-- (a moderator decides), approved (shown), rejected. A clip-only answer has
+-- an empty text answer. Purged with the prompt rows.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_prompts
+    ADD COLUMN IF NOT EXISTS clip_media_id    UUID,
+    ADD COLUMN IF NOT EXISTS clip_kind        TEXT,
+    ADD COLUMN IF NOT EXISTS clip_duration_ms INT,
+    ADD COLUMN IF NOT EXISTS clip_status      TEXT,
+    ADD COLUMN IF NOT EXISTS clip_reason      TEXT,
+    ADD COLUMN IF NOT EXISTS clip_checked_at  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS clip_source      TEXT;
+DO $m15$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'dating_prompts_clip_status_chk') THEN
+        ALTER TABLE dating_prompts ADD CONSTRAINT dating_prompts_clip_status_chk
+            CHECK (clip_status IS NULL OR clip_status IN ('pending','pending_review','approved','rejected'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'dating_prompts_clip_kind_chk') THEN
+        ALTER TABLE dating_prompts ADD CONSTRAINT dating_prompts_clip_kind_chk
+            CHECK (clip_kind IS NULL OR clip_kind IN ('audio','video'));
+    END IF;
+END $m15$;
+CREATE INDEX IF NOT EXISTS idx_dating_prompts_clip_status
+    ON dating_prompts(clip_status, clip_checked_at) WHERE clip_media_id IS NOT NULL;

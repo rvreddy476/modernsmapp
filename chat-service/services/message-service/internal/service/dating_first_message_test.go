@@ -89,7 +89,9 @@ type datingSendStore struct {
 	meta    map[uuid.UUID]*postgres.ConversationMeta
 	intents map[string]*postgres.MessageDeliveryIntent
 	rows    map[uuid.UUID]*fakeFirstMessageRow
-	order   []uuid.UUID
+	// sent records MarkMemberSent calls (dating mechanic M9).
+	sent  map[uuid.UUID][]uuid.UUID
+	order []uuid.UUID
 }
 
 func newDatingSendStore() *datingSendStore {

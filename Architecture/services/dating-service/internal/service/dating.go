@@ -33,6 +33,8 @@ type Service struct {
 	// strip + blur, signed delivery, delete) and the photo safety bars
 	// (unset = DefaultPhotoSafetyConfig).
 	mediaPhotos          MediaPhotoClient
+	// mediaClips is media-service for prompt clips (mechanic M15).
+	mediaClips MediaClipClient
 	photoCfg             PhotoSafetyConfig
 	photoCfgSet          bool
 	graphServiceClient   GraphServiceClient
@@ -58,6 +60,8 @@ type Service struct {
 	safetyCfgSet bool
 	trustSafety  TrustSafetyClient
 	connections  ConnectionChecker
+	// connectionLister lists accepted connections (mechanic M16).
+	connectionLister ConnectionLister
 
 	// Sprint 6 — moderation-strict feature-flag cache (60s TTL). The mutex
 	// is held for the cache read/write only; flag fetches happen outside.
@@ -69,6 +73,9 @@ type Service struct {
 	// for the best-effort block-propagation call to graph-service. Avoids
 	// the http.DefaultClient leak that hangs goroutines on a slow graph.
 	graphHTTPClient *http.Client
+
+	// Pulse mechanics flags and limits (mechanics.go). Zero value: all off.
+	mechanics MechanicsConfig
 }
 
 // New builds a Service. The producer + graphProvider are set later in main.go.

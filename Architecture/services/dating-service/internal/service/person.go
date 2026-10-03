@@ -50,6 +50,9 @@ type PersonCard struct {
 	// hides last active — the default for a new profile. Never a timestamp.
 	LastActiveBucket string `json:"last_active_bucket,omitempty"`
 	LastActiveLabel  string `json:"last_active_label,omitempty"`
+	// Travelling (mechanic M8): on an active trip; City and the distance
+	// bucket are the destination's. Omitted when false.
+	Travelling bool `json:"travelling,omitempty"`
 	// Detail is the pre-match "enough to decide" block, present only on the
 	// surfaces where the viewer is deciding about this person: the person
 	// card itself and an incoming spark. The match list, the trusted-contact
@@ -96,6 +99,9 @@ type PromptAnswer struct {
 	PromptID int    `json:"prompt_id"`
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
+	// Clip (mechanic M15): an approved voice or video clip; the answer
+	// text may then be empty.
+	Clip *PromptClip `json:"clip,omitempty"`
 }
 
 // ProfileDetail is the pre-match block described above. Every member is
@@ -112,6 +118,28 @@ type ProfileDetail struct {
 	// Photos is the whole approved gallery, primary first, so the card can
 	// be swiped through. Each entry carries its own variant.
 	Photos []CardPhoto `json:"photos,omitempty"`
+	// Mechanic M6: interests and the lifestyle basics, as option codes
+	// (labels come from GET /profile/options). Omitted when unset.
+	Interests []string `json:"interests,omitempty"`
+	HeightCm  int      `json:"height_cm,omitempty"`
+	Drinking  string   `json:"drinking,omitempty"`
+	Smoking   string   `json:"smoking,omitempty"`
+	Exercise  string   `json:"exercise,omitempty"`
+	Diet      string   `json:"diet,omitempty"`
+}
+
+// ProfileBasics is the shown basics feeding a ProfileDetail.
+type ProfileBasics struct {
+	Interests                         []string
+	HeightCm                          *int
+	Drinking, Smoking, Exercise, Diet *string
+}
+
+func strOr(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // cardPhotos applies the lane D6 rule to each photo with that photo's OWN
@@ -142,7 +170,15 @@ func promptAnswers(ps []store.Prompt) []PromptAnswer {
 		if !ok {
 			continue
 		}
-		out = append(out, PromptAnswer{PromptID: p.PromptID, Question: question, Answer: p.Answer})
+		a := PromptAnswer{PromptID: p.PromptID, Question: question, Answer: p.Answer}
+		if p.ClipStatus != nil && *p.ClipStatus == store.ClipStatusApproved && p.ClipKind != nil && p.ClipDurationMs != nil {
+			a.Clip = &PromptClip{Kind: *p.ClipKind, DurationMs: *p.ClipDurationMs, URL: PromptClipPath(p.UserID, p.PromptID)}
+		}
+		// A clip-only answer whose clip is not shown has nothing to show.
+		if a.Answer == "" && a.Clip == nil {
+			continue
+		}
+		out = append(out, a)
 	}
 	if len(out) == 0 {
 		return nil
@@ -151,14 +187,26 @@ func promptAnswers(ps []store.Prompt) []PromptAnswer {
 }
 
 // buildProfileDetail assembles the block, or nil when there is nothing in it.
-func buildProfileDetail(bio string, languages []string, prompts []store.Prompt, photos []store.PhotoRef, v PhotoViewer) *ProfileDetail {
+func buildProfileDetail(bio string, languages []string, basics ProfileBasics, prompts []store.Prompt, photos []store.PhotoRef, v PhotoViewer) *ProfileDetail {
 	d := &ProfileDetail{
 		Bio:       bio,
 		Prompts:   promptAnswers(prompts),
 		Languages: languages,
 		Photos:    cardPhotos(photos, v),
+		Interests: basics.Interests,
+		Drinking:  strOr(basics.Drinking),
+		Smoking:   strOr(basics.Smoking),
+		Exercise:  strOr(basics.Exercise),
+		Diet:      strOr(basics.Diet),
 	}
-	if d.Bio == "" && len(d.Prompts) == 0 && len(d.Languages) == 0 && len(d.Photos) == 0 {
+	if basics.HeightCm != nil {
+		d.HeightCm = *basics.HeightCm
+	}
+	if len(d.Interests) == 0 {
+		d.Interests = nil
+	}
+	if d.Bio == "" && len(d.Prompts) == 0 && len(d.Languages) == 0 && len(d.Photos) == 0 &&
+		len(d.Interests) == 0 && d.HeightCm == 0 && d.Drinking == "" && d.Smoking == "" && d.Exercise == "" && d.Diet == "" {
 		return nil
 	}
 	return d
@@ -210,6 +258,9 @@ func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Pro
 		band := LastActiveBucketFor(row.LastActiveAt, time.Now())
 		card.LastActiveBucket, card.LastActiveLabel = band.Code, band.Label
 	}
+	if row.Travelling {
+		card.Travelling = true
+	}
 	if row.PrimaryPhotoID != nil {
 		id := *row.PrimaryPhotoID
 		card.PrimaryPhotoID = &id
@@ -221,7 +272,9 @@ func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Pro
 		}
 	}
 	if withDetail {
-		card.Detail = buildProfileDetail(row.Bio, row.LanguagePrefs, prompts, photos, photoViewer)
+		card.Detail = buildProfileDetail(row.Bio, row.LanguagePrefs, ProfileBasics{
+			Interests: row.Interests, HeightCm: row.HeightCm, Drinking: row.Drinking, Smoking: row.Smoking, Exercise: row.Exercise, Diet: row.Diet,
+		}, prompts, photos, photoViewer)
 	}
 	return card
 }
@@ -252,7 +305,7 @@ func (s *Service) personCardsDetail(ctx context.Context, viewerID uuid.UUID, ids
 		slog.Warn("person cards matched-partners lookup failed", "viewer_id", viewerID, "error", mErr)
 		matched = map[uuid.UUID]struct{}{}
 	}
-	viewer, _ := s.store.GetProfile(ctx, viewerID)
+	viewer, _ := s.viewerProfile(ctx, viewerID)
 
 	// Only the ids that survived the visibility query are looked up, so a
 	// blocked or deleted person's prompts and photos are never even read.
@@ -283,6 +336,14 @@ func (s *Service) detailFor(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID
 	if err != nil {
 		slog.Warn("card prompts lookup failed", "error", err)
 		prompts = nil
+	}
+	// Mechanic M15: with the flag off no clip reaches a card.
+	if !s.mechanics.MediaPrompts {
+		for _, ps := range prompts {
+			for i := range ps {
+				ps[i].ClipStatus = nil
+			}
+		}
 	}
 	photos, err := s.store.ListApprovedPhotosForUsers(ctx, ids)
 	if err != nil {
@@ -318,12 +379,27 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 	if matched {
 		return true, nil
 	}
-	sparked, err := s.store.HasIncomingSparkFrom(ctx, viewerID, targetID)
-	if err != nil {
-		return false, err
+	// An incoming spark opens the card only when the viewer may see who
+	// sparked them (mechanic M4).
+	if s.likedYouUnlocked(ctx, viewerID) {
+		sparked, err := s.store.HasIncomingSparkFrom(ctx, viewerID, targetID)
+		if err != nil {
+			return false, err
+		}
+		if sparked {
+			return true, nil
+		}
 	}
-	if sparked {
-		return true, nil
+	// Mechanic M7: a daily pick opens the card too (picks are kept apart
+	// from the deck, so the deck check alone would refuse them).
+	if s.mechanics.Picks {
+		picked, err := s.store.InRecentPicks(ctx, viewerID, targetID)
+		if err != nil {
+			return false, err
+		}
+		if picked {
+			return true, nil
+		}
 	}
 	return s.inCurrentDeck(ctx, viewerID, targetID)
 }
@@ -381,7 +457,7 @@ func (s *Service) GetPersonCard(ctx context.Context, viewerID, targetID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	viewer, _ := s.store.GetProfile(ctx, viewerID)
+	viewer, _ := s.viewerProfile(ctx, viewerID)
 	// The person card is where the viewer decides, so it carries the
 	// pre-match detail block.
 	prompts, photos := s.detailFor(ctx, []uuid.UUID{targetID})
@@ -394,6 +470,13 @@ func (s *Service) GetPersonCard(ctx context.Context, viewerID, targetID uuid.UUI
 type MatchWithPerson struct {
 	*store.Match
 	Person *PersonCard `json:"person,omitempty"`
+	// FirstMove (mechanic M5) is present while the match waits for its
+	// first message under the first-move rule.
+	FirstMove *FirstMoveView `json:"first_move,omitempty"`
+	// CanCall (mechanic M9, single match view only): the pair may start a
+	// voice or video call now — both have written. Omitted while the
+	// mechanic is off.
+	CanCall *bool `json:"can_call,omitempty"`
 }
 
 // SparkWithPerson is an incoming spark plus the sender's compact card.
@@ -422,7 +505,7 @@ func (s *Service) decorateMatches(ctx context.Context, viewerID uuid.UUID, match
 	cards := s.personCards(ctx, viewerID, ids)
 	out := make([]*MatchWithPerson, 0, len(matches))
 	for _, m := range matches {
-		out = append(out, &MatchWithPerson{Match: m, Person: cards[otherParticipant(m, viewerID)]})
+		out = append(out, &MatchWithPerson{Match: m, Person: cards[otherParticipant(m, viewerID)], FirstMove: s.firstMoveView(ctx, m, viewerID)})
 	}
 	return out
 }
@@ -451,5 +534,5 @@ func (s *Service) GetMatchViewForUser(ctx context.Context, matchID, userID uuid.
 		return nil, err
 	}
 	other := otherParticipant(m, userID)
-	return &MatchWithPerson{Match: m, Person: s.personCards(ctx, userID, []uuid.UUID{other})[other]}, nil
+	return &MatchWithPerson{Match: m, Person: s.personCards(ctx, userID, []uuid.UUID{other})[other], FirstMove: s.firstMoveView(ctx, m, userID), CanCall: s.canCall(ctx, m)}, nil
 }

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "CLIP_NOT_READY",
+    "message": "the clip is still processing; try again shortly"
+  },
+  "meta": {}
+}

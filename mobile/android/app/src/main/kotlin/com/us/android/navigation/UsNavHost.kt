@@ -98,6 +98,8 @@ import com.us.android.feature.commerce.navigation.navigateToMStore
 import com.us.android.feature.dating.navigation.datingScreens
 import com.us.android.feature.dating.navigation.navigateToDating
 import com.us.android.feature.dating.navigation.navigateToDatingMatch
+import com.us.android.feature.dating.navigation.navigateToDatingReport
+import com.us.android.feature.dating.navigation.navigateToDatingSafety
 import com.us.android.feature.dating.navigation.navigateToDatingSparks
 import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.feast.checkout.FeastPaymentRequest
@@ -531,9 +533,13 @@ private fun NavHostController.openPushDestination(
         PushDestinations.TYPE_DATING_MATCH,
         PushDestinations.TYPE_DATING_MESSAGE,
         PushDestinations.TYPE_DATING_FIRST_MESSAGE,
+        PushDestinations.TYPE_DATING_SCAM_ALERT,
+        PushDestinations.TYPE_DATING_DATE_CHECKIN,
         -> when (val target = PushDestinations.datingTargetOf(destination)) {
             DatingPushTarget.IncomingSparks -> navigateToDatingSparks()
-            is DatingPushTarget.Match -> navigateToDatingMatch(target.matchId, openChat = target.openChat)
+            DatingPushTarget.Safety -> navigateToDatingSafety()
+            is DatingPushTarget.Match ->
+                navigateToDatingMatch(target.matchId, openChat = target.openChat, checkIn = target.checkIn)
             null -> Unit
         }
         // Mopedu (2026-09-18): every ride push opens the ride screen, which
@@ -758,6 +764,10 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenChat = { conversationId, title -> navController.navigateToChatThread(conversationId, title) },
         onOpenPayment = onOpenDatingPayment,
         onAbandonPayment = onAbandonDatingPayment,
+        // Mechanic M9: the match screen's Voice/Video, the same edge as chat's.
+        onStartCall = { peerUserId, peerName, video, conversationId ->
+            navController.navigateToOutgoingCall(peerUserId, peerName, video, conversationId)
+        },
     )
 
     // Mopedu (2026-09-18): the customer's ride — quote, book, track, OTP, pay,
@@ -890,6 +900,10 @@ private fun NavGraphBuilder.tabDestinations(
         },
         onStartCall = { peerUserId, peerName, video, conversationId ->
             navController.navigateToOutgoingCall(peerUserId, peerName, video, conversationId)
+        },
+        // Kind messages (Pulse M13): only a Pulse chat ever offers this.
+        onReportSender = { senderId, messageId, name ->
+            navController.navigateToDatingReport(senderId, messageId, name)
         },
     )
     callScreen(onBack = { navController.popBackStack() })

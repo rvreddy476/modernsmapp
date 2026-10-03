@@ -22,9 +22,15 @@ type Spark struct {
 	TargetRef  string    `json:"target_ref"`
 	Note       *string   `json:"note,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+	// IsSuper marks a Super Spark (mechanic M3). Omitted for an ordinary one.
+	IsSuper bool `json:"super,omitempty"`
 	// DeclinedAt is set when the recipient declined. Never serialised: the
 	// sender must not learn of a decline.
 	DeclinedAt *time.Time `json:"-"`
+	// NoteHidden (mechanic M13) is set only in the recipient's lists when
+	// their comment filter hides the note: "unkind" or "your_words". Not
+	// stored.
+	NoteHidden string `json:"note_hidden,omitempty"`
 }
 
 // ErrSparkNotFound is returned when a spark id does not exist.
@@ -100,7 +106,7 @@ func (s *Store) HasRecentDecline(ctx context.Context, senderID, recipientID uuid
 	return declined, nil
 }
 
-const sparkSelectCols = `id, from_user_id, to_user_id, target_kind, target_ref, note, created_at, declined_at`
+const sparkSelectCols = `id, from_user_id, to_user_id, target_kind, target_ref, note, created_at, declined_at, is_super`
 
 // rowQuerier is satisfied by both the pool and a transaction.
 type rowQuerier interface {
@@ -109,7 +115,7 @@ type rowQuerier interface {
 
 func scanSpark(row pgx.Row) (*Spark, error) {
 	s := &Spark{}
-	if err := row.Scan(&s.ID, &s.FromUserID, &s.ToUserID, &s.TargetKind, &s.TargetRef, &s.Note, &s.CreatedAt, &s.DeclinedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.FromUserID, &s.ToUserID, &s.TargetKind, &s.TargetRef, &s.Note, &s.CreatedAt, &s.DeclinedAt, &s.IsSuper); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSparkNotFound
 		}
@@ -162,6 +168,7 @@ func upsertSpark(ctx context.Context, q rowQuerier, fromUserID, toUserID uuid.UU
         ON CONFLICT (from_user_id, to_user_id, target_kind, target_ref) DO UPDATE
             SET note        = COALESCE(EXCLUDED.note, dating_sparks.note),
                 declined_at = CASE WHEN `+stale+` THEN NULL ELSE dating_sparks.declined_at END,
+                is_super    = CASE WHEN `+stale+` THEN false ELSE dating_sparks.is_super END,
                 created_at  = CASE WHEN `+stale+` THEN now() ELSE dating_sparks.created_at END
         RETURNING `+sparkSelectCols, fromUserID, toUserID, targetKind, targetRef, notePtr)
 	return scanSpark(row)
@@ -183,6 +190,25 @@ func (s *Store) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUID,
 // allowance cannot be reset. A per-sender advisory lock serialises the
 // count-then-insert. limit <= 0 disables the check.
 func (s *Store) CreateSparkWithQuota(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, limit int) (*Spark, error) {
+	return s.CreateSparkWithOptions(ctx, fromUserID, toUserID, targetKind, targetRef, note, SparkOptions{Limit: limit})
+}
+
+// SparkOptions is the allowances a spark is created under.
+type SparkOptions struct {
+	// Limit is the spark allowance per SparkQuotaWindow (<= 0: no check).
+	Limit int
+	// Super sends it as a Super Spark (mechanic M3), charged in the same
+	// transaction: first against SuperDailyLimit per SuperSparkQuotaWindow,
+	// then against the purchased balance; ErrSuperSparkLimited when both are
+	// spent. A person the sender already holds a live Super Spark toward is
+	// not charged again.
+	Super           bool
+	SuperDailyLimit int
+}
+
+// CreateSparkWithOptions is CreateSparkWithQuota plus the Super Spark charge.
+func (s *Store) CreateSparkWithOptions(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, opts SparkOptions) (*Spark, error) {
+	limit := opts.Limit
 	if err := validateSparkInput(fromUserID, toUserID, targetKind, targetRef); err != nil {
 		return nil, err
 	}
@@ -221,14 +247,40 @@ func (s *Store) CreateSparkWithQuota(ctx context.Context, fromUserID, toUserID u
 			return nil, fmt.Errorf("record spark ledger: %w", err)
 		}
 	}
+	if opts.Super {
+		if err := chargeSuperSparkTx(ctx, tx, fromUserID, toUserID, opts.SuperDailyLimit); err != nil {
+			return nil, err
+		}
+	}
 	sp, err := upsertSpark(ctx, tx, fromUserID, toUserID, targetKind, targetRef, note)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Super && !sp.IsSuper {
+		if _, err := tx.Exec(ctx, `UPDATE dating_sparks SET is_super = true WHERE id = $1`, sp.ID); err != nil {
+			return nil, fmt.Errorf("mark super spark: %w", err)
+		}
+		sp.IsSuper = true
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit spark: %w", err)
 	}
 	return sp, nil
+}
+
+// SparkUsage returns how many new sparks the user sent inside
+// SparkQuotaWindow and when the oldest of them was (nil when none).
+func (s *Store) SparkUsage(ctx context.Context, userID uuid.UUID) (int, *time.Time, error) {
+	var used int
+	var oldest *time.Time
+	err := s.db.QueryRow(ctx, `
+        SELECT COUNT(*)::int, min(sent_at) FROM dating_spark_ledger
+        WHERE from_user_id = $1 AND sent_at > $2`,
+		userID, time.Now().Add(-SparkQuotaWindow)).Scan(&used, &oldest)
+	if err != nil {
+		return 0, nil, fmt.Errorf("spark usage: %w", err)
+	}
+	return used, oldest, nil
 }
 
 // GetSpark returns a single spark by id.
@@ -254,7 +306,7 @@ func (s *Store) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit,
           AND sp.declined_at IS NULL
           AND NOT `+blockedPairPredicate("sp.from_user_id", "sp.to_user_id")+`
           AND `+visibleProfilePredicate("sp.from_user_id")+`
-        ORDER BY sp.created_at DESC
+        ORDER BY sp.is_super DESC, sp.created_at DESC
         LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list incoming sparks: %w", err)

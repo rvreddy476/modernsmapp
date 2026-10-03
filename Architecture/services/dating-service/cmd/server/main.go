@@ -76,6 +76,13 @@ func main() {
 		slog.Error("dating-service: refusing to start", "error", err)
 		os.Exit(1)
 	}
+	// Pulse mechanics flags (DATING_*_ENABLED; on by default in local/dev
+	// only) and their limits.
+	mechanicsCfg, err := datinghttp.ResolveMechanicsConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
 	// Lane D5: selfie bars (DATING_SELFIE_*), the media-service address for
 	// face comparison, and DIGILOCKER_MODE (mock refused outside local/dev).
 	selfieCfg, err := datinghttp.ResolveSelfieConfig(os.Getenv)
@@ -218,6 +225,18 @@ func main() {
 	datingStore.SetDeclineCooldown(declineCooldown)
 	slog.Info("decline cooldown configured", "cooldown", declineCooldown)
 	datingSvc := service.New(datingStore, rdb)
+	datingSvc.SetMechanicsConfig(mechanicsCfg)
+	slog.Info("pulse mechanics configured", "deck_refill", mechanicsCfg.DeckRefill,
+		"deck_daily_limit_free", mechanicsCfg.DeckDailyLimitFree, "deck_daily_limit_pass", mechanicsCfg.DeckDailyLimitPass,
+		"rewind", mechanicsCfg.Rewind, "rewind_daily_limit_free", mechanicsCfg.RewindDailyLimitFree,
+		"super_spark", mechanicsCfg.SuperSpark, "super_spark_daily_limit_free", mechanicsCfg.SuperSparkDailyLimitFree,
+		"super_spark_daily_limit_pass", mechanicsCfg.SuperSparkDailyLimitPass,
+		"liked_you_gate", mechanicsCfg.LikedYouGate, "first_move", mechanicsCfg.FirstMove, "filters_v2", mechanicsCfg.FiltersV2,
+		"picks", mechanicsCfg.Picks, "picks_mutual", mechanicsCfg.PicksMutual, "picks_exposure_cap", mechanicsCfg.PicksExposureCap,
+		"dealbreakers", mechanicsCfg.Dealbreakers, "fair_turn", mechanicsCfg.FairTurn, "fair_turn_limit", mechanicsCfg.FairTurnLimit,
+		"past_match_report", mechanicsCfg.PastMatchReport, "scam_alert", mechanicsCfg.ScamAlert, "date_checkin", mechanicsCfg.DateCheckin, "screen_protection", mechanicsCfg.ScreenProtection, "hide_known", mechanicsCfg.HideKnown, "kind_check", mechanicsCfg.KindCheck, "media_prompts", mechanicsCfg.MediaPrompts,
+		"travel", mechanicsCfg.Travel,
+		"read_receipts", mechanicsCfg.ReadReceipts, "call_after_exchange", mechanicsCfg.CallAfterExchange)
 	datingSvc.SetLocationPrivacyConfig(locationCfg)
 	slog.Info("location privacy limits configured",
 		"location_change_min_interval", locationCfg.LocationChangeMinInterval,
@@ -252,6 +271,8 @@ func main() {
 	}
 	if graphURL := strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")); graphURL != "" {
 		datingSvc.SetConnectionChecker(service.NewHTTPConnectionChecker(graphURL, internalKey, nil))
+		// Mechanic M16: the accepted connections a user hides from.
+		datingSvc.SetConnectionLister(service.NewHTTPConnectionLister(graphURL, internalKey, nil))
 	} else {
 		slog.Warn("dating-service: GRAPH_SERVICE_URL not set — only current matches can be added as trusted contacts")
 	}
@@ -263,6 +284,7 @@ func main() {
 	graphProvider := matcher.NewHTTPGraphProvider(
 		os.Getenv("GRAPH_SERVICE_URL"),
 		os.Getenv("COMMUNITY_SERVICE_URL"),
+		internalKey,
 	)
 	datingSvc.SetGraphProvider(graphProvider)
 
@@ -317,6 +339,9 @@ func main() {
 	// per-viewer delivery, and asset deletion.
 	datingSvc.SetPhotoSafetyConfig(photoCfg)
 	datingSvc.SetMediaPhotoClient(service.NewHTTPMediaPhotoClient(mediaServiceURL, internalKey, nil))
+	// Mechanic M15: voice/video prompt clips (media-service needs
+	// MEDIA_DATING_CLIPS_ENABLED too).
+	datingSvc.SetMediaClipClient(service.NewHTTPMediaClipClient(mediaServiceURL, internalKey, nil))
 	slog.Info("dating photo safety configured", "max_photos", photoCfg.MaxPhotos,
 		"explicit_min_confidence", photoCfg.ExplicitMinConfidence, "review_min_confidence", photoCfg.ReviewMinConfidence,
 		"require_face", photoCfg.RequireFaceOnPrimary, "recheck_enabled", photoCfg.RecheckEnabled,
@@ -341,8 +366,10 @@ func main() {
 	}
 
 	// Sprint 4: graph + community clients for vouching eligibility checks.
-	datingSvc.SetGraphServiceClient(service.NewHTTPGraphServiceClient())
-	datingSvc.SetCommunityServiceClient(service.NewHTTPCommunityServiceClient())
+	datingSvc.SetGraphServiceClient(service.NewHTTPGraphServiceClient(
+		strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")), internalKey, nil))
+	datingSvc.SetCommunityServiceClient(service.NewHTTPCommunityServiceClient(
+		strings.TrimSpace(os.Getenv("COMMUNITY_SERVICE_URL")), internalKey, nil))
 
 	// Sprint 4: feature flag client for moderation strict-mode gate.
 	// SHADOW MODE (default): pulse_moderation_strict=false → no user

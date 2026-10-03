@@ -22,7 +22,7 @@ type PromptCatalogItem struct {
 // ListPrompts returns the user's answered prompts.
 func (s *Store) ListPrompts(ctx context.Context, userID uuid.UUID) ([]Prompt, error) {
 	rows, err := s.db.Query(ctx, `
-        SELECT id, user_id, prompt_id, answer, created_at, updated_at
+        SELECT `+promptCols+`
         FROM dating_prompts WHERE user_id = $1
         ORDER BY prompt_id ASC`, userID)
 	if err != nil {
@@ -32,8 +32,8 @@ func (s *Store) ListPrompts(ctx context.Context, userID uuid.UUID) ([]Prompt, er
 
 	var out []Prompt
 	for rows.Next() {
-		var p Prompt
-		if err := rows.Scan(&p.ID, &p.UserID, &p.PromptID, &p.Answer, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanPrompt(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan prompt: %w", err)
 		}
 		out = append(out, p)
@@ -51,7 +51,7 @@ func (s *Store) ListPromptsForUsers(ctx context.Context, userIDs []uuid.UUID) (m
 		return out, nil
 	}
 	rows, err := s.db.Query(ctx, `
-        SELECT id, user_id, prompt_id, answer, created_at, updated_at
+        SELECT `+promptCols+`
         FROM dating_prompts WHERE user_id = ANY($1::uuid[])
         ORDER BY user_id, prompt_id ASC`, userIDs)
 	if err != nil {
@@ -59,8 +59,8 @@ func (s *Store) ListPromptsForUsers(ctx context.Context, userIDs []uuid.UUID) (m
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var p Prompt
-		if err := rows.Scan(&p.ID, &p.UserID, &p.PromptID, &p.Answer, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanPrompt(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan prompt: %w", err)
 		}
 		out[p.UserID] = append(out[p.UserID], p)
@@ -75,10 +75,11 @@ func (s *Store) UpsertPrompt(ctx context.Context, userID uuid.UUID, promptID int
         VALUES ($1, $2, $3)
         ON CONFLICT (user_id, prompt_id) DO UPDATE
             SET answer = EXCLUDED.answer, updated_at = now()
-        RETURNING id, user_id, prompt_id, answer, created_at, updated_at`,
+        RETURNING `+promptCols,
 		userID, promptID, answer)
-	p := &Prompt{}
-	if err := row.Scan(&p.ID, &p.UserID, &p.PromptID, &p.Answer, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	scanned, err := scanPrompt(row)
+	p := &scanned
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrPromptNotFound
 		}

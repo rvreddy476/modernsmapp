@@ -98,6 +98,8 @@ func (h *Handler) ExplainPulseCandidate(c *gin.Context) {
 // passRequest is the optional body of POST /v1/dating/pulse/:candidateId/pass.
 type passRequest struct {
 	Reason string `json:"reason,omitempty"`
+	// Source as on a spark (mechanic M7): only a deck pass spends a card.
+	Source string `json:"source,omitempty"`
 }
 
 // PassCandidate — POST /v1/dating/pulse/:candidateId/pass
@@ -119,9 +121,120 @@ func (h *Handler) PassCandidate(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	resp, err := h.svc.PassCandidate(c.Request.Context(), viewerID, candidateID, body.Reason)
+	resp, err := h.svc.PassCandidateFrom(c.Request.Context(), viewerID, candidateID, body.Reason, body.Source)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "PASS_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// RewindLastPass — POST /v1/dating/pulse/rewind
+//
+// Mechanic M2: undoes the caller's most recent pass and returns that card.
+// 409 REWIND_NOTHING_TO_UNDO when the last deck action is not an undoable
+// pass, 429 REWIND_LIMIT_REACHED when the free allowance is spent, 404
+// CANDIDATE_UNAVAILABLE when the person can no longer be shown.
+func (h *Handler) RewindLastPass(c *gin.Context) {
+	viewerID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.RewindLastPass(c.Request.Context(), viewerID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "REWIND_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// GetDailyPicks — GET /v1/dating/picks?tz=<IANA zone>
+//
+// Mechanic M7: up to ten curated profiles for the viewer's local day,
+// refreshed at local midnight (meta.resets_at). tz defaults to
+// Asia/Kolkata; an unknown zone is 400 INVALID_TIMEZONE.
+func (h *Handler) GetDailyPicks(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.GetDailyPicks(c.Request.Context(), userID, c.Query("tz"))
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	// The deck's {data, meta} envelope: data is the card array, meta the
+	// local date, its zone, when the picks refresh and how many there are.
+	c.JSON(http.StatusOK, resp)
+}
+
+// travelRequest is the body of PUT /travel.
+type travelRequest struct {
+	City string `json:"city"`
+	Days int    `json:"days"`
+}
+
+// GetTravel — GET /v1/dating/travel (mechanic M8): the caller's trip, the
+// cities and whether they may travel.
+func (h *Handler) GetTravel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetTravel(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// PutTravel — PUT /v1/dating/travel {city, days} (mechanic M8, pass holders).
+func (h *Handler) PutTravel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body travelRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.StartTravel(c.Request.Context(), userID, body.City, body.Days)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// DeleteTravel — DELETE /v1/dating/travel (mechanic M8): back home.
+func (h *Handler) DeleteTravel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.EndTravel(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// GetAllowances — GET /v1/dating/allowances
+//
+// Mechanic M10: the caller's sparks, deck, rewind and Super Spark
+// allowances (daily_limit, remaining_today, resets_at; "unlimited" for an
+// allowance a pass lifts). A mechanic whose flag is off is absent.
+func (h *Handler) GetAllowances(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.Allowances(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
@@ -148,6 +261,11 @@ type pulseMeta struct {
 	Size        int       `json:"size"`
 	CohortGated bool      `json:"cohort_gated"`
 	RequestID   string    `json:"request_id,omitempty"`
+	// Mechanic M1, omitted while DATING_DECK_REFILL_ENABLED is off (see
+	// service.PulseMeta).
+	DailyLimit     int        `json:"daily_limit,omitempty"`
+	RemainingToday int        `json:"remaining_today,omitempty"`
+	ResetsAt       *time.Time `json:"resets_at,omitempty"`
 }
 
 // pulseEnvelope is the standard {data, meta} envelope for the deck: data is
@@ -178,6 +296,10 @@ func envelopePulse(ctx context.Context, resp *service.PulseResponse) pulseEnvelo
 			Size:        resp.Meta.Size,
 			CohortGated: resp.CohortGated,
 			RequestID:   trace.RequestIDFrom(ctx),
+
+			DailyLimit:     resp.Meta.DailyLimit,
+			RemainingToday: resp.Meta.RemainingToday,
+			ResetsAt:       resp.Meta.ResetsAt,
 		},
 		CohortGated: resp.CohortGated,
 	}

@@ -1,0 +1,13 @@
+-- Dating mechanic M5 (first move): who may send the first message in a
+-- dating-match conversation.
+--
+-- dating_first_movers is set by dating-service when it creates (or retries
+-- creating) the conversation, and only while the conversation has no
+-- message yet. NULL or empty: anyone may send first (every conversation
+-- before this column). Otherwise, until the first message lands, only a
+-- listed user may send; the other person's one way in is answering an
+-- opening question, which dating-service posts through the service-only
+-- opening-answer route.
+--
+-- Mirrored in database/setup.sql (applied on every boot).
+ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS dating_first_movers UUID[];

@@ -1,0 +1,10 @@
+{
+  "data": [],
+  "meta": {
+    "generated_at": "<timestamp>",
+    "size": 0,
+    "cohort_gated": false,
+    "daily_limit": 2,
+    "resets_at": "<timestamp>"
+  }
+}

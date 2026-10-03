@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/atpost/dating-service/internal/store"
@@ -99,5 +100,19 @@ func (s *Service) UpsertPrompt(ctx context.Context, userID uuid.UUID, promptID i
 
 // DeletePrompt removes the user's answer for the given prompt.
 func (s *Service) DeletePrompt(ctx context.Context, userID uuid.UUID, promptID int) error {
-	return s.store.DeletePrompt(ctx, userID, promptID)
+	// Mechanic M15: the answer's clip goes with it (best effort; media-service
+	// reclaims an asset no row names anyway).
+	var clip *uuid.UUID
+	if p, err := s.store.GetPrompt(ctx, userID, promptID); err == nil {
+		clip = p.ClipMediaID
+	}
+	if err := s.store.DeletePrompt(ctx, userID, promptID); err != nil {
+		return err
+	}
+	if clip != nil && s.mediaClips != nil {
+		if err := s.mediaClips.DeleteClip(ctx, *clip, userID); err != nil {
+			slog.Warn("prompt delete: clip not deleted", "user_id", userID, "error", err)
+		}
+	}
+	return nil
 }

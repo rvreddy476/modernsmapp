@@ -391,6 +391,12 @@ func notifTitleBody(notifType string) (string, string) {
 		return "LIVE now", "Someone you follow just went live"
 	case "missed_call":
 		return "Missed Call", "You missed a call"
+	// Pulse mechanics (dating_pulse.go). The named copy rides a render
+	// override; this is the anonymous fallback.
+	case DatingScamAlertType:
+		return DatingScamAlertCopy("")
+	case DatingDateCheckinType:
+		return DatingDateCheckinCopy("")
 	default:
 		return "New Notification", "You have a new notification"
 	}

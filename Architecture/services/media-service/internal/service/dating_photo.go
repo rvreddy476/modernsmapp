@@ -87,8 +87,11 @@ func ResolveDatingPhotoURLTTL(getenv func(string) string) (time.Duration, error)
 // viewer on a public read route: always, unless the viewer uploaded it.
 // Everyone else reaches the bytes only through a URL dating-service obtained
 // from DeliveryURL after deciding they may.
+//
+// A dating clip (access_scope 'dating_clip', dating_clip.go) is held to the
+// same rule: every route guarded here refuses it to anyone but its uploader.
 func DatingScopeDenies(m *postgres.MediaAsset, viewerID uuid.UUID) bool {
-	if m == nil || m.AccessScope != postgres.AccessScopeDatingPhoto {
+	if m == nil || !postgres.IsDatingScope(m.AccessScope) {
 		return false
 	}
 	return viewerID == uuid.Nil || viewerID != m.UploaderID

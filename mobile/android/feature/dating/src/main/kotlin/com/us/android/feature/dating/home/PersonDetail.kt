@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.feature.dating.DatingCopy
 import com.us.android.feature.dating.DatingIntent
 import com.us.android.feature.dating.DistanceBucket
+import com.us.android.feature.dating.clips.PromptClipUi
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.network.CardPhotoDto
@@ -13,6 +14,8 @@ import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.ProfileDetailDto
 import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.photos.PhotoRules
+import com.us.android.feature.dating.profile.ProfileBasicsCodes
+import com.us.android.feature.dating.travel.visitingLabel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,12 +38,22 @@ data class PersonDetailUi(
     val languages: List<String>,
     /** The approved gallery, primary first, each already resolved to its own variant. */
     val gallery: List<GalleryPhotoUi>,
+    /**
+     * Mechanic M6: interests and the lifestyle basics, still as CODES. They are
+     * resolved to labels at the screen through `ProfileOptionsUi.basicsOf`,
+     * from the session's option lists, so an unknown code renders nothing.
+     */
+    val basics: ProfileBasicsCodes = ProfileBasicsCodes(),
 ) {
-    val isEmpty: Boolean get() = bio == null && prompts.isEmpty() && languages.isEmpty() && gallery.isEmpty()
+    val isEmpty: Boolean
+        get() = bio == null && prompts.isEmpty() && languages.isEmpty() && gallery.isEmpty() && basics.isEmpty
 }
 
-/** One catalogue question and this person's answer. */
-data class PromptUi(val promptId: Int, val question: String, val answer: String)
+/**
+ * One catalogue question and this person's answer: words, a voice or video
+ * [clip] (mechanic M15), or both. [answer] is empty for a clip-only answer.
+ */
+data class PromptUi(val promptId: Int, val question: String, val answer: String, val clip: PromptClipUi? = null)
 
 /**
  * One gallery photo, already resolved to the variant ITS OWN `state` allows.
@@ -59,17 +72,30 @@ internal fun ProfileDetailDto?.toUi(urls: DatingPhotoUrls): PersonDetailUi? {
     val dto = this ?: return null
     val detail = PersonDetailUi(
         bio = dto.bio.trim().takeIf { it.isNotBlank() },
-        prompts = dto.prompts.mapNotNull { it.toUi() },
+        prompts = dto.prompts.mapNotNull { it.toUi(urls) },
         languages = dto.languages.map { it.trim() }.filter { it.isNotBlank() },
         gallery = dto.photos.mapNotNull { it.toUi(urls) },
+        basics = dto.basicsCodes(),
     )
     return detail.takeIf { !it.isEmpty }
 }
 
-private fun com.us.android.feature.dating.network.DetailPromptDto.toUi(): PromptUi? {
+/** The M6 members of a detail block, blanks and a zero height read as unset. */
+internal fun ProfileDetailDto.basicsCodes(): ProfileBasicsCodes = ProfileBasicsCodes(
+    interests = interests.map { it.trim() }.filter { it.isNotEmpty() },
+    heightCm = heightCm.takeIf { it > 0 },
+    drinking = drinking.trim().takeIf { it.isNotEmpty() },
+    smoking = smoking.trim().takeIf { it.isNotEmpty() },
+    exercise = exercise.trim().takeIf { it.isNotEmpty() },
+    diet = diet.trim().takeIf { it.isNotEmpty() },
+)
+
+/** Nothing to show — no question, or neither words nor a clip we can play — is no prompt at all. */
+private fun com.us.android.feature.dating.network.DetailPromptDto.toUi(urls: DatingPhotoUrls): PromptUi? {
     val q = question.trim()
     val a = answer.trim()
-    return if (q.isBlank() || a.isBlank()) null else PromptUi(promptId, q, a)
+    val clip = urls.forClip(clip)
+    return if (q.isBlank() || (a.isBlank() && clip == null)) null else PromptUi(promptId, q, a, clip)
 }
 
 /**
@@ -103,6 +129,8 @@ data class PersonUi(
     val photoUrl: String?,
     val photoId: String?,
     val detail: PersonDetailUi?,
+    /** Mechanic M8: "Visiting Hyderabad" while they are on a trip, else null. */
+    val visiting: String? = null,
 )
 
 sealed interface PersonState {
@@ -158,5 +186,6 @@ class PersonViewModel @Inject constructor(
         photoUrl = urls.forPerson(this),
         photoId = PhotoRules.photoIdOf(primaryPhotoUrl),
         detail = detail.toUi(urls),
+        visiting = visitingLabel(travelling, city),
     )
 }

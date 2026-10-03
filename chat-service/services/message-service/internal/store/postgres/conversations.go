@@ -27,6 +27,11 @@ type Conversation struct {
 	LastMessageAt      *time.Time `json:"last_message_at,omitempty"`
 	LastMessagePreview string     `json:"last_message_preview,omitempty"`
 	LastMessageSender  *uuid.UUID `json:"last_message_sender,omitempty"`
+
+	// SourceApp and MatchID say which product owns the conversation: a
+	// Pulse match's chat is source_app 'dating' with its match id.
+	SourceApp string     `json:"source_app,omitempty"`
+	MatchID   *uuid.UUID `json:"match_id,omitempty"`
 }
 
 type Member struct {
@@ -285,6 +290,11 @@ func (s *ConversationStore) HasOpenDatingMatch(ctx context.Context, userA, userB
 		          SELECT 1 FROM chat.conversation_members mb
 		          WHERE mb.conversation_id = c.id AND mb.user_id = $2 AND mb.left_at IS NULL
 		      )
+		      -- Dating mechanic M9: with the rule on, both must have written.
+		      AND (NOT c.dating_call_after_exchange OR (
+		          SELECT COUNT(*) FROM chat.conversation_members mx
+		          WHERE mx.conversation_id = c.id AND mx.left_at IS NULL AND mx.first_sent_at IS NOT NULL
+		      ) >= 2)
 		)
 	`, userA, userB).Scan(&exists)
 	if err != nil {
@@ -298,6 +308,13 @@ type ConversationMeta struct {
 	SourceApp string
 	MatchID   *uuid.UUID
 	ClosedAt  *time.Time
+	// FirstMovers (dating mechanic M5): who may send the first message.
+	// Empty: anyone. LastMessageAt nil means no message has landed yet.
+	FirstMovers   []uuid.UUID
+	LastMessageAt *time.Time
+	// ReceiptsGated (dating mechanic M9): read receipts only for members
+	// dating-service allows.
+	ReceiptsGated bool
 }
 
 // GetConversationMeta returns the source_app + match_id + closed_at for
@@ -307,10 +324,10 @@ type ConversationMeta struct {
 func (s *ConversationStore) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*ConversationMeta, error) {
 	var m ConversationMeta
 	err := s.db.QueryRow(ctx, `
-		SELECT source_app, match_id, closed_at
+		SELECT source_app, match_id, closed_at, COALESCE(dating_first_movers, '{}'), last_message_at, dating_receipts_gated
 		FROM chat.conversations
 		WHERE id = $1
-	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt)
+	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt, &m.FirstMovers, &m.LastMessageAt, &m.ReceiptsGated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -513,10 +530,12 @@ func (s *ConversationStore) GetConversation(ctx context.Context, conversationID 
 	var c Conversation
 	err := s.db.QueryRow(ctx, `
 		SELECT id, type, title, created_by, is_request, created_at, updated_at,
-		       avatar_media_id, last_message_at, last_message_preview, last_message_sender, description
+		       avatar_media_id, last_message_at, last_message_preview, last_message_sender, description,
+		       COALESCE(source_app, ''), match_id
 		FROM chat.conversations WHERE id = $1
 	`, conversationID).Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt,
-		&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender, &c.Description)
+		&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender, &c.Description,
+		&c.SourceApp, &c.MatchID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -598,7 +617,8 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	var rows pgx.Rows
 	var err error
 	const listColumns = `c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at,
-		c.avatar_media_id, c.last_message_at, c.last_message_preview, c.last_message_sender, c.description`
+		c.avatar_media_id, c.last_message_at, c.last_message_preview, c.last_message_sender, c.description,
+		COALESCE(c.source_app, ''), c.match_id`
 	if cursorUpdatedAt != nil && cursorID != nil {
 		rows, err = s.db.Query(ctx, `
 			SELECT `+listColumns+`
@@ -627,7 +647,8 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	for rows.Next() {
 		var c Conversation
 		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt,
-			&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender, &c.Description); err != nil {
+			&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender, &c.Description,
+			&c.SourceApp, &c.MatchID); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

@@ -64,6 +64,8 @@ class DatingRootViewModel @Inject constructor(
     val state: StateFlow<DatingRootState> = _state.asStateFlow()
 
     init {
+        // A new Dating session: what is read once per session is read again.
+        session.entered()
         reload()
     }
 

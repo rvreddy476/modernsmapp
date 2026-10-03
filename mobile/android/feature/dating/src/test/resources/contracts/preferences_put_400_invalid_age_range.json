@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "INVALID_AGE_RANGE",
+    "message": "min_age must be \u003e= 18",
+    "details": {
+      "max": 120,
+      "min": 18
+    }
+  },
+  "meta": {}
+}

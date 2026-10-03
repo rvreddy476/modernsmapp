@@ -4,7 +4,45 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.feature.dating.data.DatingError
+import com.us.android.feature.dating.clips.ClipCopy
+import com.us.android.feature.dating.clips.ClipKind
+import com.us.android.feature.dating.clips.ClipRules
+import com.us.android.feature.dating.clips.ClipStatus
+import com.us.android.feature.dating.clips.OwnClipUi
+import com.us.android.feature.dating.clips.PromptClipUi
+import com.us.android.feature.dating.clips.clipRefusal
+import com.us.android.feature.dating.network.ClipTooLongDetailsDto
+import com.us.android.feature.dating.network.PromptClipViewDto
+import com.us.android.feature.dating.home.AllowanceUi
+import com.us.android.feature.dating.home.DeckCopy
+import com.us.android.feature.dating.home.DeckUi
+import com.us.android.feature.dating.home.FirstMoveCopy
+import com.us.android.feature.dating.network.ExtendDto
+import com.us.android.feature.dating.network.FirstMoveSettingsDto
+import com.us.android.feature.dating.network.OpeningAnswerDto
+import com.us.android.feature.dating.home.onto
+import com.us.android.feature.dating.home.toUi
+import com.us.android.feature.dating.home.PicksCopy
+import com.us.android.feature.dating.home.parseInstant
+import com.us.android.feature.dating.home.toCardUi
+import com.us.android.feature.dating.network.PicksDto
+import com.us.android.feature.dating.network.TravelCityDto
+import com.us.android.feature.dating.network.TravelDto
+import com.us.android.feature.dating.travel.TravelCopy
+import com.us.android.feature.dating.travel.TravelRules
+import java.time.Instant
+import java.time.ZoneId
+import com.us.android.feature.dating.network.AllowanceDto
+import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.AllowedDetailsDto
+import com.us.android.feature.dating.network.RewindDto
+import com.us.android.feature.dating.premium.packLabel
+import com.us.android.feature.dating.premium.activeFeatureLabels
+import com.us.android.feature.dating.premium.featureLabels
+import com.us.android.feature.dating.network.ReadReceiptsDto
+import com.us.android.feature.dating.network.AllowedIdsDetailsDto
+import com.us.android.feature.dating.network.OnboardingIncompleteDetailsDto
+import com.us.android.feature.dating.network.RangeDetailsDto
 import com.us.android.feature.dating.network.BlockedDto
 import com.us.android.feature.dating.network.BlocksDto
 import com.us.android.feature.dating.network.ClosedDto
@@ -46,11 +84,46 @@ import com.us.android.feature.dating.network.StopShareDto
 import com.us.android.feature.dating.network.TrustedContactDto
 import com.us.android.feature.dating.network.TrustedContactsDto
 import com.us.android.feature.dating.network.VerificationStatusDto
+import com.us.android.feature.dating.network.LikedYouDto
+import com.us.android.feature.dating.network.FieldRefusalDetailsDto
+import com.us.android.feature.dating.network.OptionDto
+import com.us.android.feature.dating.network.OptionRangeDto
+import com.us.android.feature.dating.network.ProfileOptionsDto
+import com.us.android.feature.dating.filters.Dealbreaker
+import com.us.android.feature.dating.filters.FiltersField
+import com.us.android.feature.dating.filters.FiltersRules
+import com.us.android.feature.dating.home.DateAgain
+import com.us.android.feature.dating.home.DateMet
+import com.us.android.feature.dating.home.FairTurnUi
+import com.us.android.feature.dating.network.DateCheckinDto
+import com.us.android.feature.dating.network.DateFeedbackDto
+import com.us.android.feature.dating.network.DateFeedbackRefusalDetailsDto
+import com.us.android.feature.dating.network.FairTurnDetailsDto
+import com.us.android.feature.dating.network.FairTurnDto
+import com.us.android.feature.dating.network.PastMatchPersonDto
+import com.us.android.feature.dating.network.PastMatchesDto
+import com.us.android.feature.dating.safety.PastMatchesCopy
+import com.us.android.feature.dating.profile.AboutMeField
+import com.us.android.feature.dating.profile.LifestyleBasic
+import com.us.android.feature.dating.profile.ProfileOptionsUi
+import com.us.android.feature.dating.photos.PhotoRules
 import com.us.android.feature.dating.premium.toReading
 import com.us.android.feature.dating.safety.MAX_TRUSTED_CONTACTS
 import com.us.android.feature.dating.selfie.SelfieOutcomes
 import com.us.android.feature.dating.selfie.SelfieState
 import com.us.android.core.payments.PaymentStatusReading
+import com.us.android.feature.dating.home.NoteHidden
+import com.us.android.feature.dating.network.BotheredDto
+import com.us.android.feature.dating.network.ClientConfigDto
+import com.us.android.feature.dating.network.CommentFilterDto
+import com.us.android.feature.dating.network.CommentFilterRefusalDetailsDto
+import com.us.android.feature.dating.network.HideKnownDto
+import com.us.android.feature.dating.network.KindCheckDto
+import com.us.android.feature.dating.network.KindCheckRefusalDetailsDto
+import com.us.android.feature.dating.privacy.CommentFilterCopy
+import com.us.android.feature.dating.privacy.CommentFilterRules
+import com.us.android.feature.dating.privacy.HideKnownCopy
+import com.us.android.feature.dating.safety.DatingConversationKindness
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -120,6 +193,8 @@ class DatingContractFixtureTest {
             assertThat(person.photoState).isEqualTo("full")
             // Absent unless BOTH sides have a location.
             assertThat(person.distanceBucket).isNull()
+            // Mechanic M9 off: no can_call at all, and the match screen offers no call.
+            assertThat(it.canCall).isNull()
         },
         "matches_get_200.json" to data(listSerializer(MatchDto.serializer())) {
             val match = it.single()
@@ -334,6 +409,79 @@ class DatingContractFixtureTest {
             assertThat(detail.photos.first().url).isEqualTo("/v1/dating/photos/<photo-primary>/full")
             assertThat(detail.photos.last().url).isEqualTo("/v1/dating/photos/<photo-match_only>/blurred")
         },
+        // ── Fixtures the server had and the app had never copied ────────────
+        "photos_post_400_invalid_visibility.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_VISIBILITY")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("public", "match_only", "sparked_only").inOrder()
+        },
+        "preferences_put_400_invalid_age_range.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_AGE_RANGE")
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(min = 18, max = 120))
+        },
+        "preferences_put_400_invalid_distance_km.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DISTANCE_KM")
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(min = 1, max = 500))
+        },
+        "preferences_put_400_invalid_intent_filter.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_INTENT_FILTER")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("casual", "serious", "marriage").inOrder()
+        },
+        "profile_upsert_400_invalid_intent.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_INTENT")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("casual", "serious", "marriage").inOrder()
+        },
+        "prompts_put_400_answer_required.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("PROMPT_ANSWER_REQUIRED")
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(min = 1, max = 280))
+        },
+        "prompts_put_400_answer_too_long.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("PROMPT_ANSWER_TOO_LONG")
+            // Only the upper bound is sent.
+            assertThat(details(error, RangeDetailsDto.serializer(), name)).isEqualTo(RangeDetailsDto(max = 280))
+        },
+        "prompts_put_400_unknown_prompt.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("UNKNOWN_PROMPT")
+            // Prompt IDS — numbers, unlike every other `allowed`.
+            assertThat(details(error, AllowedIdsDetailsDto.serializer(), name).allowed).isEqualTo((1..12).toList())
+        },
+        "pulse_pass_400_reason_too_long.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("PASS_REASON_TOO_LONG")
+            assertThat(details(error, RangeDetailsDto.serializer(), name).max).isEqualTo(200)
+        },
+        "spark_create_409_onboarding_incomplete.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("ONBOARDING_INCOMPLETE")
+            assertThat(details(error, OnboardingIncompleteDetailsDto.serializer(), name))
+                .isEqualTo(OnboardingIncompleteDetailsDto(status = "pending_selfie", step = "pending_selfie"))
+        },
+        // ── Mechanic M1: the refilling deck ─────────────────────────────────
+        "pulse_today_get_200_refill.json" to { _, raw ->
+            // A batch, with the allowance in meta. Nothing has been used yet,
+            // so resets_at is absent.
+            val today = strict.decodeFromString(PulseTodayDto.serializer(), raw)
+            assertThat(today.data).hasSize(1)
+            val meta = checkNotNull(today.meta)
+            assertThat(meta.dailyLimit).isEqualTo(2)
+            assertThat(meta.remainingToday).isEqualTo(2)
+            assertThat(meta.resetsAt).isNull()
+            val deck = meta.onto(DeckUi())
+            assertThat(deck.metered).isTrue()
+            assertThat(deck.outOfCards).isFalse()
+            assertThat(DeckCopy.cardsLeft(deck)).isEqualTo("2 cards left today")
+        },
+        "pulse_today_get_200_out_of_cards.json" to { _, raw ->
+            // The allowance is spent: daily_limit present, remaining_today
+            // OMITTED (Go drops the 0), and no cards.
+            val today = strict.decodeFromString(PulseTodayDto.serializer(), raw)
+            assertThat(today.data).isEmpty()
+            val meta = checkNotNull(today.meta)
+            assertThat(meta.dailyLimit).isEqualTo(2)
+            assertThat(meta.remainingToday).isEqualTo(0)
+            assertThat(meta.resetsAt).isNotNull()
+            assertThat(meta.onto(DeckUi()).outOfCards).isTrue()
+        },
         "report_post_201.json" to data(ReportResultDto.serializer()) {
             assertThat(it.reason).isEqualTo("harassment")
             assertThat(it.status).isEqualTo("submitted")
@@ -407,7 +555,383 @@ class DatingContractFixtureTest {
         },
         "spark_create_429_rate_limited.json" to error { error, name ->
             assertThat(refusedCode(error)).isEqualTo("SPARK_RATE_LIMITED")
-            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(50, 24))
+            // resets_at is always sent now; the golden redacts it.
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(50, 24, "<timestamp>"))
+        },
+        // ── Mechanic M3: Super Spark ────────────────────────────────────────
+        "spark_create_post_201_super.json" to data(SparkCreatedDto.serializer()) {
+            val spark = checkNotNull(it.spark)
+            assertThat(spark.superSpark).isTrue()
+            assertThat(it.matched).isFalse()
+            assertThat(it.matchId).isNull()
+        },
+        "spark_create_429_super_limit_reached.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("SUPER_SPARK_LIMIT_REACHED")
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(1, 24, "<timestamp>"))
+        },
+        "sparks_incoming_get_200_super_first.json" to data(listSerializer(SparkDto.serializer())) {
+            // The server sorts Super Sparks first; an ordinary spark omits the key.
+            assertThat(it.map { s -> s.superSpark }).containsExactly(true, false).inOrder()
+            assertThat(it.first().person?.firstName).isEqualTo("Asha")
+            assertThat(it.last().person?.distanceBucket).isNull()
+        },
+        "premium_catalogue_get_200_super_spark.json" to data(PremiumCatalogueDto.serializer()) {
+            assertThat(it.products.map { p -> p.id })
+                .containsExactly("pass_30d", "pass_90d", "pass_365d", "boost", "super_spark_5", "super_spark_15").inOrder()
+            val packs = it.products.filter { p -> p.kind == "super_spark" }
+            assertThat(packs.map { p -> p.quantity }).containsExactly(5, 15).inOrder()
+            assertThat(packs.map { p -> packLabel(p) }).containsExactly("5 Super Sparks", "15 Super Sparks").inOrder()
+            // Everything else omits quantity.
+            assertThat(it.products.filter { p -> p.kind != "super_spark" }.map { p -> p.quantity }.toSet()).containsExactly(0)
+            assertThat(packLabel(it.products.first())).isNull()
+            // Mechanic M10: a pass lists what it unlocks for the mechanics that are on (M1 and M3 here).
+            val passes = it.products.filter { p -> p.kind == "pass" }
+            passes.forEach { p ->
+                assertThat(p.features).containsExactly("match_extend", "daily_boost", "more_daily_cards", "more_super_sparks").inOrder()
+            }
+            assertThat(featureLabels(passes.first().features)).containsExactly(
+                "Extend matches", "A daily Boost", "More people on Pulse each day", "More Super Sparks",
+            ).inOrder()
+        },
+        // ── Mechanic M10: what a pass unlocks, every mechanic on ────────────
+        "premium_catalogue_get_200_all_mechanics.json" to data(PremiumCatalogueDto.serializer()) {
+            val passes = it.products.filter { p -> p.kind == "pass" }
+            assertThat(passes.map { p -> p.id }).containsExactly("pass_30d", "pass_90d", "pass_365d").inOrder()
+            passes.forEach { p -> assertThat(p.features).containsExactlyElementsIn(ALL_PASS_FEATURES).inOrder() }
+            // Every code has our own label: none falls through to nothing.
+            assertThat(featureLabels(passes.first().features)).hasSize(ALL_PASS_FEATURES.size)
+            assertThat(featureLabels(passes.first().features)).containsExactly(
+                "Extend matches",
+                "A daily Boost",
+                "More people on Pulse each day",
+                "Undo as many passes as you like",
+                "More Super Sparks",
+                "See who sparked you",
+                "More filters",
+                "Browse another city",
+                "Read receipts",
+            ).inOrder()
+            // Boost and packs list no features.
+            assertThat(it.products.filter { p -> p.kind != "pass" }.flatMap { p -> p.features }).isEmpty()
+        },
+        "premium_me_get_200_all_mechanics.json" to data(PremiumMeDto.serializer()) {
+            assertThat(it.isPremium).isTrue()
+            assertThat(it.pass?.active).isTrue()
+            assertThat(it.entitlements.map { e -> e.feature }).containsExactlyElementsIn(ALL_PASS_FEATURES).inOrder()
+            assertThat(it.entitlements.all { e -> e.active }).isTrue()
+            // boost_balance is sent as 0 here; super_spark_balance is omitted.
+            assertThat(it.boostBalance).isEqualTo(0)
+            assertThat(it.superSparkBalance).isEqualTo(0)
+            assertThat(activeFeatureLabels(it)).hasSize(ALL_PASS_FEATURES.size)
+            assertThat(activeFeatureLabels(it)).contains("Read receipts")
+        },
+        // ── Mechanic M9: in-match extras ────────────────────────────────────
+        "read_receipts_get_200.json" to data(ReadReceiptsDto.serializer()) {
+            // Go sends false values here: no choice made, no pass.
+            assertThat(it).isEqualTo(ReadReceiptsDto(enabled = false, active = false, available = false))
+        },
+        "read_receipts_put_200.json" to data(ReadReceiptsDto.serializer()) {
+            assertThat(it).isEqualTo(ReadReceiptsDto(enabled = true, active = true, available = true))
+        },
+        "read_receipts_put_403_requires_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("READ_RECEIPTS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.READ_RECEIPTS_REQUIRE_PASS)
+        },
+        "read_receipts_get_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "match_get_200_can_call.json" to data(MatchDto.serializer()) {
+            assertThat(it.status).isEqualTo("matched")
+            assertThat(it.conversationId).isEqualTo("<uuid>")
+            assertThat(it.canCall).isTrue()
+            val person = checkNotNull(it.person)
+            assertThat(person.userId).isEqualTo("<other>")
+            assertThat(person.firstName).isEqualTo("Asha")
+            assertThat(person.lastActiveLabel).isEqualTo("Active today")
+            assertThat(it.firstMove).isNull()
+        },
+        // ── Mechanic M2: undo a pass ────────────────────────────────────────
+        "pulse_rewind_post_200.json" to data(RewindDto.serializer()) {
+            assertThat(it.rewound).isTrue()
+            assertThat(it.candidateId).isEqualTo("<candidate>")
+            // The card is the deck's own shape, so it goes back on the stack as is.
+            val card = checkNotNull(it.card)
+            assertThat(card.candidateId).isEqualTo("<candidate>")
+            assertThat(card.profile.firstName).isEqualTo("Asha")
+            assertThat(card.profile.lastActiveLabel).isEqualTo("Active today")
+            assertThat(checkNotNull(card.profile.detail).photos.single().state).isEqualTo("full")
+            // The allowance after the undo: remaining_today omitted means none left.
+            assertThat(it.allowance.dailyLimit).isEqualTo(1)
+            assertThat(it.allowance.remainingToday).isEqualTo(0)
+            assertThat(it.allowance.toUi()).isEqualTo(AllowanceUi(dailyLimit = 1, remaining = 0, resetsAt = null))
+        },
+        "pulse_rewind_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): a refusal, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+        },
+        "pulse_rewind_409_nothing_to_undo.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("REWIND_NOTHING_TO_UNDO")
+        },
+        "pulse_rewind_429_limit_reached.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("REWIND_LIMIT_REACHED")
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(1, 24, "<timestamp>"))
+        },
+        // ── Mechanic M10: allowances ────────────────────────────────────────
+        "allowances_get_200.json" to data(AllowancesDto.serializer()) {
+            assertThat(it.sparks).isEqualTo(AllowanceDto(dailyLimit = 50, remainingToday = 49, resetsAt = "<timestamp>"))
+            assertThat(it.deck?.remainingToday).isEqualTo(23)
+            // Nothing used yet: no resets_at.
+            assertThat(it.rewind).isEqualTo(AllowanceDto(dailyLimit = 1, remainingToday = 1))
+            val superSpark = checkNotNull(it.superSpark)
+            assertThat(superSpark.remainingToday).isEqualTo(1)
+            // purchased_balance is omitted at 0.
+            assertThat(superSpark.purchasedBalance).isEqualTo(0)
+        },
+        "allowances_get_200_mechanics_off.json" to data(AllowancesDto.serializer()) {
+            // Every mechanic flag off: only sparks, and the rest ABSENT.
+            assertThat(it.sparks.remainingToday).isEqualTo(50)
+            assertThat(it.deck).isNull()
+            assertThat(it.rewind).isNull()
+            assertThat(it.superSpark).isNull()
+        },
+        // ── Mechanic M11: fair turn ─────────────────────────────────────────
+        "allowances_get_200_fair_turn.json" to data(AllowancesDto.serializer()) {
+            assertThat(it.sparks).isEqualTo(AllowanceDto(dailyLimit = 50, remainingToday = 50))
+            assertThat(it.deck).isEqualTo(AllowanceDto(dailyLimit = 50, remainingToday = 50))
+            assertThat(it.rewind).isNull()
+            assertThat(it.superSpark).isNull()
+            assertThat(it.fairTurn).isEqualTo(FairTurnDto(owed = 6, limit = 6, paused = true))
+            assertThat(checkNotNull(it.fairTurn).toUi()).isEqualTo(FairTurnUi(owed = 6, limit = 6, paused = true))
+            assertThat(DeckUi(fairTurn = it.fairTurn?.toUi()).sparksPaused).isTrue()
+        },
+        "sparks_post_409_fair_turn_limit.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("FAIR_TURN_LIMIT")
+            assertThat((error as DatingError.Refused).status).isEqualTo(409)
+            val details = details(error, FairTurnDetailsDto.serializer(), name)
+            assertThat(details).isEqualTo(FairTurnDetailsDto(limit = 6, owed = 6))
+            assertThat(details.toUi()).isEqualTo(FairTurnUi(owed = 6, limit = 6, paused = true))
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.FAIR_TURN_LIMIT)
+        },
+        // ── Mechanic M12: dealbreakers ──────────────────────────────────────
+        "preferences_get_200_dealbreakers.json" to data(PreferencesDto.serializer()) {
+            assertThat(it.minAge).isEqualTo(25)
+            assertThat(it.maxAge).isEqualTo(35)
+            assertThat(it.dealbreakers).containsExactly("age", "intent").inOrder()
+            // The filters flag is off in this golden: no pass section, no bucket.
+            assertThat(it.passFilters).isNull()
+            assertThat(it.distanceBucket).isNull()
+            val draft = FiltersRules.draftFrom(it, options = null, privacyVerifiedOnly = false)
+            assertThat(draft.dealbreakers).containsExactly(Dealbreaker.AGE, Dealbreaker.INTENT)
+            // No intent is chosen, so its dealbreaker has nothing to hold and is not sent.
+            assertThat(FiltersRules.dealbreakersFor(draft, flagOn = false)).containsExactly("age")
+        },
+        "preferences_put_200_dealbreakers.json" to data(PreferencesDto.serializer()) {
+            // The PUT answers with the GET's view.
+            assertThat(it.dealbreakers).containsExactly("age", "intent").inOrder()
+            assertThat(it.intentFilter).isEmpty()
+            assertThat(it.languageFilter).isEmpty()
+        },
+        "preferences_put_400_invalid_dealbreaker.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DEALBREAKER")
+            val details = details(error, FieldRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("dealbreakers")
+            // The server's list is exactly the codes this app knows, in the same order.
+            assertThat(details.allowed).containsExactlyElementsIn(Dealbreaker.entries.map { d -> d.code }).inOrder()
+            assertThat(FiltersRules.fieldFor(error, strict)).isNull()
+            assertThat(DatingCopy.forError(error, strict)).isNotEqualTo(DatingCopy.GENERIC)
+        },
+        "preferences_put_403_dealbreakers_require_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("DEALBREAKERS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.DEALBREAKERS_REQUIRE_PASS)
+        },
+        "preferences_put_404_dealbreakers_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M14: after-date check-ins ──────────────────────────────
+        "date_checkins_get_200.json" to data(listSerializer(DateCheckinDto.serializer())) {
+            val row = it.single()
+            assertThat(row.matchId).isEqualTo("<match>")
+            assertThat(row.meetId).isEqualTo("<meet>")
+            assertThat(row.person).isEqualTo(PastMatchPersonDto(userId = "<other>", firstName = "Asha"))
+            assertThat(row.askedAt).isEqualTo("<timestamp>")
+        },
+        "date_feedback_post_201.json" to data(DateFeedbackDto.serializer()) {
+            assertThat(it.matchId).isEqualTo("<match>")
+            assertThat(it.met).isEqualTo(DateMet.YES.wire)
+            assertThat(it.again).isEqualTo(DateAgain.YES.wire)
+            assertThat(it.feltSafe).isTrue()
+            assertThat(it.offerReport).isFalse()
+        },
+        "date_feedback_post_201_unsafe.json" to data(DateFeedbackDto.serializer()) {
+            assertThat(it.again).isEqualTo(DateAgain.NO.wire)
+            assertThat(it.feltSafe).isFalse()
+            assertThat(it.offerReport).isTrue()
+        },
+        "date_feedback_post_400_invalid.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DATE_FEEDBACK")
+            val details = details(error, DateFeedbackRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("met")
+            // The server's answers are exactly the app's, so nothing it offers can be refused for its code.
+            assertThat(details.met).containsExactlyElementsIn(DateMet.entries.map { m -> m.wire })
+            assertThat(details.again).containsExactlyElementsIn(DateAgain.entries.map { a -> a.wire })
+            assertThat(DatingCopy.forError(error)).isNotEqualTo(DatingCopy.GENERIC)
+        },
+        "date_feedback_post_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M19: past matches ──────────────────────────────────────
+        "past_matches_get_200.json" to { _, raw ->
+            // NOT the envelope's meta: its own {data, meta:{window_days}}.
+            val past = strict.decodeFromString(PastMatchesDto.serializer(), raw)
+            val row = past.data.single()
+            assertThat(row.matchId).isEqualTo("<match>")
+            assertThat(row.person).isEqualTo(PastMatchPersonDto(userId = "<other>", firstName = "Asha"))
+            assertThat(row.matchedAt).isEqualTo("<timestamp>")
+            assertThat(row.endedAt).isEqualTo("<timestamp>")
+            assertThat(row.ended).isEqualTo("unmatched")
+            assertThat(row.reported).isFalse()
+            assertThat(past.meta?.windowDays).isEqualTo(30)
+            // The golden redacts the time: the line falls back to how it ended.
+            assertThat(PastMatchesCopy.endedLine(row.ended, parseInstant(row.endedAt), ZoneId.of("UTC"))).isEqualTo("Unmatched")
+        },
+        "past_matches_get_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M13: kind messages ─────────────────────────────────────
+        "kind_check_post_200_kind.json" to data(KindCheckDto.serializer()) {
+            assertThat(it.kind).isTrue()
+            assertThat(it.reasons).isEmpty()
+        },
+        "kind_check_post_200_unkind.json" to data(KindCheckDto.serializer()) {
+            // Only an explicit false slows a send down or covers a message.
+            assertThat(it.kind).isFalse()
+            assertThat(it.reasons).containsExactly("insult")
+        },
+        "kind_check_post_400_invalid.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_KIND_CHECK")
+            val details = details(error, KindCheckRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("text")
+            // The app never asks about a longer text: it simply sends it.
+            assertThat(details.max).isEqualTo(DatingConversationKindness.MAX_TEXT)
+        },
+        "kind_check_post_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "bothered_post_201.json" to data(BotheredDto.serializer()) {
+            assertThat(it.matchId).isEqualTo("<match>")
+            assertThat(it.bothered).isTrue()
+            assertThat(it.offerReport).isTrue()
+        },
+        "comment_filter_get_200.json" to data(CommentFilterDto.serializer()) {
+            assertThat(it.filterUnkind).isTrue()
+            assertThat(it.words).containsExactly("ex", "cricket").inOrder()
+            it.words.orEmpty().forEach { w -> assertThat(CommentFilterRules.normalize(w)).isEqualTo(w) }
+        },
+        "comment_filter_put_200.json" to data(CommentFilterDto.serializer()) {
+            assertThat(it.filterUnkind).isTrue()
+            assertThat(it.words).containsExactly("ex", "cricket").inOrder()
+        },
+        "comment_filter_put_400_invalid.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_COMMENT_FILTER")
+            val details = details(error, CommentFilterRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("words")
+            // The app's own limits are the server's.
+            assertThat(details.maxWords).isEqualTo(CommentFilterRules.MAX_WORDS)
+            assertThat(details.minLen).isEqualTo(CommentFilterRules.MIN_LEN)
+            assertThat(details.maxLen).isEqualTo(CommentFilterRules.MAX_LEN)
+            assertThat(DatingCopy.forError(error)).isEqualTo(CommentFilterCopy.INVALID)
+        },
+        "sparks_incoming_get_200_note_hidden.json" to data(listSerializer(SparkDto.serializer())) {
+            val spark = it.single()
+            // The note itself still arrives: the recipient may read it.
+            assertThat(spark.note).isEqualTo("you look stupid")
+            assertThat(spark.noteHidden).isEqualTo("unkind")
+            assertThat(NoteHidden.fromWire(spark.noteHidden)).isEqualTo(NoteHidden.UNKIND)
+            assertThat(checkNotNull(spark.person).firstName).isEqualTo("Asha")
+        },
+        // ── Mechanic M16: hide from people I know ───────────────────────────
+        "hide_known_get_200.json" to data(HideKnownDto.serializer()) {
+            assertThat(it.enabled).isTrue()
+            assertThat(it.hiddenCount).isEqualTo(2)
+            assertThat(it.refreshedAt).isEqualTo("<timestamp>")
+            assertThat(HideKnownCopy.hiddenFrom(it.hiddenCount)).isEqualTo("Hidden from 2 connections")
+        },
+        "hide_known_put_200.json" to data(HideKnownDto.serializer()) {
+            assertThat(it.enabled).isTrue()
+            assertThat(it.hiddenCount).isEqualTo(2)
+        },
+        "hide_known_put_503_unavailable.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("HIDE_KNOWN_UNAVAILABLE")
+            assertThat((error as DatingError.Refused).status).isEqualTo(503)
+        },
+        "hide_known_get_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M18: client config ─────────────────────────────────────
+        "client_config_get_200.json" to data(ClientConfigDto.serializer()) {
+            assertThat(it.screenProtection).isTrue()
+        },
+        "client_config_get_200_off.json" to data(ClientConfigDto.serializer()) {
+            assertThat(it.screenProtection).isFalse()
+        },
+        // ── Mechanic M4: who liked you ──────────────────────────────────────
+        "liked_you_get_200_locked.json" to data(LikedYouDto.serializer()) {
+            assertThat(it.total).isEqualTo(2)
+            assertThat(it.unlocked).isFalse()
+            // Super Sparks first; an ordinary spark omits the key.
+            assertThat(it.items.map { i -> i.superSpark }).containsExactly(true, false).inOrder()
+            it.items.forEach { item ->
+                assertThat(item.sparkId).isEqualTo("<uuid>")
+                // Nothing that identifies the sender, and only the blurred route.
+                assertThat(item.person).isNull()
+                assertThat(item.note).isNull()
+                assertThat(item.photoUrl).isEqualTo("/v1/dating/liked-you/<uuid>/photo")
+                assertThat(PhotoRules.likedYouPath(item.photoUrl)).isEqualTo(item.photoUrl)
+                assertThat(PhotoRules.photoIdOf(item.photoUrl)).isNull()
+            }
+        },
+        "liked_you_get_200_unlocked.json" to data(LikedYouDto.serializer()) {
+            assertThat(it.total).isEqualTo(2)
+            assertThat(it.unlocked).isTrue()
+            assertThat(it.items.map { i -> i.superSpark }).containsExactly(true, false).inOrder()
+            assertThat(it.items.map { i -> checkNotNull(i.person).userId }).containsExactly("<super_sender>", "<sender>").inOrder()
+            it.items.forEach { item ->
+                val person = checkNotNull(item.person)
+                assertThat(person.firstName).isEqualTo("Asha")
+                assertThat(person.age).isEqualTo(30)
+                assertThat(person.photoState).isEqualTo("full")
+                // The item's photo is the person's own route.
+                assertThat(item.photoUrl).isEqualTo(person.primaryPhotoUrl)
+                assertThat(item.note).isEqualTo("Loved your answer")
+                assertThat(checkNotNull(person.detail).photos.single().state).isEqualTo("full")
+            }
+        },
+        "sparks_incoming_get_200_locked.json" to data(listSerializer(SparkDto.serializer())) {
+            assertThat(it.map { s -> s.superSpark }).containsExactly(true, false).inOrder()
+            it.forEach { spark ->
+                assertThat(spark.locked).isTrue()
+                assertThat(spark.id).isEqualTo("<uuid>")
+                // No sender at all: the old list path must cope with that.
+                assertThat(spark.fromUserId).isEmpty()
+                assertThat(spark.person).isNull()
+                assertThat(spark.note).isNull()
+                assertThat(spark.photoUrl).isEqualTo("/v1/dating/liked-you/<uuid>/photo")
+            }
+        },
+        "spark_accept_403_liked_you_locked.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("LIKED_YOU_LOCKED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo("You'll need a Premium pass to see who sparked you.")
         },
         "spark_create_post_201_matched.json" to data(SparkCreatedDto.serializer()) {
             assertThat(it.matched).isTrue()
@@ -466,6 +990,81 @@ class DatingContractFixtureTest {
             assertThat(contact.contactId).isEqualTo("<contact>")
             assertThat(contact.person).isNull()
         },
+        // ── Mechanic M5: first move ─────────────────────────────────────────
+        "first_move_get_200.json" to data(FirstMoveSettingsDto.serializer()) {
+            assertThat(it.enabled).isTrue()
+            assertThat(it.questions.map { q -> q.text })
+                .containsExactly("What does your perfect Sunday look like?", "Tea or coffee, and why?").inOrder()
+            assertThat(it.questions.map { q -> q.id }.toSet()).containsExactly("<uuid>")
+            assertThat(it.maxQuestions).isEqualTo(3)
+            assertThat(it.maxLength).isEqualTo(140)
+        },
+        "first_move_put_200.json" to data(FirstMoveSettingsDto.serializer()) {
+            // The PUT answers with the same shape as the GET.
+            assertThat(it.enabled).isTrue()
+            assertThat(it.questions).hasSize(2)
+            assertThat(it.maxQuestions).isEqualTo(3)
+            assertThat(it.maxLength).isEqualTo(140)
+        },
+        "first_move_put_400_too_many_questions.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("OPENING_QUESTIONS_TOO_MANY")
+            assertThat(details(error, RangeDetailsDto.serializer(), name).max).isEqualTo(3)
+            assertThat(DatingCopy.forError(error, strict)).isEqualTo("You can have up to 3 opening questions.")
+        },
+        "first_move_get_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "match_get_200_first_move_waiting.json" to data(MatchDto.serializer()) {
+            assertThat(it.status).isEqualTo("matched")
+            assertThat(it.person?.firstName).isEqualTo("Asha")
+            val move = checkNotNull(it.firstMove)
+            assertThat(move.youMoveFirst).isFalse()
+            assertThat(move.deadline).isEqualTo("<timestamp>")
+            assertThat(move.canExtend).isTrue()
+            assertThat(move.openingQuestions.map { q -> q.text })
+                .containsExactly("What does your perfect Sunday look like?", "Tea or coffee, and why?").inOrder()
+            val ui = checkNotNull(move.toUi())
+            assertThat(ui.waiting).isTrue()
+            assertThat(ui.questions).hasSize(2)
+            assertThat(ui.canExtend).isTrue()
+            // The golden redacts the time; an unparseable deadline is simply absent.
+            assertThat(ui.deadline).isNull()
+        },
+        "match_get_200_first_move_yours.json" to data(MatchDto.serializer()) {
+            val move = checkNotNull(it.firstMove)
+            assertThat(move.youMoveFirst).isTrue()
+            assertThat(move.deadline).isEqualTo("<timestamp>")
+            // The first mover gets no questions and no extend: Go omits the list.
+            assertThat(move.openingQuestions).isEmpty()
+            assertThat(move.canExtend).isFalse()
+            val ui = checkNotNull(move.toUi())
+            assertThat(ui.youMoveFirst).isTrue()
+            assertThat(ui.waiting).isFalse()
+        },
+        "match_opening_answer_post_201.json" to data(OpeningAnswerDto.serializer()) {
+            assertThat(it.sent).isTrue()
+            assertThat(it.conversationId).isEqualTo("<uuid>")
+        },
+        "match_opening_answer_409_not_pending.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("FIRST_MOVE_NOT_PENDING")
+            assertThat((error as DatingError.Refused).status).isEqualTo(409)
+            assertThat(DatingCopy.forError(error)).isEqualTo("This match isn't waiting for an answer from you any more.")
+        },
+        "match_extend_post_200_free.json" to data(ExtendDto.serializer()) {
+            assertThat(it.extended).isTrue()
+            assertThat(it.extraHours).isEqualTo(24)
+            // The free extend omits extra_days.
+            assertThat(it.extraDays).isEqualTo(0)
+            assertThat(it.expiresAt).isEqualTo("<timestamp>")
+            assertThat(it.free).isTrue()
+            assertThat(FirstMoveCopy.extended(it.free, it.extraHours, it.extraDays)).isEqualTo("Done. They have 24 more hours.")
+        },
+        "match_extend_429_limit_reached.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("EXTEND_LIMIT_REACHED")
+            assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(1, 24, "<timestamp>"))
+        },
         "verification_status_get_200.json" to data(VerificationStatusDto.serializer()) {
             assertThat(it.selfie.state).isEqualTo("passed")
             assertThat(it.selfie.attemptsLeftToday).isEqualTo(4)
@@ -474,6 +1073,228 @@ class DatingContractFixtureTest {
             assertThat(it.verified).isTrue()
             assertThat(it.trustTier).isEqualTo("selfie")
             assertThat(it.nextStep).isEqualTo("none")
+        },
+        // ── Mechanic M6: profile basics and filters ─────────────────────────
+        "profile_options_get_200.json" to data(ProfileOptionsDto.serializer()) {
+            assertThat(it.interests).hasSize(40)
+            assertThat(it.interests.first()).isEqualTo(OptionDto("art", "Art"))
+            assertThat(it.maxInterests).isEqualTo(10)
+            assertThat(it.languages.first { o -> o.code == "te" }.label).isEqualTo("Telugu")
+            assertThat(it.maxLanguages).isEqualTo(8)
+            assertThat(it.heightCm).isEqualTo(OptionRangeDto(min = 120, max = 230))
+            assertThat(it.drinking.map { o -> o.code }).containsExactly("never", "rarely", "socially", "regularly").inOrder()
+            assertThat(it.smoking.last().label).isEqualTo("Trying to quit")
+            assertThat(it.exercise).hasSize(4)
+            assertThat(it.diet.first { o -> o.code == "non_vegetarian" }.label).isEqualTo("Non-vegetarian")
+            assertThat(it.distanceBuckets.map { o -> o.code }).containsExactly("lt_5_km", "km_5_10", "km_10_25", "gt_25_km").inOrder()
+            // The display model keeps the server's labels and limits as sent.
+            val ui = ProfileOptionsUi.from(it)
+            assertThat(ui.heightRange).isEqualTo(120..230)
+            assertThat(ui.distanceLabel("gt_25_km")).isEqualTo("Any distance")
+            assertThat(ui.basicLabel(LifestyleBasic.EXERCISE, "often")).isEqualTo("Often")
+        },
+        "preferences_get_200_filters.json" to data(PreferencesDto.serializer()) {
+            assertThat(it.distanceBucket).isEqualTo("km_5_10")
+            val pass = checkNotNull(it.passFilters)
+            assertThat(pass.active).isTrue()
+            assertThat(pass.verifiedOnly).isTrue()
+            assertThat(pass.minHeightCm).isEqualTo(160)
+            assertThat(pass.maxHeightCm).isEqualTo(190)
+            assertThat(pass.languages).containsExactly("en", "te").inOrder()
+            assertThat(pass.drinking).containsExactly("never", "socially").inOrder()
+            // Go sends [] for an empty filter, never null.
+            assertThat(pass.exercise).isEmpty()
+            assertThat(pass.diet).containsExactly("vegetarian")
+        },
+        "preferences_put_200_filters.json" to data(PreferencesDto.serializer()) {
+            // The PUT answers with the same view as the GET.
+            assertThat(it.distanceBucket).isEqualTo("km_5_10")
+            assertThat(it.passFilters?.active).isTrue()
+            assertThat(it.intentFilter).containsExactly("serious")
+        },
+        "preferences_put_403_filters_require_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("FILTERS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.FILTERS_REQUIRE_PASS)
+        },
+        "preferences_put_400_invalid_distance_bucket.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_DISTANCE_BUCKET")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("lt_5_km", "km_5_10", "km_10_25", "gt_25_km").inOrder()
+            assertThat(FiltersRules.fieldFor(error, strict)).isEqualTo(FiltersField.DISTANCE)
+        },
+        "profile_upsert_400_invalid_interest.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_INTEREST")
+            val details = details(error, FieldRefusalDetailsDto.serializer(), name)
+            assertThat(details.field).isEqualTo("interests")
+            assertThat(details.allowed).hasSize(40)
+            assertThat(AboutMeField.fromWire(details.field)).isEqualTo(AboutMeField.INTERESTS)
+        },
+        "profile_upsert_400_invalid_height.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_HEIGHT")
+            assertThat(details(error, FieldRefusalDetailsDto.serializer(), name))
+                .isEqualTo(FieldRefusalDetailsDto(field = "height_cm", min = 120, max = 230))
+            assertThat(DatingCopy.forError(error, strict)).isEqualTo("Height needs to be between 120 and 230 cm.")
+        },
+        "privacy_patch_403_filters_require_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("FILTERS_REQUIRE_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+        },
+        // ── Mechanic M7: daily picks ────────────────────────────────────────
+        "picks_get_200.json" to { _, raw ->
+            // NOT the envelope: the deck's {data, meta}, meta carrying the local day.
+            val picks = strict.decodeFromString(PicksDto.serializer(), raw)
+            val card = picks.data.single()
+            assertThat(card.candidateId).isEqualTo("<candidate>")
+            assertThat(card.matchReasons).isEmpty()
+            assertThat(card.profile.firstName).isEqualTo("Asha")
+            assertThat(card.profile.lastActiveLabel).isEqualTo("Active today")
+            assertThat(card.profile.travelling).isFalse()
+            assertThat(card.profile.detail?.photos?.single()?.state).isEqualTo("full")
+            val meta = checkNotNull(picks.meta)
+            assertThat(meta.date).isEqualTo("<date>")
+            assertThat(meta.timezone).isEqualTo("UTC")
+            assertThat(meta.resetsAt).isEqualTo("<timestamp>")
+            assertThat(meta.size).isEqualTo(1)
+            // The card reads exactly as a deck card does, with no travelling marker.
+            val ui = card.toCardUi(photoUrls())
+            assertThat(ui.name).isEqualTo("Asha")
+            assertThat(ui.visiting).isNull()
+            // The golden redacts the time: the header falls back to general words.
+            assertThat(PicksCopy.resetLine(parseInstant(meta.resetsAt), Instant.EPOCH, ZoneId.of("UTC")))
+                .isEqualTo("New picks every day at midnight")
+        },
+        "picks_get_400_invalid_timezone.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_TIMEZONE")
+            assertThat((error as DatingError.Refused).status).isEqualTo(400)
+        },
+        "picks_get_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        // ── Mechanic M8: travel ─────────────────────────────────────────────
+        "travel_get_200.json" to data(TravelDto.serializer()) {
+            // No pass, no trip: `active` omitted, `available` false.
+            assertThat(it.active).isNull()
+            assertThat(it.available).isFalse()
+            assertThat(it.maxDays).isEqualTo(7)
+            assertThat(it.cities).hasSize(22)
+            assertThat(it.cities.first()).isEqualTo(TravelCityDto("ahmedabad", "Ahmedabad"))
+            assertThat(it.cities.first { c -> c.code == "new_york" }.label).isEqualTo("New York")
+            val cities = TravelRules.cities(it.cities)
+            assertThat(cities.map { c -> c.label }).isInOrder(String.CASE_INSENSITIVE_ORDER)
+            assertThat(TravelRules.trip(it.active)).isNull()
+        },
+        "travel_put_200.json" to data(TravelDto.serializer()) {
+            assertThat(it.available).isTrue()
+            val active = checkNotNull(it.active)
+            assertThat(active.city).isEqualTo(TravelCityDto("mumbai", "Mumbai"))
+            assertThat(active.startsAt).isEqualTo("<timestamp>")
+            assertThat(active.endsAt).isEqualTo("<timestamp>")
+            assertThat(it.cities).hasSize(22)
+            val trip = checkNotNull(TravelRules.trip(active))
+            assertThat(trip.cityLabel).isEqualTo("Mumbai")
+            // The golden redacts the times; an unparseable end is simply left off.
+            assertThat(trip.endsAt).isNull()
+            assertThat(TravelCopy.browsingUntil(trip, ZoneId.of("UTC"))).isEqualTo("Browsing Mumbai")
+        },
+        "travel_put_403_requires_pass.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("TRAVEL_REQUIRES_PASS")
+            assertThat((error as DatingError.Refused).status).isEqualTo(403)
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.TRAVEL_REQUIRES_PASS)
+        },
+        "travel_put_400_invalid_city.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_CITY")
+            val allowed = details(error, AllowedDetailsDto.serializer(), name).allowed
+            assertThat(allowed).hasSize(22)
+            assertThat(allowed).containsAtLeast("mumbai", "new_york", "visakhapatnam")
+        },
+        "travel_get_404_not_enabled.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "pulse_today_get_200_travelling.json" to { _, raw ->
+            // Someone on a trip in the viewer's deck: `travelling` true, city the destination.
+            val today = strict.decodeFromString(PulseTodayDto.serializer(), raw)
+            val card = today.data.single()
+            assertThat(card.profile.travelling).isTrue()
+            assertThat(card.profile.city).isEqualTo("Hyderabad")
+            assertThat(card.profile.distanceBucket).isEqualTo("lt_5_km")
+            assertThat(today.meta?.dailyLimit).isEqualTo(50)
+            assertThat(card.toCardUi(photoUrls()).visiting).isEqualTo("Visiting Hyderabad")
+        },
+        "person_get_200_basics.json" to data(DatingPersonDto.serializer()) {
+            val detail = checkNotNull(it.detail)
+            assertThat(detail.languages).containsExactly("en", "te").inOrder()
+            assertThat(detail.interests).containsExactly("books", "cricket", "yoga").inOrder()
+            assertThat(detail.heightCm).isEqualTo(172)
+            assertThat(detail.drinking).isEqualTo("socially")
+            assertThat(detail.smoking).isEqualTo("never")
+            assertThat(detail.exercise).isEqualTo("often")
+            assertThat(detail.diet).isEqualTo("vegetarian")
+            assertThat(it.lastActiveLabel).isEqualTo("Active today")
+        },
+        // ── Mechanic M15: voice and video prompt answers ────────────────────
+        "prompt_clip_put_200_approved.json" to data(PromptClipViewDto.serializer()) {
+            assertThat(it.promptId).isEqualTo(1)
+            assertThat(it.kind).isEqualTo("video")
+            assertThat(it.durationMs).isEqualTo(12_000L)
+            assertThat(it.status).isEqualTo("approved")
+            // Omitted unless rejected.
+            assertThat(it.reason).isNull()
+            assertThat(ClipKind.fromWire(it.kind)).isEqualTo(ClipKind.VIDEO)
+            assertThat(ClipStatus.fromWire(it.status)).isEqualTo(ClipStatus.LIVE)
+            assertThat(OwnClipUi(ClipKind.VIDEO, it.durationMs, ClipStatus.LIVE).statusLine).isEqualTo("Live on your profile")
+        },
+        "prompt_clip_put_200_pending_review.json" to data(PromptClipViewDto.serializer()) {
+            assertThat(it.promptId).isEqualTo(2)
+            assertThat(it.kind).isEqualTo("audio")
+            assertThat(it.durationMs).isEqualTo(8_000L)
+            assertThat(it.status).isEqualTo("pending_review")
+            assertThat(ClipStatus.fromWire(it.status)).isEqualTo(ClipStatus.CHECKING)
+            assertThat(ClipCopy.summary(ClipKind.fromWire(it.kind)!!, it.durationMs)).isEqualTo("Voice answer · 0:08")
+        },
+        "prompt_clip_put_404_media_not_found.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("CLIP_MEDIA_NOT_FOUND")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+            assertThat(clipRefusal(error, strict)).isEqualTo(ClipCopy.MEDIA_NOT_FOUND)
+        },
+        "prompt_clip_put_404_not_enabled.json" to error { error, _ ->
+            // Written by dating-service (it carries meta): the flag is off, not the pilot gate.
+            assertThat(refusedCode(error)).isEqualTo("MECHANIC_NOT_ENABLED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "prompt_clip_put_409_not_ready.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("CLIP_NOT_READY")
+            assertThat((error as DatingError.Refused).status).isEqualTo(409)
+            assertThat(clipRefusal(error, strict)).isEqualTo(ClipCopy.STILL_PROCESSING)
+        },
+        "prompt_clip_put_422_too_long.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("CLIP_TOO_LONG")
+            assertThat((error as DatingError.Refused).status).isEqualTo(422)
+            val max = details(error, ClipTooLongDetailsDto.serializer(), name).maxMs
+            assertThat(max).isEqualTo(ClipRules.MAX_CLIP_MS)
+            assertThat(clipRefusal(error, strict)).isEqualTo("Keep your clip to 30 seconds or less.")
+        },
+        "pulse_today_get_200_prompt_clip.json" to { _, raw ->
+            // A clip-only answer on a deck card: no words, an approved video, and only a route.
+            val card = strict.decodeFromString(PulseTodayDto.serializer(), raw).data.single()
+            val prompt = checkNotNull(card.profile.detail).prompts.single()
+            assertThat(prompt.promptId).isEqualTo(4)
+            assertThat(prompt.question).isEqualTo("A skill I'm working on...")
+            assertThat(prompt.answer).isEmpty()
+            val clip = checkNotNull(prompt.clip)
+            assertThat(clip.kind).isEqualTo("video")
+            assertThat(clip.durationMs).isEqualTo(10_000L)
+            assertThat(clip.url).isEqualTo("/v1/dating/people/<owner>/prompts/4/clip")
+            // The card keeps the clip-only answer and resolves the route on the API origin.
+            val ui = card.toCardUi(photoUrls())
+            val shown = checkNotNull(ui.detail).prompts.single()
+            assertThat(shown.answer).isEmpty()
+            assertThat(shown.clip).isEqualTo(
+                PromptClipUi(ClipKind.VIDEO, 10_000L, "https://api.test/v1/dating/people/<owner>/prompts/4/clip"),
+            )
         },
     )
 
@@ -491,13 +1312,31 @@ class DatingContractFixtureTest {
 
     @Test
     fun `every fixture also decodes with the production json`() {
-        val pulse = setOf("pulse_today_get_200.json", "pulse_today_get_200_rich_card.json")
-        parsers.keys.filter { statusOf(it) < 300 && it !in pulse }.forEach { name ->
+        // `/pulse/today` is not the envelope; each fixture and the cards it carries.
+        val pulse = mapOf(
+            "pulse_today_get_200.json" to 1,
+            "pulse_today_get_200_rich_card.json" to 1,
+            "pulse_today_get_200_refill.json" to 1,
+            "pulse_today_get_200_out_of_cards.json" to 0,
+            "pulse_today_get_200_travelling.json" to 1,
+            "pulse_today_get_200_prompt_clip.json" to 1,
+        )
+        // `/picks` is not the envelope either.
+        val picks = mapOf("picks_get_200.json" to 1)
+        // Nor is `/past-matches`: its meta carries the window.
+        val past = mapOf("past_matches_get_200.json" to 1)
+        parsers.keys.filter { statusOf(it) < 300 && it !in pulse && it !in picks && it !in past }.forEach { name ->
             val envelope = production.decodeFromString(ApiEnvelope.serializer(kotlinx.serialization.json.JsonElement.serializer()), fixture(name))
             assertThat(envelope.data).isNotNull()
         }
-        pulse.forEach { name ->
-            assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture(name)).data).hasSize(1)
+        picks.forEach { (name, cards) ->
+            assertThat(production.decodeFromString(PicksDto.serializer(), fixture(name)).data).hasSize(cards)
+        }
+        past.forEach { (name, rows) ->
+            assertThat(production.decodeFromString(PastMatchesDto.serializer(), fixture(name)).data).hasSize(rows)
+        }
+        pulse.forEach { (name, cards) ->
+            assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture(name)).data).hasSize(cards)
         }
     }
 
@@ -548,4 +1387,19 @@ class DatingContractFixtureTest {
     }
 
     private fun <T> listSerializer(element: KSerializer<T>) = kotlinx.serialization.builtins.ListSerializer(element)
+
+    private companion object {
+        /** Every pass feature with every mechanic on, in the server's order (`service.passFeatures`). */
+        val ALL_PASS_FEATURES = listOf(
+            "match_extend",
+            "daily_boost",
+            "more_daily_cards",
+            "unlimited_rewinds",
+            "more_super_sparks",
+            "see_who_sparked",
+            "advanced_filters",
+            "travel_mode",
+            "read_receipts",
+        )
+    }
 }

@@ -49,6 +49,9 @@ type PulseProfileSummary struct {
 	// the default for new profiles. Never a timestamp.
 	LastActiveBucket string `json:"last_active_bucket,omitempty"`
 	LastActiveLabel  string `json:"last_active_label,omitempty"`
+	// Travelling (mechanic M8): on an active trip; City and the distance
+	// bucket are the destination's. Omitted when false.
+	Travelling bool `json:"travelling,omitempty"`
 	// Detail is the pre-match block (ProfileDetail in person.go): the
 	// candidate's own description, their prompt answers, their languages and
 	// the rest of their approved photos to swipe through. It is what the
@@ -83,6 +86,15 @@ type PulseResponse struct {
 type PulseMeta struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	Size        int       `json:"size"`
+	// Mechanic M1 (the refilling deck), all omitted while the flag is off.
+	// DailyLimit is the caller's card allowance per rolling 24 hours,
+	// RemainingToday what is left of it (omitted at 0: a client reads
+	// "daily_limit present, remaining_today absent" as none left) and
+	// ResetsAt when the oldest counted card leaves the window (omitted while
+	// nothing has been used).
+	DailyLimit     int        `json:"daily_limit,omitempty"`
+	RemainingToday int        `json:"remaining_today,omitempty"`
+	ResetsAt       *time.Time `json:"resets_at,omitempty"`
 }
 
 // pulseCacheTTL is the TTL on `dating:pulse:today:{user_id}`.
@@ -139,6 +151,9 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 	} else {
 		slog.Warn("pulse risk lookup failed", "viewer_id", viewerID, "error", rerr)
 	}
+	if s.mechanics.DeckRefill {
+		return s.pulseTodayRefill(ctx, viewerID)
+	}
 	if cached := s.readPulseCache(ctx, viewerID); cached != nil {
 		return cached, nil
 	}
@@ -149,6 +164,94 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 	}
 	s.writePulseCache(ctx, viewerID, resp)
 	return resp, nil
+}
+
+// emptyDeckRetryAfter is how long an empty cached deck is trusted before the
+// refilling deck looks for candidates again.
+const emptyDeckRetryAfter = 5 * time.Minute
+
+// deckDailyLimit is the caller's card allowance: the pass allowance while
+// they hold an unexpired pass, the free one otherwise (and when the pass
+// lookup fails — an outage never widens an allowance).
+func (s *Service) deckDailyLimit(ctx context.Context, viewerID uuid.UUID) int {
+	premium, err := s.store.IsPremium(ctx, viewerID)
+	if err != nil {
+		slog.Warn("deck limit: premium lookup failed; using the free allowance", "viewer_id", viewerID, "error", err)
+		return s.mechanics.DeckDailyLimitFree
+	}
+	if premium {
+		return s.mechanics.DeckDailyLimitPass
+	}
+	return s.mechanics.DeckDailyLimitFree
+}
+
+// pulseTodayRefill is GetPulseToday with mechanic M1 on. The deck is served
+// in batches: when the cached batch is used up the next one is computed, so
+// the deck refills as cards are acted on, until the caller's daily allowance
+// is spent. The response never holds more cards than the allowance has left,
+// and a candidate the caller already acted on is never in it
+// (CandidateQuery.ExcludeActed plus the pass cooldown).
+func (s *Service) pulseTodayRefill(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
+	limit := s.deckDailyLimit(ctx, viewerID)
+	used, oldest, err := s.store.DeckUsage(ctx, viewerID)
+	if err != nil {
+		return nil, err
+	}
+	remaining := limit - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	meta := PulseMeta{GeneratedAt: time.Now().UTC(), DailyLimit: limit, RemainingToday: remaining}
+	if oldest != nil {
+		resets := oldest.Add(store.DeckQuotaWindow).UTC()
+		meta.ResetsAt = &resets
+	}
+	if remaining == 0 {
+		return &PulseResponse{Data: []PulseCard{}, Meta: meta}, nil
+	}
+
+	deck := s.readPulseCache(ctx, viewerID)
+	if deck == nil || (len(deck.Data) == 0 && time.Since(deck.Meta.GeneratedAt) > emptyDeckRetryAfter) {
+		if deck, err = s.computePulseToday(ctx, viewerID); err != nil {
+			return nil, err
+		}
+		s.writePulseCache(ctx, viewerID, deck)
+	}
+	cards := deck.Data
+	if len(cards) > remaining {
+		cards = cards[:remaining]
+	}
+	meta.GeneratedAt = deck.Meta.GeneratedAt
+	meta.Size = len(cards)
+	return &PulseResponse{Data: cards, Meta: meta}, nil
+}
+
+// recordDeckAction notes a deck card the caller acted on (mechanic M1): the
+// card counts against the daily allowance and leaves the cached batch. A
+// failed ledger write is logged, not returned: the action itself is already
+// stored, and the candidate stays out of the deck either way.
+func (s *Service) recordDeckAction(ctx context.Context, viewerID, candidateID uuid.UUID, action string) {
+	if !s.mechanics.DeckRefill {
+		return
+	}
+	if err := s.store.RecordDeckAction(ctx, viewerID, candidateID, action); err != nil {
+		slog.Warn("deck ledger write failed", "viewer_id", viewerID, "action", action, "error", err)
+	}
+	s.removeFromCachedDeck(ctx, viewerID, candidateID)
+	s.dropUsedUpBatch(ctx, viewerID)
+}
+
+// dropUsedUpBatch deletes the viewer's cached batch once every card in it has
+// been acted on, so the next fetch computes the next batch at once. Without
+// it a used-up batch would look like a genuinely empty one, which is trusted
+// for emptyDeckRetryAfter. Refilling deck only.
+func (s *Service) dropUsedUpBatch(ctx context.Context, viewerID uuid.UUID) {
+	if !s.mechanics.DeckRefill {
+		return
+	}
+	if cached := s.readPulseCache(ctx, viewerID); cached != nil && len(cached.Data) == 0 {
+		s.InvalidatePulseCache(ctx, viewerID)
+	}
 }
 
 // cacheKey is versioned. v2 (lane D7) cards carry distance and last-active
@@ -277,7 +380,7 @@ func (s *Service) InvalidateDecksForCandidate(ctx context.Context, candidateID u
 // computePulseToday is the real matching pipeline.
 func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
 	// 1. Load viewer state.
-	viewerProfile, err := s.store.GetProfile(ctx, viewerID)
+	viewerProfile, err := s.viewerProfile(ctx, viewerID)
 	if err != nil && !errors.Is(err, store.ErrProfileNotFound) {
 		return nil, fmt.Errorf("load viewer profile: %w", err)
 	}
@@ -292,6 +395,7 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	q := store.CandidateQuery{
 		ViewerID:      viewerID,
 		ExcludePassed: true,
+		ExcludeActed:  s.mechanics.DeckRefill,
 		Limit:         50,
 	}
 	if prefs.MinAge != nil {
@@ -324,17 +428,23 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	// the candidate query. Best-effort on lookup errors — the
 	// deck stays visible rather than empty if the privacy row is
 	// momentarily unreadable.
+	privacyVerifiedOnly := false
 	if viewerPrivacy, perr := s.store.GetPrivacy(ctx, viewerID); perr == nil && viewerPrivacy != nil {
-		q.VerifiedOnly = viewerPrivacy.VerifiedOnlyFilter
+		privacyVerifiedOnly = viewerPrivacy.VerifiedOnlyFilter
 	} else if perr != nil && !errors.Is(perr, store.ErrProfileNotFound) {
 		slog.Warn("pulse privacy lookup failed", "viewer_id", viewerID, "error", perr)
 	}
+	// Mechanic M6: verified only and the pass filters apply to a pass
+	// holder only while the flag is on; with it off, the pilot's free toggle.
+	s.applyDeckFilters(ctx, viewerID, &q, privacyVerifiedOnly)
 
 	// 3. Fetch candidates.
 	candidates, err := s.store.FetchCandidates(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("fetch candidates: %w", err)
 	}
+	// Mechanic M12: their dealbreakers apply to the viewer.
+	candidates = s.dropByTheirDealbreakers(ctx, viewerProfile, candidates)
 
 	// 4. Score each candidate and apply the diversity constraint.
 	provider := s.graphProvider
@@ -475,6 +585,7 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 		PrimaryPhotoBlurred: primaryBlurred,
 		TuneSummary:         tuneSummary,
 		TrustTier:           c.TrustTier,
+		Travelling:          c.Travelling,
 	}
 	if !c.HideLastActive {
 		band := LastActiveBucketFor(c.LastActiveAt, time.Now())
@@ -483,7 +594,9 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 	// The pre-match block. c.Bio and c.LanguagePrefs are the candidate's own
 	// profile text; c.Community is deliberately NOT used — it is read only
 	// for the deck's same-community cap and stays sealed until a match.
-	summary.Detail = buildProfileDetail(c.Bio, c.LanguagePrefs, prompts, photos, photoViewer)
+	summary.Detail = buildProfileDetail(c.Bio, c.LanguagePrefs, ProfileBasics{
+		Interests: c.Interests, HeightCm: c.HeightCm, Drinking: c.Drinking, Smoking: c.Smoking, Exercise: c.Exercise, Diet: c.Diet,
+	}, prompts, photos, photoViewer)
 
 	return PulseCard{
 		CandidateID:  c.UserID,
@@ -508,7 +621,7 @@ func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	viewerProfile, _ := s.store.GetProfile(ctx, viewerID)
+	viewerProfile, _ := s.viewerProfile(ctx, viewerID)
 
 	// §P1-3: matched-partner set drives the blur-photos-until-match
 	// lift inside buildCard. Best-effort on lookup errors.
@@ -561,6 +674,16 @@ var ErrPassReasonTooLong = fmt.Errorf("reason must be at most %d characters", Ma
 // from the viewer's cached deck, and FetchCandidates then excludes them for
 // store.PassCooldown. Nothing is emitted: the candidate is never told.
 func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.UUID, reason string) (*PassResult, error) {
+	return s.PassCandidateFrom(ctx, viewerID, candidateID, reason, "")
+}
+
+// PassCandidateFrom is a pass from a named surface; only a deck pass spends a
+// deck card.
+func (s *Service) PassCandidateFrom(ctx context.Context, viewerID, candidateID uuid.UUID, reason, source string) (*PassResult, error) {
+	isDeck, ok := deckSource(source)
+	if !ok {
+		return nil, ErrInvalidSource
+	}
 	if viewerID == uuid.Nil || candidateID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: viewer and candidate ids required")
 	}
@@ -575,6 +698,9 @@ func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.
 		return nil, err
 	}
 	s.removeFromCachedDeck(ctx, viewerID, candidateID)
+	if isDeck {
+		s.recordDeckAction(ctx, viewerID, candidateID, store.DeckActionPass)
+	}
 	return &PassResult{
 		Passed:        true,
 		CandidateID:   candidateID,

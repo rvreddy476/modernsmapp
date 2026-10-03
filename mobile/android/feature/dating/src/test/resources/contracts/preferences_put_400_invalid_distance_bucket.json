@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "INVALID_DISTANCE_BUCKET",
+    "message": "distance_bucket must be one of the profile options",
+    "details": {
+      "allowed": [
+        "lt_5_km",
+        "km_5_10",
+        "km_10_25",
+        "gt_25_km"
+      ]
+    }
+  },
+  "meta": {}
+}

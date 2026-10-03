@@ -101,9 +101,12 @@ func (r *MatchSagaReconciler) Reconcile(ctx context.Context) error {
 
 func (r *MatchSagaReconciler) retryOne(ctx context.Context, client MessageServiceClient, m *store.Match) error {
 	resp, err := client.CreateConversation(ctx, CreateConversationRequest{
-		Participants: []string{m.UserA.String(), m.UserB.String()},
-		Type:         "dating_match",
-		ContextID:    m.ID.String(),
+		Participants:  []string{m.UserA.String(), m.UserB.String()},
+		Type:          "dating_match",
+		ContextID:     m.ID.String(),
+		FirstMoverIDs:     uuidStrings(m.FirstMoverIDs),
+		ReceiptsGated:     r.svc.mechanics.ReadReceipts,
+		CallAfterExchange: r.svc.mechanics.CallAfterExchange,
 	})
 	if err != nil {
 		return err
@@ -112,5 +115,9 @@ func (r *MatchSagaReconciler) retryOne(ctx context.Context, client MessageServic
 	if err != nil {
 		return err
 	}
-	return r.svc.store.MarkMatchActive(ctx, m.ID, convID)
+	if err := r.svc.store.MarkMatchActive(ctx, m.ID, convID); err != nil {
+		return err
+	}
+	r.svc.syncMatchReadReceipts(ctx, m)
+	return nil
 }

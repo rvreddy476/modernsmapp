@@ -1,0 +1,46 @@
+{
+  "data": {
+    "id": "<match>",
+    "user_a": "<viewer>",
+    "user_b": "<other>",
+    "status": "matched",
+    "conversation_id": "<uuid>",
+    "spark_target": {
+      "target_kind": "prompt",
+      "target_ref": "m5"
+    },
+    "matched_at": "<timestamp>",
+    "expires_at": "<timestamp>",
+    "person": {
+      "user_id": "<other>",
+      "first_name": "Asha",
+      "age": 30,
+      "primary_photo_id": "<uuid>",
+      "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+      "photo_state": "full",
+      "verified": false,
+      "trust_tier": "phone",
+      "distance_bucket": "lt_5_km",
+      "distance_label": "\u003c 5 km",
+      "city": "Hyderabad",
+      "intent": "casual",
+      "last_active_bucket": "today",
+      "last_active_label": "Active today"
+    },
+    "first_move": {
+      "you_move_first": false,
+      "deadline": "<timestamp>",
+      "opening_questions": [
+        {
+          "id": "<uuid>",
+          "text": "What does your perfect Sunday look like?"
+        },
+        {
+          "id": "<uuid>",
+          "text": "Tea or coffee, and why?"
+        }
+      ],
+      "can_extend": true
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "INVALID_INTENT",
+    "message": "intent must be one of casual, serious, marriage",
+    "details": {
+      "allowed": [
+        "casual",
+        "serious",
+        "marriage"
+      ]
+    }
+  },
+  "meta": {}
+}

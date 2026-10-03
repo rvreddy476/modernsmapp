@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "TRAVEL_REQUIRES_PASS",
+    "message": "travel mode comes with a pass"
+  },
+  "meta": {}
+}

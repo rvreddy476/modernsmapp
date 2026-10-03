@@ -1,0 +1,8 @@
+{
+  "data": {
+    "prompt_id": 2,
+    "kind": "audio",
+    "duration_ms": 8000,
+    "status": "pending_review"
+  }
+}

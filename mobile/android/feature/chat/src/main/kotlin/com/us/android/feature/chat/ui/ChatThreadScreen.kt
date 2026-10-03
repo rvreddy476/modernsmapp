@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,11 +33,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -54,6 +58,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,7 +71,9 @@ import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.network.ApiConfig
@@ -92,6 +99,9 @@ fun ChatThreadScreen(
     isGroup: Boolean,
     onBack: () -> Unit,
     onStartCall: (peerUserId: String, peerName: String, video: Boolean) -> Unit = { _, _, _ -> },
+    // Kind messages: the conversation's owner offered its report flow for the
+    // sender of a message that bothered the viewer. :app routes it.
+    onReportSender: (senderId: String, messageId: String, name: String) -> Unit = { _, _, _ -> },
     viewModel: ChatThreadViewModel = hiltViewModel(),
 ) {
     val render by viewModel.state.collectAsStateWithLifecycle()
@@ -214,6 +224,18 @@ fun ChatThreadScreen(
                                 },
                                 onReply = { viewModel.startReply(message) },
                                 onDelete = { viewModel.deleteMessage(message.id) },
+                                cover = render.covers[message.id],
+                                onReveal = { viewModel.revealCovered(message.id) },
+                                onBothered = { viewModel.answerBothered(message.id, it) },
+                                onReport = {
+                                    onReportSender(
+                                        message.senderId,
+                                        message.id,
+                                        message.senderDisplayName.orEmpty().ifBlank {
+                                            title.ifBlank { render.loadedTitle }
+                                        },
+                                    )
+                                },
                             )
                         }
                     }
@@ -263,6 +285,93 @@ fun ChatThreadScreen(
                     )
                 },
             )
+        }
+    }
+
+    if (render.kindPrompt) {
+        KindPromptSheet(onEdit = viewModel::editHeldMessage, onSendAnyway = viewModel::sendAnyway)
+    }
+}
+
+/** Kind-message words. Our own. */
+internal object KindMessageCopy {
+    const val PROMPT_TITLE = "This might come across as unkind"
+    const val PROMPT_BODY = "Kind words tend to get kind replies. Want to look it over before it goes?"
+    const val EDIT = "Edit"
+    const val SEND_ANYWAY = "Send anyway"
+    const val COVERED = "This message might be unkind. Tap to read."
+    const val BOTHERED = "Did this bother you?"
+    const val YES = "Yes"
+    const val NO = "No"
+    const val OFFER_REPORT = "Thanks for telling us. You can report them; they won't know it was you."
+    const val REPORT = "Report"
+}
+
+/** The gentle nudge before a send: never a block. Dismissing it is Edit. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun KindPromptSheet(onEdit: () -> Unit, onSendAnyway: () -> Unit) {
+    ModalBottomSheet(
+        onDismissRequest = onEdit,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = UsTheme.extended.bgRaised,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .padding(bottom = UsTheme.spacing.l)
+                .testTag("kind-prompt"),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        ) {
+            Text(
+                text = KindMessageCopy.PROMPT_TITLE,
+                style = MaterialTheme.typography.titleLarge,
+                color = UsTheme.extended.textPrimary,
+            )
+            Text(
+                text = KindMessageCopy.PROMPT_BODY,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textMuted,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                UsSecondaryButton(text = KindMessageCopy.EDIT, onClick = onEdit, modifier = Modifier.weight(1f))
+                UsButton(text = KindMessageCopy.SEND_ANYWAY, onClick = onSendAnyway, modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** Under a covered message: "Did this bother you?", then — when offered — the way to report. */
+@Composable
+private fun KindCoverActions(cover: KindCover, onBothered: (Boolean) -> Unit, onReport: () -> Unit) {
+    when {
+        !cover.answered -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.testTag("kind-bothered"),
+        ) {
+            Text(
+                text = KindMessageCopy.BOTHERED,
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textMuted,
+            )
+            TextButton(onClick = { onBothered(true) }) {
+                Text(KindMessageCopy.YES, color = UsTheme.extended.accentSolid)
+            }
+            TextButton(onClick = { onBothered(false) }) {
+                Text(KindMessageCopy.NO, color = UsTheme.extended.accentSolid)
+            }
+        }
+        cover.offerReport -> Column(modifier = Modifier.widthIn(max = BUBBLE_MAX_WIDTH)) {
+            Text(
+                text = KindMessageCopy.OFFER_REPORT,
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textMuted,
+            )
+            TextButton(onClick = onReport, modifier = Modifier.testTag("kind-report")) {
+                Text(KindMessageCopy.REPORT, color = UsTheme.extended.statusDanger)
+            }
         }
     }
 }
@@ -767,6 +876,10 @@ private fun MessageRow(
     onReact: (String) -> Unit,
     onReply: () -> Unit,
     onDelete: () -> Unit,
+    cover: KindCover? = null,
+    onReveal: () -> Unit = {},
+    onBothered: (Boolean) -> Unit = {},
+    onReport: () -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -803,7 +916,14 @@ private fun MessageRow(
                     color = senderColor(message.senderId.ifBlank { name }, UsTheme.extended.chatSenders),
                 )
             }
-            MessageBubble(message = message, isOwn = isOwn, quoteAuthor = quoteAuthor)
+            MessageBubble(
+                message = message,
+                isOwn = isOwn,
+                quoteAuthor = quoteAuthor,
+                covered = cover != null && !cover.revealed,
+                onReveal = onReveal,
+            )
+            cover?.let { KindCoverActions(cover = it, onBothered = onBothered, onReport = onReport) }
             if (message.reactions.isNotEmpty()) {
                 // The reaction chip hangs off the bubble's corner (98:363).
                 Text(
@@ -886,7 +1006,13 @@ private fun MessageRow(
  */
 @Composable
 @Suppress("CyclomaticComplexMethod")
-private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String = "") {
+private fun MessageBubble(
+    message: Message,
+    isOwn: Boolean,
+    quoteAuthor: String = "",
+    covered: Boolean = false,
+    onReveal: () -> Unit = {},
+) {
     val shape = if (isOwn) {
         RoundedCornerShape(
             topStart = BUBBLE_CORNER,
@@ -946,7 +1072,19 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
         message.mediaId?.let { mediaId ->
             AttachmentImage(mediaId = mediaId)
         }
-        if (message.text.isNotBlank()) {
+        if (message.text.isNotBlank() && covered) {
+            // Kind messages: the text is not drawn at all until tapped, so
+            // nothing of it shows on any screen, blur or no blur.
+            Text(
+                text = KindMessageCopy.COVERED,
+                style = MaterialTheme.typography.bodyMedium,
+                fontStyle = FontStyle.Italic,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier
+                    .clickable(onClick = onReveal)
+                    .testTag("kind-covered"),
+            )
+        } else if (message.text.isNotBlank()) {
             Text(
                 text = message.text,
                 style = MaterialTheme.typography.bodyMedium,

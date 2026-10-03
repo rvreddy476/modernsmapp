@@ -48,6 +48,8 @@ type UpsertProfileParams struct {
 	BlurMode         *bool      `json:"blur_mode,omitempty"`
 	VisibleToPublic  *bool      `json:"visible_to_public,omitempty"`
 	LanguagePrefs    []string   `json:"language_prefs,omitempty"`
+	// Interests (mechanic M6): codes from the fixed interest list.
+	Interests []string `json:"interests,omitempty"`
 }
 
 // ErrProfileNotFound is returned when no row matches the requested user.
@@ -60,7 +62,7 @@ const profileSelectCols = `
     wants_children, family_plans, blur_mode, visible_to_public, paused,
     language_prefs, trust_tier, profile_status, created_at, updated_at, deleted_at,
     first_name, prior_status, dob_source, first_name_source,
-    religion_sealed, community_sealed`
+    religion_sealed, community_sealed, interests`
 
 // scanProfile scans a profile and opens its sealed fields (lane D9). A row
 // the backfill has not reached yet still reads its legacy plaintext.
@@ -84,7 +86,7 @@ func scanProfileRow(row pgx.Row) (*Profile, error) {
 		&p.WantsChildren, &p.FamilyPlans, &p.BlurMode, &p.VisibleToPublic, &p.Paused,
 		&p.LanguagePrefs, &p.TrustTier, &p.ProfileStatus, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 		&p.FirstName, &p.PriorStatus, &p.DOBSource, &p.FirstNameSource,
-		&p.religionSealed, &p.communitySealed,
+		&p.religionSealed, &p.communitySealed, &p.Interests,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -214,6 +216,9 @@ func profileAssignments(p UpsertProfileParams) ([]string, []any) {
 	}
 	if p.Bio != nil {
 		add("bio", *p.Bio)
+	}
+	if p.Interests != nil {
+		add("interests", p.Interests)
 	}
 	if p.Gender != nil {
 		add("gender", *p.Gender)
@@ -570,6 +575,36 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 	if err := exec(`DELETE FROM dating_explain_ledger WHERE viewer_id = $1`, userID); err != nil {
 		return nil, err
 	}
+	if err := exec(`DELETE FROM dating_deck_ledger WHERE user_id = $1 OR candidate_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_rewind_ledger WHERE user_id = $1 OR candidate_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_opening_questions WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_match_extend_ledger WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_daily_picks WHERE user_id = $1 OR candidate_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_daily_pick_days WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_travel WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_known_people WHERE user_id = $1 OR other_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_hide_known WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_comment_filters WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
 
 	// 3) Matches: the rows stay (the other party's history), but every
 	//    open match is closed first — returned so the caller emits
@@ -599,6 +634,39 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
             closed_by = CASE WHEN closed_by = $1 THEN $2::uuid ELSE closed_by END,
             anonymised_at = COALESCE(anonymised_at, now())
         WHERE user_a = $1 OR user_b = $1`, userID, token); err != nil {
+		return nil, err
+	}
+
+	// 3b) Scam alerts (M17) are a safety record and stay: the purged person
+	//     becomes their subject token, an unsent warning to them is
+	//     cancelled, and a warning about them no longer names them.
+	if err := exec(`
+        UPDATE dating_scam_alerts
+        SET cancelled_at = CASE WHEN recipient_id = $1 AND sent_at IS NULL THEN COALESCE(cancelled_at, now()) ELSE cancelled_at END,
+            first_name   = CASE WHEN subject_id = $1 THEN NULL ELSE first_name END,
+            subject_id   = CASE WHEN subject_id = $1 THEN $2::uuid ELSE subject_id END,
+            recipient_id = CASE WHEN recipient_id = $1 THEN $2::uuid ELSE recipient_id END
+        WHERE subject_id = $1 OR recipient_id = $1`, userID, token); err != nil {
+		return nil, err
+	}
+
+	// 3c) Date check-in answers (M14) are safety evidence and stay: the
+	//     purged person becomes their subject token on either side.
+	if err := exec(`
+        UPDATE dating_date_feedback
+        SET user_id  = CASE WHEN user_id = $1 THEN $2::uuid ELSE user_id END,
+            other_id = CASE WHEN other_id = $1 THEN $2::uuid ELSE other_id END
+        WHERE user_id = $1 OR other_id = $1`, userID, token); err != nil {
+		return nil, err
+	}
+
+	// 3d) "Did this bother you?" answers (M13) are safety evidence and stay:
+	//     the purged person becomes their subject token on either side.
+	if err := exec(`
+        UPDATE dating_message_feedback
+        SET user_id  = CASE WHEN user_id = $1 THEN $2::uuid ELSE user_id END,
+            other_id = CASE WHEN other_id = $1 THEN $2::uuid ELSE other_id END
+        WHERE user_id = $1 OR other_id = $1`, userID, token); err != nil {
 		return nil, err
 	}
 
@@ -696,6 +764,12 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_boost_balances WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_super_spark_balances WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_super_spark_ledger WHERE user_id = $1 OR to_user_id = $1`, userID); err != nil {
 		return nil, err
 	}
 

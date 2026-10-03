@@ -1,0 +1,17 @@
+{
+  "data": {
+    "enabled": true,
+    "questions": [
+      {
+        "id": "<uuid>",
+        "text": "What does your perfect Sunday look like?"
+      },
+      {
+        "id": "<uuid>",
+        "text": "Tea or coffee, and why?"
+      }
+    ],
+    "max_questions": 3,
+    "max_length": 140
+  }
+}

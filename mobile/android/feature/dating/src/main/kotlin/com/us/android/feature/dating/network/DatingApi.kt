@@ -52,11 +52,21 @@ interface DatingApi {
     @PATCH("v1/dating/profile/privacy")
     suspend fun updatePrivacy(@Body body: PrivacyUpdateRequest): Response<ApiEnvelope<PrivacyDto>>
 
+    /** With the M6 filters flag on, carries `distance_bucket` and `pass_filters`; without it, neither. */
     @GET("v1/dating/preferences")
     suspend fun preferences(): Response<ApiEnvelope<PreferencesDto>>
 
+    /**
+     * 403 FILTERS_REQUIRE_PASS for a pass filter (or the old `language_filter`)
+     * set without a pass while the M6 flag is on; 400 INVALID_DISTANCE_BUCKET,
+     * INVALID_HEIGHT, INVALID_LANGUAGE, INVALID_LIFESTYLE with `details.field`.
+     */
     @PUT("v1/dating/preferences")
     suspend fun updatePreferences(@Body body: PreferencesRequest): Response<ApiEnvelope<PreferencesDto>>
+
+    /** Mechanic M6: the fixed interest, language, height, basics and distance lists, with our labels. */
+    @GET("v1/dating/profile/options")
+    suspend fun profileOptions(): Response<ApiEnvelope<ProfileOptionsDto>>
 
     // Photos
 
@@ -88,6 +98,20 @@ interface DatingApi {
     @DELETE("v1/dating/prompts/{promptId}")
     suspend fun deletePrompt(@Path("promptId") promptId: Int): Response<ApiEnvelope<StatusDto>>
 
+    /**
+     * Mechanic M15: attaches an uploaded voice or video clip (≤ 30 s) to a
+     * prompt answer, creating a clip-only answer when there is none. 409
+     * CLIP_NOT_READY while media-service still processes it; 422 CLIP_TOO_LONG
+     * (details.max_ms) / CLIP_UNSUPPORTED; 404 CLIP_MEDIA_NOT_FOUND /
+     * MECHANIC_NOT_ENABLED; 503 CLIP_MEDIA_UNAVAILABLE.
+     */
+    @PUT("v1/dating/prompts/{promptId}/clip")
+    suspend fun putPromptClip(@Path("promptId") promptId: Int, @Body body: PromptClipRequest): Response<ApiEnvelope<PromptClipViewDto>>
+
+    /** Mechanic M15: removes the clip; the text answer, if any, stays. */
+    @DELETE("v1/dating/prompts/{promptId}/clip")
+    suspend fun deletePromptClip(@Path("promptId") promptId: Int): Response<ApiEnvelope<StatusDto>>
+
     // Selfie liveness
 
     @POST("v1/dating/verification/selfie/challenge")
@@ -103,7 +127,7 @@ interface DatingApi {
 
     // People
 
-    /** The compact card. 404 without a match, a live incoming spark or deck membership. */
+    /** The compact card. 404 without a match, a live incoming spark, deck membership or a pick of today's. */
     @GET("v1/dating/people/{userId}")
     suspend fun person(@Path("userId") userId: String): Response<ApiEnvelope<DatingPersonDto>>
 
@@ -119,6 +143,40 @@ interface DatingApi {
     @POST("v1/dating/pulse/{candidateId}/pass")
     suspend fun pass(@Path("candidateId") candidateId: String, @Body body: PassRequest): Response<ApiEnvelope<PassDto>>
 
+    /**
+     * Mechanic M2: undoes the caller's most recent pass, one step, never after a
+     * spark. No body. 409 REWIND_NOTHING_TO_UNDO, 429 REWIND_LIMIT_REACHED,
+     * 404 CANDIDATE_UNAVAILABLE, 404 MECHANIC_NOT_ENABLED.
+     */
+    @POST("v1/dating/pulse/rewind")
+    suspend fun rewind(): Response<ApiEnvelope<RewindDto>>
+
+    /** Mechanic M10: every daily allowance; a mechanic whose flag is off is absent. */
+    @GET("v1/dating/allowances")
+    suspend fun allowances(): Response<ApiEnvelope<AllowancesDto>>
+
+    /**
+     * Mechanic M7: today's picks. NOT the envelope — the deck's `{data, meta}`.
+     * [tz] is the device's IANA zone; null leaves it out and the server uses
+     * its default. 400 INVALID_TIMEZONE, 404 MECHANIC_NOT_ENABLED.
+     */
+    @GET("v1/dating/picks")
+    suspend fun picks(@Query("tz") tz: String?): Response<PicksDto>
+
+    // Travel (mechanic M8)
+
+    /** The caller's trip, the cities and whether they may travel. 404 MECHANIC_NOT_ENABLED. */
+    @GET("v1/dating/travel")
+    suspend fun travel(): Response<ApiEnvelope<TravelDto>>
+
+    /** 403 TRAVEL_REQUIRES_PASS, 400 INVALID_CITY (details.allowed), 400 INVALID_TRAVEL_DAYS (details.min/max). */
+    @PUT("v1/dating/travel")
+    suspend fun startTravel(@Body body: TravelRequest): Response<ApiEnvelope<TravelDto>>
+
+    /** Ends the trip; answers the same shape as the GET. */
+    @DELETE("v1/dating/travel")
+    suspend fun endTravel(): Response<ApiEnvelope<TravelDto>>
+
     // Sparks
 
     @POST("v1/dating/sparks")
@@ -127,10 +185,23 @@ interface DatingApi {
     @GET("v1/dating/sparks/incoming")
     suspend fun incomingSparks(@Query("limit") limit: Int = 50): Response<ApiEnvelope<List<SparkDto>>>
 
+    /**
+     * Mechanic M4: who sparked the caller, as a grid, with the total. Locked
+     * (the gate on, no pass): no names, ids, notes or full images.
+     */
+    @GET("v1/dating/liked-you")
+    suspend fun likedYou(
+        @Query("limit") limit: Int = 50,
+        @Query("offset") offset: Int = 0,
+    ): Response<ApiEnvelope<LikedYouDto>>
+
     @POST("v1/dating/sparks/{id}/decline")
     suspend fun declineSpark(@Path("id") id: String): Response<ApiEnvelope<SparkDeclineDto>>
 
-    /** Accepts an incoming spark: sparks back through the normal path. Idempotent; 404 once declined. */
+    /**
+     * Accepts an incoming spark: sparks back through the normal path. Idempotent;
+     * 404 once declined; 403 LIKED_YOU_LOCKED on a locked spark (mechanic M4).
+     */
     @POST("v1/dating/sparks/{id}/accept")
     suspend fun acceptSpark(@Path("id") id: String): Response<ApiEnvelope<SparkCreatedDto>>
 
@@ -156,6 +227,99 @@ interface DatingApi {
     /** Unmatch. */
     @POST("v1/dating/matches/{id}/close")
     suspend fun closeMatch(@Path("id") id: String): Response<ApiEnvelope<ClosedDto>>
+
+    /**
+     * More time on a match. Free once per rolling 24 h for the person waiting
+     * on a first-move match (429 EXTEND_LIMIT_REACHED after that); otherwise
+     * the premium 7-day extend (403 FORBIDDEN without a pass). No body.
+     */
+    @POST("v1/dating/matches/{id}/extend")
+    suspend fun extendMatch(@Path("id") id: String): Response<ApiEnvelope<ExtendDto>>
+
+    /**
+     * Mechanic M5: the waiting person answers one of the first mover's
+     * opening questions; the server posts it as the chat's first message.
+     * 409 FIRST_MOVE_NOT_PENDING, 404 OPENING_QUESTION_UNKNOWN,
+     * 400 OPENING_ANSWER_INVALID / OPENING_ANSWER_REFUSED, 503 CHAT_UNAVAILABLE.
+     */
+    @POST("v1/dating/matches/{id}/opening-answer")
+    suspend fun openingAnswer(@Path("id") id: String, @Body body: OpeningAnswerRequest): Response<ApiEnvelope<OpeningAnswerDto>>
+
+    // First move (mechanic M5)
+
+    /** 404 MECHANIC_NOT_ENABLED while the server flag is off. */
+    @GET("v1/dating/first-move")
+    suspend fun firstMove(): Response<ApiEnvelope<FirstMoveSettingsDto>>
+
+    /** 400 OPENING_QUESTIONS_TOO_MANY / OPENING_QUESTION_INVALID / OPENING_QUESTION_REFUSED. */
+    @PUT("v1/dating/first-move")
+    suspend fun updateFirstMove(@Body body: FirstMoveRequest): Response<ApiEnvelope<FirstMoveSettingsDto>>
+
+    // In-match extras (mechanic M9)
+
+    /** The caller's read-receipts setting. 404 MECHANIC_NOT_ENABLED while the server flag is off. */
+    @GET("v1/dating/read-receipts")
+    suspend fun readReceipts(): Response<ApiEnvelope<ReadReceiptsDto>>
+
+    /** 403 READ_RECEIPTS_REQUIRE_PASS turning it on without a pass; turning it off always works. */
+    @PUT("v1/dating/read-receipts")
+    suspend fun updateReadReceipts(@Body body: ReadReceiptsRequest): Response<ApiEnvelope<ReadReceiptsDto>>
+
+    // After-date check-ins (mechanic M14)
+
+    /** The "how did it go?" asks still waiting for the caller. 404 MECHANIC_NOT_ENABLED while the flag is off. */
+    @GET("v1/dating/date-checkins")
+    suspend fun dateCheckins(): Response<ApiEnvelope<List<DateCheckinDto>>>
+
+    /**
+     * The caller's answer about one of their matches, asked or not. 201 with
+     * `offer_report`; 400 INVALID_DATE_FEEDBACK, 429 DATE_FEEDBACK_LIMIT,
+     * 404 NOT_FOUND / MECHANIC_NOT_ENABLED.
+     */
+    @POST("v1/dating/matches/{id}/date-feedback")
+    suspend fun dateFeedback(@Path("id") matchId: String, @Body body: DateFeedbackRequest): Response<ApiEnvelope<DateFeedbackDto>>
+
+    // Past matches (mechanic M19)
+
+    /** NOT the envelope's meta: `{data:[...], meta:{window_days}}`. 404 MECHANIC_NOT_ENABLED while the flag is off. */
+    @GET("v1/dating/past-matches")
+    suspend fun pastMatches(): Response<PastMatchesDto>
+
+    // Kind messages (mechanic M13)
+
+    /**
+     * Judges one text: `{kind, reasons}`. 400 INVALID_KIND_CHECK (blank or over
+     * 2000 characters), 429 KIND_CHECK_RATE_LIMITED, 404 MECHANIC_NOT_ENABLED.
+     * Nothing about the text is stored.
+     */
+    @POST("v1/dating/kind-check")
+    suspend fun kindCheck(@Body body: KindCheckRequest): Response<ApiEnvelope<KindCheckDto>>
+
+    /** The answer to "did this bother you?" about a message in one of the caller's matches. 201; 404 NOT_FOUND / MECHANIC_NOT_ENABLED. */
+    @POST("v1/dating/matches/{id}/bothered")
+    suspend fun bothered(@Path("id") matchId: String, @Body body: BotheredRequest): Response<ApiEnvelope<BotheredDto>>
+
+    @GET("v1/dating/comment-filter")
+    suspend fun commentFilter(): Response<ApiEnvelope<CommentFilterDto>>
+
+    /** Replaces the filter. 400 INVALID_COMMENT_FILTER: up to 50 distinct words of 2 to 30 characters. */
+    @PUT("v1/dating/comment-filter")
+    suspend fun updateCommentFilter(@Body body: CommentFilterRequest): Response<ApiEnvelope<CommentFilterDto>>
+
+    // Hide from people I know (mechanic M16)
+
+    @GET("v1/dating/hide-known")
+    suspend fun hideKnown(): Response<ApiEnvelope<HideKnownDto>>
+
+    /** 503 HIDE_KNOWN_UNAVAILABLE when the connections cannot be read to turn it on. */
+    @PUT("v1/dating/hide-known")
+    suspend fun updateHideKnown(@Body body: HideKnownRequest): Response<ApiEnvelope<HideKnownDto>>
+
+    // Client config (mechanic M18)
+
+    /** The switches the app acts on locally, e.g. screen protection. Always 200 for a signed-in pilot user. */
+    @GET("v1/dating/client-config")
+    suspend fun clientConfig(): Response<ApiEnvelope<ClientConfigDto>>
 
     // Safety
 

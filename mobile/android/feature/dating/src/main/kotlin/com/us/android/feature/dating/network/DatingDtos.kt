@@ -59,6 +59,11 @@ data class DatingPersonDto(
     @SerialName("last_active_bucket") val lastActiveBucket: String? = null,
     @SerialName("last_active_label") val lastActiveLabel: String? = null,
     /**
+     * Mechanic M8: they are on a trip, and [city] and [distanceBucket] are the
+     * destination's. Omitted when false.
+     */
+    val travelling: Boolean = false,
+    /**
      * The pre-match "enough to decide" block, present only where the viewer is
      * deciding about this person: `GET /people/:userId` and an incoming spark.
      * The match list, trusted contacts and the location shares stay compact —
@@ -83,14 +88,44 @@ data class ProfileDetailDto(
     val languages: List<String> = emptyList(),
     /** The whole approved gallery, primary first. Each entry carries its OWN variant. */
     val photos: List<CardPhotoDto> = emptyList(),
+    // Mechanic M6: interests and the lifestyle basics, as option CODES. The
+    // labels come from `GET /profile/options`; an unknown code renders nothing.
+    // Go omits each one while unset, so every field defaults to empty.
+    val interests: List<String> = emptyList(),
+    /** 0 = not set. */
+    @SerialName("height_cm") val heightCm: Int = 0,
+    val drinking: String = "",
+    val smoking: String = "",
+    val exercise: String = "",
+    val diet: String = "",
 )
 
-/** One catalogue question and this person's answer; the question text is resolved server-side. */
+/**
+ * One catalogue question and this person's answer; the question text is resolved server-side.
+ * With a [clip] (mechanic M15) the [answer] text may be empty.
+ */
 @Serializable
 data class DetailPromptDto(
     @SerialName("prompt_id") val promptId: Int = 0,
     val question: String = "",
     val answer: String = "",
+    /** An approved voice or video answer; absent otherwise (Go omits it). */
+    val clip: CardClipDto? = null,
+)
+
+/**
+ * A prompt answer's voice or video clip on someone's card (mechanic M15,
+ * fixture pulse_today_get_200_prompt_clip). Only an APPROVED clip reaches a
+ * card. [url] is a dating route (`/v1/dating/people/<id>/prompts/<n>/clip`)
+ * that needs the bearer and answers 307 to a short-lived media URL — never a
+ * media id, never the signed URL itself.
+ */
+@Serializable
+data class CardClipDto(
+    /** audio | video */
+    val kind: String = "",
+    @SerialName("duration_ms") val durationMs: Long = 0,
+    val url: String = "",
 )
 
 /**
@@ -158,6 +193,8 @@ data class DatingProfileDto(
     @SerialName("visible_to_public") val visibleToPublic: Boolean = false,
     val paused: Boolean = false,
     @SerialName("language_prefs") val languagePrefs: List<String>? = null,
+    /** Mechanic M6: interest codes. Omitted while empty. */
+    val interests: List<String>? = null,
     @SerialName("trust_tier") val trustTier: String = "",
     @SerialName("profile_status") val profileStatus: String = "",
     @SerialName("created_at") val createdAt: String = "",
@@ -191,6 +228,14 @@ data class UpsertProfileRequest(
     val community: String? = null,
     val occupation: String? = null,
     val education: String? = null,
+    // Mechanic M6 ("About me"): option CODES only. A list is written whole, so
+    // `[]` clears it; a basic set to "" is cleared ("Prefer not to say").
+    val interests: List<String>? = null,
+    @SerialName("language_prefs") val languagePrefs: List<String>? = null,
+    val drinking: String? = null,
+    val smoking: String? = null,
+    val exercise: String? = null,
+    val diet: String? = null,
 )
 
 @Serializable
@@ -202,7 +247,7 @@ data class DeleteProfileRequest(val reason: String? = null)
 @Serializable
 data class StatusDto(val status: String = "")
 
-// ── Preferences, no fixture ─────────────────────────────────────────────────
+// ── Preferences (fixtures: preferences_get_200, preferences_*_filters) ──────
 
 @Serializable
 data class PreferencesDto(
@@ -215,14 +260,106 @@ data class PreferencesDto(
     @SerialName("blur_mode_pref") val blurModePref: Boolean = false,
     @SerialName("language_filter") val languageFilter: List<String>? = null,
     @SerialName("updated_at") val updatedAt: String = "",
+    /**
+     * Mechanic M6: the distance filter as a bucket code. Present only while the
+     * server's filters flag is on, together with [passFilters].
+     */
+    @SerialName("distance_bucket") val distanceBucket: String? = null,
+    /**
+     * Mechanic M6: the filters that come with a pass. ABSENT means the server's
+     * filters flag is off — the app then keeps its older screens.
+     */
+    @SerialName("pass_filters") val passFilters: PassFiltersDto? = null,
+    /**
+     * Mechanic M12: the preferences the person made dealbreakers, as codes
+     * (age, distance, intent; with a pass verified, height, languages,
+     * drinking, smoking, exercise, diet). PRESENT, possibly empty, only while
+     * the server's dealbreakers flag is on: null means the mechanic is off.
+     */
+    val dealbreakers: List<String>? = null,
 )
 
+/**
+ * `pass_filters` on `GET /preferences`. [active]: the caller holds a pass, so
+ * these apply to the deck; without one they are stored but not applied.
+ * Go omits the two heights while unset and sends `[]` for an empty list.
+ */
+@Serializable
+data class PassFiltersDto(
+    val active: Boolean = false,
+    @SerialName("verified_only") val verifiedOnly: Boolean = false,
+    @SerialName("min_height_cm") val minHeightCm: Int? = null,
+    @SerialName("max_height_cm") val maxHeightCm: Int? = null,
+    val languages: List<String> = emptyList(),
+    val drinking: List<String> = emptyList(),
+    val smoking: List<String> = emptyList(),
+    val exercise: List<String> = emptyList(),
+    val diet: List<String> = emptyList(),
+)
+
+/** `PUT /preferences` — a partial write: null is left out of the body and stays as it is. */
 @Serializable
 data class PreferencesRequest(
     @SerialName("min_age") val minAge: Int? = null,
     @SerialName("max_age") val maxAge: Int? = null,
     @SerialName("distance_km") val distanceKm: Int? = null,
     @SerialName("interested_in_gender") val interestedInGender: String? = null,
+    /** `[]` clears the intent filter. */
+    @SerialName("intent_filter") val intentFilter: List<String>? = null,
+    /** Mechanic M6, flag on only: replaces [distanceKm]. */
+    @SerialName("distance_bucket") val distanceBucket: String? = null,
+    /** Mechanic M6, flag on only: the WHOLE pass filter set, replaced as one. */
+    @SerialName("pass_filters") val passFilters: PassFiltersRequest? = null,
+    /**
+     * Mechanic M12, flag on only: the WHOLE dealbreaker list, replaced as one;
+     * `[]` clears it. A pass code without a pass is `403 DEALBREAKERS_REQUIRE_PASS`.
+     */
+    val dealbreakers: List<String>? = null,
+)
+
+/**
+ * `pass_filters` on `PUT /preferences`. Every member is always sent (no
+ * defaults), because the server replaces the set as one. Setting any of them
+ * without a pass is `403 FILTERS_REQUIRE_PASS`; an all-empty set clears them
+ * and is always allowed.
+ */
+@Serializable
+data class PassFiltersRequest(
+    @SerialName("verified_only") val verifiedOnly: Boolean,
+    @SerialName("min_height_cm") val minHeightCm: Int?,
+    @SerialName("max_height_cm") val maxHeightCm: Int?,
+    val languages: List<String>,
+    val drinking: List<String>,
+    val smoking: List<String>,
+    val exercise: List<String>,
+    val diet: List<String>,
+)
+
+// ── Profile options (mechanic M6; fixture: profile_options_get_200) ─────────
+
+/** One choice: the stable code that goes on the wire, and the server's label that goes on screen. */
+@Serializable
+data class OptionDto(val code: String = "", val label: String = "")
+
+@Serializable
+data class OptionRangeDto(val min: Int = 0, val max: Int = 0)
+
+/**
+ * `GET /profile/options`: every list the new profile fields and filters draw
+ * from, with OUR labels. The app shows these labels and never a code.
+ */
+@Serializable
+data class ProfileOptionsDto(
+    val interests: List<OptionDto> = emptyList(),
+    @SerialName("max_interests") val maxInterests: Int = 0,
+    val languages: List<OptionDto> = emptyList(),
+    @SerialName("max_languages") val maxLanguages: Int = 0,
+    @SerialName("height_cm") val heightCm: OptionRangeDto = OptionRangeDto(),
+    val drinking: List<OptionDto> = emptyList(),
+    val smoking: List<OptionDto> = emptyList(),
+    val exercise: List<OptionDto> = emptyList(),
+    val diet: List<OptionDto> = emptyList(),
+    @SerialName("distance_buckets") val distanceBuckets: List<OptionDto> = emptyList(),
 )
 
 // ── Privacy (fixture: privacy_get_200) ──────────────────────────────────────
@@ -283,13 +420,45 @@ data class PromptAnswerDto(
     val id: String = "",
     @SerialName("user_id") val userId: String = "",
     @SerialName("prompt_id") val promptId: Int = 0,
+    /** Empty for a clip-only answer (mechanic M15). */
     val answer: String = "",
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
+    // Mechanic M15: the owner's own clip on this answer, from store.Prompt
+    // (no fixture: `prompts_get_200` is []). Each is omitted while unset.
+    /** audio | video */
+    @SerialName("clip_kind") val clipKind: String? = null,
+    @SerialName("clip_duration_ms") val clipDurationMs: Long? = null,
+    /** pending | pending_review | approved | rejected */
+    @SerialName("clip_status") val clipStatus: String? = null,
+    /** Why a rejected clip is not shown, in the server's words. */
+    @SerialName("clip_reason") val clipReason: String? = null,
 )
 
 @Serializable
 data class PromptAnswerRequest(val answer: String)
+
+// ── Prompt clips (mechanic M15; fixtures prompt_clip_put_*) ─────────────────
+
+/** `PUT /prompts/:promptId/clip`: the media id of an upload that finished. */
+@Serializable
+data class PromptClipRequest(@SerialName("media_id") val mediaId: String)
+
+/** The 200 of `PUT /prompts/:promptId/clip`: the owner's view of the clip just attached. */
+@Serializable
+data class PromptClipViewDto(
+    @SerialName("prompt_id") val promptId: Int = 0,
+    /** audio | video */
+    val kind: String = "",
+    @SerialName("duration_ms") val durationMs: Long = 0,
+    /** pending | pending_review | approved | rejected */
+    val status: String = "",
+    val reason: String? = null,
+)
+
+/** `details` of `422 CLIP_TOO_LONG`. */
+@Serializable
+data class ClipTooLongDetailsDto(@SerialName("max_ms") val maxMs: Long = 0)
 
 // ── Selfie liveness (D5); only the consent refusal has a fixture ────────────
 
@@ -367,6 +536,14 @@ data class PulseMetaDto(
     val size: Int = 0,
     @SerialName("cohort_gated") val cohortGated: Boolean = false,
     @SerialName("request_id") val requestId: String? = null,
+    // Mechanic M1 (the refilling deck). All three are ABSENT while the server's
+    // DATING_DECK_REFILL_ENABLED is off, and then the deck behaves as before.
+    /** The caller's card allowance per rolling 24 hours. 0 = the server sent none. */
+    @SerialName("daily_limit") val dailyLimit: Int = 0,
+    /** Cards left. Go omits 0, so "daily_limit > 0 and this absent" means none left. */
+    @SerialName("remaining_today") val remainingToday: Int = 0,
+    /** RFC 3339: when the allowance starts to come back. Absent while nothing is used. */
+    @SerialName("resets_at") val resetsAt: String? = null,
 )
 
 @Serializable
@@ -398,6 +575,11 @@ data class PulseProfileDto(
     @SerialName("trust_tier") val trustTier: String = "",
     @SerialName("last_active_bucket") val lastActiveBucket: String? = null,
     @SerialName("last_active_label") val lastActiveLabel: String? = null,
+    /**
+     * Mechanic M8: on a trip; [city] and [distanceBucket] are the destination's.
+     * Omitted when false. Their home location is never sent.
+     */
+    val travelling: Boolean = false,
     /** The pre-match detail block: the deck is where someone decides to spark. */
     val detail: ProfileDetailDto? = null,
 )
@@ -421,14 +603,157 @@ data class ExplainDto(
 @Serializable
 data class ExplainReasonDto(val kind: String = "", val detail: String = "")
 
+/**
+ * [source] names the surface the pass came from (mechanic M7): null is the
+ * deck, and is left out of the body, so a deck pass is unchanged on the wire.
+ */
 @Serializable
-data class PassRequest(val reason: String? = null)
+data class PassRequest(val reason: String? = null, val source: String? = null)
+
+/**
+ * Where a spark or a pass was made (mechanic M7). Only a deck action spends a
+ * deck card; the deck is the server's default, so [wire] is null for it and the
+ * field stays out of the body. An unknown value is `400 INVALID_SOURCE`.
+ */
+enum class ActionSource(val wire: String?) {
+    DECK(null),
+    PICKS("picks"),
+    LIKED_YOU("liked_you"),
+    PROFILE("profile"),
+}
+
+// ── Daily picks (mechanic M7; fixtures picks_get_*) ────────────────────────
+
+/**
+ * `GET /picks` — NOT the envelope, the deck's own `{data, meta}` shape: up to
+ * ten cards in the deck's card shape, the same all day, refreshed at local
+ * midnight.
+ */
+@Serializable
+data class PicksDto(
+    val data: List<PulseCardDto> = emptyList(),
+    val meta: PicksMetaDto? = null,
+)
+
+@Serializable
+data class PicksMetaDto(
+    /** The viewer's local date, YYYY-MM-DD. */
+    val date: String = "",
+    /** The IANA zone the day was cut in: the one sent, or the server's default. */
+    val timezone: String = "",
+    /** RFC 3339: the next local midnight, when a new set is chosen. */
+    @SerialName("resets_at") val resetsAt: String? = null,
+    val size: Int = 0,
+)
+
+// ── Travel mode (mechanic M8; fixtures travel_*) ───────────────────────────
+
+/** `GET`, `PUT` and `DELETE /travel` all answer this. */
+@Serializable
+data class TravelDto(
+    /** The trip in effect; omitted when there is none. */
+    val active: TravelTripDto? = null,
+    /** The caller holds a pass and may start a trip. Omitted when false. */
+    val available: Boolean = false,
+    val cities: List<TravelCityDto> = emptyList(),
+    /** The longest trip in days. 0 = the server did not say. */
+    @SerialName("max_days") val maxDays: Int = 0,
+)
+
+@Serializable
+data class TravelTripDto(
+    val city: TravelCityDto = TravelCityDto(),
+    @SerialName("starts_at") val startsAt: String = "",
+    @SerialName("ends_at") val endsAt: String = "",
+)
+
+@Serializable
+data class TravelCityDto(val code: String = "", val label: String = "")
+
+/** `PUT /travel`: a city code from [TravelDto.cities] and 1 to `max_days` days. */
+@Serializable
+data class TravelRequest(val city: String, val days: Int)
 
 @Serializable
 data class PassDto(
     val passed: Boolean = false,
     @SerialName("candidate_id") val candidateId: String = "",
     @SerialName("cooldown_until") val cooldownUntil: String = "",
+)
+
+// ── Pulse mechanics: allowances (M10), undo a pass (M2) ─────────────────────
+
+/**
+ * One daily allowance (`service.Allowance`). Go omits zero values, so every
+ * field defaults: [remainingToday] absent means NONE left, and [unlimited]
+ * true (a pass holder) omits the counts altogether. [resetsAt] is RFC 3339,
+ * absent while nothing in the window is used.
+ */
+@Serializable
+data class AllowanceDto(
+    val unlimited: Boolean = false,
+    @SerialName("daily_limit") val dailyLimit: Int = 0,
+    @SerialName("remaining_today") val remainingToday: Int = 0,
+    @SerialName("resets_at") val resetsAt: String? = null,
+)
+
+/** The Super Spark allowance: the daily one plus what packs bought, which is spent once the daily one is used. */
+@Serializable
+data class SuperSparkAllowanceDto(
+    val unlimited: Boolean = false,
+    @SerialName("daily_limit") val dailyLimit: Int = 0,
+    @SerialName("remaining_today") val remainingToday: Int = 0,
+    @SerialName("resets_at") val resetsAt: String? = null,
+    /** Purchased Super Sparks left. Omitted at 0. */
+    @SerialName("purchased_balance") val purchasedBalance: Int = 0,
+)
+
+/**
+ * `GET /allowances`. A mechanic whose server flag is off is ABSENT (null
+ * here): that is how the app learns whether to offer undo or Super Spark at
+ * all. Sparks are always present.
+ */
+@Serializable
+data class AllowancesDto(
+    val sparks: AllowanceDto = AllowanceDto(),
+    val deck: AllowanceDto? = null,
+    val rewind: AllowanceDto? = null,
+    @SerialName("super_spark") val superSpark: SuperSparkAllowanceDto? = null,
+    /** Mechanic M11: absent while the server's fair-turn flag is off, or when chat could not be asked. */
+    @SerialName("fair_turn") val fairTurn: FairTurnDto? = null,
+)
+
+/**
+ * Fair turn (mechanic M11): how many matches wait on the caller's reply.
+ * [paused]: new sparks (a Super Spark included) are refused until [owed] drops
+ * below [limit]. Accepting a spark, sparking back someone who sparked you, and
+ * passing are never paused.
+ */
+@Serializable
+data class FairTurnDto(
+    val owed: Int = 0,
+    val limit: Int = 0,
+    val paused: Boolean = false,
+)
+
+/** `details` of `409 FAIR_TURN_LIMIT`. */
+@Serializable
+data class FairTurnDetailsDto(
+    val limit: Int = 0,
+    val owed: Int = 0,
+)
+
+/**
+ * `POST /pulse/rewind`: the last pass is undone. [card] is the person's deck
+ * card again, absent when the server could not build it — the app then
+ * refetches the deck instead.
+ */
+@Serializable
+data class RewindDto(
+    val rewound: Boolean = false,
+    @SerialName("candidate_id") val candidateId: String = "",
+    val card: PulseCardDto? = null,
+    val allowance: AllowanceDto = AllowanceDto(),
 )
 
 // ── Sparks (fixtures: decline 200, create 404/429) ──────────────────────────
@@ -439,6 +764,10 @@ data class SparkRequest(
     @SerialName("target_kind") val targetKind: String,
     @SerialName("target_ref") val targetRef: String,
     val note: String? = null,
+    /** True sends a Super Spark (mechanic M3). Null is left out of the body, so an ordinary spark is unchanged. */
+    @SerialName("super") val superSpark: Boolean? = null,
+    /** Mechanic M7: the surface, from [ActionSource.wire]. Null (the deck) is left out of the body. */
+    val source: String? = null,
 )
 
 @Serializable
@@ -450,8 +779,58 @@ data class SparkDto(
     @SerialName("target_ref") val targetRef: String = "",
     val note: String? = null,
     @SerialName("created_at") val createdAt: String = "",
-    /** The SENDER, on `GET /sparks/incoming`. Absent on a spark the app just created. */
+    /** A Super Spark. Omitted when false; incoming Super Sparks are listed first by the server. */
+    @SerialName("super") val superSpark: Boolean = false,
+    /**
+     * The SENDER, on `GET /sparks/incoming`. Absent on a spark the app just
+     * created, and on a LOCKED incoming spark (mechanic M4).
+     */
     val person: DatingPersonDto? = null,
+    /**
+     * Locked incoming sparks only (mechanic M4, the gate on and no pass): the
+     * blurred-image route `/v1/dating/liked-you/<id>/photo`. Such a row carries
+     * no `from_user_id`, `person` or `note`.
+     */
+    @SerialName("photo_url") val photoUrl: String = "",
+    /** True on an incoming spark the caller may not see the sender of. Omitted otherwise. */
+    val locked: Boolean = false,
+    /**
+     * Mechanic M13: the recipient's comment filter tucks [note] away —
+     * `unkind` or `your_words`. Omitted otherwise. The note itself is still sent.
+     */
+    @SerialName("note_hidden") val noteHidden: String? = null,
+)
+
+// ── Who liked you (mechanic M4; fixtures liked_you_get_200_locked/_unlocked) ─
+
+/**
+ * One card of `GET /liked-you`.
+ *
+ * LOCKED (the response's `unlocked` false): only [sparkId], [superSpark],
+ * [createdAt] and [photoUrl] — the server-blurred route
+ * `/v1/dating/liked-you/<spark_id>/photo`. UNLOCKED: [person] and [note] too,
+ * and [photoUrl] is the person's own photo route. The app never shows a person
+ * from a locked response, even if one arrived.
+ */
+@Serializable
+data class LikedYouItemDto(
+    @SerialName("spark_id") val sparkId: String = "",
+    /** A Super Spark. Omitted when false; the server lists these first. */
+    @SerialName("super") val superSpark: Boolean = false,
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("photo_url") val photoUrl: String = "",
+    val person: DatingPersonDto? = null,
+    val note: String? = null,
+    /** Mechanic M13: as on [SparkDto.noteHidden]. Omitted otherwise. */
+    @SerialName("note_hidden") val noteHidden: String? = null,
+)
+
+/** `GET /liked-you`. [total] counts every visible incoming spark across pages. */
+@Serializable
+data class LikedYouDto(
+    val total: Int = 0,
+    val unlocked: Boolean = false,
+    val items: List<LikedYouItemDto> = emptyList(),
 )
 
 /** `match_id` and `matched` are present only when a mutual match formed. */
@@ -503,7 +882,266 @@ data class MatchDto(
     @SerialName("closed_by") val closedBy: String? = null,
     /** The OTHER participant, as the server resolved them for this viewer. */
     val person: DatingPersonDto? = null,
+    /**
+     * Mechanic M5: present only while the match waits for its first message
+     * under the first-move rule. Absent means an ordinary match.
+     */
+    @SerialName("first_move") val firstMove: MatchFirstMoveDto? = null,
+    /**
+     * Mechanic M9, `GET /matches/:id` only: whether the pair may call now
+     * (both have sent a message). ABSENT while the server mechanic is off —
+     * null here, and the match screen then offers no call at all; false is
+     * sent as false.
+     */
+    @SerialName("can_call") val canCall: Boolean? = null,
 )
+
+// ── In-match extras (mechanic M9; fixtures read_receipts_*) ────────────────
+
+/**
+ * `GET`/`PUT /read-receipts`. [enabled] is the person's choice; [active] is
+ * whether it applies now (it needs a pass); [available] is whether they hold
+ * one. Go sends all three, false included; each still defaults.
+ */
+@Serializable
+data class ReadReceiptsDto(
+    val enabled: Boolean = false,
+    val active: Boolean = false,
+    val available: Boolean = false,
+)
+
+/** `PUT /read-receipts`. Turning it on needs a pass (`403 READ_RECEIPTS_REQUIRE_PASS`); off always works. */
+@Serializable
+data class ReadReceiptsRequest(val enabled: Boolean)
+
+// ── After-date check-ins (mechanic M14; fixtures date_checkins_*, date_feedback_*) ─
+
+/**
+ * The other person on a check-in or a past match: an id and a first name
+ * only. Go omits the name when there is none (a deleted profile).
+ */
+@Serializable
+data class PastMatchPersonDto(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("first_name") val firstName: String = "",
+)
+
+/** One row of `GET /date-checkins`: a "how did it go?" still waiting for the caller's answer. */
+@Serializable
+data class DateCheckinDto(
+    @SerialName("match_id") val matchId: String = "",
+    @SerialName("meet_id") val meetId: String = "",
+    val person: PastMatchPersonDto = PastMatchPersonDto(),
+    @SerialName("asked_at") val askedAt: String = "",
+)
+
+/**
+ * `POST /matches/:id/date-feedback`. [met] is yes | no | not_yet; [again]
+ * (yes | no | unsure) and [feltSafe] only follow met=yes, and null leaves
+ * them out of the body.
+ */
+@Serializable
+data class DateFeedbackRequest(
+    val met: String,
+    val again: String? = null,
+    @SerialName("felt_safe") val feltSafe: Boolean? = null,
+)
+
+/** The 201. [offerReport]: they did not feel safe, and the app offers the report flow. */
+@Serializable
+data class DateFeedbackDto(
+    @SerialName("match_id") val matchId: String = "",
+    val met: String = "",
+    val again: String? = null,
+    @SerialName("felt_safe") val feltSafe: Boolean? = null,
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("offer_report") val offerReport: Boolean = false,
+)
+
+/** `details` of `400 INVALID_DATE_FEEDBACK`: the allowed answers for each question. */
+@Serializable
+data class DateFeedbackRefusalDetailsDto(
+    val field: String = "",
+    val met: List<String> = emptyList(),
+    val again: List<String> = emptyList(),
+)
+
+// ── Past matches (mechanic M19; fixtures past_matches_*) ───────────────────
+
+/**
+ * `GET /past-matches` — NOT the envelope's meta: its own `{data, meta}`,
+ * meta carrying the window. Matches that ended within [PastMatchesMetaDto.windowDays].
+ */
+@Serializable
+data class PastMatchesDto(
+    val data: List<PastMatchDto> = emptyList(),
+    val meta: PastMatchesMetaDto? = null,
+)
+
+@Serializable
+data class PastMatchesMetaDto(@SerialName("window_days") val windowDays: Int = 0)
+
+@Serializable
+data class PastMatchDto(
+    @SerialName("match_id") val matchId: String = "",
+    val person: PastMatchPersonDto = PastMatchPersonDto(),
+    @SerialName("matched_at") val matchedAt: String = "",
+    @SerialName("ended_at") val endedAt: String = "",
+    /** unmatched | blocked | expired | closed */
+    val ended: String = "",
+    /** The caller has already reported this person. */
+    val reported: Boolean = false,
+)
+
+// ── Kind messages (mechanic M13; fixtures kind_check_*, bothered_*, comment_filter_*) ─
+
+@Serializable
+data class KindCheckRequest(val text: String)
+
+/**
+ * `POST /kind-check`. Go always writes `kind`; it stays nullable so that an
+ * answer without it reads as "nothing to say" — only an explicit `false` ever
+ * slows a message down or tucks one away.
+ */
+@Serializable
+data class KindCheckDto(
+    val kind: Boolean? = null,
+    val reasons: List<String>? = null,
+)
+
+@Serializable
+data class BotheredRequest(val bothered: Boolean)
+
+/** The 201 of `POST /matches/:id/bothered`. [offerReport]: the app offers the report flow for the sender. */
+@Serializable
+data class BotheredDto(
+    @SerialName("match_id") val matchId: String = "",
+    val bothered: Boolean = false,
+    @SerialName("offer_report") val offerReport: Boolean = false,
+)
+
+/** `GET`/`PUT /comment-filter`. Null [words] is none. */
+@Serializable
+data class CommentFilterDto(
+    @SerialName("filter_unkind") val filterUnkind: Boolean = false,
+    val words: List<String>? = null,
+)
+
+/** The whole filter, as the server replaces it. */
+@Serializable
+data class CommentFilterRequest(
+    @SerialName("filter_unkind") val filterUnkind: Boolean,
+    val words: List<String>,
+)
+
+/** `details` of `400 INVALID_KIND_CHECK`. */
+@Serializable
+data class KindCheckRefusalDetailsDto(val field: String = "", val max: Int = 0)
+
+/** `details` of `400 INVALID_COMMENT_FILTER`: the word limits. */
+@Serializable
+data class CommentFilterRefusalDetailsDto(
+    val field: String = "",
+    @SerialName("max_words") val maxWords: Int = 0,
+    @SerialName("min_len") val minLen: Int = 0,
+    @SerialName("max_len") val maxLen: Int = 0,
+)
+
+// ── Hide from people I know (mechanic M16; fixtures hide_known_*) ───────────
+
+@Serializable
+data class HideKnownRequest(val enabled: Boolean)
+
+/** `GET`/`PUT /hide-known`. [refreshedAt] is omitted until a snapshot of the connections was taken. */
+@Serializable
+data class HideKnownDto(
+    val enabled: Boolean = false,
+    @SerialName("hidden_count") val hiddenCount: Int = 0,
+    @SerialName("refreshed_at") val refreshedAt: String? = null,
+)
+
+// ── Client config (mechanic M18; fixtures client_config_*) ─────────────────
+
+/** `GET /client-config`: the switches the app acts on locally. */
+@Serializable
+data class ClientConfigDto(
+    @SerialName("screen_protection") val screenProtection: Boolean = false,
+)
+
+/**
+ * The caller's view of a first-move match (`service.FirstMoveView`).
+ *
+ * [youMoveFirst] true: the caller writes first. False: the other person does,
+ * and chat refuses the caller's own first message (`403 FIRST_MOVE_PENDING`);
+ * they may answer one of [openingQuestions] instead, or use the free extend
+ * while [canExtend]. Go omits the empty list and a nil deadline.
+ */
+@Serializable
+data class MatchFirstMoveDto(
+    @SerialName("you_move_first") val youMoveFirst: Boolean = false,
+    /** RFC 3339: when the match ends if nobody has written. */
+    val deadline: String? = null,
+    @SerialName("opening_questions") val openingQuestions: List<OpeningQuestionDto> = emptyList(),
+    @SerialName("can_extend") val canExtend: Boolean = false,
+)
+
+/** One opening question a first mover wrote. */
+@Serializable
+data class OpeningQuestionDto(
+    val id: String = "",
+    val text: String = "",
+)
+
+// ── First move (mechanic M5; fixtures first_move_*, match_opening_answer_*, match_extend_*) ─
+
+/** `GET`/`PUT /first-move`. The limits are the server's; 0 means it sent none. */
+@Serializable
+data class FirstMoveSettingsDto(
+    val enabled: Boolean = false,
+    val questions: List<OpeningQuestionDto> = emptyList(),
+    @SerialName("max_questions") val maxQuestions: Int = 0,
+    @SerialName("max_length") val maxLength: Int = 0,
+)
+
+/**
+ * `PUT /first-move`. A null field is left out of the body and the server
+ * leaves it unchanged; `questions = []` removes every question.
+ */
+@Serializable
+data class FirstMoveRequest(
+    val enabled: Boolean? = null,
+    val questions: List<String>? = null,
+)
+
+@Serializable
+data class OpeningAnswerRequest(
+    @SerialName("question_id") val questionId: String,
+    val answer: String,
+)
+
+/** `POST /matches/:id/opening-answer` — the answer is now the chat's first message. */
+@Serializable
+data class OpeningAnswerDto(
+    val sent: Boolean = false,
+    @SerialName("conversation_id") val conversationId: String? = null,
+)
+
+/**
+ * `POST /matches/:id/extend`. The free first-move extend sends [extraHours]
+ * and [free]; the premium path sends [extraDays] too. Go omits zero values.
+ */
+@Serializable
+data class ExtendDto(
+    val extended: Boolean = false,
+    @SerialName("extra_hours") val extraHours: Int = 0,
+    @SerialName("extra_days") val extraDays: Int = 0,
+    @SerialName("expires_at") val expiresAt: String? = null,
+    val free: Boolean = false,
+)
+
+/** `details` of `OPENING_QUESTION_INVALID` and `OPENING_ANSWER_INVALID`. */
+@Serializable
+data class MaxLengthDetailsDto(@SerialName("max_length") val maxLength: Int = 0)
 
 @Serializable
 data class SparkTargetDto(
@@ -714,6 +1352,8 @@ data class PremiumProductDto(
     val currency: String = "",
     @SerialName("duration_days") val durationDays: Int? = null,
     val features: List<String> = emptyList(),
+    /** How many Super Sparks a `super_spark` pack adds. Omitted (0) for every other kind. */
+    val quantity: Int = 0,
 )
 
 /** There is deliberately no amount, price or currency: the server refuses them (CLIENT_PRICE_REFUSED). */
@@ -770,6 +1410,8 @@ data class PremiumMeDto(
     val pass: PremiumPassDto? = null,
     val entitlements: List<PremiumEntitlementDto> = emptyList(),
     @SerialName("boost_balance") val boostBalance: Int = 0,
+    /** Purchased Super Sparks left. Omitted at 0. */
+    @SerialName("super_spark_balance") val superSparkBalance: Int = 0,
 )
 
 @Serializable
@@ -815,14 +1457,45 @@ data class LocationRateLimitDetailsDto(
     @SerialName("window_hours") val windowHours: Int = 0,
 )
 
+/**
+ * `details` of an allowance refusal: `SPARK_RATE_LIMITED`, `REWIND_LIMIT_REACHED`
+ * and `SUPER_SPARK_LIMIT_REACHED` all carry the same three keys.
+ */
 @Serializable
 data class RateLimitDetailsDto(
     val limit: Int = 0,
     @SerialName("window_hours") val windowHours: Int = 0,
+    /** RFC 3339: when the allowance starts to come back. Preferred over the window. */
+    @SerialName("resets_at") val resetsAt: String? = null,
 )
+
+/** `details` of a bounds refusal (`INVALID_AGE_RANGE`, `PROMPT_ANSWER_TOO_LONG`, …). Either end may be absent. */
+@Serializable
+data class RangeDetailsDto(val min: Int = 0, val max: Int = 0)
+
+/** `details` of `UNKNOWN_PROMPT`: the catalogue's prompt ids. */
+@Serializable
+data class AllowedIdsDetailsDto(val allowed: List<Int> = emptyList())
+
+/** `details` of `ONBOARDING_INCOMPLETE`: where the profile stands. */
+@Serializable
+data class OnboardingIncompleteDetailsDto(val status: String = "", val step: String = "")
 
 @Serializable
 data class AllowedDetailsDto(val allowed: List<String> = emptyList())
+
+/**
+ * `details` of a refused M6 field (`INVALID_INTEREST`, `TOO_MANY_LANGUAGE`,
+ * `INVALID_HEIGHT`, `INVALID_LIFESTYLE`, …): [field] names the picker, and the
+ * rest is whichever of the allowed codes or the limits the refusal carries.
+ */
+@Serializable
+data class FieldRefusalDetailsDto(
+    val field: String = "",
+    val allowed: List<String> = emptyList(),
+    val min: Int = 0,
+    val max: Int = 0,
+)
 
 @Serializable
 data class MovedDetailsDto(

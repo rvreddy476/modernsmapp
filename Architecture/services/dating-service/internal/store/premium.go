@@ -197,6 +197,8 @@ type PremiumEntitlement struct {
 	PassActive   bool
 	PassProduct  string
 	BoostBalance int
+	// SuperSparkBalance is the purchased Super Sparks not yet spent (M3).
+	SuperSparkBalance int
 }
 
 // GetPremiumEntitlement reads the pass and the Boost balance.
@@ -205,10 +207,11 @@ func (s *Store) GetPremiumEntitlement(ctx context.Context, userID uuid.UUID) (*P
 	var product *string
 	err := s.db.QueryRow(ctx, `
         SELECT s.expires_at, COALESCE(s.expires_at > now(), false), s.plan,
-               COALESCE((SELECT balance FROM dating_boost_balances b WHERE b.user_id = $1), 0)
+               COALESCE((SELECT balance FROM dating_boost_balances b WHERE b.user_id = $1), 0),
+               COALESCE((SELECT balance FROM dating_super_spark_balances ss WHERE ss.user_id = $1), 0)
         FROM (SELECT 1) one
         LEFT JOIN dating_premium_subscriptions s ON s.user_id = $1`, userID,
-	).Scan(&out.PassExpiresAt, &out.PassActive, &product, &out.BoostBalance)
+	).Scan(&out.PassExpiresAt, &out.PassActive, &product, &out.BoostBalance, &out.SuperSparkBalance)
 	if err != nil {
 		return nil, fmt.Errorf("get premium entitlement: %w", err)
 	}
@@ -289,15 +292,16 @@ func applyPremiumEffectTx(ctx context.Context, tx pgx.Tx, ev payments.Event, app
 	snap := payments.PurchaseSnapshot{PurchaseID: ev.PurchaseID}
 	var grantedSeconds, revokedSeconds int64
 	var boostGranted, boostRevoked bool
+	var unitsGranted, unitsRevoked int
 	err := tx.QueryRow(ctx, `
         SELECT user_id, product, status, amount_minor, currency, refunded_minor,
                COALESCE(payment_intent_id::text, ''), granted_seconds, revoked_seconds,
-               boost_granted, boost_revoked
+               boost_granted, boost_revoked, units_granted, units_revoked
         FROM dating_premium_purchases
         WHERE id = $1
         FOR UPDATE`, ev.PurchaseID,
 	).Scan(&snap.UserID, &snap.Product, &snap.Status, &snap.AmountMinor, &snap.Currency, &snap.RefundedMinor,
-		&snap.IntentID, &grantedSeconds, &revokedSeconds, &boostGranted, &boostRevoked)
+		&snap.IntentID, &grantedSeconds, &revokedSeconds, &boostGranted, &boostRevoked, &unitsGranted, &unitsRevoked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		applied.Decision = payments.Decision{Outcome: payments.OutcomePurchaseNotFound, Detail: "no such premium purchase"}
 		return recordPremiumInboxOutcomeTx(ctx, tx, ev.EventID, applied.Decision)
@@ -374,6 +378,37 @@ func applyPremiumEffectTx(ctx context.Context, tx pgx.Tx, ev payments.Event, app
                         refunded_at = now(), updated_at = now()
                     WHERE id = $1`, snap.PurchaseID, status, refundedAfter, revoke)
 			}
+		case payments.KindSuperSpark:
+			// As for Boost: a partial refund leaves the pack alone; a full
+			// refund takes back what this purchase gave and is still
+			// unspent. Super Sparks already sent stay sent.
+			taken := 0
+			if owed := unitsGranted - unitsRevoked; full && owed > 0 {
+				xerr := tx.QueryRow(ctx, `
+                    WITH cur AS (
+                        SELECT balance FROM dating_super_spark_balances WHERE user_id = $1 FOR UPDATE
+                    ), upd AS (
+                        UPDATE dating_super_spark_balances b
+                        SET balance = b.balance - LEAST(cur.balance, $2), updated_at = now()
+                        FROM cur WHERE b.user_id = $1
+                        RETURNING LEAST(cur.balance, $2) AS taken
+                    )
+                    SELECT COALESCE((SELECT taken FROM upd), 0)`, snap.UserID, owed).Scan(&taken)
+				if xerr != nil {
+					err = xerr
+					break
+				}
+				if taken < owed {
+					d.Detail = fmt.Sprintf("%d of %d super sparks already used; took back %d", owed-taken, owed, taken)
+				}
+			}
+			if err == nil {
+				_, err = tx.Exec(ctx, `
+                    UPDATE dating_premium_purchases
+                    SET status = $2, refunded_minor = $3, units_revoked = units_revoked + $4,
+                        refunded_at = now(), updated_at = now()
+                    WHERE id = $1`, snap.PurchaseID, status, refundedAfter, taken)
+			}
 		}
 	}
 	applied.Decision = d
@@ -422,6 +457,21 @@ func grantTx(ctx context.Context, tx pgx.Tx, snap payments.PurchaseSnapshot, pro
             UPDATE dating_premium_purchases
             SET status = 'paid', paid_at = now(), boost_granted = true, updated_at = now()
             WHERE id = $1`, snap.PurchaseID)
+		return err
+	case payments.KindSuperSpark:
+		if product.Quantity <= 0 {
+			return fmt.Errorf("grant: super spark pack %q has no quantity", product.ID)
+		}
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO dating_super_spark_balances (user_id, balance) VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE
+            SET balance = dating_super_spark_balances.balance + $2, updated_at = now()`, snap.UserID, product.Quantity); err != nil {
+			return fmt.Errorf("add super sparks: %w", err)
+		}
+		_, err := tx.Exec(ctx, `
+            UPDATE dating_premium_purchases
+            SET status = 'paid', paid_at = now(), units_granted = $2, updated_at = now()
+            WHERE id = $1`, snap.PurchaseID, product.Quantity)
 		return err
 	}
 	return fmt.Errorf("grant: unknown product kind %q", product.Kind)
@@ -481,7 +531,7 @@ func (s *Store) ClaimPremiumExpiryReminders(ctx context.Context, within time.Dur
             SELECT DISTINCT ON (p.user_id) p.id, p.user_id, p.product, s.expires_at
             FROM dating_premium_purchases p
             JOIN dating_premium_subscriptions s ON s.user_id = p.user_id
-            WHERE p.product <> 'boost'
+            WHERE p.product LIKE 'pass\_%'
               AND p.status IN ('paid', 'partially_refunded')
               AND s.expires_at > now()
               AND s.expires_at <= now() + $1::bigint * interval '1 second'

@@ -93,6 +93,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.PUT("/tune", h.PutTune)
 
 		dating.GET("/preferences", h.GetPreferences)
+		// Mechanic M6 — the fixed lists for the new profile fields and filters.
+		dating.GET("/profile/options", h.GetProfileOptions)
 		dating.PUT("/preferences", h.PutPreferences)
 
 		dating.GET("/photos", h.ListPhotos)
@@ -116,6 +118,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/prompts/catalog", h.GetPromptCatalog)
 		dating.GET("/prompts", h.ListPrompts)
 		dating.PUT("/prompts/:promptId", h.UpsertPrompt)
+		// Mechanic M15: a voice or video clip on a prompt answer.
+		dating.PUT("/prompts/:promptId/clip", h.PutPromptClip)
+		dating.DELETE("/prompts/:promptId/clip", h.DeletePromptClip)
 		dating.DELETE("/prompts/:promptId", h.DeletePrompt)
 
 		// §P0-7 Phase B — capture (X-Device-Fingerprint, client IP)
@@ -131,6 +136,25 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/pulse/:targetUserId/explain", fpMW, h.ExplainPulseCandidate)
 		// Lane D3 — pass on a deck candidate (idempotent, 30-day cooldown).
 		dating.POST("/pulse/:candidateId/pass", fpMW, h.PassCandidate)
+		// Mechanic M2 — undo the caller's last pass (one step, never a
+		// spark). 404 MECHANIC_NOT_ENABLED while DATING_REWIND_ENABLED is off.
+		dating.POST("/pulse/rewind", fpMW, h.RewindLastPass)
+		// Mechanic M10 — every daily allowance the caller has; a mechanic
+		// whose flag is off is absent.
+		dating.GET("/allowances", h.GetAllowances)
+		// Mechanic M7 — daily picks, apart from the deck.
+		dating.GET("/picks", fpMW, h.GetDailyPicks)
+		// Mechanic M8 — travel mode (pass holders).
+		dating.GET("/travel", h.GetTravel)
+		dating.PUT("/travel", h.PutTravel)
+		dating.DELETE("/travel", h.DeleteTravel)
+		// Mechanic M9 — read receipts (pass holders opt in).
+		dating.GET("/read-receipts", h.GetReadReceipts)
+		dating.PUT("/read-receipts", h.PutReadReceipts)
+		// Mechanic M4 — who sparked the caller, as a grid; locked without a
+		// pass while DATING_LIKED_YOU_GATE_ENABLED is on.
+		dating.GET("/liked-you", fpMW, h.GetLikedYou)
+		dating.GET("/liked-you/:sparkId/photo", h.GetLikedYouPhoto)
 
 		// Sprint 3 — Sparks
 		dating.POST("/sparks", fpMW, h.CreateSpark)
@@ -144,6 +168,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Lane D10 — the compact card for one person, for a current match,
 		// an incoming spark or someone in the viewer's deck. 404 otherwise.
 		dating.GET("/people/:userId", h.GetPersonCard)
+		dating.GET("/people/:userId/prompts/:promptId/clip", h.GetPromptClip)
 		// Sprint 3 — Stash
 		dating.GET("/stash", h.ListStash)
 		dating.POST("/stash", h.AddStash)
@@ -152,8 +177,28 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Sprint 3 — Matches
 		dating.GET("/matches", h.ListMatches)
 		dating.GET("/matches/:id", h.GetMatch)
+		// Mechanic M19: matches that ended in the last 30 days, to report.
+		dating.GET("/past-matches", h.GetPastMatches)
+		// Mechanic M14: how did the date go.
+		dating.POST("/matches/:id/date-feedback", h.PostDateFeedback)
+		dating.GET("/date-checkins", h.GetDateCheckins)
+		// Mechanic M18: switches the apps act on locally.
+		dating.GET("/client-config", h.GetClientConfig)
+		// Mechanic M16: hide from people I know.
+		dating.GET("/hide-known", h.GetHideKnown)
+		dating.PUT("/hide-known", h.PutHideKnown)
+		// Mechanic M13: kind messages and the spark-comment filter.
+		dating.POST("/kind-check", h.PostKindCheck)
+		dating.POST("/matches/:id/bothered", h.PostBothered)
+		dating.GET("/comment-filter", h.GetCommentFilter)
+		dating.PUT("/comment-filter", h.PutCommentFilter)
 		dating.POST("/matches/:id/close", h.CloseMatch)
 		dating.POST("/matches/:id/extend", h.ExtendMatch)
+		// Mechanic M5 — the waiting person's answer to an opening question.
+		dating.POST("/matches/:id/opening-answer", h.PostOpeningAnswer)
+		// Mechanic M5 — the first-move opt-in and opening questions.
+		dating.GET("/first-move", h.GetFirstMove)
+		dating.PUT("/first-move", h.PutFirstMove)
 		// Moved to InternalFirstMessagePath; 410 for one release.
 		dating.POST("/matches/:id/first-message", movedTo(InternalFirstMessagePath))
 
@@ -280,6 +325,9 @@ func (h *Handler) registerAdminRoutes(g *gin.RouterGroup, gate func(perms ...str
 	g.POST("/safety/panic/:id/ack", gate(PermPanicAct), h.AcknowledgePanic)
 	g.POST("/safety/panic/:id/resolve", gate(PermPanicAct), h.ResolvePanic)
 	g.GET("/photos/pending", gate(PermPhotosReview), h.ListPendingPhotos)
+	// Mechanic M15 — prompt clips waiting for a moderator, and the decision.
+	g.GET("/clips/pending", gate(PermPhotosReview), h.ListPendingClips)
+	g.POST("/clips/review", gate(PermPhotosReview), h.ReviewPromptClip)
 	// Lane D5 — selfie review queue (borderline similarity, high-risk first
 	// attempts) and the moderator decision.
 	g.GET("/verification/selfie/pending", gate(PermSelfieReview), h.ListSelfieReviews)
@@ -422,8 +470,188 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		return
 	}
 	if errors.Is(err, store.ErrSparkRateLimited) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SPARK_RATE_LIMITED", "spark limit reached; try again later",
-			map[string]any{"limit": service.DefaultSparkDailyLimit, "window_hours": int(store.SparkQuotaWindow.Hours())})
+		details := map[string]any{"limit": service.DefaultSparkDailyLimit, "window_hours": int(store.SparkQuotaWindow.Hours())}
+		// M10: the reset time, when the service knows it.
+		var sparkLimited *service.SparkLimitError
+		if errors.As(err, &sparkLimited) {
+			details["limit"] = sparkLimited.Limit
+			if sparkLimited.ResetsAt != nil {
+				details["resets_at"] = sparkLimited.ResetsAt.Format(time.RFC3339)
+			}
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SPARK_RATE_LIMITED", "spark limit reached; try again later", details)
+		return
+	}
+	// Pulse mechanics: a route whose flag is off, and the rewind refusals.
+	if errors.Is(err, service.ErrMechanicDisabled) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "MECHANIC_NOT_ENABLED", "this feature is not available", nil)
+		return
+	}
+	if errors.Is(err, service.ErrNothingToRewind) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REWIND_NOTHING_TO_UNDO", "there is no pass to undo", nil)
+		return
+	}
+	var rewindLimited *service.RewindLimitError
+	if errors.As(err, &rewindLimited) {
+		details := map[string]any{"limit": rewindLimited.Limit, "window_hours": int(store.RewindQuotaWindow.Hours())}
+		if rewindLimited.ResetsAt != nil {
+			details["resets_at"] = rewindLimited.ResetsAt.Format(time.RFC3339)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REWIND_LIMIT_REACHED", rewindLimited.Error(), details)
+		return
+	}
+	// Mechanic M9 — read receipts.
+	if errors.Is(err, service.ErrReadReceiptsRequirePass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "READ_RECEIPTS_REQUIRE_PASS", "read receipts come with a pass", nil)
+		return
+	}
+	// Mechanic M8 — travel mode.
+	if errors.Is(err, service.ErrTravelRequiresPass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TRAVEL_REQUIRES_PASS", "travel mode comes with a pass", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidCity) {
+		allowed := make([]string, 0, len(service.TravelCities))
+		for _, tc := range service.TravelCities {
+			allowed = append(allowed, tc.Code)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CITY", "city must be one of the travel cities",
+			map[string]any{"allowed": allowed})
+		return
+	}
+	if errors.Is(err, service.ErrInvalidTravelDays) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TRAVEL_DAYS", "days must be 1 to 7",
+			map[string]any{"min": 1, "max": service.MaxTravelDays})
+		return
+	}
+	// Mechanic M7 — daily picks and the action source.
+	if errors.Is(err, service.ErrInvalidTimezone) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TIMEZONE", "tz must be an IANA time zone name such as Asia/Kolkata", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidSource) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SOURCE", "source must be one of deck, picks, liked_you, profile",
+			map[string]any{"allowed": []string{"deck", "picks", "liked_you", "profile"}})
+		return
+	}
+	// Mechanic M6 — filters and the new profile fields.
+	if errors.Is(err, service.ErrDealbreakersRequirePass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "DEALBREAKERS_REQUIRE_PASS", "these dealbreakers come with a pass", nil)
+		return
+	}
+	if errors.Is(err, service.ErrFiltersRequirePass) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FILTERS_REQUIRE_PASS", "these filters come with a pass", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidDistanceBucket) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DISTANCE_BUCKET", "distance_bucket must be one of the profile options",
+			map[string]any{"allowed": []string{"lt_5_km", "km_5_10", "km_10_25", "gt_25_km"}})
+		return
+	}
+	var fieldErr *service.FieldError
+	if errors.As(err, &fieldErr) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, fieldErr.Code, fieldErr.Message, fieldErr.Details)
+		return
+	}
+	// Mechanic M5 — first move.
+	if errors.Is(err, service.ErrOpeningQuestionsTooMany) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_QUESTIONS_TOO_MANY", "too many opening questions",
+			map[string]any{"max": service.MaxOpeningQuestions})
+		return
+	}
+	if errors.Is(err, service.ErrOpeningQuestionInvalid) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_QUESTION_INVALID", "an opening question is too long or empty",
+			map[string]any{"max_length": service.MaxOpeningQuestionLen})
+		return
+	}
+	if errors.Is(err, service.ErrOpeningQuestionRefused) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_QUESTION_REFUSED", "opening questions cannot contain phone numbers, email addresses or links", nil)
+		return
+	}
+	if errors.Is(err, service.ErrFirstMoveNotPending) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FIRST_MOVE_NOT_PENDING", "this match is not waiting for an opening answer from you", nil)
+		return
+	}
+	if errors.Is(err, service.ErrOpeningQuestionUnknown) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "OPENING_QUESTION_UNKNOWN", "that opening question is not available", nil)
+		return
+	}
+	if errors.Is(err, service.ErrOpeningAnswerInvalid) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_ANSWER_INVALID", "an answer is too long or empty",
+			map[string]any{"max_length": service.MaxOpeningAnswerLen})
+		return
+	}
+	if errors.Is(err, service.ErrOpeningAnswerRefused) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OPENING_ANSWER_REFUSED", "answers cannot contain phone numbers, email addresses or links", nil)
+		return
+	}
+	if errors.Is(err, service.ErrChatUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "CHAT_UNAVAILABLE", "chat is unavailable; try again shortly", nil)
+		return
+	}
+	var extendLimited *service.ExtendLimitError
+	if errors.As(err, &extendLimited) {
+		details := map[string]any{"limit": extendLimited.Limit, "window_hours": int(store.FreeExtendWindow.Hours())}
+		if extendLimited.ResetsAt != nil {
+			details["resets_at"] = extendLimited.ResetsAt.Format(time.RFC3339)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "EXTEND_LIMIT_REACHED", extendLimited.Error(), details)
+		return
+	}
+	if errors.Is(err, service.ErrLikedYouLocked) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKED_YOU_LOCKED", "a pass is needed to see who sparked you", nil)
+		return
+	}
+	if errors.Is(err, service.ErrClipMediaNotFound) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "CLIP_MEDIA_NOT_FOUND", "that upload is not yours or does not exist", nil)
+		return
+	}
+	if errors.Is(err, service.ErrClipNotReady) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "CLIP_NOT_READY", "the clip is still processing; try again shortly", nil)
+		return
+	}
+	if errors.Is(err, service.ErrClipUnsupported) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "CLIP_UNSUPPORTED", "only a voice or video clip can answer a prompt", nil)
+		return
+	}
+	var clipTooLong *service.ClipTooLongError
+	if errors.As(err, &clipTooLong) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "CLIP_TOO_LONG", clipTooLong.Error(), map[string]any{"max_ms": clipTooLong.MaxMs})
+		return
+	}
+	if errors.Is(err, service.ErrClipMediaUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "CLIP_MEDIA_UNAVAILABLE", "clips are unavailable right now", nil)
+		return
+	}
+	if errors.Is(err, service.ErrInvalidClipDecision) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CLIP_DECISION", "decision must be approved or rejected", nil)
+		return
+	}
+	if errors.Is(err, service.ErrKindCheckRateLimited) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "KIND_CHECK_RATE_LIMITED", "too many checks this hour", nil)
+		return
+	}
+	if errors.Is(err, service.ErrHideKnownUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "HIDE_KNOWN_UNAVAILABLE", "your connections cannot be read right now; try again shortly", nil)
+		return
+	}
+	if errors.Is(err, service.ErrDateFeedbackLimit) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "DATE_FEEDBACK_LIMIT", "enough answers about this match", nil)
+		return
+	}
+	var fairTurn *service.FairTurnError
+	if errors.As(err, &fairTurn) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FAIR_TURN_LIMIT", "reply to the matches waiting on you before sending new sparks",
+			map[string]any{"owed": fairTurn.Owed, "limit": fairTurn.Limit})
+		return
+	}
+	var superLimited *service.SuperSparkLimitError
+	if errors.As(err, &superLimited) {
+		details := map[string]any{"limit": superLimited.Limit, "window_hours": int(store.SuperSparkQuotaWindow.Hours())}
+		if superLimited.ResetsAt != nil {
+			details["resets_at"] = superLimited.ResetsAt.Format(time.RFC3339)
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SUPER_SPARK_LIMIT_REACHED", superLimited.Error(), details)
 		return
 	}
 	if errors.Is(err, service.ErrSparkNoteRefused) {

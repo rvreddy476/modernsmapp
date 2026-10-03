@@ -1,0 +1,41 @@
+{
+  "data": {
+    "user_id": "<candidate>",
+    "first_name": "Asha",
+    "age": 30,
+    "primary_photo_id": "<uuid>",
+    "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+    "photo_state": "full",
+    "verified": false,
+    "trust_tier": "phone",
+    "distance_bucket": "lt_5_km",
+    "distance_label": "\u003c 5 km",
+    "city": "Hyderabad",
+    "intent": "casual",
+    "last_active_bucket": "today",
+    "last_active_label": "Active today",
+    "detail": {
+      "languages": [
+        "en",
+        "te"
+      ],
+      "photos": [
+        {
+          "id": "<uuid>",
+          "url": "/v1/dating/photos/<uuid>/full",
+          "state": "full"
+        }
+      ],
+      "interests": [
+        "books",
+        "cricket",
+        "yoga"
+      ],
+      "height_cm": 172,
+      "drinking": "socially",
+      "smoking": "never",
+      "exercise": "often",
+      "diet": "vegetarian"
+    }
+  }
+}

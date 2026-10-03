@@ -16,6 +16,8 @@ import androidx.navigation.toRoute
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.feature.dating.DatingCopy
 import com.us.android.feature.dating.OnboardingStep
+import com.us.android.feature.dating.filters.FiltersScreen
+import com.us.android.feature.dating.profile.AboutMeScreen
 import com.us.android.feature.dating.home.DatingHomeScreen
 import com.us.android.feature.dating.home.HomeTab
 import com.us.android.feature.dating.home.MatchDetailScreen
@@ -30,9 +32,11 @@ import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.dating.premium.PremiumScreen
 import com.us.android.feature.dating.privacy.BlocksScreen
 import com.us.android.feature.dating.privacy.PrivacyScreen
+import com.us.android.feature.dating.safety.ReportPersonScreen
 import com.us.android.feature.dating.safety.SafetyScreen
 import com.us.android.feature.dating.safety.SharedLocationScreen
 import com.us.android.feature.dating.selfie.SelfieScreen
+import com.us.android.feature.dating.travel.TravelScreen
 import com.us.android.feature.dating.ui.DatingScreen
 import com.us.android.feature.dating.ui.LoadingPane
 import com.us.android.feature.dating.ui.MessagePane
@@ -46,8 +50,12 @@ data object DatingGraph
 @Serializable
 data class DatingRootRoute(val tab: String = HomeTab.PULSE.name)
 
+/**
+ * One match. [checkIn] opens the after-date check-in sheet once the match is
+ * known (mechanic M14) — the `?checkin=1` on a check-in push's deep link.
+ */
 @Serializable
-data class DatingMatchRoute(val matchId: String, val openChat: Boolean = false)
+data class DatingMatchRoute(val matchId: String, val openChat: Boolean = false, val checkIn: Boolean = false)
 
 /** Someone else's card, with the pre-match detail the server allows. */
 @Serializable
@@ -75,19 +83,41 @@ data object DatingPrivacyRoute
 @Serializable
 data object DatingBlocksRoute
 
+/** Mechanic M6: interests, height, languages and the lifestyle basics. Optional. */
+@Serializable
+data object DatingAboutMeRoute
+
+/** Mechanic M6: the deck filters, from the Pulse top bar. */
+@Serializable
+data object DatingFiltersRoute
+
+/** Mechanic M8: travel mode, from the Pulse and Picks top bar and the deck's trip banner. */
+@Serializable
+data object DatingTravelRoute
+
+/**
+ * The ordinary report sheet for [userId], opened from outside Dating — the
+ * chat of a Pulse match after "Did this bother you?" (mechanic M13).
+ * [messageId] goes along as evidence; [name] titles the sheet.
+ */
+@Serializable
+data class DatingReportRoute(val userId: String, val messageId: String? = null, val name: String? = null)
+
 /**
  * Registers Dating.
  *
  * [onOpenChat] opens a match's conversation in chat — `:app` owns that edge,
- * because features never depend on each other. [onOpenPayment] and
- * [onAbandonPayment] are supplied by `:app`, whose Activity the payment sheet
- * opens onto; this module never names the provider.
+ * because features never depend on each other. [onStartCall] places a call
+ * from the match screen (mechanic M9) the same way, through `:app`.
+ * [onOpenPayment] and [onAbandonPayment] are supplied by `:app`, whose
+ * Activity the payment sheet opens onto; this module never names the provider.
  */
 fun NavGraphBuilder.datingScreens(
     navController: NavController,
     onOpenChat: (conversationId: String, title: String) -> Unit,
     onOpenPayment: (DatingPaymentRequest) -> Unit,
     onAbandonPayment: (DatingPaymentRequest) -> Unit,
+    onStartCall: (peerUserId: String, peerName: String, video: Boolean, conversationId: String) -> Unit = { _, _, _, _ -> },
 ) {
     navigation<DatingGraph>(startDestination = DatingRootRoute()) {
         composable<DatingRootRoute> { entry ->
@@ -96,12 +126,29 @@ fun NavGraphBuilder.datingScreens(
                 initialTab = HomeTab.entries.firstOrNull { it.name == route.tab } ?: HomeTab.PULSE,
                 onBack = { navController.popBackStack<DatingGraph>(inclusive = true) },
                 onOpenMatch = { navController.navigate(DatingMatchRoute(it)) },
+                // The match screen's "Say hello" — the same edge the match detail uses.
+                onOpenChat = onOpenChat,
                 onOpenPerson = { navController.navigate(DatingPersonRoute(it)) },
                 onOpenSafety = { navController.navigate(DatingSafetyRoute()) },
                 onOpenPremium = { navController.navigate(DatingPremiumRoute) },
                 onOpenPrivacy = { navController.navigate(DatingPrivacyRoute) },
                 onOpenPrompts = { navController.navigate(DatingPromptsRoute) },
+                onOpenAboutMe = { navController.navigate(DatingAboutMeRoute) },
+                onOpenFilters = { navController.navigate(DatingFiltersRoute) },
+                onOpenTravel = { navController.navigate(DatingTravelRoute) },
             )
+        }
+
+        composable<DatingTravelRoute> {
+            TravelScreen(onBack = navController::popBackStack, onOpenPremium = { navController.navigate(DatingPremiumRoute) })
+        }
+
+        composable<DatingAboutMeRoute> {
+            AboutMeScreen(onBack = navController::popBackStack)
+        }
+
+        composable<DatingFiltersRoute> {
+            FiltersScreen(onBack = navController::popBackStack, onOpenPremium = { navController.navigate(DatingPremiumRoute) })
         }
 
         composable<DatingMatchRoute> {
@@ -109,6 +156,7 @@ fun NavGraphBuilder.datingScreens(
                 onBack = navController::popBackStack,
                 onOpenChat = onOpenChat,
                 onShareLocation = { navController.navigate(DatingSafetyRoute(shareWith = it)) },
+                onStartCall = onStartCall,
             )
         }
 
@@ -148,11 +196,18 @@ fun NavGraphBuilder.datingScreens(
                 onOpenBlocks = { navController.navigate(DatingBlocksRoute) },
                 // The profile is gone: leave Dating entirely.
                 onDeleted = { navController.popBackStack<DatingGraph>(inclusive = true) },
+                onEditAboutMe = { navController.navigate(DatingAboutMeRoute) },
+                // Mechanic M9: read receipts come with a pass.
+                onOpenPremium = { navController.navigate(DatingPremiumRoute) },
             )
         }
 
         composable<DatingBlocksRoute> {
             BlocksScreen(onBack = navController::popBackStack)
+        }
+
+        composable<DatingReportRoute> {
+            ReportPersonScreen(onBack = navController::popBackStack)
         }
     }
 }
@@ -162,11 +217,15 @@ private fun DatingRoot(
     initialTab: HomeTab,
     onBack: () -> Unit,
     onOpenMatch: (String) -> Unit,
+    onOpenChat: (conversationId: String, title: String) -> Unit,
     onOpenPerson: (String) -> Unit,
     onOpenSafety: () -> Unit,
     onOpenPremium: () -> Unit,
     onOpenPrivacy: () -> Unit,
     onOpenPrompts: () -> Unit,
+    onOpenAboutMe: () -> Unit,
+    onOpenFilters: () -> Unit,
+    onOpenTravel: () -> Unit,
     viewModel: DatingRootViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -195,18 +254,32 @@ private fun DatingRoot(
                     onBack = onBack,
                     onSaved = viewModel::reload,
                 )
-            OnboardingStep.PHOTOS -> PhotosScreen(onBack = onBack, onContinue = viewModel::reload, onOpenPrompts = onOpenPrompts)
+            OnboardingStep.PHOTOS -> PhotosScreen(
+                onBack = onBack,
+                onContinue = viewModel::reload,
+                onOpenPrompts = onOpenPrompts,
+                onOpenAboutMe = onOpenAboutMe,
+            )
             OnboardingStep.SELFIE -> SelfieScreen(onBack = onBack, onDone = viewModel::reload)
             OnboardingStep.REVIEW, OnboardingStep.PAUSED, OnboardingStep.HELD ->
-                StatusPane(step = s.step, onBack = onBack, onUnpause = viewModel::unpause, onOpenPrivacy = onOpenPrivacy)
+                StatusPane(
+                    step = s.step,
+                    onBack = onBack,
+                    onUnpause = viewModel::unpause,
+                    onOpenPrivacy = onOpenPrivacy,
+                    onOpenAboutMe = onOpenAboutMe,
+                )
             OnboardingStep.READY -> DatingHomeScreen(
                 initialTab = initialTab,
                 onBack = onBack,
                 onOpenMatch = onOpenMatch,
+                onOpenChat = onOpenChat,
                 onOpenPerson = onOpenPerson,
                 onOpenSafety = onOpenSafety,
                 onOpenPremium = onOpenPremium,
                 onOpenSettings = onOpenPrivacy,
+                onOpenFilters = onOpenFilters,
+                onOpenTravel = onOpenTravel,
             )
         }
     }
@@ -217,5 +290,25 @@ fun NavController.navigateToDating() = navigate(DatingGraph)
 /** A spark push: Dating's home on the incoming sparks tab. */
 fun NavController.navigateToDatingSparks() = navigate(DatingRootRoute(tab = HomeTab.SPARKS.name))
 
-/** A match push; [openChat] continues into the conversation once the match loads. */
-fun NavController.navigateToDatingMatch(matchId: String, openChat: Boolean) = navigate(DatingMatchRoute(matchId, openChat))
+/**
+ * A match push; [openChat] continues into the conversation once the match
+ * loads; [checkIn] opens the after-date check-in sheet (mechanic M14).
+ */
+fun NavController.navigateToDatingMatch(matchId: String, openChat: Boolean, checkIn: Boolean = false) =
+    navigate(DatingMatchRoute(matchId, openChat, checkIn))
+
+/** The safety centre, as a scam-alert push (mechanic M17, deep link `/dating/safety`) opens it. */
+fun NavController.navigateToDatingSafety() = navigate(DatingSafetyRoute())
+
+/** The report sheet for someone in a Pulse chat (mechanic M13): [messageId] is the message that bothered the viewer. */
+fun NavController.navigateToDatingReport(userId: String, messageId: String?, name: String?) =
+    navigate(DatingReportRoute(userId = userId, messageId = messageId, name = name))
+
+/**
+ * Whether a dating deep link asks for the after-date check-in: the
+ * `checkin=1` query on `/dating/matches/{id}?checkin=1` (mechanic M14). Pure.
+ */
+fun datingCheckInRequested(deepLink: String?): Boolean {
+    val query = deepLink?.substringAfter('?', missingDelimiterValue = "")?.substringBefore('#').orEmpty()
+    return query.split('&').any { it.trim() == "checkin=1" }
+}

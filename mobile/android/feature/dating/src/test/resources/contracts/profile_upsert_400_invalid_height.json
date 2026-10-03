@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "INVALID_HEIGHT",
+    "message": "height must be 120 to 230 cm",
+    "details": {
+      "field": "height_cm",
+      "max": 230,
+      "min": 120
+    }
+  },
+  "meta": {}
+}

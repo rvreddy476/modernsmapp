@@ -76,6 +76,13 @@ data class PrivacyUiState(
     val busy: Boolean = false,
     val deleted: Boolean = false,
     val message: UsMessage? = null,
+    /**
+     * Mechanic M6: `GET /preferences` carried `pass_filters`, so the server's
+     * filters flag is on and "verified only" is a pass filter in Filters. The
+     * old switch is then not drawn here. False (the flag off, or preferences
+     * unreadable) keeps the switch where it was.
+     */
+    val verifiedOnlyInFilters: Boolean = false,
 )
 
 /**
@@ -105,9 +112,11 @@ class PrivacyViewModel @Inject constructor(
             val consents = repository.consents().valueOrNull()?.also(session::setConsents)
             val profile = repository.profile().valueOrNull()
             val exports = repository.exports().valueOrNull().orEmpty()
+            val filtersFlag = repository.preferences().valueOrNull()?.passFilters != null
             _state.update {
                 it.copy(
                     loading = false,
+                    verifiedOnlyInFilters = filtersFlag,
                     privacy = privacy,
                     consents = consents,
                     paused = profile?.profileStatus == OnboardingGate.STATUS_PAUSED,
@@ -333,9 +342,21 @@ fun PrivacyScreen(
     onEditPrompts: () -> Unit,
     onOpenBlocks: () -> Unit,
     onDeleted: () -> Unit,
+    onEditAboutMe: () -> Unit = {},
+    onOpenPremium: () -> Unit = {},
     viewModel: PrivacyViewModel = hiltViewModel(),
+    firstMove: FirstMoveSettingsViewModel = hiltViewModel(),
+    readReceipts: ReadReceiptsViewModel = hiltViewModel(),
+    hideKnown: HideKnownViewModel = hiltViewModel(),
+    commentFilter: CommentFilterViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val firstMoveState by firstMove.state.collectAsStateWithLifecycle()
+    val receiptsState by readReceipts.state.collectAsStateWithLifecycle()
+    val hideKnownState by hideKnown.state.collectAsStateWithLifecycle()
+    val commentFilterState by commentFilter.state.collectAsStateWithLifecycle()
+    // Shown again — back from Premium, where a pass may have landed.
+    LaunchedEffect(Unit) { readReceipts.shown() }
     val context = LocalContext.current
     var withdraw by remember { mutableStateOf<ConsentType?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -353,7 +374,20 @@ fun PrivacyScreen(
 
     LaunchedEffect(state.deleted) { if (state.deleted) onDeleted() }
 
-    DatingScreen(title = "Privacy and data", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
+    DatingScreen(
+        title = "Privacy and data",
+        onBack = onBack,
+        message = state.message ?: firstMoveState.message ?: receiptsState.message ?: hideKnownState.message ?: commentFilterState.message,
+        onDismissMessage = {
+            when {
+                state.message != null -> viewModel.dismissMessage()
+                firstMoveState.message != null -> firstMove.dismissMessage()
+                receiptsState.message != null -> readReceipts.dismissMessage()
+                hideKnownState.message != null -> hideKnown.dismissMessage()
+                else -> commentFilter.dismissMessage()
+            }
+        },
+    ) { padding ->
         if (state.loading) {
             LoadingPane()
             return@DatingScreen
@@ -369,15 +403,31 @@ fun PrivacyScreen(
                     SwitchRow("Hide when I was last active", null, privacy.hideLastActive, !state.busy) {
                         viewModel.update(PrivacyUpdateRequest(hideLastActive = it))
                     }
-                    SwitchRow("Show me verified people only", null, privacy.verifiedOnlyFilter, !state.busy) {
-                        viewModel.update(PrivacyUpdateRequest(verifiedOnlyFilter = it))
+                    // Mechanic M6 moves this into Filters once the server's flag is on.
+                    if (!state.verifiedOnlyInFilters) {
+                        SwitchRow("Show me verified people only", null, privacy.verifiedOnlyFilter, !state.busy) {
+                            viewModel.update(PrivacyUpdateRequest(verifiedOnlyFilter = it))
+                        }
                     }
                     SwitchRow("Blur my photos until we match", "Everyone else sees them blurred.", privacy.blurPhotosUntilMatch, !state.busy) {
                         viewModel.update(PrivacyUpdateRequest(blurPhotosUntilMatch = it))
                     }
                     InfoNote("Your location is always approximate. Others only see a distance range.")
+                    if (state.verifiedOnlyInFilters) InfoNote(VERIFIED_ONLY_MOVED)
                 }
             }
+
+            // Mechanic M16: drawn only while the server's flag is on.
+            hideKnownSection(hideKnownState, hideKnown)
+
+            // Mechanic M5: drawn only while the server's flag is on.
+            firstMoveSection(firstMoveState, firstMove)
+
+            // Mechanic M9: drawn only while the server's flag is on.
+            readReceiptsSection(receiptsState, readReceipts, onOpenPremium)
+
+            // Mechanic M13: drawn only while the server's flag is on.
+            commentFilterSection(commentFilterState, commentFilter)
 
             item { SectionLabel("Blocked people") }
             item {
@@ -417,6 +467,7 @@ fun PrivacyScreen(
                 DatingCard {
                     UsSecondaryButton(text = "Edit photos", onClick = onEditPhotos, modifier = Modifier.fillMaxWidth())
                     UsSecondaryButton(text = "Edit prompts", onClick = onEditPrompts, modifier = Modifier.fillMaxWidth())
+                    UsSecondaryButton(text = "Edit interests and basics", onClick = onEditAboutMe, modifier = Modifier.fillMaxWidth())
                     UsSecondaryButton(
                         text = if (state.paused) "Resume dating" else "Pause my profile",
                         enabled = !state.busy,
@@ -479,6 +530,19 @@ fun PrivacyScreen(
             onDismiss = { withdraw = null },
         )
     }
+    if (receiptsState.upsell) {
+        ConfirmDialog(
+            title = ReadReceiptsCopy.UPSELL_TITLE,
+            body = ReadReceiptsCopy.UPSELL_BODY,
+            confirmLabel = ReadReceiptsCopy.SEE_PREMIUM,
+            dismissLabel = ReadReceiptsCopy.NOT_NOW,
+            onConfirm = {
+                readReceipts.dismissUpsell()
+                onOpenPremium()
+            },
+            onDismiss = readReceipts::dismissUpsell,
+        )
+    }
     if (confirmDelete) {
         ConfirmDialog(
             title = "Delete your dating profile?",
@@ -526,3 +590,6 @@ fun exportLabel(status: String): String = when (status) {
 }
 
 private const val EXPORT_READY = "ready"
+
+/** Where the old switch went, said once where it used to be. */
+const val VERIFIED_ONLY_MOVED = "Seeing verified people only is now in Filters, on Pulse."

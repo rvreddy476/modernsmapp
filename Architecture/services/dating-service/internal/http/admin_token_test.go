@@ -180,6 +180,8 @@ func TestAdminToken_EveryInternalRouteNeedsItsPermission(t *testing.T) {
 		"POST " + InternalAdminPrefix + "/safety/panic/:id/resolve":           PermPanicAct,
 		"GET " + InternalAdminPrefix + "/photos/pending":                      PermPhotosReview,
 		"POST " + InternalAdminPrefix + "/photos/:id/moderation":              PermPhotosReview,
+		"GET " + InternalAdminPrefix + "/clips/pending":                       PermPhotosReview,
+		"POST " + InternalAdminPrefix + "/clips/review":                       PermPhotosReview,
 		"GET " + InternalAdminPrefix + "/verification/selfie/pending":         PermSelfieReview,
 		"POST " + InternalAdminPrefix + "/verification/selfie/:userId/review": PermSelfieReview,
 		"GET " + InternalAdminPrefix + "/audit":                               PermAuditRead,

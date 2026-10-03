@@ -56,6 +56,59 @@ class DatingSession @Inject constructor() {
 
     fun isRemoved(userId: String?): Boolean = userId != null && userId in _removed.value
 
+    private val disabledMechanics = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * A Pulse mechanic the server answered `MECHANIC_NOT_ENABLED` for. It stays
+     * hidden for the rest of the session even if a later allowances read,
+     * cached somewhere on the way, still names it.
+     */
+    fun disableMechanic(mechanic: String) {
+        disabledMechanics.update { it + mechanic }
+    }
+
+    fun isMechanicDisabled(mechanic: String): Boolean = mechanic in disabledMechanics.value
+
+    private val _filtersVersion = MutableStateFlow(0)
+
+    /**
+     * Bumped each time the deck filters are saved (mechanic M6). The deck reads
+     * a fresh batch on every change, so what it shows always follows the
+     * filters the server now holds.
+     */
+    val filtersVersion: StateFlow<Int> = _filtersVersion.asStateFlow()
+
+    fun filtersChanged() {
+        _filtersVersion.update { it + 1 }
+    }
+
+    private val _travelVersion = MutableStateFlow(0)
+
+    /**
+     * Bumped each time a trip starts or ends (mechanic M8). The deck and the
+     * picks are the destination's while a trip is on, so both read afresh.
+     */
+    val travelVersion: StateFlow<Int> = _travelVersion.asStateFlow()
+
+    fun travelChanged() {
+        _travelVersion.update { it + 1 }
+    }
+
+    @Volatile
+    private var visits = 0
+
+    /**
+     * Which opening of Dating this is: bumped each time the Dating graph is
+     * entered. What is read "once per Dating session" (the client config,
+     * mechanic M18) is read again when it changes.
+     */
+    val visit: Int get() = visits
+
+    /** Dating was opened (its root screen was created). */
+    fun entered() {
+        visits++
+    }
+
     /** The other participant of a match. */
     fun otherOf(userA: String, userB: String): String = if (userA == myUserId) userB else userA
 
@@ -63,5 +116,6 @@ class DatingSession @Inject constructor() {
     fun clear() {
         _profile.value = null
         _consents.value = null
+        disabledMechanics.value = emptySet()
     }
 }

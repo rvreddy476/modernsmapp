@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "OPENING_QUESTIONS_TOO_MANY",
+    "message": "too many opening questions",
+    "details": {
+      "max": 3
+    }
+  },
+  "meta": {}
+}

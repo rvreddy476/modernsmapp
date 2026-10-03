@@ -78,7 +78,52 @@ func (s *Service) consentPolicy() string {
 
 // PremiumCatalogue is GET /v1/dating/premium/catalogue.
 func (s *Service) PremiumCatalogue() []payments.Product {
-	return payments.Catalogue()
+	all := payments.Catalogue()
+	features := s.passFeatures()
+	out := make([]payments.Product, 0, len(all))
+	for _, p := range all {
+		if !s.productOnSale(p) {
+			continue
+		}
+		if p.Kind == payments.KindPass {
+			p.Features = append([]string(nil), features...)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// passFeatures is what a pass unlocks right now (mechanic M10): the
+// features every pass has, plus each mechanic's while its flag is on.
+func (s *Service) passFeatures() []string {
+	out := append([]string(nil), payments.PassFeatures...)
+	m := s.mechanics
+	for _, f := range []struct {
+		on      bool
+		feature string
+	}{
+		{m.DeckRefill, payments.FeatureMoreDailyCards},
+		{m.Rewind, payments.FeatureUnlimitedRewinds},
+		{m.SuperSpark, payments.FeatureMoreSuperSparks},
+		{m.LikedYouGate, payments.FeatureSeeWhoSparked},
+		{m.FiltersV2, payments.FeatureAdvancedFilters},
+		{m.Travel, payments.FeatureTravelMode},
+		{m.ReadReceipts, payments.FeatureReadReceipts},
+	} {
+		if f.on {
+			out = append(out, f.feature)
+		}
+	}
+	return out
+}
+
+// productOnSale reports whether a catalogue product may be listed and bought:
+// a product of a mechanic whose flag is off is neither.
+func (s *Service) productOnSale(p payments.Product) bool {
+	if p.Kind == payments.KindSuperSpark {
+		return s.mechanics.SuperSpark
+	}
+	return true
 }
 
 // PremiumPurchaseInput is the client's request: a product, a key and an
@@ -105,7 +150,7 @@ func (s *Service) CreatePremiumPurchase(ctx context.Context, userID uuid.UUID, i
 		return nil, false, ErrPremiumIdempotencyKeyRequired
 	}
 	product, ok := payments.LookupProduct(strings.TrimSpace(in.Product))
-	if !ok {
+	if !ok || !s.productOnSale(product) {
 		return nil, false, ErrPremiumProductUnknown
 	}
 	method := in.Method
@@ -207,6 +252,8 @@ type MyPremiumResponse struct {
 	Pass         *PremiumPassView            `json:"pass"`
 	Entitlements []PremiumFeatureEntitlement `json:"entitlements"`
 	BoostBalance int                         `json:"boost_balance"`
+	// SuperSparkBalance is the purchased Super Sparks left (M3); omitted at 0.
+	SuperSparkBalance int `json:"super_spark_balance,omitempty"`
 }
 
 // MyPremium returns the user's premium state. A pass is active only while
@@ -220,14 +267,14 @@ func (s *Service) MyPremium(ctx context.Context, userID uuid.UUID) (*MyPremiumRe
 		return nil, err
 	}
 	active := ent.PassActive && ent.PassExpiresAt != nil
-	out := &MyPremiumResponse{IsPremium: active, BoostBalance: ent.BoostBalance}
+	out := &MyPremiumResponse{IsPremium: active, BoostBalance: ent.BoostBalance, SuperSparkBalance: ent.SuperSparkBalance}
 	var expires *time.Time
 	if ent.PassExpiresAt != nil {
 		e := ent.PassExpiresAt.UTC()
 		expires = &e
 		out.Pass = &PremiumPassView{Product: ent.PassProduct, Active: active, ExpiresAt: e}
 	}
-	for _, f := range payments.PassFeatures {
+	for _, f := range s.passFeatures() {
 		out.Entitlements = append(out.Entitlements, PremiumFeatureEntitlement{Feature: f, Active: active, ExpiresAt: expires})
 	}
 	return out, nil
@@ -237,6 +284,14 @@ func (s *Service) MyPremium(ctx context.Context, userID uuid.UUID) (*MyPremiumRe
 // announces; the entitlement change already committed.
 func (s *Service) OnPremiumPaymentApplied(ctx context.Context, a payments.Applied) {
 	product, _ := payments.LookupProduct(a.Product)
+	// Mechanic M9: a pass granted, extended or cut short moves the
+	// read-receipt until-time chat holds.
+	if product.Kind == payments.KindPass {
+		switch a.Decision.Effect {
+		case payments.EffectGrant, payments.EffectRevoke, payments.EffectPartialRevoke:
+			s.syncReadReceipts(ctx, a.UserID)
+		}
+	}
 	switch a.Decision.Effect {
 	case payments.EffectGrant:
 		if err := s.store.RecordConsent(ctx, a.UserID, "payments", true, s.consentPolicy()); err != nil {

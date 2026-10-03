@@ -162,6 +162,13 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		if err := s.enqueueDatingFirstMessage(ctx, intent); err != nil {
 			return fmt.Errorf("queue dating first-message notification: %w", err)
 		}
+		// Dating mechanic M9: stamp the sender's first message, which the
+		// call rule reads. Part of delivery, so repair replays it.
+		if st, ok := s.convStore.(datingExtrasStore); ok {
+			if err := st.MarkMemberSent(ctx, intent.ConversationID, intent.SenderID); err != nil {
+				return fmt.Errorf("mark dating member sent: %w", err)
+			}
+		}
 	}
 
 	if intent.FirstRequest {

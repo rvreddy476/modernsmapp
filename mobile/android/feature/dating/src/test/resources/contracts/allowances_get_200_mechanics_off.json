@@ -1,0 +1,9 @@
+{
+  "data": {
+    "sparks": {
+      "unlimited": false,
+      "daily_limit": 50,
+      "remaining_today": 50
+    }
+  }
+}

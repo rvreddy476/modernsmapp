@@ -56,6 +56,16 @@ type CandidateProfile struct {
 	HideLastActive       bool
 	BlurPhotosUntilMatch bool
 	Incognito            bool
+	// Mechanic M6: the shown basics (not sealed) and interests.
+	HeightCm  *int
+	Drinking  *string
+	Smoking   *string
+	Exercise  *string
+	Diet      *string
+	Interests []string
+	// Travelling (mechanic M8): the candidate is on an active trip, so City
+	// and the point above are the destination's.
+	Travelling bool
 }
 
 // Age returns the candidate's age in whole years, or 0 if BirthDate is nil.
@@ -143,7 +153,7 @@ func (e *EchoCache) CommunitySlugs() []string {
 
 const candidateSelectCols = `
     p.user_id, p.first_name, p.intent, p.bio, p.gender, p.birth_date,
-    p.city, p.country, p.latitude, p.longitude, p.location_geohash,
+    {{city}}, p.country, {{latitude}}, {{longitude}}, {{geohash}},
     p.community, p.community_sealed, p.blur_mode, p.trust_tier, p.last_active_at, p.language_prefs,
     t.lifestyle_rhythm, t.conversation_style, t.faith_weight, t.family_weight,
     t.region_weight, t.family_plans_axis, t.education_axis,
@@ -162,7 +172,21 @@ const candidateSelectCols = `
         LIMIT 1), 'public') AS primary_photo_visibility,
     EXISTS (SELECT 1 FROM dating_sparks sv
         WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
-    p.hide_last_active, p.blur_photos_until_match, p.incognito`
+    p.hide_last_active, p.blur_photos_until_match, p.incognito,
+    p.height_cm, p.drinking, p.smoking, p.exercise, p.diet, p.interests, {{travelling}}`
+
+// candidateCols is candidateSelectCols with the travel-aware location
+// (mechanic M8): during an active trip a candidate's point, geohash and city
+// are the destination's, and the last column says they are travelling.
+func (s *Store) candidateCols() string {
+	return strings.NewReplacer(
+		"{{city}}", s.effectiveCol("p", "city", "city_label"),
+		"{{latitude}}", s.effectiveCol("p", "latitude", "latitude"),
+		"{{longitude}}", s.effectiveCol("p", "longitude", "longitude"),
+		"{{geohash}}", s.effectiveCol("p", "location_geohash", "geohash"),
+		"{{travelling}}", s.travellingCol("p"),
+	).Replace(candidateSelectCols)
+}
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
 type CandidateQuery struct {
@@ -185,6 +209,22 @@ type CandidateQuery struct {
 	// from the deck. Defaults to false so the existing deck shape
 	// is preserved.
 	VerifiedOnly bool
+	// OnlyIDs (mechanic M7) restricts the query to these users: the daily
+	// picks re-checked against every visibility rule.
+	OnlyIDs []uuid.UUID
+	// Mechanic M6 pass filters (0 / empty: not applied). A candidate with no
+	// value for a filtered field is left out.
+	MinHeightCm int
+	MaxHeightCm int
+	Languages   []string
+	Drinking    []string
+	Smoking     []string
+	Exercise    []string
+	Diet        []string
+	// ExcludeActed (mechanic M1, the refilling deck) keeps out everyone the
+	// viewer has already acted on: a live spark (newer than the pair's last
+	// closed match) or an open match. Passes are ExcludePassed.
+	ExcludeActed bool
 }
 
 // FetchCandidates returns up to Limit profiles that pass the hard-filter
@@ -240,6 +280,11 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		// profile reveals nothing.
 		incognitoVisiblePredicate("p", "$1"),
 	}
+	// Mechanic M16: people who know each other, when either hides from
+	// people they know, stay apart.
+	if s.hideKnownEnabled {
+		where = append(where, `NOT `+hideKnownPredicate("$1", "p.user_id"))
+	}
 	// Decline cooldown: a candidate who declined one of the viewer's sparks
 	// stays out of the viewer's deck for the cooldown. One-directional.
 	args = append(args, s.declineCutoff())
@@ -287,7 +332,34 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		args = append(args, PassCooldown.Seconds())
 		where = append(where, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM dating_passes dp
 		    WHERE dp.user_id = $1 AND dp.candidate_id = p.user_id
+		      AND dp.rewound_at IS NULL
 		      AND dp.passed_at > now() - make_interval(secs => $%d))`, len(args)))
+	}
+
+	if q.ExcludeActed {
+		where = append(where, `NOT `+actedOnPredicate("$1", "p.user_id"))
+	}
+	if len(q.OnlyIDs) > 0 {
+		args = append(args, q.OnlyIDs)
+		where = append(where, fmt.Sprintf(`p.user_id = ANY($%d::uuid[])`, len(args)))
+	}
+	if q.MinHeightCm > 0 {
+		args = append(args, q.MinHeightCm)
+		where = append(where, fmt.Sprintf(`p.height_cm >= $%d`, len(args)))
+	}
+	if q.MaxHeightCm > 0 {
+		args = append(args, q.MaxHeightCm)
+		where = append(where, fmt.Sprintf(`p.height_cm <= $%d`, len(args)))
+	}
+	if len(q.Languages) > 0 {
+		args = append(args, q.Languages)
+		where = append(where, fmt.Sprintf(`p.language_prefs && $%d::text[]`, len(args)))
+	}
+	for col, set := range map[string][]string{"drinking": q.Drinking, "smoking": q.Smoking, "exercise": q.Exercise, "diet": q.Diet} {
+		if len(set) > 0 {
+			args = append(args, set)
+			where = append(where, fmt.Sprintf(`p.%s = ANY($%d::text[])`, col, len(args)))
+		}
 	}
 
 	// P0-10 Phase A: geohash prefix prefilter. When the viewer has a
@@ -317,7 +389,7 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 				ors := make([]string, 0, len(cells))
 				for _, c := range cells {
 					args = append(args, c+"%")
-					ors = append(ors, fmt.Sprintf("p.location_geohash LIKE $%d", len(args)))
+					ors = append(ors, fmt.Sprintf("%s LIKE $%d", s.effectiveCol("p", "location_geohash", "geohash"), len(args)))
 				}
 				where = append(where, "("+strings.Join(ors, " OR ")+")")
 			}
@@ -336,7 +408,7 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	// Larger inner scan, randomised so subsequent calls vary, then top-N by random.
 	args = append(args, limit*4) // over-fetch so distance pruning + diversity have headroom
 	sql := `
-        SELECT ` + candidateSelectCols + `
+        SELECT ` + s.candidateCols() + `
         FROM dating_profiles p
         LEFT JOIN dating_tunes t ON t.user_id = p.user_id
         ` + whereClause + `
@@ -391,6 +463,7 @@ func scanCandidateRow(row pgx.Row) (*CandidateProfile, error) {
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
 		&c.PrimaryPhotoID, &c.PrimaryPhotoVisibility, &c.SparkedViewer,
 		&c.HideLastActive, &c.BlurPhotosUntilMatch, &c.Incognito,
+		&c.HeightCm, &c.Drinking, &c.Smoking, &c.Exercise, &c.Diet, &c.Interests, &c.Travelling,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan candidate: %w", err)
@@ -412,7 +485,7 @@ func incognitoVisiblePredicate(alias, viewer string) string {
 // sparked the viewer.
 func (s *Store) GetCandidateForViewer(ctx context.Context, viewerID, userID uuid.UUID) (*CandidateProfile, error) {
 	row := s.db.QueryRow(ctx, `
-        SELECT `+candidateSelectCols+`
+        SELECT `+s.candidateCols()+`
         FROM dating_profiles p
         LEFT JOIN dating_tunes t ON t.user_id = p.user_id
         WHERE p.user_id = $2
@@ -527,6 +600,9 @@ const PassCooldown = 30 * 24 * time.Hour
 // inside the cooldown changes nothing; a repeat after it re-arms the
 // cooldown. Returns the passed_at that now stands.
 //
+// Mechanic M2: a pass that was rewound (rewound_at set) is not standing, so
+// passing the person again re-arms it too and clears rewound_at.
+//
 // The cooldown cutoff is computed with the database clock (now()), the same
 // clock that stamps passed_at. It used to be the app host's time.Now(), so a
 // host/DB clock skew moved the cooldown edge (and made the store test depend
@@ -547,8 +623,9 @@ func (s *Store) RecordPass(ctx context.Context, userID, candidateID uuid.UUID, r
         INSERT INTO dating_passes (user_id, candidate_id, reason)
         VALUES ($1, $2, $3)
         ON CONFLICT (user_id, candidate_id) DO UPDATE
-            SET passed_at = CASE WHEN dating_passes.passed_at <= now() - make_interval(secs => $4) THEN now() ELSE dating_passes.passed_at END,
-                reason    = CASE WHEN dating_passes.passed_at <= now() - make_interval(secs => $4) THEN EXCLUDED.reason ELSE dating_passes.reason END
+            SET passed_at = CASE WHEN dating_passes.rewound_at IS NOT NULL OR dating_passes.passed_at <= now() - make_interval(secs => $4) THEN now() ELSE dating_passes.passed_at END,
+                reason    = CASE WHEN dating_passes.rewound_at IS NOT NULL OR dating_passes.passed_at <= now() - make_interval(secs => $4) THEN EXCLUDED.reason ELSE dating_passes.reason END,
+                rewound_at = NULL
         RETURNING passed_at`, userID, candidateID, reasonPtr, PassCooldown.Seconds()).Scan(&passedAt)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("record pass: %w", err)
@@ -570,6 +647,7 @@ func (s *Store) ListPassedCandidates(ctx context.Context, userID uuid.UUID, limi
         SELECT dp.candidate_id, dp.passed_at, dp.reason
         FROM dating_passes dp
         WHERE dp.user_id = $1
+          AND dp.rewound_at IS NULL
           AND NOT `+blockedPairPredicate("dp.user_id", "dp.candidate_id")+`
           AND `+visibleProfilePredicate("dp.candidate_id")+`
         ORDER BY dp.passed_at DESC

@@ -424,6 +424,10 @@ data class ConversationDto(
     // (5-minute TTL — re-read rather than cached).
     val description: String = "",
     @SerialName("avatar_url") val avatarUrl: String? = null,
+    // A Pulse match's chat (dating M13): source_app "dating" and its match id.
+    // Omitted for every other conversation.
+    @SerialName("source_app") val sourceApp: String? = null,
+    @SerialName("match_id") val matchId: String? = null,
 )
 
 /**

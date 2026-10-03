@@ -1,20 +1,44 @@
 package com.us.android.feature.dating.data
 
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.feature.dating.network.ActionSource
+import com.us.android.feature.dating.network.AllowancesDto
+import com.us.android.feature.dating.network.PicksDto
+import com.us.android.feature.dating.network.TravelDto
+import com.us.android.feature.dating.network.TravelRequest
 import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
 import com.us.android.feature.dating.network.BlocksDto
+import com.us.android.feature.dating.network.BotheredDto
+import com.us.android.feature.dating.network.BotheredRequest
+import com.us.android.feature.dating.network.ClientConfigDto
+import com.us.android.feature.dating.network.CommentFilterDto
+import com.us.android.feature.dating.network.CommentFilterRequest
+import com.us.android.feature.dating.network.HideKnownDto
+import com.us.android.feature.dating.network.HideKnownRequest
+import com.us.android.feature.dating.network.KindCheckDto
+import com.us.android.feature.dating.network.KindCheckRequest
 import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.ConsentRequest
 import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.DataExportDto
 import com.us.android.feature.dating.network.DatingApi
+import com.us.android.feature.dating.network.DateCheckinDto
+import com.us.android.feature.dating.network.DateFeedbackDto
+import com.us.android.feature.dating.network.DateFeedbackRequest
+import com.us.android.feature.dating.network.PastMatchesDto
 import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.DeleteProfileRequest
 import com.us.android.feature.dating.network.ExplainDto
+import com.us.android.feature.dating.network.ExtendDto
+import com.us.android.feature.dating.network.FirstMoveRequest
+import com.us.android.feature.dating.network.FirstMoveSettingsDto
+import com.us.android.feature.dating.network.OpeningAnswerDto
+import com.us.android.feature.dating.network.OpeningAnswerRequest
+import com.us.android.feature.dating.network.LikedYouDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.MyLocationSharesDto
 import com.us.android.feature.dating.network.PanicDto
@@ -31,12 +55,18 @@ import com.us.android.feature.dating.network.PremiumPurchaseRequest
 import com.us.android.feature.dating.network.PremiumPurchaseResultDto
 import com.us.android.feature.dating.network.PrivacyDto
 import com.us.android.feature.dating.network.PrivacyUpdateRequest
+import com.us.android.feature.dating.network.ProfileOptionsDto
 import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PromptAnswerRequest
 import com.us.android.feature.dating.network.PromptCatalogItemDto
+import com.us.android.feature.dating.network.PromptClipRequest
+import com.us.android.feature.dating.network.PromptClipViewDto
 import com.us.android.feature.dating.network.PulseTodayDto
+import com.us.android.feature.dating.network.ReadReceiptsDto
+import com.us.android.feature.dating.network.ReadReceiptsRequest
 import com.us.android.feature.dating.network.ReportRequest
 import com.us.android.feature.dating.network.ReportResultDto
+import com.us.android.feature.dating.network.RewindDto
 import com.us.android.feature.dating.network.SelfieChallengeDto
 import com.us.android.feature.dating.network.SelfieResultDto
 import com.us.android.feature.dating.network.SelfieSubmitRequest
@@ -126,6 +156,9 @@ class DatingRepository @Inject constructor(
     suspend fun updatePreferences(request: PreferencesRequest): DatingResult<PreferencesDto> =
         call { api.updatePreferences(request) }
 
+    /** The option lists for "About me" and Filters (mechanic M6). ProfileOptionsStore caches them per session. */
+    suspend fun profileOptions(): DatingResult<ProfileOptionsDto> = call { api.profileOptions() }
+
     suspend fun myPhotos(): DatingResult<List<DatingPhotoDto>> = list { api.myPhotos() }
 
     suspend fun attachPhoto(mediaId: String, primary: Boolean): DatingResult<DatingPhotoDto> =
@@ -145,6 +178,13 @@ class DatingRepository @Inject constructor(
 
     suspend fun deletePrompt(promptId: Int): DatingResult<StatusDto> = call { api.deletePrompt(promptId) }
 
+    /** Attaches the uploaded clip [mediaId] to the caller's prompt [promptId] (mechanic M15). */
+    suspend fun putPromptClip(promptId: Int, mediaId: String): DatingResult<PromptClipViewDto> =
+        call { api.putPromptClip(promptId, PromptClipRequest(mediaId)) }
+
+    /** Removes the clip from the caller's prompt [promptId] (mechanic M15). */
+    suspend fun deletePromptClip(promptId: Int): DatingResult<StatusDto> = call { api.deletePromptClip(promptId) }
+
     suspend fun selfieChallenge(): DatingResult<SelfieChallengeDto> = call { api.selfieChallenge() }
 
     suspend fun submitSelfie(challengeId: String, videoMediaId: String): DatingResult<SelfieResultDto> =
@@ -154,10 +194,41 @@ class DatingRepository @Inject constructor(
 
     suspend fun explain(userId: String): DatingResult<ExplainDto> = call { api.explain(userId) }
 
-    suspend fun pass(candidateId: String): DatingResult<PassDto> = call { api.pass(candidateId, PassRequest()) }
+    /** A pass; [source] other than the deck spends no deck card (mechanic M7). */
+    suspend fun pass(candidateId: String, source: ActionSource = ActionSource.DECK): DatingResult<PassDto> =
+        call { api.pass(candidateId, PassRequest(source = source.wire)) }
 
-    /** A spark on [toUserId]'s primary photo. */
-    suspend fun spark(toUserId: String, note: String? = null): DatingResult<SparkCreatedDto> =
+    /** Undoes the caller's most recent pass (mechanic M2). */
+    suspend fun rewind(): DatingResult<RewindDto> = call { api.rewind() }
+
+    /** Every daily allowance (mechanic M10). An absent mechanic is switched off on the server. */
+    suspend fun allowances(): DatingResult<AllowancesDto> = call { api.allowances() }
+
+    /** Today's picks (mechanic M7) in [tz], an IANA zone; null lets the server pick its default. */
+    suspend fun picks(tz: String?): DatingResult<PicksDto> =
+        datingRawCall(json) { api.picks(tz?.trim()?.takeIf { it.isNotEmpty() }) }
+
+    /** The caller's trip, the cities and whether they may travel (mechanic M8). */
+    suspend fun travel(): DatingResult<TravelDto> = call { api.travel() }
+
+    /** Starts (or replaces) the caller's trip: a city code and 1 to `max_days` days. */
+    suspend fun startTravel(city: String, days: Int): DatingResult<TravelDto> =
+        call { api.startTravel(TravelRequest(city = city, days = days)) }
+
+    /** Ends the caller's trip. */
+    suspend fun endTravel(): DatingResult<TravelDto> = call { api.endTravel() }
+
+    /**
+     * A spark on [toUserId]'s primary photo; [superSpark] sends it as a Super
+     * Spark (mechanic M3). [source] other than the deck spends no deck card
+     * (mechanic M7); the deck itself is left out of the body.
+     */
+    suspend fun spark(
+        toUserId: String,
+        note: String? = null,
+        superSpark: Boolean = false,
+        source: ActionSource = ActionSource.DECK,
+    ): DatingResult<SparkCreatedDto> =
         call {
             api.spark(
                 SparkRequest(
@@ -165,11 +236,16 @@ class DatingRepository @Inject constructor(
                     targetKind = TARGET_PHOTO,
                     targetRef = PRIMARY_PHOTO_REF,
                     note = note?.trim()?.takeIf { it.isNotEmpty() },
+                    superSpark = true.takeIf { superSpark },
+                    source = source.wire,
                 ),
             )
         }
 
     suspend fun incomingSparks(): DatingResult<List<SparkDto>> = list { api.incomingSparks() }
+
+    /** Who sparked the caller (mechanic M4), one page; the total spans every page. */
+    suspend fun likedYou(limit: Int, offset: Int): DatingResult<LikedYouDto> = call { api.likedYou(limit, offset) }
 
     suspend fun declineSpark(sparkId: String): DatingResult<SparkDeclineDto> = call { api.declineSpark(sparkId) }
 
@@ -191,11 +267,88 @@ class DatingRepository @Inject constructor(
 
     suspend fun stash(candidateId: String): DatingResult<StashDto> = call { api.stash(StashRequest(candidateId)) }
 
-    suspend fun matches(): DatingResult<List<MatchDto>> = list { api.matches() }
+    suspend fun matches(): DatingResult<List<MatchDto>> = list { api.matches() }.also { result ->
+        if (result is DatingResult.Success) result.value.forEach(::rememberConversation)
+    }
 
-    suspend fun match(matchId: String): DatingResult<MatchDto> = call { api.match(matchId) }
+    suspend fun match(matchId: String): DatingResult<MatchDto> = call { api.match(matchId) }.also { result ->
+        if (result is DatingResult.Success) rememberConversation(result.value)
+    }
+
+    /**
+     * Which match a chat conversation belongs to, from the matches this process
+     * has read — how the kind-message checks (mechanic M13) tell a Pulse chat
+     * from every other conversation. Null: not one this process knows.
+     */
+    fun matchForConversation(conversationId: String): String? = conversationMatches[conversationId]
+
+    private val conversationMatches = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Sign-out: one account's matches are not the next one's. */
+    fun forgetConversations() = conversationMatches.clear()
+
+    private fun rememberConversation(match: MatchDto) = rememberConversation(match.conversationId.orEmpty(), match.id)
+
+    /** [conversationId] is the chat of [matchId] — from a match read here, or from chat's own conversation response. */
+    fun rememberConversation(conversationId: String, matchId: String) {
+        val conversation = conversationId.trim()
+        val match = matchId.trim()
+        if (conversation.isNotEmpty() && match.isNotEmpty()) conversationMatches[conversation] = match
+    }
 
     suspend fun unmatch(matchId: String): DatingResult<ClosedDto> = call { api.closeMatch(matchId) }
+
+    /** More time on a match: the free first-move extend, or the premium one. */
+    suspend fun extendMatch(matchId: String): DatingResult<ExtendDto> = call { api.extendMatch(matchId) }
+
+    /** Answers one of the first mover's opening questions (mechanic M5); it becomes the first message. */
+    suspend fun openingAnswer(matchId: String, questionId: String, answer: String): DatingResult<OpeningAnswerDto> =
+        call { api.openingAnswer(matchId, OpeningAnswerRequest(questionId = questionId, answer = answer.trim())) }
+
+    /** The caller's first-move setting and opening questions (mechanic M5). */
+    suspend fun firstMove(): DatingResult<FirstMoveSettingsDto> = call { api.firstMove() }
+
+    /** Null fields stay as they are on the server; an empty [questions] removes them all. */
+    suspend fun updateFirstMove(enabled: Boolean? = null, questions: List<String>? = null): DatingResult<FirstMoveSettingsDto> =
+        call { api.updateFirstMove(FirstMoveRequest(enabled = enabled, questions = questions)) }
+
+    /** The caller's read-receipts setting (mechanic M9). */
+    suspend fun readReceipts(): DatingResult<ReadReceiptsDto> = call { api.readReceipts() }
+
+    /** Turns read receipts on (needs a pass) or off (always allowed). */
+    suspend fun setReadReceipts(enabled: Boolean): DatingResult<ReadReceiptsDto> =
+        call { api.updateReadReceipts(ReadReceiptsRequest(enabled)) }
+
+    /** The "how did it go?" asks waiting for the caller (mechanic M14). */
+    suspend fun dateCheckins(): DatingResult<List<DateCheckinDto>> = list { api.dateCheckins() }
+
+    /** The caller's answer about [matchId]: [again] and [feltSafe] only after met=yes; null leaves them out. */
+    suspend fun dateFeedback(matchId: String, met: String, again: String?, feltSafe: Boolean?): DatingResult<DateFeedbackDto> =
+        call { api.dateFeedback(matchId, DateFeedbackRequest(met = met, again = again, feltSafe = feltSafe)) }
+
+    /** Matches that ended recently, so someone from one can still be reported (mechanic M19). */
+    suspend fun pastMatches(): DatingResult<PastMatchesDto> = datingRawCall(json) { api.pastMatches() }
+
+    /** Whether [text] might come across as unkind (mechanic M13). The text is not stored. */
+    suspend fun kindCheck(text: String): DatingResult<KindCheckDto> = call { api.kindCheck(KindCheckRequest(text)) }
+
+    /** The answer to "did this bother you?" about a message in [matchId] (mechanic M13). */
+    suspend fun bothered(matchId: String, bothered: Boolean): DatingResult<BotheredDto> =
+        call { api.bothered(matchId, BotheredRequest(bothered)) }
+
+    /** The caller's spark-comment filter (mechanic M13). */
+    suspend fun commentFilter(): DatingResult<CommentFilterDto> = call { api.commentFilter() }
+
+    suspend fun updateCommentFilter(filterUnkind: Boolean, words: List<String>): DatingResult<CommentFilterDto> =
+        call { api.updateCommentFilter(CommentFilterRequest(filterUnkind = filterUnkind, words = words)) }
+
+    /** "Hide me from people I know" (mechanic M16). */
+    suspend fun hideKnown(): DatingResult<HideKnownDto> = call { api.hideKnown() }
+
+    suspend fun setHideKnown(enabled: Boolean): DatingResult<HideKnownDto> = call { api.updateHideKnown(HideKnownRequest(enabled)) }
+
+    /** The switches the app acts on locally (mechanic M18). */
+    suspend fun clientConfig(): DatingResult<ClientConfigDto> = call { api.clientConfig() }
 
     suspend fun block(userId: String): DatingResult<BlockedDto> = call { api.block(BlockRequest(userId)) }
 

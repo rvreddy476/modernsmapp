@@ -98,7 +98,7 @@ func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.
 	if err := s.requireNotBlocked(ctx, viewerID, targetID); err != nil {
 		return nil, err
 	}
-	viewer, err := s.store.GetProfile(ctx, viewerID)
+	viewer, err := s.viewerProfile(ctx, viewerID)
 	if err != nil {
 		if errors.Is(err, store.ErrProfileNotFound) {
 			return nil, ErrCandidateUnavailable

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "LIKED_YOU_LOCKED",
+    "message": "a pass is needed to see who sparked you"
+  },
+  "meta": {}
+}

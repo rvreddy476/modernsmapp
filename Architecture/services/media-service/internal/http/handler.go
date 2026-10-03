@@ -24,6 +24,9 @@ type Handler struct {
 	// datingPhotos backs the internal dating photo routes (lane D6,
 	// dating_photo_handler.go). Nil leaves them unregistered.
 	datingPhotos *service.DatingPhotoService
+	// datingClips backs the internal dating clip routes
+	// (dating_clip_handler.go). Nil leaves them unregistered.
+	datingClips *service.DatingClipService
 	// subtitles is the read slice the caption endpoints use. It is always
 	// the service; it is an interface so the authorization wiring of those
 	// endpoints can be pinned without a database (clips_handler.go).

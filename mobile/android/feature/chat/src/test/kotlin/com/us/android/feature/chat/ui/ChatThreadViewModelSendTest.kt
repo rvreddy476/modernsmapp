@@ -13,6 +13,7 @@ import com.us.android.core.chat.data.ChatSocket
 import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.OutboxScheduler
 import com.us.android.core.chat.data.ScrubRecoveryFlag
+import com.us.android.core.common.chat.ConversationKindness
 import com.us.android.core.database.ChatDao
 import com.us.android.core.database.ChatPendingSendEntity
 import com.us.android.core.database.UsDatabase
@@ -100,7 +101,10 @@ class ChatThreadViewModelSendTest {
         override fun cancelDrain() = Unit
     }
 
-    private fun harness(flag: Flag = Flag()): Pair<ChatThreadViewModel, GatingDao> {
+    private fun harness(
+        flag: Flag = Flag(),
+        kindness: ConversationKindness = ConversationKindness.None,
+    ): Pair<ChatThreadViewModel, GatingDao> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         database = Room.inMemoryDatabaseBuilder(context, UsDatabase::class.java)
             .allowMainThreadQueries()
@@ -139,6 +143,7 @@ class ChatThreadViewModelSendTest {
                     MutableStateFlow(SessionState.Authenticated(userId = "viewer", sessionId = "s"))
             },
             savedStateHandle = SavedStateHandle(mapOf("conversationId" to "conv")),
+            kindness = kindness,
         )
         return viewModel to dao
     }
@@ -233,6 +238,79 @@ class ChatThreadViewModelSendTest {
         assertThat(dao.pendingSends().single().text).isEqualTo("held message")
         assertThat(vm.state.value.sendUnavailable).isFalse()
         assertThat(flag.stored).isFalse() // the owed scrub was repaid first
+    }
+
+    // ── kind messages ───────────────────────────────────────────────────
+
+    /** A conversation owner that checks "conv" and answers [unkind] for every text. */
+    private class CheckedConversation(var unkind: Boolean) : ConversationKindness {
+        val asked = mutableListOf<String>()
+        override suspend fun appliesTo(conversationId: String): Boolean = conversationId == "conv"
+        override suspend fun mightBeUnkind(conversationId: String, text: String): Boolean {
+            asked += text
+            return unkind
+        }
+        override suspend fun shouldCover(conversationId: String, messageId: String, text: String): Boolean = false
+        override suspend fun bothered(conversationId: String, messageId: String, bothered: Boolean): Boolean = false
+    }
+
+    @Test
+    fun `an unkind draft is held for Edit or Send anyway, never dropped`() = runTest {
+        val owner = CheckedConversation(unkind = true)
+        val (vm, dao) = harness(kindness = owner)
+        settle()
+
+        vm.onDraftChange("you look stupid")
+        vm.send()
+        awaitUntil { vm.state.value.kindPrompt }
+        assertThat(dao.pendingSends()).isEmpty()
+        // A tap while the nudge is open does nothing more.
+        vm.send()
+        assertThat(owner.asked).containsExactly("you look stupid")
+
+        // Edit: the draft stays, nothing is sent.
+        vm.editHeldMessage()
+        assertThat(vm.state.value.kindPrompt).isFalse()
+        assertThat(vm.state.value.thread.draft).isEqualTo("you look stupid")
+        assertThat(dao.pendingSends()).isEmpty()
+
+        // Send anyway: it goes exactly as written.
+        vm.send()
+        awaitUntil { vm.state.value.kindPrompt }
+        vm.sendAnyway()
+        awaitUntil { vm.state.value.thread.draft.isEmpty() }
+        assertThat(dao.pendingSends().single().text).isEqualTo("you look stupid")
+    }
+
+    @Test
+    fun `a kind draft in a checked conversation sends straight away`() = runTest {
+        val owner = CheckedConversation(unkind = false)
+        val (vm, dao) = harness(kindness = owner)
+        settle()
+
+        vm.onDraftChange("see you at 7")
+        vm.send()
+        awaitUntil { vm.state.value.thread.draft.isEmpty() }
+
+        assertThat(owner.asked).containsExactly("see you at 7")
+        assertThat(vm.state.value.kindPrompt).isFalse()
+        assertThat(dao.pendingSends().single().text).isEqualTo("see you at 7")
+    }
+
+    @Test
+    fun `a conversation without checks is never asked about`() = runTest {
+        val owner = CheckedConversation(unkind = true)
+        val (vm, dao) = harness(kindness = object : ConversationKindness by owner {
+            override suspend fun appliesTo(conversationId: String): Boolean = false
+        })
+        settle()
+
+        vm.onDraftChange("you look stupid")
+        vm.send()
+        awaitUntil { vm.state.value.thread.draft.isEmpty() }
+
+        assertThat(owner.asked).isEmpty()
+        assertThat(dao.pendingSends().single().text).isEqualTo("you look stupid")
     }
 
     private companion object {

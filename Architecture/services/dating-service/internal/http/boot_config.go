@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/dating-service/internal/payments"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 )
@@ -410,4 +411,141 @@ func ResolveTrustSafetyURL(getenv func(string) string) (baseURL, warning string,
 		return "", "", fmt.Errorf("TRUST_SAFETY_SERVICE_URL must be an absolute http(s) URL")
 	}
 	return strings.TrimRight(raw, "/"), "", nil
+}
+
+// envFlag reads a boolean flag: blank keeps def; true/1 and false/0 are the
+// only other accepted values.
+func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(getenv(key))) {
+	case "":
+		return def, nil
+	case "true", "1":
+		return true, nil
+	case "false", "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("%s must be true or false, got %q", key, getenv(key))
+}
+
+// ResolveMechanicsConfig reads the Pulse mechanics flags and limits. Every
+// flag defaults to ON only when ENV is local or dev and to OFF everywhere
+// else, so a mechanic reaches staging or production only by an explicit
+// "true".
+//
+//	DATING_DECK_REFILL_ENABLED     the refilling swipe deck (M1)
+//	DATING_DECK_DAILY_LIMIT_FREE   1-500,  default 25 cards per rolling 24h
+//	DATING_DECK_DAILY_LIMIT_PASS   1-2000, default 100 for pass holders
+//	DATING_REWIND_ENABLED          undo the last pass (M2)
+//	DATING_REWIND_DAILY_LIMIT_FREE 1-100,  default 1 per rolling 24h (pass
+//	                               holders are not limited)
+//	DATING_SUPER_SPARK_ENABLED          Super Spark and its packs (M3)
+//	DATING_SUPER_SPARK_DAILY_LIMIT_FREE 1-50,  default 1 per rolling 24h
+//	DATING_SUPER_SPARK_DAILY_LIMIT_PASS 1-100, default 5 for pass holders
+//	DATING_LIKED_YOU_GATE_ENABLED       who sparked you is for pass holders (M4)
+//	DATING_FIRST_MOVE_ENABLED           first move + opening questions (M5)
+//	DATING_FILTERS_V2_ENABLED           distance buckets + pass filters (M6)
+//	DATING_PICKS_ENABLED                daily picks (M7)
+//	DATING_PICKS_MUTUAL_ENABLED         picks must suit both people, spread out
+//	DATING_PICKS_EXPOSURE_CAP           1-10000, default 30 picks per person a day
+//	DATING_FAIR_TURN_ENABLED            no new sparks while owing replies (M11)
+//	DATING_FAIR_TURN_LIMIT              1-100, default 6 matches waiting on you
+//	DATING_PAST_MATCH_REPORT_ENABLED    ended matches, to report (M19)
+//	DATING_SCAM_ALERT_ENABLED           warn matches of a suspended scammer (M17)
+//	DATING_DATE_CHECKIN_ENABLED         how did the date go (M14)
+//	DATING_SCREEN_PROTECTION_ENABLED    Android blocks screenshots of people (M18)
+//	DATING_HIDE_KNOWN_ENABLED           hide from my Momentum connections (M16)
+//	DATING_KIND_CHECK_ENABLED           kind-message check + comment filter (M13)
+//	DATING_MEDIA_PROMPTS_ENABLED        voice/video prompt answers (M15)
+//	DATING_DEALBREAKERS_ENABLED         dealbreakers apply both ways (M12)
+//	DATING_TRAVEL_ENABLED               travel mode (M8)
+//	DATING_READ_RECEIPTS_ENABLED        read receipts for pass holders (M9)
+//	DATING_CALL_AFTER_EXCHANGE_ENABLED  calls only after both wrote (M9)
+//
+// Any malformed value is an error, on which main refuses to start.
+func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig, error) {
+	cfg := service.DefaultMechanicsConfig()
+	def := payments.IsLocalEnv(getenv("ENV"))
+	var err error
+	if cfg.DeckRefill, err = envFlag(getenv, "DATING_DECK_REFILL_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_DECK_DAILY_LIMIT_FREE", 1, 500, &cfg.DeckDailyLimitFree); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_DECK_DAILY_LIMIT_PASS", 1, 2000, &cfg.DeckDailyLimitPass); err != nil {
+		return cfg, err
+	}
+	if cfg.Rewind, err = envFlag(getenv, "DATING_REWIND_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_REWIND_DAILY_LIMIT_FREE", 1, 100, &cfg.RewindDailyLimitFree); err != nil {
+		return cfg, err
+	}
+	if cfg.SuperSpark, err = envFlag(getenv, "DATING_SUPER_SPARK_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_SUPER_SPARK_DAILY_LIMIT_FREE", 1, 50, &cfg.SuperSparkDailyLimitFree); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_SUPER_SPARK_DAILY_LIMIT_PASS", 1, 100, &cfg.SuperSparkDailyLimitPass); err != nil {
+		return cfg, err
+	}
+	if cfg.LikedYouGate, err = envFlag(getenv, "DATING_LIKED_YOU_GATE_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.FirstMove, err = envFlag(getenv, "DATING_FIRST_MOVE_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.FiltersV2, err = envFlag(getenv, "DATING_FILTERS_V2_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.Picks, err = envFlag(getenv, "DATING_PICKS_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.PicksMutual, err = envFlag(getenv, "DATING_PICKS_MUTUAL_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_PICKS_EXPOSURE_CAP", 1, 10000, &cfg.PicksExposureCap); err != nil {
+		return cfg, err
+	}
+	if cfg.FairTurn, err = envFlag(getenv, "DATING_FAIR_TURN_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_FAIR_TURN_LIMIT", 1, 100, &cfg.FairTurnLimit); err != nil {
+		return cfg, err
+	}
+	if cfg.PastMatchReport, err = envFlag(getenv, "DATING_PAST_MATCH_REPORT_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.ScamAlert, err = envFlag(getenv, "DATING_SCAM_ALERT_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.DateCheckin, err = envFlag(getenv, "DATING_DATE_CHECKIN_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.ScreenProtection, err = envFlag(getenv, "DATING_SCREEN_PROTECTION_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.HideKnown, err = envFlag(getenv, "DATING_HIDE_KNOWN_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.KindCheck, err = envFlag(getenv, "DATING_KIND_CHECK_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.MediaPrompts, err = envFlag(getenv, "DATING_MEDIA_PROMPTS_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.Dealbreakers, err = envFlag(getenv, "DATING_DEALBREAKERS_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.Travel, err = envFlag(getenv, "DATING_TRAVEL_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.ReadReceipts, err = envFlag(getenv, "DATING_READ_RECEIPTS_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	if cfg.CallAfterExchange, err = envFlag(getenv, "DATING_CALL_AFTER_EXCHANGE_ENABLED", def); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }

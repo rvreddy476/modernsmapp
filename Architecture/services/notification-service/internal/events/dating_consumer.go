@@ -139,6 +139,11 @@ func (c *Consumer) handleDatingEvent(ctx context.Context, envelope events.EventE
 		return true, c.handleDatingSafetyPanic(ctx, envelope.Payload)
 	case events.EventDatingSafetyLocationShared:
 		return true, c.handleDatingSafetyLocationShared(ctx, envelope.Payload)
+	// Pulse mechanics M17/M14 (dating_pulse.go).
+	case events.EventDatingScamAlert:
+		return true, c.handleDatingScamAlert(ctx, envelope.Payload)
+	case events.EventDatingDateCheckinDue:
+		return true, c.handleDatingDateCheckinDue(ctx, envelope.Payload)
 	case events.EventDatingMatchFormed,
 		events.EventDatingMatchClosed,
 		events.EventDatingMatchQuiet,

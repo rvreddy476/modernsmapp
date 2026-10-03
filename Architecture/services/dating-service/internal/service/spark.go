@@ -99,6 +99,55 @@ func (s *Service) requireActiveAdultCandidate(ctx context.Context, candidateID u
 // applicable. Returns the persisted Spark and an optional matchID — when
 // non-nil, a match was formed as a side effect.
 func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*store.Spark, *uuid.UUID, error) {
+	sp, matchID, err := s.createSpark(ctx, fromUserID, toUserID, targetKind, targetRef, note, false)
+	if err == nil {
+		// Mechanic M1: a spark sent from the deck uses one card of the
+		// daily allowance. AcceptSpark answers an incoming spark, not a
+		// deck card, so it goes through createSpark and costs none.
+		s.recordDeckAction(ctx, fromUserID, toUserID, store.DeckActionSpark)
+	}
+	return sp, matchID, err
+}
+
+// ErrInvalidSource maps to 400 INVALID_SOURCE.
+var ErrInvalidSource = errors.New("invalid: source must be deck, picks, liked_you or profile")
+
+// deckSource reports whether an action's source is the deck (the default),
+// and whether the source is known at all. Only a deck action spends a deck
+// card (mechanic M1); daily picks (M7) and other surfaces do not.
+func deckSource(source string) (isDeck, ok bool) {
+	switch source {
+	case "", "deck":
+		return true, true
+	case "picks", "liked_you", "profile":
+		return false, true
+	}
+	return false, false
+}
+
+// CreateSparkFrom is a spark (or Super Spark) sent from a named surface.
+func (s *Service) CreateSparkFrom(ctx context.Context, source string, super bool, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*store.Spark, *uuid.UUID, error) {
+	isDeck, ok := deckSource(source)
+	if !ok {
+		return nil, nil, ErrInvalidSource
+	}
+	if super && !s.mechanics.SuperSpark {
+		return nil, nil, ErrMechanicDisabled
+	}
+	sp, matchID, err := s.createSpark(ctx, fromUserID, toUserID, targetKind, targetRef, note, super)
+	if err == nil && isDeck {
+		action := store.DeckActionSpark
+		if super {
+			action = store.DeckActionSuperSpark
+		}
+		s.recordDeckAction(ctx, fromUserID, toUserID, action)
+	}
+	return sp, matchID, err
+}
+
+// createSpark is CreateSpark without the deck bookkeeping.
+// super sends it as a Super Spark (super_spark.go), charged with the insert.
+func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, super bool) (*store.Spark, *uuid.UUID, error) {
 	if fromUserID == uuid.Nil {
 		return nil, nil, fmt.Errorf("invalid: fromUserID required")
 	}
@@ -153,6 +202,11 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		return nil, nil, err
 	}
 
+	// Mechanic M11: no new sparks while too many matches wait on a reply.
+	if err := s.checkFairTurn(ctx, fromUserID, toUserID); err != nil {
+		return nil, nil, err
+	}
+
 	// Lane D3: the recipient must be an active 18+ profile, and the pair
 	// must not be blocked either way. Both refusals are the same
 	// ErrCandidateUnavailable, so the sender cannot tell a block apart.
@@ -183,8 +237,19 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 
 	// Lane D3: the rolling spark allowance is enforced in the same
 	// transaction as the insert.
-	sp, err := s.store.CreateSparkWithQuota(ctx, fromUserID, toUserID, targetKind, targetRef, note, s.sparkDailyLimit(ctx, fromUserID))
+	opts := store.SparkOptions{Limit: s.sparkDailyLimit(ctx, fromUserID)}
+	if super {
+		opts.Super = true
+		opts.SuperDailyLimit = s.superSparkDailyLimit(ctx, fromUserID)
+	}
+	sp, err := s.store.CreateSparkWithOptions(ctx, fromUserID, toUserID, targetKind, targetRef, note, opts)
 	if err != nil {
+		if errors.Is(err, store.ErrSuperSparkLimited) {
+			return nil, nil, s.superSparkLimitError(ctx, fromUserID, opts.SuperDailyLimit)
+		}
+		if errors.Is(err, store.ErrSparkRateLimited) {
+			return nil, nil, s.sparkLimitError(ctx, fromUserID, opts.Limit)
+		}
 		return nil, nil, err
 	}
 	if liftsDecline {
@@ -193,7 +258,10 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 
 	// Always emit spark.created.
 	if s.producer != nil {
-		if perr := s.producer.PublishSparkCreated(ctx, sp.ID, fromUserID, toUserID, targetKind, targetRef, note); perr != nil {
+		// Mechanic M4: the notification names its actor, so a recipient the
+		// gate locks gets the event without the sender.
+		reveal := s.likedYouUnlocked(ctx, toUserID)
+		if perr := s.producer.PublishSparkCreated(ctx, sp.ID, fromUserID, toUserID, targetKind, targetRef, note, reveal); perr != nil {
 			slog.Warn("publish spark.created failed", "spark_id", sp.ID, "error", perr)
 		}
 	}
@@ -241,6 +309,8 @@ func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limi
 	if err != nil {
 		return nil, err
 	}
+	// Mechanic M13: the recipient's comment filter.
+	s.markHiddenNotes(ctx, userID, sparks)
 	return s.decorateIncomingSparks(ctx, userID, sparks), nil
 }
 
@@ -291,5 +361,17 @@ func (s *Service) AcceptSpark(ctx context.Context, sparkID, recipientID uuid.UUI
 	if sp.ToUserID != recipientID || sp.DeclinedAt != nil {
 		return nil, nil, store.ErrSparkNotFound
 	}
-	return s.CreateSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "")
+	// Mechanic M4: accepting forms a match, which would reveal who sent a
+	// spark the caller may not see. They can still spark that person when
+	// they meet them in the deck.
+	if !s.likedYouUnlocked(ctx, recipientID) {
+		return nil, nil, ErrLikedYouLocked
+	}
+	out, matchID, err := s.createSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "", false)
+	if err == nil && s.mechanics.DeckRefill {
+		// The sender may also be a card in the recipient's cached batch.
+		s.removeFromCachedDeck(ctx, recipientID, sp.FromUserID)
+		s.dropUsedUpBatch(ctx, recipientID)
+	}
+	return out, matchID, err
 }

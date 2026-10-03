@@ -30,6 +30,12 @@ type Store struct {
 	// pii seals religion, community, exact points and device signals (lane
 	// D9, pii.go). Nil only in local/dev without DATING_PII_KEYS.
 	pii *datingpii.Crypto
+	// travelEnabled switches trips' effect on discovery (mechanic M8,
+	// travel.go). Off: home locations everywhere.
+	travelEnabled bool
+	// hideKnownEnabled switches "hide from people I know" (mechanic M16,
+	// hide_known.go) in discovery.
+	hideKnownEnabled bool
 }
 
 // New returns a Store backed by the given pool.
@@ -73,6 +79,8 @@ type Profile struct {
 	VisibleToPublic  bool       `json:"visible_to_public"`
 	Paused           bool       `json:"paused"`
 	LanguagePrefs    []string   `json:"language_prefs"`
+	// Interests (mechanic M6): omitted while empty.
+	Interests        []string   `json:"interests,omitempty"`
 	TrustTier        string     `json:"trust_tier"`
 	// ProfileStatus is the §P1-1 lifecycle column. Values: draft,
 	// pending_photo, pending_selfie, pending_review, active, paused,
@@ -153,6 +161,13 @@ type Prompt struct {
 	Answer    string    `json:"answer"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Mechanic M15: the answer's voice or video clip, shown to the owner
+	// only (cards carry service.PromptClip). The media id never leaves.
+	ClipMediaID    *uuid.UUID `json:"-"`
+	ClipKind       *string    `json:"clip_kind,omitempty"`
+	ClipDurationMs *int       `json:"clip_duration_ms,omitempty"`
+	ClipStatus     *string    `json:"clip_status,omitempty"`
+	ClipReason     *string    `json:"clip_reason,omitempty"`
 }
 
 // Preferences are the discovery filters chosen by a user.

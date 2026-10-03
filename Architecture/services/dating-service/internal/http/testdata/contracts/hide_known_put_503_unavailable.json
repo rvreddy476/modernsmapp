@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "HIDE_KNOWN_UNAVAILABLE",
+    "message": "your connections cannot be read right now; try again shortly"
+  },
+  "meta": {}
+}

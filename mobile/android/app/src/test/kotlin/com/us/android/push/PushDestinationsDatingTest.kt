@@ -35,6 +35,20 @@ class PushDestinationsDatingTest {
     }
 
     @Test
+    fun `a scam alert opens the safety page`() {
+        assertThat(target("dating_scam_alert", "m-1", "/dating/safety")).isEqualTo(DatingPushTarget.Safety)
+    }
+
+    @Test
+    fun `a date check-in opens the match with its sheet`() {
+        assertThat(target("dating_date_checkin", "m-entity", "/dating/matches/m-5?checkin=1"))
+            .isEqualTo(DatingPushTarget.Match("m-5", openChat = false, checkIn = true))
+        assertThat(target("dating_date_checkin", "m-6", ""))
+            .isEqualTo(DatingPushTarget.Match("m-6", openChat = false, checkIn = true))
+        assertThat(target("dating_date_checkin", " ", "")).isNull()
+    }
+
+    @Test
     fun `other types and malformed links route nowhere`() {
         assertThat(target("dm", "c-1", "/dating/matches/m-1")).isNull()
         assertThat(PushDestinations.datingMatchIdOf("/dating/matches/")).isNull()

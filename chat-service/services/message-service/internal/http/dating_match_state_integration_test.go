@@ -79,7 +79,7 @@ func TestDatingMatchStateEndToEnd(t *testing.T) {
 
 	// Open match, both directions.
 	matchID := uuid.New()
-	if _, err := svc.CreateDatingMatchConversation(ctx, a, b, matchID); err != nil {
+	if _, err := svc.CreateDatingMatchConversation(ctx, a, b, matchID, chatservice.DatingMatchOptions{}); err != nil {
 		t.Fatalf("create match conversation: %v", err)
 	}
 	if !probe(t, a, b) {
@@ -106,7 +106,7 @@ func TestDatingMatchStateEndToEnd(t *testing.T) {
 	// conversation itself is open.
 	c, d := uuid.New(), uuid.New()
 	secondMatch := uuid.New()
-	if _, err := svc.CreateDatingMatchConversation(ctx, c, d, secondMatch); err != nil {
+	if _, err := svc.CreateDatingMatchConversation(ctx, c, d, secondMatch, chatservice.DatingMatchOptions{}); err != nil {
 		t.Fatalf("create second match conversation: %v", err)
 	}
 	if !probe(t, c, d) {

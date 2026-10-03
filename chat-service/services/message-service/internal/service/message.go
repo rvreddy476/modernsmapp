@@ -179,6 +179,12 @@ type ConversationResponse struct {
 	// earlier client and capture stays byte-compatible.
 	IsPinned bool `json:"is_pinned,omitempty"`
 	IsMuted  bool `json:"is_muted,omitempty"`
+
+	// A Pulse match's chat (dating mechanic M13): source_app "dating" and
+	// its match id, so a client can tell from any entry point. Omitted for
+	// every other conversation, so earlier captures stay byte-compatible.
+	SourceApp string     `json:"source_app,omitempty"`
+	MatchID   *uuid.UUID `json:"match_id,omitempty"`
 }
 
 type ReactionSummary struct {
@@ -525,16 +531,38 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 //
 // Caller is dating-service (internal-key gated at the handler).
 // P0-3 in dating/PRODUCTION_GAP_ANALYSIS.md.
-func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*ConversationResponse, error) {
+//
+// firstMovers (dating mechanic M5) names who may send the first message;
+// empty leaves the conversation open to both. They must be members of the
+// pair. A retry re-applies them while no message has landed.
+func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, opts DatingMatchOptions) (*ConversationResponse, error) {
+	firstMovers := opts.FirstMovers
 	if userA == userB {
 		return nil, errors.New("dating-match conversation requires two distinct users")
 	}
 	if matchID == uuid.Nil {
 		return nil, errors.New("match_id is required")
 	}
+	if err := validateFirstMovers(userA, userB, firstMovers); err != nil {
+		return nil, err
+	}
 	convID, _, err := s.convStore.CreateDatingMatchConversation(ctx, userA, userB, matchID)
 	if err != nil {
 		return nil, err
+	}
+	if len(firstMovers) > 0 {
+		if err := s.setDatingFirstMovers(ctx, convID, firstMovers); err != nil {
+			return nil, err
+		}
+	}
+	if opts.ReceiptsGated || opts.CallAfterExchange {
+		st, err := s.datingExtras()
+		if err != nil {
+			return nil, err
+		}
+		if err := st.SetDatingConversationRules(ctx, convID, opts.ReceiptsGated, opts.CallAfterExchange); err != nil {
+			return nil, err
+		}
 	}
 	return s.getConversationResponse(ctx, convID)
 }
@@ -733,6 +761,8 @@ func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit
 			HasUnread:          hasUnread,
 			IsPinned:           settings[c.ID].IsPinned,
 			IsMuted:            settings[c.ID].IsMuted,
+			SourceApp:          datingSourceApp(c.SourceApp),
+			MatchID:            datingMatchID(c.SourceApp, c.MatchID),
 		})
 	}
 	s.resolveGroupAvatarURLs(ctx, userID, out)
@@ -1043,6 +1073,14 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		// constrained first message until the recipient accepts. This runs
 		// inside the idempotency closure so an idempotent retry returns the
 		// cached response instead of being rejected as a follow-up.
+		// Dating mechanic M5: until the first message lands, only a first
+		// mover may send. Inside the closure so an idempotent retry of an
+		// accepted send returns the cached response. The opening answer
+		// dating-service validated is the one send let through.
+		if firstMoveBlocks(meta, userID) && !firstMoveBypassed(ctx) {
+			return nil, ErrFirstMovePending
+		}
+
 		firstRequestMessage := false
 		conv, err := s.convStore.GetConversation(ctx, conversationID)
 		if err != nil {
@@ -1742,7 +1780,25 @@ func (s *Service) getConversationResponse(ctx context.Context, convID uuid.UUID)
 		LastMessageAt:      conv.LastMessageAt,
 		LastMessagePreview: conv.LastMessagePreview,
 		LastMessageSender:  conv.LastMessageSender,
+		SourceApp:          datingSourceApp(conv.SourceApp),
+		MatchID:            datingMatchID(conv.SourceApp, conv.MatchID),
 	}, nil
+}
+
+// datingSourceApp shows the source app only for a Pulse chat.
+func datingSourceApp(app string) string {
+	if app == "dating" {
+		return app
+	}
+	return ""
+}
+
+// datingMatchID shows the match id only for a Pulse chat.
+func datingMatchID(app string, id *uuid.UUID) *uuid.UUID {
+	if app != "dating" {
+		return nil
+	}
+	return id
 }
 
 // getConversationResponseFor is getConversationResponse plus the viewer-
@@ -1767,6 +1823,12 @@ func (s *Service) getConversationResponseFor(ctx context.Context, viewerID, conv
 // live path had deliberately withheld.
 func (s *Service) attachReadCursors(ctx context.Context, viewerID uuid.UUID, resp *ConversationResponse) {
 	if resp == nil || len(resp.Members) == 0 {
+		return
+	}
+	// Dating mechanic M9: in a gated dating conversation the viewer sees
+	// receipts only while dating allows it.
+	if meta, err := s.convStore.GetConversationMeta(ctx, resp.ID); err == nil && meta != nil && meta.ReceiptsGated &&
+		!s.datingReceiptsAllowed(ctx, resp.ID, viewerID) {
 		return
 	}
 	cursors, err := s.groupStore().GetConversationReadCursors(ctx, resp.ID)
@@ -2062,6 +2124,12 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		return nil
 	}
 
+	// Dating mechanic M9: a gated dating conversation delivers the frame
+	// only to members dating allows to see receipts.
+	gated := false
+	if meta, err := s.convStore.GetConversationMeta(ctx, conversationID); err == nil && meta != nil {
+		gated = meta.ReceiptsGated
+	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"type": "read_receipt",
 		"payload": map[string]interface{}{
@@ -2077,6 +2145,9 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		}
 		if policy.ReadReceiptsVisibility == "connections_only" &&
 			!s.discloseReceiptTo(ctx, m.UserID, userID) {
+			continue
+		}
+		if gated && !s.datingReceiptsAllowed(ctx, conversationID, m.UserID) {
 			continue
 		}
 		s.rdb.Publish(ctx, fmt.Sprintf("chat:%s", m.UserID), payload)
