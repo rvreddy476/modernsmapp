@@ -193,6 +193,7 @@ func seedD10Basics(t *testing.T, st *store.Store, id uuid.UUID) {
 			t.Fatalf("seed transition %s: %v", ev, err)
 		}
 	}
+	closeSelfieReviewAtCleanup(t, st, id)
 }
 
 // seedD10Profile is seedD10Basics plus a passed selfie: a fully active

@@ -7,6 +7,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,9 +38,10 @@ func blinkLiveness(similarity float64) fakeSelfieLiveness {
 }
 
 type selfieHTTPEnv struct {
-	r   *gin.Engine
-	svc *service.Service
-	st  *store.Store
+	r    *gin.Engine
+	svc  *service.Service
+	st   *store.Store
+	pool *pgxpool.Pool
 }
 
 func setupSelfieHTTP(t *testing.T) *selfieHTTPEnv {
@@ -71,7 +73,40 @@ func setupSelfieHTTP(t *testing.T) *selfieHTTPEnv {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	New(svc).WithInternalKey(testInternalKey).RegisterRoutes(r)
-	return &selfieHTTPEnv{r: r, svc: svc, st: st}
+	return &selfieHTTPEnv{r: r, svc: svc, st: st, pool: pool}
+}
+
+// closeSelfieReviewAtCleanup rejects the user's selfie review if it is still
+// open when the test ends. dating_it_test is shared across runs and the
+// moderator queue lists the oldest 200, so every review a test leaves open
+// pushes later tests' users further down until they fall off the end.
+func closeSelfieReviewAtCleanup(t *testing.T, st *store.Store, id uuid.UUID) {
+	t.Helper()
+	t.Cleanup(func() { closeSelfieReview(t, st, id) })
+}
+
+// closeSelfieReview is closeSelfieReviewAtCleanup for tests whose pool is
+// closed by a deferred cleanup (setupTestRouter), which runs before t.Cleanup:
+// defer it after that cleanup is deferred.
+func closeSelfieReview(t *testing.T, st *store.Store, id uuid.UUID) {
+	t.Helper()
+	err := st.ResolveSelfieReview(context.Background(), id, uuid.New(), false)
+	if err != nil && !errors.Is(err, store.ErrSelfieNotPendingReview) {
+		t.Errorf("close selfie review for %s: %v", id, err)
+	}
+}
+
+// backdateSelfieReview moves the user's open review to the head of the
+// oldest-first queue, so reviews left open by killed runs (whose cleanups
+// never ran) cannot push it past the list limit.
+func backdateSelfieReview(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
+	t.Helper()
+	tag, err := pool.Exec(context.Background(), `
+        UPDATE dating_verifications SET selfie_at = selfie_at - INTERVAL '100 years'
+        WHERE user_id = $1 AND selfie_status = 'pending_review'`, id)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("backdate selfie review: rows=%d, %v", tag.RowsAffected(), err)
+	}
 }
 
 // seedSelfieUser seeds basics and a primary photo (approved or pending) and
@@ -112,6 +147,7 @@ func seedSelfieUser(t *testing.T, st *store.Store, id uuid.UUID, approvePhoto bo
 			t.Fatalf("seed transition %s: %v", ev, err)
 		}
 	}
+	closeSelfieReviewAtCleanup(t, st, id)
 }
 
 func (e *selfieHTTPEnv) do(t *testing.T, method, path string, user uuid.UUID, scopes string, body any) (int, map[string]any) {
@@ -249,6 +285,7 @@ func TestSelfieHTTP_ReviewQueueIsAdminOnly(t *testing.T) {
 	if code, env := e.do(t, http.MethodPost, "/v1/dating/verification/selfie", user, "", submitBody(e.challenge(t, user))); code != http.StatusOK || dataOf(t, env)["status"] != "pending_review" {
 		t.Fatalf("borderline submit: %d %v", code, env)
 	}
+	backdateSelfieReview(t, e.pool, user)
 	reviewPath := "/v1/dating/admin/verification/selfie/" + user.String() + "/review"
 	if code, _ := e.do(t, http.MethodGet, "/v1/dating/admin/verification/selfie/pending", user, "", nil); code != http.StatusForbidden {
 		t.Fatalf("queue as a user: %d", code)

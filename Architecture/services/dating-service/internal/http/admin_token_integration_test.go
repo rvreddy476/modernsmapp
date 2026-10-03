@@ -173,6 +173,7 @@ func TestAdminTokenIT_Stats(t *testing.T) {
 	}
 	exec(`INSERT INTO dating_verifications (user_id, selfie_status, selfie_at) VALUES ($1, 'pending_review', now())
 	      ON CONFLICT (user_id) DO UPDATE SET selfie_status = 'pending_review', selfie_at = now()`, p1)
+	closeSelfieReviewAtCleanup(t, env.st, p1)
 
 	a, b := uuid.New(), uuid.New()
 	if a.String() > b.String() {
