@@ -42,6 +42,11 @@ func main() {
 		logger.Error("refusing to start: unsafe access-token configuration", "error", err)
 		os.Exit(1)
 	}
+	// OTP_BYPASS_CODE outside production: allowed, but never quietly.
+	// (In production ValidateForProduction above has already refused.)
+	if msg, ok := cfg.OTPBypassBootWarning(); ok {
+		logger.Warn(msg, "production", cfg.Production)
+	}
 	logger.Info("access-token minting policy",
 		"production", cfg.Production,
 		"issuer", cfg.JWTIssuer,

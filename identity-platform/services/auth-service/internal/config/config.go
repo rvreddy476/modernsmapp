@@ -260,7 +260,44 @@ func (c *Config) ValidateForProduction() error {
 			"RS256-signed. With HS256 the verifying gateway holds the signing secret and can " +
 			"mint identities rather than merely verify them")
 	}
+	return c.ValidateOTPBypass()
+}
+
+// ErrOTPBypassInProduction is returned by ValidateOTPBypass when
+// OTP_BYPASS_CODE is set and the service is running in production.
+var ErrOTPBypassInProduction = errors.New("OTP_BYPASS_CODE is set but this is production; refusing to start. " +
+	"The bypass code is a dev/test shortcut that accepts one fixed string in place of every " +
+	"OTP (login, registration, OAuth link). Unset it in the production environment")
+
+// OTPBypassActive reports whether a fixed bypass code is configured, which
+// makes every OTP check accept that code (internal/service/auth.go and
+// oauth.go). Dev and CI rely on it; production must never run with it.
+func (c *Config) OTPBypassActive() bool {
+	return strings.TrimSpace(c.OTPBypassCode) != ""
+}
+
+// ValidateOTPBypass fails closed: in production a configured bypass code is a
+// start-up error, not a warning. ValidateForProduction calls this, so a
+// single boot gate covers both token minting and the OTP shortcut; it is
+// also exported so the gate can be exercised on its own.
+func (c *Config) ValidateOTPBypass() error {
+	if c.Production && c.OTPBypassActive() {
+		return ErrOTPBypassInProduction
+	}
 	return nil
+}
+
+// OTPBypassBootWarning is the loud non-production warning: when the bypass
+// code is set outside production it returns the message main should log at
+// WARN level and true; otherwise "" and false. The code itself is never
+// included.
+func (c *Config) OTPBypassBootWarning() (string, bool) {
+	if !c.OTPBypassActive() || c.Production {
+		return "", false
+	}
+	return "OTP_BYPASS_CODE IS SET: a fixed code is accepted in place of every OTP (login, " +
+		"registration, OAuth link). This is a dev/test shortcut only; the service refuses " +
+		"to start with it in production", true
 }
 
 // splitToSet parses a comma-separated env value into a set of trimmed,

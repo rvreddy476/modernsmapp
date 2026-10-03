@@ -26,6 +26,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/atpost/api-gateway/pkg/adminsession"
+	"github.com/atpost/api-gateway/pkg/disabledprefixes"
 	"github.com/atpost/api-gateway/pkg/edgeheaders"
 	"github.com/atpost/api-gateway/pkg/internalroutes"
 	"github.com/atpost/api-gateway/pkg/routepolicy"
@@ -159,7 +160,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	coreHandler := newCoreHandler(routes, promHandler, reviewerPublicEnabled, dormantProducts)
+	// W7 (first production deployment): prefixes whose upstream is not
+	// deployed in this environment answer 404 NOT_AVAILABLE at the edge
+	// instead of a reverse-proxy 502. Validated against the route table so a
+	// typo refuses boot rather than leaving the route open.
+	disabled, disabledErr := disabledprefixes.Parse(os.Getenv(disabledprefixes.EnvVar), prefixesOf(routeDefs))
+	if disabledErr != nil {
+		slog.Error("refusing to start: invalid "+disabledprefixes.EnvVar, "error", disabledErr)
+		os.Exit(1)
+	}
+	if closed := disabled.Prefixes(); len(closed) > 0 {
+		slog.Info("gateway prefixes closed at the edge (404 NOT_AVAILABLE)", "prefixes", closed)
+	}
+
+	coreHandler := newCoreHandler(routes, promHandler, reviewerPublicEnabled, dormantProducts, disabled)
 
 	// H5 — Redis-backed rate limiter so per-IP / per-user limits hold
 	// across the whole gateway fleet, not just per-pod. The in-memory
@@ -295,7 +309,7 @@ func newRoute(prefix string, target *url.URL, internalKey string) route {
 
 // newCoreHandler serves probes, metrics and the launch gates, then proxies by
 // route prefix.
-func newCoreHandler(routes []route, promHandler http.Handler, reviewerPublicEnabled bool, dormantProducts []dormantProduct) http.Handler {
+func newCoreHandler(routes []route, promHandler http.Handler, reviewerPublicEnabled bool, dormantProducts []dormantProduct, disabled disabledprefixes.Set) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handleProbe(w, r, len(routes)) {
 			return
@@ -306,6 +320,13 @@ func newCoreHandler(routes []route, promHandler http.Handler, reviewerPublicEnab
 			return
 		}
 		if serveLiveV1Retired(w, r) {
+			return
+		}
+		// GATEWAY_DISABLED_PREFIXES: upstream not deployed here. Runs after
+		// the live 410 (that answer is specific and must stay) and before
+		// the launch gates, so a prefix that is both gated and undeployed
+		// answers "not available" rather than a 503 that implies a service.
+		if disabled.Serve(w, r) {
 			return
 		}
 		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
@@ -563,6 +584,15 @@ func routeDefinitions() []routeDef {
 		// Commerce service (full e-commerce rebuild)
 		{"/v1/commerce", env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")},
 	}
+}
+
+// prefixesOf lists the route table's prefixes, in table order.
+func prefixesOf(defs []routeDef) []string {
+	out := make([]string, 0, len(defs))
+	for _, rd := range defs {
+		out = append(out, rd.prefix)
+	}
+	return out
 }
 
 // liveV1Prefix is the retired v1 live API (MediaMTX RTMP/OBS through

@@ -35,17 +35,27 @@ func main() {
 
 	// 2. Config
 	port := env("HTTP_PORT", "8089")
-	opensearchURL := env("OPENSEARCH_URL", "http://opensearch:9200")
 	kafkaBrokers := env("KAFKA_BROKERS", "redpanda:9092")
 	redisAddr := env("REDIS_ADDR", "redis:6379")
 
 	// 3. OpenSearch Store
-	searchStore, err := search.New(opensearchURL)
+	//
+	// OPENSEARCH_URL plus OPENSEARCH_USERNAME / OPENSEARCH_PASSWORD (Amazon
+	// OpenSearch fine-grained access control, internal master user). In
+	// production an https URL without credentials refuses to start: the
+	// domain would 401 every write and the index would silently stay empty.
+	production := search.IsProductionEnv()
+	osCfg, err := search.ConfigFromEnv(nil, production)
+	if err != nil {
+		slog.Error("opensearch configuration rejected", "error", err)
+		os.Exit(1)
+	}
+	searchStore, err := search.NewWithConfig(osCfg)
 	if err != nil {
 		slog.Error("failed to initialize opensearch store", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("connected to opensearch")
+	slog.Info("connected to opensearch", "basic_auth", osCfg.HasCredentials(), "production", production)
 
 	// M2 re-review v2 P0-2: index bootstrap is otherwise best-effort and
 	// log-only, which is acceptable for a search index that refills itself

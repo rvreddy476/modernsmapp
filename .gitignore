@@ -6,7 +6,9 @@
 # Binaries
 *.exe
 *.bin
+# A built `server` binary — but never a cmd/server/ (or any server/) source directory.
 server
+!server/
 
 # Loose APK build artifacts at the repo root (rebuildable via Gradle)
 /*.apk

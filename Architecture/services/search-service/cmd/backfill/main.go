@@ -112,12 +112,23 @@ func main() {
 	flag.Parse()
 
 	ctx := context.Background()
-	osURL := envOr("OPENSEARCH_URL", "http://localhost:9200")
-	store, err := search.New(osURL)
+	// Same env contract as the server (OPENSEARCH_URL/USERNAME/PASSWORD),
+	// only the dev default differs: the backfill is run from a shell, not
+	// the compose network.
+	osCfg, err := search.ConfigFromEnv(func(k string) string {
+		if k == search.EnvURL {
+			return envOr(search.EnvURL, "http://localhost:9200")
+		}
+		return os.Getenv(k)
+	}, search.IsProductionEnv())
+	if err != nil {
+		fatal("opensearch config", err)
+	}
+	store, err := search.NewWithConfig(osCfg)
 	if err != nil {
 		fatal("opensearch connect", err)
 	}
-	slog.Info("backfill: connected to opensearch", "url", osURL)
+	slog.Info("backfill: connected to opensearch", "url", osCfg.URL, "basic_auth", osCfg.HasCredentials())
 
 	appDSN := envOr("POSTGRES_DSN", "")
 	commerceDSN := envOr("COMMERCE_POSTGRES_DSN", "")

@@ -19,12 +19,19 @@ type Store struct {
 	client *opensearch.Client
 }
 
+// New connects without credentials — the dev/compose cluster and the test
+// fixtures. Production goes through NewWithConfig(ConfigFromEnv(...)).
 func New(url string) (*Store, error) {
-	client, err := opensearch.NewClient(opensearch.Config{
-		Addresses: []string{url},
-		// Disable verification for dev/self-signed certs if needed,
-		// but standard docker image is HTTP by default or easy to configure
-	})
+	return NewWithConfig(Config{URL: url})
+}
+
+// NewWithConfig builds the client (basic auth + TLS as configured) and
+// bootstraps the indices.
+func NewWithConfig(cfg Config) (*Store, error) {
+	if cfg.URL == "" {
+		return nil, fmt.Errorf("opensearch: empty URL")
+	}
+	client, err := opensearch.NewClient(cfg.clientConfig())
 	if err != nil {
 		return nil, err
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/atpost/api-gateway/pkg/disabledprefixes"
 	"github.com/atpost/api-gateway/pkg/internalroutes"
 	"github.com/atpost/api-gateway/pkg/sessionrevocation"
 )
@@ -72,7 +73,7 @@ func edgeGateway(t *testing.T, up *recordingUpstream, checker sessionrevocation.
 	for _, rd := range routeDefinitions() {
 		routes = append(routes, newRoute(rd.prefix, target, edgeTestInternalKey))
 	}
-	core := newCoreHandler(routes, nil, true, nil)
+	core := newCoreHandler(routes, nil, true, nil, disabledprefixes.Set{})
 	passThrough := func(next http.Handler) http.Handler { return next }
 	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
 	return edgeChain(keys, devTestPolicy(), passThrough, checker, core)
