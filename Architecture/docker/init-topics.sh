@@ -60,6 +60,7 @@ topics=(
   "wallet-events"
   "billpay-events"
   "rider-events"
+  "doorstep.events"
 )
 
 rpk cluster config set kafka_enable_authorization true >/dev/null 2>&1 || true

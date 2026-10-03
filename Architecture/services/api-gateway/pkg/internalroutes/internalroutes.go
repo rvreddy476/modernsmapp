@@ -343,6 +343,13 @@ var StampPolicy = map[string]bool{
 	"/v1/food":               true,
 	"/v1/rider":              true,
 
+	// doorstep-service: the whole /v1/doorstep public group sits behind
+	// RequireInternalKey, as rider's does, and its user routes trust the
+	// gateway identity only once the key has admitted them. The admin family
+	// /v1/doorstep/internal/admin/* is refused at the edge like every
+	// internal path; admin-service calls it in-cluster.
+	"/v1/doorstep": true,
+
 	// wallet-service: the key guards only /v1/wallet/internal/* (debit,
 	// refund, balance for any user) — exactly the routes this lane closes.
 	// User wallet routes do not read it.

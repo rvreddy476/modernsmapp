@@ -4,7 +4,7 @@
 #
 # One Secrets Manager secret per deployable, <prefix>/<name>, each a flat JSON
 # object; the prefix is atpost/<env>. Terraform creates every one as an EMPTY
-# shell (envs/<env>/secrets.tf, output service_secret_names: the 32 services
+# shell (envs/<env>/secrets.tf, output service_secret_names: the 33 services
 # + web + admin-console) so External Secrets can reference it; this tool
 # fills them. Key names are the `remoteRef` properties in
 # deploy/services/<svc>/values-<env>.yaml and deploy/web/*/values-<env>.yaml;
@@ -109,7 +109,7 @@ shared:
   jwt_kid_previous: const:
   # chat-message-service and chat-ws-gateway entitlement HMAC.
   chat_entitlement_secret: generate:hex64
-  # notification-service verifies the realtime tokens rider and food mint.
+  # notification-service verifies the realtime tokens rider, food and doorstep mint.
   realtime_token_secret: generate:hex64
   # Moderation capabilities: issued by trust-safety-service, verified by
   # post-service; byte-identical in both secrets.
@@ -139,6 +139,8 @@ shared:
   svc_trust_safety_kid: const:trust-safety-1
   svc_live: generate:ed25519-keypair
   svc_live_kid: const:live-1
+  svc_doorstep: generate:ed25519-keypair
+  svc_doorstep_kid: const:doorstep-1
   # identity-auth mini-app session signer (RS256).
   mini_app_session_rs256: generate:rsa2048-pem
   # Third parties, typed once, used by several services.
@@ -527,6 +529,8 @@ secrets:
     caller_dating_kid: shared:svc_dating_kid
     caller_rider_pubkey: shared-public:svc_rider
     caller_rider_kid: shared:svc_rider_kid
+    caller_doorstep_pubkey: shared-public:svc_doorstep
+    caller_doorstep_kid: shared:svc_doorstep_kid
     # Admin console: pre-filled so enabling is uncommenting the values lines.
     caller_admin_pubkey: shared-public:svc_admin
     caller_admin_kid: shared:svc_admin_kid
@@ -725,6 +729,30 @@ secrets:
     rider_service_token_key: shared-private:svc_rider
     rider_service_token_kid: shared:svc_rider_kid
     realtime_token_secret: shared:realtime_token_secret
+    # Admin console: pre-filled so enabling is uncommenting the values lines.
+    caller_admin_pubkey: shared-public:svc_admin
+    caller_admin_kid: shared:svc_admin_kid
+
+  # Doorstep (home services), 4 Oct 2026. Schema doorstep in the app database.
+  doorstep-service:
+    postgres_dsn: dsn:app/doorstep_service
+    redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
+    redis_password: copy:elasticache-auth#auth_token
+    kafka_brokers: tf:msk_bootstrap_brokers
+    kafka_sasl_username: copy:msk-scram#username
+    kafka_sasl_password: copy:msk-scram#password
+    internal_service_key: copy:platform-auth#internal_service_key
+    realtime_token_secret: shared:realtime_token_secret
+    doorstep_pii_keys: generate:pii-keyring
+    doorstep_pii_lookup_salt: generate:hex64
+    # Payments caller (application doorstep); payments-service holds the
+    # public half as caller_doorstep_pubkey / caller_doorstep_kid.
+    doorstep_service_token_key: shared-private:svc_doorstep
+    doorstep_service_token_kid: shared:svc_doorstep_kid
+    # Doorstep is off at the gateway at launch.
+    doorstep_platform_gstin: prompt-optional:Doorstep platform GSTIN, e-commerce operator s.9(5) (Doorstep is off at launch)
+    digilocker_client_id: prompt-optional:DigiLocker (API Setu) partner client id (Doorstep; off at launch)
+    digilocker_client_secret: prompt-optional:DigiLocker (API Setu) partner client secret (Doorstep; off at launch)
     # Admin console: pre-filled so enabling is uncommenting the values lines.
     caller_admin_pubkey: shared-public:svc_admin
     caller_admin_kid: shared:svc_admin_kid

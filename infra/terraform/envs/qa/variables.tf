@@ -117,6 +117,7 @@ variable "service_names" {
     "post-service",
     "qa-service",
     "rider-service",
+    "doorstep-service",
     "search-service",
     "suggestion-service",
     "trust-safety-service",
@@ -341,10 +342,12 @@ variable "aurora_databases" {
   type        = list(string)
   default     = ["app", "identity_db", "chat_db", "call_db", "commerce_db"]
 }
+# btree_gist: doorstep-service's exclusion constraint on a professional's
+# calendar (EXCLUDE USING gist (pro_id WITH =, during WITH &&)).
 variable "aurora_extensions" {
   description = "Same extensions as prod."
   type        = list(string)
-  default     = ["postgis", "pg_trgm", "pgcrypto"]
+  default     = ["postgis", "pg_trgm", "pgcrypto", "btree_gist"]
 }
 
 # ─── Kafka (MSK Provisioned) ───────────────────────────────────────────

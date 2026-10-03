@@ -350,3 +350,154 @@ func TestDatingPilotAllowlistParsing(t *testing.T) {
 		t.Error("dev: an invalid allowlist entry was honoured")
 	}
 }
+
+// ---- Doorstep (home services) ----------------------------------------------
+//
+// Doorstep is gated exactly like Dating: closed by default, its own flag, and
+// an internal pilot allowlist that fails closed.
+
+var doorstepPaths = []string{
+	"/v1/doorstep", "/v1/doorstep/catalogue", "/v1/doorstep/bookings/abc/cancel",
+	"/v1/doorstep/pro/readiness", "/v1/doorstep/pro/offers/abc/accept",
+}
+
+func TestDoorstepFlagDefaultsClosed(t *testing.T) {
+	for _, env := range []map[string]string{
+		nil,
+		{"DOORSTEP_PUBLIC_ENABLED": ""},
+		{"DOORSTEP_PUBLIC_ENABLED": "false"},
+		{"DOORSTEP_PUBLIC_ENABLED": "1"},
+		{"DOORSTEP_PUBLIC_ENABLED": "yes"},
+	} {
+		products := productsFrom(t, env)
+		for _, path := range doorstepPaths {
+			if !gated(t, products, path) {
+				t.Errorf("DOORSTEP_PUBLIC_ENABLED=%q: %s was not gated", env["DOORSTEP_PUBLIC_ENABLED"], path)
+			}
+		}
+	}
+}
+
+func TestDoorstepGateDoesNotTouchNeighbours(t *testing.T) {
+	products := productsFrom(t, map[string]string{"DATING_PUBLIC_ENABLED": "true", "RIDER_PUBLIC_ENABLED": "true",
+		"GROUPS_PUBLIC_ENABLED": "true", "COMMUNITIES_PUBLIC_ENABLED": "true"})
+	for _, path := range []string{"/v1/doorsteps", "/v1/door", "/v1/doorstepx/catalogue", "/v1/food", "/v1/rider/rides"} {
+		if gated(t, products, path) {
+			t.Errorf("%s was gated by the doorstep entry", path)
+		}
+	}
+}
+
+// Doorstep opens on DOORSTEP_PUBLIC_ENABLED alone, and that flag opens nothing else.
+func TestDoorstepGateIsIndependentOfOtherFlags(t *testing.T) {
+	othersOpen := productsFrom(t, map[string]string{"GROUPS_PUBLIC_ENABLED": "true", "COMMUNITIES_PUBLIC_ENABLED": "true",
+		"RIDER_PUBLIC_ENABLED": "true", "DATING_PUBLIC_ENABLED": "true"})
+	for _, path := range doorstepPaths {
+		if !gated(t, othersOpen, path) {
+			t.Errorf("another product's flag opened %s", path)
+		}
+	}
+
+	doorstepOpen := productsFrom(t, map[string]string{"DOORSTEP_PUBLIC_ENABLED": "true"})
+	for _, path := range doorstepPaths {
+		if gated(t, doorstepOpen, path) {
+			t.Errorf("DOORSTEP_PUBLIC_ENABLED=true still gates %s", path)
+		}
+	}
+	for _, path := range append(append(append([]string{}, groupsAndCommunitiesPaths...), riderPaths...), datingPaths...) {
+		if !gated(t, doorstepOpen, path) {
+			t.Errorf("DOORSTEP_PUBLIC_ENABLED=true opened %s", path)
+		}
+	}
+}
+
+func TestDoorstepGateWhileClosed(t *testing.T) {
+	pilot := map[string]string{"DOORSTEP_PILOT_USER_IDS": pilotCallA + "," + pilotCallB}
+
+	closedCases := []struct {
+		name    string
+		path    string
+		prepare func(*http.Request)
+	}{
+		{"anonymous", "/v1/doorstep/catalogue", nil},
+		{"anonymous on pro", "/v1/doorstep/pro/readiness", nil},
+		{"non-allowlisted user", "/v1/doorstep/catalogue", bearer(t, outsiderUser, "secret")},
+		{"non-allowlisted user on pro", "/v1/doorstep/pro/offers/abc/accept", bearer(t, outsiderUser, "secret")},
+		{"anonymous claiming an allowlisted X-User-Id", "/v1/doorstep/catalogue", spoofUserHeaders(pilotCallA)},
+		{"non-allowlisted user claiming an allowlisted X-User-Id", "/v1/doorstep/bookings",
+			both(bearer(t, outsiderUser, "secret"), spoofUserHeaders(pilotCallA))},
+	}
+	for _, tc := range closedCases {
+		got := throughGateway(t, pilot, tc.path, tc.prepare)
+		if got.reached || got.status != http.StatusNotFound {
+			t.Errorf("%s: %s gave status %d, reached upstream=%v; want 404, not reached", tc.name, tc.path, got.status, got.reached)
+		}
+	}
+
+	// A forged token carrying an allowlisted id never reaches doorstep.
+	got := throughGateway(t, pilot, "/v1/doorstep/catalogue", both(bearer(t, pilotCallA, "not-the-gateway-secret"), spoofUserHeaders(pilotCallA)))
+	if got.reached || (got.status != http.StatusUnauthorized && got.status != http.StatusNotFound) {
+		t.Errorf("forged token: status %d, reached upstream=%v; want 401 or 404, not reached", got.status, got.reached)
+	}
+
+	for _, user := range []string{pilotCallA, pilotCallB} {
+		for _, path := range doorstepPaths {
+			if got := throughGateway(t, pilot, path, bearer(t, user, "secret")); !got.reached {
+				t.Errorf("allowlisted %s on %s: status %d, upstream not reached", user, path, got.status)
+			}
+		}
+	}
+}
+
+func TestDoorstepGateEmptyAllowlistLetsNobodyIn(t *testing.T) {
+	for _, env := range []map[string]string{
+		nil,
+		{"DOORSTEP_PILOT_USER_IDS": ""},
+		{"DOORSTEP_PILOT_USER_IDS": " , ,"},
+	} {
+		for _, user := range []string{pilotCallA, outsiderUser} {
+			got := throughGateway(t, env, "/v1/doorstep/catalogue", bearer(t, user, "secret"))
+			if got.reached || got.status != http.StatusNotFound {
+				t.Errorf("allowlist %q, user %s: status %d, reached=%v; want 404", env["DOORSTEP_PILOT_USER_IDS"], user, got.status, got.reached)
+			}
+		}
+	}
+}
+
+func TestDoorstepGateOpenLetsEveryoneThrough(t *testing.T) {
+	open := map[string]string{"DOORSTEP_PUBLIC_ENABLED": "true"}
+	for _, prepare := range []func(*http.Request){nil, bearer(t, outsiderUser, "secret")} {
+		for _, path := range doorstepPaths {
+			if got := throughGateway(t, open, path, prepare); !got.reached {
+				t.Errorf("DOORSTEP_PUBLIC_ENABLED=true: %s gave status %d, upstream not reached", path, got.status)
+			}
+		}
+	}
+}
+
+// The two pilot lists are separate: a dating pilot is not a doorstep pilot and
+// a doorstep pilot is not a dating pilot.
+func TestDoorstepAndDatingPilotsAreSeparate(t *testing.T) {
+	datingOnly := map[string]string{"DATING_PILOT_USER_IDS": pilotCallA}
+	if got := throughGateway(t, datingOnly, "/v1/doorstep/catalogue", bearer(t, pilotCallA, "secret")); got.reached {
+		t.Error("a dating pilot user reached doorstep")
+	}
+	doorstepOnly := map[string]string{"DOORSTEP_PILOT_USER_IDS": pilotCallA}
+	for _, path := range append(append(append([]string{}, groupsAndCommunitiesPaths...), riderPaths...), datingPaths...) {
+		if got := throughGateway(t, doorstepOnly, path, bearer(t, pilotCallA, "secret")); got.reached {
+			t.Errorf("doorstep pilot user reached %s", path)
+		}
+	}
+}
+
+func TestDoorstepPilotAllowlistParsing(t *testing.T) {
+	withInvalid := pilotCallA + ", call_a"
+	if _, err := dormantProductsFromEnv(envOf(map[string]string{"DOORSTEP_PILOT_USER_IDS": withInvalid}), true); err == nil {
+		t.Error("production accepted an invalid DOORSTEP_PILOT_USER_IDS entry; want a boot error")
+	} else if !strings.Contains(err.Error(), "DOORSTEP_PILOT_USER_IDS") {
+		t.Errorf("boot error does not name the variable: %v", err)
+	}
+	if got := throughGateway(t, map[string]string{"DOORSTEP_PILOT_USER_IDS": withInvalid}, "/v1/doorstep/catalogue", bearer(t, "call_a", "secret")); got.reached {
+		t.Error("dev: an invalid allowlist entry was honoured")
+	}
+}

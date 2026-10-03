@@ -367,8 +367,8 @@ func TestCommittedManifestMatchesTerraformShells(t *testing.T) {
 				t.Errorf("manifest fills %s/%s, but envs/%s creates no such secret", m.Prefix, g, env)
 			}
 		}
-		if len(want) != 34 {
-			t.Fatalf("expected 32 services + web + admin-console in envs/%s, got %d", env, len(want))
+		if len(want) != 35 {
+			t.Fatalf("expected 33 services + web + admin-console in envs/%s, got %d", env, len(want))
 		}
 	})
 }
@@ -547,7 +547,7 @@ func TestCommittedManifestFullApply(t *testing.T) {
 				t.Errorf("role %s has no password", g.Role)
 			}
 		}
-		if len(p.Roles) != 32 {
+		if len(p.Roles) != 33 {
 			t.Errorf("roles: %d", len(p.Roles))
 		}
 		// Spot checks of the cross-service contracts.

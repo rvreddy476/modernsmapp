@@ -347,6 +347,14 @@ services:
       # pilot allowlist: the product is dormant to everyone until the flag).
       # Set it in the gitignored .env for a dev test and recreate api-gateway.
       RIDER_PUBLIC_ENABLED: ${RIDER_PUBLIC_ENABLED:-false}
+      # Doorstep (home services) answers 404 at the edge unless
+      # DOORSTEP_PUBLIC_ENABLED=true. While closed, only these verified user
+      # ids get through: the dev test accounts call_a and call_b, the same
+      # pilot as Dating (not secrets). /v1/doorstep/internal/* is refused at
+      # the edge whatever the flag. See docs/adr/adr-dormant-products.md.
+      DOORSTEP_SERVICE_URL: http://doorstep-service:8122
+      DOORSTEP_PUBLIC_ENABLED: ${DOORSTEP_PUBLIC_ENABLED:-false}
+      DOORSTEP_PILOT_USER_IDS: ${DOORSTEP_PILOT_USER_IDS:-2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}
     ports:
       - "8080:8080"
     depends_on:
@@ -1587,6 +1595,9 @@ services:
       # Mopedu (rider-service), same token contract; rider registers
       # admin-service through RIDER_SERVICE_CALLERS below.
       RIDER_SERVICE_URL: http://rider-service:8116
+      # Doorstep (doorstep-service, audience "doorstep"), same token contract;
+      # doorstep registers admin-service through DOORSTEP_SERVICE_CALLERS below.
+      DOORSTEP_SERVICE_URL: http://doorstep-service:8122
       # Live moderation (live-service-v2, audience "live"), same token
       # contract; live-service-v2 registers admin-service through
       # LIVE_SERVICE_CALLERS below.
@@ -1649,6 +1660,16 @@ services:
       SERVICE_CALLER_RIDER_SERVICE_OPS: ${SERVICE_CALLER_RIDER_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
       SERVICE_CALLER_RIDER_SERVICE_REFTYPES: ${SERVICE_CALLER_RIDER_SERVICE_REFTYPES:-mopedu_ride,mopedu_subscription}
       SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS: ${SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS:-mopedu}
+      # doorstep-service: Doorstep bookings (doorstep_booking) and the extras
+      # bill raised during a visit (doorstep_extras), migration 015. Takes
+      # effect only once SERVICE_CALLERS names doorstep-service and its PUBKEY
+      # is set (both in the gitignored .env). Migration 015 must have seeded
+      # `doorstep` before that.
+      SERVICE_CALLER_DOORSTEP_SERVICE_KID: ${SERVICE_CALLER_DOORSTEP_SERVICE_KID:-ds1}
+      SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY: ${SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY:-}
+      SERVICE_CALLER_DOORSTEP_SERVICE_OPS: ${SERVICE_CALLER_DOORSTEP_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
+      SERVICE_CALLER_DOORSTEP_SERVICE_REFTYPES: ${SERVICE_CALLER_DOORSTEP_SERVICE_REFTYPES:-doorstep_booking,doorstep_extras}
+      SERVICE_CALLER_DOORSTEP_SERVICE_APPLICATIONS: ${SERVICE_CALLER_DOORSTEP_SERVICE_APPLICATIONS:-doorstep}
       # admin-service: the admin console's /v1/payments/internal/admin/* only.
       # OPS is payments' AdminPermissions; no REFTYPES and no APPLICATIONS (boot
       # refuses either). Takes effect only once SERVICE_CALLERS names
@@ -2065,6 +2086,94 @@ services:
       redpanda:
         condition: service_started
       wallet-service:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Doorstep (home services, Urban Company style). Fixed-price catalogue
+  # booked into a time slot, paid in full at booking, gig professionals.
+  # See services/doorstep-service and the Doorstep programme plan.
+  doorstep-service:
+    build:
+      context: ..
+      dockerfile: services/doorstep-service/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8122"
+      # Schema `doorstep` in the shared app database. `public` stays on the
+      # path for the extensions (postgis, btree_gist) the migrations use.
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/app?sslmode=disable&search_path=doorstep,public
+      # Realtime (booking tracking, pro offers, the ops live board) goes to
+      # Redis Streams, which notification-service's SSE reads. The topic
+      # tokens are signed with INTERNAL_SERVICE_KEY here, as for rider and
+      # food (no REALTIME_TOKEN_SECRET on the dev stack).
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: doorstep.events
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Anything but local/dev/development is production to doorstep-service,
+      # which then refuses every mock below and requires the payments token
+      # and the PII keys. The dev stack is dev.
+      ENV: dev
+      # identity-auth owns ecosystem roles; doorstep grants
+      # service_professional through its internal role API.
+      IDENTITY_AUTH_URL: http://identity-auth:8081
+      # Photos, selfies and the selfie face compare.
+      MEDIA_SERVICE_URL: http://media-service:8087
+      # Payments (application doorstep, reference types doorstep_booking and
+      # doorstep_extras) with doorstep's own Ed25519 service token; a booking
+      # is paid only from the signed payment.succeeded event. The dev-only
+      # seed and kid live in the gitignored .env; the matching public half
+      # goes to payments-service (SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY /
+      # KID, with doorstep-service in its SERVICE_CALLERS). Without the key
+      # the payment routes answer 503.
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      DOORSTEP_SERVICE_TOKEN_KEY: ${DOORSTEP_SERVICE_TOKEN_KEY:-}
+      DOORSTEP_SERVICE_TOKEN_KID: ${DOORSTEP_SERVICE_TOKEN_KID:-}
+      # PII sealing (addresses, Aadhaar-derived fields, PAN, payout accounts,
+      # police certificates, OTPs). Dev-only random keys live in the
+      # gitignored .env; never reuse a dev key in QA or production.
+      DOORSTEP_PII_KEYS: ${DOORSTEP_PII_KEYS:-}
+      DOORSTEP_PII_LOOKUP_SALT: ${DOORSTEP_PII_LOOKUP_SALT:-}
+      # THIS IS A SYNTHETIC TEST IDENTIFIER, NOT A REAL REGISTRATION (the
+      # checksum-valid golden GSTIN food and rider use). Dev only.
+      DOORSTEP_PLATFORM_GSTIN: 29ZZZPZ0000Z1Z6
+      # Professional verification, all MOCKED on the dev stack so onboarding
+      # runs with no human and no partner: DigiLocker returns a verified
+      # Aadhaar (gender included), every selfie matches, and the background
+      # check clears. Each mock is refused in production.
+      DIGILOCKER_MODE: ${DOORSTEP_DIGILOCKER_MODE:-mock}
+      DOORSTEP_FACE_COMPARE_MODE: ${DOORSTEP_FACE_COMPARE_MODE:-mock}
+      DOORSTEP_SELFIE_MIN_SIMILARITY: ${DOORSTEP_SELFIE_MIN_SIMILARITY:-80}
+      DOORSTEP_BACKGROUND_CHECK_MODE: ${DOORSTEP_BACKGROUND_CHECK_MODE:-mock}
+      # DigiLocker return: an origin the PHONE's browser can reach (the
+      # gateway on the PC's LAN IP, or the dev tunnel) and the pro app's link.
+      DOORSTEP_PUBLIC_BASE_URL: ${DOORSTEP_PUBLIC_BASE_URL:-http://localhost:8080}
+      DOORSTEP_PRO_APP_LINK_URL: ${DOORSTEP_PRO_APP_LINK_URL:-}
+      # Admin console: /v1/doorstep/internal/admin/* admits only admin-service
+      # tokens (audience "doorstep") scoped to the one permission it checked,
+      # naming the admin. A distinct .env name, because SERVICE_CALLERS in
+      # .env is payments'. Blank = no tokens accepted (401).
+      SERVICE_CALLERS: ${DOORSTEP_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: doorstep:catalogue.read,doorstep:catalogue.write,doorstep:config.write,doorstep:pros.read,doorstep:pros.approve,doorstep:pros.suspend,doorstep:documents.review,doorstep:bookings.read,doorstep:bookings.cancel,doorstep:bookings.redispatch,doorstep:refunds.issue,doorstep:incidents.read,doorstep:incidents.act,doorstep:tickets.act,doorstep:ratings.moderate,doorstep:settlements.read,doorstep:stats.read,doorstep:audit.read
+    # No host port, on purpose: the public group trusts the gateway's
+    # identity behind the internal key, so it is reachable only through
+    # api-gateway on this network.
+    # Health: docker compose exec doorstep-service wget -qO- http://localhost:8122/healthz
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
         condition: service_started
     deploy:
       resources:

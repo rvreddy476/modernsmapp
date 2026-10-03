@@ -1,0 +1,139 @@
+# doorstep-service (Doorstep, home services) overrides for QA (AWS
+# ap-south-1, the QA account). NEW 4 Oct 2026.
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `doorstep-service`, translated to production: schema `doorstep` in the
+# shared Aurora `app` database, PII sealed, payments through payments-service
+# with doorstep's own service token (application doorstep, reference types
+# doorstep_booking / doorstep_extras), photos through media-service (so the
+# IRSA role carries no policy). Secrets by reference only
+# (atpost/qa/doorstep-service).
+#
+# DORMANT: the gateway keeps /v1/doorstep closed (DOORSTEP_PUBLIC_ENABLED=
+# false, empty pilot allowlist). Deployed-but-gated, so the service MUST
+# boot. Production refuses the dev mocks: no DigiLocker mock, no face-compare
+# mock, no background-check mock is ever set in this file. DigiLocker stays
+# DISABLED until the API Setu partner credentials exist; professional
+# onboarding stops at that step, which is fine for a closed product.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: doorstep-service
+  port: 8122
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/doorstep-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# IRSA: no policy (Kafka is SASL/SCRAM; photos and selfies go through
+# media-service). The role exists so the chart is uniform.
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-doorstep-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/doorstep-service
+  data:
+    # Aurora `app` (schema doorstep; the service sets its own search_path).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    # Realtime tokens: rider, food and doorstep mint them, notification
+    # verifies them. One shared key, so all of them mount it or none does.
+    - { secretKey: REALTIME_TOKEN_SECRET, remoteRef: realtime_token_secret }
+    # Doorstep's PRIVATE ed25519 payments token (application doorstep,
+    # reference types doorstep_booking / doorstep_extras); payments-service
+    # holds the public half (caller_doorstep_pubkey / caller_doorstep_kid).
+    - { secretKey: DOORSTEP_SERVICE_TOKEN_KEY, remoteRef: doorstep_service_token_key }
+    - { secretKey: DOORSTEP_SERVICE_TOKEN_KID, remoteRef: doorstep_service_token_kid }
+    # PII sealing (addresses, Aadhaar-derived fields, PAN, payout accounts,
+    # police certificates, OTPs): "v1:<base64 32-byte key>" and a >= 16-byte
+    # salt. Never a dev key.
+    - { secretKey: DOORSTEP_PII_KEYS, remoteRef: doorstep_pii_keys }
+    - { secretKey: DOORSTEP_PII_LOOKUP_SALT, remoteRef: doorstep_pii_lookup_salt }
+    # The platform's REAL e-commerce-operator GSTIN (CGST s.9(5) for the
+    # *_VIA_ECO categories; Telangana registration is an adviser item). Kept
+    # with the secrets so the seeder, not git, carries the registration.
+    - { secretKey: DOORSTEP_PLATFORM_GSTIN, remoteRef: doorstep_platform_gstin }
+    # DigiLocker (API Setu) partner credentials — only when the mode below
+    # becomes http. Disabled at launch.
+    # - { secretKey: DIGILOCKER_CLIENT_ID, remoteRef: digilocker_client_id }
+    # - { secretKey: DIGILOCKER_CLIENT_SECRET, remoteRef: digilocker_client_secret }
+    # Admin console (Doorstep): NOT enabled yet (401 until then). To enable:
+    # the founder's ONE admin key (admin-service values, step 1): public half
+    # → caller_admin_pubkey, kid → caller_admin_kid; uncomment the two lines
+    # below AND the SERVICE_CALLERS lines under env; enable admin-service's
+    # two lines. Setting SERVICE_CALLERS first refuses boot.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+
+env:
+  # Anything but local/dev/development is production to doorstep-service.
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Realtime (booking tracking, pro offers, the ops live board) is published
+  # to Redis Streams for notification-service's SSE.
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TOPIC: doorstep.events
+
+  # ── Peers ────────────────────────────────────────────────────────────────
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  # identity-auth owns ecosystem roles (service_professional).
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  # Photos, selfies and the selfie face compare.
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+
+  # ── Professional verification ────────────────────────────────────────────
+  # DigiLocker is DISABLED until API Setu (the mock is refused in
+  # production; http needs the partner credentials above).
+  DIGILOCKER_MODE: disabled
+  # Selfie face match through media-service; "mock" is refused here.
+  DOORSTEP_FACE_COMPARE_MODE: http
+  DOORSTEP_SELFIE_MIN_SIMILARITY: "80"
+  # Background check at launch: the professional uploads a Police Clearance
+  # Certificate and an admin reviews it (the one manual step). A vendor
+  # plugs in later behind the provider interface; "mock" is refused here.
+  DOORSTEP_BACKGROUND_CHECK_MODE: uploaded_document
+  # The gateway origin the phone's browser reaches for the DigiLocker return,
+  # and the pro app's https link it sends the browser back to — fill the
+  # link when Doorstep opens. Empty is accepted; a non-URL refuses boot.
+  DOORSTEP_PUBLIC_BASE_URL: https://api-qa.cleestudio.com
+  DOORSTEP_PRO_APP_LINK_URL: ""
+
+  # Admin console (see externalSecret above for the order).
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'doorstep:catalogue.read,doorstep:catalogue.write,doorstep:config.write,doorstep:pros.read,doorstep:pros.approve,doorstep:pros.suspend,doorstep:documents.review,doorstep:bookings.read,doorstep:bookings.cancel,doorstep:bookings.redispatch,doorstep:refunds.issue,doorstep:incidents.read,doorstep:incidents.act,doorstep:tickets.act,doorstep:ratings.moderate,doorstep:settlements.read,doorstep:stats.read,doorstep:audit.read'
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

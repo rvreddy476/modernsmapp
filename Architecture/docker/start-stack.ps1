@@ -43,7 +43,8 @@ docker compose @compose up -d --build `
 # ── Batch 5: mini-apps that depend on wallet-service ──────────────────────
 docker compose @compose up -d --build `
     bill-pay-service `
-    rider-service
+    rider-service `
+    doorstep-service
 
 # ── Frontend (Next.js inside compose + Caddy reverse proxy) ───────────────
 docker compose @compose up -d nextjs caddy
@@ -65,6 +66,7 @@ Write-Host "  curl http://localhost:8113/healthz   # food-service (FiGo)"
 Write-Host "  curl http://localhost:8114/healthz   # wallet-service"
 Write-Host "  curl http://localhost:8115/healthz   # bill-pay-service"
 Write-Host "  docker compose exec rider-service wget -qO- http://localhost:8116/healthz   # rider-service (Mopedu), no host port"
+Write-Host "  docker compose exec doorstep-service wget -qO- http://localhost:8122/healthz   # doorstep-service (Doorstep), no host port"
 Write-Host ""
-Write-Host "Kafka topics (should include dating-events, wallet-events, billpay-events, rider-events):" -ForegroundColor Green
+Write-Host "Kafka topics (should include dating-events, wallet-events, billpay-events, rider-events, doorstep.events):" -ForegroundColor Green
 Write-Host "  docker compose exec redpanda rpk topic list"

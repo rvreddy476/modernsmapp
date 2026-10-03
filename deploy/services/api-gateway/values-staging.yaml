@@ -43,6 +43,10 @@ env:
   # on purpose: empty lets nobody through. See docs/adr/adr-dormant-products.md.
   DATING_PUBLIC_ENABLED: "false"
   DATING_PILOT_USER_IDS: ""
+  # Doorstep's /v1/doorstep stays closed at the edge; empty pilot allowlist =
+  # nobody. See docs/adr/adr-dormant-products.md.
+  DOORSTEP_PUBLIC_ENABLED: "false"
+  DOORSTEP_PILOT_USER_IDS: ""
   # ── Module 3 SR-1: edge token identity ──────────────────────────────────
   # APP_ENV is what the gateway reads to decide whether to apply production
   # token rules. It is set explicitly here rather than relying on ENV so the
@@ -92,6 +96,7 @@ env:
   WALLET_SERVICE_URL: http://wallet-service.atpost.svc.cluster.local:8114
   BILL_PAY_SERVICE_URL: http://bill-pay-service.atpost.svc.cluster.local:8115
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  DOORSTEP_SERVICE_URL: http://doorstep-service.atpost.svc.cluster.local:8122
   LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
   AI_SERVICE_URL: http://ai-service.atpost.svc.cluster.local:8121
 

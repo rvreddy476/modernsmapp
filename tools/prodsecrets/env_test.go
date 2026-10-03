@@ -178,7 +178,7 @@ func TestOmitSecretsPerEnvironment(t *testing.T) {
 	if qa.FullName("argocd-repo-modernsmapp") != "atpost/qa/argocd-repo-modernsmapp" {
 		t.Fatal(qa.FullName("argocd-repo-modernsmapp"))
 	}
-	if len(prod.Secrets) != 34 || len(qa.Secrets) != 35 {
+	if len(prod.Secrets) != 35 || len(qa.Secrets) != 36 {
 		t.Fatalf("secrets: prod %d, qa %d", len(prod.Secrets), len(qa.Secrets))
 	}
 }

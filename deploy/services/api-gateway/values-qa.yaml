@@ -95,6 +95,10 @@ env:
   RIDER_PUBLIC_ENABLED: "false"
   DATING_PUBLIC_ENABLED: "false"
   DATING_PILOT_USER_IDS: ""
+  # Doorstep (home services): closed at the edge while its first version is
+  # built. The pilot allowlist is EMPTY on purpose: empty lets nobody in.
+  DOORSTEP_PUBLIC_ENABLED: "false"
+  DOORSTEP_PILOT_USER_IDS: ""
   # W7b: prefixes whose upstream is NOT deployed on AWS answer a clean
   # "not available" instead of a 502 (memories, feature flags, reviewer).
   # Wallet and bill pay have no production provider (BANK_PARTNER=mock,
@@ -138,6 +142,7 @@ env:
   WALLET_SERVICE_URL: http://wallet-service.atpost.svc.cluster.local:8114
   BILL_PAY_SERVICE_URL: http://bill-pay-service.atpost.svc.cluster.local:8115
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  DOORSTEP_SERVICE_URL: http://doorstep-service.atpost.svc.cluster.local:8122
   # /v1/live (v1) is retired: the gateway answers 410 LIVE_V1_RETIRED and
   # proxies nothing, so there is no LIVE_SERVICE_URL. Only v2 (LiveKit).
   LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117

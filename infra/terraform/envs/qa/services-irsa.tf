@@ -67,6 +67,7 @@ locals {
     "bill-pay-service"     = local.policies_none
     "dating-service"       = local.policies_none
     "rider-service"        = local.policies_none
+    "doorstep-service"     = local.policies_none
     "wallet-service"       = local.policies_none
     "api-gateway"          = local.policies_none
 

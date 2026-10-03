@@ -581,6 +581,12 @@ func routeDefinitions() []routeDef {
 		{"/v1/billpay", env("BILL_PAY_SERVICE_URL", "http://bill-pay-service:8115")},
 		// Rider service (Mopedu mini-app) — see services/rider-service.
 		{"/v1/rider", env("RIDER_SERVICE_URL", "http://rider-service:8116")},
+		// Doorstep (home services) — see services/doorstep-service. Closed at
+		// the edge by the dormant-product gate (DOORSTEP_PUBLIC_ENABLED) except
+		// to the DOORSTEP_PILOT_USER_IDS allowlist. Its admin family is
+		// /v1/doorstep/internal/admin/*: every `internal` segment is refused at
+		// the edge, so only admin-service reaches it, in-cluster.
+		{"/v1/doorstep", env("DOORSTEP_SERVICE_URL", "http://doorstep-service:8122")},
 		// Commerce service (full e-commerce rebuild)
 		{"/v1/commerce", env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")},
 	}
@@ -1109,6 +1115,10 @@ func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dorm
 	if err != nil {
 		return nil, err
 	}
+	doorstepPilot, err := parsePilotUserIDs("DOORSTEP_PILOT_USER_IDS", getenv("DOORSTEP_PILOT_USER_IDS"), production)
+	if err != nil {
+		return nil, err
+	}
 	return []dormantProduct{
 		// Groups and Communities shared DORMANT_PRODUCTS_ENABLED, which is the
 		// coupling the comment above warns against: opening Groups would have
@@ -1124,6 +1134,10 @@ func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dorm
 		// anonymously because the gateway stamps the internal key on all
 		// traffic. Closed except to an internal pilot while it is rebuilt.
 		{prefixes: []string{"/v1/dating"}, enabled: flag("DATING_PUBLIC_ENABLED"), pilotUsers: datingPilot},
+		// Doorstep (home services): new, and no client ships yet. Closed
+		// except to an internal pilot while the first version is built; an
+		// empty allowlist lets nobody through.
+		{prefixes: []string{"/v1/doorstep"}, enabled: flag("DOORSTEP_PUBLIC_ENABLED"), pilotUsers: doorstepPilot},
 	}, nil
 }
 

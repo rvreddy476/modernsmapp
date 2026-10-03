@@ -1,0 +1,77 @@
+# doorstep-service (Doorstep, home services) overrides for the staging
+# environment. NEW 4 Oct 2026.
+#
+# The atpost-service chart owns Deployment / Service / SA / ESO /
+# HPA / PDB / ServiceMonitor. Anything not listed here inherits the
+# chart default. CI rewrites image.tag on every push to main; never
+# hand-edit it.
+#
+# The gateway keeps /v1/doorstep closed in staging (DOORSTEP_PUBLIC_ENABLED=
+# false, empty pilot allowlist). No dev mock (DigiLocker, face compare,
+# background check) is set here: staging verifies like production.
+#
+# Staging Terraform (infra/terraform/envs/staging) has no doorstep-service
+# ECR repository, IRSA role or secret yet: add it there before syncing this.
+
+service:
+  name: doorstep-service
+  port: 8122
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/doorstep-service'
+  tag: latest # CI overrides via --set image.tag=<sha>
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-doorstep-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/staging/doorstep-service
+  data:
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: REALTIME_TOKEN_SECRET, remoteRef: realtime_token_secret }
+    # Payments (application doorstep): the private ed25519 seed and kid here,
+    # the public half + kid for payments-service (caller_doorstep_pubkey /
+    # caller_doorstep_kid) with doorstep-service in its SERVICE_CALLERS.
+    - { secretKey: DOORSTEP_SERVICE_TOKEN_KEY, remoteRef: doorstep_service_token_key }
+    - { secretKey: DOORSTEP_SERVICE_TOKEN_KID, remoteRef: doorstep_service_token_kid }
+    - { secretKey: DOORSTEP_PII_KEYS, remoteRef: doorstep_pii_keys }
+    - { secretKey: DOORSTEP_PII_LOOKUP_SALT, remoteRef: doorstep_pii_lookup_salt }
+    # - { secretKey: DOORSTEP_PLATFORM_GSTIN, remoteRef: doorstep_platform_gstin }
+    # Admin console: NOT enabled yet (see values-prod.yaml for the order).
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+
+env:
+  ENV: staging
+  LOG_LEVEL: info
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  KAFKA_TOPIC: doorstep.events
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  # DigiLocker disabled until API Setu; no mocks outside dev.
+  DIGILOCKER_MODE: disabled
+  DOORSTEP_FACE_COMPARE_MODE: http
+  DOORSTEP_SELFIE_MIN_SIMILARITY: "80"
+  DOORSTEP_BACKGROUND_CHECK_MODE: uploaded_document
+  # Admin console (see externalSecret above).
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'doorstep:catalogue.read,doorstep:catalogue.write,doorstep:config.write,doorstep:pros.read,doorstep:pros.approve,doorstep:pros.suspend,doorstep:documents.review,doorstep:bookings.read,doorstep:bookings.cancel,doorstep:bookings.redispatch,doorstep:refunds.issue,doorstep:incidents.read,doorstep:incidents.act,doorstep:tickets.act,doorstep:ratings.moderate,doorstep:settlements.read,doorstep:stats.read,doorstep:audit.read'
+
+# Internal-only — api-gateway is the external surface.
+ingress:
+  enabled: false

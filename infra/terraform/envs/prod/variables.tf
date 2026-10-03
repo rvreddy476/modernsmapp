@@ -74,6 +74,9 @@ variable "ses_configuration_set_name" {
 # 3 Oct 2026: food-service (values pending, gated off at the gateway) and
 # suggestion-service (values existed with no registry or role) added so
 # every deployable has an ECR repo, an IRSA role and a secret shell.
+#
+# 4 Oct 2026: doorstep-service (Doorstep home services, closed at the
+# gateway; photos go through media-service, so its IRSA role has no policy).
 variable "service_names" {
   type = list(string)
   default = [
@@ -98,6 +101,7 @@ variable "service_names" {
     "post-service",
     "qa-service",
     "rider-service",
+    "doorstep-service",
     "search-service",
     "suggestion-service",
     "trust-safety-service",
@@ -323,9 +327,11 @@ variable "aurora_databases" {
   type    = list(string)
   default = ["app", "identity_db", "chat_db", "call_db", "commerce_db"]
 }
+# btree_gist: doorstep-service's exclusion constraint on a professional's
+# calendar (EXCLUDE USING gist (pro_id WITH =, during WITH &&)).
 variable "aurora_extensions" {
   type    = list(string)
-  default = ["postgis", "pg_trgm", "pgcrypto"]
+  default = ["postgis", "pg_trgm", "pgcrypto", "btree_gist"]
 }
 
 # ─── Kafka (MSK Provisioned) ───────────────────────────────────────────

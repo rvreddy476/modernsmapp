@@ -80,6 +80,10 @@ services:
     environment:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+      # Doorstep stays closed; the dev pilot (call_a, call_b) is not carried
+      # over. Empty lets nobody through.
+      DOORSTEP_PUBLIC_ENABLED: "false"
+      DOORSTEP_PILOT_USER_IDS: ${DOORSTEP_PILOT_USER_IDS:-}
 
   identity-auth:
     <<: *transport_certs
@@ -288,6 +292,25 @@ services:
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:?set DIGILOCKER_BASE_URL}
       DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:?set DIGILOCKER_API_KEY}
       DIGILOCKER_REDIRECT_URI: ${DIGILOCKER_REDIRECT_URI:?set DIGILOCKER_REDIRECT_URI}
+
+  doorstep-service:
+    <<: *transport_certs
+    environment:
+      # Arms the fail-closed start checks: every dev mock (DigiLocker, face
+      # compare, background check) is refused, and the PII keys, the payments
+      # token and the platform GSTIN are required.
+      ENV: production
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+      DOORSTEP_PII_KEYS: ${DOORSTEP_PII_KEYS:?set DOORSTEP_PII_KEYS}
+      DOORSTEP_PII_LOOKUP_SALT: ${DOORSTEP_PII_LOOKUP_SALT:?set DOORSTEP_PII_LOOKUP_SALT}
+      DOORSTEP_SERVICE_TOKEN_KEY: ${DOORSTEP_SERVICE_TOKEN_KEY:?set DOORSTEP_SERVICE_TOKEN_KEY}
+      DOORSTEP_SERVICE_TOKEN_KID: ${DOORSTEP_SERVICE_TOKEN_KID:?set DOORSTEP_SERVICE_TOKEN_KID}
+      DOORSTEP_PLATFORM_GSTIN: ${DOORSTEP_PLATFORM_GSTIN:?set DOORSTEP_PLATFORM_GSTIN}
+      DIGILOCKER_MODE: disabled
+      DOORSTEP_FACE_COMPARE_MODE: http
+      DOORSTEP_BACKGROUND_CHECK_MODE: uploaded_document
+      DOORSTEP_PUBLIC_BASE_URL: ${DOORSTEP_PUBLIC_BASE_URL:?set DOORSTEP_PUBLIC_BASE_URL}
 
   nextjs:
     environment:

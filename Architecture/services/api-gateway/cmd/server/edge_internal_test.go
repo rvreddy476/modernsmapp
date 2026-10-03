@@ -134,6 +134,8 @@ var edgeInternalTargets = []string{
 	"/v1/feed/internal/debug",
 	"/v1/reviewer/internal/enqueue",
 	"/v1/dating/internal/risk/11111111-1111-4111-8111-111111111111",
+	"/v1/doorstep/internal/admin/professionals/11111111-1111-4111-8111-111111111111/approve",
+	"/v1/doorstep/internal/admin/bookings/11111111-1111-4111-8111-111111111111/refund",
 }
 
 func TestEdgeRefusesInternalPathsForEveryCaller(t *testing.T) {
@@ -229,6 +231,7 @@ func TestInternalKeyIsStampedOnlyForUpstreamsThatNeedIt(t *testing.T) {
 		{"/v1/calls/history", false},
 		{"/v1/commerce/products", true},
 		{"/v1/posts/feed", true},
+		{"/v1/doorstep/catalogue", true},
 		{"/v1/admin/commerce/sellers/queue", true},
 	}
 	for _, anonymous := range []bool{true, false} {
@@ -448,5 +451,81 @@ func TestEdgeRefusesInternalPathsUnderSubtitles(t *testing.T) {
 	}
 	if hits := up.take(); len(hits) != 0 {
 		t.Fatalf("internal path under /v1/subtitles reached an upstream: %+v", hits)
+	}
+}
+
+// ─── /v1/doorstep ────────────────────────────────────────────────────
+//
+// Doorstep's admin family lives at /v1/doorstep/internal/admin/* and is for
+// admin-service in-cluster only. Through the real chain, with the product
+// OPEN and the caller on the pilot list holding every platform role, it is
+// still 404 and never reaches doorstep-service; the user routes do reach it,
+// stamped with the internal key, and only for the pilot while closed.
+func TestDoorstepInternalAdminIsNeverReachableFromTheEdge(t *testing.T) {
+	const pilotUser = "33333333-3333-4333-8333-333333333333" // edgeToken's user
+	up := newRecordingUpstream(t)
+	target, err := url.Parse(up.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routes []route
+	for _, rd := range routeDefinitions() {
+		routes = append(routes, newRoute(rd.prefix, target, edgeTestInternalKey))
+	}
+	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
+	passThrough := func(next http.Handler) http.Handler { return next }
+	build := func(env map[string]string) http.Handler {
+		products, err := dormantProductsFromEnv(envOf(env), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core := newCoreHandler(routes, nil, true, products, disabledprefixes.Set{})
+		return edgeChain(keys, devTestPolicy(), passThrough, nil, core)
+	}
+	superadmin := edgeToken(t, "superadmin admin moderator", "")
+
+	for name, env := range map[string]map[string]string{
+		"open":           {"DOORSTEP_PUBLIC_ENABLED": "true"},
+		"closed, pilot":  {"DOORSTEP_PILOT_USER_IDS": pilotUser},
+		"closed, nobody": nil,
+	} {
+		gw := build(env)
+		for _, p := range []string{
+			"/v1/doorstep/internal/admin/professionals",
+			"/v1/doorstep/internal/admin/bookings/x/refund",
+			"/v1/doorstep/INTERNAL/admin/stats",
+			"/v1/doorstep%2Finternal/admin/audit",
+			"/v1/doorstep/x/../internal/admin/config",
+		} {
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				req := httptest.NewRequest(method, p, nil)
+				req.Header.Set("Authorization", "Bearer "+superadmin)
+				req.Header.Set("X-Internal-Service-Key", edgeTestInternalKey)
+				res := httptest.NewRecorder()
+				gw.ServeHTTP(res, req)
+				if res.Code != http.StatusNotFound {
+					t.Errorf("%s: %s %s gave %d, want 404", name, method, p, res.Code)
+				}
+			}
+		}
+		if hits := up.take(); len(hits) != 0 {
+			t.Fatalf("%s: a doorstep internal path reached the upstream: %+v", name, hits)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/doorstep/catalogue", nil)
+		req.Header.Set("Authorization", "Bearer "+edgeToken(t, "user", ""))
+		req.Header.Set("X-Internal-Service-Key", "client-forged")
+		res := httptest.NewRecorder()
+		gw.ServeHTTP(res, req)
+		hits := up.take()
+		if name == "closed, nobody" {
+			if res.Code != http.StatusNotFound || len(hits) != 0 {
+				t.Errorf("%s: catalogue gave %d with %d hits, want 404 and none", name, res.Code, len(hits))
+			}
+			continue
+		}
+		if res.Code != http.StatusOK || len(hits) != 1 || hits[0].key != edgeTestInternalKey {
+			t.Errorf("%s: catalogue gave %d hits %+v, want 200 with the gateway's key", name, res.Code, hits)
+		}
 	}
 }
