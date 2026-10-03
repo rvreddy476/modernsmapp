@@ -1,0 +1,169 @@
+# payments-service overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `payments-service` (Commerce P0 LB-24 / M-10 / v1 §5.11). Secrets by
+# reference only (atpost/qa/payments-service). __TF_*__ placeholders come
+# from Terraform outputs.
+#
+# QA: Razorpay TEST MODE for good (contract 3 Oct 2026): the seeder stores a
+# rzp_test_ key id, its secret and the test webhook secret in
+# atpost/qa/payments-service; live keys never belong in this account.
+# PAYMENTS_ALLOW_STUB is deliberately ABSENT (main.go exits if it is set while
+# ENV=prod), so testers pay through the real Razorpay window with test cards
+# and test UPI. Razorpay TEST dashboard webhook URL:
+# https://api-qa.cleestudio.com/v1/payments/webhook
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: payments-service
+  port: 8102
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/payments-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-payments-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/payments-service
+  data:
+    # ── Infrastructure ────────────────────────────────────────────
+    # Aurora `commerce_db`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+
+    # ── Platform identity ─────────────────────────────────────────
+    # INTERNAL_SERVICE_KEY is retained only for the legacy routes during the
+    # food-service migration window; no money route accepts it (A2).
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+
+    # ── PSP credentials (v1 §5.11) ────────────────────────────────
+    # main.go refuses to start with a key id and no secret, or without the
+    # webhook secret (verification cannot fail closed without it).
+    - { secretKey: RAZORPAY_KEY_ID, remoteRef: razorpay_key_id }
+    - { secretKey: RAZORPAY_KEY_SECRET, remoteRef: razorpay_key_secret }
+    - { secretKey: RAZORPAY_WEBHOOK_SECRET, remoteRef: razorpay_webhook_secret }
+
+    # ── Caller allowlist (A2): PUBLIC keys only ───────────────────
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY, remoteRef: caller_commerce_pubkey }
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
+    - { secretKey: SERVICE_CALLER_FOOD_SERVICE_PUBKEY, remoteRef: caller_food_pubkey }
+    - { secretKey: SERVICE_CALLER_FOOD_SERVICE_KID, remoteRef: caller_food_kid }
+    # dating-service (migration 011), rider-service (012 + 013) and
+    # admin-service are NOT enabled: each needs its public key stored
+    # first, these lines uncommented, then its name added to SERVICE_CALLERS
+    # — in that order. A listed caller with no KID/PUBKEY refuses boot and
+    # takes every payment down.
+    # - { secretKey: SERVICE_CALLER_DATING_SERVICE_PUBKEY, remoteRef: caller_dating_pubkey }
+    # - { secretKey: SERVICE_CALLER_DATING_SERVICE_KID, remoteRef: caller_dating_kid }
+    # - { secretKey: SERVICE_CALLER_RIDER_SERVICE_PUBKEY, remoteRef: caller_rider_pubkey }
+    # - { secretKey: SERVICE_CALLER_RIDER_SERVICE_KID, remoteRef: caller_rider_kid }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+
+  # A2 — who may call, what they may do, and what they may do it to. An
+  # empty OPS or REFTYPES entry is a startup error, never "allow all".
+  SERVICE_CALLERS: 'commerce-service,food-service'
+  SERVICE_CALLER_COMMERCE_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create,payments:payment.fetch'
+  SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: 'order'
+  SERVICE_CALLER_FOOD_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  SERVICE_CALLER_FOOD_SERVICE_REFTYPES: 'food_order'
+  # Migration 010 — applications each caller may open payments for.
+  SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: 'mstore'
+  SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS: 'feast'
+  # Inert until the caller is enabled above (see externalSecret).
+  SERVICE_CALLER_DATING_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  SERVICE_CALLER_DATING_SERVICE_REFTYPES: 'dating_premium'
+  SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: 'dating'
+  # SERVICE_CALLER_RIDER_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  # SERVICE_CALLER_RIDER_SERVICE_REFTYPES: 'mopedu_ride,mopedu_subscription'
+  # SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS: 'mopedu'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'payments:stats.read,payments:refunds.read,payments:refund.issue,payments:intents.read,payments:reconciliation.read,payments:applications.read,payments:applications.manage,payments:audit.read,payments:offers.manage'
+
+  # LB-9 — reconciliation.
+  PAYMENTS_RECONCILE_INTERVAL_SEC: '60'
+  PAYMENTS_PENDING_AGE_SEC: '600'
+  # Bank offers (Razorpay Offers): dev only; absent means off.
+
+ingress:
+  enabled: false
+
+# The PSP webhook is the only unauthenticated public surface in the payment
+# path (signature-authenticated). Its own ingress on the API host, joining
+# the API ALB group BEFORE the gateway's catch-all; /v1/payments/* is not
+# proxied by the gateway at all (LB-1). Razorpay dashboard webhook URL:
+# https://api-qa.cleestudio.com/v1/payments/webhook
+webhookIngress:
+  enabled: true
+  host: api-qa.cleestudio.com
+  path: /v1/payments/webhook
+  pathType: Prefix
+  groupName: atpost-qa-api
+  groupOrder: 10
+  certificateArn: "__TF_PUBLIC_EDGE_CERTIFICATE_ARN__" # from terraform output public_edge_certificate_arn
+  # MUST be the API ingress ACL (api-gateway values): one load balancer takes
+  # one WAF ACL, and the load-balancer controller refuses to reconcile the
+  # whole atpost-qa-api group if members name different ones. The separate
+  # psp-webhook ACL (terraform output waf_psp_webhook_acl_arn) therefore
+  # cannot attach here; its 1000-per-5-min rule belongs inside the web ACL as
+  # a rule scoped to this path (W1), or the webhook needs its own host and ALB
+  # (groupName empty). render_test.sh asserts the two ACLs are equal.
+  wafAclArn: "__TF_WAF_WEB_ACL_ARN__" # from terraform output waf_web_acl_arn
+
+# A2 — only these workloads may reach payments. Behind the service token,
+# not instead of it. Pod peers use the chart's app.kubernetes.io/name label.
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - podSelector: { matchLabels: { app.kubernetes.io/name: commerce-service } }
+    - podSelector: { matchLabels: { app.kubernetes.io/name: food-service } }
+    - podSelector: { matchLabels: { app.kubernetes.io/name: dating-service } }
+    - podSelector: { matchLabels: { app.kubernetes.io/name: rider-service } }
+    - podSelector: { matchLabels: { app.kubernetes.io/name: admin-service } }
+    - podSelector: { matchLabels: { app.kubernetes.io/name: api-gateway } }
+    - ingressController: true # the webhook path only (ALB ENIs in the VPC)
+  ingressControllerCidrs:
+    - "10.40.0.0/16" # the QA VPC CIDR (infra/terraform/envs/qa/variables.tf vpc_cidr; not an output)
+  monitoringNamespace: observability
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

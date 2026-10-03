@@ -1,0 +1,148 @@
+# post-service overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `post-service`. Secrets by reference only (atpost/qa/post-service).
+# __TF_*__ placeholders come from Terraform outputs.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: post-service
+  port: 8084
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/post-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+# QA size: one copy; the HPA may add a second.
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-post-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/post-service
+  data:
+    # Aurora `app`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # Moderation capability HMAC keys: ISSUED by trust-safety-service,
+    # VERIFIED here; byte-identical in both secrets (>= 32 bytes or boot
+    # refuses). POST_RESTRICTION_HMAC_KEY (case-specific holds, phase 3)
+    # was missing from these values — added (audit finding 5).
+    - { secretKey: STORY_MODERATION_HMAC_KEY, remoteRef: story_moderation_hmac_key }
+    - { secretKey: STORY_MODERATION_HMAC_KEY_PREVIOUS, remoteRef: story_moderation_hmac_key_previous }
+    - { secretKey: POST_MODERATION_HMAC_KEY, remoteRef: post_moderation_hmac_key }
+    - { secretKey: POST_MODERATION_HMAC_KEY_PREVIOUS, remoteRef: post_moderation_hmac_key_previous }
+    - { secretKey: POST_RESTRICTION_HMAC_KEY, remoteRef: post_restriction_hmac_key }
+    # Publication standing (P-5): post-service asks trust-safety with ITS OWN
+    # ed25519 service token; without the key EVERY publish answers 503. The
+    # private seed + kid live here; the public half is registered with
+    # trust-safety-service (caller_post_pubkey / caller_post_kid). Was
+    # missing from these values — added (audit finding 5).
+    - { secretKey: POST_SERVICE_TOKEN_KEY, remoteRef: post_service_token_key }
+    - { secretKey: POST_SERVICE_TOKEN_KID, remoteRef: post_service_token_kid }
+    # trust-safety-service calls /v1/posts/internal restrictions with its own
+    # token (post:restrictions.read): its PUBLIC key is registered here.
+    - { secretKey: SERVICE_CALLER_TRUST_SAFETY_SERVICE_PUBKEY, remoteRef: caller_trust_safety_pubkey }
+    - { secretKey: SERVICE_CALLER_TRUST_SAFETY_SERVICE_KID, remoteRef: caller_trust_safety_kid }
+    # Admin console (Social and Tube): NOT enabled yet (401 until then). To
+    # enable: the founder's ONE admin key (admin-service values, step 1):
+    # public half → caller_admin_pubkey, kid → caller_admin_kid; uncomment
+    # the two lines below AND add admin-service to SERVICE_CALLERS with its
+    # OPS line; enable admin-service's two lines.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+
+  # ── Managed stores ────────────────────────────────────────────────────────
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  # Scylla on EKS (operator-managed client Service; terraform output
+  # scylla_client_service). Keyspaces: deploy/scylla/ applies schema.prod.cql.
+  SCYLLA_HOSTS: atpost-qa-client.scylla.svc.cluster.local
+
+  # Account control: identity-topic consumer + purge acks.
+  IDENTITY_KAFKA_TOPIC: identity.events.v1
+  PURGE_ACKS_TOPIC: platform.purge-acks.v1
+  # POST_PURGE_AFTER / POST_PURGE_INTERVAL unset: production defaults (30 d
+  # restore window, 5 min tick). MAX_POSTS_PER_HOUR/DAY unset: production
+  # defaults (20/hour, 50/day).
+
+  # ── Peers ────────────────────────────────────────────────────────────────
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  # The APP user-service owns usernames (@mention resolution, by-owner).
+  APP_USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  # Visible view counts: analytics-service's display view.
+  ANALYTICS_SERVICE_URL: http://analytics-service.atpost.svc.cluster.local:8094
+  # Publication standing (P-5).
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  # Reviewer programme is OFF at launch (no reviewer-service deployed):
+  # REVIEWER_SERVICE_URL unset, nothing is routed to review.
+  REVIEW_ALL_VIDEOS: "false"
+
+  # Callers whose service tokens post-service verifies.
+  SERVICE_CALLERS: 'trust-safety-service'
+  SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS: 'post:restrictions.read'
+  # Admin console (see externalSecret above): then SERVICE_CALLERS becomes
+  # 'trust-safety-service,admin-service' and this OPS line is uncommented.
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'social:stats.read,social:posts.moderate,social:posts.remove,social:reels.moderate,social:reels.remove,social:comments.moderate,social:comments.remove,social:reports.act,social:users.read,tube:stats.read,tube:videos.moderate,tube:videos.remove,tube:channels.moderate,tube:reports.act'
+  # Migration runner: new files under database/migrations/ apply on boot.
+  SCHEMA_MIGRATIONS_BASELINE: "false"
+  # Author cards, birth dates (age gates) and creator monetization (defaults
+  # are compose names).
+  PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains
+
+# post-service migrations reference tables owned by other services:
+#   media_assets     -> media-service   (003_content_type_reel_video.sql)
+#   user_preferences -> feed-service    (009_crosspost_v2.sql)
+#   users            -> user-service    (010_postbook_features.sql)
+schemaDependencies:
+  - media_assets
+  - user_preferences
+  - users

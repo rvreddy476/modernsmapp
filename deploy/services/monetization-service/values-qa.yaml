@@ -1,0 +1,99 @@
+# monetization-service overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `monetization-service`. Secrets by reference only (atpost/qa/
+# monetization-service). __TF_*__ placeholders come from Terraform outputs.
+#
+# LAUNCH: writes and payouts OFF (plan §3 "Creator payouts: off"). Only the
+# read-only creator-ledger endpoints are served; no money-moving worker.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: monetization-service
+  port: 8099
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/monetization-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-monetization-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/monetization-service
+  data:
+    # Aurora `app` (the analytics schema must exist too: settlement reads it).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    # Payout rail (RazorpayX) + bank-account capture key: built only when
+    # payouts are enabled. No production RazorpayX credentials exist; leave
+    # the entries commented until the founder places them.
+    # - { secretKey: RAZORPAY_KEY_ID, remoteRef: razorpay_key_id }
+    # - { secretKey: RAZORPAY_KEY_SECRET, remoteRef: razorpay_key_secret }
+    # - { secretKey: RAZORPAYX_ACCOUNT_NUMBER, remoteRef: razorpayx_account_number }
+    # - { secretKey: RAZORPAYX_WEBHOOK_SECRET, remoteRef: razorpayx_webhook_secret }
+    # - { secretKey: MONETIZATION_BANK_DETAILS_KEY, remoteRef: monetization_bank_details_key }
+    # Admin console (Monetization): NOT enabled yet. To enable: the founder's
+    # ONE admin key (admin-service values, step 1): public half →
+    # caller_admin_pubkey, kid → caller_admin_kid; uncomment the two lines
+    # below AND the SERVICE_CALLERS lines under env; enable admin-service's
+    # two lines. With writes off every route still answers 503
+    # MONETIZATION_NOT_LAUNCHED (shown as "not launched").
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  # The financial launch boundary. CLOSED.
+  MONETIZATION_WRITES_ENABLED: "false"
+  # Withdrawals: requires writes on; the process refuses payouts-on/writes-off.
+  MONETIZATION_PAYOUTS_ENABLED: "false"
+  # Maintenance mode: only ever true for a supervised correction run.
+  MONETIZATION_MAINTENANCE: "false"
+  # TDS at payout: computed and recorded, NOT deducted (founder, 12 Sep 2026).
+  MONETIZATION_TDS_APPLY: "false"
+  CF_SETTLEMENT_CADENCE: monthly
+  # Admin console (see externalSecret above for the order).
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'monetization:stats.read,monetization:fraud.review,monetization:wallet.freeze,monetization:wallet.unfreeze,monetization:wallet.rebuild,monetization:fund.read,monetization:fund.rates,monetization:creators.suspend,monetization:fund.settle,monetization:fund.reverse,monetization:fund.budget,monetization:disputes.read,monetization:disputes.act,monetization:refund.issue,monetization:payouts.read,monetization:audit.read'
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

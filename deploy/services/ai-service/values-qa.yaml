@@ -1,0 +1,75 @@
+# ai-service overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service `ai-service`.
+# Secrets by reference only (atpost/qa/ai-service). __TF_*__ placeholders
+# come from Terraform outputs.
+#
+# PORT 8121 (W4): the Helm values said 8098, which is identity-profile's port
+# (the gateway's AI_SERVICE_URL pointed at the wrong service); compose uses
+# 8117, which is live-service-v2's port in Helm. 8121 is unused anywhere.
+# HTTP_PORT follows service.port automatically.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: ai-service
+  port: 8121
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/ai-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-ai-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/ai-service
+  data:
+    # Aurora `app` and Redis (compose: POSTGRES_DSN, REDIS_ADDR).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # Model access. Empty in dev; production needs a key or the AI routes
+    # answer unavailable. Store anthropic_api_key and uncomment.
+    # - { secretKey: ANTHROPIC_API_KEY, remoteRef: anthropic_api_key }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

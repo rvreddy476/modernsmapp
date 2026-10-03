@@ -22,7 +22,10 @@ W6 web, W8 live). Terraform side: `infra/terraform/envs/prod/README.md`.
 | `argocd/repo-credentials.yaml` | ExternalSecret → ArgoCD repository Secret (token from `atpost/prod/argocd-repo-modernsmapp`) |
 | `argocd/apply-prod-applicationsets.sh` | applies the prod ApplicationSets by hand, filling the account id |
 | `jobs/scylla-schema/` | one-shot Job applying the production Scylla keyspaces and tables |
-| `fill-tf-outputs.sh` | replaces every `__TF_*__` placeholder with its Terraform output |
+| `fill-tf-outputs.sh <qa\|prod>` | replaces every `__TF_*__` placeholder in that environment's values with its Terraform output |
+| `services/<svc>/values-qa.yaml`, `web/*/values-qa.yaml` | QA (the QA AWS account): the prod file with QA data only (section 8) |
+| `argocd/applicationset-qa.yaml` | `atpost-services-qa` and `atpost-web-qa`, MANUAL sync, branch `qa` |
+| `argocd/repo-credentials-qa.yaml` | the repository ExternalSecret for the QA cluster (`atpost/qa/argocd-repo-modernsmapp`) |
 
 How values reach a pod: literal, non-secret settings are in `env:`; every
 connection string and credential (DSN, Kafka brokers + SCRAM user, Redis
@@ -70,8 +73,8 @@ REFUSES to render while any placeholder is left, naming it. Fill them all on
 ```bash
 cd infra/terraform/envs/prod && terraform output   # pass 2 applied, AWS_PROFILE set
 cd ../../../..
-deploy/fill-tf-outputs.sh --check                   # what is left
-deploy/fill-tf-outputs.sh                           # rewrite in place
+deploy/fill-tf-outputs.sh prod --check              # what is left
+deploy/fill-tf-outputs.sh prod                      # rewrite values-prod.yaml in place
 git diff deploy/                                    # review, then commit to release/prod
 ```
 
@@ -139,7 +142,10 @@ It renders every `values-prod.yaml` (services + web) and every
 ApplicationSets (token substituted, each matched file rendered with the
 parameter the template passes), and checks the refusals (no/fake/templated
 account id, empty tags, unfilled placeholders), the optional templates, ports,
-the webhook/ALB/WAF wiring and the web hosts. One service by hand:
+the webhook/ALB/WAF wiring and the web hosts. It does the same for every
+`values-qa.yaml` and both QA ApplicationSets, plus the QA guards listed in
+section 8 (`QA_GUARDS_ONLY=1` runs just those, without Docker, in seconds).
+One service by hand:
 
 ```bash
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W 2>/dev/null || pwd):/wk" -w /wk alpine/helm:latest \
@@ -159,8 +165,8 @@ cqlsh:
 
 ```bash
 kubectl -n scylla get scyllacluster                 # Ready after Terraform pass 2
-deploy/jobs/scylla-schema/apply.sh --dry-run
-deploy/jobs/scylla-schema/apply.sh                  # builds ConfigMap scylla-schema-prod, runs the Job, waits
+deploy/jobs/scylla-schema/apply.sh prod --dry-run
+deploy/jobs/scylla-schema/apply.sh prod             # builds ConfigMap scylla-schema-prod, runs the Job, waits
 ```
 
 Re-running is safe (`IF NOT EXISTS` everywhere).
@@ -177,7 +183,7 @@ Re-running is safe (`IF NOT EXISTS` everywhere).
    production without it), `mopedu_platform_gstin` (rider, same),
    `live_egress_s3_access_key_id/secret` (live recordings), Razorpay keys
    (payments refuses to boot without the webhook secret).
-4. `deploy/fill-tf-outputs.sh` run and committed on `release/prod`.
+4. `deploy/fill-tf-outputs.sh prod` run and committed on `release/prod`.
 5. CI has written real image tags for every service and both web apps.
 6. Scylla schema applied (section 6).
 7. Sync in the plan's order (runbook section 6): identity-auth, identity-user,
@@ -192,3 +198,124 @@ migrator yet; the server migrates at boot); the gateway closes
 (no production provider, no gate of their own); calls off, payouts off,
 communities/dating/rider/reviewer closed, live pilot-only, OAuth sign-up off,
 no `OTP_BYPASS_CODE`, no `PAYMENTS_ALLOW_STUB`.
+
+## 8. QA — the QA AWS account (order of operations)
+
+The new AWS account is QA for good (contract 3 Oct 2026); production gets its
+own account later and uses everything above unchanged. QA is ADDED beside it:
+
+| | QA | prod |
+|---|---|---|
+| values | `values-qa.yaml` | `values-prod.yaml` |
+| ApplicationSets | `argocd/applicationset-qa.yaml` (`qa-<svc>`, `web-qa-<app>`) | `argocd/applicationset.yaml` |
+| branch | `qa` | `release/prod` |
+| hosts | `qa.`, `api-qa.`, `ws-qa.`, `admin-qa.`, `media-qa.cleestudio.com` | `app.` (+ bare), `api.`, `ws.`, `admin.`, `media.` |
+| secrets | `atpost/qa/<svc>` | `atpost/prod/<svc>` |
+| IRSA / ALB groups / Scylla | `atpost-qa-<svc>-irsa`, `atpost-qa-{api,ws,web}`, `atpost-qa-client` | `atpost-prod-…` |
+| VPC CIDR (payments NetworkPolicy, `TRUSTED_PROXIES`) | `10.40.0.0/16` | `10.30.0.0/16` |
+| JWT issuer / audience | `https://api-qa.cleestudio.com` / `atpost-api-qa` | `auth-service` / `atpost-api` |
+| email | `no-reply@qa.cleestudio.com`, set `atpost-qa-transactional` | `no-reply@cleestudio.com`, `atpost-prod-transactional` |
+| Scylla | 1 node, `schema.qa.cql` (NetworkTopologyStrategy RF 1) | 3 nodes, `schema.prod.cql` (RF 3) |
+
+**QA runs with PRODUCTION SEMANTICS.** `ENV: prod`, `APP_ENV: production`
+(gateway, identity-auth, chat x3, search) and `DEPLOY_ENV: production` (media)
+are exactly prod's. Never set them to `qa`: `APP_ENV=qa` downgrades the
+gateway, auth, chat, search, ai and group to development rules (HS256,
+unpinned issuers), and commerce refuses to boot on an unknown `ENV`. The only
+"qa" marker is the ArgoCD label `atpost.io/env: qa`; nothing reads it.
+
+Everything else is prod's, launch switches included (render_test.sh fails on
+any drift), with three deliberate QA values: Razorpay in TEST mode through
+the seeded secret (`rzp_test_…`; `PAYMENTS_ALLOW_STUB` absent, so testers use
+the real checkout window with test cards/UPI), the STUB courier
+(`COURIER_PROVIDER: stub` as a value in commerce, no Shiprocket credentials
+mounted), and the admin console's image origins narrowed to `media-qa.` and
+`api-qa.`. `DIGILOCKER_MODE: disabled` for dating and food and the rider gate
+closed are prod's values too.
+
+QA size: one replica each, HPA 1..2 where prod autoscales, no
+PodDisruptionBudget (one replica would block every node drain), requests
+25m/128Mi (most services), 50m/192Mi (gateway, auth, post, feed, media,
+chat-message, chat-ws, search, graph), 25m/64Mi (the four dormant ones),
+media worker 250m/512Mi (one replica, 20Gi scratch), web 50m/192Mi, admin
+25m/128Mi; limits as prod. About 1.4 vCPU and 5.2 GiB requested for 36 pods,
+so the two m7g.xlarge general nodes keep room for ArgoCD, observability and
+the rest.
+
+Guards (charts/atpost-service/render_test.sh): no prod host and no bare domain
+in any QA file (comments included), no `atpost/prod/`, `atpost-prod-`, prod
+CIDR or `release/prod`; ENV/APP_ENV/DEPLOY_ENV/NODE_ENV equal to prod's, in the
+files and in every rendered container; no `PAYMENTS_ALLOW_STUB`,
+`OTP_BYPASS_CODE`, stub media or stub payments; every env value equal to
+prod's after the QA host/name mapping; one QA JWT identity across gateway,
+identity-auth and the chat verifiers; one replica, HPA max 2, no PDB; QA-only
+ingress hosts; the QA ApplicationSets manual, on `qa`, matching
+`values-qa.yaml` only.
+
+Order (each step after the previous one is green):
+
+1. Terraform for the QA account, passes 0 and 1:
+   `infra/terraform/envs/qa/README.md` sections 1–8 (certificates ISSUED,
+   `media_custom_domain_enabled = true` applied: `MEDIA_CDN_BASE_URL` is
+   `https://media-qa.cleestudio.com`, which only works once CloudFront has the
+   custom domain).
+2. Create the branch `qa` from `main` (the lead) and push it. The QA
+   ApplicationSets track it; with no branch every Application shows an error.
+3. Fill the Terraform placeholders in the QA values on the `qa` branch:
+   ```bash
+   cd infra/terraform/envs/qa && terraform output   # AWS_PROFILE = the QA profile
+   cd ../../../..
+   deploy/fill-tf-outputs.sh qa --check
+   deploy/fill-tf-outputs.sh qa                     # touches values-qa.yaml only
+   git diff deploy/                                 # review, commit to qa, push
+   ```
+4. Terraform pass 2 (envs/qa README section 9): it applies
+   `deploy/argocd/applicationset-qa.yaml` through templatefile with the QA
+   account id. Then check the Applications exist and are NOT syncing:
+   ```bash
+   kubectl -n argocd get applications | head
+   ```
+5. Seed the QA secrets (`scripts/prodsecrets.sh --env qa …`, order in its
+   header): every `atpost/qa/<svc>`, Razorpay TEST keys in
+   `atpost/qa/payments-service` (and the `rzp_test_` key id for the web build),
+   the LiveKit QA project, `food_platform_gstin` / `mopedu_platform_gstin`
+   (food and rider refuse to boot in production mode without them).
+   ```bash
+   kubectl apply -f deploy/argocd/repo-credentials-qa.yaml
+   kubectl -n atpost get externalsecret          # after the first sync: all SecretSynced
+   ```
+6. Images: CI builds every service into the QA account's ECR and writes the
+   tags into `values-qa.yaml` on `qa` (the tag bump must target values-qa).
+   The web image MUST be built with the QA build arguments
+   (`NEXT_PUBLIC_SITE_URL=https://qa.cleestudio.com`,
+   `NEXT_PUBLIC_ENABLE_STUB_PAYMENTS=false`, the `rzp_test_` key id); see the
+   header of `web/app/values-qa.yaml`.
+7. Scylla schema, RF 1:
+   ```bash
+   kubectl -n scylla get scyllacluster              # atpost-qa Ready
+   deploy/jobs/scylla-schema/apply.sh qa --dry-run
+   deploy/jobs/scylla-schema/apply.sh qa
+   ```
+8. Sync by hand in the plan's order: `qa-identity-auth-service`,
+   `qa-identity-user-service`, `qa-identity-profile-service`,
+   `qa-api-gateway`, `qa-user-service`, `qa-graph-service`, `web-qa-web`,
+   `web-qa-admin-console`; then the rest.
+   ```bash
+   argocd app sync qa-identity-auth-service
+   ```
+9. Public host names at Cloudflare (envs/qa README section 10). The web and
+   admin ingresses live in namespace `atpost-web`, the API and websocket ones
+   in `atpost`:
+   ```bash
+   kubectl get ingress -A
+   ```
+10. Razorpay TEST dashboard webhook:
+    `https://api-qa.cleestudio.com/v1/payments/webhook`; LiveKit QA project
+    webhook: `https://api-qa.cleestudio.com/v1/livestream/webhooks/livekit`.
+11. After the founder registers on QA: `SUPERADMIN_USER_IDS` in
+    `services/identity-auth-service/values-qa.yaml` (and, when chosen,
+    `LIVE_PILOT_USER_IDS` in live-service-v2), commit to `qa`, sync those two.
+    These per-account user-id lists (and ADMIN/MODERATOR/PAGES_ADMIN ids) are
+    the only env values the drift guard lets QA set differently from prod;
+    `DATING_PILOT_USER_IDS` and `COMMUNITIES_ALLOWED_*` open closed products
+    and must stay prod's (empty) unless prod changes too.

@@ -1,0 +1,104 @@
+# search-service overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `search-service`, translated to production: Amazon OpenSearch over https
+# with fine-grained access (internal master user; W7b added basic auth).
+# Secrets by reference only (atpost/qa/search-service). __TF_*__
+# placeholders come from Terraform outputs.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: search-service
+  port: 8089
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/search-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-search-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/search-service
+  data:
+    # Aurora `app`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+    # OpenSearch: https://<opensearch_endpoint output> written by the seeder
+    # (scripts/prodsecrets.sh export-outputs adds the scheme), and the
+    # internal master user (fine-grained access control). With
+    # APP_ENV=production an https OPENSEARCH_URL without credentials refuses
+    # to start (W7b).
+    - { secretKey: OPENSEARCH_URL, remoteRef: opensearch_url }
+    - { secretKey: OPENSEARCH_USERNAME, remoteRef: opensearch_username }
+    - { secretKey: OPENSEARCH_PASSWORD, remoteRef: opensearch_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+
+env:
+  ENV: prod
+  # Production marker read by the OpenSearch client config
+  # (search.IsProductionEnv): https-without-credentials refusal is live.
+  # OPENSEARCH_INSECURE_SKIP_VERIFY is deliberately absent.
+  APP_ENV: production
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  # Lean domain: one node, so one shard and no replica per index (upgrade
+  # together with the node count).
+  OPENSEARCH_INDEX_SHARDS: "1"
+  OPENSEARCH_INDEX_REPLICAS: "0"
+  # Source of truth for the users_v1 reindex / startup auto-heal.
+  PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  IDENTITY_KAFKA_TOPIC: identity.events.v1
+  PURGE_ACKS_TOPIC: platform.purge-acks.v1
+  # Private accounts: follow-set scope and account_visibility authority.
+  # Unset, private accounts index as public — "Do not run this in production".
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
+  # Thumbnails / avatars resolved as the viewer.
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  # Product search: catalogue read-back and attribute definitions.
+  COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
+  # Post read-back for the posts index (default is the compose name).
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

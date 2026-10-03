@@ -1,0 +1,104 @@
+# admin-service overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `admin-service`. Secrets by reference only (atpost/qa/admin-service).
+# __TF_*__ placeholders come from Terraform outputs.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: admin-service
+  port: 8096
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/admin-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-admin-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/admin-service
+  data:
+    # Aurora `app`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # Admin console Wave 2: admin-service signs a 60 s service token per
+    # product admin call. NOT enabled yet: without it the product dashboards
+    # answer 503 PRODUCT_UNAVAILABLE; boot is not refused. To enable:
+    #   1. the founder generates ONE ed25519 key: the private half (base64
+    #      32-byte seed) → admin_service_token_key, its kid →
+    #      admin_service_token_kid here; the public half + the same kid go to
+    #      each product as caller_admin_pubkey / caller_admin_kid
+    #      (identity-auth, dating, commerce, trust-safety, post, user, qa,
+    #      channel, group, community, rider, live-service-v2, payments,
+    #      monetization, food);
+    #   2. enable each product first (its values file: the two secret lines
+    #      and the SERVICE_CALLERS lines);
+    #   3. uncomment the two lines below.
+    # - { secretKey: ADMIN_SERVICE_TOKEN_KEY, remoteRef: admin_service_token_key }
+    # - { secretKey: ADMIN_SERVICE_TOKEN_KID, remoteRef: admin_service_token_kid }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  # Every admin route needs X-Admin-MFA=true (the gateway stamps it from the
+  # admin_mfa claim). Never false outside a laptop.
+  ADMIN_REQUIRE_MFA: "true"
+  # Product dashboards (each enabled per its own values file).
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  FOOD_SERVICE_URL: http://food-service.atpost.svc.cluster.local:8113
+  COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  QA_SERVICE_URL: http://qa-service.atpost.svc.cluster.local:8108
+  CHANNEL_SERVICE_URL: http://channel-service.atpost.svc.cluster.local:8106
+  GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
+  COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
+  RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
+  # Access page (Wave 1, B4): identity-auth's token-only admin family.
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

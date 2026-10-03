@@ -80,6 +80,10 @@ var environments = []struct {
 }{
 	{"prod", "api-gateway/values-prod.yaml", "identity-auth-service/values-prod.yaml", true},
 	{"staging", "api-gateway/values-staging.yaml", "identity-auth-service/values-staging.yaml", false},
+	// The QA account (3 Oct 2026) runs with PRODUCTION semantics on purpose:
+	// a non-production APP_ENV/ENV would accept HS256 and unpinned issuers on
+	// the public internet. Its issuer/audience are QA's own.
+	{"qa", "api-gateway/values-qa.yaml", "identity-auth-service/values-qa.yaml", true},
 }
 
 func TestDeploymentIssuerAndAudienceMatchAcrossServices(t *testing.T) {

@@ -32,6 +32,9 @@ import (
 const (
 	prodValues    = "../../../../../deploy/services/commerce-service/values-prod.yaml"
 	stagingValues = "../../../../../deploy/services/commerce-service/values-staging.yaml"
+	// The QA account (3 Oct 2026). It runs with PRODUCTION semantics
+	// (ENV: prod), in its own account with its own CMK and role.
+	qaValues = "../../../../../deploy/services/commerce-service/values-qa.yaml"
 )
 
 func readValues(t *testing.T, path string) string {
@@ -48,6 +51,7 @@ func managedManifests(t *testing.T) map[string]string {
 	return map[string]string{
 		"prod":    readValues(t, prodValues),
 		"staging": readValues(t, stagingValues),
+		"qa":      readValues(t, qaValues),
 	}
 }
 
@@ -103,6 +107,10 @@ func TestProdAndStagingUseDifferentIRSARoles(t *testing.T) {
 	}
 	if p == s {
 		t.Fatalf("prod and staging share the IRSA role %q; the environments are not isolated", p)
+	}
+	q := roleARN.FindString(m["qa"])
+	if q == "" || q == p || q == s {
+		t.Fatalf("qa IRSA role %q must exist and differ from prod %q and staging %q", q, p, s)
 	}
 }
 
@@ -170,6 +178,8 @@ func TestManagedManifestsDeclareARecognisedEnvironment(t *testing.T) {
 	cases := map[string][]string{
 		"prod":    {"ENV: prod", "ENV: production"},
 		"staging": {"ENV: staging", "ENV: stage"},
+		// QA runs with production semantics (ENV audit, 3 Oct 2026).
+		"qa": {"ENV: prod"},
 	}
 	m := managedManifests(t)
 	for env, accepted := range cases {

@@ -1,12 +1,21 @@
-# identity-auth-service overrides for prod (AWS ap-south-1).
+# identity-auth-service overrides for QA (AWS ap-south-1, the QA account).
 #
 # Env contract: Architecture/docker/docker-compose.yml, service
 # `identity-auth`, translated to production. Secrets by reference only
-# (atpost/prod/identity-auth-service). __TF_*__ placeholders come from
+# (atpost/qa/identity-auth-service). __TF_*__ placeholders come from
 # Terraform outputs (deploy/README.md).
 #
 # OTP_BYPASS_CODE is deliberately ABSENT: the service refuses to start in
 # production when it is set (W7b). Never add it here.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
 
 service:
   name: identity-auth-service
@@ -16,29 +25,29 @@ image:
   repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/identity-auth-service'
   tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
 
-# Lean first stage: two copies (auth is on the sign-in path).
-replicaCount: 2
+# QA size: one copy; the HPA may add a second.
+replicaCount: 1
 hpa:
   enabled: true
-  minReplicas: 2
-  maxReplicas: 6
+  minReplicas: 1
+  maxReplicas: 2
   targetCPUUtilizationPercentage: 65
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 50m
+    memory: 192Mi
   limits:
     cpu: "1"
     memory: 1Gi
 
 # IRSA: ses:SendEmail on the verified identity (W2), MSK client policy.
 serviceAccount:
-  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-identity-auth-service-irsa'
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-identity-auth-service-irsa'
 
 externalSecret:
   enabled: true
-  remoteKey: atpost/prod/identity-auth-service
+  remoteKey: atpost/qa/identity-auth-service
   data:
     # Aurora `identity_db` (one DSN per service, pointing at the right
     # database; sslmode=require). The compose name is POSTGRES_DSN; the code
@@ -89,7 +98,7 @@ env:
 
   # Per-IP limits key on the real client: the gateway (and the ALB in front
   # of it) are the only peers, both inside the VPC.
-  TRUSTED_PROXIES: "10.30.0.0/16" # the prod VPC CIDR (infra/terraform/envs/prod/main.tf, module "vpc" vpc_cidr; not an output)
+  TRUSTED_PROXIES: "10.40.0.0/16" # the QA VPC CIDR (infra/terraform/envs/qa/variables.tf vpc_cidr; not an output)
   RATE_LIMIT_ENABLED: "true"
 
   # ── Email via Amazon SES (Module 3 SR-6; contract) ───────────────────────
@@ -97,14 +106,14 @@ env:
   # come from the SDK default chain (IRSA); no static key anywhere.
   # SES_FROM_ADDRESS must be a VERIFIED identity; the configuration set
   # routes bounces and complaints (W1 creates both).
-  SES_FROM_ADDRESS: no-reply@cleestudio.com
-  SES_CONFIGURATION_SET: atpost-prod-transactional
+  SES_FROM_ADDRESS: no-reply@qa.cleestudio.com
+  SES_CONFIGURATION_SET: atpost-qa-transactional
 
   # ── Module 3 SR-1: access-token minting identity ─────────────────────────
   # MUST match api-gateway's JWT_ISSUER / JWT_AUDIENCE exactly.
   APP_ENV: "production"
-  JWT_ISSUER: auth-service
-  JWT_AUDIENCE: "atpost-api"
+  JWT_ISSUER: "https://api-qa.cleestudio.com"
+  JWT_AUDIENCE: "atpost-api-qa"
   JWT_RS256_KID: rsa-1
   # Token lifetimes: the service defaults (access 15 min, refresh 30 days).
   # ACCESS_TOKEN_TTL / REFRESH_TOKEN_TTL deliberately unset — dev's year-long
@@ -125,19 +134,18 @@ env:
   # Where OAuth sign-in returns the browser (FrontendURL + /auth/callback),
   # and the provider callbacks registered with Google/Apple/GitHub (sign-up
   # through them is off; the URLs must still be production, never localhost).
-  FRONTEND_URL: https://app.cleestudio.com
+  FRONTEND_URL: https://qa.cleestudio.com
   # The access/refresh session cookies carry Secure (config.go COOKIE_SECURE,
   # default false — it was missing, so they went out without it; audit 3 Oct
   # 2026). The admin cookie is Secure in production regardless. COOKIE_DOMAIN
   # stays unset: host-only cookies on the host that set them.
   COOKIE_SECURE: "true"
-  OAUTH_GOOGLE_REDIRECT_URL: https://api.cleestudio.com/v1/auth/oauth/google/callback
-  OAUTH_APPLE_REDIRECT_URL: https://api.cleestudio.com/v1/auth/oauth/apple/callback
-  OAUTH_GITHUB_REDIRECT_URL: https://api.cleestudio.com/v1/auth/oauth/github/callback
+  OAUTH_GOOGLE_REDIRECT_URL: https://api-qa.cleestudio.com/v1/auth/oauth/google/callback
+  OAUTH_APPLE_REDIRECT_URL: https://api-qa.cleestudio.com/v1/auth/oauth/apple/callback
+  OAUTH_GITHUB_REDIRECT_URL: https://api-qa.cleestudio.com/v1/auth/oauth/github/callback
 
 ingress:
   enabled: false
 
 pdb:
-  enabled: true
-  minAvailable: 1
+  enabled: false # QA runs one replica: any PDB would block node drains

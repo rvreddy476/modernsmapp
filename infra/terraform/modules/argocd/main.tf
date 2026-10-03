@@ -205,7 +205,8 @@ resource "kubernetes_manifest" "project_atpost" {
 # iterations.
 locals {
   applicationsets = var.applicationset_manifest_path != "" ? [
-    for doc in split("\n---\n", templatefile(var.applicationset_manifest_path, { aws_account_id = var.aws_account_id })) :
+    # CRLF normalised first: a Windows checkout (core.autocrlf) would not split on "\n---\n".
+    for doc in split("\n---\n", replace(templatefile(var.applicationset_manifest_path, { aws_account_id = var.aws_account_id }), "\r\n", "\n")) :
     yamldecode(doc) if trimspace(doc) != ""
   ] : []
 }

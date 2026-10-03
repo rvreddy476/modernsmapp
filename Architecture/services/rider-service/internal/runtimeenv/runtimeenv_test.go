@@ -76,6 +76,7 @@ func helmEnv(t *testing.T, file string) map[string]string {
 func TestHelmValuesResolveProduction(t *testing.T) {
 	for file, want := range map[string]bool{
 		"values-prod.yaml":          true,
+		"values-qa.yaml":            true, // QA runs with production semantics
 		"values-azure-prod.yaml":    true,
 		"values-staging.yaml":       false,
 		"values-azure-staging.yaml": false,

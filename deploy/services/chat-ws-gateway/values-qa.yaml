@@ -1,0 +1,102 @@
+# chat-ws-gateway overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `chat-ws-gateway`. Secrets by reference only (atpost/qa/chat-ws-gateway).
+# __TF_*__ placeholders come from Terraform outputs.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: chat-ws-gateway
+  port: 8093
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/chat-ws-gateway'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-chat-ws-gateway-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/chat-ws-gateway
+  data:
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # RS256 verification (public key); HS256 stays accepted in parallel.
+    - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    # Conversation-room entitlements (shared HMAC with chat-message-service;
+    # the gateway verifies, never mints).
+    - { secretKey: CHAT_ENTITLEMENT_SECRET, remoteRef: chat_entitlement_secret }
+
+env:
+  ENV: prod
+  APP_ENV: production
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  JWT_ISSUER: "https://api-qa.cleestudio.com"
+  JWT_AUDIENCE: "atpost-api-qa"
+  JWT_RS256_KID: rsa-1
+  REDIS_TLS_ENABLED: "true"
+  # Browser origins allowed to open a socket (the web app on both hosts).
+  ALLOWED_ORIGINS: https://qa.cleestudio.com
+  # Tokens arrive in the Authorization header (the gateway's query-token
+  # allowlist covers /v1/ws for browsers that cannot set it).
+  WS_ALLOW_QUERY_TOKEN: "false"
+  # Live comment threads: post:<id> rooms admitted after post-service
+  # confirms visibility; live:stream:<id> rooms after live-service-v2 does.
+  WS_POST_ROOMS_ENABLED: "true"
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  ENABLE_LIVE_ROOMS: "true"
+  LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains
+
+# Its own load balancer: long-lived sockets need the 4 h idle timeout, which
+# must not apply to the API ALB.
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: atpost-qa-ws
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /readyz
+    alb.ingress.kubernetes.io/certificate-arn: "__TF_PUBLIC_EDGE_CERTIFICATE_ARN__" # from terraform output public_edge_certificate_arn
+    alb.ingress.kubernetes.io/wafv2-acl-arn: "__TF_WAF_WEB_ACL_ARN__" # from terraform output waf_web_acl_arn
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=14400
+  hosts:
+    - host: ws-qa.cleestudio.com
+      paths:
+        - { path: /, pathType: Prefix }

@@ -157,30 +157,110 @@ func repoFile(t *testing.T, rel string) []byte {
 	return b
 }
 
-// The committed production schema must be exactly the production render of
-// the dev schema: same tables, same bytes, only the replication maps differ.
-func TestCommittedProdSchemaIsCurrent(t *testing.T) {
-	for _, pair := range []struct{ dev, prod string }{
-		{"docker/scylla/schema.cql", "docker/scylla/schema.prod.cql"},
-		{filepath.Join("..", "chat-service", "services", "message-service", "scylla", "schema.cql"),
-			filepath.Join("..", "chat-service", "services", "message-service", "scylla", "schema.prod.cql")},
+// The committed per-environment schemas must be exactly the render of the dev
+// schema for that environment: same tables, same bytes, only the replication
+// maps differ. prod = NetworkTopologyStrategy RF 3; qa = the same strategy at
+// RF 1 (one Scylla node in the QA account).
+func TestCommittedEnvSchemasAreCurrent(t *testing.T) {
+	chat := filepath.Join("..", "chat-service", "services", "message-service", "scylla")
+	for _, env := range []struct {
+		name   string
+		cfg    Config
+		suffix string
+		rf     string
+	}{
+		{"prod", ProdConfig, "schema.prod.cql", "'replication_factor': 3"},
+		{"qa", QAConfig, "schema.qa.cql", "'replication_factor': 1"},
 	} {
-		t.Run(pair.prod, func(t *testing.T) {
-			dev := repoFile(t, pair.dev)
-			prod := repoFile(t, pair.prod)
-			rendered, _, err := Render(dev, ProdConfig)
+		for _, pair := range []struct{ dev, out string }{
+			{"docker/scylla/schema.cql", "docker/scylla/" + env.suffix},
+			{filepath.Join(chat, "schema.cql"), filepath.Join(chat, env.suffix)},
+		} {
+			t.Run(env.name+"/"+pair.out, func(t *testing.T) {
+				dev := repoFile(t, pair.dev)
+				got := repoFile(t, pair.out)
+				rendered, names, err := Render(dev, env.cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, rendered) {
+					t.Fatalf("%s is stale: run `go run ./tools/scyllaschema -env %s -in %s -out %s`", pair.out, env.name, pair.dev, pair.out)
+				}
+				if strings.Contains(string(got), "SimpleStrategy") {
+					t.Fatalf("%s still contains SimpleStrategy", pair.out)
+				}
+				// Every keyspace carries this environment's factor.
+				if n := strings.Count(string(got), env.rf); n != len(names) {
+					t.Fatalf("%s: %d of %d keyspaces carry %s", pair.out, n, len(names), env.rf)
+				}
+				// Everything but the keyspace statements is byte-identical.
+				if a, b := stripKeyspaceLines(got), stripKeyspaceLines(dev); !bytes.Equal(a, b) {
+					t.Fatalf("%s differs from %s outside the CREATE KEYSPACE statements", pair.out, pair.dev)
+				}
+			})
+		}
+	}
+}
+
+func TestPreset(t *testing.T) {
+	for name, want := range map[string]Config{"dev": DevConfig, "qa": QAConfig, "prod": ProdConfig, " QA ": QAConfig} {
+		got, err := Preset(name)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("Preset(%q) = %+v, %v; want %+v", name, got, err, want)
+		}
+	}
+	if _, err := Preset("staging"); err == nil || !strings.Contains(err.Error(), "dev, prod, qa") {
+		t.Fatalf("unknown preset: err = %v", err)
+	}
+	if QAConfig.Strategy != NetworkTopologyStrategy || QAConfig.Factor != 1 {
+		t.Fatalf("QA must be %s RF 1, got %+v", NetworkTopologyStrategy, QAConfig)
+	}
+}
+
+func TestResolveConfig(t *testing.T) {
+	none := flagOverrides{}
+	cases := []struct {
+		name    string
+		env     string
+		prod    bool
+		flags   flagOverrides
+		vars    map[string]string
+		want    Config
+		wantErr string
+	}{
+		{name: "nothing is the dev default", want: DevConfig},
+		{name: "variables without a preset", vars: map[string]string{EnvStrategy: "NetworkTopologyStrategy", EnvFactor: "2"},
+			want: Config{Strategy: NetworkTopologyStrategy, Factor: 2}},
+		{name: "-env qa", env: "qa", want: QAConfig},
+		{name: "-env prod", env: "prod", want: ProdConfig},
+		{name: "-prod", prod: true, want: ProdConfig},
+		{name: "-prod with -env prod", prod: true, env: "prod", want: ProdConfig},
+		{name: "-prod with -env qa disagree", prod: true, env: "qa", wantErr: "disagree"},
+		{name: "a preset beats a stray variable", env: "qa", vars: map[string]string{EnvFactor: "3"}, want: QAConfig},
+		{name: "an explicit flag beats the preset", env: "qa", flags: flagOverrides{Factor: "2"},
+			want: Config{Strategy: NetworkTopologyStrategy, Factor: 2}},
+		{name: "datacenters on the qa preset inherit RF 1", env: "qa", flags: flagOverrides{Datacenters: "ap-south-1"},
+			want: Config{Strategy: NetworkTopologyStrategy, Factor: 1, Datacenters: []Datacenter{{"ap-south-1", 1}}}},
+		{name: "unknown preset", env: "staging", wantErr: "is not one of"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flags := tc.flags
+			if flags == (flagOverrides{}) {
+				flags = none
+			}
+			got, err := resolveConfig(tc.env, tc.prod, flags, envOf(tc.vars))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(prod, rendered) {
-				t.Fatalf("%s is stale: run `go run ./tools/scyllaschema -prod -in %s -out %s`", pair.prod, pair.dev, pair.prod)
-			}
-			if strings.Contains(string(prod), "SimpleStrategy") {
-				t.Fatalf("%s still contains SimpleStrategy", pair.prod)
-			}
-			// Everything but the keyspace statements is byte-identical.
-			if got, want := stripKeyspaceLines(prod), stripKeyspaceLines(dev); !bytes.Equal(got, want) {
-				t.Fatalf("%s differs from %s outside the CREATE KEYSPACE statements", pair.prod, pair.dev)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("config = %+v, want %+v", got, tc.want)
 			}
 		})
 	}

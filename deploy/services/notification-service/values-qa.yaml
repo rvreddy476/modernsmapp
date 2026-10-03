@@ -1,0 +1,114 @@
+# notification-service overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `notification-service`. Secrets by reference only (atpost/qa/
+# notification-service). __TF_*__ placeholders come from Terraform outputs.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: notification-service
+  port: 8088
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/notification-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-notification-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/notification-service
+  data:
+    # Aurora `app`.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    # Realtime tokens: rider and food mint them, notification verifies them.
+    # One shared key (falls back to INTERNAL_SERVICE_KEY when absent), so all
+    # three mount it or none does.
+    - { secretKey: REALTIME_TOKEN_SECRET, remoteRef: realtime_token_secret }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # FCM push (Firebase HTTP v1). FCM_SERVICE_ACCOUNT_KEY accepts the
+    # service-account JSON INLINE (main.go: inline JSON or a file path), so
+    # the production google service-account JSON goes into the secret as a
+    # string; no file mount. Both blank = push disabled (and then
+    # CALL_PUSH_REQUIRED must stay false).
+    - { secretKey: FCM_PROJECT_ID, remoteRef: fcm_project_id }
+    - { secretKey: FCM_SERVICE_ACCOUNT_KEY, remoteRef: fcm_service_account_key }
+    # Transactional email over the SES SMTP interface (the service speaks
+    # SMTP, not the SES API). SMTP credentials are derived from an IAM user
+    # with ses:SendRawEmail (W1/W3). Blank SMTP_HOST below would mean the
+    # NoopMailer: no mail, silently.
+    - { secretKey: SMTP_USERNAME, remoteRef: smtp_username }
+    - { secretKey: SMTP_PASSWORD, remoteRef: smtp_password }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  SCYLLA_HOSTS: atpost-qa-client.scylla.svc.cluster.local # terraform output scylla_client_service
+  # SES SMTP endpoint for ap-south-1 (STARTTLS on 587).
+  SMTP_HOST: email-smtp.ap-south-1.amazonaws.com
+  SMTP_PORT: "587"
+  SMTP_FROM_NAME: Momentum
+  SMTP_FROM_ADDR: no-reply@qa.cleestudio.com
+  # CALL-LB-4B, machine-enforced by notification-service's manifest test:
+  # CALLS_ENABLED may not be "true" in chat-call-service values unless
+  # CALL_PUSH_REQUIRED is "true" here AND FCM is configured. Calls are off at
+  # launch (plan §3), so this stays false.
+  CALL_PUSH_REQUIRED: "false"
+  # Tube channel subscriptions live in post-service.
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  SUBSCRIBERS_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  # Dating lane D8 panic paging: dating is closed at the edge at launch, so
+  # the responder list is empty on purpose (every panic raises a critical
+  # ops alert instead). DECISION PENDING: name the responder before dating
+  # opens.
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  DATING_SAFETY_RESPONDER_USER_IDS: ""
+  DATING_SAFETY_OPS_EMAIL: ""
+  # Follow checks and actor cards (defaults are compose names).
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

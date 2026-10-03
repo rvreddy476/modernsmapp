@@ -10,8 +10,9 @@
 // Rather than hand-maintain two schema files that drift, this tool rewrites
 // ONLY the `WITH replication = {...}` clause of each CREATE KEYSPACE
 // statement and leaves every other byte (tables, comments, line endings)
-// untouched. schema.prod.cql is the committed render for production; the
-// -check mode fails when it is stale.
+// untouched. schema.prod.cql is the committed render for production and
+// schema.qa.cql for QA (one node, RF 1); the -check mode fails when either
+// is stale.
 //
 // Configuration (environment, flags override):
 //
@@ -22,9 +23,14 @@
 //	                             clause uses 'replication_factor': N, which
 //	                             Scylla applies to every datacenter it knows.
 //
+// Presets (-env, or -prod as shorthand for -env prod): dev
+// SimpleStrategy RF 1, qa NetworkTopologyStrategy RF 1, prod
+// NetworkTopologyStrategy RF 3. Explicit flags/variables override a preset.
+//
 // Usage:
 //
-//	go run ./tools/scyllaschema -in docker/scylla/schema.cql -out docker/scylla/schema.prod.cql
+//	go run ./tools/scyllaschema -env prod -in docker/scylla/schema.cql -out docker/scylla/schema.prod.cql
+//	go run ./tools/scyllaschema -env qa   -in docker/scylla/schema.cql -out docker/scylla/schema.qa.cql
 //	SCYLLA_REPLICATION_STRATEGY=NetworkTopologyStrategy SCYLLA_REPLICATION_FACTOR=3 \
 //	  go run ./tools/scyllaschema -in ... -out ... [-check]
 package main
@@ -73,6 +79,33 @@ var DevConfig = Config{Strategy: SimpleStrategy, Factor: 1}
 // ProdConfig is the first production deployment: Scylla operator on EKS,
 // three nodes, one datacenter, RF 3 (aws-fixes-contract, 3 Oct 2026).
 var ProdConfig = Config{Strategy: NetworkTopologyStrategy, Factor: 3}
+
+// QAConfig is the QA account (aws-qa-contract, 3 Oct 2026): the same
+// operator cluster with ONE node, so every keyspace is RF 1. Still
+// NetworkTopologyStrategy, so QA exercises the production statement shape
+// and only the factor differs.
+var QAConfig = Config{Strategy: NetworkTopologyStrategy, Factor: 1}
+
+// Presets are the named policies -env selects. dev is the compose cluster.
+var Presets = map[string]Config{
+	"dev":  DevConfig,
+	"qa":   QAConfig,
+	"prod": ProdConfig,
+}
+
+// Preset returns the named policy, or an error naming the known ones.
+func Preset(name string) (Config, error) {
+	cfg, ok := Presets[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
+		known := make([]string, 0, len(Presets))
+		for k := range Presets {
+			known = append(known, k)
+		}
+		sort.Strings(known)
+		return Config{}, fmt.Errorf("-env %q is not one of %s", name, strings.Join(known, ", "))
+	}
+	return cfg, nil
+}
 
 // ConfigFromEnv reads the three variables with dev defaults. getenv nil
 // means the process environment.

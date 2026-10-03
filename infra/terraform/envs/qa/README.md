@@ -199,7 +199,7 @@ QA Applications.
 ## 10. Public host names at Cloudflare (after the first ArgoCD sync)
 
 1. ```bash
-   kubectl -n atpost get ingress
+   kubectl get ingress -A   # api/ws in namespace atpost, web/admin in atpost-web
    ```
    The ADDRESS column holds the ALB host names.
 2. Put them into `qa.tfvars` (`ingress_alb_hostnames`, keys `qa`, `api-qa`,
@@ -220,7 +220,8 @@ the values fill script read them unchanged (`TF_DIR=infra/terraform/envs/qa`).
 |---|---|
 | `service_irsa_role_arns` | `serviceAccount.irsaRoleArn` in each values-qa.yaml (`atpost-qa-<service>-irsa`) |
 | `media_bucket_name` | media-service + worker `S3_BUCKET` |
-| `media_cdn_base_url`, `media_cloudfront_key_pair_id`, `media_cloudfront_signing_secret_arn` | seeder → `atpost/qa/media-service` |
+| `media_cloudfront_key_pair_id`, `media_cloudfront_signing_secret_arn` | seeder → `atpost/qa/media-service` |
+| `media_cdn_base_url` | a literal `MEDIA_CDN_BASE_URL` in `deploy/services/media-service/values-qa.yaml` (works once `media_custom_domain_enabled = true` is applied) |
 | `live_recordings_bucket_name`, `commerce_invoices_bucket_name`, `food_files_bucket_name` | live-service-v2 / commerce / food values-qa |
 | `msk_bootstrap_brokers`, `msk_scram_secret_name` | seeder → `KAFKA_BROKERS` + SCRAM user/password in every service secret |
 | `aurora_cluster_endpoint`, `aurora_master_secret_arn` | seeder builds one DSN per service |

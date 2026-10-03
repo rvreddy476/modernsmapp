@@ -1,17 +1,21 @@
-# One-shot Job: apply the production Scylla schemas (keyspaces with
-# NetworkTopologyStrategy, replication 3, and every table) to the operator
-# cluster before any Scylla-backed service starts (post, feed, notification,
-# analytics, suggestion, chat-message).
+# One-shot Job: apply one environment's Scylla schemas (keyspaces with
+# NetworkTopologyStrategy — replication 3 in prod, 1 in QA — and every table)
+# to the operator cluster before any Scylla-backed service starts (post, feed,
+# notification, analytics, suggestion, chat-message).
+#
+# Written for prod. apply.sh <qa|prod> rewrites the two environment-specific
+# names on the way to kubectl: the ConfigMap scylla-schema-<env> and the client
+# Service atpost-<env>-client. Do not `kubectl apply` this file directly.
 #
 # The CQL is NOT inlined here: it lives next to the code that owns it and is
 # mounted from a ConfigMap built from those two files, so this Job can never
 # drift from them:
-#   Architecture/docker/scylla/schema.prod.cql                  -> 10-platform.cql
-#   chat-service/services/message-service/scylla/schema.prod.cql -> 20-chat-message.cql
+#   Architecture/docker/scylla/schema.<env>.cql                  -> 10-platform.cql
+#   chat-service/services/message-service/scylla/schema.<env>.cql -> 20-chat-message.cql
 # Helm cannot read files outside a chart directory and kustomize refuses
 # them by default, so the ConfigMap is created by kubectl; apply.sh does both
 # steps (deploy/README.md, "Scylla schema"):
-#   deploy/jobs/scylla-schema/apply.sh
+#   deploy/jobs/scylla-schema/apply.sh <qa|prod>
 #
 # Every statement is IF NOT EXISTS, so re-running is harmless. Image tag =
 # the cluster's Scylla version (infra/terraform/modules/scylla scylla_version)

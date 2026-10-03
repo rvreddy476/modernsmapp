@@ -16,34 +16,16 @@ func main() {
 		strategy = flag.String("strategy", "", "overrides "+EnvStrategy)
 		factor   = flag.String("factor", "", "overrides "+EnvFactor)
 		dcs      = flag.String("datacenters", "", "overrides "+EnvDatacenters)
-		prod     = flag.Bool("prod", false, "shorthand for the production policy: "+NetworkTopologyStrategy+" RF 3")
+		prod     = flag.Bool("prod", false, "shorthand for -env prod: "+NetworkTopologyStrategy+" RF 3")
+		envName  = flag.String("env", "", "preset policy: dev ("+SimpleStrategy+" RF 1), qa ("+NetworkTopologyStrategy+" RF 1), prod ("+NetworkTopologyStrategy+" RF 3)")
 	)
 	flag.Parse()
 	if *in == "" || *out == "" {
-		fmt.Fprintln(os.Stderr, "usage: scyllaschema -in schema.cql -out schema.prod.cql [-prod] [-check]")
+		fmt.Fprintln(os.Stderr, "usage: scyllaschema -in schema.cql -out schema.<env>.cql [-env dev|qa|prod | -prod] [-check]")
 		os.Exit(2)
 	}
 
-	getenv := func(k string) string {
-		switch {
-		case k == EnvStrategy && *strategy != "":
-			return *strategy
-		case k == EnvFactor && *factor != "":
-			return *factor
-		case k == EnvDatacenters && *dcs != "":
-			return *dcs
-		}
-		if *prod {
-			switch k {
-			case EnvStrategy:
-				return ProdConfig.Strategy
-			case EnvFactor:
-				return fmt.Sprint(ProdConfig.Factor)
-			}
-		}
-		return os.Getenv(k)
-	}
-	cfg, err := ConfigFromEnv(getenv)
+	cfg, err := resolveConfig(*envName, *prod, flagOverrides{Strategy: *strategy, Factor: *factor, Datacenters: *dcs}, os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "scyllaschema:", err)
 		os.Exit(2)
@@ -84,4 +66,49 @@ func main() {
 		os.Exit(2)
 	}
 	fmt.Fprintf(os.Stderr, "scyllaschema: wrote %s with %s on %s\n", *out, clause, strings.Join(names, ", "))
+}
+
+// flagOverrides are the explicit -strategy / -factor / -datacenters values.
+type flagOverrides struct {
+	Strategy, Factor, Datacenters string
+}
+
+// resolveConfig picks the replication policy. Precedence, per setting: an
+// explicit flag, then the -env preset (or -prod), then the SCYLLA_*
+// environment variable, then the dev default. -prod is shorthand for
+// -env prod; asking for both with different presets is an error.
+func resolveConfig(envName string, prod bool, flags flagOverrides, getenv func(string) string) (Config, error) {
+	if prod {
+		if envName != "" && !strings.EqualFold(strings.TrimSpace(envName), "prod") {
+			return Config{}, fmt.Errorf("-prod and -env %q disagree", envName)
+		}
+		envName = "prod"
+	}
+	var preset *Config
+	if envName != "" {
+		p, err := Preset(envName)
+		if err != nil {
+			return Config{}, err
+		}
+		preset = &p
+	}
+	return ConfigFromEnv(func(k string) string {
+		switch {
+		case k == EnvStrategy && flags.Strategy != "":
+			return flags.Strategy
+		case k == EnvFactor && flags.Factor != "":
+			return flags.Factor
+		case k == EnvDatacenters && flags.Datacenters != "":
+			return flags.Datacenters
+		}
+		if preset != nil {
+			switch k {
+			case EnvStrategy:
+				return preset.Strategy
+			case EnvFactor:
+				return fmt.Sprint(preset.Factor)
+			}
+		}
+		return getenv(k)
+	})
 }

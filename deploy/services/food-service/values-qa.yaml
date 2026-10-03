@@ -1,0 +1,145 @@
+# food-service (Feast) overrides for QA (AWS ap-south-1, the QA account).
+#
+# Env contract: Architecture/docker/docker-compose.yml, service
+# `food-service`, translated to production: files to S3 through the IRSA
+# role (W7a: FOOD_BLOB_BACKEND / FOOD_BLOB_BUCKET — REQUIRED to boot in
+# production; no MINIO_*), PII sealed, payments through payments-service with
+# food's own service token. Secrets by reference only (atpost/qa/
+# food-service). __TF_*__ placeholders come from Terraform outputs.
+#
+# LAUNCH: Feast is OFF (plan §3). It is deployed so the gateway route has an
+# upstream and the admin console can read it; it takes no orders because no
+# restaurant is live and FOOD_COD_ENABLED / FOOD_WALLET_PAYMENTS_ENABLED stay
+# off. Production refuses to start without FOOD_SERVICE_TOKEN_KEY,
+# FOOD_PII_KEYS, FOOD_PII_LOOKUP_SALT, FOOD_PLATFORM_GSTIN and the S3 backend.
+#
+# QA (contract 3 Oct 2026): this file is values-prod.yaml with QA DATA only —
+# hosts (qa., api-qa., ws-qa., admin-qa., media-qa.cleestudio.com), secret
+# atpost/qa/<svc>, IRSA role atpost-qa-<svc>-irsa, ALB groups atpost-qa-*,
+# Scylla atpost-qa-client, the QA VPC CIDR, QA JWT issuer/audience, and the
+# QA size (one replica, HPA 1..2, no PDB, smaller requests; limits as prod).
+# ENV / APP_ENV / DEPLOY_ENV are the PRODUCTION values on purpose: QA runs
+# with production semantics (ENV audit, 3 Oct 2026); any other value turns
+# on development rules or refuses to boot. Launch switches are prod's.
+
+service:
+  name: food-service
+  port: 8113
+
+image:
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/food-service'
+  tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
+
+replicaCount: 1
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# IRSA (W1/W2): s3 on the food-files bucket, MSK. The ECR repository
+# atpost/food-service and this role are added by W1.
+serviceAccount:
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-qa-food-service-irsa'
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/qa/food-service
+  data:
+    # Aurora `app` (compose: the app DSN).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    # Realtime tokens: rider and food mint them, notification verifies them.
+    # One shared key (falls back to INTERNAL_SERVICE_KEY when absent), so all
+    # three mount it or none does.
+    - { secretKey: REALTIME_TOKEN_SECRET, remoteRef: realtime_token_secret }
+    # Food's PRIVATE ed25519 payments token (application feast, reference
+    # type food_order); payments-service holds the public half
+    # (caller_food_pubkey / caller_food_kid). Required in production.
+    - { secretKey: FOOD_SERVICE_TOKEN_KEY, remoteRef: food_service_token_key }
+    - { secretKey: FOOD_SERVICE_TOKEN_KID, remoteRef: food_service_token_kid }
+    # PII sealing (restaurant PAN, payout accounts, rider documents):
+    # "v1:<base64 32-byte key>" and a >= 16-byte salt. Never a dev key.
+    - { secretKey: FOOD_PII_KEYS, remoteRef: food_pii_keys }
+    - { secretKey: FOOD_PII_LOOKUP_SALT, remoteRef: food_pii_lookup_salt }
+    # The platform's REAL e-commerce-operator GSTIN (CGST s.9(5)); the
+    # compose value is a synthetic test identifier. Kept with the secrets so
+    # the seeder, not git, carries the registration number.
+    - { secretKey: FOOD_PLATFORM_GSTIN, remoteRef: food_platform_gstin }
+    # DigiLocker (http mode) partner credentials — only when the mode below
+    # becomes http. Disabled at launch.
+    # - { secretKey: DIGILOCKER_CLIENT_ID, remoteRef: digilocker_client_id }
+    # - { secretKey: DIGILOCKER_CLIENT_SECRET, remoteRef: digilocker_client_secret }
+    # Admin console (Feast): NOT enabled yet (401 until then). To enable:
+    # the founder's ONE admin key (admin-service values, step 1): public half
+    # → caller_admin_pubkey, kid → caller_admin_kid; uncomment the two lines
+    # below AND the SERVICE_CALLERS lines under env; enable admin-service's
+    # two lines. Setting SERVICE_CALLERS first refuses boot.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+
+env:
+  # Anything but local/dev/development is production to food-service.
+  ENV: prod
+  LOG_LEVEL: info
+  AWS_REGION: ap-south-1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Realtime (order tracking, kitchen queue, rider offers) is published to
+  # Redis Streams; without it the token route answers 503.
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TOPIC: food-events
+
+  # ── Blobs: S3 through IRSA (W7a) ─────────────────────────────────────────
+  FOOD_BLOB_BACKEND: s3
+  FOOD_BLOB_BUCKET: "__TF_FOOD_FILES_BUCKET_NAME__" # from terraform output food_files_bucket_name
+
+  # ── Peers ────────────────────────────────────────────────────────────────
+  MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  # identity-auth owns ecosystem roles (restaurant_owner / delivery_partner).
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+
+  # ── Delivery-partner verification ────────────────────────────────────────
+  # DigiLocker is DISABLED at launch (the mock is refused in production;
+  # http needs the partner credentials). FOOD_PUBLIC_BASE_URL is the gateway
+  # origin the phone's browser reaches; the app link is where the public
+  # return route sends the browser — fill when Feast opens.
+  DIGILOCKER_MODE: disabled
+  FOOD_PUBLIC_BASE_URL: https://api-qa.cleestudio.com
+  # CHANGEME when Feast opens: the Feast Rider https app link. Empty is
+  # accepted; a non-URL here refuses boot.
+  FOOD_RIDER_APP_LINK_URL: ""
+
+  # ── Launch switches ──────────────────────────────────────────────────────
+  # Coupons off until the tax adviser confirms the GST treatment of a
+  # discount; COD and wallet payments off (online only); penny-drop off
+  # (payout accounts stay NOT_VERIFIED until a provider exists).
+  FOOD_COUPONS_ENABLED: "false"
+  FOOD_COD_ENABLED: "false"
+  FOOD_WALLET_PAYMENTS_ENABLED: "false"
+  FOOD_PENNY_DROP_ENABLED: "false"
+
+  # Admin console (see externalSecret above for the order).
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'food:stats.read,food:restaurant.approve,food:restaurant.suspend,food:delivery_partner.approve,food:delivery_partner.suspend,food:documents.review,food:payout_accounts.read,food:orders.read,food:orders.cancel,food:refund.issue,food:refunds.read,food:settlement.read,food:settlement.generate,food:settlement.mark_paid,food:menu.moderate,food:reviews.moderate,food:tickets.act,food:coupons.manage,food:service_areas.manage,food:reports.read,food:fraud.read,food:audit.read'
+
+ingress:
+  enabled: false
+
+pdb:
+  enabled: false # QA runs one replica: any PDB would block node drains

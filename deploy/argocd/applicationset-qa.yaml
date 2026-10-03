@@ -1,0 +1,160 @@
+# ArgoCD ApplicationSets for QA — one Application per deployable.
+#
+# The QA AWS account (contract 3 Oct 2026: that account is QA for good;
+# production gets its own account and applicationset.yaml). Terraform
+# applies this whole file to the QA cluster (infra/terraform/envs/qa, module
+# "argocd", applicationset_manifest_path), splitting on `---`; every
+# document below must therefore be a complete manifest.
+#
+#   atpost-services-qa   deploy/services/*/values-qa.yaml   branch qa
+#   atpost-web-qa        deploy/web/*/values-qa.yaml        branch qa
+#
+# Same shape as the production file (applicationset.yaml): the git FILES
+# generator, so an Application exists only where a values-qa.yaml exists;
+# ArgoCD's default git-file globbing lets `*` cross `/`, so nothing else under
+# deploy/services or deploy/web may end in /values-qa.yaml.
+#
+# AWS ACCOUNT ID. Never committed. Each ApplicationSet carries a list
+# generator with ONE element, `awsAccountId` holding the Terraform template
+# token for aws_account_id (dollar, brace, name, brace), joined to every file
+# match by the matrix generator and passed to the chart as the Helm parameter
+# global.awsAccountId (forceString). envs/qa fills it with templatefile and
+# data.aws_caller_identity.current.account_id. Applied unfilled, the chart
+# refuses to render (it must be 12 digits). Apart from the two tokens, this
+# file must contain no dollar-brace or percent-brace sequence, not even in a
+# comment (Terraform template syntax).
+#
+# QA is MANUAL sync at first (contract): no `automated` block. A rollout is a
+# click in the ArgoCD UI or `argocd app sync qa-<name>`.
+#
+# Branch `qa` is created by the lead at deploy time; promotion is a merge of
+# main into it. Applications are named qa-<service> / web-qa-<app> and carry
+# the label atpost.io/env: qa — the only place "qa" appears as an
+# environment marker. Pods run with the PRODUCTION ENV/APP_ENV/DEPLOY_ENV
+# values (ENV audit, 3 Oct 2026); nothing reads the label.
+#
+# Repository access: the AppProject `atpost` (Terraform module argocd,
+# allowed_source_repos) and the repository Secret from
+# deploy/argocd/repo-credentials-qa.yaml (atpost/qa/argocd-repo-modernsmapp).
+
+# ─── Services: QA (MANUAL sync) ────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-services-qa
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                # QA AWS account id (12 digits), filled at apply time
+                # (header). Unfilled, every render is refused.
+                - awsAccountId: "${aws_account_id}"
+          - git:
+              repoURL: https://github.com/rvreddy476/modernsmapp.git
+              revision: qa
+              files:
+                - path: "deploy/services/*/values-qa.yaml"
+  template:
+    metadata:
+      name: 'qa-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost
+        atpost.io/env: qa
+        atpost.io/service: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: qa
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-qa.yaml
+            parameters:
+              - name: global.awsAccountId
+                value: '{{.awsAccountId}}'
+                forceString: true
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: qa
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost
+      # MANUAL: no `automated` block. Drift is reported, not reverted;
+      # pruning only on a sync a person requests with --prune.
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 10m
+
+---
+# ─── Web: QA (MANUAL sync) ─────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-web-qa
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                # Same QA account id as atpost-services-qa.
+                - awsAccountId: "${aws_account_id}"
+          - git:
+              repoURL: https://github.com/rvreddy476/modernsmapp.git
+              revision: qa
+              files:
+                - path: "deploy/web/*/values-qa.yaml"
+  template:
+    metadata:
+      name: 'web-qa-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost-web
+        atpost.io/env: qa
+        atpost.io/app: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: qa
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-qa.yaml
+            parameters:
+              - name: global.awsAccountId
+                value: '{{.awsAccountId}}'
+                forceString: true
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: qa
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost-web
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 10m

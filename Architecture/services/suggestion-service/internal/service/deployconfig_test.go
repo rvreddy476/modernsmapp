@@ -34,6 +34,7 @@ var environments = []struct {
 }{
 	{"prod", "values-prod.yaml"},
 	{"staging", "values-staging.yaml"},
+	{"qa", "values-qa.yaml"}, // the QA account (3 Oct 2026)
 }
 
 // section extracts a top-level block's `key: value` pairs.

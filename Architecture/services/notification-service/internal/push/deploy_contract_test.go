@@ -135,7 +135,7 @@ func loadManifest(t *testing.T, root, service, file string) serviceValues {
 // notification-service push posture at the chart-consumed paths.
 func TestDeployedManifestsCoupleCallsToRequiredPush(t *testing.T) {
 	root := repoRoot(t)
-	for _, valuesFile := range []string{"values-prod.yaml", "values-staging.yaml"} {
+	for _, valuesFile := range []string{"values-prod.yaml", "values-qa.yaml", "values-staging.yaml"} {
 		call := loadManifest(t, root, "chat-call-service", valuesFile)
 		notif := loadManifest(t, root, "notification-service", valuesFile)
 		callsEnabled, missing := validateCallDeploymentContract(call, notif)
@@ -150,7 +150,7 @@ func TestDeployedManifestsCoupleCallsToRequiredPush(t *testing.T) {
 // The knob must be DECLARED at the chart-consumed path (env.), explicitly.
 func TestDeployedManifestsDeclareCallPushRequired(t *testing.T) {
 	root := repoRoot(t)
-	for _, valuesFile := range []string{"values-prod.yaml", "values-staging.yaml"} {
+	for _, valuesFile := range []string{"values-prod.yaml", "values-qa.yaml", "values-staging.yaml"} {
 		notif := loadManifest(t, root, "notification-service", valuesFile)
 		v, ok := envString(notif, "CALL_PUSH_REQUIRED")
 		if !ok {

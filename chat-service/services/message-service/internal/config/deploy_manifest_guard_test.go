@@ -50,7 +50,7 @@ func TestAWSManifestsCarryIdentityAuthorityAndEntitlementSecret(t *testing.T) {
 	msg := filepath.Join(root, "deploy", "services", "chat-message-service")
 	gw := filepath.Join(root, "deploy", "services", "chat-ws-gateway")
 
-	for _, env := range []string{"values-prod.yaml", "values-staging.yaml"} {
+	for _, env := range []string{"values-prod.yaml", "values-qa.yaml", "values-staging.yaml"} {
 		mustContain(t, filepath.Join(msg, env),
 			"IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110",
 			"without it the policy fetch falls back to a Compose-only default and every "+
