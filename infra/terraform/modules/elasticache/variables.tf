@@ -23,7 +23,7 @@ variable "node_type" {
 }
 
 variable "num_replicas" {
-  description = "Number of replicas (in addition to the primary). Prod: 2 (one per remaining AZ); staging: 1."
+  description = "Number of replicas (in addition to the primary). Prod: 2 (one per remaining AZ); staging: 1; QA: 0 (single node, no failover)."
   type        = number
   default     = 2
 }

@@ -54,3 +54,9 @@ variable "aws_account_id" {
     error_message = "aws_account_id must be a 12-digit AWS account id."
   }
 }
+
+variable "replicas" {
+  description = "Replicas of each ArgoCD component (controller, server, repo-server, applicationset). 2 (HA) by default; QA runs 1."
+  type        = number
+  default     = 2
+}

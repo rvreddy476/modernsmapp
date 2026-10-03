@@ -126,8 +126,10 @@ resource "aws_elasticache_replication_group" "this" {
   # Multi-AZ with automatic failover: replicas are spread across the
   # subnet group's AZs (the isolated tier subnets), and on primary
   # failure one replica gets promoted automatically.
-  automatic_failover_enabled = true
-  multi_az_enabled           = true
+  # AWS requires at least one replica for either; QA runs a single node
+  # (num_replicas = 0), so both follow the replica count.
+  automatic_failover_enabled = var.num_replicas > 0
+  multi_az_enabled           = var.num_replicas > 0
 
   # Encryption everywhere — at rest (KMS), in transit (TLS), and
   # authenticated (AUTH token). PCI evidence requires all three for

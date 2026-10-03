@@ -96,7 +96,11 @@ module "eks" {
       }
     }
 
-    memory = {
+    # memory_node_subnet_ids pins the group to the Scylla racks' AZs (QA:
+    # one node, one rack, one subnet — otherwise the node could start in
+    # an AZ the rack's zone affinity excludes). Null keeps the cluster's
+    # subnets, as before.
+    memory = merge({
       name           = "atpost-${var.environment}-memory"
       instance_types = [var.memory_node_instance_type]
       min_size       = var.memory_node_min
@@ -115,7 +119,7 @@ module "eks" {
           effect = "NO_SCHEDULE"
         }
       }
-    }
+    }, { for k, v in { subnet_ids = var.memory_node_subnet_ids } : k => v if v != null })
 
     system = {
       name           = "atpost-${var.environment}-system"

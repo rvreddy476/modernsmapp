@@ -48,7 +48,7 @@ variable "create_terraform_apply_role" {
 }
 
 variable "apply_github_subjects" {
-  description = "Exact GitHub OIDC `sub` values (StringEquals) that may assume the apply role. Prod: [\"repo:ORG/atpost:environment:prod\"]."
+  description = "Exact GitHub OIDC `sub` values (StringEquals) that may assume the apply role. Prod: [\"repo:ORG/atpost:environment:prod\"]; QA: [\"repo:ORG/REPO:environment:qa\"] (envs/qa derives it from terraform_apply_github_environment)."
   type        = list(string)
   default     = []
 }

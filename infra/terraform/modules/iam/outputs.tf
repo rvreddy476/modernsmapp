@@ -14,5 +14,5 @@ output "ci_role_name" {
 
 output "terraform_apply_role_arn" {
   value       = var.create_terraform_apply_role ? aws_iam_role.terraform_apply[0].arn : null
-  description = "Set as repository secret AWS_TERRAFORM_ROLE_ARN; the apply workflow assumes it from the `prod` GitHub environment."
+  description = "Set as repository secret AWS_TERRAFORM_ROLE_ARN; the apply workflow assumes it from the env's GitHub environment (`prod`, or `qa` for envs/qa)."
 }

@@ -19,3 +19,14 @@ variable "single_nat_gateway" {
   type        = bool
   default     = false
 }
+
+variable "az_count" {
+  description = "Availability zones used (subnets per tier, and NAT gateways when single_nat_gateway = false). 3 everywhere except QA (2). MSK needs at least 2."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.az_count >= 2 && var.az_count <= 3
+    error_message = "az_count must be 2 or 3."
+  }
+}

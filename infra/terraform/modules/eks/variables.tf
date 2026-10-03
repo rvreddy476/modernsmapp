@@ -111,3 +111,9 @@ variable "system_node_desired" {
   type    = number
   default = 3
 }
+
+variable "memory_node_subnet_ids" {
+  description = "Subnets for the memory (Scylla) node group. Null = the cluster's private subnets (prod/staging). QA passes the one subnet of its single Scylla rack."
+  type        = list(string)
+  default     = null
+}

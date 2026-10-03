@@ -1,4 +1,4 @@
-# 3-AZ VPC for AtPost.
+# 3-AZ VPC for AtPost (az_count = 2 in QA).
 #
 # Tier layout per AZ:
 #   public  /20  — ALB, NAT gateways, bastion (if needed)
@@ -14,13 +14,15 @@ data "aws_availability_zones" "available" {
 }
 
 locals {
-  azs = slice(data.aws_availability_zones.available.names, 0, 3)
+  azs = slice(data.aws_availability_zones.available.names, 0, var.az_count)
 
   # /20s for public + private (4k addresses each); /22s for isolated.
   # Index by AZ position so adding a 4th AZ later doesn't reshuffle.
-  public_subnets   = [for i in range(3) : cidrsubnet(var.vpc_cidr, 4, i)]
-  private_subnets  = [for i in range(3) : cidrsubnet(var.vpc_cidr, 4, i + 3)]
-  isolated_subnets = [for i in range(3) : cidrsubnet(var.vpc_cidr, 6, i + 24)]
+  # The offsets are those of the 3-AZ layout whatever az_count is, so a
+  # 2-AZ VPC (QA) could grow to 3 without renumbering.
+  public_subnets   = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 4, i)]
+  private_subnets  = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 4, i + 3)]
+  isolated_subnets = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 6, i + 24)]
 }
 
 resource "aws_vpc" "this" {
@@ -42,7 +44,7 @@ resource "aws_internet_gateway" "this" {
 }
 
 resource "aws_subnet" "public" {
-  count                   = 3
+  count                   = var.az_count
   vpc_id                  = aws_vpc.this.id
   cidr_block              = local.public_subnets[count.index]
   availability_zone       = local.azs[count.index]
@@ -56,7 +58,7 @@ resource "aws_subnet" "public" {
 }
 
 resource "aws_subnet" "private" {
-  count             = 3
+  count             = var.az_count
   vpc_id            = aws_vpc.this.id
   cidr_block        = local.private_subnets[count.index]
   availability_zone = local.azs[count.index]
@@ -69,7 +71,7 @@ resource "aws_subnet" "private" {
 }
 
 resource "aws_subnet" "isolated" {
-  count             = 3
+  count             = var.az_count
   vpc_id            = aws_vpc.this.id
   cidr_block        = local.isolated_subnets[count.index]
   availability_zone = local.azs[count.index]
@@ -84,7 +86,7 @@ resource "aws_subnet" "isolated" {
 # Without the per-env split a single AZ outage takes down all private
 # egress in prod, which would defeat the multi-AZ design.
 resource "aws_eip" "nat" {
-  count  = var.single_nat_gateway ? 1 : 3
+  count  = var.single_nat_gateway ? 1 : var.az_count
   domain = "vpc"
 
   tags = {
@@ -93,7 +95,7 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "this" {
-  count         = var.single_nat_gateway ? 1 : 3
+  count         = var.single_nat_gateway ? 1 : var.az_count
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
 
@@ -118,13 +120,13 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route_table_association" "public" {
-  count          = 3
+  count          = var.az_count
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
 
 resource "aws_route_table" "private" {
-  count  = 3
+  count  = var.az_count
   vpc_id = aws_vpc.this.id
 
   route {
@@ -138,7 +140,7 @@ resource "aws_route_table" "private" {
 }
 
 resource "aws_route_table_association" "private" {
-  count          = 3
+  count          = var.az_count
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private[count.index].id
 }

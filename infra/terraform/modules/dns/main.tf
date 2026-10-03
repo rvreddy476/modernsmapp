@@ -51,6 +51,11 @@ resource "aws_route53_record" "cert_validation" {
   type    = each.value.type
   records = [each.value.record]
   ttl     = 60
+
+  # ACM gives the apex and the wildcard the SAME validation CNAME, so both
+  # map entries write one record; without this the second create fails
+  # with "already exists" (the provider's documented pattern).
+  allow_overwrite = true
 }
 
 resource "aws_acm_certificate_validation" "wildcard" {

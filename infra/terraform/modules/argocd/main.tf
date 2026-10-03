@@ -88,19 +88,19 @@ resource "helm_release" "argocd" {
   # failure mode you don't notice until the next deploy.
   set {
     name  = "controller.replicas"
-    value = "2"
+    value = tostring(var.replicas)
   }
   set {
     name  = "server.replicas"
-    value = "2"
+    value = tostring(var.replicas)
   }
   set {
     name  = "repoServer.replicas"
-    value = "2"
+    value = tostring(var.replicas)
   }
   set {
     name  = "applicationSet.replicas"
-    value = "2"
+    value = tostring(var.replicas)
   }
 
   # Schedule on the system node group.

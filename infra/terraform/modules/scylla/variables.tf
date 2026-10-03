@@ -42,3 +42,9 @@ variable "storage_per_replica" {
   type        = string
   default     = "100Gi"
 }
+
+variable "operator_replicas" {
+  description = "Scylla Operator controller replicas. 2 (HA) by default; QA runs 1."
+  type        = number
+  default     = 2
+}

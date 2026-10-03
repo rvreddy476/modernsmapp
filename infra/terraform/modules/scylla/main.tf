@@ -78,7 +78,7 @@ resource "helm_release" "scylla_operator" {
   # tooling, not DB load.
   set {
     name  = "replicas"
-    value = "2"
+    value = tostring(var.operator_replicas)
   }
 }
 

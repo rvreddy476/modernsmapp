@@ -1,0 +1,125 @@
+# Copy to `qa.tfvars` (gitignored) and replace the four placeholder values
+# in the REQUIRED block — nowhere else has one, and CI refuses a file that
+# still contains one. Pass with `terraform plan -var-file=qa.tfvars`. The
+# GitHub environment secret TF_QA_TFVARS holds the same filled-in text.
+# Every other variable has the QA-size default from variables.tf; the
+# commented lines show the knob and its default.
+
+# ─── REQUIRED ────────────────────────────────────────────────────────────
+
+# From `terraform output` in bootstrap/, run once in the QA account.
+tfstate_bucket_arn     = "arn:aws:s3:::atpost-tfstate-CHANGEME"
+tfstate_lock_table_arn = "arn:aws:dynamodb:ap-south-1:CHANGEME:table/atpost-tfstate-locks"
+
+# The founder's address. Receives the $1,000/month budget alerts, backup,
+# GuardDuty and SES bounce/complaint mail. SNS emails a confirmation link on
+# the first apply — click it or nothing arrives.
+ops_alert_email = "CHANGEME@example.com"
+
+# CIDRs allowed to reach the EKS public API endpoint (the machines that run
+# kubectl / terraform). Never 0.0.0.0/0. `curl -s https://checkip.amazonaws.com`
+# prints your current address; add /32.
+cluster_endpoint_public_access_cidrs = [
+  "CHANGEME/32", # the founder's address
+  # "198.51.100.5/32", # the lead's address (example value)
+]
+
+# Break-glass cluster admins (EKS access entries). The principal that runs
+# pass 1 is admin already; leave empty if that is the only one.
+cluster_admin_arns = [
+  # "arn:aws:iam::<qa-account-id>:role/<break-glass-role>",
+]
+
+# ─── GitHub (defaults shown) ─────────────────────────────────────────────
+# CI role (ECR push + plan): refs main and qa, plus pull_request.
+# Terraform apply role: only jobs in the GitHub environment `qa`
+# (required reviewer = founder).
+# github_repository                  = "rvreddy476/modernsmapp"
+# ci_github_branches                 = ["main", "qa"]
+# ci_github_subjects                 = []      # explicit list overrides the two lines above
+# terraform_apply_github_environment = "qa"
+# terraform_apply_github_subjects    = []      # explicit list overrides the line above
+# create_terraform_apply_role        = true
+
+# ─── Hosts and email (defaults shown) ────────────────────────────────────
+# domain                     = "cleestudio.com"
+# public_subdomains          = ["qa", "api-qa", "ws-qa", "admin-qa"]
+# media_subdomain            = "media-qa"
+# internal_zone_name         = "aws-qa.cleestudio.com"   # ArgoCD / Grafana (internal ALBs)
+# ses_domain                 = "qa.cleestudio.com"
+# ses_from_address           = "no-reply@qa.cleestudio.com"
+# ses_configuration_set_name = "atpost-qa-transactional"
+# dmarc_report_address       = null                      # → ops_alert_email
+
+# Flip to true ONLY after `aws acm describe-certificate --region us-east-1`
+# shows ISSUED for media-qa.cleestudio.com (its validation CNAME is in the
+# cloudflare_dns_records output). Then apply again.
+media_custom_domain_enabled = false
+
+# ALB host names for the Cloudflare host rows, after the first ArgoCD sync
+# (`kubectl -n atpost get ingress`). Leave empty until then.
+ingress_alb_hostnames = {
+  # "qa"       = "k8s-atpost-<from-kubectl>.ap-south-1.elb.amazonaws.com"
+  # "api-qa"   = "k8s-atpost-<from-kubectl>.ap-south-1.elb.amazonaws.com"
+  # "ws-qa"    = "k8s-atpost-<from-kubectl>.ap-south-1.elb.amazonaws.com"
+  # "admin-qa" = "k8s-atpost-<from-kubectl>.ap-south-1.elb.amazonaws.com"
+}
+
+# ─── QA size (defaults shown; uncomment to change) ───────────────────────
+# vpc_cidr                     = "10.40.0.0/16"
+# az_count                     = 2
+
+# eks_cluster_version          = "1.36"
+# general_node_instance_type   = "m7g.xlarge"
+# general_node_min             = 2
+# general_node_max             = 4
+# general_node_desired         = 2
+# system_node_instance_type    = "m7g.medium"  # or "t4g.medium"
+# system_node_min              = 2
+# system_node_max              = 2
+# system_node_desired          = 2
+# memory_node_instance_type    = "m7g.large"
+# scylla_node_count            = 1             # keyspaces RF 1 (values lane)
+# karpenter_chart_version      = "1.14.1"
+# karpenter_capacity_types     = ["on-demand"]
+# karpenter_cpu_limit          = "16"
+# karpenter_memory_limit       = "64Gi"
+
+# scylla_cpu_per_replica       = "1500m"
+# scylla_memory_per_replica    = "5Gi"
+# scylla_storage_per_replica   = "50Gi"
+
+# aurora_engine_version        = "16.15"
+# aurora_min_acu               = 0.5
+# aurora_max_acu               = 2
+# aurora_backup_retention_days = 3
+# aurora_databases             = ["app", "identity_db", "chat_db", "call_db", "commerce_db"]
+# aurora_extensions            = ["postgis", "pg_trgm", "pgcrypto"]
+
+# msk_kafka_version             = "3.9.x"
+# msk_broker_instance_type      = "kafka.t3.small"
+# msk_number_of_broker_nodes    = 2
+# msk_broker_ebs_volume_size_gb = 50
+# msk_topic_partitions          = 3
+# msk_topic_replication_factor  = 2
+# msk_min_insync_replicas       = 1
+
+# elasticache_engine_version   = "8.1"
+# elasticache_node_type        = "cache.t4g.small"
+# elasticache_num_replicas     = 0
+
+# opensearch_engine_version     = "OpenSearch_2.19"
+# opensearch_data_instance_type = "t3.small.search"
+# opensearch_ebs_volume_size_gb = 20
+
+# ─── Operations ──────────────────────────────────────────────────────────
+# budget_thresholds_usd        = [500, 1000]   # limit = the largest
+# backup_retention_days        = 7
+# cloudtrail_retention_days    = 30
+# secret_recovery_window_days  = 7
+
+# ─── Images and secret shells ────────────────────────────────────────────
+# service_names       = [...]                  # variables.tf — same list as envs/prod
+# worker_image_names  = ["media-worker"]
+# web_image_names     = ["web", "admin-console"]
+# extra_secret_shells = ["argocd-repo-modernsmapp"]
