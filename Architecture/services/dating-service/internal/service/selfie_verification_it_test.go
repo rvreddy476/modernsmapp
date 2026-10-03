@@ -103,7 +103,35 @@ func seedPendingSelfie(t *testing.T, st *store.Store, id uuid.UUID) uuid.UUID {
 	if p := driveProfile(t, st, id, store.ProfileEventPhotoApproved, store.ProfileActorSystem); p.ProfileStatus != store.ProfileStatusPendingSelfie {
 		t.Fatalf("seeded status = %s, want pending_selfie", p.ProfileStatus)
 	}
+	closeSelfieReviewAtCleanup(t, st, id)
 	return primary
+}
+
+// closeSelfieReviewAtCleanup rejects the user's selfie review if it is still
+// open when the test ends. dating_it_test is shared across runs and the
+// moderator queue lists the oldest 200, so every review a test leaves open
+// pushes later tests' users further down until they fall off the end.
+func closeSelfieReviewAtCleanup(t *testing.T, st *store.Store, id uuid.UUID) {
+	t.Helper()
+	t.Cleanup(func() {
+		err := st.ResolveSelfieReview(context.Background(), id, uuid.New(), false)
+		if err != nil && !errors.Is(err, store.ErrSelfieNotPendingReview) {
+			t.Errorf("close selfie review for %s: %v", id, err)
+		}
+	})
+}
+
+// backdateSelfieReview moves the user's open review to the head of the
+// oldest-first queue, so reviews left open by killed runs (whose cleanups
+// never ran) cannot push it past the list limit.
+func backdateSelfieReview(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
+	t.Helper()
+	tag, err := pool.Exec(context.Background(), `
+        UPDATE dating_verifications SET selfie_at = selfie_at - INTERVAL '100 years'
+        WHERE user_id = $1 AND selfie_status = 'pending_review'`, id)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("backdate selfie review: rows=%d, %v", tag.RowsAffected(), err)
+	}
 }
 
 func profileStatusOf(t *testing.T, st *store.Store, id uuid.UUID) string {
@@ -278,7 +306,7 @@ func TestSelfie_PrimaryPhotoNotApproved409(t *testing.T) {
 }
 
 func TestSelfie_BorderlineGoesToReviewAndAdminApproveActivates(t *testing.T) {
-	svc, st, _ := newSelfieSvc(t)
+	svc, st, pool := newSelfieSvc(t)
 	ctx := context.Background()
 	user, video, admin := uuid.New(), uuid.New(), uuid.New()
 	primary := seedPendingSelfie(t, st, user)
@@ -289,6 +317,7 @@ func TestSelfie_BorderlineGoesToReviewAndAdminApproveActivates(t *testing.T) {
 		res.ProfileStatus != store.ProfileStatusPendingSelfie {
 		t.Fatalf("borderline = %+v, %v", res, err)
 	}
+	backdateSelfieReview(t, pool, user)
 	queue, err := svc.ListSelfieReviews(ctx, 200)
 	if err != nil {
 		t.Fatalf("queue: %v", err)

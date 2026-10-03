@@ -60,6 +60,7 @@ func TestVerificationStatus(t *testing.T) {
 	// A moderator review is reported as "review".
 	inReview := uuid.New()
 	mustSeedProfile(t, st, inReview)
+	defer closeSelfieReview(t, st, inReview)
 	if err := st.RecordSelfieAttempt(ctx, inReview, 0.85, store.SelfieStatusPendingReview); err != nil {
 		t.Fatalf("seed review: %v", err)
 	}
