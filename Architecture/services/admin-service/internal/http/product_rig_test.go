@@ -74,6 +74,14 @@ var (
 		permRiderIncidentsRead, permRiderIncidentsAct, permRiderIncidentsReveal, permRiderCitiesManage, permRiderFaresManage,
 		permRiderReportsRead, permRiderAuditRead,
 	}
+	// doorstepAll is doorstep-service's AdminPermissions (the contract's 18).
+	doorstepAll = []string{
+		permDoorstepCatalogueRead, permDoorstepCatalogueWrite, permDoorstepConfigWrite,
+		permDoorstepProsRead, permDoorstepProsApprove, permDoorstepProsSuspend, permDoorstepDocumentsReview,
+		permDoorstepBookingsRead, permDoorstepBookingsCancel, permDoorstepBookingsRedispatch, permDoorstepRefundsIssue,
+		permDoorstepIncidentsRead, permDoorstepIncidentsAct, permDoorstepTicketsAct, permDoorstepRatingsModerate,
+		permDoorstepSettlementsRead, permDoorstepStatsRead, permDoorstepAuditRead,
+	}
 )
 
 // productHit is one call a stub product saw, with the token verified by a
@@ -166,6 +174,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	postURL, pagesURL, qaURL := stub("post", postAll), stub("social", pagesAll), stub("qa", qaAll)
 	channelURL, groupURL, communityURL := stub("chat", channelAll), stub("chat", groupAll), stub("chat", communityAll)
 	riderURL := stub("rider", riderAll)
+	doorstepURL := stub("doorstep", doorstepAll)
 	liveURL := stub("live", liveAll)
 	identityURL := stub("identity", identityAll)
 
@@ -191,6 +200,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 		WithQA(service.NewQAClient(qaURL, signer)).
 		WithChat(service.NewChannelClient(channelURL, signer), service.NewGroupClient(groupURL, signer), service.NewCommunityClient(communityURL, signer)).
 		WithRider(service.NewRiderClient(riderURL, signer)).
+		WithDoorstep(service.NewDoorstepClient(doorstepURL, signer)).
 		WithLive(service.NewLiveClient(liveURL, signer)).
 		WithIdentity(service.NewIdentityConsoleClient(identityURL, signer))
 	if err := h.RegisterAllRoutes(rg.r); err != nil {

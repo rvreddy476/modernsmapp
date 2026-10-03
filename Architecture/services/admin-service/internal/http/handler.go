@@ -92,6 +92,8 @@ type Handler struct {
 	community *service.ProductClient
 	// Mopedu: rider-service.
 	rider *service.ProductClient
+	// Doorstep (home services): doorstep-service.
+	doorstep *service.ProductClient
 	// Live moderation: live-service-v2.
 	live *service.ProductClient
 	// Access page: identity's admin console family (roles, users, sessions).
@@ -164,6 +166,12 @@ func (h *Handler) WithRider(rc *service.ProductClient) *Handler {
 	return h
 }
 
+// WithDoorstep installs the doorstep-service client (Doorstep).
+func (h *Handler) WithDoorstep(dc *service.ProductClient) *Handler {
+	h.doorstep = dc
+	return h
+}
+
 // WithLive installs the live-service-v2 client (live moderation).
 func (h *Handler) WithLive(lc *service.ProductClient) *Handler {
 	h.live = lc
@@ -200,6 +208,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterChatRoutes(r)
 	h.RegisterLiveRoutes(r)
 	h.RegisterRiderRoutes(r)
+	h.RegisterDoorstepRoutes(r)
 	h.RegisterAccessRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err

@@ -45,7 +45,8 @@ externalSecret:
     #      to each product as caller_admin_pubkey / caller_admin_kid
     #      (dating-service, commerce-service, trust-safety-service, post-service,
     #      user-service, qa-service, channel-service, group-service,
-    #      community-service; and food-service once it has deploy values);
+    #      community-service, doorstep-service; and food-service once it has
+    #      deploy values);
     #   2. enable each product first (its values file: two secret lines and
     #      the SERVICE_CALLERS lines);
     #   3. uncomment the two lines below.
@@ -80,6 +81,9 @@ env:
   # Mopedu (rider-service), same key: enable rider-service first (numbered
   # steps in its values file).
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  # Doorstep (home services): doorstep-service's token-only admin family
+  # (audience "doorstep"), same key; enable doorstep-service first.
+  DOORSTEP_SERVICE_URL: http://doorstep-service.atpost.svc.cluster.local:8122
   # Access page (Wave 1, B4): role management through identity-auth's
   # token-only admin family, same key (audience "identity"); also the URL of
   # the permission lookups. Enable identity-auth-service's two commented

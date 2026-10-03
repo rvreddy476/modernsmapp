@@ -46,6 +46,11 @@ const (
 	RiderAudience    = "rider"
 	RiderAdminPrefix = "/v1/rider/internal/admin"
 
+	// Doorstep (home services): doorstep-service's token-only admin family
+	// (doorstep-service/internal/http/admin_token.go), audience "doorstep".
+	DoorstepAudience    = "doorstep"
+	DoorstepAdminPrefix = "/v1/doorstep/internal/admin"
+
 	// Live (live-service-v2, the LiveKit stack): its token-only admin family,
 	// audience "live" (the identity app the six live:* permissions belong to).
 	LiveAudience    = "live"
@@ -69,6 +74,13 @@ func NewIdentityConsoleClient(baseURL string, signer *servicetoken.Signer) *Prod
 // NewRiderClient builds the client for rider-service (Mopedu).
 func NewRiderClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
 	return newProductClient(baseURL, RiderAdminPrefix, RiderAudience, signer)
+}
+
+// NewDoorstepClient builds the client for doorstep-service (Doorstep home
+// services): a fresh 60 s token per call, audience "doorstep", one doorstep:*
+// permission as its scope, the admin as act.
+func NewDoorstepClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, DoorstepAdminPrefix, DoorstepAudience, signer)
 }
 
 // NewLiveClient builds the client for live-service-v2 (live moderation).

@@ -145,6 +145,7 @@ var approvalLabels = map[string]string{
 	opPayRefundResolve:       "Resolve payments refund",
 	opRiderRefundIssue:       "Refund Mopedu ride",
 	opRiderOutstandingWaive:  "Waive Mopedu cancellation fee",
+	opDoorstepRefundIssue:    "Refund Doorstep booking",
 	opAccessRoleGrant:        "Grant role",
 	opAccessRoleRevoke:       "Revoke role",
 }
@@ -153,7 +154,7 @@ var approvalLabels = map[string]string{
 // stored request carries one and says so when it does not.
 var refundOperations = map[string]bool{
 	opFoodRefundIssue: true, opFoodRefundDecide: true, opMonRefundIssue: true, opPayRefundResolve: true,
-	opRiderRefundIssue: true,
+	opRiderRefundIssue: true, opDoorstepRefundIssue: true,
 }
 
 // approvalSummary is a one-line description: what, on which target, and the

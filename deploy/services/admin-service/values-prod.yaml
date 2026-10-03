@@ -53,7 +53,7 @@ externalSecret:
     #      each product as caller_admin_pubkey / caller_admin_kid
     #      (identity-auth, dating, commerce, trust-safety, post, user, qa,
     #      channel, group, community, rider, live-service-v2, payments,
-    #      monetization, food);
+    #      monetization, food, doorstep);
     #   2. enable each product first (its values file: the two secret lines
     #      and the SERVICE_CALLERS lines);
     #   3. uncomment the two lines below.
@@ -84,6 +84,9 @@ env:
   GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
   COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  # Doorstep (home services): doorstep-service's token-only admin family
+  # (audience "doorstep"), same key; enable doorstep-service first.
+  DOORSTEP_SERVICE_URL: http://doorstep-service.atpost.svc.cluster.local:8122
   LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
   # Access page (Wave 1, B4): identity-auth's token-only admin family.
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081

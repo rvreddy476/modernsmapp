@@ -12,7 +12,7 @@ import (
 )
 
 // navigationOrder is the console's menu order (founder order: live pilots,
-// money, content apps, Mopedu, then cross-app areas).
+// money, content apps, Mopedu, Doorstep, then cross-app areas).
 var navigationOrder = []struct{ app, label string }{
 	{"dating", "Dating"},
 	{"food", "Feast"},
@@ -26,6 +26,7 @@ var navigationOrder = []struct{ app, label string }{
 	{"chat", "Chat"},
 	{"live", "Live"},
 	{"rider", "Mopedu"},
+	{"doorstep", "Doorstep"},
 	{"trust_safety", "Trust & safety"},
 	{"platform", "Platform"},
 	// Access (roles, holders, sessions) is a page of the platform, shown to
