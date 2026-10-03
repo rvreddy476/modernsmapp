@@ -1,18 +1,27 @@
-# Production secrets manifest for tools/prodsecrets (W3 of
-# docs/runbooks/aws-first-production-deployment.md).
+# Secrets manifest for tools/prodsecrets (W3 of
+# docs/runbooks/aws-first-production-deployment.md), for every environment:
+# production (--env prod, the default) and QA (--env qa, the QA AWS account).
 #
 # One Secrets Manager secret per deployable, <prefix>/<name>, each a flat JSON
-# object. Terraform creates every one as an EMPTY shell (envs/prod/secrets.tf,
-# output service_secret_names: the 32 services + web + admin-console) so
-# External Secrets can reference it; this tool fills them. Key names are the
-# `remoteRef` properties in deploy/services/<svc>/values-prod.yaml and
-# deploy/web/app/values-prod.yaml; manifest_test.go fails on any drift from
-# those files and on any difference from Terraform's list. Keys the values
-# files carry only commented out (admin-console callers, providers that are
-# off at launch) are filled too, so enabling one is uncommenting two lines.
+# object; the prefix is atpost/<env>. Terraform creates every one as an EMPTY
+# shell (envs/<env>/secrets.tf, output service_secret_names: the 32 services
+# + web + admin-console) so External Secrets can reference it; this tool
+# fills them. Key names are the `remoteRef` properties in
+# deploy/services/<svc>/values-<env>.yaml and deploy/web/*/values-<env>.yaml;
+# manifest_test.go fails on any drift from those files and on any difference
+# from Terraform's list, for every environment whose files exist. Keys the
+# values files carry only commented out (admin-console callers, providers
+# that are off at launch) are filled too, so enabling one is uncommenting
+# two lines.
 #
-# Production values are freshly generated, typed by the founder, or read
-# from what Terraform generated. Dev values are never reused.
+# Values are freshly generated per environment, typed by the founder, or read
+# from what that environment's Terraform generated. Dev values are never
+# reused, and QA and production never share a value.
+#
+# Environment differences are NOT duplicated: ${name} tokens below expand
+# from the `environments` block (${env} is built in). An unknown token is an
+# error. QA uses Razorpay TEST mode: the tool accepts only rzp_test_ key ids
+# in qa and only rzp_live_ in prod (a rule in env.go, not in this file).
 #
 # File format: a strict YAML subset parsed by manifest.go: nested mappings of
 # scalars, two-space indentation, full-line comments. No lists, anchors,
@@ -40,25 +49,58 @@
 #   literal    const:<value>             literal, may be empty (an empty "previous" slot)
 
 version: 1
-prefix: atpost/prod
+
+# Per-environment values. Every environment defines the same vars.
+# omit_secrets: secrets that environment's Terraform creates no shell for.
+environments:
+  prod:
+    # envs/prod has no argocd-repo shell yet (deploy/argocd/repo-credentials.yaml
+    # reads atpost/prod/argocd-repo-modernsmapp): drop this line once
+    # envs/prod/secrets.tf creates it.
+    omit_secrets: argocd-repo-modernsmapp
+    vars:
+      env_label: PRODUCTION
+      env_word: production
+      razorpay_mode: LIVE
+      razorpay_key_prefix: rzp_live_
+      web_host: app.cleestudio.com
+      api_host: api.cleestudio.com
+      ws_host: ws.cleestudio.com
+      admin_host: admin.cleestudio.com
+      media_host: media.cleestudio.com
+      mail_from: no-reply@cleestudio.com
+  qa:
+    vars:
+      env_label: QA
+      env_word: QA
+      razorpay_mode: TEST-MODE
+      razorpay_key_prefix: rzp_test_
+      web_host: qa.cleestudio.com
+      api_host: api-qa.cleestudio.com
+      ws_host: ws-qa.cleestudio.com
+      admin_host: admin-qa.cleestudio.com
+      media_host: media-qa.cleestudio.com
+      mail_from: no-reply@qa.cleestudio.com
+
+prefix: atpost/${env}
 
 # Secrets this tool READS and never writes. Terraform generates them; their
 # values are copied into the per-service secrets, never re-generated.
 sources:
   # modules/auth-keys: jwt_secret, jwt_kid, internal_service_key,
   # jwt_private_key_pem, jwt_public_key_pem, jwt_rs256_kid.
-  platform-auth: atpost/prod/platform-auth
+  platform-auth: atpost/${env}/platform-auth
   # modules/elasticache: auth_token, primary_endpoint, reader_endpoint, port.
-  elasticache-auth: atpost/prod/elasticache/auth
+  elasticache-auth: atpost/${env}/elasticache/auth
   # modules/opensearch: username, password, endpoint. This is the internal
   # MASTER user of fine-grained access control; search-service uses it until
   # a least-privilege OpenSearch user is created inside the domain.
-  opensearch-master: atpost/prod/opensearch/master
+  opensearch-master: atpost/${env}/opensearch/master
   # modules/msk: username, password (the AmazonMSK_ name is AWS-mandated).
   msk-scram: tf:msk_scram_secret_name
   # modules/media: media_cloudfront_key_pair_id, media_cloudfront_private_key,
   # media_cdn_base_url. Terraform generates the CloudFront signing key pair.
-  cloudfront-signing: atpost/prod/media/cloudfront-signing
+  cloudfront-signing: atpost/${env}/media/cloudfront-signing
 
 shared:
   # A fresh deployment has no previous key. External Secrets needs the
@@ -100,13 +142,13 @@ shared:
   # identity-auth mini-app session signer (RS256).
   mini_app_session_rs256: generate:rsa2048-pem
   # Third parties, typed once, used by several services.
-  razorpay_key_id: prompt:Razorpay LIVE key id (rzp_live_...)
-  razorpay_key_secret: prompt:Razorpay LIVE key secret
-  razorpay_webhook_secret: prompt:Razorpay webhook secret (dashboard webhook to https://api.cleestudio.com/v1/payments/webhook)
-  livekit_url: prompt:LiveKit Cloud PRODUCTION project URL (wss://<project>.livekit.cloud)
+  razorpay_key_id: prompt:Razorpay ${razorpay_mode} key id (${razorpay_key_prefix}...)
+  razorpay_key_secret: prompt:Razorpay ${razorpay_mode} key secret
+  razorpay_webhook_secret: prompt:Razorpay webhook secret (dashboard webhook to https://${api_host}/v1/payments/webhook)
+  livekit_url: prompt:LiveKit Cloud ${env_label} project URL (wss://<project>.livekit.cloud)
   livekit_public_url: prompt:LiveKit Cloud URL devices dial (wss://...; the same as the project URL on Cloud)
-  livekit_api_key: prompt:LiveKit Cloud PRODUCTION API key
-  livekit_api_secret: prompt:LiveKit Cloud PRODUCTION API secret
+  livekit_api_key: prompt:LiveKit Cloud ${env_label} API key
+  livekit_api_secret: prompt:LiveKit Cloud ${env_label} API secret
 
 secrets:
 
@@ -140,7 +182,7 @@ secrets:
     mini_app_session_private_key_pem: shared-private:mini_app_session_rs256
     mini_app_session_key_id: const:miniapp-1
     # Sign-in with Google/Apple/GitHub is off at launch (OAUTH_NEW_ACCOUNT_ENABLED=false).
-    oauth_google_client_id: prompt-optional:Google OAuth client id (empty until the production OAuth app exists)
+    oauth_google_client_id: prompt-optional:Google OAuth client id (empty until the ${env_word} OAuth app exists)
     oauth_google_client_secret: prompt-optional:Google OAuth client secret
     oauth_apple_client_id: prompt-optional:Apple Sign-in client id
     oauth_apple_client_secret: prompt-optional:Apple Sign-in client secret
@@ -300,15 +342,15 @@ secrets:
     jwt_secret_previous: shared:jwt_secret_previous
     jwt_kid_previous: shared:jwt_kid_previous
     realtime_token_secret: shared:realtime_token_secret
-    fcm_project_id: prompt:Firebase PRODUCTION project id
-    fcm_service_account_key: prompt-file:Path to the Firebase PRODUCTION service-account JSON
+    fcm_project_id: prompt:Firebase ${env_label} project id
+    fcm_service_account_key: prompt-file:Path to the Firebase ${env_label} service-account JSON
     # iOS push is off until APNS_TEAM_ID is set.
     apns_team_id: prompt-optional:APNs team id (iOS push; empty until the iOS app ships)
     apns_key_id: prompt-optional:APNs key id
     apns_private_key: prompt-optional:APNs .p8 private key contents
     apns_bundle_id: prompt-optional:APNs bundle id
     smtp_host: prompt-optional:SES SMTP host (email-smtp.ap-south-1.amazonaws.com) if notification mail is wanted
-    smtp_username: prompt-optional:SES SMTP username
+    smtp_username: prompt-optional:SES SMTP username (an SMTP user allowed to send as ${mail_from})
     smtp_password: prompt-optional:SES SMTP password
 
   search-service:
@@ -340,7 +382,7 @@ secrets:
     jwt_secret_previous: shared:jwt_secret_previous
     jwt_kid_previous: shared:jwt_kid_previous
     story_moderation_hmac_key: shared:story_moderation_hmac_key
-    story_moderation_blocklist: prompt:Story moderation blocklist, comma-separated terms (required in production)
+    story_moderation_blocklist: prompt:Story moderation blocklist, comma-separated terms (required in ${env_word})
     post_moderation_hmac_key: shared:post_moderation_hmac_key
     post_restriction_hmac_key: shared:post_restriction_hmac_key
     trust_safety_service_token_key: shared-private:svc_trust_safety
@@ -519,12 +561,12 @@ secrets:
     commerce_service_token_kid: shared:svc_commerce_kid
     commerce_kms_key_id: tf:commerce_pii_kms_key_id
     commerce_pii_lookup_salt: generate:hex64
-    # Courier booking stays manual until the Shiprocket production account
+    # Courier booking stays manual until the Shiprocket account of the environment
     # exists. To switch: change this to const:shiprocket, fill the four
     # prompts below, and run apply --rotate commerce-service/courier_provider.
     courier_provider: const:stub
-    shiprocket_email: prompt-optional:Shiprocket production account email
-    shiprocket_password: prompt-optional:Shiprocket production account password
+    shiprocket_email: prompt-optional:Shiprocket ${env_word} account email
+    shiprocket_password: prompt-optional:Shiprocket ${env_word} account password
     shiprocket_webhook_token: prompt-optional:Shiprocket webhook token
     shiprocket_webhook_hmac: prompt-optional:Shiprocket webhook HMAC secret
     # Admin console: pre-filled so enabling is uncommenting the values lines.
@@ -704,8 +746,8 @@ secrets:
     livekit_api_key: shared:livekit_api_key
     livekit_api_secret: shared:livekit_api_secret
     # Egress upload credentials for the recordings bucket: the IAM user
-    # created by hand after Terraform (envs/prod/README.md section 5).
-    live_egress_s3_access_key_id: prompt:LiveKit egress IAM user access key id (atpost-prod-livekit-egress)
+    # created by hand after Terraform (envs/<env>/README.md, the egress IAM user section).
+    live_egress_s3_access_key_id: prompt:LiveKit egress IAM user access key id (atpost-${env}-livekit-egress)
     live_egress_s3_secret_access_key: prompt:LiveKit egress IAM user secret access key
     live_service_token_privkey: shared-private:svc_live
     live_service_token_kid: shared:svc_live_kid
@@ -723,3 +765,11 @@ secrets:
   # atpost-web-ui apps/admin (atpost/admin-console) reads only URLs today,
   # all values. The shell is filled with {} so an ExternalSecret can exist.
   admin-console:
+
+  # ArgoCD's read credential for the private modernsmapp repository
+  # (deploy/argocd/repo-credentials.yaml reads username + password). Filled
+  # in qa; prod omits it until envs/prod creates the shell (environments).
+  # Rotate the token with apply --rotate argocd-repo-modernsmapp/password.
+  argocd-repo-modernsmapp:
+    username: prompt:GitHub user name for ArgoCD (for a fine-grained token: its owner)
+    password: prompt:GitHub fine-grained token for ArgoCD (Contents read-only on rvreddy476/modernsmapp, nothing else)

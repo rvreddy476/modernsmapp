@@ -155,314 +155,447 @@ func repoPath(t *testing.T, parts ...string) string {
 	return p
 }
 
-func loadCommitted(t *testing.T) *Manifest {
+func loadCommitted(t *testing.T, env string) *Manifest {
 	t.Helper()
-	m, err := LoadManifest("manifest.yaml")
+	m, err := LoadManifest("manifest.yaml", env)
 	if err != nil {
-		t.Fatalf("manifest.yaml: %v", err)
+		t.Fatalf("manifest.yaml (%s): %v", env, err)
 	}
-	if m.Prefix != "atpost/prod" {
+	if m.Prefix != "atpost/"+env {
 		t.Fatalf("prefix %q", m.Prefix)
 	}
 	return m
 }
 
-// The committed manifest must load, and every externalSecret remoteRef in
-// deploy/services/*/values-prod.yaml and deploy/web/*/values-prod.yaml must
-// exist under the matching secret: the drift guard between the chart values
-// and the seeder. Commented-out refs are checked too (they are what the
-// next enablement uncomments).
-func TestCommittedManifestCoversDeployValues(t *testing.T) {
-	m := loadCommitted(t)
-	keysOf := map[string]map[string]bool{}
-	for _, s := range m.Secrets {
-		keysOf[s.Name] = map[string]bool{}
-		for _, k := range s.Keys {
-			keysOf[s.Name][k.Name] = true
-		}
+// forEachEnv runs f once per known environment as a subtest.
+func forEachEnv(t *testing.T, f func(t *testing.T, env string)) {
+	for _, env := range KnownEnvs {
+		env := env
+		t.Run(env, func(t *testing.T) { f(t, env) })
 	}
-	files, _ := filepath.Glob(filepath.Join(repoPath(t, "deploy", "services"), "*", "values-prod.yaml"))
-	web, _ := filepath.Glob(filepath.Join(repoPath(t, "deploy", "web"), "*", "values-prod.yaml"))
-	files = append(files, web...)
-	remoteKeyRe := regexp.MustCompile(`^\s*remoteKey:\s*atpost/prod/([A-Za-z0-9-]+)\s*$`)
-	refRe := regexp.MustCompile(`^\s*#?\s*-\s*\{\s*secretKey:\s*[A-Z0-9_]+\s*,\s*remoteRef:\s*([a-z0-9_]+)\s*(,\s*remoteKey:\s*([^\s}]+)\s*)?\}`)
-	checked := 0
+}
+
+// envTerraformDir is infra/terraform/envs/<env>. Production must exist; any
+// other environment is skipped until its directory is created (the QA
+// Terraform lands separately), and checked fully from then on.
+func envTerraformDir(t *testing.T, env string) string {
+	t.Helper()
+	dir := repoPath(t, "infra", "terraform", "envs", "prod")
+	dir = filepath.Join(filepath.Dir(dir), env)
+	if _, err := os.Stat(dir); err != nil {
+		if env == DefaultEnv {
+			t.Fatalf("%s missing", dir)
+		}
+		t.Skipf("%s does not exist yet", dir)
+	}
+	return dir
+}
+
+func valuesFiles(t *testing.T, env string) []string {
+	t.Helper()
+	files, _ := filepath.Glob(filepath.Join(repoPath(t, "deploy", "services"), "*", "values-"+env+".yaml"))
+	web, _ := filepath.Glob(filepath.Join(repoPath(t, "deploy", "web"), "*", "values-"+env+".yaml"))
+	return append(files, web...)
+}
+
+// The committed manifest must load, and every externalSecret remoteRef in
+// deploy/services/*/values-<env>.yaml and deploy/web/*/values-<env>.yaml must
+// exist under the matching secret: the drift guard between the chart values
+// and the seeder, for production and for every other environment whose
+// values files exist (QA: skipped while there is no values-qa.yaml, failing
+// on the first remoteRef the manifest lacks once there is). Commented-out
+// refs are checked too (they are what the next enablement uncomments).
+// deploy/argocd/*.yaml remoteRefs (the repository credential) are checked the
+// same way.
+func TestCommittedManifestCoversDeployValues(t *testing.T) {
+	prodFiles := 0
+	forEachEnv(t, func(t *testing.T, env string) {
+		m := loadCommitted(t, env)
+		keysOf := map[string]map[string]bool{}
+		for _, s := range m.Secrets {
+			keysOf[s.Name] = map[string]bool{}
+			for _, k := range s.Keys {
+				keysOf[s.Name][k.Name] = true
+			}
+		}
+		omitted := map[string]bool{}
+		for _, o := range m.Omitted {
+			omitted[o] = true
+		}
+		files := valuesFiles(t, env)
+		if env == DefaultEnv {
+			prodFiles = len(files)
+		} else if len(files) == 0 {
+			t.Skipf("no deploy/**/values-%s.yaml yet", env)
+		}
+		prefix := regexp.QuoteMeta(m.Prefix)
+		remoteKeyRe := regexp.MustCompile(`^\s*remoteKey:\s*` + prefix + `/([A-Za-z0-9-]+)\s*$`)
+		refRe := regexp.MustCompile(`^\s*#?\s*-\s*\{\s*secretKey:\s*[A-Z0-9_]+\s*,\s*remoteRef:\s*([a-z0-9_]+)\s*(,\s*remoteKey:\s*([^\s}]+)\s*)?\}`)
+		checked := 0
+		for _, f := range files {
+			fh, err := os.Open(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var secret string
+			sc := bufio.NewScanner(fh)
+			for sc.Scan() {
+				line := sc.Text()
+				if mm := remoteKeyRe.FindStringSubmatch(line); mm != nil {
+					secret = mm[1]
+					if _, ok := keysOf[secret]; !ok {
+						t.Errorf("%s: secret %q is not in manifest.yaml for %s", f, secret, env)
+					}
+					continue
+				}
+				mm := refRe.FindStringSubmatch(line)
+				if mm == nil || secret == "" {
+					continue
+				}
+				if mm[3] != "" && mm[3] != m.Prefix+"/"+secret {
+					continue // a per-entry remoteKey reads another (Terraform-owned) secret
+				}
+				checked++
+				if !keysOf[secret][mm[1]] {
+					t.Errorf("%s: remoteRef %q is not a key of %s in manifest.yaml (%s)", f, mm[1], secret, env)
+				}
+			}
+			fh.Close()
+		}
+		// A partial set (another lane still writing values-qa.yaml) is
+		// checked ref by ref; the parser sanity floor applies to full sets.
+		if len(files) >= prodFiles && checked < 300 {
+			t.Fatalf("only %d remoteRefs checked in %d files; the values parser is probably broken", checked, len(files))
+		}
+		if len(files) < prodFiles {
+			t.Logf("%s: %d of %d values files exist; %d remoteRefs checked", env, len(files), prodFiles, checked)
+		}
+
+		// ExternalSecrets outside the chart: `key: <prefix>/<secret>` then
+		// `property: <key>`.
+		argo, _ := filepath.Glob(filepath.Join(repoPath(t, "deploy", "argocd"), "*.yaml"))
+		argoSub, _ := filepath.Glob(filepath.Join(repoPath(t, "deploy", "argocd"), "*", "*.yaml"))
+		keyRe := regexp.MustCompile(`^\s*key:\s*` + prefix + `/([A-Za-z0-9-]+)\s*$`)
+		propRe := regexp.MustCompile(`^\s*property:\s*([A-Za-z0-9_.-]+)\s*$`)
+		for _, f := range append(argo, argoSub...) {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var secret string
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimRight(line, "\r")
+				if mm := keyRe.FindStringSubmatch(line); mm != nil {
+					secret = mm[1]
+					continue
+				}
+				if mm := propRe.FindStringSubmatch(line); mm != nil && secret != "" {
+					switch {
+					case omitted[secret]:
+						t.Logf("%s: %s/%s.%s is omitted in %s (no Terraform shell yet)", f, m.Prefix, secret, mm[1], env)
+					case !keysOf[secret][mm[1]]:
+						t.Errorf("%s: %s/%s property %q is not in manifest.yaml (%s)", f, m.Prefix, secret, mm[1], env)
+					}
+					secret = ""
+				}
+			}
+		}
+	})
+}
+
+// terraformText is every *.tf of one environment, concatenated.
+func terraformText(t *testing.T, dir string) string {
+	t.Helper()
+	files, _ := filepath.Glob(filepath.Join(dir, "*.tf"))
+	var b strings.Builder
 	for _, f := range files {
-		fh, err := os.Open(f)
+		body, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var secret string
-		sc := bufio.NewScanner(fh)
-		for sc.Scan() {
-			line := sc.Text()
-			if mm := remoteKeyRe.FindStringSubmatch(line); mm != nil {
-				secret = mm[1]
-				if _, ok := keysOf[secret]; !ok {
-					t.Errorf("%s: secret %q is not in manifest.yaml", f, secret)
-				}
-				continue
-			}
-			mm := refRe.FindStringSubmatch(line)
-			if mm == nil || secret == "" {
-				continue
-			}
-			if mm[3] != "" && mm[3] != "atpost/prod/"+secret {
-				continue // a per-entry remoteKey reads another (Terraform-owned) secret
-			}
-			checked++
-			if !keysOf[secret][mm[1]] {
-				t.Errorf("%s: remoteRef %q is not a key of %s in manifest.yaml", f, mm[1], secret)
-			}
-		}
-		fh.Close()
+		b.Write(body)
+		b.WriteString("\n")
 	}
-	if checked < 300 {
-		t.Fatalf("only %d remoteRefs checked; the values parser is probably broken", checked)
-	}
+	return b.String()
 }
 
 // The seeder fills exactly the shells Terraform creates: service_names +
-// web_image_names in infra/terraform/envs/prod/variables.tf.
+// web_image_names in infra/terraform/envs/<env>, plus any other shell that
+// environment's Terraform names explicitly (the ArgoCD repository
+// credential). QA is checked once envs/qa exists.
 func TestCommittedManifestMatchesTerraformShells(t *testing.T) {
-	m := loadCommitted(t)
-	b, err := os.ReadFile(repoPath(t, "infra", "terraform", "envs", "prod", "variables.tf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(b)
-	listOf := func(name string) []string {
-		re := regexp.MustCompile(`(?s)variable "` + name + `" \{.*?default\s*=\s*\[(.*?)\]`)
-		mm := re.FindStringSubmatch(src)
-		if mm == nil {
-			t.Fatalf("variables.tf: no default list for %s", name)
+	forEachEnv(t, func(t *testing.T, env string) {
+		dir := envTerraformDir(t, env)
+		m := loadCommitted(t, env)
+		src := terraformText(t, dir)
+		listOf := func(name string) []string {
+			re := regexp.MustCompile(`(?s)variable "` + name + `" \{.*?default\s*=\s*\[(.*?)\]`)
+			mm := re.FindStringSubmatch(src)
+			if mm == nil {
+				t.Fatalf("envs/%s: no default list for %s", env, name)
+			}
+			var out []string
+			for _, q := range regexp.MustCompile(`"([a-z0-9-]+)"`).FindAllStringSubmatch(mm[1], -1) {
+				out = append(out, q[1])
+			}
+			return out
 		}
-		var out []string
-		for _, q := range regexp.MustCompile(`"([a-z0-9-]+)"`).FindAllStringSubmatch(mm[1], -1) {
-			out = append(out, q[1])
+		want := append(listOf("service_names"), listOf("web_image_names")...)
+		sort.Strings(want)
+		inTF := map[string]bool{}
+		for _, w := range want {
+			inTF[w] = true
 		}
-		return out
-	}
-	want := append(listOf("service_names"), listOf("web_image_names")...)
-	sort.Strings(want)
-	got := m.SecretNames()
-	sort.Strings(got)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("manifest secrets differ from Terraform shells:\n manifest:  %v\n terraform: %v", got, want)
-	}
-	if len(got) != 34 {
-		t.Fatalf("expected 32 services + web + admin-console, got %d", len(got))
-	}
-}
-
-// Every tf: name the manifest reads is a real output of envs/prod, and
-// every copy:<source>#<field> is a field Terraform writes into that source.
-func TestCommittedManifestReadsRealTerraform(t *testing.T) {
-	m := loadCommitted(t)
-	envFiles, _ := filepath.Glob(filepath.Join(repoPath(t, "infra", "terraform", "envs", "prod"), "*.tf"))
-	outputs := map[string]bool{}
-	outRe := regexp.MustCompile(`(?m)^output "([a-z0-9_]+)"`)
-	for _, f := range envFiles {
-		b, _ := os.ReadFile(f)
-		for _, mm := range outRe.FindAllStringSubmatch(string(b), -1) {
-			outputs[mm[1]] = true
+		got := m.SecretNames()
+		sort.Strings(got)
+		inManifest := map[string]bool{}
+		for _, g := range got {
+			inManifest[g] = true
 		}
-	}
-	needTF := map[string]bool{"aurora_cluster_endpoint": true} // dsn:
-	moduleOf := map[string]string{
-		"platform-auth":      "auth-keys",
-		"elasticache-auth":   "elasticache",
-		"opensearch-master":  "opensearch",
-		"msk-scram":          "msk",
-		"cloudfront-signing": "media",
-	}
-	fields := map[string]map[string]bool{}
-	for _, s := range m.Sources {
-		if out, ok := s.TFOutput(); ok {
-			needTF[out] = true
-		}
-		mod, ok := moduleOf[s.Alias]
-		if !ok {
-			t.Errorf("source %s: test does not know its Terraform module", s.Alias)
-			continue
-		}
-		b, err := os.ReadFile(repoPath(t, "infra", "terraform", "modules", mod, "main.tf"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := string(b)
-		if !strings.HasPrefix(s.Ref, "tf:") {
-			// atpost/prod/<x> must be the name the module creates.
-			name := strings.Replace(s.Ref, "atpost/prod/", "atpost/${var.environment}/", 1)
-			if !strings.Contains(body, `"`+name+`"`) {
-				t.Errorf("source %s: module %s does not create %q", s.Alias, mod, s.Ref)
+		for _, w := range want {
+			if !inManifest[w] {
+				t.Errorf("envs/%s creates a shell for %s, which the manifest does not fill", env, w)
 			}
 		}
-		js := regexp.MustCompile(`(?s)secret_string\s*=\s*jsonencode\(\{(.*?)\}\)`).FindStringSubmatch(body)
-		if js == nil {
-			t.Fatalf("module %s: no jsonencode secret_string", mod)
+		for _, g := range got {
+			if inTF[g] {
+				continue
+			}
+			// Not a service shell: that environment's Terraform must create
+			// it by name, or the fetch before every apply fails.
+			if !strings.Contains(src, `"`+g+`"`) && !strings.Contains(src, "/"+g+`"`) {
+				t.Errorf("manifest fills %s/%s, but envs/%s creates no such secret", m.Prefix, g, env)
+			}
 		}
-		fields[s.Alias] = map[string]bool{}
-		for _, f := range regexp.MustCompile(`(?m)^\s*([a-z0-9_]+)\s*=`).FindAllStringSubmatch(js[1], -1) {
-			fields[s.Alias][f[1]] = true
+		if len(want) != 34 {
+			t.Fatalf("expected 32 services + web + admin-console in envs/%s, got %d", env, len(want))
 		}
-	}
-	checkCopy := func(where, arg string) {
-		ref, _ := ParseCopyRef(arg)
-		if !fields[ref.Source][ref.Field] {
-			t.Errorf("%s: %s has no field %q in Terraform", where, ref.Source, ref.Field)
+	})
+}
+
+// Every tf: name the manifest reads is a real output of envs/<env>, and
+// every copy:<source>#<field> is a field Terraform writes into that source.
+func TestCommittedManifestReadsRealTerraform(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, env string) {
+		dir := envTerraformDir(t, env)
+		m := loadCommitted(t, env)
+		outputs := map[string]bool{}
+		outRe := regexp.MustCompile(`(?m)^output "([a-z0-9_]+)"`)
+		for _, mm := range outRe.FindAllStringSubmatch(terraformText(t, dir), -1) {
+			outputs[mm[1]] = true
 		}
-	}
-	for _, s := range m.Secrets {
-		for _, k := range s.Keys {
-			where := s.Name + "." + k.Name
-			switch k.Spec.Kind {
-			case KindTF:
-				needTF[k.Spec.Arg] = true
-			case KindCopy:
-				checkCopy(where, k.Spec.Arg)
-			case KindDerive:
-				for _, p := range DerivePlaceholders(k.Spec.Arg) {
-					if p[0] == "tf" {
-						needTF[p[1]] = true
-					} else {
-						checkCopy(where, p[1])
+		needTF := map[string]bool{"aurora_cluster_endpoint": true} // dsn:
+		moduleOf := map[string]string{
+			"platform-auth":      "auth-keys",
+			"elasticache-auth":   "elasticache",
+			"opensearch-master":  "opensearch",
+			"msk-scram":          "msk",
+			"cloudfront-signing": "media",
+		}
+		fields := map[string]map[string]bool{}
+		for _, s := range m.Sources {
+			if out, ok := s.TFOutput(); ok {
+				needTF[out] = true
+			}
+			mod, ok := moduleOf[s.Alias]
+			if !ok {
+				t.Errorf("source %s: test does not know its Terraform module", s.Alias)
+				continue
+			}
+			b, err := os.ReadFile(repoPath(t, "infra", "terraform", "modules", mod, "main.tf"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(b)
+			if !strings.HasPrefix(s.Ref, "tf:") {
+				// atpost/<env>/<x> must be the name the module creates.
+				name := strings.Replace(s.Ref, m.Prefix+"/", "atpost/${var.environment}/", 1)
+				if !strings.Contains(body, `"`+name+`"`) {
+					t.Errorf("source %s: module %s does not create %q", s.Alias, mod, s.Ref)
+				}
+			}
+			js := regexp.MustCompile(`(?s)secret_string\s*=\s*jsonencode\(\{(.*?)\}\)`).FindStringSubmatch(body)
+			if js == nil {
+				t.Fatalf("module %s: no jsonencode secret_string", mod)
+			}
+			fields[s.Alias] = map[string]bool{}
+			for _, f := range regexp.MustCompile(`(?m)^\s*([a-z0-9_]+)\s*=`).FindAllStringSubmatch(js[1], -1) {
+				fields[s.Alias][f[1]] = true
+			}
+		}
+		checkCopy := func(where, arg string) {
+			ref, _ := ParseCopyRef(arg)
+			if !fields[ref.Source][ref.Field] {
+				t.Errorf("%s: %s has no field %q in Terraform", where, ref.Source, ref.Field)
+			}
+		}
+		for _, s := range m.Secrets {
+			for _, k := range s.Keys {
+				where := s.Name + "." + k.Name
+				switch k.Spec.Kind {
+				case KindTF:
+					needTF[k.Spec.Arg] = true
+				case KindCopy:
+					checkCopy(where, k.Spec.Arg)
+				case KindDerive:
+					for _, p := range DerivePlaceholders(k.Spec.Arg) {
+						if p[0] == "tf" {
+							needTF[p[1]] = true
+						} else {
+							checkCopy(where, p[1])
+						}
 					}
 				}
 			}
 		}
-	}
-	for name := range needTF {
-		if !outputs[name] {
-			t.Errorf("terraform output %q is not defined in infra/terraform/envs/prod", name)
+		for name := range needTF {
+			if !outputs[name] {
+				t.Errorf("terraform output %q is not defined in infra/terraform/envs/%s", name, env)
+			}
 		}
-	}
+	})
 }
 
 // Every service-token keypair has exactly one caller (private holder) and
 // the platform secret is never written by the seeder.
 func TestCommittedManifestPairing(t *testing.T) {
-	m := loadCommitted(t)
-	holders := map[string][]string{}
-	receivers := map[string]int{}
-	for _, s := range m.Secrets {
-		if s.Name == "platform-auth" {
-			t.Fatal("platform-auth is Terraform's; the seeder must only read it")
-		}
-		for _, k := range s.Keys {
-			switch k.Spec.Kind {
-			case KindSharedPrivate:
-				holders[k.Spec.Arg] = append(holders[k.Spec.Arg], s.Name)
-			case KindSharedPublic:
-				receivers[k.Spec.Arg]++
+	forEachEnv(t, func(t *testing.T, env string) {
+		m := loadCommitted(t, env)
+		holders := map[string][]string{}
+		receivers := map[string]int{}
+		for _, s := range m.Secrets {
+			if s.Name == "platform-auth" {
+				t.Fatal("platform-auth is Terraform's; the seeder must only read it")
+			}
+			for _, k := range s.Keys {
+				switch k.Spec.Kind {
+				case KindSharedPrivate:
+					holders[k.Spec.Arg] = append(holders[k.Spec.Arg], s.Name)
+				case KindSharedPublic:
+					receivers[k.Spec.Arg]++
+				}
 			}
 		}
-	}
-	for _, e := range m.Shared {
-		if !e.Spec.IsKeypair() {
-			continue
-		}
-		if len(holders[e.Name]) != 1 {
-			t.Errorf("keypair %s: private half in %v, want exactly one caller", e.Name, holders[e.Name])
-		}
-		if strings.HasPrefix(e.Name, "svc_") {
-			if receivers[e.Name] == 0 {
-				t.Errorf("service token %s has no receiver", e.Name)
+		for _, e := range m.Shared {
+			if !e.Spec.IsKeypair() {
+				continue
 			}
-			if _, ok := m.SharedEntry(e.Name + "_kid"); !ok {
-				t.Errorf("service token %s has no %s_kid", e.Name, e.Name)
+			if len(holders[e.Name]) != 1 {
+				t.Errorf("keypair %s: private half in %v, want exactly one caller", e.Name, holders[e.Name])
+			}
+			if strings.HasPrefix(e.Name, "svc_") {
+				if receivers[e.Name] == 0 {
+					t.Errorf("service token %s has no receiver", e.Name)
+				}
+				if _, ok := m.SharedEntry(e.Name + "_kid"); !ok {
+					t.Errorf("service token %s has no %s_kid", e.Name, e.Name)
+				}
 			}
 		}
-	}
+	})
 }
 
 // A full apply of the committed manifest with stand-in Terraform values and
 // every required prompt answered: nothing pending, every pair verifies, every
 // role has a password and every DSN points at the role's own database.
 func TestCommittedManifestFullApply(t *testing.T) {
-	m := loadCommitted(t)
-	pair, _ := Generator{}.Pair(GenRSA2048)
-	in := Inputs{
-		Apply: true,
-		TF: map[string]string{
-			"aurora_cluster_endpoint":      "aurora.example.internal",
-			"commerce_pii_kms_key_id":      "1234abcd-12ab-34cd-56ef-1234567890ab",
-			"elasticache_primary_endpoint": "cache.example.internal",
-			"msk_bootstrap_brokers":        "b-1.example:9096,b-2.example:9096",
-			"opensearch_endpoint":          "vpc-search.example.internal",
-			"msk_scram_secret_name":        "AmazonMSK_atpost-prod-atpost",
-		},
-		Sources: map[string]map[string]string{
-			"platform-auth":      {"jwt_secret": "JWTSECRETSTANDIN000000000000000001", "jwt_kid": "v1", "internal_service_key": "INTERNALKEYSTANDIN0000000000001", "jwt_private_key_pem": pair.Private, "jwt_public_key_pem": pair.Public, "jwt_rs256_kid": "rsa-1"},
-			"elasticache-auth":   {"auth_token": "REDISAUTHSTANDIN000000000001"},
-			"opensearch-master":  {"username": "atpost-master", "password": "OSPASSWORDSTANDIN0000001"},
-			"msk-scram":          {"username": "atpost", "password": "SCRAMSTANDIN000000000001"},
-			"cloudfront-signing": {"media_cloudfront_key_pair_id": "K2STANDIN", "media_cloudfront_private_key": pair.Private, "media_cdn_base_url": "https://media.cleestudio.com"},
-		},
-		Prompter: answerRequired{},
-		ReadFile: func(string) ([]byte, error) { return []byte(`{"type":"service_account"}`), nil },
-	}
-	p, err := Resolve(m, in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(p.MissingTF)+len(p.MissingSources)+len(p.PairErrors)+len(p.Warnings) != 0 {
-		t.Fatalf("missing tf %v, sources %v, pairs %v, warnings %v", p.MissingTF, p.MissingSources, p.PairErrors, p.Warnings)
-	}
-	for _, s := range p.Secrets {
-		for _, k := range s.Keys {
-			if k.Action == ActPending {
-				t.Errorf("%s.%s pending: %s", s.Name, k.Key, k.Reason)
-			}
-			if k.Spec.Kind == KindDSN {
-				ref, _ := ParseDSNRef(k.Spec.Arg)
-				if !strings.HasSuffix(strings.SplitN(k.Value, "?", 2)[0], "/"+ref.Database) || !strings.Contains(k.Value, ref.Role+":"+p.RolePasswords[ref.Role]+"@") {
-					t.Errorf("%s.%s: DSN does not carry %s on %s", s.Name, k.Key, ref.Role, ref.Database)
+	forEachEnv(t, func(t *testing.T, env string) {
+		m := loadCommitted(t, env)
+		pair, _ := Generator{}.Pair(GenRSA2048)
+		in := Inputs{
+			Apply: true,
+			TF: map[string]string{
+				"aurora_cluster_endpoint":      "aurora.example.internal",
+				"commerce_pii_kms_key_id":      "1234abcd-12ab-34cd-56ef-1234567890ab",
+				"elasticache_primary_endpoint": "cache.example.internal",
+				"msk_bootstrap_brokers":        "b-1.example:9096,b-2.example:9096",
+				"opensearch_endpoint":          "vpc-search.example.internal",
+				"msk_scram_secret_name":        "AmazonMSK_atpost-" + env + "-atpost",
+			},
+			Sources: map[string]map[string]string{
+				"platform-auth":      {"jwt_secret": "JWTSECRETSTANDIN000000000000000001", "jwt_kid": "v1", "internal_service_key": "INTERNALKEYSTANDIN0000000000001", "jwt_private_key_pem": pair.Private, "jwt_public_key_pem": pair.Public, "jwt_rs256_kid": "rsa-1"},
+				"elasticache-auth":   {"auth_token": "REDISAUTHSTANDIN000000000001"},
+				"opensearch-master":  {"username": "atpost-master", "password": "OSPASSWORDSTANDIN0000001"},
+				"msk-scram":          {"username": "atpost", "password": "SCRAMSTANDIN000000000001"},
+				"cloudfront-signing": {"media_cloudfront_key_pair_id": "K2STANDIN", "media_cloudfront_private_key": pair.Private, "media_cdn_base_url": "https://" + m.Vars["media_host"]},
+			},
+			Prompter: answerRequired{},
+			ReadFile: func(string) ([]byte, error) { return []byte(`{"type":"service_account"}`), nil },
+		}
+		p, err := Resolve(m, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.MissingTF)+len(p.MissingSources)+len(p.PairErrors)+len(p.PrefixErrors)+len(p.Warnings) != 0 {
+			t.Fatalf("missing tf %v, sources %v, pairs %v, prefixes %v, warnings %v", p.MissingTF, p.MissingSources, p.PairErrors, p.PrefixErrors, p.Warnings)
+		}
+		for _, s := range p.Secrets {
+			for _, k := range s.Keys {
+				if k.Action == ActPending {
+					t.Errorf("%s.%s pending: %s", s.Name, k.Key, k.Reason)
+				}
+				if k.Spec.Kind == KindDSN {
+					ref, _ := ParseDSNRef(k.Spec.Arg)
+					if !strings.HasSuffix(strings.SplitN(k.Value, "?", 2)[0], "/"+ref.Database) || !strings.Contains(k.Value, ref.Role+":"+p.RolePasswords[ref.Role]+"@") {
+						t.Errorf("%s.%s: DSN does not carry %s on %s", s.Name, k.Key, ref.Role, ref.Database)
+					}
 				}
 			}
 		}
-	}
-	for _, g := range p.Roles {
-		if len(p.RolePasswords[g.Role]) != 32 {
-			t.Errorf("role %s has no password", g.Role)
+		for _, g := range p.Roles {
+			if len(p.RolePasswords[g.Role]) != 32 {
+				t.Errorf("role %s has no password", g.Role)
+			}
 		}
-	}
-	if len(p.Roles) != 32 {
-		t.Errorf("roles: %d", len(p.Roles))
-	}
-	// Spot checks of the cross-service contracts.
-	get := func(secret, key string) string { return keyOf(t, p, secret, key).Value }
-	if get("web", "chat_proxy_signing_secret") != get("chat-ws-gateway", "jwt_secret") {
-		t.Error("the web chat proxy must sign with the platform jwt_secret")
-	}
-	if get("post-service", "post_moderation_hmac_key") != get("trust-safety-service", "post_moderation_hmac_key") {
-		t.Error("moderation HMAC differs between issuer and verifier")
-	}
-	if get("search-service", "opensearch_url") != "https://vpc-search.example.internal" || get("media-service", "redis_addr") != "cache.example.internal:6379" {
-		t.Error("derived addresses")
-	}
-	for _, c := range [][3]string{
-		{"live-service-v2", "live_service_token_privkey", "media-service.caller_live_pubkey"},
-		{"commerce-service", "commerce_service_token_key", "payments-service.caller_commerce_pubkey"},
-		{"food-service", "food_service_token_key", "payments-service.caller_food_pubkey"},
-		{"admin-service", "admin_service_token_key", "user-service.caller_admin_pubkey"},
-		{"post-service", "post_service_token_key", "trust-safety-service.caller_post_pubkey"},
-		{"trust-safety-service", "trust_safety_service_token_key", "post-service.caller_trust_safety_pubkey"},
-	} {
-		recv := strings.SplitN(c[2], ".", 2)
-		rebuilt, err := pairFromPrivate(GenEd25519, get(c[0], c[1]))
-		if err != nil || rebuilt.Public != get(recv[0], recv[1]) {
-			t.Errorf("%s.%s does not pair with %s", c[0], c[1], c[2])
+		if len(p.Roles) != 32 {
+			t.Errorf("roles: %d", len(p.Roles))
 		}
-	}
+		// Spot checks of the cross-service contracts.
+		get := func(secret, key string) string { return keyOf(t, p, secret, key).Value }
+		if get("web", "chat_proxy_signing_secret") != get("chat-ws-gateway", "jwt_secret") {
+			t.Error("the web chat proxy must sign with the platform jwt_secret")
+		}
+		if get("post-service", "post_moderation_hmac_key") != get("trust-safety-service", "post_moderation_hmac_key") {
+			t.Error("moderation HMAC differs between issuer and verifier")
+		}
+		if get("search-service", "opensearch_url") != "https://vpc-search.example.internal" || get("media-service", "redis_addr") != "cache.example.internal:6379" {
+			t.Error("derived addresses")
+		}
+		wantPrefix, _ := requiredPrefix(env, "razorpay_key_id")
+		for _, s := range []string{"payments-service", "monetization-service"} {
+			if v := get(s, "razorpay_key_id"); !strings.HasPrefix(v, wantPrefix) {
+				t.Errorf("%s.razorpay_key_id is not a %s key in %s", s, wantPrefix, env)
+			}
+		}
+		for _, c := range [][3]string{
+			{"live-service-v2", "live_service_token_privkey", "media-service.caller_live_pubkey"},
+			{"commerce-service", "commerce_service_token_key", "payments-service.caller_commerce_pubkey"},
+			{"food-service", "food_service_token_key", "payments-service.caller_food_pubkey"},
+			{"admin-service", "admin_service_token_key", "user-service.caller_admin_pubkey"},
+			{"post-service", "post_service_token_key", "trust-safety-service.caller_post_pubkey"},
+			{"trust-safety-service", "trust_safety_service_token_key", "post-service.caller_trust_safety_pubkey"},
+		} {
+			recv := strings.SplitN(c[2], ".", 2)
+			rebuilt, err := pairFromPrivate(GenEd25519, get(c[0], c[1]))
+			if err != nil || rebuilt.Public != get(recv[0], recv[1]) {
+				t.Errorf("%s.%s does not pair with %s", c[0], c[1], c[2])
+			}
+		}
+	})
 }
 
-// answerRequired answers every prompt with a stand-in value.
+// answerRequired answers every prompt with a stand-in value; a Razorpay key
+// id gets the mode prefix its label asks for.
 type answerRequired struct{}
 
 func (answerRequired) Ask(label string) (string, error) {
 	if strings.HasPrefix(label, "Path to") {
 		return "/stand-in/path.json", nil
+	}
+	for _, p := range []string{"rzp_live_", "rzp_test_"} {
+		if strings.Contains(label, "("+p) {
+			return p + "STANDIN0123456789", nil
+		}
 	}
 	return "STANDIN-" + strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {

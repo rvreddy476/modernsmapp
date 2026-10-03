@@ -100,6 +100,7 @@ type Plan struct {
 	PendingPrompts []string // "secret.key — label"
 	Warnings       []string
 	PairErrors     []string           // caller/receiver halves that do not match
+	PrefixErrors   []string           // values of the wrong mode for the environment (a live key in QA)
 	Roles          []RoleGrant        // every (role, database) pair the manifest uses
 	RolePasswords  map[string]string  // role -> password (never printed)
 	RotatedRoles   map[string]bool    // roles whose password changed this run
@@ -188,6 +189,7 @@ func Resolve(m *Manifest, in Inputs) (*Plan, error) {
 		r.plan.Secrets = append(r.plan.Secrets, sp)
 	}
 	r.verifyPairs()
+	r.verifyPrefixes()
 	r.collectRoles()
 	r.adoptKeptRolePasswords()
 	sort.Strings(r.plan.MissingTF)
@@ -197,7 +199,29 @@ func Resolve(m *Manifest, in Inputs) (*Plan, error) {
 	if in.Apply && len(r.plan.PairErrors) > 0 {
 		return r.plan, fmt.Errorf("refusing to emit mismatched key pairs:\n  %s", strings.Join(r.plan.PairErrors, "\n  "))
 	}
+	if in.Apply && len(r.plan.PrefixErrors) > 0 {
+		return r.plan, fmt.Errorf("refusing to emit values of the wrong mode for %s:\n  %s", m.Env, strings.Join(r.plan.PrefixErrors, "\n  "))
+	}
 	return r.plan, nil
+}
+
+// verifyPrefixes applies the per-environment prefix rule (env.go) to every
+// value in the plan, including ones kept from Secrets Manager or reused from
+// an unpushed payload, which never went through a prompt in this run.
+func (r *resolver) verifyPrefixes() {
+	for _, s := range r.plan.Secrets {
+		for _, k := range s.Keys {
+			name := keyRuleName(k)
+			if err := checkPrefix(r.m.Env, name, k.Value); err != nil {
+				hint := s.Name + "/" + k.Key
+				switch k.Spec.Kind {
+				case KindShared, KindSharedPrivate, KindSharedPublic:
+					hint = "shared/" + k.Spec.Arg // --rotate refuses <secret>/<key> for a shared copy
+				}
+				r.plan.PrefixErrors = append(r.plan.PrefixErrors, fmt.Sprintf("%s.%s (%s, from %s): %v; re-run apply --rotate %s and type the right key", s.Name, k.Key, k.Action, k.Origin, err, hint))
+			}
+		}
+	}
 }
 
 func (r *resolver) checkRotateTarget(t string) error {
@@ -460,6 +484,9 @@ func (r *resolver) ownValue(secret string, k Entry, rotating bool) (string, Orig
 	return v, OriginGenerated, nil
 }
 
+// maxPromptAttempts bounds re-asking after a refused (wrong-mode) answer.
+const maxPromptAttempts = 3
+
 // promptValue asks the founder when applying; in plan mode it is pending.
 // id is "secret.key" or "shared.<name>"; prior finds an unpushed answer.
 func (r *resolver) promptValue(id string, spec Spec, rotating bool, prior func() (string, bool)) (string, Origin, string, error) {
@@ -480,18 +507,32 @@ func (r *resolver) promptValue(id string, spec Spec, rotating bool, prior func()
 		}
 		return "", OriginNone, "prompt not answered (plan mode)", nil
 	}
-	answer, err := r.in.Prompter.Ask(label)
-	if err != nil {
-		return "", OriginNone, "", fmt.Errorf("prompt: %w", err)
-	}
-	answer = strings.TrimSpace(answer)
-	if spec.Kind == KindPromptFile && answer != "" {
-		b, err := r.in.ReadFile(answer)
+	name := id[strings.LastIndex(id, ".")+1:]
+	var answer string
+	for attempt, ask := 1, label; ; attempt++ {
+		a, err := r.in.Prompter.Ask(ask)
 		if err != nil {
-			// The answer is a path, not a secret, but keep it out anyway.
-			return "", OriginNone, "", fmt.Errorf("prompt-file: cannot read the file given for %s", id)
+			return "", OriginNone, "", fmt.Errorf("prompt: %w", err)
 		}
-		answer = strings.TrimSpace(string(b))
+		a = strings.TrimSpace(a)
+		if spec.Kind == KindPromptFile && a != "" {
+			b, err := r.in.ReadFile(a)
+			if err != nil {
+				// The answer is a path, not a secret, but keep it out anyway.
+				return "", OriginNone, "", fmt.Errorf("prompt-file: cannot read the file given for %s", id)
+			}
+			a = strings.TrimSpace(string(b))
+		}
+		perr := checkPrefix(r.m.Env, name, a)
+		if perr == nil {
+			answer = a
+			break
+		}
+		// Refused: never kept, never echoed. Ask again, saying why.
+		if attempt == maxPromptAttempts {
+			return "", OriginNone, "", fmt.Errorf("%s: refused %d times: %v", id, attempt, perr)
+		}
+		ask = label + "\n  REFUSED: " + perr.Error() + "; type it again"
 	}
 	if answer == "" {
 		r.plan.PendingPrompts = append(r.plan.PendingPrompts, id+optional+" — "+label)

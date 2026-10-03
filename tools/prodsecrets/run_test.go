@@ -232,8 +232,8 @@ func TestOutDirInsideRepoRefused(t *testing.T) {
 	if err := checkOutDir(t.TempDir()); err != nil {
 		t.Fatalf("outside a checkout: %v", err)
 	}
-	if !strings.Contains(DefaultOutDir(), filepath.Join(".atpost", "prodsecrets")) {
-		t.Fatalf("default out dir %s", DefaultOutDir())
+	if !strings.Contains(DefaultOutDir("prod"), filepath.Join(".atpost", "prodsecrets")) {
+		t.Fatalf("default out dir %s", DefaultOutDir("prod"))
 	}
 }
 

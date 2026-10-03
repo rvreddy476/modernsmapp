@@ -232,8 +232,10 @@ jobs:
 
   # ─── Job 3: bump tag in the staging values file + push back ──────
   # values-staging.yaml is the promotion candidate: promote.yml copies its
-  # image.tag into values-prod.yaml on a PR against release/prod. The staging
-  # cluster itself is not built (one environment only, 3 Oct 2026).
+  # image.tag into values-qa.yaml (target qa, PR against branch qa) or
+  # values-prod.yaml (target prod, PR against release/prod). Service images
+  # are environment-neutral (tag = git sha), so one build serves both. The
+  # staging cluster itself is not built.
   bump-tag:
     needs: [detect-changes, build-push]
     if: ${{ needs.detect-changes.outputs.services != '' }}

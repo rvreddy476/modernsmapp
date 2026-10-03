@@ -1,5 +1,7 @@
-// prodsecrets fills the per-service production secrets in AWS Secrets Manager
-// from tools/prodsecrets/manifest.yaml. It never talks to AWS itself and has
+// prodsecrets fills the per-service secrets of one environment (--env prod,
+// the default, or --env qa) in AWS Secrets Manager from
+// tools/prodsecrets/manifest.yaml, expanded for that environment (secret
+// names atpost/<env>/<service>). It never talks to AWS itself and has
 // no AWS SDK: it EMITS one JSON payload per secret (mode 0600, outside the
 // repository by default) plus the exact `aws secretsmanager put-secret-value
 // --secret-string file://...` script, and scripts/prodsecrets.sh runs that
@@ -8,8 +10,9 @@
 //	scripts/prodsecrets.sh plan                               # what would change, no values
 //	scripts/prodsecrets.sh apply                              # generate, prompt, write payloads
 //	scripts/prodsecrets.sh apply --rotate shared/svc_commerce # re-key one thing
+//	scripts/prodsecrets.sh --env qa plan                      # the same for QA
 //
-// Inputs, all under --out (default ~/.atpost/prodsecrets/prod):
+// Inputs, all under --out (default ~/.atpost/prodsecrets/<env>):
 //
 //	tf-outputs.json   `terraform output -json` (no secrets in it)
 //	current/*.json    what Secrets Manager holds now, one file per manifest secret
@@ -50,13 +53,25 @@ func main() {
 }
 
 // DefaultOutDir is outside any checkout so an emitted payload can never be
-// committed by accident.
-func DefaultOutDir() string {
+// committed by accident; one directory per environment, so QA and
+// production inputs and payloads never mix.
+func DefaultOutDir(env string) string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(os.TempDir(), "atpost-prodsecrets", "prod")
+		return filepath.Join(os.TempDir(), "atpost-prodsecrets", env)
 	}
-	return filepath.Join(home, ".atpost", "prodsecrets", "prod")
+	return filepath.Join(home, ".atpost", "prodsecrets", env)
+}
+
+// checkOutDirEnv refuses an --out whose last element names ANOTHER known
+// environment (--env qa --out ~/.atpost/prodsecrets/prod): that directory
+// holds the other environment's Terraform outputs and payloads.
+func checkOutDirEnv(dir, env string) error {
+	base := filepath.Base(filepath.Clean(dir))
+	if knownEnv(base) && base != env {
+		return fmt.Errorf("--out %s belongs to the %s environment, but --env is %s", dir, base, env)
+	}
+	return nil
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
@@ -64,7 +79,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	var (
 		manifestPath = fs.String("manifest", defaultManifestPath(), "manifest file")
-		outDir       = fs.String("out", DefaultOutDir(), "working directory for inputs and emitted payloads (must be outside the repository)")
+		env          = fs.String("env", DefaultEnv, "environment: "+strings.Join(KnownEnvs, " or ")+" (secret names atpost/<env>/...)")
+		outDir       = fs.String("out", "", "working directory for inputs and emitted payloads, outside the repository (default ~/.atpost/prodsecrets/<env>)")
 		tfPath       = fs.String("tf", "", "Terraform outputs JSON (default: <out>/tf-outputs.json)")
 		region       = fs.String("region", "ap-south-1", "AWS region written into the push script")
 		plan         = fs.Bool("plan", false, "show what would be created or updated; write nothing")
@@ -81,6 +97,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
+	if !knownEnv(*env) {
+		return fmt.Errorf("--env %q: use one of %s", *env, strings.Join(KnownEnvs, ", "))
+	}
+	if *outDir == "" {
+		*outDir = DefaultOutDir(*env)
+	}
+	if err := checkOutDirEnv(*outDir, *env); err != nil {
+		return err
+	}
 	if err := checkOutDir(*outDir); err != nil {
 		return err
 	}
@@ -88,7 +113,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		*tfPath = filepath.Join(*outDir, "tf-outputs.json")
 	}
 
-	m, err := LoadManifest(*manifestPath)
+	sh := wrapperCmd(*env)
+	m, err := LoadManifest(*manifestPath, *env)
 	if err != nil {
 		return err
 	}
@@ -145,7 +171,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 		if !currentFetched || len(missing) > 0 {
-			return fmt.Errorf("--apply needs what Secrets Manager holds now (%d secret(s) not fetched into %s); run it through scripts/prodsecrets.sh apply, which fetches first",
+			return fmt.Errorf("--apply needs what Secrets Manager holds now (%d secret(s) not fetched into %s); run it through "+sh+" apply, which fetches first",
 				len(missing), filepath.Join(*outDir, "current"))
 		}
 	}
@@ -173,11 +199,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 		if !currentFetched {
 			fmt.Fprintf(out, "\nNOTE: %s is absent, so this plan assumes every secret is empty.\n", filepath.Join(*outDir, "current"))
 		}
-		fmt.Fprintf(out, "\nNext: scripts/prodsecrets.sh apply\n")
+		fmt.Fprintf(out, "\nNext: %s apply\n", sh)
 		return nil
 	}
 	if len(p.MissingTF) > 0 || len(p.MissingSources) > 0 {
-		return fmt.Errorf("refusing to emit payloads with Terraform values missing (%d output(s), %d source(s)); finish terraform pass 1, then scripts/prodsecrets.sh export-outputs",
+		return fmt.Errorf("refusing to emit payloads with Terraform values missing (%d output(s), %d source(s)); finish terraform pass 1, then "+sh+" export-outputs",
 			len(p.MissingTF), len(p.MissingSources))
 	}
 
@@ -207,16 +233,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(out, "\nChecklist:\n")
 	step := 1
 	if written.RolesSQL != "" {
-		fmt.Fprintf(out, "  %d. scripts/prodsecrets.sh roles     (CREATE ROLE / GRANT on Aurora, from inside the cluster; deletes roles.sql)\n", step)
+		fmt.Fprintf(out, "  %d. "+sh+" roles     (CREATE ROLE / GRANT on Aurora, from inside the cluster; deletes roles.sql)\n", step)
 		step++
 	}
 	if len(p.PendingPrompts) > 0 {
 		fmt.Fprintf(out, "  %d. %d prompt(s) still empty (listed above): re-run apply when the values exist; nothing else changes.\n", step, len(p.PendingPrompts))
 		step++
 	}
-	fmt.Fprintf(out, "  %d. scripts/prodsecrets.sh push      (pushes %d secret(s), deleting each payload after it lands)\n", step, countChanged(p))
+	fmt.Fprintf(out, "  %d. "+sh+" push      (pushes %d secret(s), deleting each payload after it lands)\n", step, countChanged(p))
 	step++
-	fmt.Fprintf(out, "  %d. scripts/prodsecrets.sh plan      (expect every key: keep)\n", step)
+	fmt.Fprintf(out, "  %d. "+sh+" plan      (expect every key: keep)\n", step)
 	return nil
 }
 
@@ -253,7 +279,7 @@ func checkOutDir(dir string) error {
 			if rel == "tools/prodsecrets/out" || strings.HasPrefix(rel, "tools/prodsecrets/out/") {
 				return nil
 			}
-			return fmt.Errorf("--out %s is inside the git checkout %s; use a directory outside it (default %s)", abs, d, DefaultOutDir())
+			return fmt.Errorf("--out %s is inside the git checkout %s; use a directory outside it (default %s)", abs, d, DefaultOutDir("<env>"))
 		}
 		parent := filepath.Dir(d)
 		if parent == d {

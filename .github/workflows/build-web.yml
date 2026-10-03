@@ -14,25 +14,41 @@
 # NEXT_PUBLIC_* values are inlined into the browser bundle at build time, so
 # they are build args, taken from repository variables of the SAME NAME:
 #   NEXT_PUBLIC_API_BASE_URL   NEXT_PUBLIC_WS_BASE_URL   NEXT_PUBLIC_SITE_URL
-#   NEXT_PUBLIC_RAZORPAY_KEY_ID (the LIVE key id is public by design)
-#   NEXT_PUBLIC_ENABLE_STUB_PAYMENTS (must be "false" for production)
-#   ADMIN_BASE_PATH ("/" on admin.cleestudio.com)   NEXT_PUBLIC_ADMIN_SIGN_IN_URL
+#   NEXT_PUBLIC_RAZORPAY_KEY_ID (a key id is public by design)
+#   NEXT_PUBLIC_ENABLE_STUB_PAYMENTS (must be "false", in QA too)
+#   ADMIN_BASE_PATH ("/" on the admin host)   NEXT_PUBLIC_ADMIN_SIGN_IN_URL
 #   NEXT_PUBLIC_ADMIN_API_ORIGIN   ADMIN_IMAGE_ORIGINS
 # Changing one means a rebuild, not a restart. Runtime values (API_GATEWAY_URL,
 # AUTH_SERVICE_URL, CHAT_BACKEND_URL, CHAT_PROXY_SIGNING_SECRET, …) come from
-# the chart values and the atpost/prod/web secret instead.
+# the chart values and the atpost/<env>/web secret instead.
+#
+# Unlike the service images, a web image is NOT environment-neutral: the
+# bundle carries its environment's URLs. Input `environment` (qa | prod) names
+# the environment being built for, and the check steps refuse to build when
+# the variables point at another one: qa needs https://api-qa.cleestudio.com,
+# wss://ws-qa.cleestudio.com and a rzp_test_ key id; prod needs
+# https://api.cleestudio.com, wss://ws.cleestudio.com and a rzp_live_ key id.
+# The jobs do NOT run in a GitHub environment: the CI role (ECR push) trusts
+# only branch and pull-request OIDC subjects, so the variables are the
+# repository's, set for the account this repository deploys to now (QA).
 #
 # Tags = the git sha of the WEB repo commit that was built (not this repo's).
 # Nothing is committed: the job summary prints both tags, and promote.yml
-# (inputs web_tag, admin_console_tag) writes them into
-# deploy/web/app/values-prod.yaml and deploy/web/admin-console/values-prod.yaml
-# on a PR against release/prod. Production never builds; it pins these shas.
+# (target, web_tag, admin_console_tag) writes them into
+# deploy/web/app/values-<target>.yaml and
+# deploy/web/admin-console/values-<target>.yaml on a PR against the target's
+# branch (qa or release/prod). Clusters never build; they pin these shas.
 
 name: build-web
 
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Environment the bundle is built for (its NEXT_PUBLIC_* URLs and Razorpay mode are checked against it)"
+        type: choice
+        options: [qa, prod]
+        default: qa
       target:
         description: "Which image(s) to build"
         type: choice
@@ -68,12 +84,34 @@ jobs:
           WEB_REPO: ${{ vars.WEB_REPO }}
           WEB_REF: ${{ inputs.web_ref || vars.WEB_REF }}
           STUB: ${{ vars.NEXT_PUBLIC_ENABLE_STUB_PAYMENTS }}
+          TARGET_ENV: ${{ inputs.environment }}
+          API_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+          WS_URL: ${{ vars.NEXT_PUBLIC_WS_BASE_URL }}
+          SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          RZP_KEY_ID: ${{ vars.NEXT_PUBLIC_RAZORPAY_KEY_ID }}
         run: |
           [[ -n "$WEB_REPO" ]] || { echo "::error ::repository variable WEB_REPO is not set (owner/postbook-ui)"; exit 1; }
           [[ -n "$WEB_REF" ]]  || { echo "::error ::repository variable WEB_REF is not set and no web_ref input given"; exit 1; }
           if [[ "${STUB:-false}" != "false" ]]; then
-            echo "::error ::NEXT_PUBLIC_ENABLE_STUB_PAYMENTS must be \"false\" for a production web image (it is '${STUB}')"; exit 1
+            echo "::error ::NEXT_PUBLIC_ENABLE_STUB_PAYMENTS must be \"false\" for a $TARGET_ENV web image (it is '${STUB}')"; exit 1
           fi
+          # The bundle bakes these in: they must point at the environment
+          # being built for, and the Razorpay key id must be of its mode.
+          case "$TARGET_ENV" in
+            qa)   API=api-qa.cleestudio.com; WS=ws-qa.cleestudio.com; SITE=qa.cleestudio.com;  RZP=rzp_test_ ;;
+            prod) API=api.cleestudio.com;    WS=ws.cleestudio.com;    SITE=app.cleestudio.com; RZP=rzp_live_ ;;
+            *)    echo "::error ::unknown environment '$TARGET_ENV'"; exit 1 ;;
+          esac
+          bad=0
+          [[ "$API_URL" == "https://$API" || "$API_URL" == "https://$API/"* ]] || { echo "::error ::NEXT_PUBLIC_API_BASE_URL must be https://$API for $TARGET_ENV (it is '$API_URL')"; bad=1; }
+          [[ "$WS_URL" == "wss://$WS" || "$WS_URL" == "wss://$WS/"* ]] || { echo "::error ::NEXT_PUBLIC_WS_BASE_URL must be wss://$WS for $TARGET_ENV (it is '$WS_URL')"; bad=1; }
+          if [[ -n "$SITE_URL" && "$SITE_URL" != "https://$SITE" && "$SITE_URL" != "https://$SITE/"* ]]; then
+            echo "::error ::NEXT_PUBLIC_SITE_URL must be https://$SITE for $TARGET_ENV (it is '$SITE_URL')"; bad=1
+          fi
+          # A key id is public by design (it ships in the bundle); only its
+          # mode is checked here.
+          [[ "$RZP_KEY_ID" == "$RZP"* ]] || { echo "::error ::NEXT_PUBLIC_RAZORPAY_KEY_ID must be a $RZP key id for $TARGET_ENV"; bad=1; }
+          exit $bad
 
       - name: Checkout postbook-ui
         id: src
@@ -111,7 +149,7 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
             NEXT_PUBLIC_WS_BASE_URL=${{ vars.NEXT_PUBLIC_WS_BASE_URL }}
-            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL || 'https://app.cleestudio.com' }}
+            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL || (inputs.environment == 'qa' && 'https://qa.cleestudio.com' || 'https://app.cleestudio.com') }}
             NEXT_PUBLIC_ENABLE_STUB_PAYMENTS=false
             NEXT_PUBLIC_RAZORPAY_KEY_ID=${{ vars.NEXT_PUBLIC_RAZORPAY_KEY_ID }}
           cache-from: type=gha,scope=web
@@ -130,9 +168,25 @@ jobs:
         env:
           ADMIN_REPO: ${{ vars.ADMIN_REPO }}
           ADMIN_REF: ${{ inputs.admin_ref || vars.ADMIN_REF }}
+          TARGET_ENV: ${{ inputs.environment }}
+          SIGN_IN_URL: ${{ vars.NEXT_PUBLIC_ADMIN_SIGN_IN_URL }}
+          API_ORIGIN: ${{ vars.NEXT_PUBLIC_ADMIN_API_ORIGIN }}
         run: |
           [[ -n "$ADMIN_REPO" ]] || { echo "::error ::repository variable ADMIN_REPO is not set (owner/atpost-web-ui)"; exit 1; }
           [[ -n "$ADMIN_REF" ]]  || { echo "::error ::repository variable ADMIN_REF is not set and no admin_ref input given"; exit 1; }
+          # Baked into the bundle: must belong to the environment being built.
+          case "$TARGET_ENV" in
+            qa)   OTHER='(^|[/.@])(app|api|ws|admin|media)\.cleestudio\.com' ;;
+            prod) OTHER='qa\.cleestudio\.com' ;;
+            *)    echo "::error ::unknown environment '$TARGET_ENV'"; exit 1 ;;
+          esac
+          bad=0
+          for pair in "NEXT_PUBLIC_ADMIN_SIGN_IN_URL=$SIGN_IN_URL" "NEXT_PUBLIC_ADMIN_API_ORIGIN=$API_ORIGIN"; do
+            if printf '%s' "${pair#*=}" | grep -qE "$OTHER"; then
+              echo "::error ::${pair%%=*} points at another environment's host for $TARGET_ENV (it is '${pair#*=}')"; bad=1
+            fi
+          done
+          exit $bad
 
       - name: Checkout atpost-web-ui
         id: src
@@ -180,9 +234,9 @@ jobs:
           provenance: false
 
   # ─── record what was built ───────────────────────────────────────
-  # Nothing is committed here: the tags go to production only through
-  # promote.yml (inputs web_tag / admin_console_tag), as a reviewed PR
-  # against release/prod that edits deploy/web/<app|admin-console>/values-prod.yaml.
+  # Nothing is committed here: the tags reach a cluster only through
+  # promote.yml (target, web_tag, admin_console_tag), as a reviewed PR
+  # against qa or release/prod editing deploy/web/<app|admin-console>/values-<target>.yaml.
   summary:
     needs: [web, admin-console]
     if: ${{ always() && needs.web.result != 'failure' && needs.admin-console.result != 'failure' }}
@@ -192,12 +246,13 @@ jobs:
         env:
           WEB_TAG: ${{ needs.web.outputs.tag }}
           ADMIN_TAG: ${{ needs.admin-console.outputs.tag }}
+          TARGET_ENV: ${{ inputs.environment }}
         run: |
           {
-            echo "## Web images pushed"
+            echo "## Web images pushed (built for $TARGET_ENV)"
             echo
             [[ -n "$WEB_TAG" ]]   && echo "- atpost/web: \`$WEB_TAG\`"
             [[ -n "$ADMIN_TAG" ]] && echo "- atpost/admin-console: \`$ADMIN_TAG\`"
             echo
-            echo "Promote with the promote workflow: web_tag=${WEB_TAG:-<unchanged>} admin_console_tag=${ADMIN_TAG:-<unchanged>}"
+            echo "Promote with the promote workflow: target=$TARGET_ENV web_tag=${WEB_TAG:-<unchanged>} admin_console_tag=${ADMIN_TAG:-<unchanged>}"
           } >> "$GITHUB_STEP_SUMMARY"

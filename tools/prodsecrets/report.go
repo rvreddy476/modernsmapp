@@ -103,7 +103,10 @@ func PrintPlan(w io.Writer, m *Manifest, p *Plan, apply bool, verbose bool) {
 		mode = "APPLY"
 	}
 	secrets, keys, byCategory := m.Summary()
-	fmt.Fprintf(w, "prodsecrets %s — %d secrets, %d keys under %s/\n", mode, secrets, keys, m.Prefix)
+	fmt.Fprintf(w, "prodsecrets %s — environment %s, %d secrets, %d keys under %s/\n", mode, m.Env, secrets, keys, m.Prefix)
+	if len(m.Omitted) > 0 {
+		fmt.Fprintf(w, "  not filled in %s: %s\n", m.Env, strings.Join(m.Omitted, ", "))
+	}
 	for _, c := range []string{"generate", "prompt", "terraform-output", "derive", "copy", "literal"} {
 		fmt.Fprintf(w, "  %-18s %d\n", c, byCategory[c])
 	}
@@ -157,11 +160,11 @@ func PrintPlan(w io.Writer, m *Manifest, p *Plan, apply bool, verbose bool) {
 	}
 	if len(p.MissingTF) > 0 {
 		fmt.Fprintf(w, "\nTerraform outputs still needed (%d): %s\n", len(p.MissingTF), strings.Join(p.MissingTF, ", "))
-		fmt.Fprintf(w, "  → run scripts/prodsecrets.sh export-outputs after terraform apply, then re-run.\n")
+		fmt.Fprintf(w, "  → run %s export-outputs after terraform apply, then re-run.\n", wrapperCmd(m.Env))
 	}
 	if len(p.MissingSources) > 0 {
 		fmt.Fprintf(w, "\nSource secrets not fetched (%d): %s\n", len(p.MissingSources), strings.Join(p.MissingSources, ", "))
-		fmt.Fprintf(w, "  → scripts/prodsecrets.sh plan|apply fetches them (Terraform pass 1 creates them).\n")
+		fmt.Fprintf(w, "  → %s plan|apply fetches them (Terraform pass 1 creates them).\n", wrapperCmd(m.Env))
 	}
 	if len(p.PendingPrompts) > 0 {
 		fmt.Fprintf(w, "\nPrompts still empty (%d):\n", len(p.PendingPrompts))
@@ -171,6 +174,9 @@ func PrintPlan(w io.Writer, m *Manifest, p *Plan, apply bool, verbose bool) {
 	}
 	for _, e := range p.PairErrors {
 		fmt.Fprintf(w, "\nKEY PAIR MISMATCH: %s\n", e)
+	}
+	for _, e := range p.PrefixErrors {
+		fmt.Fprintf(w, "\nWRONG MODE FOR %s: %s\n", strings.ToUpper(m.Env), e)
 	}
 	for _, warn := range p.Warnings {
 		fmt.Fprintf(w, "\nWARNING: %s\n", warn)

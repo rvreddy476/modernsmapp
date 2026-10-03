@@ -147,9 +147,12 @@ type Secret struct {
 	Line int
 }
 
-// Manifest is the parsed manifest.yaml.
+// Manifest is the parsed manifest.yaml, expanded for one environment.
 type Manifest struct {
 	Version int
+	Env     string            // the environment it was expanded for (prod, qa)
+	Vars    map[string]string // ${name} values of that environment, env included
+	Omitted []string          // secrets the environment leaves out (omit_secrets)
 	Prefix  string
 	Sources []Source
 	Shared  []Entry
@@ -299,25 +302,182 @@ func (n *node) child(key string) *node {
 // ---------------------------------------------------------------------------
 // Manifest loading and validation
 
-// LoadManifest reads and validates a manifest file.
-func LoadManifest(path string) (*Manifest, error) {
+// LoadManifest reads a manifest file and expands it for env.
+func LoadManifest(path, env string) (*Manifest, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return ParseManifest(f)
+	return ParseManifestEnv(f, env)
 }
 
-// ParseManifest parses and validates a manifest from a reader.
+// ParseManifest parses a manifest for the default environment (prod).
 func ParseManifest(r io.Reader) (*Manifest, error) {
+	return ParseManifestEnv(r, DefaultEnv)
+}
+
+// ---------------------------------------------------------------------------
+// Environments
+//
+// One manifest serves every environment. Anything that differs between them
+// (the secret prefix, source secret ids, host names and words in prompt
+// labels) is written as ${name} and expanded from the selected environment:
+//
+//	environments:
+//	  qa:
+//	    omit_secrets: some-secret other-secret   (optional, space separated)
+//	    vars:
+//	      api_host: api-qa.cleestudio.com
+//
+// ${env} is built in (the environment's name). Every environment must define
+// the same variables, so a token cannot expand in one and fail in another.
+// An unknown token is an error, never left in place.
+
+var (
+	envNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+	tokenRe   = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
+)
+
+type envDef struct {
+	vars map[string]string
+	omit []string
+	line int
+}
+
+func parseEnvironments(n *node) (map[string]envDef, error) {
+	if n.hasValue {
+		return nil, fmt.Errorf("manifest line %d: environments must be a mapping", n.line)
+	}
+	envs := map[string]envDef{}
+	var first string
+	for _, e := range n.children {
+		if !envNameRe.MatchString(e.key) || e.hasValue {
+			return nil, fmt.Errorf("manifest line %d: environment %q must be a lower-case name holding a mapping", e.line, e.key)
+		}
+		def := envDef{vars: map[string]string{}, line: e.line}
+		for _, c := range e.children {
+			switch c.key {
+			case "omit_secrets":
+				if !c.hasValue {
+					return nil, fmt.Errorf("manifest line %d: omit_secrets is a space-separated list of secret names", c.line)
+				}
+				def.omit = strings.Fields(strings.ReplaceAll(c.value, ",", " "))
+			case "vars":
+				if c.hasValue {
+					return nil, fmt.Errorf("manifest line %d: vars must be a mapping", c.line)
+				}
+				for _, v := range c.children {
+					if !v.hasValue {
+						return nil, fmt.Errorf("manifest line %d: var %q must be a scalar", v.line, v.key)
+					}
+					if v.key == "env" {
+						return nil, fmt.Errorf("manifest line %d: ${env} is built in", v.line)
+					}
+					if strings.Contains(v.value, "${") {
+						return nil, fmt.Errorf("manifest line %d: var %q may not contain a token", v.line, v.key)
+					}
+					def.vars[v.key] = v.value
+				}
+			default:
+				return nil, fmt.Errorf("manifest line %d: environment %s: unknown key %q (omit_secrets, vars)", c.line, e.key, c.key)
+			}
+		}
+		envs[e.key] = def
+		if first == "" {
+			first = e.key
+			continue
+		}
+		// Same variable names everywhere.
+		for k := range envs[first].vars {
+			if _, ok := def.vars[k]; !ok {
+				return nil, fmt.Errorf("manifest line %d: environment %s does not define %q (%s does)", e.line, e.key, k, first)
+			}
+		}
+		for k := range def.vars {
+			if _, ok := envs[first].vars[k]; !ok {
+				return nil, fmt.Errorf("manifest line %d: environment %s defines %q, which %s does not", e.line, e.key, k, first)
+			}
+		}
+	}
+	if len(envs) == 0 {
+		return nil, fmt.Errorf("manifest line %d: environments is empty", n.line)
+	}
+	return envs, nil
+}
+
+// expandTokens replaces ${name} in every value outside the environments
+// block, in place.
+func expandTokens(n *node, vars map[string]string) error {
+	for _, c := range n.children {
+		if n.indent == -1 && c.key == "environments" {
+			continue
+		}
+		if c.hasValue && strings.Contains(c.value, "$") {
+			var bad string
+			c.value = tokenRe.ReplaceAllStringFunc(c.value, func(tok string) string {
+				name := tokenRe.FindStringSubmatch(tok)[1]
+				v, ok := vars[name]
+				if !ok && bad == "" {
+					bad = name
+				}
+				return v
+			})
+			if bad != "" {
+				return fmt.Errorf("manifest line %d: unknown token ${%s}", c.line, bad)
+			}
+			if strings.Contains(c.value, "${") {
+				return fmt.Errorf("manifest line %d: malformed token in %q", c.line, c.key)
+			}
+		}
+		if err := expandTokens(c, vars); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ParseManifestEnv parses and validates a manifest, expanded for env.
+func ParseManifestEnv(r io.Reader, env string) (*Manifest, error) {
+	if !envNameRe.MatchString(env) {
+		return nil, fmt.Errorf("environment %q: use a lower-case name such as prod or qa", env)
+	}
 	root, err := parseYAMLSubset(r)
 	if err != nil {
 		return nil, fmt.Errorf("manifest: %w", err)
 	}
-	m := &Manifest{}
+	m := &Manifest{Env: env, Vars: map[string]string{"env": env}}
+	var allOmits map[string][]string
+	if en := root.child("environments"); en != nil {
+		envs, err := parseEnvironments(en)
+		if err != nil {
+			return nil, err
+		}
+		def, ok := envs[env]
+		if !ok {
+			names := make([]string, 0, len(envs))
+			for k := range envs {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("manifest: environment %q is not defined (have %s)", env, strings.Join(names, ", "))
+		}
+		for k, v := range def.vars {
+			m.Vars[k] = v
+		}
+		m.Omitted = def.omit
+		allOmits = map[string][]string{}
+		for name, d := range envs {
+			allOmits[name] = d.omit
+		}
+	}
+	if err := expandTokens(root, m.Vars); err != nil {
+		return nil, err
+	}
 	for _, c := range root.children {
 		switch c.key {
+		case "environments":
+			// Read above.
 		case "version":
 			v, err := strconv.Atoi(c.value)
 			if err != nil || v != 1 {
@@ -378,6 +538,32 @@ func ParseManifest(r io.Reader) (*Manifest, error) {
 	}
 	if m.Prefix == "" {
 		return nil, fmt.Errorf("manifest: prefix is required")
+	}
+	// Every environment's omit list must name real secrets (checked for all
+	// of them, so a typo in qa fails a prod load too).
+	known := map[string]bool{}
+	for _, s := range m.Secrets {
+		known[s.Name] = true
+	}
+	for name, omits := range allOmits {
+		for _, o := range omits {
+			if !known[o] {
+				return nil, fmt.Errorf("manifest: environment %s omits unknown secret %q", name, o)
+			}
+		}
+	}
+	if len(m.Omitted) > 0 {
+		drop := map[string]bool{}
+		for _, o := range m.Omitted {
+			drop[o] = true
+		}
+		kept := m.Secrets[:0]
+		for _, s := range m.Secrets {
+			if !drop[s.Name] {
+				kept = append(kept, s)
+			}
+		}
+		m.Secrets = kept
 	}
 	if err := m.validate(); err != nil {
 		return nil, err

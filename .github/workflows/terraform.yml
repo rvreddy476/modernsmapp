@@ -7,36 +7,45 @@ name: Terraform
 #     (plan|apply). Uses GitHub-OIDC into the Terraform role and the S3
 #     backend. Never runs automatically — no unattended applies.
 #
-# Production gate (3 Oct 2026, W5): the plan-apply job runs in the GitHub
-# environment named after the input (`prod`). Configure that environment with
-# REQUIRED REVIEWERS in repo settings → Environments → prod: the job then waits
-# for a human approval before it gets credentials, and `apply` additionally
-# demands the literal confirmation input "apply prod". The apply itself is a
+# Environments (3 Oct 2026): `qa` is the AWS account that exists now
+# (infra/terraform/envs/qa); `prod` is kept for the later, separate
+# production account (envs/prod) and behaves exactly as before.
+#
+# Gate (W5): the plan-apply job runs in the GitHub environment named after the
+# input (`qa` or `prod`). Configure each with REQUIRED REVIEWERS in repo
+# settings → Environments: the job then waits for a human approval before it
+# gets credentials, and `apply` additionally demands the literal confirmation
+# input "apply <env>" ("apply qa", "apply prod"). The apply itself is a
 # saved plan (`terraform plan -out` then `terraform apply <planfile>`), so what
 # is applied is exactly what was shown in the log, and -auto-approve is never
-# passed on prod outside that gated job.
+# passed outside that gated job.
 #
-# Variables: envs/prod/prod.tfvars stays gitignored (it carries the account
+# Variables: envs/<env>/<env>.tfvars stays gitignored (it carries the account
 # id, admin ARNs and office CIDRs; infra/terraform/.gitignore). CI writes it
-# from the `prod` ENVIRONMENT secret TF_PROD_TFVARS (the whole file's text,
-# from prod.tfvars.example with every CHANGEME filled), so it only exists
-# inside the approved job. No secret VALUE ever reaches Terraform: service
-# secrets are seeded into Secrets Manager by tools/prodsecrets after apply.
+# from the ENVIRONMENT secret of that environment — TF_QA_TFVARS in `qa`,
+# TF_PROD_TFVARS in `prod` (the whole file's text, from <env>.tfvars.example
+# with every CHANGEME filled) — so it only exists inside the approved job. No
+# secret VALUE ever reaches Terraform: service secrets are seeded into Secrets
+# Manager by tools/prodsecrets (--env <env>) after apply.
 #
-# The first two applies (pass 1 targeted, pass 2 full; envs/prod/README.md)
+# The first two applies (pass 1 targeted, pass 2 full; envs/<env>/README.md)
 # are run by the lead from a workstation, because pass 2 needs the
 # kubernetes provider against a cluster pass 1 creates. This workflow is for
 # plans and later changes.
 #
-# Only prod is validated and planned: one environment is built (contract,
-# 3 Oct 2026); envs/staging and envs/smoke are kept but not maintained.
+# envs/staging and envs/smoke are kept but not maintained (not validated).
 #
-# Required for plan-apply (repo settings):
-#   secret AWS_TERRAFORM_ROLE_ARN   — envs/prod output terraform_apply_role_arn
-#   var    TF_STATE_BUCKET          — atpost-tfstate-<account-id>
-#   var    TF_LOCK_TABLE            — atpost-tfstate-locks
-#   environment `prod`: required reviewers, deployment branches = main,
-#                       environment secret TF_PROD_TFVARS
+# Required for plan-apply, per GitHub environment (qa and, later, prod):
+#   environment secret AWS_TERRAFORM_ROLE_ARN — envs/<env> output
+#                                               terraform_apply_role_arn (the
+#                                               role trusts only
+#                                               repo:…:environment:<env>)
+#   environment secret TF_<ENV>_TFVARS        — TF_QA_TFVARS / TF_PROD_TFVARS
+#   environment vars   TF_STATE_BUCKET        — atpost-tfstate-<account-id>
+#                      TF_LOCK_TABLE          — atpost-tfstate-locks
+#   (environment-level values override repository-level ones of the same
+#   name, so each account's role and state bucket stay with its environment)
+#   required reviewers = founder; deployment branches = main
 
 on:
   pull_request:
@@ -47,17 +56,17 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Which env"
+        description: "Which env (qa = the QA account; prod = the later production account)"
         type: choice
-        options: [prod]
-        default: prod
+        options: [qa, prod]
+        default: qa
       command:
         description: "plan or apply"
         type: choice
         options: [plan, apply]
         default: plan
       confirm:
-        description: "For command=apply on prod, type exactly: apply prod"
+        description: "For command=apply, type exactly: apply <env>  (apply qa / apply prod)"
         required: false
         default: ""
 
@@ -76,7 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [prod]
+        env: [prod, qa]
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -105,26 +114,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard the production apply
+      - name: Guard the apply
         run: |
-          if [[ "$TF_COMMAND" == "apply" && "$TF_ENV" == "prod" && "$TF_CONFIRM" != "apply prod" ]]; then
-            echo "::error ::refusing to apply prod: set the confirm input to exactly 'apply prod' (and the prod environment must have required reviewers)"
+          case "$TF_ENV" in
+            qa|prod) ;;
+            *) echo "::error ::unknown environment '$TF_ENV'"; exit 1 ;;
+          esac
+          if [[ "$TF_COMMAND" == "apply" && "$TF_CONFIRM" != "apply $TF_ENV" ]]; then
+            echo "::error ::refusing to apply $TF_ENV: set the confirm input to exactly 'apply $TF_ENV' (and the $TF_ENV environment must have required reviewers)"
             exit 1
           fi
 
       - name: Write the tfvars from the environment secret
         env:
-          TFVARS: ${{ secrets.TF_PROD_TFVARS }}
+          # Each environment reads ONLY its own secret; there is no fallback
+          # from one to the other.
+          TFVARS_PROD: ${{ secrets.TF_PROD_TFVARS }}
+          TFVARS_QA: ${{ secrets.TF_QA_TFVARS }}
         run: |
+          case "$TF_ENV" in
+            prod) NAME=TF_PROD_TFVARS; TFVARS="$TFVARS_PROD" ;;
+            qa)   NAME=TF_QA_TFVARS;   TFVARS="$TFVARS_QA" ;;
+          esac
           VARFILE="infra/terraform/envs/$TF_ENV/$TF_ENV.tfvars"
           if [[ -z "$TFVARS" ]]; then
-            echo "::error ::environment secret TF_PROD_TFVARS is empty (the text of $VARFILE, from prod.tfvars.example)"
+            echo "::error ::environment secret $NAME is empty (the text of $VARFILE, from $TF_ENV.tfvars.example)"
             exit 1
           fi
           umask 077
           printf '%s\n' "$TFVARS" > "$VARFILE"
           if grep -qiE 'CHANGEME|REPLACE_ME' "$VARFILE"; then
-            echo "::error ::TF_PROD_TFVARS still contains placeholders"
+            echo "::error ::$NAME still contains placeholders"
             exit 1
           fi
 
@@ -182,5 +202,5 @@ jobs:
         working-directory: infra/terraform/envs/${{ github.event.inputs.environment }}
         run: |
           # Values stay out of the log; the lead exports them locally with
-          # scripts/prodsecrets.sh export-outputs.
+          # scripts/prodsecrets.sh --env <env> export-outputs.
           terraform output -json | jq -r 'to_entries[] | "\(.key)\(if .value.sensitive then " (sensitive)" else "" end)"'
