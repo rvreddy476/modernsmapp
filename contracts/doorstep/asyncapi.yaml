@@ -1,0 +1,475 @@
+asyncapi: 2.6.0
+info:
+  title: Doorstep Event Contracts
+  version: 1.0.0
+  description: >-
+    Kafka topic `doorstep.events` (written only through the schema-local
+    transactional outbox `doorstep.outbox_events`, drained by shared/outbox),
+    realtime topics (shared/realtime StreamPublisher + TokenSigner, delivered
+    by notification-service SSE), and the push-type registry for the Momentum
+    app and the `doorstep_pro` device app.
+
+
+    Envelope (every Kafka value): `{event_id, event_type, version, occurred_at,
+    booking_id?, customer_user_id?, pro_user_id?, data}`. Every payload carries
+    `customer_user_id` and/or `pro_user_id` so notification-service never has
+    to call back. Partition key: booking_id for doorstep.booking.* and
+    doorstep.incident.raised; pro_user_id for doorstep.pro.*. Kafka header
+    `event_type` mirrors the envelope. Consumers dedupe on event_id. Money in
+    integer paise. No address, phone, OTP or document number ever appears in an
+    event (locality at most).
+
+channels:
+  doorstep.events:
+    description: Authoritative Doorstep lifecycle events.
+    publish:
+      summary: Emitted by doorstep-service via the outbox in the same transaction as the state change
+      message:
+        oneOf:
+          - $ref: '#/components/messages/BookingCreated'
+          - $ref: '#/components/messages/BookingConfirmed'
+          - $ref: '#/components/messages/BookingExpired'
+          - $ref: '#/components/messages/BookingAssigned'
+          - $ref: '#/components/messages/BookingReassigned'
+          - $ref: '#/components/messages/BookingUnassignedAlert'
+          - $ref: '#/components/messages/BookingEnRoute'
+          - $ref: '#/components/messages/BookingArrived'
+          - $ref: '#/components/messages/BookingStarted'
+          - $ref: '#/components/messages/BookingExtrasProposed'
+          - $ref: '#/components/messages/BookingExtrasDecided'
+          - $ref: '#/components/messages/BookingExtrasPaymentDue'
+          - $ref: '#/components/messages/BookingExtrasPaid'
+          - $ref: '#/components/messages/BookingOutstandingCreated'
+          - $ref: '#/components/messages/BookingCompleted'
+          - $ref: '#/components/messages/BookingCancelled'
+          - $ref: '#/components/messages/BookingRescheduled'
+          - $ref: '#/components/messages/BookingNoShow'
+          - $ref: '#/components/messages/BookingRefunded'
+          - $ref: '#/components/messages/BookingRated'
+          - $ref: '#/components/messages/BookingReworkRequested'
+          - $ref: '#/components/messages/BookingMessageSent'
+          - $ref: '#/components/messages/BookingReminder'
+          - $ref: '#/components/messages/IncidentRaised'
+          - $ref: '#/components/messages/ProApplied'
+          - $ref: '#/components/messages/ProStatusChanged'
+          - $ref: '#/components/messages/ProDocumentReviewed'
+          - $ref: '#/components/messages/ProBackgroundCheckExpiring'
+          - $ref: '#/components/messages/ProOfferCreated'
+          - $ref: '#/components/messages/ProOfferClosed'
+          - $ref: '#/components/messages/ProSettlementComputed'
+
+  doorstep.booking.{booking_id}:
+    description: >-
+      Realtime topic for one booking. Token scope: the booking's customer, the
+      accepted professional, admin console. Frames are the same `event_type` +
+      `data` as Kafka plus `pro_location` frames (`{lat, lng, eta_minutes,
+      at}`) while en_route.
+    parameters:
+      booking_id:
+        schema: {type: string, format: uuid}
+    subscribe:
+      message:
+        $ref: '#/components/messages/RealtimeFrame'
+
+  doorstep.pro.{user_id}:
+    description: Realtime topic for one professional (offers, job changes).
+    parameters:
+      user_id:
+        schema: {type: string, format: uuid}
+    subscribe:
+      message:
+        $ref: '#/components/messages/RealtimeFrame'
+
+  doorstep.admin.live:
+    description: Ops live feed (unassigned alerts, SOS, incidents). Admin console token only.
+    subscribe:
+      message:
+        $ref: '#/components/messages/RealtimeFrame'
+
+x-push-types:
+  description: >-
+    notification-service maps doorstep.events to pushes. Momentum (customer)
+    types are prefixed `doorstep.`; doorstep_pro device-app types are
+    prefixed `doorstep.pro.`. `deeplink` is the in-app route. Titles/bodies
+    are owned by notification-service; `data` keys listed are the push data
+    payload (strings).
+  momentum:
+    doorstep.booking.confirmed: {from_event: doorstep.booking.confirmed, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.assigned: {from_event: doorstep.booking.assigned, data: [booking_id, pro_first_name], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.reassigned: {from_event: doorstep.booking.reassigned, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.pro_en_route: {from_event: doorstep.booking.en_route, data: [booking_id, eta_minutes], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.pro_arrived: {from_event: doorstep.booking.arrived, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.started: {from_event: doorstep.booking.started, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.extras_proposed: {from_event: doorstep.booking.extras_proposed, data: [booking_id, extra_id, total_paise], deeplink: "momentum://doorstep/bookings/{booking_id}/extras"}
+    doorstep.booking.extras_payment_due: {from_event: doorstep.booking.extras_payment_due, data: [booking_id, bill_id, amount_paise], deeplink: "momentum://doorstep/bookings/{booking_id}/extras"}
+    doorstep.booking.completed: {from_event: doorstep.booking.completed, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}/rate"}
+    doorstep.booking.cancelled: {from_event: doorstep.booking.cancelled, data: [booking_id, refund_paise], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.expired: {from_event: doorstep.booking.expired, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.refund_issued: {from_event: doorstep.booking.refunded, data: [booking_id, amount_paise], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.reminder: {from_event: doorstep.booking.reminder, data: [booking_id, slot_start], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.pro_no_show: {from_event: doorstep.booking.no_show, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}", when: "data.party == 'pro'"}
+    doorstep.outstanding.due: {from_event: doorstep.booking.outstanding_created, data: [booking_id, bill_id, amount_paise], deeplink: "momentum://doorstep/outstanding"}
+    doorstep.message.new: {from_event: doorstep.booking.message_sent, data: [booking_id, message_id], deeplink: "momentum://doorstep/bookings/{booking_id}/chat", when: "data.sender_kind == 'pro'"}
+    doorstep.rework.updated: {from_event: doorstep.booking.rework_requested, data: [booking_id, rework_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+  doorstep_pro:
+    doorstep.pro.offer.new: {from_event: doorstep.pro.offer_created, data: [offer_id, booking_id, expires_at], deeplink: "doorstep-pro://offers/{offer_id}", priority: high}
+    doorstep.pro.offer.expired: {from_event: doorstep.pro.offer_closed, data: [offer_id], deeplink: "doorstep-pro://offers", when: "data.outcome == 'expired'"}
+    doorstep.pro.job.cancelled: {from_event: doorstep.booking.cancelled, data: [booking_id], deeplink: "doorstep-pro://jobs/{booking_id}", when: "pro_user_id != null"}
+    doorstep.pro.job.rescheduled: {from_event: doorstep.booking.rescheduled, data: [booking_id, slot_start], deeplink: "doorstep-pro://jobs/{booking_id}", when: "pro_user_id != null"}
+    doorstep.pro.job.reminder: {from_event: doorstep.booking.reminder, data: [booking_id, slot_start], deeplink: "doorstep-pro://jobs/{booking_id}", when: "pro_user_id != null"}
+    doorstep.pro.extras.approved: {from_event: doorstep.booking.extras_decided, data: [booking_id, extra_id], deeplink: "doorstep-pro://jobs/{booking_id}", when: "data.decision == 'approved'"}
+    doorstep.pro.extras.declined: {from_event: doorstep.booking.extras_decided, data: [booking_id, extra_id], deeplink: "doorstep-pro://jobs/{booking_id}", when: "data.decision == 'declined'"}
+    doorstep.pro.extras.paid: {from_event: doorstep.booking.extras_paid, data: [booking_id, bill_id], deeplink: "doorstep-pro://jobs/{booking_id}"}
+    doorstep.pro.message.new: {from_event: doorstep.booking.message_sent, data: [booking_id, message_id], deeplink: "doorstep-pro://jobs/{booking_id}/chat", when: "data.sender_kind == 'customer'"}
+    doorstep.pro.application.approved: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://home", when: "data.to_status == 'approved' && data.from_status == 'pending_verification'"}
+    doorstep.pro.application.rejected: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://onboarding", when: "data.to_status == 'rejected'"}
+    doorstep.pro.account.suspended: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://account", when: "data.to_status == 'suspended'"}
+    doorstep.pro.account.reinstated: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://home", when: "data.to_status == 'approved' && data.from_status == 'suspended'"}
+    doorstep.pro.document.reviewed: {from_event: doorstep.pro.document_reviewed, data: [document_id, decision], deeplink: "doorstep-pro://onboarding"}
+    doorstep.pro.background_check.expiring: {from_event: doorstep.pro.background_check_expiring, data: [valid_until], deeplink: "doorstep-pro://onboarding/police-certificate"}
+    doorstep.pro.rating.received: {from_event: doorstep.booking.rated, data: [booking_id, stars], deeplink: "doorstep-pro://jobs/{booking_id}", when: "data.rater_kind == 'customer'"}
+    doorstep.pro.settlement.computed: {from_event: doorstep.pro.settlement_computed, data: [settlement_id, net_paise], deeplink: "doorstep-pro://earnings"}
+
+components:
+  schemas:
+    Envelope:
+      type: object
+      required: [event_id, event_type, version, occurred_at, data]
+      properties:
+        event_id: {type: string, format: uuid}
+        event_type: {type: string}
+        version: {type: integer, const: 1}
+        occurred_at: {type: string, format: date-time}
+        booking_id: {type: string, format: uuid, nullable: true}
+        customer_user_id: {type: string, format: uuid, nullable: true}
+        pro_user_id: {type: string, format: uuid, nullable: true}
+        data: {type: object}
+    BookingCore:
+      type: object
+      required: [booking_id, customer_user_id, status, city_code, category_slug, service_id, slot_start, slot_end]
+      properties:
+        booking_id: {type: string, format: uuid}
+        customer_user_id: {type: string, format: uuid}
+        pro_user_id: {type: string, format: uuid, nullable: true}
+        status: {type: string}
+        city_code: {type: string}
+        category_slug: {type: string}
+        service_id: {type: string, format: uuid}
+        slot_start: {type: string, format: date-time}
+        slot_end: {type: string, format: date-time}
+        parent_booking_id: {type: string, format: uuid, nullable: true}
+
+  messages:
+    RealtimeFrame:
+      name: doorstep.realtime
+      payload:
+        type: object
+        required: [event_type, data, at]
+        properties:
+          event_type: {type: string}
+          data: {type: object}
+          at: {type: string, format: date-time}
+
+    BookingCreated:
+      name: doorstep.booking.created
+      summary: Booking created in pending_payment with a professional held
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [total_paise, hold_expires_at]
+            properties:
+              total_paise: {type: integer, format: int64}
+              hold_expires_at: {type: string, format: date-time}
+    BookingConfirmed:
+      name: doorstep.booking.confirmed
+      summary: Signed payment.succeeded applied
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [paid_paise, payment_id]
+            properties:
+              paid_paise: {type: integer, format: int64}
+              payment_id: {type: string, format: uuid}
+    BookingExpired:
+      name: doorstep.booking.expired
+      payload:
+        $ref: '#/components/schemas/BookingCore'
+    BookingAssigned:
+      name: doorstep.booking.assigned
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [pro_user_id, pro_first_name, assignment_id]
+            properties:
+              pro_first_name: {type: string}
+              assignment_id: {type: string, format: uuid}
+    BookingReassigned:
+      name: doorstep.booking.reassigned
+      summary: Back to confirmed; dispatch re-runs excluding previous_pro_user_id
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [previous_pro_user_id, cause]
+            properties:
+              previous_pro_user_id: {type: string, format: uuid}
+              cause: {type: string, enum: [pro_cancel, pro_no_show, not_on_duty, unsafe_exit, ops_redispatch, pro_suspended]}
+    BookingUnassignedAlert:
+      name: doorstep.booking.unassigned_alert
+      summary: T-2h with no accepted professional (ops); T-45 min leads to cancel + refund
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [minutes_to_slot]
+            properties:
+              minutes_to_slot: {type: integer}
+    BookingEnRoute:
+      name: doorstep.booking.en_route
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            properties:
+              eta_minutes: {type: integer, nullable: true}
+    BookingArrived:
+      name: doorstep.booking.arrived
+      payload:
+        $ref: '#/components/schemas/BookingCore'
+    BookingStarted:
+      name: doorstep.booking.started
+      payload:
+        $ref: '#/components/schemas/BookingCore'
+    BookingExtrasProposed:
+      name: doorstep.booking.extras_proposed
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [extra_id, name, total_paise]
+            properties:
+              extra_id: {type: string, format: uuid}
+              name: {type: string}
+              total_paise: {type: integer, format: int64}
+    BookingExtrasDecided:
+      name: doorstep.booking.extras_decided
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [extra_id, decision]
+            properties:
+              extra_id: {type: string, format: uuid}
+              decision: {type: string, enum: [approved, declined]}
+    BookingExtrasPaymentDue:
+      name: doorstep.booking.extras_payment_due
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [bill_id, amount_paise, due_at]
+            properties:
+              bill_id: {type: string, format: uuid}
+              amount_paise: {type: integer, format: int64}
+              due_at: {type: string, format: date-time}
+    BookingExtrasPaid:
+      name: doorstep.booking.extras_paid
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [bill_id, amount_paise]
+            properties:
+              bill_id: {type: string, format: uuid}
+              amount_paise: {type: integer, format: int64}
+    BookingOutstandingCreated:
+      name: doorstep.booking.outstanding_created
+      summary: Extras below the charge-now threshold unpaid 15 min after finish; customer blocked from new bookings
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [bill_id, amount_paise]
+            properties:
+              bill_id: {type: string, format: uuid}
+              amount_paise: {type: integer, format: int64}
+    BookingCompleted:
+      name: doorstep.booking.completed
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [total_paise, extras_total_paise]
+            properties:
+              total_paise: {type: integer, format: int64}
+              extras_total_paise: {type: integer, format: int64}
+    BookingCancelled:
+      name: doorstep.booking.cancelled
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [cancelled_by, reason, fee_paise, refund_paise]
+            properties:
+              cancelled_by: {type: string, enum: [customer, pro, admin, system]}
+              reason: {type: string}
+              fee_paise: {type: integer, format: int64}
+              refund_paise: {type: integer, format: int64}
+    BookingRescheduled:
+      name: doorstep.booking.rescheduled
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [previous_slot_start]
+            properties:
+              previous_slot_start: {type: string, format: date-time}
+    BookingNoShow:
+      name: doorstep.booking.no_show
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [party]
+            properties:
+              party: {type: string, enum: [customer, pro]}
+              fee_paise: {type: integer, format: int64}
+    BookingRefunded:
+      name: doorstep.booking.refunded
+      summary: Refund succeeded at payments-service
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [refund_id, amount_paise, cause]
+            properties:
+              refund_id: {type: string, format: uuid}
+              amount_paise: {type: integer, format: int64}
+              cause: {type: string}
+    BookingRated:
+      name: doorstep.booking.rated
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [rater_kind, stars]
+            properties:
+              rater_kind: {type: string, enum: [customer, pro]}
+              stars: {type: integer}
+    BookingReworkRequested:
+      name: doorstep.booking.rework_requested
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [rework_id]
+            properties:
+              rework_id: {type: string, format: uuid}
+              child_booking_id: {type: string, format: uuid, nullable: true}
+    BookingMessageSent:
+      name: doorstep.booking.message_sent
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [message_id, sender_kind]
+            properties:
+              message_id: {type: string, format: uuid}
+              sender_kind: {type: string, enum: [customer, pro]}
+    BookingReminder:
+      name: doorstep.booking.reminder
+      summary: T-60 min reminder for both sides
+      payload:
+        $ref: '#/components/schemas/BookingCore'
+    IncidentRaised:
+      name: doorstep.incident.raised
+      payload:
+        type: object
+        required: [incident_id, kind, severity, raised_by_kind]
+        properties:
+          incident_id: {type: string, format: uuid}
+          booking_id: {type: string, format: uuid, nullable: true}
+          customer_user_id: {type: string, format: uuid, nullable: true}
+          pro_user_id: {type: string, format: uuid, nullable: true}
+          kind: {type: string, enum: [sos, safety, damage, harassment, theft, unsafe_exit, other]}
+          severity: {type: string, enum: [low, medium, high, critical]}
+          raised_by_kind: {type: string, enum: [customer, pro, system, admin]}
+          pro_auto_suspended: {type: boolean}
+    ProApplied:
+      name: doorstep.pro.applied
+      payload:
+        type: object
+        required: [pro_id, pro_user_id, city_code]
+        properties:
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          city_code: {type: string}
+    ProStatusChanged:
+      name: doorstep.pro.status_changed
+      payload:
+        type: object
+        required: [pro_id, pro_user_id, from_status, to_status]
+        properties:
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          from_status: {type: string}
+          to_status: {type: string, enum: [draft, pending_verification, approved, suspended, rejected, blocked]}
+          reason: {type: string, nullable: true}
+    ProDocumentReviewed:
+      name: doorstep.pro.document_reviewed
+      payload:
+        type: object
+        required: [pro_id, pro_user_id, document_id, kind, decision]
+        properties:
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          document_id: {type: string, format: uuid}
+          kind: {type: string}
+          decision: {type: string, enum: [approved, rejected]}
+    ProBackgroundCheckExpiring:
+      name: doorstep.pro.background_check_expiring
+      payload:
+        type: object
+        required: [pro_id, pro_user_id, valid_until]
+        properties:
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          valid_until: {type: string, format: date}
+    ProOfferCreated:
+      name: doorstep.pro.offer_created
+      payload:
+        type: object
+        required: [offer_id, booking_id, pro_user_id, customer_user_id, expires_at, locality]
+        properties:
+          offer_id: {type: string, format: uuid}
+          booking_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          customer_user_id: {type: string, format: uuid}
+          expires_at: {type: string, format: date-time}
+          locality: {type: string}
+    ProOfferClosed:
+      name: doorstep.pro.offer_closed
+      payload:
+        type: object
+        required: [offer_id, booking_id, pro_user_id, customer_user_id, outcome]
+        properties:
+          offer_id: {type: string, format: uuid}
+          booking_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          customer_user_id: {type: string, format: uuid}
+          outcome: {type: string, enum: [accepted, declined, expired, withdrawn]}
+    ProSettlementComputed:
+      name: doorstep.pro.settlement_computed
+      payload:
+        type: object
+        required: [settlement_id, pro_id, pro_user_id, net_paise, period_start, period_end]
+        properties:
+          settlement_id: {type: string, format: uuid}
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          net_paise: {type: integer, format: int64}
+          period_start: {type: string, format: date}
+          period_end: {type: string, format: date}

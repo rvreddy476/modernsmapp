@@ -1,0 +1,4781 @@
+openapi: 3.0.3
+info:
+  title: Doorstep Home Services API
+  version: 1.0.0
+  description: >-
+    Authoritative REST contract for Doorstep (Urban Company style home
+    services): the customer surface (Momentum Android app and postbook-ui
+    /doorstep), the professional surface (/pro, the doorstep_pro Android app)
+    and the admin-internal family (/internal/admin, admin-service tokens only).
+
+
+    Served by doorstep-service (port 8122, schema `doorstep`) behind the API
+    gateway prefix /v1/doorstep (dormant gate DOORSTEP_PUBLIC_ENABLED, pilot
+    allowlist DOORSTEP_PILOT_USER_IDS). Pilot city Hyderabad (`HYD`).
+
+
+    Conventions (binding for every lane):
+
+    - Every response is the shared envelope: success `{"data": <payload>,
+      "meta": {"request_id": "..."}}`, failure `{"error": {"code", "message",
+      "details"?}, "meta": {...}}`. Schemas below describe `data` unless they
+      are named `*Envelope` or `ErrorEnvelope`.
+
+    - Money is integer paise in fields ending `_paise`. Customer prices are
+      GST-inclusive; the split is shown as `taxable_paise` + `tax_paise`.
+
+    - Error codes are stable UPPER_SNAKE strings (see `x-doorstep-error-codes`).
+      Clients branch on `error.code`, never on `message`.
+
+    - Timestamps are RFC 3339 UTC. Dates are `YYYY-MM-DD` in the city's time
+      zone (Asia/Kolkata). Times of day are `HH:MM`.
+
+    - Optional values are emitted as explicit `null`, never omitted, on every
+      Doorstep payload (strict decoders on web and Android).
+
+    - Identity: the gateway is the only JWT verifier; it stamps
+      X-Verified-User-Id / X-User-Id and X-Internal-Service-Key. Routes marked
+      `security: []` need only the internal key (no user). The
+      /internal/admin family needs `X-Service-Authorization: Bearer <token>`
+      minted by admin-service (aud `doorstep`, iss `admin-service`, scope =
+      the one `doorstep:*` permission, act = admin user id, exp 60 s), and the
+      gateway refuses /internal/ from the edge.
+
+
+    `x-lane` names the doorstep-service lane that implements a route
+    (A1 catalogue/zones/quotes/admin catalogue+config, A2 professional
+    onboarding, A3 calendar/holds/bookings/payments, A4 dispatch/offers/
+    realtime, A5 visit/extras/ratings/rework/safety/chat/tickets/settlements,
+    A6 remaining admin). Golden bytes: doorstep-service
+    internal/http/testdata/contracts/*.json (copied byte-identical to web and
+    Android).
+servers:
+  - url: https://api.atpost.app
+    description: Production API Gateway
+  - url: http://localhost:8080
+    description: Local API Gateway
+
+tags:
+  - name: Catalogue
+  - name: Customer
+  - name: Booking
+  - name: Visit
+  - name: Safety
+  - name: Professional
+  - name: ProfessionalJob
+  - name: Admin
+  - name: Webhook
+
+security:
+  - gatewayIdentity: []
+
+x-doorstep-booking-states:
+  description: >-
+    Booking status values and the only transitions the service performs.
+    Every transition writes doorstep.booking_status_history and emits the
+    matching doorstep.booking.* event through the outbox in the same
+    transaction.
+  states:
+    - pending_payment        # booking created, 10-minute hold on the reserved professional, payment intent open
+    - confirmed              # signed payment.succeeded applied via ApplyOnce; offer sent to the reserved professional
+    - assigned               # a professional accepted the offer
+    - en_route               # professional started travelling
+    - arrived                # professional within the arrival radius (geo-checked)
+    - in_progress            # start OTP verified + minimum before photos uploaded
+    - awaiting_extras_payment  # finished with approved extras >= the charge-now threshold, not yet paid
+    - completed              # after photos + end OTP; extras paid or turned into outstanding
+    - cancelled              # by customer, professional (before start), ops or a worker; refunds per cancellation rules
+    - expired                # hold lapsed before payment; a late capture is fully refunded
+    - customer_no_show       # professional waited, customer absent; no-show fee applies
+    - pro_no_show            # professional never arrived and no replacement could be found; full refund
+  transitions:
+    - {from: pending_payment, to: confirmed, by: payment_event}
+    - {from: pending_payment, to: expired, by: worker}
+    - {from: pending_payment, to: cancelled, by: customer}
+    - {from: confirmed, to: assigned, by: pro_accept}
+    - {from: confirmed, to: cancelled, by: [customer, ops, worker_t_minus_45]}
+    - {from: confirmed, to: pro_no_show, by: worker}
+    - {from: assigned, to: confirmed, by: [pro_cancel, ops_redispatch, worker_not_on_duty, worker_pro_no_show]}
+    - {from: assigned, to: en_route, by: pro}
+    - {from: assigned, to: cancelled, by: [customer, ops]}
+    - {from: en_route, to: arrived, by: pro_geo_checked}
+    - {from: en_route, to: confirmed, by: [pro_unsafe_exit, ops_redispatch]}
+    - {from: en_route, to: cancelled, by: [customer, ops]}
+    - {from: arrived, to: in_progress, by: pro_start_otp_and_photos}
+    - {from: arrived, to: customer_no_show, by: pro}
+    - {from: arrived, to: confirmed, by: [pro_unsafe_exit, ops_redispatch]}
+    - {from: arrived, to: cancelled, by: [customer, ops]}
+    - {from: in_progress, to: awaiting_extras_payment, by: pro_finish}
+    - {from: in_progress, to: completed, by: pro_end_otp_and_photos}
+    - {from: in_progress, to: cancelled, by: [ops, pro_unsafe_exit]}
+    - {from: awaiting_extras_payment, to: completed, by: [payment_event, worker_grace_to_outstanding]}
+  rework: >-
+    A rework request on a completed booking within the service's rework_days
+    creates a child booking (parent_booking_id set, total 0, status
+    confirmed) that follows the same lifecycle.
+  offer_window: 2 h when the slot starts more than 12 h after confirmation, else 10 min (city config).
+  workers:
+    - T-2h unassigned -> ops alert (doorstep.admin.live)
+    - T-45min unassigned -> cancelled + full refund
+    - assigned professional not on duty by T-90min -> reassign (re-run dispatch excluding them)
+    - slot start + 30 min not arrived -> pro no-show: reassign, else pro_no_show + full refund
+
+x-doorstep-error-codes:
+  # Shared middleware codes (not Doorstep-prefixed, emitted by shared code)
+  UNAUTHORIZED: {status: 401, meaning: X-Internal-Service-Key missing or wrong}
+  AUTH_REQUIRED: {status: 401, meaning: no gateway identity on a user route}
+  INVALID_USER_ID: {status: 401, meaning: gateway identity is not a UUID}
+  ADMIN_SERVICE_TOKEN_REQUIRED: {status: 401, meaning: admin route without X-Service-Authorization}
+  SERVICE_CREDENTIAL_REQUIRED: {status: 401, meaning: deployment accepts no service tokens (SERVICE_CALLERS unset)}
+  SERVICE_TOKEN_REJECTED: {status: 403, meaning: bad signature, unknown caller, wrong audience, expired, or a caller other than admin-service}
+  ADMIN_PERMISSION_NOT_IN_TOKEN: {status: 403, meaning: token scope lacks the route permission; details.required}
+  ADMIN_ACTOR_REQUIRED: {status: 403, meaning: token has no act claim}
+  # Doorstep domain codes
+  DOORSTEP_INVALID_REQUEST: {status: 400, meaning: malformed body, id or query; details.field when known}
+  DOORSTEP_CITY_NOT_FOUND: {status: 404, meaning: unknown or inactive city code}
+  DOORSTEP_CATEGORY_NOT_FOUND: {status: 404}
+  DOORSTEP_SERVICE_NOT_FOUND: {status: 404}
+  DOORSTEP_SERVICE_NOT_AVAILABLE: {status: 422, meaning: service has no current price in the city}
+  DOORSTEP_OUTSIDE_SERVICE_AREA: {status: 422, meaning: point is in no active zone of an active city}
+  DOORSTEP_OPTION_INVALID: {status: 422, meaning: option unknown, inactive, unpriced or of another service}
+  DOORSTEP_QUANTITY_INVALID: {status: 422, meaning: quantity outside 1..option.max_quantity}
+  DOORSTEP_ADDON_INVALID: {status: 422, meaning: add-on unknown, of another service, inactive, unpriced, duplicated, or a group's min/max broken; details.group_id, details.min_select, details.max_select when a group rule failed}
+  DOORSTEP_QUOTE_NOT_FOUND: {status: 404}
+  DOORSTEP_QUOTE_EXPIRED: {status: 410}
+  DOORSTEP_ADDRESS_NOT_FOUND: {status: 404}
+  DOORSTEP_SLOT_UNAVAILABLE: {status: 422, meaning: slot outside lead time, horizon, open hours or not offered}
+  DOORSTEP_SLOT_TAKEN: {status: 409, meaning: no qualified professional can be held for the slot (exclusion constraint lost the race)}
+  DOORSTEP_HOLD_EXPIRED: {status: 410, meaning: the 10-minute hold lapsed; book again}
+  DOORSTEP_OUTSTANDING_DUE: {status: 409, meaning: customer has unpaid extras; details.outstanding_paise, details.extras_bill_ids}
+  DOORSTEP_BOOKING_NOT_FOUND: {status: 404}
+  DOORSTEP_INVALID_TRANSITION: {status: 409, meaning: action not allowed in the booking's status; details.status}
+  DOORSTEP_CANCEL_NOT_ALLOWED: {status: 409, meaning: cancellation after the start OTP}
+  DOORSTEP_RESCHEDULE_NOT_ALLOWED: {status: 409, meaning: already rescheduled once, or less than 3 h before the slot}
+  DOORSTEP_PAYMENTS_UNAVAILABLE: {status: 503, meaning: payments-service client not configured or down}
+  DOORSTEP_PAYMENT_ALREADY_SETTLED: {status: 409}
+  DOORSTEP_GENDER_RULE: {status: 403, meaning: the professional's DigiLocker gender does not satisfy the category rule or the customer's woman-professional preference}
+  DOORSTEP_OTP_INVALID: {status: 422, meaning: wrong start/end OTP; details.attempts_left}
+  DOORSTEP_OTP_LOCKED: {status: 423, meaning: too many wrong OTPs; details.locked_until}
+  DOORSTEP_PHOTOS_REQUIRED: {status: 422, meaning: before/after/kit photos missing; details.phase, details.required, details.uploaded}
+  DOORSTEP_GEO_CHECK_FAILED: {status: 422, meaning: arrived reported too far from the address; details.distance_m, details.max_distance_m}
+  DOORSTEP_EXTRA_INVALID: {status: 422, meaning: rate-card item unknown/inactive, quantity over max, or free text}
+  DOORSTEP_EXTRAS_NOT_ALLOWED: {status: 422, meaning: category allows catalogue add-ons only (salon)}
+  DOORSTEP_EXTRAS_PENDING: {status: 409, meaning: finish attempted with undecided extras}
+  DOORSTEP_OFFER_NOT_FOUND: {status: 404}
+  DOORSTEP_OFFER_EXPIRED: {status: 410}
+  DOORSTEP_OFFER_TAKEN: {status: 409}
+  DOORSTEP_PRO_NOT_FOUND: {status: 404}
+  DOORSTEP_PRO_EXISTS: {status: 409}
+  DOORSTEP_PRO_NOT_APPROVED: {status: 403}
+  DOORSTEP_PRO_SUSPENDED: {status: 403}
+  DOORSTEP_ONBOARDING_INCOMPLETE: {status: 422, meaning: details.missing_steps}
+  DOORSTEP_BACKGROUND_CHECK_REQUIRED: {status: 403, meaning: no clear check valid on the slot date}
+  DOORSTEP_DIGILOCKER_UNAVAILABLE: {status: 503}
+  DOORSTEP_FACE_MATCH_FAILED: {status: 422}
+  DOORSTEP_NOT_ON_DUTY: {status: 409}
+  DOORSTEP_RATING_EXISTS: {status: 409}
+  DOORSTEP_RATING_WINDOW_CLOSED: {status: 422}
+  DOORSTEP_REWORK_WINDOW_CLOSED: {status: 422}
+  DOORSTEP_REWORK_EXISTS: {status: 409}
+  DOORSTEP_CHAT_CLOSED: {status: 409, meaning: chat opens at acceptance and closes 2 h after completion}
+  DOORSTEP_SHARE_TOKEN_INVALID: {status: 404}
+  DOORSTEP_TICKET_NOT_FOUND: {status: 404}
+  DOORSTEP_INCIDENT_NOT_FOUND: {status: 404}
+  DOORSTEP_REFUND_EXCEEDS_PAID: {status: 422}
+  DOORSTEP_NOT_FOUND: {status: 404, meaning: admin entity not found}
+  DOORSTEP_CONFLICT: {status: 409, meaning: admin write violates a unique rule (slug, code, default option)}
+  DOORSTEP_ZONE_INVALID: {status: 422, meaning: boundary is not a valid GeoJSON Polygon/MultiPolygon}
+  DOORSTEP_PRICE_OVERLAP: {status: 409, meaning: price periods for one item and city overlap}
+  DOORSTEP_INTERNAL: {status: 500}
+
+x-doorstep-permissions:
+  # admin-service token scope per route (doorstep:<area>.<verb>)
+  - doorstep:catalogue.read
+  - doorstep:catalogue.write
+  - doorstep:config.write
+  - doorstep:pros.read
+  - doorstep:pros.approve
+  - doorstep:pros.suspend
+  - doorstep:documents.review
+  - doorstep:bookings.read
+  - doorstep:bookings.cancel
+  - doorstep:bookings.redispatch
+  - doorstep:refunds.issue        # step-up in admin-service
+  - doorstep:incidents.read
+  - doorstep:incidents.act
+  - doorstep:tickets.act
+  - doorstep:ratings.moderate
+  - doorstep:settlements.read
+  - doorstep:stats.read
+  - doorstep:audit.read
+
+x-doorstep-payments:
+  application: doorstep
+  reference_types:
+    doorstep_booking: {reference_id: booking id, intent_key: "doorstep:booking:{booking_id}"}
+    doorstep_extras: {reference_id: extras bill id, intent_key: "doorstep:extras:{bill_id}"}
+  rules:
+    - A booking or extras bill is paid ONLY by the signed payment.succeeded event applied once (shared/paymentevents ApplyOnce); client callbacks are advisory.
+    - No cash method exists in this API.
+    - Refund idempotency key per cause, e.g. doorstep:refund:{booking_id}:{cause}.
+
+paths:
+  # ===================================================================
+  # Catalogue (A1) - internal key only, no user identity
+  # ===================================================================
+  /v1/doorstep/catalogue:
+    get:
+      summary: Categories offered in a city
+      operationId: getCatalogue
+      tags: [Catalogue]
+      security: []
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/CityQuery'
+      responses:
+        '200':
+          description: Active categories with at least one priced service. Golden bytes catalogue_get_200.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Catalogue'}
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/doorstep/categories/{slug}:
+    get:
+      summary: One category with its services
+      operationId: getCategory
+      tags: [Catalogue]
+      security: []
+      x-lane: A1
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: {type: string, example: salon-women}
+        - $ref: '#/components/parameters/CityQuery'
+      responses:
+        '200':
+          description: Golden bytes category_get_200.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CategoryPage'}
+        '404':
+          description: DOORSTEP_CITY_NOT_FOUND or DOORSTEP_CATEGORY_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/services/{id}:
+    get:
+      summary: Service detail with options and add-on groups priced for the city
+      operationId: getService
+      tags: [Catalogue]
+      security: []
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/CityQuery'
+      responses:
+        '200':
+          description: Only active, currently priced options and add-ons are listed. Golden bytes service_get_200.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServicePage'}
+        '404':
+          description: DOORSTEP_CITY_NOT_FOUND, DOORSTEP_SERVICE_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '422':
+          description: DOORSTEP_SERVICE_NOT_AVAILABLE (no current price in the city)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/serviceability:
+    post:
+      summary: Is a point inside an active service zone?
+      operationId: checkServiceability
+      tags: [Catalogue]
+      security: []
+      x-lane: A1
+      description: >-
+        Point-in-zone via PostGIS ST_Covers on the zone boundary (a point on
+        the edge is inside). When zones touch, the lowest (sort by name, id)
+        zone wins. Always 200; `serviceable=false` carries reason
+        OUTSIDE_SERVICE_AREA. Golden bytes serviceability_in_200.json,
+        serviceability_out_200.json.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ServiceabilityRequest'}
+      responses:
+        '200':
+          description: Serviceability answer
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Serviceability'}
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /v1/doorstep/share/{token}:
+    get:
+      summary: Shared booking status (trusted contact view)
+      operationId: getSharedBooking
+      tags: [Safety]
+      security: []
+      x-lane: A5
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SharedBookingView'}
+          description: Locality, status, professional first name and photo, ETA. Never the full address.
+        '404':
+          description: DOORSTEP_SHARE_TOKEN_INVALID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  # ===================================================================
+  # Customer (gateway identity)
+  # ===================================================================
+  /v1/doorstep/quotes:
+    post:
+      summary: Price a service selection (GST-inclusive)
+      operationId: createQuote
+      tags: [Customer]
+      x-lane: A1
+      description: >-
+        Validates the option (active, of this service, priced in the zone's
+        city), the quantity (1..max_quantity) and the add-ons with the food
+        add-on group rules (each group: count >= max(min_select, is_required ?
+        1 : 0) and count <= max_select; no duplicates; add-on of this service,
+        active and priced). Prices come from the effective-dated city price
+        rows current at quote time and are GST-inclusive; tax is split by
+        the TaxComputer (provisional until shared/gst lands; the invoice is
+        recomputed at completion with the actual professional). Expires after
+        15 minutes. Golden bytes quote_post_201.json, quote_post_422_*.json.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QuoteRequest'}
+      responses:
+        '201':
+          description: Quote created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Quote'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          description: DOORSTEP_SERVICE_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '422':
+          description: DOORSTEP_OUTSIDE_SERVICE_AREA, DOORSTEP_OPTION_INVALID, DOORSTEP_QUANTITY_INVALID, DOORSTEP_ADDON_INVALID, DOORSTEP_SERVICE_NOT_AVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/quotes/{id}:
+    get:
+      summary: Read one of my quotes
+      operationId: getQuote
+      tags: [Customer]
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Quote'}
+          description: The quote (status open, expired or consumed)
+        '404':
+          description: DOORSTEP_QUOTE_NOT_FOUND (also for another user's quote)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/addresses:
+    get:
+      summary: My saved addresses
+      operationId: listAddresses
+      tags: [Customer]
+      x-lane: A3
+      responses:
+        '200':
+          description: Addresses
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Address'}
+    post:
+      summary: Save an address (point must be serviceable)
+      operationId: createAddress
+      tags: [Customer]
+      x-lane: A3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AddressInput'}
+      responses:
+        '201':
+          description: Saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Address'}
+        '422':
+          description: DOORSTEP_OUTSIDE_SERVICE_AREA
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/addresses/{id}:
+    patch:
+      summary: Edit an address
+      operationId: updateAddress
+      tags: [Customer]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AddressInput'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Address'}
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      summary: Remove an address (soft delete; bookings keep their snapshot)
+      operationId: deleteAddress
+      tags: [Customer]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '204':
+          description: Removed
+
+  /v1/doorstep/slots:
+    get:
+      summary: Bookable slots for a quote (calendar-derived)
+      operationId: listSlots
+      tags: [Booking]
+      x-lane: A3
+      description: >-
+        A slot is offered only when at least one professional passes the hard
+        dispatch filters (approved, background check clear on the date, skill,
+        gender rule + preference, zone, calendar fit incl. travel buffer, daily
+        cap). Earliest slot = now + min_lead_minutes (2 h); horizon from the
+        slot config. Also used for reschedule with booking_id.
+      parameters:
+        - name: quote_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: booking_id
+          in: query
+          description: Reschedule mode (excludes the booking's own block)
+          schema: {type: string, format: uuid}
+        - name: address_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: require_female_pro
+          in: query
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Days with slots
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SlotDays'}
+        '409':
+          description: DOORSTEP_OUTSTANDING_DUE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '410':
+          description: DOORSTEP_QUOTE_EXPIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings:
+    post:
+      summary: Book a slot (holds a professional for 10 minutes, then pay)
+      operationId: createBooking
+      tags: [Booking]
+      x-lane: A3
+      description: >-
+        Picks the best-fitting professional for the slot and inserts a `hold`
+        calendar block (EXCLUDE USING gist makes a double hold impossible),
+        creates the booking in pending_payment and the payments-service
+        intent (application doorstep, reference doorstep_booking). Idempotent
+        on the Idempotency-Key header per customer.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BookingCreateRequest'}
+      responses:
+        '201':
+          description: Booking created; pay before hold_expires_at
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BookingCreated'}
+        '409':
+          description: DOORSTEP_SLOT_TAKEN, DOORSTEP_OUTSTANDING_DUE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '410':
+          description: DOORSTEP_QUOTE_EXPIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '422':
+          description: DOORSTEP_SLOT_UNAVAILABLE, DOORSTEP_OUTSIDE_SERVICE_AREA
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '503':
+          description: DOORSTEP_PAYMENTS_UNAVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    get:
+      summary: My bookings
+      operationId: listBookings
+      tags: [Booking]
+      x-lane: A3
+      parameters:
+        - name: status
+          in: query
+          description: upcoming | past | all
+          schema: {type: string, enum: [upcoming, past, all], default: all}
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of bookings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/BookingSummary'}
+                  next_cursor: {type: string, nullable: true}
+
+  /v1/doorstep/bookings/{id}:
+    get:
+      summary: One of my bookings
+      operationId: getBooking
+      tags: [Booking]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Booking
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Booking'}
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/doorstep/bookings/{id}/cancel-preview:
+    get:
+      summary: What cancelling now would cost
+      operationId: previewCancel
+      tags: [Booking]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Fee and refund
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CancelPreview'}
+
+  /v1/doorstep/bookings/{id}/cancel:
+    post:
+      summary: Cancel my booking
+      operationId: cancelBooking
+      tags: [Booking]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CancelRequest'}
+      responses:
+        '200':
+          description: Cancelled; refund (total - fee) requested
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Booking'}
+        '409':
+          description: DOORSTEP_CANCEL_NOT_ALLOWED, DOORSTEP_INVALID_TRANSITION
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/reschedule:
+    post:
+      summary: Move my booking to another slot (free once, up to 3 h before)
+      operationId: rescheduleBooking
+      tags: [Booking]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slot_start]
+              properties:
+                slot_start: {type: string, format: date-time}
+      responses:
+        '200':
+          description: Rescheduled (may re-run dispatch)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Booking'}
+        '409':
+          description: DOORSTEP_RESCHEDULE_NOT_ALLOWED, DOORSTEP_SLOT_TAKEN
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/payment/intent:
+    post:
+      summary: (Re)open the payment intent for a pending booking
+      operationId: createBookingPaymentIntent
+      tags: [Booking]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Intent (idempotent on doorstep:booking:{id})
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PaymentIntent'}
+        '409':
+          description: DOORSTEP_PAYMENT_ALREADY_SETTLED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '410':
+          description: DOORSTEP_HOLD_EXPIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '503':
+          description: DOORSTEP_PAYMENTS_UNAVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/payment:
+    get:
+      summary: Payment status of a booking (paid only by the signed event)
+      operationId: getBookingPayment
+      tags: [Booking]
+      x-lane: A3
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Payment rows (booking + extras) and refunds
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BookingPayments'}
+
+  /v1/doorstep/bookings/{id}/extras:
+    get:
+      summary: Extras the professional proposed
+      operationId: listBookingExtras
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Extras
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Extra'}
+
+  /v1/doorstep/bookings/{id}/extras/{extraId}/approve:
+    post:
+      summary: Approve a proposed extra
+      operationId: approveExtra
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/ExtraIdPath'
+      responses:
+        '200':
+          description: >-
+            Approved. When the approved extras exceed the city's
+            charge-now threshold (default 300000 paise) an extras bill is
+            opened and must be paid now.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Extra'}
+
+  /v1/doorstep/bookings/{id}/extras/{extraId}/decline:
+    post:
+      summary: Decline a proposed extra
+      operationId: declineExtra
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/ExtraIdPath'
+      responses:
+        '200':
+          description: Declined
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Extra'}
+
+  /v1/doorstep/bookings/{id}/extras-bill:
+    get:
+      summary: The extras bill of a booking
+      operationId: getExtrasBill
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Bill
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExtrasBill'}
+
+  /v1/doorstep/extras-bills/{id}/payment/intent:
+    post:
+      summary: Pay an extras bill (also how outstanding is paid)
+      operationId: createExtrasPaymentIntent
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Intent (doorstep_extras, key doorstep:extras:{bill_id})
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PaymentIntent'}
+
+  /v1/doorstep/me/outstanding:
+    get:
+      summary: My unpaid extras (blocks new bookings)
+      operationId: getMyOutstanding
+      tags: [Visit]
+      x-lane: A5
+      responses:
+        '200':
+          description: Outstanding
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Outstanding'}
+
+  /v1/doorstep/bookings/{id}/rating:
+    post:
+      summary: Rate the professional (once, within 7 days of completion)
+      operationId: rateBooking
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RatingInput'}
+      responses:
+        '201':
+          description: Rated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Rating'}
+        '409':
+          description: DOORSTEP_RATING_EXISTS
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/rework:
+    post:
+      summary: Ask for the job to be redone (within the service's rework window)
+      operationId: requestRework
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReworkInput'}
+      responses:
+        '201':
+          description: Rework requested (child booking created when a slot is chosen)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReworkRequest'}
+        '422':
+          description: DOORSTEP_REWORK_WINDOW_CLOSED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    get:
+      summary: Rework requests of a booking
+      operationId: listRework
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ReworkRequest'}
+
+  /v1/doorstep/bookings/{id}/sos:
+    post:
+      summary: Customer SOS
+      operationId: customerSOS
+      tags: [Safety]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SOSInput'}
+      responses:
+        '201':
+          description: Incident raised (doorstep.incident.raised); salon safety incidents auto-suspend the professional
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Incident'}
+
+  /v1/doorstep/bookings/{id}/share:
+    post:
+      summary: Create a share-status link
+      operationId: createShareToken
+      tags: [Safety]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '201':
+          description: Link
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShareToken'}
+    delete:
+      summary: Revoke the share link
+      operationId: revokeShareToken
+      tags: [Safety]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '204':
+          description: Revoked
+
+  /v1/doorstep/trusted-contact:
+    get:
+      summary: My trusted contact (masked)
+      operationId: getTrustedContact
+      tags: [Safety]
+      x-lane: A5
+      responses:
+        '200':
+          description: Contact or null
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TrustedContact'}
+    put:
+      summary: Set my trusted contact
+      operationId: putTrustedContact
+      tags: [Safety]
+      x-lane: A5
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, phone]
+              properties:
+                name: {type: string}
+                phone: {type: string, description: E.164; sealed at rest}
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TrustedContact'}
+
+  /v1/doorstep/bookings/{id}/messages:
+    get:
+      summary: Chat with the professional (acceptance to completion + 2 h)
+      operationId: listBookingMessages
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagePage'}
+    post:
+      summary: Send a chat message
+      operationId: postBookingMessage
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MessageInput'}
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Message'}
+        '409':
+          description: DOORSTEP_CHAT_CLOSED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/messages/{msgId}/read:
+    post:
+      summary: Mark a message read
+      operationId: markBookingMessageRead
+      tags: [Visit]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - name: msgId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204':
+          description: Marked
+
+  /v1/doorstep/tickets:
+    get:
+      summary: My support tickets
+      operationId: listTickets
+      tags: [Customer]
+      x-lane: A5
+      responses:
+        '200':
+          description: Tickets
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Ticket'}
+    post:
+      summary: Open a support ticket
+      operationId: createTicket
+      tags: [Customer]
+      x-lane: A5
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TicketInput'}
+      responses:
+        '201':
+          description: Opened
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ticket'}
+
+  /v1/doorstep/tickets/{id}:
+    get:
+      summary: One of my tickets
+      operationId: getTicket
+      tags: [Customer]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Ticket
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ticket'}
+
+  /v1/doorstep/realtime/token:
+    post:
+      summary: Scoped realtime token for doorstep.booking.<id> topics
+      operationId: issueCustomerRealtimeToken
+      tags: [Booking]
+      x-lane: A4
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                booking_id: {type: string, format: uuid}
+      responses:
+        '200':
+          description: shared/realtime TokenSigner token
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RealtimeToken'}
+
+  # ===================================================================
+  # Professional (/pro) - gateway identity; role service_professional
+  # ===================================================================
+  /v1/doorstep/pro/apply:
+    post:
+      summary: Start a professional application
+      operationId: proApply
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProApplyInput'}
+      responses:
+        '201':
+          description: Draft professional created; identity role service_professional granted via the identityroles outbox
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+        '409':
+          description: DOORSTEP_PRO_EXISTS
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/me:
+    get:
+      summary: My professional profile
+      operationId: proGetMe
+      tags: [Professional]
+      x-lane: A2
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+        '404':
+          description: DOORSTEP_PRO_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    patch:
+      summary: Edit display name / photo
+      operationId: proPatchMe
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: {type: string}
+                photo_media_id: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+
+  /v1/doorstep/pro/readiness:
+    get:
+      summary: Onboarding steps still missing (pure MissingSteps)
+      operationId: proReadiness
+      tags: [Professional]
+      x-lane: A2
+      responses:
+        '200':
+          description: Readiness
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProReadiness'}
+
+  /v1/doorstep/pro/digilocker/start:
+    post:
+      summary: Begin Aadhaar via DigiLocker (PKCE); sets gender
+      operationId: proDigilockerStart
+      tags: [Professional]
+      x-lane: A2
+      responses:
+        '200':
+          description: Authorization URL and state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorization_url, state]
+                properties:
+                  authorization_url: {type: string}
+                  state: {type: string}
+        '503':
+          description: DOORSTEP_DIGILOCKER_UNAVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/digilocker/callback:
+    post:
+      summary: Complete DigiLocker; records the Aadhaar check and gender
+      operationId: proDigilockerCallback
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, state]
+              properties:
+                code: {type: string}
+                state: {type: string}
+      responses:
+        '200':
+          description: Readiness after the step
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProReadiness'}
+
+  /v1/doorstep/pro/selfie:
+    post:
+      summary: Submit a selfie for face match against the DigiLocker photo
+      operationId: proSelfie
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_id]
+              properties:
+                media_id: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Result (below threshold stays pending review)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KycCheck'}
+        '422':
+          description: DOORSTEP_FACE_MATCH_FAILED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/skills:
+    get:
+      summary: Skill catalogue
+      operationId: proListSkills
+      tags: [Professional]
+      x-lane: A2
+      responses:
+        '200':
+          description: Skills
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Skill'}
+
+  /v1/doorstep/pro/me/skills:
+    put:
+      summary: Declare my skills (verified by ops)
+      operationId: proPutSkills
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [skill_codes]
+              properties:
+                skill_codes:
+                  type: array
+                  items: {type: string}
+      responses:
+        '200':
+          description: My skills with verification status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProSkill'}
+
+  /v1/doorstep/pro/me/area:
+    put:
+      summary: Service area (zones, home point, radius)
+      operationId: proPutArea
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProAreaInput'}
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProArea'}
+
+  /v1/doorstep/pro/me/hours:
+    get:
+      summary: Weekly hours
+      operationId: proGetHours
+      tags: [Professional]
+      x-lane: A2
+      responses:
+        '200':
+          description: Hours
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WeeklyHours'}
+    put:
+      summary: Replace weekly hours
+      operationId: proPutHours
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WeeklyHours'}
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WeeklyHours'}
+
+  /v1/doorstep/pro/me/days-off:
+    get:
+      summary: Days off
+      operationId: proListDaysOff
+      tags: [Professional]
+      x-lane: A2
+      responses:
+        '200':
+          description: Days
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/DayOff'}
+    post:
+      summary: Add a day off (refused when it has an accepted job)
+      operationId: proAddDayOff
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DayOff'}
+      responses:
+        '201':
+          description: Added
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DayOff'}
+
+  /v1/doorstep/pro/me/days-off/{date}:
+    delete:
+      summary: Remove a day off
+      operationId: proDeleteDayOff
+      tags: [Professional]
+      x-lane: A2
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema: {type: string, format: date}
+      responses:
+        '204':
+          description: Removed
+
+  /v1/doorstep/pro/me/bank:
+    put:
+      summary: Payout bank account (sealed; payouts OFF, settlements computed only)
+      operationId: proPutBank
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_holder, account_number, ifsc]
+              properties:
+                account_holder: {type: string}
+                account_number: {type: string}
+                ifsc: {type: string}
+      responses:
+        '200':
+          description: Masked account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PayoutAccount'}
+
+  /v1/doorstep/pro/me/police-certificate:
+    post:
+      summary: Upload a Police Clearance Certificate (reviewed by an admin)
+      operationId: proPostPoliceCertificate
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_id, issued_on]
+              properties:
+                media_id: {type: string, format: uuid}
+                issued_on: {type: string, format: date}
+                certificate_number: {type: string}
+      responses:
+        '201':
+          description: Document pending review; background_check source=uploaded_document, valid 12 months from issue once approved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProDocument'}
+
+  /v1/doorstep/pro/me/agreement:
+    post:
+      summary: Accept the professional agreement
+      operationId: proAcceptAgreement
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: {type: string}
+      responses:
+        '200':
+          description: Readiness
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProReadiness'}
+
+  /v1/doorstep/pro/me/pan:
+    put:
+      summary: PAN (recommended, not required)
+      operationId: proPutPAN
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pan]
+              properties:
+                pan: {type: string}
+      responses:
+        '200':
+          description: Readiness
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProReadiness'}
+
+  /v1/doorstep/pro/duty/on:
+    post:
+      summary: Go on duty
+      operationId: proDutyOn
+      tags: [Professional]
+      x-lane: A4
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LocationInput'}
+      responses:
+        '200':
+          description: Duty state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DutyState'}
+        '403':
+          description: DOORSTEP_PRO_NOT_APPROVED, DOORSTEP_PRO_SUSPENDED, DOORSTEP_BACKGROUND_CHECK_REQUIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/duty/off:
+    post:
+      summary: Go off duty
+      operationId: proDutyOff
+      tags: [Professional]
+      x-lane: A4
+      responses:
+        '200':
+          description: Duty state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DutyState'}
+
+  /v1/doorstep/pro/location:
+    post:
+      summary: Location ping (Redis GEO; travel to job)
+      operationId: proLocation
+      tags: [Professional]
+      x-lane: A4
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LocationInput'}
+      responses:
+        '204':
+          description: Accepted
+        '409':
+          description: DOORSTEP_NOT_ON_DUTY
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/offers:
+    get:
+      summary: My open offers (locality only, no address)
+      operationId: proListOffers
+      tags: [ProfessionalJob]
+      x-lane: A4
+      responses:
+        '200':
+          description: Offers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Offer'}
+
+  /v1/doorstep/pro/offers/{id}/accept:
+    post:
+      summary: Accept an offer (row-locked; idempotent)
+      operationId: proAcceptOffer
+      tags: [ProfessionalJob]
+      x-lane: A4
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: The job, now with address and chat
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProJob'}
+        '403':
+          description: DOORSTEP_GENDER_RULE, DOORSTEP_BACKGROUND_CHECK_REQUIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '409':
+          description: DOORSTEP_OFFER_TAKEN
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '410':
+          description: DOORSTEP_OFFER_EXPIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/offers/{id}/decline:
+    post:
+      summary: Decline an offer (next professional is offered automatically)
+      operationId: proDeclineOffer
+      tags: [ProfessionalJob]
+      x-lane: A4
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string, enum: [too_far, busy, not_my_skill, other]}
+      responses:
+        '204':
+          description: Declined
+
+  /v1/doorstep/pro/jobs:
+    get:
+      summary: My jobs
+      operationId: proListJobs
+      tags: [ProfessionalJob]
+      x-lane: A4
+      parameters:
+        - name: status
+          in: query
+          schema: {type: string, enum: [upcoming, active, past]}
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProJob'}
+                  next_cursor: {type: string, nullable: true}
+
+  /v1/doorstep/pro/jobs/{id}:
+    get:
+      summary: One of my jobs
+      operationId: proGetJob
+      tags: [ProfessionalJob]
+      x-lane: A4
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProJob'}
+
+  /v1/doorstep/pro/jobs/{id}/en-route:
+    post:
+      summary: Start travelling (assigned -> en_route)
+      operationId: proJobEnRoute
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProJob'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /v1/doorstep/pro/jobs/{id}/arrived:
+    post:
+      summary: Arrived (geo-checked against the booking point)
+      operationId: proJobArrived
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LocationInput'}
+      responses:
+        '200':
+          $ref: '#/components/responses/ProJob'
+        '422':
+          description: DOORSTEP_GEO_CHECK_FAILED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/jobs/{id}/photos:
+    post:
+      summary: Record a before/after/kit photo (workspace and kit only, never the customer)
+      operationId: proJobPhoto
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PhotoInput'}
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Photo'}
+
+  /v1/doorstep/pro/jobs/{id}/start:
+    post:
+      summary: Start with the customer's start OTP (needs min before photos; salon also a sealed-kit photo)
+      operationId: proJobStart
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OTPInput'}
+      responses:
+        '200':
+          $ref: '#/components/responses/ProJob'
+        '422':
+          description: DOORSTEP_OTP_INVALID, DOORSTEP_PHOTOS_REQUIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '423':
+          description: DOORSTEP_OTP_LOCKED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/jobs/{id}/extras:
+    post:
+      summary: Propose an extra from the category rate card (or a catalogue add-on for salon)
+      operationId: proProposeExtra
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExtraInput'}
+      responses:
+        '201':
+          description: Proposed (customer approves in the app)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Extra'}
+        '422':
+          description: DOORSTEP_EXTRA_INVALID, DOORSTEP_EXTRAS_NOT_ALLOWED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/jobs/{id}/extras/{extraId}:
+    delete:
+      summary: Withdraw a proposed extra
+      operationId: proWithdrawExtra
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/ExtraIdPath'
+      responses:
+        '204':
+          description: Withdrawn
+
+  /v1/doorstep/pro/jobs/{id}/finish:
+    post:
+      summary: Work done; opens the extras bill (awaiting_extras_payment when over the threshold)
+      operationId: proJobFinish
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProJob'
+        '409':
+          description: DOORSTEP_EXTRAS_PENDING
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/jobs/{id}/complete:
+    post:
+      summary: Complete with the end OTP (needs min after photos)
+      operationId: proJobComplete
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OTPInput'}
+      responses:
+        '200':
+          $ref: '#/components/responses/ProJob'
+        '422':
+          description: DOORSTEP_OTP_INVALID, DOORSTEP_PHOTOS_REQUIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '423':
+          description: DOORSTEP_OTP_LOCKED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/jobs/{id}/no-show:
+    post:
+      summary: Customer not present (arrived + waited 15 min)
+      operationId: proJobCustomerNoShow
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProJob'
+
+  /v1/doorstep/pro/jobs/{id}/cancel:
+    post:
+      summary: Professional gives the job back before start (counts against acceptance; dispatch re-runs)
+      operationId: proJobCancel
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CancelRequest'}
+      responses:
+        '204':
+          description: Released
+
+  /v1/doorstep/pro/jobs/{id}/sos:
+    post:
+      summary: Professional SOS
+      operationId: proJobSOS
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SOSInput'}
+      responses:
+        '201':
+          description: Incident
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Incident'}
+
+  /v1/doorstep/pro/jobs/{id}/unsafe-exit:
+    post:
+      summary: '"Unsafe, leaving": professional exits; incident raised, booking redispatched or refunded, no penalty'
+      operationId: proJobUnsafeExit
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SOSInput'}
+      responses:
+        '201':
+          description: Incident
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Incident'}
+
+  /v1/doorstep/pro/jobs/{id}/rating:
+    post:
+      summary: Rate the customer
+      operationId: proRateCustomer
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RatingInput'}
+      responses:
+        '201':
+          description: Rated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Rating'}
+
+  /v1/doorstep/pro/jobs/{id}/messages:
+    get:
+      summary: Chat with the customer
+      operationId: proListMessages
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagePage'}
+    post:
+      summary: Send a message
+      operationId: proPostMessage
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MessageInput'}
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Message'}
+
+  /v1/doorstep/pro/earnings:
+    get:
+      summary: Earning lines and totals (computed; payouts OFF)
+      operationId: proEarnings
+      tags: [Professional]
+      x-lane: A5
+      parameters:
+        - name: from
+          in: query
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          schema: {type: string, format: date}
+      responses:
+        '200':
+          description: Earnings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Earnings'}
+
+  /v1/doorstep/pro/realtime/token:
+    post:
+      summary: Realtime token for doorstep.pro.<user_id> and accepted bookings
+      operationId: issueProRealtimeToken
+      tags: [Professional]
+      x-lane: A4
+      responses:
+        '200':
+          description: Token
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RealtimeToken'}
+
+  # ===================================================================
+  # Background-check vendor webhook (future vendor; signed, no identity)
+  # ===================================================================
+  /v1/doorstep/webhooks/background-check/{provider}:
+    post:
+      summary: Background-check vendor callback (AuthBridge / IDfy / OnGrid, later)
+      operationId: backgroundCheckWebhook
+      tags: [Webhook]
+      security: []
+      x-lane: A2
+      description: Verified by the provider's HMAC signature header; unknown provider -> 404; bad signature -> 401. No provider is enabled at launch.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '204':
+          description: Applied (idempotent on the provider event id)
+
+  # ===================================================================
+  # Admin-internal (admin-service tokens only)
+  # ===================================================================
+  /v1/doorstep/internal/admin/cities:
+    get:
+      summary: List cities
+      operationId: adminListCities
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      responses:
+        '200':
+          description: Cities. Golden bytes admin_cities_list_200.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCityList'}
+    post:
+      summary: Create a city
+      operationId: adminCreateCity
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCityInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCity'}
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /v1/doorstep/internal/admin/cities/{code}:
+    patch:
+      summary: Edit a city (settings, activate/deactivate)
+      operationId: adminUpdateCity
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: {type: string, example: HYD}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCityPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCity'}
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/doorstep/internal/admin/zones:
+    get:
+      summary: List zones (optionally by city)
+      operationId: adminListZones
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/CityFilter'
+      responses:
+        '200':
+          description: Zones
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminZoneList'}
+    post:
+      summary: Create a zone (GeoJSON Polygon or MultiPolygon, WGS84)
+      operationId: adminCreateZone
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminZoneInput'}
+      responses:
+        '201':
+          description: Created. Golden bytes admin_zone_post_201.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminZone'}
+        '422':
+          description: DOORSTEP_ZONE_INVALID. Golden bytes admin_zone_post_422.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/internal/admin/zones/{id}:
+    patch:
+      summary: Edit a zone
+      operationId: adminUpdateZone
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminZonePatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminZone'}
+
+  /v1/doorstep/internal/admin/categories:
+    get:
+      summary: List categories (all, incl. inactive)
+      operationId: adminListCategories
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      responses:
+        '200':
+          description: Categories
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCategoryList'}
+    post:
+      summary: Create a category
+      operationId: adminCreateCategory
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCategoryInput'}
+      responses:
+        '201':
+          description: Created. Golden bytes admin_category_post_201.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCategory'}
+        '409':
+          description: DOORSTEP_CONFLICT (slug taken)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/internal/admin/categories/{id}:
+    patch:
+      summary: Edit a category
+      operationId: adminUpdateCategory
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCategoryPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCategory'}
+
+  /v1/doorstep/internal/admin/skills:
+    get:
+      summary: List skills
+      operationId: adminListSkills
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      responses:
+        '200':
+          description: Skills
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Skill'}
+    post:
+      summary: Create a skill
+      operationId: adminCreateSkill
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SkillInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Skill'}
+
+  /v1/doorstep/internal/admin/services:
+    get:
+      summary: List services (optionally by category)
+      operationId: adminListServices
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - name: category_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Services
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminServiceList'}
+    post:
+      summary: Create a service
+      operationId: adminCreateService
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminServiceInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminService'}
+
+  /v1/doorstep/internal/admin/services/{id}:
+    get:
+      summary: A service with all options, add-on groups and add-ons (incl. inactive)
+      operationId: adminGetService
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Service tree
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminServiceTree'}
+    patch:
+      summary: Edit a service
+      operationId: adminUpdateService
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminServicePatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminService'}
+
+  /v1/doorstep/internal/admin/services/{id}/options:
+    post:
+      summary: Add an option to a service
+      operationId: adminCreateOption
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminOptionInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminOption'}
+
+  /v1/doorstep/internal/admin/options/{id}:
+    patch:
+      summary: Edit an option
+      operationId: adminUpdateOption
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminOptionPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminOption'}
+
+  /v1/doorstep/internal/admin/services/{id}/addon-groups:
+    post:
+      summary: Add an add-on group to a service (min_select <= max_select, max_select >= 1)
+      operationId: adminCreateAddonGroup
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminAddonGroupInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminAddonGroup'}
+
+  /v1/doorstep/internal/admin/addon-groups/{id}:
+    patch:
+      summary: Edit an add-on group
+      operationId: adminUpdateAddonGroup
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminAddonGroupPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminAddonGroup'}
+
+  /v1/doorstep/internal/admin/addon-groups/{id}/addons:
+    post:
+      summary: Add an add-on to a group
+      operationId: adminCreateAddon
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminAddonInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminAddon'}
+
+  /v1/doorstep/internal/admin/addons/{id}:
+    patch:
+      summary: Edit an add-on
+      operationId: adminUpdateAddon
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminAddonPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminAddon'}
+
+  /v1/doorstep/internal/admin/prices:
+    get:
+      summary: Price rows (history included) for a city, optionally one item
+      operationId: adminListPrices
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/CityFilter'
+        - name: item_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Prices
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminPriceList'}
+    post:
+      summary: Set a price from effective_from (closes the open row of the same item and city)
+      operationId: adminCreatePrice
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      description: >-
+        Effective-dated. The currently open row (effective_to null) of the same
+        (city, item) gets effective_to = new effective_from. A new row may not
+        start before the open row's start; overlaps are refused by an
+        exclusion constraint (DOORSTEP_PRICE_OVERLAP). Prices are GST-inclusive.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminPriceInput'}
+      responses:
+        '201':
+          description: Created. Golden bytes admin_price_post_201.json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminPrice'}
+        '409':
+          description: DOORSTEP_PRICE_OVERLAP
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/internal/admin/rate-cards:
+    get:
+      summary: Extras rate-card items (by city and/or category)
+      operationId: adminListRateCards
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/CityFilter'
+        - name: category_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Rate-card items
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminRateCardList'}
+    post:
+      summary: Create a rate-card item
+      operationId: adminCreateRateCard
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminRateCardInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminRateCard'}
+
+  /v1/doorstep/internal/admin/rate-cards/{id}:
+    patch:
+      summary: Edit a rate-card item
+      operationId: adminUpdateRateCard
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminRateCardPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminRateCard'}
+
+  /v1/doorstep/internal/admin/slot-configs:
+    get:
+      summary: Slot configurations
+      operationId: adminListSlotConfigs
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/CityFilter'
+      responses:
+        '200':
+          description: Slot configs
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminSlotConfigList'}
+    post:
+      summary: Create a slot config (city default when category_id is null)
+      operationId: adminCreateSlotConfig
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminSlotConfigInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminSlotConfig'}
+
+  /v1/doorstep/internal/admin/slot-configs/{id}:
+    patch:
+      summary: Edit a slot config
+      operationId: adminUpdateSlotConfig
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminSlotConfigPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminSlotConfig'}
+
+  /v1/doorstep/internal/admin/cancellation-rules:
+    get:
+      summary: Cancellation fee rules
+      operationId: adminListCancellationRules
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/CityFilter'
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCancellationRuleList'}
+    post:
+      summary: Create a cancellation rule
+      operationId: adminCreateCancellationRule
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCancellationRuleInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCancellationRule'}
+
+  /v1/doorstep/internal/admin/cancellation-rules/{id}:
+    patch:
+      summary: Edit a cancellation rule
+      operationId: adminUpdateCancellationRule
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCancellationRulePatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCancellationRule'}
+
+  /v1/doorstep/internal/admin/commission-rules:
+    get:
+      summary: Commission rules
+      operationId: adminListCommissionRules
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:catalogue.read
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/CityFilter'
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCommissionRuleList'}
+    post:
+      summary: Create a commission rule
+      operationId: adminCreateCommissionRule
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCommissionRuleInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCommissionRule'}
+
+  /v1/doorstep/internal/admin/commission-rules/{id}:
+    patch:
+      summary: Edit a commission rule
+      operationId: adminUpdateCommissionRule
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:config.write
+      x-lane: A1
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCommissionRulePatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCommissionRule'}
+
+  /v1/doorstep/internal/admin/professionals:
+    get:
+      summary: Professionals by status
+      operationId: adminListProfessionals
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.read
+      x-lane: A2
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/ProStatus'}
+        - $ref: '#/components/parameters/CityFilter'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Professional'}
+                  next_cursor: {type: string, nullable: true}
+
+  /v1/doorstep/internal/admin/professionals/{id}:
+    get:
+      summary: One professional with KYC (masked), documents, checks, skills, zones
+      operationId: adminGetProfessional
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.read
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Detail
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminProfessionalDetail'}
+
+  /v1/doorstep/internal/admin/professionals/{id}/approve:
+    post:
+      summary: Approve (refused while MissingSteps is not empty)
+      operationId: adminApproveProfessional
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.approve
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+        '422':
+          description: DOORSTEP_ONBOARDING_INCOMPLETE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/internal/admin/professionals/{id}/reject:
+    post:
+      summary: Reject (revokes service_professional)
+      operationId: adminRejectProfessional
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.approve
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+
+  /v1/doorstep/internal/admin/professionals/{id}/suspend:
+    post:
+      summary: Suspend (role kept; future jobs redispatched)
+      operationId: adminSuspendProfessional
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.suspend
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Suspended
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+
+  /v1/doorstep/internal/admin/professionals/{id}/reinstate:
+    post:
+      summary: Lift a suspension
+      operationId: adminReinstateProfessional
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.suspend
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Approved again
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+
+  /v1/doorstep/internal/admin/professionals/{id}/block:
+    post:
+      summary: Block permanently (revokes service_professional)
+      operationId: adminBlockProfessional
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.suspend
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Blocked
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+
+  /v1/doorstep/internal/admin/professionals/{id}/skills/{code}/verify:
+    post:
+      summary: Verify (or revoke) a declared skill
+      operationId: adminVerifySkill
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.approve
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - name: code
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verified]
+              properties:
+                verified: {type: boolean}
+                reason: {type: string}
+      responses:
+        '200':
+          description: Skill
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProSkill'}
+
+  /v1/doorstep/internal/admin/documents:
+    get:
+      summary: Document review queue (police certificates first)
+      operationId: adminListDocuments
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:documents.review
+      x-lane: A2
+      parameters:
+        - name: status
+          in: query
+          schema: {type: string, enum: [pending, approved, rejected], default: pending}
+      responses:
+        '200':
+          description: Documents (media ids; console renders with watermark)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProDocument'}
+
+  /v1/doorstep/internal/admin/documents/{id}/decide:
+    post:
+      summary: Approve or reject a document; approving a police certificate makes the background check clear until issued_on + 12 months
+      operationId: adminDecideDocument
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:documents.review
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: {type: string, enum: [approve, reject]}
+                reason: {type: string}
+      responses:
+        '200':
+          description: Document
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProDocument'}
+
+  /v1/doorstep/internal/admin/bookings:
+    get:
+      summary: Bookings (filters)
+      operationId: adminListBookings
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:bookings.read
+      x-lane: A6
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/BookingStatus'}
+        - $ref: '#/components/parameters/CityFilter'
+        - name: date
+          in: query
+          schema: {type: string, format: date}
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/BookingSummary'}
+                  next_cursor: {type: string, nullable: true}
+
+  /v1/doorstep/internal/admin/bookings/{id}:
+    get:
+      summary: Booking with history, assignments, payments, refunds, extras, photos
+      operationId: adminGetBooking
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:bookings.read
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Detail
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminBookingDetail'}
+
+  /v1/doorstep/internal/admin/bookings/{id}/cancel:
+    post:
+      summary: Ops cancel (full refund unless fee_paise given)
+      operationId: adminCancelBooking
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:bookings.cancel
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Booking
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Booking'}
+
+  /v1/doorstep/internal/admin/bookings/{id}/redispatch:
+    post:
+      summary: Re-run dispatch excluding the current professional (never hand-picking)
+      operationId: adminRedispatchBooking
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:bookings.redispatch
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Booking (confirmed, new offer out)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Booking'}
+
+  /v1/doorstep/internal/admin/bookings/{id}/refund:
+    post:
+      summary: Issue a refund (step-up in admin-service)
+      operationId: adminRefundBooking
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:refunds.issue
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_paise, reason]
+              properties:
+                amount_paise: {type: integer, format: int64, minimum: 1}
+                reason: {type: string}
+                payment: {type: string, enum: [booking, extras], default: booking}
+      responses:
+        '201':
+          description: Refund requested
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Refund'}
+        '422':
+          description: DOORSTEP_REFUND_EXCEEDS_PAID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/internal/admin/incidents:
+    get:
+      summary: Incidents (SOS, safety, damage)
+      operationId: adminListIncidents
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:incidents.read
+      x-lane: A6
+      parameters:
+        - name: status
+          in: query
+          schema: {type: string, enum: [open, acknowledged, resolved]}
+      responses:
+        '200':
+          description: Incidents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Incident'}
+
+  /v1/doorstep/internal/admin/incidents/{id}/acknowledge:
+    post:
+      summary: Acknowledge an incident
+      operationId: adminAcknowledgeIncident
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:incidents.act
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Incident
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Incident'}
+
+  /v1/doorstep/internal/admin/incidents/{id}/resolve:
+    post:
+      summary: Resolve (lifts an incident auto-suspension only when lift_suspension=true)
+      operationId: adminResolveIncident
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:incidents.act
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution: {type: string}
+                lift_suspension: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Incident
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Incident'}
+
+  /v1/doorstep/internal/admin/tickets:
+    get:
+      summary: Support tickets
+      operationId: adminListTickets
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:tickets.act
+      x-lane: A6
+      responses:
+        '200':
+          description: Tickets
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Ticket'}
+
+  /v1/doorstep/internal/admin/tickets/{id}/status:
+    post:
+      summary: Move a ticket
+      operationId: adminSetTicketStatus
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:tickets.act
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [open, in_progress, resolved, closed]}
+                note: {type: string}
+      responses:
+        '200':
+          description: Ticket
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ticket'}
+
+  /v1/doorstep/internal/admin/ratings:
+    get:
+      summary: Ratings (low or reported first)
+      operationId: adminListRatings
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:ratings.moderate
+      x-lane: A6
+      responses:
+        '200':
+          description: Ratings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Rating'}
+
+  /v1/doorstep/internal/admin/ratings/{id}/hide:
+    post:
+      summary: Hide a rating (excluded from averages)
+      operationId: adminHideRating
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:ratings.moderate
+      x-lane: A6
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: Rating
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Rating'}
+
+  /v1/doorstep/internal/admin/settlements:
+    get:
+      summary: Computed settlements (payouts OFF)
+      operationId: adminListSettlements
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:settlements.read
+      x-lane: A6
+      parameters:
+        - name: period_start
+          in: query
+          schema: {type: string, format: date}
+      responses:
+        '200':
+          description: Settlements
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Settlement'}
+
+  /v1/doorstep/internal/admin/stats:
+    get:
+      summary: Dashboard counts
+      operationId: adminStats
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:stats.read
+      x-lane: A6
+      responses:
+        '200':
+          description: Counts (money in paise)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminStats'}
+
+  /v1/doorstep/internal/admin/audit-logs:
+    get:
+      summary: Doorstep admin audit trail (every admin write)
+      operationId: adminAuditLogs
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:audit.read
+      x-lane: A1
+      parameters:
+        - name: entity
+          in: query
+          schema: {type: string}
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Rows, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/AuditLog'}
+
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-Verified-User-Id
+      description: Stamped by the gateway from the verified JWT (with X-Internal-Service-Key). Never sent by clients directly.
+    adminServiceToken:
+      type: apiKey
+      in: header
+      name: X-Service-Authorization
+      description: 'Bearer <ed25519 service token>: iss admin-service, aud doorstep, scope [one doorstep:* permission], act <admin user id>, exp <= 60 s.'
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ExtraIdPath:
+      name: extraId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    CityQuery:
+      name: city
+      in: query
+      required: true
+      description: City code, e.g. HYD (case-insensitive)
+      schema: {type: string, example: HYD}
+    CityFilter:
+      name: city
+      in: query
+      required: false
+      schema: {type: string, example: HYD}
+    Cursor:
+      name: cursor
+      in: query
+      schema: {type: string}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, maxLength: 128}
+
+  responses:
+    Error:
+      description: Error envelope (see x-doorstep-error-codes)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    ProJob:
+      description: The job after the action
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ProJob'}
+
+  schemas:
+    # ---------- envelope ----------
+    Meta:
+      type: object
+      properties:
+        request_id: {type: string}
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string, example: DOORSTEP_ADDON_INVALID}
+            message: {type: string}
+            details:
+              type: object
+              additionalProperties: true
+        meta: {$ref: '#/components/schemas/Meta'}
+
+    # ---------- enums ----------
+    Family:
+      type: string
+      description: Drives the GST category (shared/gst `<FAMILY>_VIA_ECO` / `<FAMILY>_REGISTERED`)
+      enum: [HOME_CLEANING, PEST_CONTROL, APPLIANCE_REPAIR, INSTALLATION_REPAIR, PAINTING, BEAUTY_SALON]
+    GenderRule:
+      type: string
+      enum: [any, female_pros_only, male_pros_only]
+    ExtrasPolicy:
+      type: string
+      enum: [rate_card, catalogue_addons_only]
+    BookingStatus:
+      type: string
+      enum: [pending_payment, confirmed, assigned, en_route, arrived, in_progress, awaiting_extras_payment, completed, cancelled, expired, customer_no_show, pro_no_show]
+    ProStatus:
+      type: string
+      enum: [draft, pending_verification, approved, suspended, rejected, blocked]
+
+    # ---------- catalogue (A1, golden) ----------
+    CityRef:
+      type: object
+      required: [code, name]
+      properties:
+        code: {type: string, example: HYD}
+        name: {type: string, example: Hyderabad}
+    Catalogue:
+      type: object
+      required: [city, categories]
+      properties:
+        city: {$ref: '#/components/schemas/CityRef'}
+        categories:
+          type: array
+          items: {$ref: '#/components/schemas/CategorySummary'}
+    CategorySummary:
+      type: object
+      required: [id, slug, name, description, family, gender_rule, image_url, sort_order, service_count, starting_price_paise]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        description: {type: string}
+        family: {$ref: '#/components/schemas/Family'}
+        gender_rule: {$ref: '#/components/schemas/GenderRule'}
+        image_url: {type: string, nullable: true}
+        sort_order: {type: integer}
+        service_count: {type: integer, description: Active services with a current price in the city}
+        starting_price_paise: {type: integer, format: int64, description: Lowest current option price in the city}
+    CategoryPage:
+      type: object
+      required: [city, category, services]
+      properties:
+        city: {$ref: '#/components/schemas/CityRef'}
+        category: {$ref: '#/components/schemas/CategorySummary'}
+        services:
+          type: array
+          items: {$ref: '#/components/schemas/ServiceSummary'}
+    ServiceSummary:
+      type: object
+      required: [id, category_id, slug, name, description, duration_minutes, image_url, starting_price_paise, starting_mrp_paise]
+      properties:
+        id: {type: string, format: uuid}
+        category_id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer}
+        image_url: {type: string, nullable: true}
+        starting_price_paise: {type: integer, format: int64}
+        starting_mrp_paise: {type: integer, format: int64, nullable: true, description: Strike-through price of the cheapest option}
+    ServicePage:
+      type: object
+      required: [city, service]
+      properties:
+        city: {$ref: '#/components/schemas/CityRef'}
+        service: {$ref: '#/components/schemas/ServiceDetail'}
+    ServiceDetail:
+      type: object
+      required: [id, category, slug, name, description, duration_minutes, inclusions, exclusions, image_url, crew_size, rework_days, min_before_photos, min_after_photos, options, addon_groups]
+      properties:
+        id: {type: string, format: uuid}
+        category:
+          type: object
+          required: [id, slug, name, family, gender_rule, extras_policy]
+          properties:
+            id: {type: string, format: uuid}
+            slug: {type: string}
+            name: {type: string}
+            family: {$ref: '#/components/schemas/Family'}
+            gender_rule: {$ref: '#/components/schemas/GenderRule'}
+            extras_policy: {$ref: '#/components/schemas/ExtrasPolicy'}
+        slug: {type: string}
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer}
+        inclusions: {type: array, items: {type: string}}
+        exclusions: {type: array, items: {type: string}}
+        image_url: {type: string, nullable: true}
+        crew_size: {type: integer, description: Always 1 at launch (crew bookings switched off)}
+        rework_days: {type: integer}
+        min_before_photos: {type: integer}
+        min_after_photos: {type: integer}
+        options:
+          type: array
+          items: {$ref: '#/components/schemas/ServiceOption'}
+        addon_groups:
+          type: array
+          items: {$ref: '#/components/schemas/AddonGroup'}
+    ServiceOption:
+      type: object
+      required: [id, name, description, duration_minutes, max_quantity, is_default, price_paise, mrp_paise]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer, description: Duration of one unit}
+        max_quantity: {type: integer}
+        is_default: {type: boolean}
+        price_paise: {type: integer, format: int64, description: GST-inclusive, per unit}
+        mrp_paise: {type: integer, format: int64, nullable: true}
+    AddonGroup:
+      type: object
+      required: [id, name, min_select, max_select, is_required, addons]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        min_select: {type: integer}
+        max_select: {type: integer}
+        is_required: {type: boolean}
+        addons:
+          type: array
+          items: {$ref: '#/components/schemas/Addon'}
+    Addon:
+      type: object
+      required: [id, name, description, extra_duration_minutes, price_paise]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        extra_duration_minutes: {type: integer}
+        price_paise: {type: integer, format: int64}
+
+    ServiceabilityRequest:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat: {type: number, format: double, minimum: -90, maximum: 90}
+        lng: {type: number, format: double, minimum: -180, maximum: 180}
+    Serviceability:
+      type: object
+      required: [serviceable, city, zone, reason]
+      properties:
+        serviceable: {type: boolean}
+        city:
+          allOf: [{$ref: '#/components/schemas/CityRef'}]
+          nullable: true
+        zone:
+          type: object
+          nullable: true
+          required: [id, name]
+          properties:
+            id: {type: string, format: uuid}
+            name: {type: string}
+        reason:
+          type: string
+          nullable: true
+          enum: [OUTSIDE_SERVICE_AREA, null]
+
+    QuoteRequest:
+      type: object
+      required: [service_id, option_id, lat, lng]
+      properties:
+        service_id: {type: string, format: uuid}
+        option_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, default: 1}
+        addons:
+          type: array
+          items:
+            type: object
+            required: [addon_id]
+            properties:
+              addon_id: {type: string, format: uuid}
+        lat: {type: number, format: double}
+        lng: {type: number, format: double}
+    Quote:
+      type: object
+      required: [id, status, service_id, option_id, quantity, city_code, zone_id, lines, total_paise, taxable_paise, tax_paise, prices_include_tax, tax_provisional, tax_note, duration_minutes, expires_at, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [open, expired, consumed]}
+        service_id: {type: string, format: uuid}
+        option_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        city_code: {type: string}
+        zone_id: {type: string, format: uuid}
+        lines:
+          type: array
+          items: {$ref: '#/components/schemas/QuoteLine'}
+        total_paise: {type: integer, format: int64, description: What the customer pays (GST-inclusive)}
+        taxable_paise: {type: integer, format: int64}
+        tax_paise: {type: integer, format: int64}
+        prices_include_tax: {type: boolean}
+        tax_provisional:
+          type: boolean
+          description: true while the stub TaxComputer is in use (shared/gst Doorstep categories pending adviser sign-off)
+        tax_note: {type: string}
+        duration_minutes: {type: integer}
+        expires_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+    QuoteLine:
+      type: object
+      required: [kind, ref_id, price_id, name, quantity, unit_price_paise, line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac]
+      properties:
+        kind: {type: string, enum: [option, addon]}
+        ref_id: {type: string, format: uuid}
+        price_id: {type: string, format: uuid, description: The doorstep.city_prices row used}
+        name: {type: string}
+        quantity: {type: integer}
+        unit_price_paise: {type: integer, format: int64}
+        line_total_paise: {type: integer, format: int64}
+        taxable_paise: {type: integer, format: int64}
+        tax_paise: {type: integer, format: int64}
+        tax_rate_bps: {type: integer}
+        gst_category: {type: string, example: HOME_CLEANING_VIA_ECO}
+        sac: {type: string}
+
+    # ---------- customer (A3/A5) ----------
+    Address:
+      type: object
+      required: [id, label, line1, line2, landmark, locality, city_code, pincode, lat, lng, zone_id, is_default, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        label: {type: string, example: Home}
+        line1: {type: string}
+        line2: {type: string, nullable: true}
+        landmark: {type: string, nullable: true}
+        locality: {type: string, description: The only part shown to a professional before acceptance}
+        city_code: {type: string}
+        pincode: {type: string}
+        lat: {type: number}
+        lng: {type: number}
+        zone_id: {type: string, format: uuid}
+        is_default: {type: boolean}
+        created_at: {type: string, format: date-time}
+    AddressInput:
+      type: object
+      required: [label, line1, locality, pincode, lat, lng]
+      properties:
+        label: {type: string}
+        line1: {type: string}
+        line2: {type: string}
+        landmark: {type: string}
+        locality: {type: string}
+        pincode: {type: string}
+        lat: {type: number}
+        lng: {type: number}
+        is_default: {type: boolean}
+    SlotDays:
+      type: object
+      required: [timezone, days]
+      properties:
+        timezone: {type: string, example: Asia/Kolkata}
+        days:
+          type: array
+          items:
+            type: object
+            required: [date, slots]
+            properties:
+              date: {type: string, format: date}
+              slots:
+                type: array
+                items:
+                  type: object
+                  required: [start, end, available]
+                  properties:
+                    start: {type: string, format: date-time}
+                    end: {type: string, format: date-time}
+                    available: {type: boolean}
+    BookingCreateRequest:
+      type: object
+      required: [quote_id, address_id, slot_start]
+      properties:
+        quote_id: {type: string, format: uuid}
+        address_id: {type: string, format: uuid}
+        slot_start: {type: string, format: date-time}
+        require_female_pro: {type: boolean, default: false}
+        notes: {type: string, maxLength: 500}
+    BookingCreated:
+      type: object
+      required: [booking, payment_intent]
+      properties:
+        booking: {$ref: '#/components/schemas/Booking'}
+        payment_intent: {$ref: '#/components/schemas/PaymentIntent'}
+    BookingSummary:
+      type: object
+      required: [id, status, service_name, category_slug, slot_start, slot_end, total_paise, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/BookingStatus'}
+        service_name: {type: string}
+        category_slug: {type: string}
+        slot_start: {type: string, format: date-time}
+        slot_end: {type: string, format: date-time}
+        total_paise: {type: integer, format: int64}
+        created_at: {type: string, format: date-time}
+    Booking:
+      type: object
+      required: [id, status, service_id, service_name, category_slug, city_code, zone_id, slot_start, slot_end, duration_minutes, require_female_pro, items, total_paise, taxable_paise, tax_paise, paid_paise, refunded_paise, cancellation_fee_paise, extras_total_paise, outstanding_paise, hold_expires_at, address, professional, parent_booking_id, start_otp, can_cancel, can_reschedule, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/BookingStatus'}
+        service_id: {type: string, format: uuid}
+        service_name: {type: string}
+        category_slug: {type: string}
+        city_code: {type: string}
+        zone_id: {type: string, format: uuid}
+        slot_start: {type: string, format: date-time}
+        slot_end: {type: string, format: date-time}
+        duration_minutes: {type: integer}
+        require_female_pro: {type: boolean}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/QuoteLine'}
+        total_paise: {type: integer, format: int64}
+        taxable_paise: {type: integer, format: int64}
+        tax_paise: {type: integer, format: int64}
+        paid_paise: {type: integer, format: int64}
+        refunded_paise: {type: integer, format: int64}
+        cancellation_fee_paise: {type: integer, format: int64}
+        extras_total_paise: {type: integer, format: int64}
+        outstanding_paise: {type: integer, format: int64}
+        hold_expires_at: {type: string, format: date-time, nullable: true}
+        address: {$ref: '#/components/schemas/Address'}
+        professional:
+          type: object
+          nullable: true
+          description: Present from assigned on; first name, photo, rating, phone never exposed
+          required: [first_name, photo_media_id, rating_avg, jobs_completed]
+          properties:
+            first_name: {type: string}
+            photo_media_id: {type: string, nullable: true}
+            rating_avg: {type: number, nullable: true}
+            jobs_completed: {type: integer}
+        parent_booking_id: {type: string, format: uuid, nullable: true}
+        start_otp: {type: string, nullable: true, description: Shown to the customer from assigned until in_progress}
+        can_cancel: {type: boolean}
+        can_reschedule: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    CancelRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, maxLength: 500}
+    CancelPreview:
+      type: object
+      required: [allowed, fee_paise, refund_paise, rule]
+      properties:
+        allowed: {type: boolean}
+        fee_paise: {type: integer, format: int64}
+        refund_paise: {type: integer, format: int64}
+        rule: {type: string, description: e.g. free_before_assignment, lt_3h, lt_1h_or_en_route, arrived}
+    PaymentIntent:
+      type: object
+      required: [payment_id, reference_type, reference_id, amount_paise, status, checkout]
+      properties:
+        payment_id: {type: string, format: uuid}
+        reference_type: {type: string, enum: [doorstep_booking, doorstep_extras]}
+        reference_id: {type: string, format: uuid}
+        amount_paise: {type: integer, format: int64}
+        status: {type: string, enum: [created, pending, succeeded, failed, refunded, partially_refunded]}
+        checkout:
+          type: object
+          additionalProperties: true
+          description: payments-service checkout session (Razorpay order id, key id), passed through unchanged
+    BookingPayments:
+      type: object
+      required: [payments, refunds]
+      properties:
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/PaymentIntent'}
+        refunds:
+          type: array
+          items: {$ref: '#/components/schemas/Refund'}
+    Refund:
+      type: object
+      required: [id, payment_id, cause, amount_paise, status, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        payment_id: {type: string, format: uuid}
+        cause: {type: string, example: customer_cancel}
+        amount_paise: {type: integer, format: int64}
+        status: {type: string, enum: [requested, pending, succeeded, failed]}
+        created_at: {type: string, format: date-time}
+    Extra:
+      type: object
+      required: [id, booking_id, kind, rate_card_id, addon_id, name, quantity, unit_price_paise, total_paise, status, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid}
+        kind: {type: string, enum: [rate_card, addon]}
+        rate_card_id: {type: string, format: uuid, nullable: true}
+        addon_id: {type: string, format: uuid, nullable: true}
+        name: {type: string}
+        quantity: {type: integer}
+        unit_price_paise: {type: integer, format: int64}
+        total_paise: {type: integer, format: int64}
+        status: {type: string, enum: [proposed, approved, declined, withdrawn, billed]}
+        created_at: {type: string, format: date-time}
+    ExtraInput:
+      type: object
+      required: [quantity]
+      properties:
+        rate_card_id: {type: string, format: uuid}
+        addon_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1}
+        evidence_media_id: {type: string, format: uuid}
+    ExtrasBill:
+      type: object
+      required: [id, booking_id, amount_paise, taxable_paise, tax_paise, status, due_at, paid_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid}
+        amount_paise: {type: integer, format: int64}
+        taxable_paise: {type: integer, format: int64}
+        tax_paise: {type: integer, format: int64}
+        status: {type: string, enum: [open, payment_pending, paid, outstanding, waived, refunded]}
+        due_at: {type: string, format: date-time, nullable: true}
+        paid_at: {type: string, format: date-time, nullable: true}
+    Outstanding:
+      type: object
+      required: [total_paise, bills]
+      properties:
+        total_paise: {type: integer, format: int64}
+        bills:
+          type: array
+          items: {$ref: '#/components/schemas/ExtrasBill'}
+    RatingInput:
+      type: object
+      required: [stars]
+      properties:
+        stars: {type: integer, minimum: 1, maximum: 5}
+        tags: {type: array, items: {type: string}}
+        comment: {type: string, maxLength: 1000}
+    Rating:
+      type: object
+      required: [id, booking_id, rater_kind, stars, tags, comment, hidden, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid}
+        rater_kind: {type: string, enum: [customer, pro]}
+        stars: {type: integer}
+        tags: {type: array, items: {type: string}}
+        comment: {type: string, nullable: true}
+        hidden: {type: boolean}
+        created_at: {type: string, format: date-time}
+    ReworkInput:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, maxLength: 1000}
+        media_ids: {type: array, items: {type: string, format: uuid}}
+        slot_start: {type: string, format: date-time}
+    ReworkRequest:
+      type: object
+      required: [id, booking_id, child_booking_id, status, reason, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid}
+        child_booking_id: {type: string, format: uuid, nullable: true}
+        status: {type: string, enum: [requested, approved, rejected, scheduled, completed]}
+        reason: {type: string}
+        created_at: {type: string, format: date-time}
+    SOSInput:
+      type: object
+      properties:
+        lat: {type: number}
+        lng: {type: number}
+        note: {type: string, maxLength: 1000}
+    Incident:
+      type: object
+      required: [id, booking_id, raised_by_kind, kind, severity, status, description, pro_auto_suspended, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid, nullable: true}
+        raised_by_kind: {type: string, enum: [customer, pro, system, admin]}
+        kind: {type: string, enum: [sos, safety, damage, harassment, theft, unsafe_exit, other]}
+        severity: {type: string, enum: [low, medium, high, critical]}
+        status: {type: string, enum: [open, acknowledged, resolved]}
+        description: {type: string, nullable: true}
+        pro_auto_suspended: {type: boolean}
+        created_at: {type: string, format: date-time}
+    ShareToken:
+      type: object
+      required: [token, url, expires_at]
+      properties:
+        token: {type: string}
+        url: {type: string}
+        expires_at: {type: string, format: date-time}
+    SharedBookingView:
+      type: object
+      required: [status, locality, professional_first_name, slot_start, eta_minutes]
+      properties:
+        status: {$ref: '#/components/schemas/BookingStatus'}
+        locality: {type: string}
+        professional_first_name: {type: string, nullable: true}
+        slot_start: {type: string, format: date-time}
+        eta_minutes: {type: integer, nullable: true}
+    TrustedContact:
+      type: object
+      nullable: true
+      required: [name, phone_masked, updated_at]
+      properties:
+        name: {type: string}
+        phone_masked: {type: string, example: '******4321'}
+        updated_at: {type: string, format: date-time}
+    MessageInput:
+      type: object
+      required: [body]
+      properties:
+        body: {type: string, maxLength: 1000}
+    Message:
+      type: object
+      required: [id, booking_id, sender_kind, body, created_at, read_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid}
+        sender_kind: {type: string, enum: [customer, pro, system]}
+        body: {type: string}
+        created_at: {type: string, format: date-time}
+        read_at: {type: string, format: date-time, nullable: true}
+    MessagePage:
+      type: object
+      required: [items, next_cursor, open]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Message'}
+        next_cursor: {type: string, nullable: true}
+        open: {type: boolean, description: false outside acceptance .. completion + 2 h}
+    TicketInput:
+      type: object
+      required: [subject, body]
+      properties:
+        booking_id: {type: string, format: uuid}
+        category: {type: string, enum: [payment, quality, safety, damage, professional, other]}
+        subject: {type: string, maxLength: 200}
+        body: {type: string, maxLength: 4000}
+    Ticket:
+      type: object
+      required: [id, booking_id, category, subject, status, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid, nullable: true}
+        category: {type: string}
+        subject: {type: string}
+        status: {type: string, enum: [open, in_progress, resolved, closed]}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    RealtimeToken:
+      type: object
+      required: [token, topics, expires_at]
+      properties:
+        token: {type: string}
+        topics:
+          type: array
+          items: {type: string, example: doorstep.booking.9b3f0c55-0000-4000-8000-000000000000}
+        expires_at: {type: string, format: date-time}
+
+    # ---------- professional (A2/A4/A5) ----------
+    ProApplyInput:
+      type: object
+      required: [display_name, city_code]
+      properties:
+        display_name: {type: string}
+        city_code: {type: string}
+        category_ids: {type: array, items: {type: string, format: uuid}}
+    Professional:
+      type: object
+      required: [id, user_id, status, display_name, city_code, gender, photo_media_id, rating_avg, rating_count, jobs_completed, max_jobs_per_day, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/ProStatus'}
+        display_name: {type: string}
+        city_code: {type: string}
+        gender: {type: string, nullable: true, enum: [female, male, other, null], description: From DigiLocker Aadhaar only}
+        photo_media_id: {type: string, nullable: true}
+        rating_avg: {type: number, nullable: true}
+        rating_count: {type: integer}
+        jobs_completed: {type: integer}
+        max_jobs_per_day: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ProReadiness:
+      type: object
+      required: [status, missing_steps, completed_steps, can_go_on_duty]
+      properties:
+        status: {$ref: '#/components/schemas/ProStatus'}
+        missing_steps:
+          type: array
+          items: {$ref: '#/components/schemas/OnboardingStep'}
+        completed_steps:
+          type: array
+          items: {$ref: '#/components/schemas/OnboardingStep'}
+        recommended_steps:
+          type: array
+          items: {$ref: '#/components/schemas/OnboardingStep'}
+        can_go_on_duty: {type: boolean}
+    OnboardingStep:
+      type: string
+      description: In order; pan is recommended, never required
+      enum: [profile, aadhaar_digilocker, selfie_face_match, skills, service_area, weekly_hours, bank, police_certificate, agreement, pan]
+    KycCheck:
+      type: object
+      required: [kind, status, score, verified_at]
+      properties:
+        kind: {type: string, enum: [digilocker_aadhaar, selfie_face_match, pan, bank]}
+        status: {type: string, enum: [pending, passed, failed, expired]}
+        score: {type: number, nullable: true}
+        verified_at: {type: string, format: date-time, nullable: true}
+    Skill:
+      type: object
+      required: [code, name, description]
+      properties:
+        code: {type: string, example: ac_service}
+        name: {type: string}
+        description: {type: string}
+    SkillInput:
+      type: object
+      required: [code, name]
+      properties:
+        code: {type: string, pattern: '^[a-z][a-z0-9_]{1,47}$'}
+        name: {type: string}
+        description: {type: string}
+    ProSkill:
+      type: object
+      required: [skill_code, status, verified_at]
+      properties:
+        skill_code: {type: string}
+        status: {type: string, enum: [pending, verified, revoked]}
+        verified_at: {type: string, format: date-time, nullable: true}
+    ProAreaInput:
+      type: object
+      required: [zone_ids, home_lat, home_lng, radius_m]
+      properties:
+        zone_ids: {type: array, items: {type: string, format: uuid}}
+        home_lat: {type: number}
+        home_lng: {type: number}
+        radius_m: {type: integer, minimum: 1000, maximum: 30000}
+    ProArea:
+      allOf:
+        - $ref: '#/components/schemas/ProAreaInput'
+    WeeklyHours:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [weekday, start, end]
+            properties:
+              weekday: {type: integer, minimum: 0, maximum: 6, description: 0 = Sunday}
+              start: {type: string, example: '09:00'}
+              end: {type: string, example: '18:00'}
+    DayOff:
+      type: object
+      required: [date]
+      properties:
+        date: {type: string, format: date}
+        reason: {type: string, nullable: true}
+    PayoutAccount:
+      type: object
+      required: [account_holder, account_last4, ifsc, status]
+      properties:
+        account_holder: {type: string}
+        account_last4: {type: string}
+        ifsc: {type: string}
+        status: {type: string, enum: [pending, verified, failed]}
+    ProDocument:
+      type: object
+      required: [id, pro_id, kind, media_id, status, issued_on, expires_on, reason, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        pro_id: {type: string, format: uuid}
+        kind: {type: string, enum: [police_certificate, aadhaar, pan, other]}
+        media_id: {type: string, format: uuid}
+        status: {type: string, enum: [pending, approved, rejected]}
+        issued_on: {type: string, format: date, nullable: true}
+        expires_on: {type: string, format: date, nullable: true}
+        reason: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
+    AdminProfessionalDetail:
+      type: object
+      required: [professional, readiness, skills, zone_ids, documents, background_checks, kyc_checks, payout_account]
+      properties:
+        professional: {$ref: '#/components/schemas/Professional'}
+        readiness: {$ref: '#/components/schemas/ProReadiness'}
+        skills: {type: array, items: {$ref: '#/components/schemas/ProSkill'}}
+        zone_ids: {type: array, items: {type: string, format: uuid}}
+        documents: {type: array, items: {$ref: '#/components/schemas/ProDocument'}}
+        background_checks:
+          type: array
+          items:
+            type: object
+            required: [id, source, status, valid_until]
+            properties:
+              id: {type: string, format: uuid}
+              source: {type: string, enum: [provider, uploaded_document]}
+              status: {type: string, enum: [pending, clear, consider, failed, expired]}
+              valid_until: {type: string, format: date, nullable: true}
+        kyc_checks: {type: array, items: {$ref: '#/components/schemas/KycCheck'}}
+        payout_account:
+          allOf: [{$ref: '#/components/schemas/PayoutAccount'}]
+          nullable: true
+    LocationInput:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat: {type: number}
+        lng: {type: number}
+        accuracy_m: {type: number}
+    DutyState:
+      type: object
+      required: [on_duty, since]
+      properties:
+        on_duty: {type: boolean}
+        since: {type: string, format: date-time, nullable: true}
+    Offer:
+      type: object
+      required: [id, booking_id, service_name, category_slug, locality, distance_m, slot_start, slot_end, earning_estimate_paise, expires_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid}
+        service_name: {type: string}
+        category_slug: {type: string}
+        locality: {type: string, description: Locality only before acceptance}
+        distance_m: {type: integer}
+        slot_start: {type: string, format: date-time}
+        slot_end: {type: string, format: date-time}
+        earning_estimate_paise: {type: integer, format: int64}
+        expires_at: {type: string, format: date-time}
+    ProJob:
+      type: object
+      required: [booking_id, status, service_name, category_slug, slot_start, slot_end, items, locality, address, customer_first_name, chat_open, photos_required, earning_estimate_paise]
+      properties:
+        booking_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/BookingStatus'}
+        service_name: {type: string}
+        category_slug: {type: string}
+        slot_start: {type: string, format: date-time}
+        slot_end: {type: string, format: date-time}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/QuoteLine'}
+        locality: {type: string}
+        address:
+          allOf: [{$ref: '#/components/schemas/Address'}]
+          nullable: true
+          description: From acceptance to completion + 2 h only
+        customer_first_name: {type: string, nullable: true}
+        chat_open: {type: boolean}
+        photos_required:
+          type: object
+          required: [before, after, kit_seal]
+          properties:
+            before: {type: integer}
+            after: {type: integer}
+            kit_seal: {type: integer}
+        earning_estimate_paise: {type: integer, format: int64}
+    PhotoInput:
+      type: object
+      required: [phase, media_id]
+      properties:
+        phase: {type: string, enum: [before, after, kit_seal, extra_evidence]}
+        media_id: {type: string, format: uuid}
+        lat: {type: number}
+        lng: {type: number}
+    Photo:
+      type: object
+      required: [id, booking_id, phase, media_id, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        booking_id: {type: string, format: uuid}
+        phase: {type: string, enum: [before, after, kit_seal, extra_evidence]}
+        media_id: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+    OTPInput:
+      type: object
+      required: [otp]
+      properties:
+        otp: {type: string, pattern: '^[0-9]{4}$'}
+    Earnings:
+      type: object
+      required: [total_paise, lines]
+      properties:
+        total_paise: {type: integer, format: int64}
+        lines:
+          type: array
+          items:
+            type: object
+            required: [id, booking_id, kind, amount_paise, created_at]
+            properties:
+              id: {type: string, format: uuid}
+              booking_id: {type: string, format: uuid, nullable: true}
+              kind: {type: string, enum: [job, extras, incentive, penalty, adjustment, commission]}
+              amount_paise: {type: integer, format: int64}
+              created_at: {type: string, format: date-time}
+    Settlement:
+      type: object
+      required: [id, pro_id, period_start, period_end, gross_paise, commission_paise, tax_paise, net_paise, status]
+      properties:
+        id: {type: string, format: uuid}
+        pro_id: {type: string, format: uuid}
+        period_start: {type: string, format: date}
+        period_end: {type: string, format: date}
+        gross_paise: {type: integer, format: int64}
+        commission_paise: {type: integer, format: int64}
+        tax_paise: {type: integer, format: int64}
+        net_paise: {type: integer, format: int64}
+        status: {type: string, enum: [computed, approved, paid]}
+
+    # ---------- admin (A1 golden: cities, zones, categories, prices) ----------
+    ReasonInput:
+      type: object
+      properties:
+        reason: {type: string, maxLength: 1000}
+    AdminCity:
+      type: object
+      required: [code, name, state_code, timezone, active, extras_charge_now_threshold_paise, extras_grace_minutes, max_jobs_per_day, offer_window_far_minutes, offer_window_near_minutes, offer_far_threshold_minutes, created_at, updated_at]
+      properties:
+        code: {type: string, pattern: '^[A-Z]{3}$'}
+        name: {type: string}
+        state_code: {type: string, description: GST state code, e.g. "36" for Telangana}
+        timezone: {type: string}
+        active: {type: boolean}
+        extras_charge_now_threshold_paise: {type: integer, format: int64, default: 300000}
+        extras_grace_minutes: {type: integer, default: 15}
+        max_jobs_per_day: {type: integer, default: 6}
+        offer_window_far_minutes: {type: integer, default: 120}
+        offer_window_near_minutes: {type: integer, default: 10}
+        offer_far_threshold_minutes: {type: integer, default: 720}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminCityInput:
+      type: object
+      required: [code, name, state_code]
+      properties:
+        code: {type: string}
+        name: {type: string}
+        state_code: {type: string}
+        timezone: {type: string, default: Asia/Kolkata}
+        active: {type: boolean, default: false}
+        extras_charge_now_threshold_paise: {type: integer, format: int64}
+        extras_grace_minutes: {type: integer}
+        max_jobs_per_day: {type: integer}
+        offer_window_far_minutes: {type: integer}
+        offer_window_near_minutes: {type: integer}
+        offer_far_threshold_minutes: {type: integer}
+    AdminCityPatch:
+      type: object
+      description: Every field optional; code is immutable
+      properties:
+        name: {type: string}
+        state_code: {type: string}
+        timezone: {type: string}
+        active: {type: boolean}
+        extras_charge_now_threshold_paise: {type: integer, format: int64}
+        extras_grace_minutes: {type: integer}
+        max_jobs_per_day: {type: integer}
+        offer_window_far_minutes: {type: integer}
+        offer_window_near_minutes: {type: integer}
+        offer_far_threshold_minutes: {type: integer}
+    AdminCityList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminCity'}}
+    GeoJSONPolygon:
+      type: object
+      required: [type, coordinates]
+      description: GeoJSON Polygon or MultiPolygon, [lng, lat] order, WGS84
+      properties:
+        type: {type: string, enum: [Polygon, MultiPolygon]}
+        coordinates: {type: array, items: {}}
+    AdminZone:
+      type: object
+      required: [id, city_code, name, slug, active, travel_buffer_minutes, boundary, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        city_code: {type: string}
+        name: {type: string}
+        slug: {type: string}
+        active: {type: boolean}
+        travel_buffer_minutes: {type: integer, default: 30}
+        boundary: {$ref: '#/components/schemas/GeoJSONPolygon'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminZoneInput:
+      type: object
+      required: [city_code, name, slug, boundary]
+      properties:
+        city_code: {type: string}
+        name: {type: string}
+        slug: {type: string}
+        active: {type: boolean, default: true}
+        travel_buffer_minutes: {type: integer}
+        boundary: {$ref: '#/components/schemas/GeoJSONPolygon'}
+    AdminZonePatch:
+      type: object
+      properties:
+        name: {type: string}
+        active: {type: boolean}
+        travel_buffer_minutes: {type: integer}
+        boundary: {$ref: '#/components/schemas/GeoJSONPolygon'}
+    AdminZoneList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminZone'}}
+    AdminCategory:
+      type: object
+      required: [id, slug, name, description, family, gender_rule, extras_policy, image_url, sort_order, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        description: {type: string}
+        family: {$ref: '#/components/schemas/Family'}
+        gender_rule: {$ref: '#/components/schemas/GenderRule'}
+        extras_policy: {$ref: '#/components/schemas/ExtrasPolicy'}
+        image_url: {type: string, nullable: true}
+        sort_order: {type: integer}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminCategoryInput:
+      type: object
+      required: [slug, name, family]
+      properties:
+        slug: {type: string, pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'}
+        name: {type: string}
+        description: {type: string}
+        family: {$ref: '#/components/schemas/Family'}
+        gender_rule: {$ref: '#/components/schemas/GenderRule'}
+        extras_policy: {$ref: '#/components/schemas/ExtrasPolicy'}
+        image_url: {type: string}
+        sort_order: {type: integer}
+        active: {type: boolean, default: false}
+    AdminCategoryPatch:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        family: {$ref: '#/components/schemas/Family'}
+        gender_rule: {$ref: '#/components/schemas/GenderRule'}
+        extras_policy: {$ref: '#/components/schemas/ExtrasPolicy'}
+        image_url: {type: string}
+        sort_order: {type: integer}
+        active: {type: boolean}
+    AdminCategoryList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminCategory'}}
+    AdminService:
+      type: object
+      required: [id, category_id, slug, name, description, duration_minutes, required_skill, inclusions, exclusions, image_url, crew_size, min_before_photos, min_after_photos, rework_days, sort_order, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        category_id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer}
+        required_skill: {type: string}
+        inclusions: {type: array, items: {type: string}}
+        exclusions: {type: array, items: {type: string}}
+        image_url: {type: string, nullable: true}
+        crew_size: {type: integer}
+        min_before_photos: {type: integer}
+        min_after_photos: {type: integer}
+        rework_days: {type: integer}
+        sort_order: {type: integer}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminServiceInput:
+      type: object
+      required: [category_id, slug, name, duration_minutes, required_skill]
+      properties:
+        category_id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer, minimum: 15, maximum: 720}
+        required_skill: {type: string}
+        inclusions: {type: array, items: {type: string}}
+        exclusions: {type: array, items: {type: string}}
+        image_url: {type: string}
+        crew_size: {type: integer, description: Must be 1 while crew bookings are off}
+        min_before_photos: {type: integer, default: 2}
+        min_after_photos: {type: integer, default: 2}
+        rework_days: {type: integer, default: 7}
+        sort_order: {type: integer}
+        active: {type: boolean, default: false}
+    AdminServicePatch:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer}
+        required_skill: {type: string}
+        inclusions: {type: array, items: {type: string}}
+        exclusions: {type: array, items: {type: string}}
+        image_url: {type: string}
+        min_before_photos: {type: integer}
+        min_after_photos: {type: integer}
+        rework_days: {type: integer}
+        sort_order: {type: integer}
+        active: {type: boolean}
+    AdminServiceList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminService'}}
+    AdminServiceTree:
+      type: object
+      required: [service, options, addon_groups]
+      properties:
+        service: {$ref: '#/components/schemas/AdminService'}
+        options: {type: array, items: {$ref: '#/components/schemas/AdminOption'}}
+        addon_groups:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/AdminAddonGroup'
+              - type: object
+                required: [addons]
+                properties:
+                  addons: {type: array, items: {$ref: '#/components/schemas/AdminAddon'}}
+    AdminOption:
+      type: object
+      required: [id, service_id, name, description, duration_minutes, max_quantity, is_default, sort_order, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        service_id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer}
+        max_quantity: {type: integer}
+        is_default: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminOptionInput:
+      type: object
+      required: [name, duration_minutes]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer}
+        max_quantity: {type: integer, default: 1}
+        is_default: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean, default: true}
+    AdminOptionPatch:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        duration_minutes: {type: integer}
+        max_quantity: {type: integer}
+        is_default: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean}
+    AdminAddonGroup:
+      type: object
+      required: [id, service_id, name, min_select, max_select, is_required, sort_order, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        service_id: {type: string, format: uuid}
+        name: {type: string}
+        min_select: {type: integer}
+        max_select: {type: integer}
+        is_required: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminAddonGroupInput:
+      type: object
+      required: [name, max_select]
+      properties:
+        name: {type: string}
+        min_select: {type: integer, minimum: 0, default: 0}
+        max_select: {type: integer, minimum: 1}
+        is_required: {type: boolean, default: false}
+        sort_order: {type: integer}
+        active: {type: boolean, default: true}
+    AdminAddonGroupPatch:
+      type: object
+      properties:
+        name: {type: string}
+        min_select: {type: integer}
+        max_select: {type: integer}
+        is_required: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean}
+    AdminAddon:
+      type: object
+      required: [id, group_id, name, description, extra_duration_minutes, sort_order, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        extra_duration_minutes: {type: integer}
+        sort_order: {type: integer}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminAddonInput:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        extra_duration_minutes: {type: integer, default: 0}
+        sort_order: {type: integer}
+        active: {type: boolean, default: true}
+    AdminAddonPatch:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        extra_duration_minutes: {type: integer}
+        sort_order: {type: integer}
+        active: {type: boolean}
+    AdminPrice:
+      type: object
+      required: [id, city_code, item_kind, item_id, price_paise, mrp_paise, effective_from, effective_to, created_by, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        city_code: {type: string}
+        item_kind: {type: string, enum: [option, addon]}
+        item_id: {type: string, format: uuid}
+        price_paise: {type: integer, format: int64, minimum: 1, description: GST-inclusive}
+        mrp_paise: {type: integer, format: int64, nullable: true}
+        effective_from: {type: string, format: date-time}
+        effective_to: {type: string, format: date-time, nullable: true}
+        created_by: {type: string, format: uuid, nullable: true, description: Admin actor (token act claim)}
+        created_at: {type: string, format: date-time}
+    AdminPriceInput:
+      type: object
+      required: [city_code, item_kind, item_id, price_paise]
+      properties:
+        city_code: {type: string}
+        item_kind: {type: string, enum: [option, addon]}
+        item_id: {type: string, format: uuid}
+        price_paise: {type: integer, format: int64, minimum: 1}
+        mrp_paise: {type: integer, format: int64, description: Must be >= price_paise when set}
+        effective_from: {type: string, format: date-time, description: Defaults to now}
+    AdminPriceList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminPrice'}}
+    AdminRateCard:
+      type: object
+      required: [id, city_code, category_id, code, name, description, unit, price_paise, max_quantity, is_part, sort_order, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        city_code: {type: string}
+        category_id: {type: string, format: uuid}
+        code: {type: string}
+        name: {type: string}
+        description: {type: string}
+        unit: {type: string, enum: [per_item, per_metre, per_hour, per_visit]}
+        price_paise: {type: integer, format: int64, description: GST-inclusive}
+        max_quantity: {type: integer}
+        is_part: {type: boolean, description: Goods (spare part) vs labour; adviser item on composite supply}
+        sort_order: {type: integer}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminRateCardInput:
+      type: object
+      required: [city_code, category_id, code, name, unit, price_paise]
+      properties:
+        city_code: {type: string}
+        category_id: {type: string, format: uuid}
+        code: {type: string}
+        name: {type: string}
+        description: {type: string}
+        unit: {type: string, enum: [per_item, per_metre, per_hour, per_visit]}
+        price_paise: {type: integer, format: int64, minimum: 1}
+        max_quantity: {type: integer, default: 10}
+        is_part: {type: boolean, default: false}
+        sort_order: {type: integer}
+        active: {type: boolean, default: true}
+    AdminRateCardPatch:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        unit: {type: string, enum: [per_item, per_metre, per_hour, per_visit]}
+        price_paise: {type: integer, format: int64}
+        max_quantity: {type: integer}
+        is_part: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean}
+    AdminRateCardList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminRateCard'}}
+    AdminSlotConfig:
+      type: object
+      required: [id, city_code, category_id, open_time, close_time, slot_step_minutes, min_lead_minutes, horizon_days, hold_minutes, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        city_code: {type: string}
+        category_id: {type: string, format: uuid, nullable: true, description: null = city default}
+        open_time: {type: string, example: '08:00'}
+        close_time: {type: string, example: '20:00'}
+        slot_step_minutes: {type: integer, default: 30}
+        min_lead_minutes: {type: integer, default: 120}
+        horizon_days: {type: integer, default: 7}
+        hold_minutes: {type: integer, default: 10}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminSlotConfigInput:
+      type: object
+      required: [city_code, open_time, close_time]
+      properties:
+        city_code: {type: string}
+        category_id: {type: string, format: uuid}
+        open_time: {type: string}
+        close_time: {type: string}
+        slot_step_minutes: {type: integer}
+        min_lead_minutes: {type: integer}
+        horizon_days: {type: integer}
+        hold_minutes: {type: integer}
+        active: {type: boolean, default: true}
+    AdminSlotConfigPatch:
+      type: object
+      properties:
+        open_time: {type: string}
+        close_time: {type: string}
+        slot_step_minutes: {type: integer}
+        min_lead_minutes: {type: integer}
+        horizon_days: {type: integer}
+        hold_minutes: {type: integer}
+        active: {type: boolean}
+    AdminSlotConfigList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminSlotConfig'}}
+    AdminCancellationRule:
+      type: object
+      required: [id, city_code, category_id, stage, minutes_before_lt, fee_paise, allowed, sort_order, active, created_at, updated_at]
+      description: >-
+        The first active rule (category-specific before city default, then
+        sort_order) whose stage matches and whose minutes_before_lt is null or
+        greater than the minutes left before the slot decides the fee.
+        Placeholders: unassigned free; assigned >= 180 min free; < 180 min
+        7500; < 60 min or en_route 15000; arrived 20000; in_progress not allowed.
+      properties:
+        id: {type: string, format: uuid}
+        city_code: {type: string}
+        category_id: {type: string, format: uuid, nullable: true}
+        stage: {type: string, enum: [unassigned, assigned, en_route, arrived, in_progress]}
+        minutes_before_lt: {type: integer, nullable: true}
+        fee_paise: {type: integer, format: int64}
+        allowed: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminCancellationRuleInput:
+      type: object
+      required: [city_code, stage, fee_paise]
+      properties:
+        city_code: {type: string}
+        category_id: {type: string, format: uuid}
+        stage: {type: string, enum: [unassigned, assigned, en_route, arrived, in_progress]}
+        minutes_before_lt: {type: integer}
+        fee_paise: {type: integer, format: int64, minimum: 0}
+        allowed: {type: boolean, default: true}
+        sort_order: {type: integer}
+        active: {type: boolean, default: true}
+    AdminCancellationRulePatch:
+      type: object
+      properties:
+        minutes_before_lt: {type: integer, nullable: true}
+        fee_paise: {type: integer, format: int64}
+        allowed: {type: boolean}
+        sort_order: {type: integer}
+        active: {type: boolean}
+    AdminCancellationRuleList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminCancellationRule'}}
+    AdminCommissionRule:
+      type: object
+      required: [id, city_code, category_id, commission_bps, effective_from, effective_to, active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        city_code: {type: string}
+        category_id: {type: string, format: uuid, nullable: true}
+        commission_bps: {type: integer, minimum: 0, maximum: 5000}
+        effective_from: {type: string, format: date-time}
+        effective_to: {type: string, format: date-time, nullable: true}
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminCommissionRuleInput:
+      type: object
+      required: [city_code, commission_bps]
+      properties:
+        city_code: {type: string}
+        category_id: {type: string, format: uuid}
+        commission_bps: {type: integer}
+        effective_from: {type: string, format: date-time}
+        effective_to: {type: string, format: date-time}
+        active: {type: boolean, default: true}
+    AdminCommissionRulePatch:
+      type: object
+      properties:
+        commission_bps: {type: integer}
+        effective_to: {type: string, format: date-time}
+        active: {type: boolean}
+    AdminCommissionRuleList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminCommissionRule'}}
+    AdminBookingDetail:
+      type: object
+      required: [booking, customer_user_id, history, assignments, payments, refunds, extras, photos]
+      properties:
+        booking: {$ref: '#/components/schemas/Booking'}
+        customer_user_id: {type: string, format: uuid}
+        history:
+          type: array
+          items:
+            type: object
+            required: [from_status, to_status, actor_kind, reason, created_at]
+            properties:
+              from_status: {type: string, nullable: true}
+              to_status: {type: string}
+              actor_kind: {type: string, enum: [customer, pro, system, admin, payment_event]}
+              reason: {type: string, nullable: true}
+              created_at: {type: string, format: date-time}
+        assignments:
+          type: array
+          items:
+            type: object
+            required: [id, pro_id, role, status, offered_at, offer_expires_at, responded_at]
+            properties:
+              id: {type: string, format: uuid}
+              pro_id: {type: string, format: uuid}
+              role: {type: string, enum: [lead, helper]}
+              status: {type: string, enum: [offered, accepted, declined, expired, released, completed, no_show, cancelled]}
+              offered_at: {type: string, format: date-time}
+              offer_expires_at: {type: string, format: date-time}
+              responded_at: {type: string, format: date-time, nullable: true}
+        payments: {type: array, items: {$ref: '#/components/schemas/PaymentIntent'}}
+        refunds: {type: array, items: {$ref: '#/components/schemas/Refund'}}
+        extras: {type: array, items: {$ref: '#/components/schemas/Extra'}}
+        photos: {type: array, items: {$ref: '#/components/schemas/Photo'}}
+    AdminStats:
+      type: object
+      required: [bookings_today, bookings_in_progress, unassigned_within_2h, pros_approved, pros_pending_verification, documents_pending, incidents_open, gmv_today_paise, refunds_today_paise, outstanding_paise]
+      properties:
+        bookings_today: {type: integer}
+        bookings_in_progress: {type: integer}
+        unassigned_within_2h: {type: integer}
+        pros_approved: {type: integer}
+        pros_pending_verification: {type: integer}
+        documents_pending: {type: integer}
+        incidents_open: {type: integer}
+        gmv_today_paise: {type: integer, format: int64}
+        refunds_today_paise: {type: integer, format: int64}
+        outstanding_paise: {type: integer, format: int64}
+    AuditLog:
+      type: object
+      required: [id, actor_user_id, permission, action, entity, entity_id, details, created_at]
+      properties:
+        id: {type: integer, format: int64}
+        actor_user_id: {type: string, format: uuid}
+        permission: {type: string}
+        action: {type: string, example: price.create}
+        entity: {type: string, example: city_price}
+        entity_id: {type: string}
+        details: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}

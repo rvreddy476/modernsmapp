@@ -1,0 +1,1 @@
+{"data":{"id":"6b044e6d-69c8-51d0-8fed-4b38c00e6fb7","city_code":"HYD","name":"Kondapur","slug":"kondapur","active":true,"travel_buffer_minutes":30,"boundary":{"type":"Polygon","coordinates":[[[78.35,17.45],[78.37,17.45],[78.37,17.47],[78.35,17.47],[78.35,17.45]]]},"created_at":"2026-10-04T06:30:00Z","updated_at":"2026-10-04T06:30:00Z"},"meta":{"request_id":"fixture"}}

@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_ZONE_INVALID","message":"every ring must be closed (first position == last)"},"meta":{"request_id":"fixture"}}

@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_ADDON_INVALID","message":"\"Choose a mask\" allows fewer choices","details":{"group_id":"1bf67262-b425-5be4-a26f-388795d86a43","max_select":1,"min_select":1,"selected":2}},"meta":{"request_id":"fixture"}}
