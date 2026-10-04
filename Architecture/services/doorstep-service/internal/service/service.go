@@ -88,6 +88,8 @@ type Service struct {
 	quoteTTL time.Duration
 	// pro is professional onboarding (A2), wired by WithPro.
 	pro ProDeps
+	// bk is bookings and payments (A3), wired by WithBookings.
+	bk BookingDeps
 }
 
 // New builds the service.

@@ -4,8 +4,8 @@ Doorstep is home services in the Urban Company style: a fixed-price catalogue bo
 
 | File | What it pins |
 |---|---|
-| `openapi.yaml` | Every customer route, every `/pro` route, every `/internal/admin` route, and the background-check webhook (125 paths, 148 operations). It also holds the booking state enum and transitions (`x-doorstep-booking-states`), the stable error codes (`x-doorstep-error-codes`), the 18 admin permissions (`x-doorstep-permissions`) and the payments references (`x-doorstep-payments`). Each route carries `x-lane` (the lane that builds it) and, on admin routes, `x-permission`. |
-| `asyncapi.yaml` | The Kafka topic `doorstep.events` (31 event types, every payload carries `customer_user_id` and/or `pro_user_id`), the realtime topics `doorstep.booking.<id>`, `doorstep.pro.<user_id>` and `doorstep.admin.live`, and the push-type registry (`x-push-types`): 17 Momentum types (`doorstep.*`) and 17 `doorstep_pro` types (`doorstep.pro.*`), each mapped to its source event. |
+| `openapi.yaml` | Every customer route, every `/pro` route, every `/internal/admin` route, and the background-check webhook (126 paths, 149 operations). It also holds the booking state enum and transitions (`x-doorstep-booking-states`), the stable error codes (`x-doorstep-error-codes`), the 18 admin permissions (`x-doorstep-permissions`) and the payments references (`x-doorstep-payments`). Each route carries `x-lane` (the lane that builds it) and, on admin routes, `x-permission`. |
+| `asyncapi.yaml` | The Kafka topic `doorstep.events` (33 event types, every payload carries `customer_user_id` and/or `pro_user_id`), the realtime topics `doorstep.booking.<id>`, `doorstep.pro.<user_id>` and `doorstep.admin.live`, and the push-type registry (`x-push-types`): 17 Momentum types (`doorstep.*`) and 17 `doorstep_pro` types (`doorstep.pro.*`), each mapped to its source event. |
 
 ## Conventions
 
@@ -39,6 +39,13 @@ doorstep-service produces these through its real handlers, in `Architecture/serv
 | `webhook_background_check_404.json` | background-check vendor webhook (no vendor enabled) |
 | `admin_professionals_list_200.json`, `admin_professional_get_200.json`, `admin_professional_get_404.json`, `admin_professional_approve_200.json`, `admin_professional_approve_422_incomplete.json`, `admin_professional_approve_403_gender.json`, `admin_professional_reject_200.json`, `admin_professional_reject_400_reason.json`, `admin_professional_suspend_200.json`, `admin_professional_suspend_400_reason.json`, `admin_professional_suspend_409_transition.json`, `admin_professional_reinstate_200.json`, `admin_professional_block_200.json`, `admin_skill_verify_200_revoke.json`, `admin_skill_verify_422_certificate.json` | admin professional review (A2) |
 | `admin_documents_list_200.json`, `admin_document_decide_200_police.json`, `admin_document_decide_400_reason.json`, `admin_document_decide_409_decided.json`, `admin_document_view_403_scope.json`, `admin_document_view_404.json`, `admin_document_view_503.json` | document review and the audited image view (the 200 is image bytes, no fixture) |
+| `address_post_201.json`, `address_post_422_outside_area.json`, `addresses_get_200.json` | addresses (A3; street lines sealed at rest, serviceability on save) |
+| `slots_get_200.json`, `slots_get_409_outstanding.json` | `GET /slots?quote_id=&address_id=` (calendar-derived; Sunday has no hours in the fixture world, Monday shows one professional busy 10:00-13:30) |
+| `booking_post_201.json`, `booking_post_400_idempotency_key.json`, `booking_post_409_slot_taken.json`, `booking_post_409_outstanding.json`, `booking_post_410_quote_expired.json`, `booking_post_422_slot_unavailable.json` | `POST /bookings` (Idempotency-Key; the 201 carries the Razorpay-shaped `checkout`) |
+| `booking_get_200_pending_payment.json`, `booking_get_200.json`, `booking_get_404.json`, `bookings_get_200.json` | booking detail (with `status_history`, `end_otp` null, `photos` []) and list |
+| `booking_payment_intent_post_200.json`, `booking_payment_intent_410_hold_expired.json`, `booking_payment_get_200_pending.json`, `booking_payment_get_200.json`, `booking_payment_get_200_refund.json`, `booking_payment_stub_confirm_404.json` | payments: intent, the paid source, the dev stub confirm refused outside development |
+| `cancel_preview_get_200.json`, `booking_cancel_post_200.json`, `booking_reschedule_post_200.json`, `booking_reschedule_post_409.json` | cancel and reschedule |
+| `admin_bookings_list_200.json`, `admin_booking_get_200.json`, `admin_booking_cancel_200.json`, `admin_booking_refund_201.json`, `admin_booking_refund_422_exceeds.json`, `admin_stats_200.json` | admin booking pages (A3; never an OTP) |
 
 ## Status (A1)
 
@@ -51,7 +58,7 @@ doorstep-service produces these through its real handlers, in `Architecture/serv
 
 **Contract only, built by later lanes:**
 
-- addresses, slots, bookings, payments and refunds (A3)
+- addresses, slots, bookings, payments and refunds (A3): built; see the A3 fixtures above. A3 added `Booking.end_otp`, `Booking.photos`, `Booking.status_history` (`StatusStep`), `Extra.evidence_media_id`, the development-only `POST /bookings/{id}/payment/stub-confirm`, `AdminCancelInput.fee_paise`, the Idempotency-Key on the admin refund, `AdminBookingDetail.reserved_pro_id/needs_attention/attention_reason`, `AdminStats.bookings_needing_attention`, the error code `DOORSTEP_STUB_UNAVAILABLE` and the events `doorstep.booking.refund_failed` and `doorstep.booking.payment_attention` (ops only). The admin booking list, detail, cancel, refund and stats routes moved from A6 to A3.
 - professional onboarding (A2): built; see the A2 fixtures above. A2 added two routes to this contract (`POST /pro/me/skills/{code}/certificate`, `GET /internal/admin/documents/{id}/view`), `Skill.requires_certificate`, `ProDocument.skill_code` and the kinds `trade_certificate` and `selfie`, and four error codes.
 - dispatch, offers and realtime (A4)
 - the visit, extras, ratings, rework, safety, chat and tickets (A5)

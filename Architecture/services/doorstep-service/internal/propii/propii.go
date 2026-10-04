@@ -25,6 +25,8 @@ const (
 	ScopePAN                pii.Scope = "doorstep.pan"
 	ScopeProDocument        pii.Scope = "doorstep.pro_document"
 	ScopeDigiLockerVerifier pii.Scope = "doorstep.digilocker_verifier"
+	// ScopeCustomerAddress seals a customer address's street lines (A3).
+	ScopeCustomerAddress pii.Scope = "doorstep.customer_address"
 )
 
 // ErrNotConfigured: no keys (development only).
@@ -38,7 +40,7 @@ type Sealed struct {
 
 // Crypto holds the sealers.
 type Crypto struct {
-	account, pan, document, verifier *pii.Sealer
+	account, pan, document, verifier, address *pii.Sealer
 }
 
 // New builds the sealers from parsed keys. No keys → (nil, nil).
@@ -47,7 +49,7 @@ func New(ctx context.Context, keys []config.PIIKey) (*Crypto, error) {
 		return nil, nil
 	}
 	var static []pii.StaticKey
-	scopes := []pii.Scope{ScopePayoutAccount, ScopePAN, ScopeProDocument, ScopeDigiLockerVerifier}
+	scopes := []pii.Scope{ScopePayoutAccount, ScopePAN, ScopeProDocument, ScopeDigiLockerVerifier, ScopeCustomerAddress}
 	for _, k := range keys {
 		for _, s := range scopes {
 			static = append(static, pii.StaticKey{Scope: s, Version: k.Version, Key: k.Key})
@@ -61,7 +63,7 @@ func New(ctx context.Context, keys []config.PIIKey) (*Crypto, error) {
 	for _, x := range []struct {
 		dst   **pii.Sealer
 		scope pii.Scope
-	}{{&c.account, ScopePayoutAccount}, {&c.pan, ScopePAN}, {&c.document, ScopeProDocument}, {&c.verifier, ScopeDigiLockerVerifier}} {
+	}{{&c.account, ScopePayoutAccount}, {&c.pan, ScopePAN}, {&c.document, ScopeProDocument}, {&c.verifier, ScopeDigiLockerVerifier}, {&c.address, ScopeCustomerAddress}} {
 		s, err := pii.NewSealer(ctx, ring, x.scope)
 		if err != nil {
 			return nil, fmt.Errorf("sealer %s: %w", x.scope, err)
@@ -129,4 +131,21 @@ func (c *Crypto) OpenAccountNumber(ctx context.Context, blob []byte) (string, er
 		return "", ErrNotConfigured
 	}
 	return c.account.Open(ctx, blob)
+}
+
+// SealAddress seals a customer address's street lines (a JSON blob).
+func (c *Crypto) SealAddress(ctx context.Context, v string) (Sealed, error) {
+	if c == nil {
+		return Sealed{}, ErrNotConfigured
+	}
+	return seal(ctx, c.address, v)
+}
+
+// OpenAddress opens sealed street lines for the address's owner (and, from
+// acceptance to completion, the professional; admin views).
+func (c *Crypto) OpenAddress(ctx context.Context, blob []byte) (string, error) {
+	if c == nil {
+		return "", ErrNotConfigured
+	}
+	return c.address.Open(ctx, blob)
 }

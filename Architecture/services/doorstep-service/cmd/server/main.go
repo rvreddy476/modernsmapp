@@ -5,13 +5,16 @@
 //
 // A1: catalogue, zones/serviceability, quotes and the admin-internal catalogue
 // and config CRUD. A2: professional onboarding and verification (/pro, the
-// admin professional and document review, service_professional roles). Later
-// lanes add bookings and payments (A3), dispatch and realtime (A4), the visit
-// (A5).
+// admin professional and document review, service_professional roles). A3:
+// addresses, calendar-derived slots, holds, bookings, payments (confirmed only
+// from the signed payments-service event), refunds, cancel and reschedule, and
+// the admin booking pages. Later lanes add dispatch and realtime (A4) and the
+// visit (A5).
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,8 +29,10 @@ import (
 	"github.com/atpost/doorstep-service/internal/facecompare"
 	doorstephttp "github.com/atpost/doorstep-service/internal/http"
 	"github.com/atpost/doorstep-service/internal/mediaclient"
+	"github.com/atpost/doorstep-service/internal/payments"
 	"github.com/atpost/doorstep-service/internal/propii"
 	"github.com/atpost/doorstep-service/internal/service"
+	"github.com/atpost/doorstep-service/internal/slotcache"
 	"github.com/atpost/doorstep-service/internal/store"
 	"github.com/atpost/doorstep-service/internal/tax"
 	"github.com/atpost/shared/health"
@@ -38,14 +43,17 @@ import (
 	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/servicetoken"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The pgx store is the service's store.
 var (
-	_ service.Store    = (*store.Store)(nil)
-	_ service.ProStore = (*store.Store)(nil)
+	_ service.Store        = (*store.Store)(nil)
+	_ service.ProStore     = (*store.Store)(nil)
+	_ service.BookingStore = (*store.Store)(nil)
+	_ payments.Applier     = (*store.Store)(nil)
 )
 
 func main() {
@@ -170,6 +178,50 @@ func main() {
 
 	svc := service.New(pgStore, taxComputer, cfg.QuoteTTL).WithPro(proDeps)
 	slog.Info("doorstep-service: pricing", "gst_computed", taxComputer.Computed(), "quote_ttl", cfg.QuoteTTL)
+
+	// Bookings and payments (A3). The payments client is doorstep's own
+	// Ed25519 token (application doorstep, reference doorstep_booking); in
+	// local/dev without one the shared internal key stands in (payments'
+	// legacy path). Without either the payment routes answer 503.
+	bookingDeps := service.BookingDeps{Store: pgStore, PII: proDeps.PII, DevStubPayments: !cfg.Production}
+	payClient, err := payments.NewClient(payments.Config{BaseURL: cfg.PaymentsServiceURL, TokenKey: cfg.ServiceTokenKey,
+		TokenKID: cfg.ServiceTokenKID, InternalKey: cfg.InternalKey, LegacyAllowed: !cfg.Production})
+	switch {
+	case errors.Is(err, payments.ErrNotConfigured):
+		slog.Warn("doorstep-service: payments not configured (no DOORSTEP_SERVICE_TOKEN_KEY, no dev internal key); booking and payment routes answer 503")
+	case err != nil:
+		slog.Error("refusing to start: payments client", "error", err)
+		os.Exit(1)
+	default:
+		bookingDeps.Payments = payClient
+		slog.Info("doorstep-service: payments client ready", "legacy_internal_key", payClient.LegacyAuth())
+	}
+	// Slot answers are cached ≤30 s in Redis; Redis down only means no cache.
+	if rdb, err := transport.NewRedisClientFromEnv(cfg.RedisAddr); err != nil {
+		slog.Warn("doorstep-service: redis client not configured; slot answers are not cached", "error", err)
+	} else {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		if err := rdb.Ping(pingCtx).Err(); err != nil {
+			slog.Warn("doorstep-service: redis ping failed; the slot cache retries per call", "error", err)
+		}
+		cancel()
+		defer rdb.Close()
+		bookingDeps.Cache = slotcache.New(rdb)
+	}
+	svc = svc.WithBookings(bookingDeps)
+	if bookingDeps.DevStubPayments {
+		slog.Warn("doorstep-service: POST /bookings/{id}/payment/stub-confirm is enabled (development; refused when payments-service has a real provider)")
+	}
+
+	// A booking is confirmed ONLY here, from the signed payments-service
+	// event (application doorstep, reference doorstep_booking), applied once
+	// through doorstep.payment_inbox in the booking's transaction.
+	paymentConsumer := payments.NewConsumer(pgStore, cfg.KafkaBrokers, metrics.NewKafkaConsumerMetrics("doorstep-service"), svc.AfterPaymentEvent)
+	defer paymentConsumer.Close()
+	go paymentConsumer.Start(bgCtx)
+	slog.Info("doorstep payment consumer started", "group", payments.ConsumerGroup, "topic", payments.Topic)
+	// Hold sweeper (expire lapsed holds) and refund resubmission.
+	go svc.RunWorkers(bgCtx, 30*time.Second)
 	if serviceVerifier == nil {
 		slog.Warn("doorstep-service: SERVICE_CALLERS not set — admin-service tokens are refused; /v1/doorstep/internal/admin answers 401")
 	} else {

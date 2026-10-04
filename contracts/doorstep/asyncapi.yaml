@@ -45,6 +45,8 @@ channels:
           - $ref: '#/components/messages/BookingRescheduled'
           - $ref: '#/components/messages/BookingNoShow'
           - $ref: '#/components/messages/BookingRefunded'
+          - $ref: '#/components/messages/BookingRefundFailed'
+          - $ref: '#/components/messages/BookingPaymentAttention'
           - $ref: '#/components/messages/BookingRated'
           - $ref: '#/components/messages/BookingReworkRequested'
           - $ref: '#/components/messages/BookingMessageSent'
@@ -142,7 +144,7 @@ components:
         occurred_at: {type: string, format: date-time}
         booking_id: {type: string, format: uuid, nullable: true}
         customer_user_id: {type: string, format: uuid, nullable: true}
-        pro_user_id: {type: string, format: uuid, nullable: true}
+        pro_user_id: {type: string, format: uuid, nullable: true, description: "The ACCEPTED professional only (A4 onward); a professional reserved by the hold but never offered the job is not named"}
         data: {type: object}
     BookingCore:
       type: object
@@ -349,6 +351,30 @@ components:
               refund_id: {type: string, format: uuid}
               amount_paise: {type: integer, format: int64}
               cause: {type: string}
+    BookingRefundFailed:
+      name: doorstep.booking.refund_failed
+      summary: payments-service could not make a refund (payment.refund_failed); the booking needs ops attention. Ops live board only, never a customer push.
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [refund_id, amount_paise, cause, reason]
+            properties:
+              refund_id: {type: string, format: uuid}
+              amount_paise: {type: integer, format: int64}
+              cause: {type: string}
+              reason: {type: string, nullable: true}
+    BookingPaymentAttention:
+      name: doorstep.booking.payment_attention
+      summary: A payment event did not match the booking (amount, currency, payer or intent) or a refund failed; the booking was NOT confirmed from it. Ops live board only.
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [payment_event_type, detail]
+            properties:
+              payment_event_type: {type: string, example: payment.succeeded}
+              detail: {type: string}
     BookingRated:
       name: doorstep.booking.rated
       payload:

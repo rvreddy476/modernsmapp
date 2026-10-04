@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_OUTSTANDING_DUE","message":"pay your outstanding extras before booking again","details":{"extras_bill_ids":["0f262b76-512b-54cf-996c-ccdc2c15f897"],"outstanding_paise":45000}},"meta":{"request_id":"fixture"}}

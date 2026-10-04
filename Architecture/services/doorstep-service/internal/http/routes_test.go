@@ -90,6 +90,47 @@ var wantRoutes = []string{
 	"GET /v1/doorstep/internal/admin/documents",
 	"POST /v1/doorstep/internal/admin/documents/:id/decide",
 	"GET /v1/doorstep/internal/admin/documents/:id/view",
+	// Bookings and payments (A3).
+	"GET /v1/doorstep/addresses",
+	"POST /v1/doorstep/addresses",
+	"PATCH /v1/doorstep/addresses/:id",
+	"DELETE /v1/doorstep/addresses/:id",
+	"GET /v1/doorstep/slots",
+	"POST /v1/doorstep/bookings",
+	"GET /v1/doorstep/bookings",
+	"GET /v1/doorstep/bookings/:id",
+	"GET /v1/doorstep/bookings/:id/cancel-preview",
+	"POST /v1/doorstep/bookings/:id/cancel",
+	"POST /v1/doorstep/bookings/:id/reschedule",
+	"POST /v1/doorstep/bookings/:id/payment/intent",
+	"GET /v1/doorstep/bookings/:id/payment",
+	"POST /v1/doorstep/bookings/:id/payment/stub-confirm",
+	"GET /v1/doorstep/internal/admin/bookings",
+	"GET /v1/doorstep/internal/admin/bookings/:id",
+	"POST /v1/doorstep/internal/admin/bookings/:id/cancel",
+	"POST /v1/doorstep/internal/admin/bookings/:id/refund",
+	"GET /v1/doorstep/internal/admin/stats",
+}
+
+// The A3 admin routes carry exactly the contract's permissions.
+func TestBookingAdminRoutePermissions(t *testing.T) {
+	want := map[string]string{
+		"GET /bookings":             PermBookingsRead,
+		"GET /bookings/:id":         PermBookingsRead,
+		"POST /bookings/:id/cancel": PermBookingsCancel,
+		"POST /bookings/:id/refund": PermRefundsIssue,
+		"GET /stats":                PermStatsRead,
+	}
+	h := &Handler{}
+	rts := h.bookingAdminRoutes()
+	if len(rts) != len(want) {
+		t.Fatalf("booking admin routes %d, want %d", len(rts), len(want))
+	}
+	for _, rt := range rts {
+		if p := want[rt.method+" "+rt.path]; p != rt.perm {
+			t.Errorf("%s %s needs %s, table says %s", rt.method, rt.path, p, rt.perm)
+		}
+	}
 }
 
 func TestRouteInventory(t *testing.T) {

@@ -75,6 +75,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 			// Professional onboarding (A2).
 			h.registerProRoutes(user)
+
+			// Addresses, slots, bookings, payments (A3).
+			h.registerBookingRoutes(user)
 		}
 	}
 	h.registerInternalAdminRoutes(r)

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/atpost/shared/identityroles"
 	"github.com/atpost/shared/outbox"
@@ -34,6 +35,9 @@ type Store struct {
 	roles *identityroles.Outbox
 	// events is the schema-local doorstep.events outbox.
 	events *outbox.Queuer
+	// now is the clock of payment events and workers (WithClock); nil is
+	// time.Now.
+	now func() time.Time
 }
 
 // New wraps a pool (nil is allowed for route tests that never reach it).

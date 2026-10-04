@@ -68,6 +68,20 @@ const (
 	CodeMediaUnavailable        = "DOORSTEP_MEDIA_UNAVAILABLE"
 	CodeCertificateRequired     = "DOORSTEP_CERTIFICATE_REQUIRED"
 	CodeWebhookSignatureInvalid = "DOORSTEP_WEBHOOK_SIGNATURE_INVALID"
+
+	// Bookings and payments (A3), from the contract.
+	CodeAddressNotFound       = "DOORSTEP_ADDRESS_NOT_FOUND"
+	CodeSlotUnavailable       = "DOORSTEP_SLOT_UNAVAILABLE"
+	CodeHoldExpired           = "DOORSTEP_HOLD_EXPIRED"
+	CodeBookingNotFound       = "DOORSTEP_BOOKING_NOT_FOUND"
+	CodeCancelNotAllowed      = "DOORSTEP_CANCEL_NOT_ALLOWED"
+	CodeRescheduleNotAllowed  = "DOORSTEP_RESCHEDULE_NOT_ALLOWED"
+	CodePaymentsUnavailable   = "DOORSTEP_PAYMENTS_UNAVAILABLE"
+	CodePaymentAlreadySettled = "DOORSTEP_PAYMENT_ALREADY_SETTLED"
+	CodeRefundExceedsPaid     = "DOORSTEP_REFUND_EXCEEDS_PAID"
+	// A3 addition: the dev stub confirm when payments-service has a real
+	// provider (the signed webhook settles there).
+	CodeStubUnavailable = "DOORSTEP_STUB_UNAVAILABLE"
 )
 
 // Invalid is a 400 DOORSTEP_INVALID_REQUEST naming the offending field.

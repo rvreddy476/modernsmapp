@@ -91,6 +91,7 @@ x-doorstep-booking-states:
   transitions:
     - {from: pending_payment, to: confirmed, by: payment_event}
     - {from: pending_payment, to: expired, by: worker}
+    - {from: expired, to: confirmed, by: payment_event_late_capture}  # only while the reserved professional is still free and the slot ahead; else a full refund and it stays expired
     - {from: pending_payment, to: cancelled, by: customer}
     - {from: confirmed, to: assigned, by: pro_accept}
     - {from: confirmed, to: cancelled, by: [customer, ops, worker_t_minus_45]}
@@ -182,6 +183,7 @@ x-doorstep-error-codes:
   DOORSTEP_TICKET_NOT_FOUND: {status: 404}
   DOORSTEP_INCIDENT_NOT_FOUND: {status: 404}
   DOORSTEP_REFUND_EXCEEDS_PAID: {status: 422}
+  DOORSTEP_STUB_UNAVAILABLE: {status: 409, meaning: dev stub confirm while payments-service has a real provider (pay through checkout)}
   DOORSTEP_NOT_FOUND: {status: 404, meaning: admin entity not found}
   DOORSTEP_CONFLICT: {status: 409, meaning: admin write violates a unique rule (slug, code, default option)}
   DOORSTEP_ZONE_INVALID: {status: 422, meaning: boundary is not a valid GeoJSON Polygon/MultiPolygon}
@@ -417,6 +419,7 @@ paths:
       operationId: listAddresses
       tags: [Customer]
       x-lane: A3
+      description: Default first, then newest. Street lines are sealed at rest (shared/pii) and opened for the owner only. Golden bytes addresses_get_200.json.
       responses:
         '200':
           description: Addresses
@@ -434,6 +437,11 @@ paths:
       operationId: createAddress
       tags: [Customer]
       x-lane: A3
+      description: >-
+        Serviceability on save: the point must be in an active zone (city and zone are derived
+        from it). The first address is the default. line1, line2 and landmark are sealed. Golden
+        bytes address_post_201.json, address_post_422_outside_area.json. 503
+        DOORSTEP_PII_UNAVAILABLE when sealing keys are absent (development only).
       requestBody:
         required: true
         content:
@@ -457,6 +465,7 @@ paths:
       operationId: updateAddress
       tags: [Customer]
       x-lane: A3
+      description: Partial update. An absent field keeps its value (lat and lng change together); the point is re-checked for serviceability. Bookings keep their own snapshot.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
@@ -494,7 +503,10 @@ paths:
         dispatch filters (approved, background check clear on the date, skill,
         gender rule + preference, zone, calendar fit incl. travel buffer, daily
         cap). Earliest slot = now + min_lead_minutes (2 h); horizon from the
-        slot config. Also used for reschedule with booking_id.
+        slot config. Also used for reschedule with booking_id. Send exactly one of
+        quote_id or booking_id. Every grid start of the horizon is listed; available is
+        false inside the lead time or when nobody can take it. Cached at most 30 s (advisory:
+        the hold decides). Golden bytes slots_get_200.json, slots_get_409_outstanding.json.
       parameters:
         - name: quote_id
           in: query
@@ -537,7 +549,16 @@ paths:
         calendar block (EXCLUDE USING gist makes a double hold impossible),
         creates the booking in pending_payment and the payments-service
         intent (application doorstep, reference doorstep_booking). Idempotent
-        on the Idempotency-Key header per customer.
+        on the Idempotency-Key header per customer. A replay with the same body answers the
+        same booking (and opens the intent if it was never opened); the same key with another
+        quote, address or slot is 400. Professionals are ranked (distance, smoothed rating,
+        acceptance, cancellations, weekly load) and the first whose hold the exclusion
+        constraint admits is reserved (reserved_pro_id). The hold is [slot_start, slot_end +
+        the zone travel buffer). Outstanding extras refuse with 409. Golden bytes
+        booking_post_201.json, booking_post_400_idempotency_key.json,
+        booking_post_409_slot_taken.json, booking_post_409_outstanding.json,
+        booking_post_410_quote_expired.json, booking_post_422_slot_unavailable.json
+        (details.reason inside_lead_time, beyond_horizon, not_on_grid or no_professional).
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -576,6 +597,7 @@ paths:
       operationId: listBookings
       tags: [Booking]
       x-lane: A3
+      description: upcoming = active bookings soonest first; past = finished, latest first; all = latest slot first. Golden bytes bookings_get_200.json.
       parameters:
         - name: status
           in: query
@@ -603,6 +625,7 @@ paths:
       operationId: getBooking
       tags: [Booking]
       x-lane: A3
+      description: Golden bytes booking_get_200.json, booking_get_200_pending_payment.json, booking_get_404.json (also for another customer's booking).
       parameters:
         - $ref: '#/components/parameters/IdPath'
       responses:
@@ -620,6 +643,11 @@ paths:
       operationId: previewCancel
       tags: [Booking]
       x-lane: A3
+      description: >-
+        Fee tiers from doorstep.cancellation_rules (category rules first, then sort order): free
+        before payment and before assignment; assigned free from 3 h out, then the lt_3h and
+        lt_1h fees; en route and arrived their fees; in progress not allowed. The fee never
+        exceeds what is refundable. Golden bytes cancel_preview_get_200.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       responses:
@@ -635,6 +663,7 @@ paths:
       operationId: cancelBooking
       tags: [Booking]
       x-lane: A3
+      description: Releases the calendar, cancels open offers, writes the refund (paid - fee, key doorstep:refund:{id}:customer_cancel) with the cancellation and submits it. Golden bytes booking_cancel_post_200.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
@@ -660,6 +689,12 @@ paths:
       operationId: rescheduleBooking
       tags: [Booking]
       x-lane: A3
+      description: >-
+        From confirmed or assigned, once, at least 3 h before the slot. The current professional
+        is kept when free, else the best other one is held; an assigned booking that changes
+        professional goes back to confirmed (offered again). New block then the old one
+        released, in one transaction. Golden bytes booking_reschedule_post_200.json,
+        booking_reschedule_post_409.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
@@ -689,6 +724,7 @@ paths:
       operationId: createBookingPaymentIntent
       tags: [Booking]
       x-lane: A3
+      description: Golden bytes booking_payment_intent_post_200.json, booking_payment_intent_410_hold_expired.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       responses:
@@ -723,10 +759,48 @@ paths:
         - $ref: '#/components/parameters/IdPath'
       responses:
         '200':
-          description: Payment rows (booking + extras) and refunds
+          description: Payment rows (booking + extras) and refunds. The ONLY source a client reads "paid" from. Golden bytes booking_payment_get_200_pending.json, booking_payment_get_200.json, booking_payment_get_200_refund.json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/BookingPayments'}
+        '404':
+          description: DOORSTEP_BOOKING_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/payment/stub-confirm:
+    post:
+      summary: (Development only) settle the booking through payments-service's stub gateway
+      operationId: stubConfirmBookingPayment
+      tags: [Booking]
+      x-lane: A3
+      description: >-
+        Local/dev stacks only (404 DOORSTEP_NOT_FOUND anywhere else, the route does nothing
+        there). Asks payments-service to verify a stub callback for the booking's intent; its
+        stub settlement publishes the signed payment.succeeded, and the consumer confirms the
+        booking from that event like any real capture. This route never marks anything paid:
+        poll GET /bookings/{id}/payment. Refused with 409 DOORSTEP_STUB_UNAVAILABLE when
+        payments-service has a real provider (the webhook settles there). Golden bytes
+        booking_payment_stub_confirm_404.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: The payment rows as they stand (usually still pending for a moment)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BookingPayments'}
+        '404':
+          description: DOORSTEP_NOT_FOUND (not a development stack), DOORSTEP_BOOKING_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '409':
+          description: DOORSTEP_STUB_UNAVAILABLE, DOORSTEP_INVALID_TRANSITION
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/bookings/{id}/extras:
     get:
@@ -3048,7 +3122,8 @@ paths:
       tags: [Admin]
       security: [{adminServiceToken: []}]
       x-permission: doorstep:bookings.read
-      x-lane: A6
+      x-lane: A3
+      description: Latest slot first, 50 per page; rows carry no address. Golden bytes admin_bookings_list_200.json.
       parameters:
         - name: status
           in: query
@@ -3079,7 +3154,7 @@ paths:
       tags: [Admin]
       security: [{adminServiceToken: []}]
       x-permission: doorstep:bookings.read
-      x-lane: A6
+      x-lane: A3
       parameters:
         - $ref: '#/components/parameters/IdPath'
       responses:
@@ -3096,17 +3171,17 @@ paths:
       tags: [Admin]
       security: [{adminServiceToken: []}]
       x-permission: doorstep:bookings.cancel
-      x-lane: A6
+      x-lane: A3
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/ReasonInput'}
+            schema: {$ref: '#/components/schemas/AdminCancelInput'}
       responses:
         '200':
-          description: Booking
+          description: Booking (admin view, OTPs null). Golden bytes admin_booking_cancel_200.json. The refund (refundable - fee) is written with the cancellation, keyed doorstep:refund:{id}:admin_cancel.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Booking'}
@@ -3140,9 +3215,18 @@ paths:
       tags: [Admin]
       security: [{adminServiceToken: []}]
       x-permission: doorstep:refunds.issue
-      x-lane: A6
+      x-lane: A3
+      description: >-
+        Refunds the booking payment: amount_paise must not exceed captured minus every refund
+        that has not failed (DOORSTEP_REFUND_EXCEEDS_PAID). Idempotent on the Idempotency-Key
+        admin-service forwards (its two-person approval replays the same key): the refund key is
+        doorstep:refund:{id}:admin_<hash of the key>, and a replay answers the same row. Written
+        with its audit row in one transaction, then submitted to payments-service; settled only by
+        payment.refunded. payment=extras answers 422 until the visit lane pays extras.
+        Golden bytes admin_booking_refund_201.json, admin_booking_refund_422_exceeds.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -3160,6 +3244,11 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Refund'}
+        '400':
+          description: DOORSTEP_INVALID_REQUEST (no Idempotency-Key, amount, reason)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         '422':
           description: DOORSTEP_REFUND_EXCEEDS_PAID
           content:
@@ -3358,7 +3447,7 @@ paths:
       tags: [Admin]
       security: [{adminServiceToken: []}]
       x-permission: doorstep:stats.read
-      x-lane: A6
+      x-lane: A3
       responses:
         '200':
           description: Counts (money in paise)
@@ -3778,9 +3867,23 @@ components:
         slot_end: {type: string, format: date-time}
         total_paise: {type: integer, format: int64}
         created_at: {type: string, format: date-time}
+    StatusStep:
+      type: object
+      description: One step of the customer's booking timeline (A3). Actor and reason are admin-only.
+      required: [from_status, to_status, created_at]
+      properties:
+        from_status: {type: string, nullable: true}
+        to_status: {$ref: '#/components/schemas/BookingStatus'}
+        created_at: {type: string, format: date-time}
     Booking:
       type: object
-      required: [id, status, service_id, service_name, category_slug, city_code, zone_id, slot_start, slot_end, duration_minutes, require_female_pro, items, total_paise, taxable_paise, tax_paise, paid_paise, refunded_paise, cancellation_fee_paise, extras_total_paise, outstanding_paise, hold_expires_at, address, professional, parent_booking_id, start_otp, can_cancel, can_reschedule, created_at, updated_at]
+      description: >-
+        Golden bytes booking_get_200.json (confirmed), booking_get_200_pending_payment.json,
+        booking_cancel_post_200.json, booking_reschedule_post_200.json. end_otp, photos and
+        status_history closed the A3 contract gaps: end_otp stays null until the visit lane
+        (A5) sets it, photos stays [] until A5 uploads before/after photos (customers see
+        only those two phases), status_history is the timeline oldest first.
+      required: [id, status, service_id, service_name, category_slug, city_code, zone_id, slot_start, slot_end, duration_minutes, require_female_pro, items, total_paise, taxable_paise, tax_paise, paid_paise, refunded_paise, cancellation_fee_paise, extras_total_paise, outstanding_paise, hold_expires_at, address, professional, parent_booking_id, start_otp, end_otp, photos, status_history, can_cancel, can_reschedule, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         status: {$ref: '#/components/schemas/BookingStatus'}
@@ -3817,9 +3920,17 @@ components:
             rating_avg: {type: number, nullable: true}
             jobs_completed: {type: integer}
         parent_booking_id: {type: string, format: uuid, nullable: true}
-        start_otp: {type: string, nullable: true, description: Shown to the customer from assigned until in_progress}
+        start_otp: {type: string, nullable: true, description: Shown to the customer from assigned until in_progress (A5 sets it; null before)}
+        end_otp: {type: string, nullable: true, description: Shown to the customer while in_progress once the after photos are in (A5 sets it; null before). Never in an admin response.}
+        photos:
+          type: array
+          description: Before/after visit photos (A5); [] until then
+          items: {$ref: '#/components/schemas/Photo'}
+        status_history:
+          type: array
+          items: {$ref: '#/components/schemas/StatusStep'}
         can_cancel: {type: boolean}
-        can_reschedule: {type: boolean}
+        can_reschedule: {type: boolean, description: "confirmed or assigned, never rescheduled before, and at least 3 h before the slot"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     CancelRequest:
@@ -3846,8 +3957,17 @@ components:
         status: {type: string, enum: [created, pending, succeeded, failed, refunded, partially_refunded]}
         checkout:
           type: object
-          additionalProperties: true
-          description: payments-service checkout session (Razorpay order id, key id), passed through unchanged
+          additionalProperties: {type: string}
+          description: >-
+            payments-service's client session relayed unchanged (paymentsclient.ClientSession):
+            provider (razorpay, or stub on a dev stack), order_id, key_id (publishable) and,
+            when payments has one, merchant_display_name. {} when payments attached none.
+            Never a secret. Paid is read ONLY from GET /bookings/{id}/payment.
+          properties:
+            provider: {type: string, example: razorpay}
+            order_id: {type: string}
+            key_id: {type: string}
+            merchant_display_name: {type: string}
     BookingPayments:
       type: object
       required: [payments, refunds]
@@ -3870,7 +3990,7 @@ components:
         created_at: {type: string, format: date-time}
     Extra:
       type: object
-      required: [id, booking_id, kind, rate_card_id, addon_id, name, quantity, unit_price_paise, total_paise, status, created_at]
+      required: [id, booking_id, kind, rate_card_id, addon_id, name, quantity, unit_price_paise, total_paise, status, evidence_media_id, created_at]
       properties:
         id: {type: string, format: uuid}
         booking_id: {type: string, format: uuid}
@@ -3882,6 +4002,7 @@ components:
         unit_price_paise: {type: integer, format: int64}
         total_paise: {type: integer, format: int64}
         status: {type: string, enum: [proposed, approved, declined, withdrawn, billed]}
+        evidence_media_id: {type: string, nullable: true, description: The photo the professional attached to the extra}
         created_at: {type: string, format: date-time}
     ExtraInput:
       type: object
@@ -4820,12 +4941,28 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/AdminCommissionRule'}}
+    AdminCancelInput:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, maxLength: 1000}
+        fee_paise:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Omitted = full refund of what is refundable; a fee is capped at it
     AdminBookingDetail:
       type: object
-      required: [booking, customer_user_id, history, assignments, payments, refunds, extras, photos]
+      description: >-
+        Golden bytes admin_booking_get_200.json. booking.start_otp and booking.end_otp are
+        always null here (never exposed to admins); photos lists every phase.
+      required: [booking, customer_user_id, reserved_pro_id, needs_attention, attention_reason, history, assignments, payments, refunds, extras, photos]
       properties:
         booking: {$ref: '#/components/schemas/Booking'}
         customer_user_id: {type: string, format: uuid}
+        reserved_pro_id: {type: string, format: uuid, nullable: true, description: The professional whose calendar holds the slot (A4 offers to them first)}
+        needs_attention: {type: boolean, description: Money did not match (capture amount/payer/intent/currency) or a refund failed; never confirmed from it}
+        attention_reason: {type: string, nullable: true}
         history:
           type: array
           items:
@@ -4856,11 +4993,13 @@ components:
         photos: {type: array, items: {$ref: '#/components/schemas/Photo'}}
     AdminStats:
       type: object
-      required: [bookings_today, bookings_in_progress, unassigned_within_2h, pros_approved, pros_pending_verification, documents_pending, incidents_open, gmv_today_paise, refunds_today_paise, outstanding_paise]
+      required: [bookings_today, bookings_in_progress, unassigned_within_2h, bookings_needing_attention, pros_approved, pros_pending_verification, documents_pending, incidents_open, gmv_today_paise, refunds_today_paise, outstanding_paise]
+      description: Golden bytes admin_stats_200.json. "Today" is the IST day.
       properties:
         bookings_today: {type: integer}
         bookings_in_progress: {type: integer}
         unassigned_within_2h: {type: integer}
+        bookings_needing_attention: {type: integer}
         pros_approved: {type: integer}
         pros_pending_verification: {type: integer}
         documents_pending: {type: integer}

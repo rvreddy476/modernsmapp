@@ -65,3 +65,86 @@ type ProDocumentReviewedData struct {
 	Kind       string    `json:"kind"`
 	Decision   string    `json:"decision"`
 }
+
+// Booking event types (A3).
+const (
+	BookingCreated      = "doorstep.booking.created"
+	BookingConfirmed    = "doorstep.booking.confirmed"
+	BookingExpired      = "doorstep.booking.expired"
+	BookingCancelled    = "doorstep.booking.cancelled"
+	BookingRescheduled  = "doorstep.booking.rescheduled"
+	BookingRefunded     = "doorstep.booking.refunded"
+	BookingRefundFailed = "doorstep.booking.refund_failed"
+	BookingAttention    = "doorstep.booking.payment_attention"
+)
+
+// BookingCore is every booking event's common data (asyncapi BookingCore).
+// pro_user_id is the ACCEPTED professional only: a professional who was
+// reserved but never offered the job is never told about it.
+type BookingCore struct {
+	BookingID       uuid.UUID  `json:"booking_id"`
+	CustomerUserID  uuid.UUID  `json:"customer_user_id"`
+	ProUserID       *uuid.UUID `json:"pro_user_id"`
+	Status          string     `json:"status"`
+	CityCode        string     `json:"city_code"`
+	CategorySlug    string     `json:"category_slug"`
+	ServiceID       uuid.UUID  `json:"service_id"`
+	SlotStart       time.Time  `json:"slot_start"`
+	SlotEnd         time.Time  `json:"slot_end"`
+	ParentBookingID *uuid.UUID `json:"parent_booking_id"`
+}
+
+// Booking builds a booking event: partition key is the booking id.
+func Booking(eventType string, core BookingCore, at time.Time, data any) (key string, payload []byte, err error) {
+	id, cust := core.BookingID, core.CustomerUserID
+	payload, err = json.Marshal(Envelope{EventID: uuid.New(), EventType: eventType, Version: 1, OccurredAt: at.UTC(),
+		BookingID: &id, CustomerUserID: &cust, ProUserID: core.ProUserID, Data: data})
+	return id.String(), payload, err
+}
+
+// BookingCreatedData is doorstep.booking.created's data.
+type BookingCreatedData struct {
+	BookingCore
+	TotalPaise    int64     `json:"total_paise"`
+	HoldExpiresAt time.Time `json:"hold_expires_at"`
+}
+
+// BookingConfirmedData is doorstep.booking.confirmed's data.
+type BookingConfirmedData struct {
+	BookingCore
+	PaidPaise int64     `json:"paid_paise"`
+	PaymentID uuid.UUID `json:"payment_id"`
+}
+
+// BookingCancelledData is doorstep.booking.cancelled's data.
+type BookingCancelledData struct {
+	BookingCore
+	CancelledBy string `json:"cancelled_by"`
+	Reason      string `json:"reason"`
+	FeePaise    int64  `json:"fee_paise"`
+	RefundPaise int64  `json:"refund_paise"`
+}
+
+// BookingRescheduledData is doorstep.booking.rescheduled's data.
+type BookingRescheduledData struct {
+	BookingCore
+	PreviousSlotStart time.Time `json:"previous_slot_start"`
+}
+
+// BookingRefundData is doorstep.booking.refunded's and
+// doorstep.booking.refund_failed's data.
+type BookingRefundData struct {
+	BookingCore
+	RefundID    uuid.UUID `json:"refund_id"`
+	AmountPaise int64     `json:"amount_paise"`
+	Cause       string    `json:"cause"`
+	Reason      *string   `json:"reason"`
+}
+
+// BookingAttentionData is doorstep.booking.payment_attention's data: money
+// that did not match the booking (ops live board; never a customer push).
+type BookingAttentionData struct {
+	BookingCore
+	EventType string `json:"payment_event_type"`
+	Detail    string `json:"detail"`
+}
