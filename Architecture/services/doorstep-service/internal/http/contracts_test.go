@@ -105,6 +105,11 @@ func (rg *rig) router(key string, v *servicetoken.Verifier) *gin.Engine {
 	}
 	svc := service.New(rg.store, tc, 15*time.Minute).
 		WithClock(func() time.Time { return fixtureNow }, func() uuid.UUID { return fixtureQuoteID })
+	return mount(svc, key, v)
+}
+
+// mount builds the engine the fixtures run through around a service.
+func mount(svc *service.Service, key string, v *servicetoken.Verifier) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(gin.Recovery())

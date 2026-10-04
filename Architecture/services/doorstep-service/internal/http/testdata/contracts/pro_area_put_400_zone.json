@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"every zone must be an active zone of your city","details":{"field":"zone_ids"}},"meta":{"request_id":"fixture"}}

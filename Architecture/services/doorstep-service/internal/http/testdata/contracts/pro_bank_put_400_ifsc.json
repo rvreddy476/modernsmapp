@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"ifsc must look like ABCD0123456","details":{"field":"ifsc"}},"meta":{"request_id":"fixture"}}

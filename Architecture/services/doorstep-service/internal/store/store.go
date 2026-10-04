@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/atpost/shared/identityroles"
+	"github.com/atpost/shared/outbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -28,10 +30,16 @@ var (
 // Store is the pgx-backed store.
 type Store struct {
 	db *pgxpool.Pool
+	// roles is the identity role queue (identity_roles.go); nil is a no-op.
+	roles *identityroles.Outbox
+	// events is the schema-local doorstep.events outbox.
+	events *outbox.Queuer
 }
 
 // New wraps a pool (nil is allowed for route tests that never reach it).
-func New(db *pgxpool.Pool) *Store { return &Store{db: db} }
+func New(db *pgxpool.Pool) *Store {
+	return &Store{db: db, events: outbox.NewQueuer("doorstep")}
+}
 
 // Pool exposes the pool (outbox, health).
 func (s *Store) Pool() *pgxpool.Pool { return s.db }

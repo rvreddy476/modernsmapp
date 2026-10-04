@@ -154,16 +154,21 @@ type AdminCategoryPatch struct {
 	Active       *bool            `json:"active"`
 }
 
+// Skill is the contract's Skill plus requires_certificate (A2): true means
+// the skill is verified only through an admin-approved trade certificate,
+// false that declaring it verifies it (cleaning, painting, salon...).
 type Skill struct {
-	Code        string `json:"code"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Code                string `json:"code"`
+	Name                string `json:"name"`
+	Description         string `json:"description"`
+	RequiresCertificate bool   `json:"requires_certificate"`
 }
 
 type SkillInput struct {
-	Code        string  `json:"code"`
-	Name        string  `json:"name"`
-	Description *string `json:"description"`
+	Code                string  `json:"code"`
+	Name                string  `json:"name"`
+	Description         *string `json:"description"`
+	RequiresCertificate *bool   `json:"requires_certificate"`
 }
 
 // ---- services, options, add-ons ----

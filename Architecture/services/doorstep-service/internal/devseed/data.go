@@ -65,6 +65,15 @@ var skills = [][2]string{
 	{"salon_men", "Salon for men"},
 }
 
+// certificateFree are the skills verified on declaration (no trade
+// certificate exists for them in practice). Every other skill keeps the
+// schema default requires_certificate = TRUE and is verified only through an
+// admin-approved trade certificate (migration 002).
+var certificateFree = map[string]bool{
+	"deep_cleaning": true, "sofa_carpet_cleaning": true, "plumber": true, "carpenter": true,
+	"painter": true, "salon_women": true, "salon_men": true,
+}
+
 // Zones: two adjacent rectangles sharing the lng 78.40 edge.
 var zones = []struct {
 	slug, name string

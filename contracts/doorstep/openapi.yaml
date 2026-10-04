@@ -186,6 +186,10 @@ x-doorstep-error-codes:
   DOORSTEP_CONFLICT: {status: 409, meaning: admin write violates a unique rule (slug, code, default option)}
   DOORSTEP_ZONE_INVALID: {status: 422, meaning: boundary is not a valid GeoJSON Polygon/MultiPolygon}
   DOORSTEP_PRICE_OVERLAP: {status: 409, meaning: price periods for one item and city overlap}
+  DOORSTEP_PII_UNAVAILABLE: {status: 503, meaning: sealing keys are not configured (development only; production refuses to boot without them)}
+  DOORSTEP_MEDIA_UNAVAILABLE: {status: 503, meaning: media-service could not verify an upload or serve a document image}
+  DOORSTEP_CERTIFICATE_REQUIRED: {status: 422, meaning: a skill with requires_certificate is verified only through an approved trade certificate; details.skill_code}
+  DOORSTEP_WEBHOOK_SIGNATURE_INVALID: {status: 401, meaning: background-check vendor webhook signature does not verify}
   DOORSTEP_INTERNAL: {status: 500}
 
 x-doorstep-permissions:
@@ -1293,6 +1297,51 @@ paths:
                   items:
                     type: array
                     items: {$ref: '#/components/schemas/ProSkill'}
+
+  /v1/doorstep/pro/me/skills/{code}/certificate:
+    post:
+      summary: Upload a trade certificate for a declared skill that requires one (reviewed by an admin)
+      operationId: proPostTradeCertificate
+      tags: [Professional]
+      x-lane: A2
+      description: >-
+        A skill whose requires_certificate is true is verified only when an
+        admin approves its trade certificate (POST
+        /internal/admin/documents/{id}/decide); a skill with
+        requires_certificate false is verified on declaration. The image must
+        be the caller's own processed, moderation-passed upload.
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_id, issued_on]
+              properties:
+                media_id: {type: string, format: uuid}
+                issued_on: {type: string, format: date}
+                certificate_number: {type: string}
+      responses:
+        '201':
+          description: Document pending review (kind trade_certificate, skill_code set)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProDocument'}
+        '400':
+          description: DOORSTEP_INVALID_REQUEST (unknown skill, skill needs no certificate, skill not declared, not your media)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '409':
+          description: DOORSTEP_CONFLICT (a certificate for this skill is already under review)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/pro/me/area:
     put:
@@ -2943,6 +2992,55 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ProDocument'}
 
+  /v1/doorstep/internal/admin/documents/{id}/view:
+    get:
+      summary: The document's image BYTES for review (police certificate, trade certificate, selfie)
+      operationId: adminViewDocument
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:documents.review
+      x-lane: A2
+      description: >-
+        doorstep-service reads the document's own media id from
+        doorstep.pro_documents (never from the request), fetches the display
+        rendition from media-service server-side (GET
+        /v1/media/internal/{mediaId}/image-bytes, internal key plus a
+        doorstep-service token, audience media, operation
+        media:image-bytes.read, no user identity) and streams the bytes with
+        Cache-Control no-store, private and X-Content-Type-Options nosniff.
+        Never a redirect or a URL. One admin_audit_log row (action
+        document.view) per successful view, written before the bytes are
+        sent. admin-service proxies it with step-up and its own audit row per
+        view (like the commerce KYC /view route). Error bodies are the JSON
+        envelope. Fixtures: admin_document_view_404.json,
+        admin_document_view_403_scope.json, admin_document_view_503.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Raster image (JPEG, PNG, WebP, GIF or AVIF), at most 15 MB
+          headers:
+            Cache-Control: {schema: {type: string, example: 'no-store, private'}}
+            X-Content-Type-Options: {schema: {type: string, example: nosniff}}
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+        '403':
+          description: ADMIN_PERMISSION_NOT_IN_TOKEN (and the other token refusals)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '404':
+          description: DOORSTEP_NOT_FOUND (no such document, or media-service has no viewable image for it)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '503':
+          description: DOORSTEP_MEDIA_UNAVAILABLE (media-service unreachable or refused doorstep's credential)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
   /v1/doorstep/internal/admin/bookings:
     get:
       summary: Bookings (filters)
@@ -3999,11 +4097,12 @@ components:
         verified_at: {type: string, format: date-time, nullable: true}
     Skill:
       type: object
-      required: [code, name, description]
+      required: [code, name, description, requires_certificate]
       properties:
         code: {type: string, example: ac_service}
         name: {type: string}
         description: {type: string}
+        requires_certificate: {type: boolean, description: "true: verified only through an admin-approved trade certificate (POST /pro/me/skills/{code}/certificate); false: declaring the skill verifies it (A2)"}
     SkillInput:
       type: object
       required: [code, name]
@@ -4011,6 +4110,7 @@ components:
         code: {type: string, pattern: '^[a-z][a-z0-9_]{1,47}$'}
         name: {type: string}
         description: {type: string}
+        requires_certificate: {type: boolean, default: true, description: Omitted means true (fail closed)}
     ProSkill:
       type: object
       required: [skill_code, status, verified_at]
@@ -4058,11 +4158,12 @@ components:
         status: {type: string, enum: [pending, verified, failed]}
     ProDocument:
       type: object
-      required: [id, pro_id, kind, media_id, status, issued_on, expires_on, reason, created_at]
+      required: [id, pro_id, kind, skill_code, media_id, status, issued_on, expires_on, reason, created_at]
       properties:
         id: {type: string, format: uuid}
         pro_id: {type: string, format: uuid}
-        kind: {type: string, enum: [police_certificate, aadhaar, pan, other]}
+        kind: {type: string, enum: [police_certificate, trade_certificate, selfie, aadhaar, pan, other], description: "A2: selfie documents are written by POST /pro/selfie (approved when the face match passed, pending for review below the threshold, rejected when it failed or was superseded); aadhaar is never stored"}
+        skill_code: {type: string, nullable: true, description: The skill a trade_certificate is for; null for every other kind}
         media_id: {type: string, format: uuid}
         status: {type: string, enum: [pending, approved, rejected]}
         issued_on: {type: string, format: date, nullable: true}

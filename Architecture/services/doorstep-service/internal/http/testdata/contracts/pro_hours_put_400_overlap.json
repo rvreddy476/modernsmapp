@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"items[1]: windows on one day may not overlap","details":{"field":"items"}},"meta":{"request_id":"fixture"}}

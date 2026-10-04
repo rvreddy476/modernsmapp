@@ -68,7 +68,8 @@ func Seed(ctx context.Context, db *pgxpool.Pool) error {
 			ON CONFLICT DO NOTHING`, ID("zone", z.slug), CityCode, z.name, z.slug, z.polygon)
 	}
 	for _, k := range skills {
-		ex(`INSERT INTO doorstep.skills (code, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`, k[0], k[1])
+		ex(`INSERT INTO doorstep.skills (code, name, requires_certificate) VALUES ($1, $2, $3)
+			ON CONFLICT (code) DO UPDATE SET requires_certificate = EXCLUDED.requires_certificate`, k[0], k[1], !certificateFree[k[0]])
 	}
 	price := func(kind string, item uuid.UUID, key string, paise, mrp int64) {
 		var mrpArg *int64

@@ -51,6 +51,23 @@ const (
 	CodePriceOverlap         = "DOORSTEP_PRICE_OVERLAP"
 	CodeInternal             = "DOORSTEP_INTERNAL"
 	ReasonOutsideServiceArea = "OUTSIDE_SERVICE_AREA"
+
+	// Professional onboarding (A2), from the contract.
+	CodeProNotFound             = "DOORSTEP_PRO_NOT_FOUND"
+	CodeProExists               = "DOORSTEP_PRO_EXISTS"
+	CodeOnboardingIncomplete    = "DOORSTEP_ONBOARDING_INCOMPLETE"
+	CodeBackgroundCheckRequired = "DOORSTEP_BACKGROUND_CHECK_REQUIRED"
+	CodeDigiLockerUnavailable   = "DOORSTEP_DIGILOCKER_UNAVAILABLE"
+	CodeFaceMatchFailed         = "DOORSTEP_FACE_MATCH_FAILED"
+	CodeInvalidTransition       = "DOORSTEP_INVALID_TRANSITION"
+	// A2 additions (not yet in the contract's error table; reported to the
+	// lead): sealing keys absent (development only), media-service down
+	// while verifying an upload, a certificate-skill verified without an
+	// approved trade certificate, a vendor webhook with a bad signature.
+	CodePIIUnavailable          = "DOORSTEP_PII_UNAVAILABLE"
+	CodeMediaUnavailable        = "DOORSTEP_MEDIA_UNAVAILABLE"
+	CodeCertificateRequired     = "DOORSTEP_CERTIFICATE_REQUIRED"
+	CodeWebhookSignatureInvalid = "DOORSTEP_WEBHOOK_SIGNATURE_INVALID"
 )
 
 // Invalid is a 400 DOORSTEP_INVALID_REQUEST naming the offending field.

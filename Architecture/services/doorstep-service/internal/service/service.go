@@ -86,6 +86,8 @@ type Service struct {
 	now      func() time.Time
 	newID    func() uuid.UUID
 	quoteTTL time.Duration
+	// pro is professional onboarding (A2), wired by WithPro.
+	pro ProDeps
 }
 
 // New builds the service.

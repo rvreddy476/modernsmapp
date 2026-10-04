@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_ONBOARDING_INCOMPLETE","message":"onboarding steps are missing","details":{"missing_steps":["aadhaar_digilocker"]}},"meta":{"request_id":"fixture"}}

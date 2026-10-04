@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_TRANSITION","message":"not allowed while the professional is suspended","details":{"status":"suspended"}},"meta":{"request_id":"fixture"}}

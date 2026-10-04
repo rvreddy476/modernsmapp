@@ -275,7 +275,7 @@ func (h *Handler) adminRoutes() []adminRoute {
 // the internal-key group.
 func (h *Handler) registerInternalAdminRoutes(r *gin.Engine) {
 	g := r.Group(InternalAdminPrefix)
-	for _, rt := range h.adminRoutes() {
+	for _, rt := range append(h.adminRoutes(), h.proAdminRoutes()...) {
 		g.Handle(rt.method, rt.path, h.requireAdminToken(rt.perm), rt.handler)
 	}
 }

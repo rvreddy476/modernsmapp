@@ -62,6 +62,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		d.GET("/categories/:slug", h.getCategory)
 		d.GET("/services/:id", h.getService)
 		d.POST("/serviceability", h.postServiceability)
+		// Background-check vendor webhook (A2): signed, no identity; no
+		// vendor is enabled, so every provider answers 404.
+		d.POST("/webhooks/background-check/:provider", h.backgroundCheckWebhook)
 
 		user := d.Group("")
 		user.Use(middleware.GatewayIdentity())
@@ -69,6 +72,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			// Quotes (A1).
 			user.POST("/quotes", h.postQuote)
 			user.GET("/quotes/:id", h.getQuote)
+
+			// Professional onboarding (A2).
+			h.registerProRoutes(user)
 		}
 	}
 	h.registerInternalAdminRoutes(r)

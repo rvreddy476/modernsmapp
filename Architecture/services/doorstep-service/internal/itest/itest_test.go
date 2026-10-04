@@ -6,7 +6,8 @@
 // Requires TEST_PG_DSN naming exactly doorstep_it_test (database.
 // RequireTestDatabase refuses anything else); skipped when unset. Setup drops
 // and recreates the doorstep schema, applies the migrations twice through the
-// runner, executes 001 once more by hand (it must be re-runnable), and seeds
+// runner, executes every migration once more by hand (each must be
+// re-runnable), and seeds
 // Hyderabad twice (idempotent).
 package itest
 
@@ -15,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -86,13 +88,19 @@ func setup(dsn string) (*pgxpool.Pool, error) {
 			return nil, err
 		}
 	}
-	// ... and 001 executed again by hand: it must be re-runnable as is.
-	body, err := fs.ReadFile(database.Migrations, "migrations/001_doorstep_schema.sql")
+	// ... and every file executed again by hand: each must be re-runnable.
+	files, err := fs.Glob(database.Migrations, "migrations/*.sql")
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.Exec(ctx, string(body)); err != nil {
-		return nil, err
+	for _, f := range files {
+		body, err := fs.ReadFile(database.Migrations, f)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.Exec(ctx, string(body)); err != nil {
+			return nil, fmt.Errorf("re-run %s: %w", f, err)
+		}
 	}
 	for i := 0; i < 2; i++ {
 		if err := devseed.Seed(ctx, p); err != nil {
@@ -221,8 +229,9 @@ func TestSchemaAndExclusionConstraint(t *testing.T) {
 		t.Fatalf("doorstep has %d tables, want the full data model (>= 45)", tables)
 	}
 	var applied int
-	if err := p.QueryRow(ctx, `SELECT count(*) FROM public.schema_migrations WHERE service = 'doorstep-service'`).Scan(&applied); err != nil || applied != 1 {
-		t.Fatalf("schema_migrations rows %d err %v, want exactly 1 after two runs", applied, err)
+	files, _ := fs.Glob(database.Migrations, "migrations/*.sql")
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM public.schema_migrations WHERE service = 'doorstep-service'`).Scan(&applied); err != nil || applied != len(files) {
+		t.Fatalf("schema_migrations rows %d err %v, want one per migration file (%d) after two runs", applied, err, len(files))
 	}
 
 	// Calendar: one professional, two overlapping ACTIVE blocks are impossible.

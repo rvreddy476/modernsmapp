@@ -259,23 +259,26 @@ func (s *Store) UpdateCategory(ctx context.Context, a Actor, id uuid.UUID, p mod
 
 // ListSkills lists skills.
 func (s *Store) ListSkills(ctx context.Context) ([]model.Skill, error) {
-	rows, err := s.db.Query(ctx, `SELECT code, name, description FROM doorstep.skills ORDER BY code`)
+	rows, err := s.db.Query(ctx, `SELECT code, name, description, requires_certificate FROM doorstep.skills ORDER BY code`)
 	if err != nil {
 		return nil, err
 	}
 	return collect(rows, func(r pgx.Rows) (model.Skill, error) {
 		var k model.Skill
-		err := r.Scan(&k.Code, &k.Name, &k.Description)
+		err := r.Scan(&k.Code, &k.Name, &k.Description, &k.RequiresCertificate)
 		return k, err
 	})
 }
 
-// CreateSkill inserts a skill.
+// CreateSkill inserts a skill. requires_certificate defaults to TRUE (fail
+// closed: a new skill is verified only through a trade certificate).
 func (s *Store) CreateSkill(ctx context.Context, a Actor, in model.SkillInput) (*model.Skill, error) {
 	var out model.Skill
 	err := s.adminWrite(ctx, a, "skill.create", "skill", in, func(tx pgx.Tx) (string, error) {
-		err := tx.QueryRow(ctx, `INSERT INTO doorstep.skills (code, name, description) VALUES ($1, $2, COALESCE($3::text, ''))
-			RETURNING code, name, description`, in.Code, in.Name, in.Description).Scan(&out.Code, &out.Name, &out.Description)
+		err := tx.QueryRow(ctx, `INSERT INTO doorstep.skills (code, name, description, requires_certificate)
+			VALUES ($1, $2, COALESCE($3::text, ''), COALESCE($4::bool, TRUE))
+			RETURNING code, name, description, requires_certificate`, in.Code, in.Name, in.Description, in.RequiresCertificate).
+			Scan(&out.Code, &out.Name, &out.Description, &out.RequiresCertificate)
 		return in.Code, err
 	})
 	if err != nil {

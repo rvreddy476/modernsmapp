@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/doorstep-service/internal/digilocker"
 	"github.com/atpost/doorstep-service/internal/runtimeenv"
 	"github.com/atpost/doorstep-service/internal/tax"
 	"github.com/atpost/shared/pii"
@@ -95,6 +96,10 @@ type Config struct {
 	DigiLockerMode         string
 	DigiLockerClientID     string
 	DigiLockerClientSecret string
+	// DigiLockerAuthorizeURL / DigiLockerTokenURL default to DigiLocker's
+	// public endpoints (DIGILOCKER_AUTHORIZE_URL / DIGILOCKER_TOKEN_URL).
+	DigiLockerAuthorizeURL string
+	DigiLockerTokenURL     string
 	FaceCompareMode        string
 	SelfieMinSimilarity    int
 	BackgroundCheckMode    string
@@ -123,6 +128,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		PlatformGSTIN:          get("DOORSTEP_PLATFORM_GSTIN"),
 		DigiLockerClientID:     get("DIGILOCKER_CLIENT_ID"),
 		DigiLockerClientSecret: get("DIGILOCKER_CLIENT_SECRET"),
+		DigiLockerAuthorizeURL: orDefault(get("DIGILOCKER_AUTHORIZE_URL"), digilocker.DefaultAuthorizeURL),
+		DigiLockerTokenURL:     orDefault(get("DIGILOCKER_TOKEN_URL"), digilocker.DefaultTokenURL),
 		PublicBaseURL:          get("DOORSTEP_PUBLIC_BASE_URL"),
 		ProAppLinkURL:          get("DOORSTEP_PRO_APP_LINK_URL"),
 		QuoteTTL:               DefaultQuoteTTL,
@@ -271,6 +278,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 
 	for _, u := range []struct{ name, v string }{
 		{"DOORSTEP_PUBLIC_BASE_URL", cfg.PublicBaseURL}, {"DOORSTEP_PRO_APP_LINK_URL", cfg.ProAppLinkURL},
+		{"DIGILOCKER_AUTHORIZE_URL", cfg.DigiLockerAuthorizeURL}, {"DIGILOCKER_TOKEN_URL", cfg.DigiLockerTokenURL},
 	} {
 		if u.v != "" && !isHTTPURL(u.v, prod) {
 			fail("%s must be an absolute %s URL", u.name, pick(prod, "https", "http(s)"))
@@ -357,4 +365,19 @@ func isHTTPURL(raw string, httpsOnly bool) bool {
 		return u.Scheme == "https"
 	}
 	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+// DigiLockerRedirectURI is the redirect_uri registered with DigiLocker: the
+// pro app's link (DOORSTEP_PRO_APP_LINK_URL) when set, else the public base
+// URL's /doorstep-pro/digilocker path, which the pro app claims as an App
+// Link. The app reads code and state from it and calls
+// POST /v1/doorstep/pro/digilocker/callback.
+func (c Config) DigiLockerRedirectURI() string {
+	if c.ProAppLinkURL != "" {
+		return c.ProAppLinkURL
+	}
+	if c.PublicBaseURL == "" {
+		return ""
+	}
+	return strings.TrimRight(c.PublicBaseURL, "/") + "/doorstep-pro/digilocker"
 }

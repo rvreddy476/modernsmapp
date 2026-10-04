@@ -21,6 +21,28 @@ var wantRoutes = []string{
 	"POST /v1/doorstep/serviceability",
 	"POST /v1/doorstep/quotes",
 	"GET /v1/doorstep/quotes/:id",
+	// Professional onboarding (A2).
+	"POST /v1/doorstep/pro/apply",
+	"GET /v1/doorstep/pro/me",
+	"PATCH /v1/doorstep/pro/me",
+	"GET /v1/doorstep/pro/readiness",
+	"POST /v1/doorstep/pro/digilocker/start",
+	"POST /v1/doorstep/pro/digilocker/callback",
+	"POST /v1/doorstep/pro/selfie",
+	"GET /v1/doorstep/pro/skills",
+	"PUT /v1/doorstep/pro/me/skills",
+	"POST /v1/doorstep/pro/me/skills/:code/certificate",
+	"PUT /v1/doorstep/pro/me/area",
+	"GET /v1/doorstep/pro/me/hours",
+	"PUT /v1/doorstep/pro/me/hours",
+	"GET /v1/doorstep/pro/me/days-off",
+	"POST /v1/doorstep/pro/me/days-off",
+	"DELETE /v1/doorstep/pro/me/days-off/:date",
+	"PUT /v1/doorstep/pro/me/bank",
+	"POST /v1/doorstep/pro/me/police-certificate",
+	"POST /v1/doorstep/pro/me/agreement",
+	"PUT /v1/doorstep/pro/me/pan",
+	"POST /v1/doorstep/webhooks/background-check/:provider",
 	"GET /v1/doorstep/internal/admin/cities",
 	"POST /v1/doorstep/internal/admin/cities",
 	"PATCH /v1/doorstep/internal/admin/cities/:code",
@@ -57,6 +79,17 @@ var wantRoutes = []string{
 	"POST /v1/doorstep/internal/admin/commission-rules",
 	"PATCH /v1/doorstep/internal/admin/commission-rules/:id",
 	"GET /v1/doorstep/internal/admin/audit-logs",
+	"GET /v1/doorstep/internal/admin/professionals",
+	"GET /v1/doorstep/internal/admin/professionals/:id",
+	"POST /v1/doorstep/internal/admin/professionals/:id/approve",
+	"POST /v1/doorstep/internal/admin/professionals/:id/reject",
+	"POST /v1/doorstep/internal/admin/professionals/:id/suspend",
+	"POST /v1/doorstep/internal/admin/professionals/:id/reinstate",
+	"POST /v1/doorstep/internal/admin/professionals/:id/block",
+	"POST /v1/doorstep/internal/admin/professionals/:id/skills/:code/verify",
+	"GET /v1/doorstep/internal/admin/documents",
+	"POST /v1/doorstep/internal/admin/documents/:id/decide",
+	"GET /v1/doorstep/internal/admin/documents/:id/view",
 }
 
 func TestRouteInventory(t *testing.T) {
@@ -103,6 +136,33 @@ func TestAdminRoutePermissions(t *testing.T) {
 	}
 	if len(AdminPermissions) != 18 {
 		t.Fatalf("AdminPermissions has %d entries, the contract pins 18", len(AdminPermissions))
+	}
+}
+
+// The A2 admin routes carry the contract's x-permission exactly.
+func TestProAdminRoutePermissions(t *testing.T) {
+	want := map[string]string{
+		"GET /professionals":                          PermProsRead,
+		"GET /professionals/:id":                      PermProsRead,
+		"POST /professionals/:id/approve":             PermProsApprove,
+		"POST /professionals/:id/reject":              PermProsApprove,
+		"POST /professionals/:id/suspend":             PermProsSuspend,
+		"POST /professionals/:id/reinstate":           PermProsSuspend,
+		"POST /professionals/:id/block":               PermProsSuspend,
+		"POST /professionals/:id/skills/:code/verify": PermProsApprove,
+		"GET /documents":                              PermDocumentsReview,
+		"POST /documents/:id/decide":                  PermDocumentsReview,
+		"GET /documents/:id/view":                     PermDocumentsReview,
+	}
+	h := &Handler{}
+	routes := h.proAdminRoutes()
+	if len(routes) != len(want) {
+		t.Fatalf("pro admin routes %d, want %d", len(routes), len(want))
+	}
+	for _, rt := range routes {
+		if p, ok := want[rt.method+" "+rt.path]; !ok || p != rt.perm {
+			t.Errorf("%s %s: permission %s, want %s", rt.method, rt.path, rt.perm, p)
+		}
 	}
 }
 

@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"accept the current agreement version","details":{"current_version":"2026-10-04","field":"version"}},"meta":{"request_id":"fixture"}}
