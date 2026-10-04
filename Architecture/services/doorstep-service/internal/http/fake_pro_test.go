@@ -814,6 +814,10 @@ type fakeMedia struct {
 	unavailable bool
 }
 
+func (m *fakeMedia) PrepareVisitPhoto(ctx context.Context, media, owner uuid.UUID) error {
+	return m.VerifyOwned(ctx, media, owner, mediaclient.KindImage)
+}
+
 func (m *fakeMedia) VerifyOwned(_ context.Context, media, owner uuid.UUID, _ ...mediaclient.Kind) error {
 	if m.unavailable {
 		return mediaclient.ErrUnavailable

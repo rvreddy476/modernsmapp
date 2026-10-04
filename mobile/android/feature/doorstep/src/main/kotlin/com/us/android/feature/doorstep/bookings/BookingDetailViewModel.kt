@@ -47,6 +47,7 @@ data class BookingDetailUiState(
     val extras: List<ExtraDto> = emptyList(),
     val bill: ExtrasBillDto? = null,
     val rework: List<ReworkRequestDto> = emptyList(),
+    val reworkSlots: List<com.us.android.feature.doorstep.data.SlotDto> = emptyList(),
     /** The SSE stream is connected. When false the screen is kept fresh by polling. */
     val live: Boolean = false,
     val error: String? = null,
@@ -60,6 +61,16 @@ data class BookingDetailUiState(
     val submitting: Boolean = false,
     /** A share link to hand to the system share sheet, once. */
     val shareUrl: String? = null,
+    val conversation: com.us.android.feature.doorstep.data.MessagePageDto? = null,
+    val chatBusy: Boolean = false,
+    val chatLoading: Boolean = false,
+    val chatError: String? = null,
+    val trustedContact: com.us.android.feature.doorstep.data.TrustedContactDto? = null,
+    val contactBusy: Boolean = false,
+    val contactError: String? = null,
+    val tickets: List<com.us.android.feature.doorstep.data.TicketDto> = emptyList(),
+    val ticketBusy: Boolean = false,
+    val ticketError: String? = null,
 ) {
     val status: BookingStatus get() = BookingStatus.of(booking?.status)
 
@@ -111,6 +122,98 @@ class BookingDetailViewModel @Inject constructor(
 
     private var streamJob: Job? = null
     private var pollJob: Job? = null
+    private var chatJob: Job? = null
+
+    fun openChat() {
+        chatJob?.cancel()
+        chatJob = viewModelScope.launch {
+            while (true) {
+                loadChat()
+                delay(15_000)
+            }
+        }
+    }
+
+    fun closeChat() { chatJob?.cancel(); chatJob = null }
+
+    private suspend fun loadChat(cursor: String? = null) {
+        if (_state.value.chatLoading) return
+        _state.update { it.copy(chatLoading = true) }
+        // Refresh the loaded window without dropping pages the user opened.
+        val target = _state.value.conversation?.items?.size ?: 0
+        val items = if (cursor == null) mutableListOf() else _state.value.conversation?.items.orEmpty().toMutableList()
+        var next = cursor
+        do {
+            when (val result = repository.messages(bookingId, next)) {
+                is DoorstepResult.Success -> {
+                    items.addAll(result.value.items)
+                    next = result.value.nextCursor
+                    _state.update { it.copy(conversation = result.value.copy(items = items.distinctBy { message -> message.id }), chatError = null) }
+                }
+                is DoorstepResult.Failure -> { _state.update { it.copy(chatLoading = false, chatError = result.error.userMessage()) }; return }
+            }
+        } while (cursor == null && next != null && items.size < target)
+        _state.update { it.copy(chatLoading = false) }
+        _state.value.conversation?.items.orEmpty().filter { it.senderKind == "pro" && it.readAt == null }.forEach {
+            repository.readMessage(bookingId, it.id)
+        }
+    }
+
+    fun loadMoreMessages() = viewModelScope.launch { _state.value.conversation?.nextCursor?.let { loadChat(it) } }
+
+    fun sendMessage(body: String, onSent: () -> Unit) {
+        val text = body.trim()
+        if (text.isBlank() || text.length > 1000 || _state.value.chatBusy) return
+        _state.update { it.copy(chatBusy = true, chatError = null) }
+        viewModelScope.launch {
+            when (val result = repository.sendMessage(bookingId, text)) {
+                is DoorstepResult.Success -> { onSent(); loadChat() }
+                is DoorstepResult.Failure -> _state.update { it.copy(chatError = result.error.userMessage()) }
+            }
+            _state.update { it.copy(chatBusy = false) }
+        }
+    }
+
+    fun loadTrustedContact() = viewModelScope.launch {
+        when (val result = repository.trustedContact()) {
+            is DoorstepResult.Success -> _state.update { it.copy(trustedContact = result.value) }
+            is DoorstepResult.Failure -> _state.update { it.copy(message = errorMessage(result.error.userMessage())) }
+        }
+    }
+
+    fun saveTrustedContact(name: String, phone: String, onSaved: () -> Unit) = viewModelScope.launch {
+        if (_state.value.contactBusy) return@launch
+        _state.update { it.copy(contactBusy = true, contactError = null) }
+        when (val result = repository.saveTrustedContact(name.trim(), phone.trim())) {
+            is DoorstepResult.Success -> { _state.update { it.copy(trustedContact = result.value, message = successMessage("Trusted contact saved")) }; onSaved() }
+            is DoorstepResult.Failure -> _state.update { it.copy(contactError = result.error.userMessage()) }
+        }
+        _state.update { it.copy(contactBusy = false) }
+    }
+
+    fun revokeShare() = viewModelScope.launch {
+        when (val result = repository.revokeShare(bookingId)) {
+            is DoorstepResult.Success -> _state.update { it.copy(message = successMessage("Shared link revoked")) }
+            is DoorstepResult.Failure -> _state.update { it.copy(message = errorMessage(result.error.userMessage())) }
+        }
+    }
+
+    fun loadTickets() = viewModelScope.launch {
+        when (val result = repository.tickets()) {
+            is DoorstepResult.Success -> _state.update { it.copy(tickets = result.value.filter { ticket -> ticket.bookingId == bookingId }, ticketError = null) }
+            is DoorstepResult.Failure -> _state.update { it.copy(ticketError = result.error.userMessage()) }
+        }
+    }
+
+    fun openTicket(category: String, subject: String, body: String, onSaved: () -> Unit) = viewModelScope.launch {
+        if (_state.value.ticketBusy || subject.isBlank() || body.isBlank()) return@launch
+        _state.update { it.copy(ticketBusy = true, ticketError = null) }
+        when (val result = repository.openTicket(com.us.android.feature.doorstep.data.TicketInputDto(bookingId, category, subject.trim(), body.trim()))) {
+            is DoorstepResult.Success -> { _state.update { it.copy(tickets = listOf(result.value) + it.tickets, message = successMessage("Support request sent")) }; onSaved() }
+            is DoorstepResult.Failure -> _state.update { it.copy(ticketError = result.error.userMessage()) }
+        }
+        _state.update { it.copy(ticketBusy = false) }
+    }
 
     init {
         viewModelScope.launch {
@@ -133,6 +236,11 @@ class BookingDetailViewModel @Inject constructor(
     fun payBill() {
         val bill = _state.value.bill ?: return
         billPayment.pay(bookingId, bill.id)
+    }
+
+    fun payProfessionalDifference() {
+        val intent = com.us.android.feature.doorstep.domain.ProChangeRules.payableIntent(_state.value.booking?.pendingChange) ?: return
+        billPayment.payIntent(bookingId, intent)
     }
 
     fun previewCancel() {
@@ -184,11 +292,20 @@ class BookingDetailViewModel @Inject constructor(
         }
     }
 
-    fun requestRework(reason: String) {
+    fun loadReworkSlots() {
+        viewModelScope.launch {
+            when(val result=repository.slots(null,bookingId,null,false)) {
+                is DoorstepResult.Success -> _state.update { it.copy(reworkSlots=result.value.days.flatMap { day -> day.slots }.filter { slot -> slot.available }) }
+                is DoorstepResult.Failure -> _state.update { it.copy(message=errorMessage(result.error.userMessage())) }
+            }
+        }
+    }
+
+    fun requestRework(reason: String, slotStart: String) {
         if (reason.isBlank() || _state.value.submitting) return
         _state.update { it.copy(submitting = true) }
         viewModelScope.launch {
-            when (val result = repository.requestRework(bookingId, reason.trim())) {
+            when (val result = repository.requestRework(bookingId, reason.trim(), slotStart)) {
                 is DoorstepResult.Success -> _state.update {
                     it.copy(submitting = false, reworkRequested = true, rework = it.rework + result.value, message = successMessage("Rework requested"))
                 }
@@ -201,7 +318,7 @@ class BookingDetailViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = repository.sos(bookingId, note)) {
                 is DoorstepResult.Success -> _state.update {
-                    it.copy(message = successMessage("Our safety team has been alerted and will call you."))
+                    it.copy(message = successMessage("Safety alert recorded. If you are in danger, call 112 now; do not wait for a response."))
                 }
                 is DoorstepResult.Failure -> _state.update {
                     it.copy(message = errorMessage("Couldn't reach us. If you're in danger, call 112."))

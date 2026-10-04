@@ -547,6 +547,9 @@ func (s *Service) Booking(ctx context.Context, user, id uuid.UUID) (*model.Booki
 	if aerr != nil {
 		return nil, aerr
 	}
+	if ae := s.customerVisitCodes(ctx, b); ae != nil {
+		return nil, ae
+	}
 	return b, nil
 }
 

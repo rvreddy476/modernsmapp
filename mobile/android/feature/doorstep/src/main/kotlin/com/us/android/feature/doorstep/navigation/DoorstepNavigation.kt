@@ -19,6 +19,7 @@ import com.us.android.feature.doorstep.catalogue.CategoryScreen
 import com.us.android.feature.doorstep.checkout.CheckoutScreen
 import com.us.android.feature.doorstep.outstanding.OutstandingScreen
 import com.us.android.feature.doorstep.payment.DoorstepPaymentRequest
+import com.us.android.feature.doorstep.professionals.ProfessionalsScreen
 import com.us.android.feature.doorstep.service.ServiceDetailScreen
 import kotlinx.serialization.Serializable
 
@@ -35,25 +36,53 @@ data class DoorstepCategoryRoute(val slug: String)
 @Serializable
 data class DoorstepServiceRoute(val serviceId: String)
 
-/** [forBooking] true when the next step is the slot picker; false when only managing addresses. */
+/** [forBooking] true when the next step is the professionals list; false when only managing addresses. */
 @Serializable
 data class DoorstepAddressesRoute(val forBooking: Boolean = false)
 
 @Serializable
 data object DoorstepAddAddressRoute
 
-/** A new booking for [addressId] (the service pick rides the session), or a reschedule of [rescheduleBookingId]. */
+/**
+ * B1: the professionals step. A new booking for [addressId] (the service pick
+ * rides the session), or [bookingId]'s alternatives while it is
+ * pro_unavailable (the `doorstep.booking.pro_unavailable` push lands here).
+ */
 @Serializable
-data class DoorstepSlotsRoute(val addressId: String? = null, val rescheduleBookingId: String? = null)
+data class DoorstepProfessionalsRoute(val addressId: String? = null, val bookingId: String? = null)
 
-/** Everything checkout needs to rebuild itself from the server after process death. */
+/**
+ * The full calendar of ONE professional: a new booking's [quoteId] (priced
+ * with the picked professional, so the slots are theirs) at [addressId], or
+ * a reschedule of [rescheduleBookingId] (same professional only).
+ */
+@Serializable
+data class DoorstepSlotsRoute(
+    val addressId: String? = null,
+    val rescheduleBookingId: String? = null,
+    val quoteId: String? = null,
+    val proFirstName: String? = null,
+)
+
+/**
+ * Everything checkout needs to rebuild itself from the server after process
+ * death: the quote (it carries the professional), the address, and exactly
+ * one of [slotStart] or [asap].
+ */
 @Serializable
 data class DoorstepCheckoutRoute(
     val quoteId: String,
     val addressId: String,
-    val slotStart: String,
+    val slotStart: String? = null,
+    val asap: Boolean = false,
     val requireFemalePro: Boolean,
+    val proFirstName: String? = null,
+    /** ASAP only, for display; [NO_ETA] when unknown. */
+    val etaMinutes: Int = NO_ETA,
 )
+
+/** [DoorstepCheckoutRoute.etaMinutes] when the list gave no ETA. */
+const val NO_ETA = -1
 
 @Serializable
 data object DoorstepBookingsRoute
@@ -107,7 +136,7 @@ fun NavGraphBuilder.doorstepScreens(
                 onBack = navController::popBackStack,
                 onAdd = { navController.navigate(DoorstepAddAddressRoute) },
                 onPicked = { addressId ->
-                    if (forBooking) navController.navigate(DoorstepSlotsRoute(addressId = addressId)) else navController.popBackStack()
+                    if (forBooking) navController.navigate(DoorstepProfessionalsRoute(addressId = addressId)) else navController.popBackStack()
                 },
             )
         }
@@ -119,12 +148,52 @@ fun NavGraphBuilder.doorstepScreens(
             )
         }
 
+        composable<DoorstepProfessionalsRoute> {
+            ProfessionalsScreen(
+                onBack = navController::popBackStack,
+                onCheckout = { outcome ->
+                    navController.navigate(
+                        DoorstepCheckoutRoute(
+                            quoteId = outcome.quoteId,
+                            addressId = outcome.addressId,
+                            slotStart = outcome.slotStart,
+                            asap = outcome.asap,
+                            requireFemalePro = outcome.requireFemalePro,
+                            proFirstName = outcome.proFirstName,
+                            etaMinutes = outcome.etaMinutes ?: NO_ETA,
+                        ),
+                    )
+                },
+                onMoreTimes = { outcome ->
+                    navController.navigate(
+                        DoorstepSlotsRoute(addressId = outcome.addressId, quoteId = outcome.quoteId, proFirstName = outcome.proFirstName),
+                    )
+                },
+                onBackToBooking = { bookingId ->
+                    // Back to the booking (it re-reads itself on resume); open it when the push came straight here.
+                    if (!navController.popBackStack<DoorstepBookingRoute>(inclusive = false)) {
+                        navController.navigate(DoorstepBookingRoute(bookingId)) {
+                            popUpTo<DoorstepProfessionalsRoute> { inclusive = true }
+                        }
+                    }
+                },
+                onOpenOutstanding = { navController.navigate(DoorstepOutstandingRoute) },
+                onStartAgain = { navController.popBackStack<DoorstepHomeRoute>(inclusive = false) },
+            )
+        }
+
         composable<DoorstepSlotsRoute> {
             SlotPickerScreen(
                 onBack = navController::popBackStack,
                 onCheckout = { outcome ->
                     navController.navigate(
-                        DoorstepCheckoutRoute(outcome.quoteId, outcome.addressId, outcome.slotStart, outcome.requireFemalePro),
+                        DoorstepCheckoutRoute(
+                            quoteId = outcome.quoteId,
+                            addressId = outcome.addressId,
+                            slotStart = outcome.slotStart,
+                            requireFemalePro = outcome.requireFemalePro,
+                            proFirstName = outcome.proFirstName,
+                        ),
                     )
                 },
                 onRescheduled = { navController.popBackStack() },
@@ -139,8 +208,8 @@ fun NavGraphBuilder.doorstepScreens(
                 onOpenPayment = onOpenPayment,
                 onAbandonPayment = onAbandonPayment,
                 onPickAnotherSlot = {
-                    // Back to the slot step (a fresh quote and fresh slots); home when it is gone.
-                    if (!navController.popBackStack<DoorstepSlotsRoute>(inclusive = false)) {
+                    // Back to the professionals step (a fresh list, a fresh quote); home when it is gone.
+                    if (!navController.popBackStack<DoorstepProfessionalsRoute>(inclusive = false)) {
                         navController.navigate(DoorstepHomeRoute)
                     }
                 },
@@ -171,6 +240,7 @@ fun NavGraphBuilder.doorstepScreens(
             BookingDetailScreen(
                 onBack = navController::popBackStack,
                 onReschedule = { navController.navigate(DoorstepSlotsRoute(rescheduleBookingId = it)) },
+                onChooseProfessional = { navController.navigate(DoorstepProfessionalsRoute(bookingId = it)) },
                 onOpenPayment = onOpenPayment,
                 onAbandonPayment = onAbandonPayment,
             )
@@ -192,6 +262,16 @@ fun NavController.navigateToDoorstep() = navigate(DoorstepGraph)
 
 /** A Doorstep push: the booking screen, which reads the real state from the server. */
 fun NavController.navigateToDoorstepBooking(bookingId: String) = navigate(DoorstepBookingRoute(bookingId))
+
+/**
+ * The `doorstep.booking.pro_unavailable` push (deep link
+ * `momentum://doorstep/bookings/{id}/professionals`): the choice screen, with
+ * the booking under it so Back lands on the booking, never out of Doorstep.
+ */
+fun NavController.navigateToDoorstepChooseProfessional(bookingId: String) {
+    navigate(DoorstepBookingRoute(bookingId))
+    navigate(DoorstepProfessionalsRoute(bookingId = bookingId))
+}
 
 /** The `doorstep.outstanding.due` push: the dues screen. */
 fun NavController.navigateToDoorstepOutstanding() = navigate(DoorstepOutstandingRoute)

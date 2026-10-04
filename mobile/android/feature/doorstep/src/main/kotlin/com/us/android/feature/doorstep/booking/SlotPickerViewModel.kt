@@ -30,7 +30,7 @@ import javax.inject.Inject
 /** Where the slot step goes next. */
 sealed interface SlotOutcome {
     /** A new booking: checkout for this quote, address and slot. */
-    data class Checkout(val quoteId: String, val addressId: String, val slotStart: String, val requireFemalePro: Boolean) : SlotOutcome
+    data class Checkout(val quoteId: String, val addressId: String, val slotStart: String, val requireFemalePro: Boolean, val proFirstName: String? = null) : SlotOutcome
 
     /** A reschedule the server accepted. */
     data object Rescheduled : SlotOutcome
@@ -71,6 +71,8 @@ class SlotPickerViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val addressId: String? = savedStateHandle.get<String>("addressId")
+    private val quoteId: String? = savedStateHandle.get<String>("quoteId")
+    private val proFirstName: String? = savedStateHandle.get<String>("proFirstName")
     private val rescheduleBookingId: String? = savedStateHandle.get<String>("rescheduleBookingId")
 
     private val _state = MutableStateFlow(SlotPickerUiState(rescheduling = rescheduleBookingId != null))
@@ -103,7 +105,7 @@ class SlotPickerViewModel @Inject constructor(
             val quote = s.quote ?: return
             val address = s.address ?: return
             val requireWoman = session.draft.value?.selection?.requireWoman ?: false
-            _state.update { it.copy(outcome = SlotOutcome.Checkout(quote.id, address.id, slot.start, requireWoman)) }
+            _state.update { it.copy(outcome = SlotOutcome.Checkout(quote.id, address.id, slot.start, requireWoman, proFirstName)) }
             return
         }
         _state.update { it.copy(submitting = true) }
@@ -123,8 +125,8 @@ class SlotPickerViewModel @Inject constructor(
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     private suspend fun loadNew() {
-        val draft = session.draft.value
-        if (draft == null) {
+        val selectedQuoteId = quoteId
+        if (selectedQuoteId == null) {
             _state.update { it.copy(loading = false, draftLost = true) }
             return
         }
@@ -132,15 +134,9 @@ class SlotPickerViewModel @Inject constructor(
             _state.update { it.copy(loading = false, error = "Pick an address for the visit first.") }
             return
         }
-        val request = QuoteRequestDto(
-            serviceId = draft.service.id,
-            optionId = draft.selection.optionId.orEmpty(),
-            quantity = draft.selection.quantity,
-            addons = draft.selection.addonIds.sorted().map(::QuoteAddonDto),
-            lat = address.lat,
-            lng = address.lng,
-        )
-        val quote = when (val result = repository.createQuote(request)) {
+        // Keep the quote priced with the professional the customer picked.
+        // Recreating it here would lose that choice, especially after process death.
+        val quote = when (val result = repository.quote(selectedQuoteId)) {
             is DoorstepResult.Success -> result.value
             is DoorstepResult.Failure -> {
                 _state.update { it.copy(loading = false, address = address, error = result.error.userMessage()) }
@@ -148,7 +144,7 @@ class SlotPickerViewModel @Inject constructor(
             }
         }
         _state.update { it.copy(quote = quote, address = address) }
-        applySlots(repository.slots(quote.id, null, address.id, draft.selection.requireWoman))
+        applySlots(repository.slots(quote.id, null, address.id, session.draft.value?.selection?.requireWoman ?: false))
     }
 
     private suspend fun loadReschedule(bookingId: String) {

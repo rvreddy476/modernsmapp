@@ -323,3 +323,122 @@ type BookingProChangedData struct {
 	DifferencePaise   int64      `json:"difference_paise"`
 	Asap              bool       `json:"asap"`
 }
+
+// Visit event types (A5).
+const (
+	BookingEnRoute            = "doorstep.booking.en_route"
+	BookingArrived            = "doorstep.booking.arrived"
+	BookingStarted            = "doorstep.booking.started"
+	BookingExtrasProposed     = "doorstep.booking.extras_proposed"
+	BookingExtrasDecided      = "doorstep.booking.extras_decided"
+	BookingExtrasPaymentDue   = "doorstep.booking.extras_payment_due"
+	BookingExtrasPaid         = "doorstep.booking.extras_paid"
+	BookingOutstandingCreated = "doorstep.booking.outstanding_created"
+	BookingCompleted          = "doorstep.booking.completed"
+	BookingRated              = "doorstep.booking.rated"
+	BookingReworkRequested    = "doorstep.booking.rework_requested"
+	BookingMessageSent        = "doorstep.booking.message_sent"
+	IncidentRaised            = "doorstep.incident.raised"
+	ProSettlementComputed     = "doorstep.pro.settlement_computed"
+)
+
+// A5 pro_unavailable causes: the professional left feeling unsafe (no
+// penalty), or a salon customer's incident suspended them.
+const (
+	UnavailableProUnsafeExit = "pro_unsafe_exit"
+	UnavailableProSuspended  = "pro_suspended"
+)
+
+// BookingEnRouteData is doorstep.booking.en_route's data.
+type BookingEnRouteData struct {
+	BookingCore
+	EtaMinutes *int `json:"eta_minutes"`
+}
+
+// BookingExtrasProposedData is doorstep.booking.extras_proposed's data.
+type BookingExtrasProposedData struct {
+	BookingCore
+	ExtraID    uuid.UUID `json:"extra_id"`
+	Name       string    `json:"name"`
+	TotalPaise int64     `json:"total_paise"`
+}
+
+// BookingExtrasDecidedData is doorstep.booking.extras_decided's data.
+type BookingExtrasDecidedData struct {
+	BookingCore
+	ExtraID  uuid.UUID `json:"extra_id"`
+	Decision string    `json:"decision"`
+}
+
+// BookingExtrasBillData is the data of extras_payment_due (with due_at),
+// extras_paid and outstanding_created.
+type BookingExtrasBillData struct {
+	BookingCore
+	BillID      uuid.UUID  `json:"bill_id"`
+	AmountPaise int64      `json:"amount_paise"`
+	DueAt       *time.Time `json:"due_at,omitempty"`
+}
+
+// BookingCompletedData is doorstep.booking.completed's data.
+type BookingCompletedData struct {
+	BookingCore
+	TotalPaise       int64 `json:"total_paise"`
+	ExtrasTotalPaise int64 `json:"extras_total_paise"`
+}
+
+// BookingRatedData is doorstep.booking.rated's data.
+type BookingRatedData struct {
+	BookingCore
+	RaterKind string `json:"rater_kind"`
+	Stars     int    `json:"stars"`
+}
+
+// BookingReworkRequestedData is doorstep.booking.rework_requested's data.
+type BookingReworkRequestedData struct {
+	BookingCore
+	ReworkID       uuid.UUID  `json:"rework_id"`
+	ChildBookingID *uuid.UUID `json:"child_booking_id"`
+}
+
+// BookingMessageSentData is doorstep.booking.message_sent's data: never the
+// body.
+type BookingMessageSentData struct {
+	BookingCore
+	MessageID  uuid.UUID `json:"message_id"`
+	SenderKind string    `json:"sender_kind"`
+}
+
+// IncidentRaisedData is doorstep.incident.raised's data (ops page it; the
+// note and the position stay in the database).
+type IncidentRaisedData struct {
+	IncidentID       uuid.UUID  `json:"incident_id"`
+	BookingID        *uuid.UUID `json:"booking_id"`
+	CustomerUserID   *uuid.UUID `json:"customer_user_id"`
+	ProUserID        *uuid.UUID `json:"pro_user_id"`
+	Kind             string     `json:"kind"`
+	Severity         string     `json:"severity"`
+	RaisedByKind     string     `json:"raised_by_kind"`
+	ProAutoSuspended bool       `json:"pro_auto_suspended"`
+}
+
+// Incident builds doorstep.incident.raised: partition key is the booking
+// (else the incident), the envelope names both users.
+func Incident(d IncidentRaisedData, at time.Time) (key string, payload []byte, err error) {
+	payload, err = json.Marshal(Envelope{EventID: uuid.New(), EventType: IncidentRaised, Version: 1, OccurredAt: at.UTC(),
+		BookingID: d.BookingID, CustomerUserID: d.CustomerUserID, ProUserID: d.ProUserID, Data: d})
+	key = d.IncidentID.String()
+	if d.BookingID != nil {
+		key = d.BookingID.String()
+	}
+	return key, payload, err
+}
+
+// ProSettlementComputedData is doorstep.pro.settlement_computed's data.
+type ProSettlementComputedData struct {
+	SettlementID uuid.UUID `json:"settlement_id"`
+	ProID        uuid.UUID `json:"pro_id"`
+	ProUserID    uuid.UUID `json:"pro_user_id"`
+	NetPaise     int64     `json:"net_paise"`
+	PeriodStart  string    `json:"period_start"`
+	PeriodEnd    string    `json:"period_end"`
+}

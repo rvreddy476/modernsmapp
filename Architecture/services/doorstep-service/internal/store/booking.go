@@ -142,6 +142,8 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 		       COALESCE((SELECT st.same_day FROM doorstep.pro_service_settings st WHERE st.pro_id = p.id AND st.service_id = $6), FALSE)
 		FROM doorstep.professionals p, pt
 		WHERE p.city_code = $1 AND p.status = 'approved' AND ($7::uuid[] IS NULL OR p.id = ANY($7))
+          AND (NOT EXISTS (SELECT 1 FROM doorstep.services s JOIN doorstep.categories c ON c.id=s.category_id
+                 WHERE s.id=$6 AND c.family IN ('BEAUTY_SALON','CAR_CARE','HOME_STAFFING','RELOCATION','PHOTOGRAPHY','FITNESS_WELLNESS')) OR p.gstin IS NOT NULL)
 		ORDER BY p.id`, q.City, q.ZoneID, q.Lat, q.Lng, q.Skill, q.ServiceID, proIDs(q.ProIDs))
 	if err != nil {
 		return nil, err
@@ -393,6 +395,21 @@ func holdFirstTx(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, candidates
 		sp, err := tx.Begin(ctx)
 		if err != nil {
 			return uuid.Nil, err
+		}
+		var permitted bool
+		err = sp.QueryRow(ctx, `SELECT p.status='approved' AND NOT p.incident_suspended AND
+              (c.family NOT IN ('BEAUTY_SALON','CAR_CARE','HOME_STAFFING','RELOCATION','PHOTOGRAPHY','FITNESS_WELLNESS') OR p.gstin IS NOT NULL)
+              FROM doorstep.professionals p JOIN doorstep.bookings b ON b.id=$2 JOIN doorstep.categories c ON c.id=b.category_id
+              WHERE p.id=$1 FOR SHARE OF p`, pro, bookingID).Scan(&permitted)
+		if err != nil || !permitted {
+			_ = sp.Rollback(ctx)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return uuid.Nil, ErrNotFound
+			}
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return uuid.Nil, err
+			}
+			continue
 		}
 		_, err = sp.Exec(ctx, `INSERT INTO doorstep.pro_calendar_blocks (pro_id, kind, booking_id, during, expires_at)
 			VALUES ($1, $2, $3, tstzrange($4, $5, '[)'), $6)`, pro, kind, bookingID, start, end, expiresAt)

@@ -8,4 +8,5 @@ package com.us.android.feature.doorstep.ui
  */
 class DoorstepMediaUrls(private val baseUrl: String) {
     fun serve(mediaId: String): String = baseUrl.trimEnd('/') + "/v1/media/" + mediaId.trim() + "/serve"
+    fun visit(bookingId: String, mediaId: String): String = baseUrl.trimEnd('/') + "/v1/doorstep/bookings/" + bookingId + "/photos/" + mediaId
 }

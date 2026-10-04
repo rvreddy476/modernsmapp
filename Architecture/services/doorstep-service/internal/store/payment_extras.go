@@ -60,7 +60,7 @@ func (s *Store) ApplyExtrasPaymentEvent(ctx context.Context, ev payments.Event) 
 	if err != nil {
 		return applied, err
 	}
-	if kind != "pro_change" {
+	if kind != "pro_change" && kind != "visit_extras" {
 		applied.Decision = payments.Decision{Outcome: payments.OutcomeUnclaimed, Detail: "visit extras are the visit lane's"}
 		return applied, nil
 	}
@@ -109,7 +109,15 @@ func (s *Store) applyExtrasEffectTx(ctx context.Context, tx pgx.Tx, ev payments.
 	var err error
 	switch ev.EventType {
 	case sharedevents.EventPaymentSucceeded:
-		d, err = s.extrasSucceededTx(ctx, tx, ev, l, at, applied)
+		var kind string
+		if err = tx.QueryRow(ctx, `SELECT kind FROM doorstep.extras_bills WHERE id=$1`, ev.ExtrasBillID).Scan(&kind); err != nil {
+			return err
+		}
+		if kind == "visit_extras" {
+			d, err = s.visitExtrasSucceededTx(ctx, tx, ev, l, at, applied)
+		} else {
+			d, err = s.extrasSucceededTx(ctx, tx, ev, l, at, applied)
+		}
 	default:
 		// failed / refunded / refund_failed: the booking table's own rules,
 		// on this payment row.

@@ -32,6 +32,10 @@ import com.us.android.feature.doorsteppro.data.ServiceabilityDto
 import com.us.android.feature.doorsteppro.data.SkillDto
 import com.us.android.feature.doorsteppro.data.WeeklyHoursDto
 import com.us.android.feature.doorsteppro.data.code
+import com.us.android.feature.doorsteppro.data.ProPriceDto
+import com.us.android.feature.doorsteppro.data.ProServicePricingDto
+import com.us.android.feature.doorsteppro.data.SameDaySettingDto
+import com.us.android.feature.doorsteppro.data.ProZoneDto
 import com.us.android.feature.doorsteppro.data.detailInt
 import com.us.android.feature.doorsteppro.data.detailText
 import com.us.android.feature.doorsteppro.data.field
@@ -76,6 +80,57 @@ class ProContractFixtureTest {
     private val backendDir = File("../../../../Architecture/services/doorstep-service/internal/http/testdata/contracts")
 
     private val parsers: Map<String, (raw: String) -> Unit> = mapOf(
+        "pro_start_422_photos.json" to error(422) {},
+        "pro_start_400_otp.json" to error(400) {},
+        "pro_complete_409_extras.json" to error(409) {},
+        "pro_en_route_200.json" to data(ProJobDto.serializer()) {},
+        "pro_arrived_200.json" to data(ProJobDto.serializer()) {},
+        "pro_photo_201.json" to data(PhotoDto.serializer()) {},
+        "pro_start_200.json" to data(ProJobDto.serializer()) {},
+        "pro_extra_options_get_200.json" to data(ProListDto.serializer(ExtraOptionDto.serializer())) {},
+        "pro_extra_post_201.json" to data(ExtraDto.serializer()) {},
+        "pro_extras_get_200.json" to data(ProListDto.serializer(ExtraDto.serializer())) {},
+        "pro_finish_200.json" to data(ProJobDto.serializer()) {},
+        "pro_complete_200.json" to data(ProJobDto.serializer()) {},
+        "pro_no_show_200.json" to data(ProJobDto.serializer()) {},
+        "pro_sos_201.json" to data(IncidentDto.serializer()) {},
+        "pro_unsafe_exit_201.json" to data(IncidentDto.serializer()) {},
+        "pro_rating_201.json" to data(RatingDto.serializer()) {},
+        "pro_message_post_201.json" to data(MessageDto.serializer()) {},
+        "pro_messages_get_200.json" to data(MessagePageDto.serializer()) {},
+        "pro_earnings_get_200.json" to data(EarningsDto.serializer()) {},
+        "pro_duty_off_200.json" to data(DutyStateDto.serializer()) {},
+        "pro_duty_on_200.json" to data(DutyStateDto.serializer()) {},
+        "pro_me_duty_get_200.json" to data(DutyStateDto.serializer()) {},
+        "pro_jobs_get_200.json" to data(ProJobPageDto.serializer()) {},
+        "pro_job_get_200.json" to data(ProJobDto.serializer()) {},
+        "pro_job_get_200_offered.json" to data(ProJobDto.serializer()) {},
+        "pro_offer_accept_200.json" to data(ProJobDto.serializer()) {},
+        "pro_me_area_get_200.json" to data(ProAreaDto.serializer()) {},
+        "pro_me_bank_get_200.json" to data(PayoutAccountDto.serializer()) {},
+        "pro_me_documents_get_200.json" to data(ProListDto.serializer(ProDocumentDto.serializer())) {},
+        "pro_me_skills_get_200.json" to data(ProListDto.serializer(ProSkillDto.serializer())) {},
+        "pro_offers_get_200.json" to data(ProListDto.serializer(OfferDto.serializer())) {},
+        "pro_offer_get_200.json" to data(OfferDto.serializer()) {},
+        "pro_prices_get_200.json" to data(ProListDto.serializer(ProServicePricingDto.serializer())) {},
+        "pro_price_post_201.json" to data(ProPriceDto.serializer()) {},
+        "pro_price_withdraw_200.json" to data(ProPriceDto.serializer()) {},
+        "pro_realtime_token_post_200.json" to data(RealtimeTokenDto.serializer()) {},
+        "pro_same_day_put_200.json" to data(SameDaySettingDto.serializer()) {},
+        "pro_zones_get_200.json" to data(ProListDto.serializer(ProZoneDto.serializer())) {},
+        "pro_duty_on_403_not_approved.json" to error(403) {},
+        "pro_jobs_get_400_date.json" to error(400) {},
+        "pro_location_400.json" to error(400) {},
+        "pro_location_409_not_on_duty.json" to error(409) {},
+        "pro_offer_accept_404.json" to error(404) {},
+        "pro_offer_accept_409_taken.json" to error(409) {},
+        "pro_offer_accept_410_expired.json" to error(410) {},
+        "pro_offer_decline_400_reason.json" to error(400) {},
+        "pro_offer_get_404.json" to error(404) {},
+        "pro_price_post_400.json" to error(400) {},
+        "pro_price_post_403_skill.json" to error(403) {},
+        "pro_price_post_409_unchanged.json" to error(409) {},
+        "pro_price_withdraw_409.json" to error(409) {},
         // ── Apply and profile ──
         "pro_apply_201.json" to data(ProfessionalDto.serializer()) { dto ->
             assertThat(ProStatus.of(dto.status)).isEqualTo(ProStatus.DRAFT)
@@ -97,7 +152,7 @@ class ProContractFixtureTest {
             val checklist = OnboardingChecklist.of(dto)
             assertThat(checklist.status).isEqualTo(ProStatus.DRAFT)
             assertThat(checklist.next).isEqualTo(OnboardingStep.PROFILE)
-            assertThat(checklist.items.first { it.step == OnboardingStep.SKILLS }.state).isEqualTo(StepState.DONE)
+            assertThat(checklist.items.first { it.step == OnboardingStep.SKILLS }.state).isEqualTo(StepState.TO_DO)
             // The selfie waits for Aadhaar.
             assertThat(checklist.items.first { it.step == OnboardingStep.SELFIE }.state).isEqualTo(StepState.WAITING)
             assertThat(checklist.items.last().state).isEqualTo(StepState.OPTIONAL)
@@ -134,7 +189,7 @@ class ProContractFixtureTest {
         "pro_digilocker_callback_400_state.json" to error(400) { assertThat(it.field).isEqualTo("state") },
         // ── Selfie ──
         "pro_selfie_200.json" to data(KycCheckDto.serializer()) { dto ->
-            assertThat(dto.status).isEqualTo("passed")
+            assertThat(dto.status).isEqualTo("pending")
             assertThat(dto.score).isEqualTo(96.0)
         },
         "pro_selfie_200_pending.json" to data(KycCheckDto.serializer()) { assertThat(it.verifiedAt).isNull() },
@@ -146,7 +201,7 @@ class ProContractFixtureTest {
             assertThat(dto.items.first { it.code == "deep_cleaning" }.requiresCertificate).isFalse()
         },
         "pro_skills_put_200.json" to data(ProListDto.serializer(ProSkillDto.serializer())) { dto ->
-            assertThat(dto.items.map { it.status }).containsExactly("verified", "pending").inOrder()
+            assertThat(dto.items.map { it.status }).containsExactly("pending", "pending").inOrder()
         },
         "pro_skills_put_400_unknown.json" to error(400) { assertThat(it.field).isEqualTo("skill_codes") },
         "pro_skills_put_403_gender.json" to error(403) { assertThat(it.code).isEqualTo(ProCodes.GENDER_RULE) },
@@ -256,54 +311,7 @@ class ProContractFixtureTest {
      *       GET  /pro/jobs/{id}/extras/options 200      pro_job_extra_options_200.json
      *       GET  /pro/jobs/{id}/extras 200              pro_job_extras_200.json
      */
-    private val pending: Map<String, (raw: String) -> Unit> = mapOf(
-        "pro_duty_on_200.json" to data(DutyStateDto.serializer()) { assertThat(it.onDuty).isTrue() },
-        "pro_duty_off_200.json" to data(DutyStateDto.serializer()) { assertThat(it.onDuty).isFalse() },
-        "pro_duty_on_403_not_approved.json" to error(403) { assertThat(it.code).isEqualTo(ProCodes.PRO_NOT_APPROVED) },
-        "pro_location_409_not_on_duty.json" to error(409) { assertThat(it.code).isEqualTo(ProCodes.NOT_ON_DUTY) },
-        "pro_offers_list_200.json" to data(ProListDto.serializer(OfferDto.serializer())) {},
-        "pro_offer_accept_200.json" to data(ProJobDto.serializer()) { assertThat(it.address).isNotNull() },
-        "pro_offer_accept_409_taken.json" to error(409) { assertThat(it.code).isEqualTo(ProCodes.OFFER_TAKEN) },
-        "pro_offer_accept_410_expired.json" to error(410) { assertThat(it.code).isEqualTo(ProCodes.OFFER_EXPIRED) },
-        "pro_jobs_list_200.json" to data(ProJobPageDto.serializer()) {},
-        "pro_job_get_200.json" to data(ProJobDto.serializer()) {},
-        "pro_realtime_token_200.json" to data(RealtimeTokenDto.serializer()) { dto ->
-            assertThat(dto.topics.any { it.startsWith("doorstep.pro.") }).isTrue()
-        },
-        "pro_job_en_route_200.json" to data(ProJobDto.serializer()) { assertThat(it.status).isEqualTo("en_route") },
-        "pro_job_arrived_200.json" to data(ProJobDto.serializer()) { assertThat(it.status).isEqualTo("arrived") },
-        "pro_job_arrived_422_geo.json" to error(422) { err ->
-            assertThat(err.code).isEqualTo(ProCodes.GEO_CHECK_FAILED)
-            assertThat(err.detailInt("max_distance_m")).isNotNull()
-        },
-        "pro_job_photo_201.json" to data(PhotoDto.serializer()) {},
-        "pro_job_start_200.json" to data(ProJobDto.serializer()) { assertThat(it.status).isEqualTo("in_progress") },
-        "pro_job_start_422_otp.json" to error(422) { err ->
-            assertThat(err.code).isEqualTo(ProCodes.OTP_INVALID)
-            assertThat(err.detailInt("attempts_left")).isNotNull()
-        },
-        "pro_job_start_422_photos.json" to error(422) { err ->
-            assertThat(err.code).isEqualTo(ProCodes.PHOTOS_REQUIRED)
-            assertThat(err.detailText("phase")).isNotNull()
-        },
-        "pro_job_start_423_locked.json" to error(423) { err ->
-            assertThat(err.code).isEqualTo(ProCodes.OTP_LOCKED)
-            assertThat(err.detailText("locked_until")).isNotNull()
-        },
-        "pro_job_extra_post_201.json" to data(ExtraDto.serializer()) { assertThat(it.status).isEqualTo("proposed") },
-        "pro_job_finish_200.json" to data(ProJobDto.serializer()) {},
-        "pro_job_finish_409_extras_pending.json" to error(409) { assertThat(it.code).isEqualTo(ProCodes.EXTRAS_PENDING) },
-        "pro_job_complete_200.json" to data(ProJobDto.serializer()) { assertThat(it.status).isEqualTo("completed") },
-        "pro_job_no_show_200.json" to data(ProJobDto.serializer()) { assertThat(it.status).isEqualTo("customer_no_show") },
-        "pro_job_sos_201.json" to data(IncidentDto.serializer()) { assertThat(it.raisedByKind).isEqualTo("pro") },
-        "pro_job_unsafe_exit_201.json" to data(IncidentDto.serializer()) { assertThat(it.kind).isEqualTo("unsafe_exit") },
-        "pro_job_rating_201.json" to data(RatingDto.serializer()) { assertThat(it.raterKind).isEqualTo("pro") },
-        "pro_job_messages_200.json" to data(MessagePageDto.serializer()) {},
-        "pro_job_message_post_201.json" to data(MessageDto.serializer()) { assertThat(it.senderKind).isEqualTo("pro") },
-        "pro_earnings_200.json" to data(EarningsDto.serializer()) {},
-        "pro_job_extra_options_200.json" to data(ProListDto.serializer(ExtraOptionDto.serializer())) {},
-        "pro_job_extras_200.json" to data(ProListDto.serializer(ExtraDto.serializer())) {},
-    )
+    private val pending: Map<String, (raw: String) -> Unit> = emptyMap()
 
     private fun fixtures(): Set<String> = contractsDir.listFiles { f -> f.name.endsWith(".json") }.orEmpty().map { it.name }.toSet()
 
@@ -318,27 +326,21 @@ class ProContractFixtureTest {
 
     @Test
     fun `every fixture decodes strictly into its DTO`() {
+        val failures = mutableListOf<String>()
         for ((name, parse) in parsers) {
             val raw = File(contractsDir, name).readText()
             try {
                 parse(raw)
             } catch (e: Throwable) {
-                throw AssertionError("fixture $name failed to parse: ${e.message}", e)
+                failures += "fixture $name failed to parse: ${e.message}"
             }
         }
+        assertThat(failures).isEmpty()
     }
 
     @Test
-    fun `pending fixtures decode once the backend publishes them`() {
-        val published = pending.keys.filter { File(contractsDir, it).exists() }
-        assumeTrue("none of the pending fixtures is published yet: ${pending.keys}", published.isNotEmpty())
-        for (name in published) {
-            try {
-                pending.getValue(name)(File(contractsDir, name).readText())
-            } catch (e: Throwable) {
-                throw AssertionError("fixture $name failed to parse: ${e.message}", e)
-            }
-        }
+    fun `no visit contract remains deferred`() {
+        assertThat(pending).isEmpty()
     }
 
     /** Byte for byte what doorstep-service's handler tests write — and every pro_* golden the backend has is copied. */

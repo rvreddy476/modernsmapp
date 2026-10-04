@@ -67,6 +67,7 @@ func (s *Service) proUnavailable(ctx context.Context, id uuid.UUID, sp unavailab
 	if err != nil {
 		return nil, err
 	}
+	s.SubmitRefunds(ctx, res.RefundIDs...)
 	if res.ClosedOutcome != "" && res.ClosedOfferID != nil && res.ClosedProUserID != nil {
 		s.publish(ctx, ProTopic(*res.ClosedProUserID), FrameOfferClosed, OfferClosedFrame{OfferID: *res.ClosedOfferID, BookingID: id,
 			Outcome: res.ClosedOutcome, At: now})
@@ -149,6 +150,7 @@ func (s *Service) alternativesPlace(ctx context.Context, rec *store.BookingRecor
 	}
 	id, total := b.ID, b.TotalPaise
 	p.booking, p.baseTotal = &id, &total
+	p.rework = b.ParentBookingID != nil
 	return p, nil
 }
 
@@ -251,6 +253,9 @@ func (s *Service) ChangeProfessional(ctx context.Context, user, id uuid.UUID, id
 			return nil, ae
 		}
 		return nil, internal(ctx, "price selection", err)
+	}
+	if rec.Booking.ParentBookingID != nil {
+		zeroReworkPrice(priced)
 	}
 	from, to := now.AddDate(0, 0, -1), now.AddDate(0, 0, p.cfg.HorizonDays+1)
 	pros, err := s.bk.Store.SlotCandidates(ctx, store.CandidateQuery{City: p.city, ZoneID: p.zoneID, Lat: p.lat, Lng: p.lng,

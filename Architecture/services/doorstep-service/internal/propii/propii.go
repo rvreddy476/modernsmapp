@@ -27,6 +27,8 @@ const (
 	ScopeDigiLockerVerifier pii.Scope = "doorstep.digilocker_verifier"
 	// ScopeCustomerAddress seals a customer address's street lines (A3).
 	ScopeCustomerAddress pii.Scope = "doorstep.customer_address"
+	ScopeVisitOTP        pii.Scope = "doorstep.visit_otp"
+	ScopeTrustedContact  pii.Scope = "doorstep.trusted_contact"
 )
 
 // ErrNotConfigured: no keys (development only).
@@ -40,7 +42,7 @@ type Sealed struct {
 
 // Crypto holds the sealers.
 type Crypto struct {
-	account, pan, document, verifier, address *pii.Sealer
+	account, pan, document, verifier, address, otp, contact *pii.Sealer
 }
 
 // New builds the sealers from parsed keys. No keys → (nil, nil).
@@ -49,7 +51,7 @@ func New(ctx context.Context, keys []config.PIIKey) (*Crypto, error) {
 		return nil, nil
 	}
 	var static []pii.StaticKey
-	scopes := []pii.Scope{ScopePayoutAccount, ScopePAN, ScopeProDocument, ScopeDigiLockerVerifier, ScopeCustomerAddress}
+	scopes := []pii.Scope{ScopePayoutAccount, ScopePAN, ScopeProDocument, ScopeDigiLockerVerifier, ScopeCustomerAddress, ScopeVisitOTP, ScopeTrustedContact}
 	for _, k := range keys {
 		for _, s := range scopes {
 			static = append(static, pii.StaticKey{Scope: s, Version: k.Version, Key: k.Key})
@@ -63,7 +65,7 @@ func New(ctx context.Context, keys []config.PIIKey) (*Crypto, error) {
 	for _, x := range []struct {
 		dst   **pii.Sealer
 		scope pii.Scope
-	}{{&c.account, ScopePayoutAccount}, {&c.pan, ScopePAN}, {&c.document, ScopeProDocument}, {&c.verifier, ScopeDigiLockerVerifier}, {&c.address, ScopeCustomerAddress}} {
+	}{{&c.account, ScopePayoutAccount}, {&c.pan, ScopePAN}, {&c.document, ScopeProDocument}, {&c.verifier, ScopeDigiLockerVerifier}, {&c.address, ScopeCustomerAddress}, {&c.otp, ScopeVisitOTP}, {&c.contact, ScopeTrustedContact}} {
 		s, err := pii.NewSealer(ctx, ring, x.scope)
 		if err != nil {
 			return nil, fmt.Errorf("sealer %s: %w", x.scope, err)
@@ -71,6 +73,28 @@ func New(ctx context.Context, keys []config.PIIKey) (*Crypto, error) {
 		*x.dst = s
 	}
 	return c, nil
+}
+
+// SealVisitOTP seals a booking-bound OTP payload, never an unscoped code.
+func (c *Crypto) SealTrustedContact(ctx context.Context, v string) (Sealed, error) {
+	if c == nil {
+		return Sealed{}, ErrNotConfigured
+	}
+	return seal(ctx, c.contact, v)
+}
+
+func (c *Crypto) SealVisitOTP(ctx context.Context, v string) (Sealed, error) {
+	if c == nil {
+		return Sealed{}, ErrNotConfigured
+	}
+	return seal(ctx, c.otp, v)
+}
+
+func (c *Crypto) OpenVisitOTP(ctx context.Context, blob []byte) (string, error) {
+	if c == nil {
+		return "", ErrNotConfigured
+	}
+	return c.otp.Open(ctx, blob)
 }
 
 // Configured reports whether sealing is available.

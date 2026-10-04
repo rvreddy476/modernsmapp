@@ -148,14 +148,15 @@ type Booking struct {
 
 // BookingSummary is one row of a bookings list.
 type BookingSummary struct {
-	ID           uuid.UUID `json:"id"`
-	Status       string    `json:"status"`
-	ServiceName  string    `json:"service_name"`
-	CategorySlug string    `json:"category_slug"`
-	SlotStart    time.Time `json:"slot_start"`
-	SlotEnd      time.Time `json:"slot_end"`
-	TotalPaise   int64     `json:"total_paise"`
-	CreatedAt    time.Time `json:"created_at"`
+	NeedsAttention *bool     `json:"needs_attention,omitempty"`
+	ID             uuid.UUID `json:"id"`
+	Status         string    `json:"status"`
+	ServiceName    string    `json:"service_name"`
+	CategorySlug   string    `json:"category_slug"`
+	SlotStart      time.Time `json:"slot_start"`
+	SlotEnd        time.Time `json:"slot_end"`
+	TotalPaise     int64     `json:"total_paise"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // BookingPage is a page of bookings.

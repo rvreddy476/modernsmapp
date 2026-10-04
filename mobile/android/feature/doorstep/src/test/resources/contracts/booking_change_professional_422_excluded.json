@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_SLOT_UNAVAILABLE","message":"this slot cannot be booked","details":{"reason":"professional_excluded"}},"meta":{"request_id":"fixture"}}

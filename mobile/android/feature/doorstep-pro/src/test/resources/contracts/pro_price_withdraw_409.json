@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_TRANSITION","message":"only a pending or live price can be withdrawn","details":{"status":"withdrawn"}},"meta":{"request_id":"fixture"}}

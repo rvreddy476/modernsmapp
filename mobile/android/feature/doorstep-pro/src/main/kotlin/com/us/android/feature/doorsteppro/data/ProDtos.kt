@@ -187,6 +187,13 @@ data class ZoneRefDto(
     @SerialName("name") val name: String,
 )
 
+@Serializable
+data class ProZoneDto(
+    val id: String, val name: String, val slug: String,
+    @SerialName("city_code") val cityCode: String,
+    val boundary: JsonObject,
+)
+
 // ── Duty, offers, jobs (A4) ─────────────────────────────────────────────────
 
 /** `DutyState`. */
@@ -199,6 +206,7 @@ data class DutyStateDto(
 /** `Offer` — locality only before acceptance, never the address. */
 @Serializable
 data class OfferDto(
+    val status: String = "open",
     @SerialName("id") val id: String,
     @SerialName("booking_id") val bookingId: String,
     @SerialName("service_name") val serviceName: String,
@@ -226,6 +234,9 @@ data class ProJobDto(
     @SerialName("customer_first_name") val customerFirstName: String?,
     @SerialName("chat_open") val chatOpen: Boolean,
     @SerialName("photos_required") val photosRequired: PhotosRequiredDto,
+    @SerialName("photos_uploaded") val photosUploaded: PhotosRequiredDto = PhotosRequiredDto(0,0,0),
+    @SerialName("arrived_at") val arrivedAt: String? = null,
+    val finished: Boolean = false,
     @SerialName("earning_estimate_paise") val earningEstimatePaise: Long,
 )
 
@@ -244,6 +255,8 @@ data class QuoteLineDto(
     @SerialName("ref_id") val refId: String,
     @SerialName("price_id") val priceId: String,
     @SerialName("name") val name: String,
+    @SerialName("unit") val unit: String = "per_job",
+    @SerialName("pro_price_id") val proPriceId: String? = null,
     @SerialName("quantity") val quantity: Int,
     @SerialName("unit_price_paise") val unitPricePaise: Long,
     @SerialName("line_total_paise") val lineTotalPaise: Long,
@@ -288,6 +301,7 @@ data class PhotoDto(
 /** `Extra`. */
 @Serializable
 data class ExtraDto(
+    @SerialName("evidence_media_id") val evidenceMediaId: String? = null,
     @SerialName("id") val id: String,
     @SerialName("booking_id") val bookingId: String,
     /** rate_card | addon */
@@ -526,6 +540,65 @@ data class MessageRequest(
 )
 
 // ── Errors ─────────────────────────────────────────────────────────────────
+
+@Serializable
+data class ProPriceDto(
+    val id: String,
+    @SerialName("service_id") val serviceId: String,
+    @SerialName("item_kind") val itemKind: String,
+    @SerialName("item_id") val itemId: String,
+    val unit: String,
+    @SerialName("price_paise") val pricePaise: Long,
+    val status: String,
+    @SerialName("effective_from") val effectiveFrom: String?,
+    @SerialName("effective_to") val effectiveTo: String?,
+    @SerialName("submitted_at") val submittedAt: String,
+    @SerialName("reviewed_at") val reviewedAt: String?,
+    val reason: String?,
+)
+
+@Serializable
+data class ProPriceItemDto(
+    @SerialName("item_kind") val itemKind: String,
+    @SerialName("item_id") val itemId: String,
+    val name: String,
+    val unit: String,
+    @SerialName("max_quantity") val maxQuantity: Int,
+    @SerialName("suggested_price_paise") val suggestedPricePaise: Long?,
+    val approved: ProPriceDto?, val pending: ProPriceDto?, val rejected: ProPriceDto?,
+)
+
+@Serializable
+data class ProServicePricingDto(
+    @SerialName("service_id") val serviceId: String,
+    @SerialName("service_name") val serviceName: String,
+    @SerialName("category_slug") val categorySlug: String,
+    @SerialName("category_name") val categoryName: String,
+    val family: String,
+    @SerialName("skill_code") val skillCode: String,
+    @SerialName("skill_status") val skillStatus: String,
+    @SerialName("same_day") val sameDay: Boolean,
+    val bookable: Boolean,
+    val items: List<ProPriceItemDto>,
+)
+
+@Serializable
+data class SameDaySettingDto(
+    @SerialName("service_id") val serviceId: String,
+    @SerialName("same_day") val sameDay: Boolean,
+    @SerialName("updated_at") val updatedAt: String,
+)
+
+@Serializable
+data class ProPriceRequest(
+    @SerialName("service_id") val serviceId: String,
+    @SerialName("item_kind") val itemKind: String,
+    @SerialName("item_id") val itemId: String,
+    @SerialName("price_paise") val pricePaise: Long,
+)
+
+@Serializable
+data class SameDayRequest(@SerialName("same_day") val sameDay: Boolean)
 
 /** The error envelope, read from a 4xx/5xx body. Clients branch on [ProErrorBodyDto.code], never the message. */
 @Serializable

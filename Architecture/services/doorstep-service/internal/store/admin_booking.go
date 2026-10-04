@@ -14,8 +14,9 @@ import (
 
 // AdminBookingFilter narrows the admin list.
 type AdminBookingFilter struct {
-	Status string
-	City   string
+	NeedsAttention bool
+	Status         string
+	City           string
 	// Date is an IST date ("2006-01-02") the slot starts on.
 	Date  string
 	After *BookingCursor
@@ -25,20 +26,27 @@ type AdminBookingFilter struct {
 // AdminBookings pages bookings latest slot first. limit+1 rows come back
 // when there is a next page. Rows carry no address.
 func (s *Store) AdminBookings(ctx context.Context, f AdminBookingFilter) ([]model.BookingSummary, error) {
-	args := []any{f.Limit + 1, f.Status, f.City, f.Date}
+	args := []any{f.Limit + 1, f.Status, f.City, f.Date, f.NeedsAttention}
 	where := `($2 = '' OR b.status = $2) AND ($3 = '' OR b.city_code = $3)
-		AND ($4 = '' OR (b.slot_start AT TIME ZONE 'Asia/Kolkata')::date = NULLIF($4, '')::date)`
+		AND ($4 = '' OR (b.slot_start AT TIME ZONE 'Asia/Kolkata')::date = NULLIF($4, '')::date) AND (NOT $5 OR b.needs_attention)`
 	if f.After != nil {
-		where += ` AND (b.slot_start, b.id) < ($5, $6)`
+		where += ` AND (b.slot_start, b.id) < ($6, $7)`
 		args = append(args, f.After.SlotStart, f.After.ID)
 	}
-	rows, err := s.db.Query(ctx, `SELECT `+summaryCols+`
+	rows, err := s.db.Query(ctx, `SELECT `+summaryCols+`,b.needs_attention
 		FROM doorstep.bookings b JOIN doorstep.services s ON s.id = b.service_id JOIN doorstep.categories c ON c.id = b.category_id
 		WHERE `+where+` ORDER BY b.slot_start DESC, b.id DESC LIMIT $1`, args...)
 	if err != nil {
 		return nil, err
 	}
-	return collect(rows, scanSummary)
+	return collect(rows, func(row pgx.Rows) (model.BookingSummary, error) {
+		var b model.BookingSummary
+		var attention bool
+		e := row.Scan(&b.ID, &b.Status, &b.ServiceName, &b.CategorySlug, &b.SlotStart, &b.SlotEnd, &b.TotalPaise, &b.CreatedAt, &attention)
+		b.NeedsAttention = &attention
+		b.SlotStart, b.SlotEnd, b.CreatedAt = b.SlotStart.UTC(), b.SlotEnd.UTC(), b.CreatedAt.UTC()
+		return b, e
+	})
 }
 
 // BookingAssignments lists a booking's offers and assignments.

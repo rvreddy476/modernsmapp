@@ -165,7 +165,8 @@ const (
 	OutcomeBookingNotFound Outcome = "booking_not_found"
 	// B1: a change-of-professional difference was paid and the change
 	// applied (the booking is confirmed again with the new professional).
-	OutcomeProChanged Outcome = "pro_changed"
+	OutcomeProChanged      Outcome = "pro_changed"
+	OutcomeVisitExtrasPaid Outcome = "visit_extras_paid"
 	// OutcomeUnclaimed: a doorstep_extras event for a visit-extras bill (A5)
 	// is left unapplied and unrecorded, for the visit lane.
 	OutcomeUnclaimed Outcome = "unclaimed"

@@ -29,6 +29,7 @@ import com.us.android.feature.doorstep.catalogue.DuesBanner
 import com.us.android.feature.doorstep.data.AddonGroupDto
 import com.us.android.feature.doorstep.domain.GenderRules
 import com.us.android.feature.doorstep.domain.SelectionRules
+import com.us.android.feature.doorstep.domain.Units
 import com.us.android.feature.doorstep.model.Paise
 import com.us.android.feature.doorstep.model.toRupeeText
 import com.us.android.feature.doorstep.model.toShortRupeeText
@@ -39,7 +40,6 @@ import com.us.android.feature.doorstep.ui.DoorstepScreen
 import com.us.android.feature.doorstep.ui.InfoNote
 import com.us.android.feature.doorstep.ui.LoadingPane
 import com.us.android.feature.doorstep.ui.MessagePane
-import com.us.android.feature.doorstep.ui.PriceText
 import com.us.android.feature.doorstep.ui.QuantityStepper
 import com.us.android.feature.doorstep.ui.SectionLabel
 import com.us.android.feature.doorstep.ui.Tone
@@ -63,10 +63,12 @@ fun ServiceDetailScreen(
         bottomBar = {
             if (service != null) {
                 BottomAction(
-                    label = "Choose address and time",
+                    label = "Choose address and professional",
                     onClick = { if (viewModel.continueToBooking()) onContinue() },
                     enabled = !state.blocked,
-                    summary = "${state.estimate.toRupeeText()} incl. GST · ${durationText(state.durationMinutes)}",
+                    summary = state.fromEstimate
+                        ?.let { "From ${it.toRupeeText()} incl. GST · ${durationText(state.durationMinutes)}" }
+                        ?: "Professionals set their own prices · ${durationText(state.durationMinutes)}",
                 )
             }
         },
@@ -89,7 +91,10 @@ fun ServiceDetailScreen(
                         if (service.description.isNotBlank()) {
                             Text(service.description, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
                         }
-                        InfoNote("Prices include GST. You pay in full when you book; no cash.")
+                        InfoNote(
+                            "Each professional sets their own price, checked by our team. You'll pick one next. " +
+                                "Prices include GST; you pay in full when you book, no cash.",
+                        )
                     }
                 }
                 if (state.blocked) {
@@ -115,16 +120,20 @@ fun ServiceDetailScreen(
                         )
                         Column(Modifier.weight(1f)) {
                             Text(option.name, style = MaterialTheme.typography.titleSmall, color = UsTheme.extended.textPrimary)
-                            Text(durationText(option.durationMinutes), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                            Text(
+                                durationText(option.durationMinutes) + if (option.unit == Units.PER_MONTH) " first visit" else "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = UsTheme.extended.textMuted,
+                            )
                         }
-                        PriceText(price = Paise(option.pricePaise), mrp = option.mrpPaise?.let(::Paise))
+                        FromPrice(fromPaise = option.fromPricePaise, unit = option.unit)
                     }
                 }
                 SelectionRules.option(service, state.selection)?.takeIf { it.maxQuantity > 1 }?.let { option ->
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Text(
-                                "Quantity (up to ${option.maxQuantity})",
+                                Units.quantityLabel(option.unit, option.maxQuantity),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = UsTheme.extended.textSecondary,
                                 modifier = Modifier.weight(1f),
@@ -173,12 +182,14 @@ fun ServiceDetailScreen(
                                     )
                                 }
                             }
-                            Text(
-                                "+${Paise(addon.pricePaise).toShortRupeeText()}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = UsTheme.extended.textPrimary,
-                            )
+                            addon.fromPricePaise?.let { from ->
+                                Text(
+                                    "+ from ${Paise(from).toShortRupeeText()}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = UsTheme.extended.textPrimary,
+                                )
+                            }
                         }
                     }
                 }
@@ -219,6 +230,27 @@ fun ServiceDetailScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * "from ₹1,699/hour" — the lowest professional price per unit, or a note that
+ * nobody prices it yet. The city's suggested price is never shown as a price.
+ */
+@Composable
+private fun FromPrice(fromPaise: Long?, unit: String) {
+    if (fromPaise == null) {
+        Text("No price yet", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textDim)
+        return
+    }
+    Column(horizontalAlignment = Alignment.End) {
+        Text("from", style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.textDim)
+        Text(
+            Paise(fromPaise).toShortRupeeText() + Units.priceSuffix(unit),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = UsTheme.extended.textPrimary,
+        )
     }
 }
 

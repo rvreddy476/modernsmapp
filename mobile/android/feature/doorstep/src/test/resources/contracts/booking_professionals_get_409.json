@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_TRANSITION","message":"not allowed while the booking is pending_payment","details":{"status":"pending_payment"}},"meta":{"request_id":"fixture"}}

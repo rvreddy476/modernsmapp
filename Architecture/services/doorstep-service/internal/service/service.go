@@ -93,7 +93,10 @@ type Service struct {
 	// ds is dispatch, presence and realtime (A4), wired by WithDispatch.
 	ds DispatchDeps
 	// pr is professional pricing (B1), wired by WithPricing.
-	pr PricingStore
+	pr        PricingStore
+	visit     VisitStore
+	aftercare AftercareStore
+	careAdmin AdminAftercareStore
 }
 
 // New builds the service.

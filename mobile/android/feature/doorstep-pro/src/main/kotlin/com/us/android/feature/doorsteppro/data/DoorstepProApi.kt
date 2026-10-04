@@ -25,6 +25,17 @@ import retrofit2.http.Query
  */
 @Suppress("TooManyFunctions")
 interface DoorstepProApi {
+    @GET("v1/doorstep/pro/me/prices")
+    suspend fun prices(): Response<ApiEnvelope<ProListDto<ProServicePricingDto>>>
+
+    @POST("v1/doorstep/pro/me/prices")
+    suspend fun submitPrice(@Body body: ProPriceRequest): Response<ApiEnvelope<ProPriceDto>>
+
+    @POST("v1/doorstep/pro/me/prices/{id}/withdraw")
+    suspend fun withdrawPrice(@Path("id") id: String): Response<ApiEnvelope<ProPriceDto>>
+
+    @PUT("v1/doorstep/pro/me/services/{id}/same-day")
+    suspend fun sameDay(@Path("id") id: String, @Body body: SameDayRequest): Response<ApiEnvelope<SameDaySettingDto>>
 
     // ── Onboarding (A2) ──
     @POST("v1/doorstep/pro/apply")
@@ -175,6 +186,9 @@ interface DoorstepProApi {
 
     @POST("v1/doorstep/pro/jobs/{id}/messages")
     suspend fun sendMessage(@Path("id") bookingId: String, @Body body: MessageRequest): Response<ApiEnvelope<MessageDto>>
+
+    @POST("v1/doorstep/pro/jobs/{id}/messages/{msgId}/read")
+    suspend fun readMessage(@Path("id") bookingId: String, @Path("msgId") messageId: String): Response<Unit>
 
     @GET("v1/doorstep/pro/earnings")
     suspend fun earnings(@Query("from") from: String?, @Query("to") to: String?): Response<ApiEnvelope<EarningsDto>>

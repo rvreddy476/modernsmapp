@@ -37,6 +37,7 @@ const (
 	permDoorstepSettlementsRead    = "doorstep:settlements.read"
 	permDoorstepStatsRead          = "doorstep:stats.read"
 	permDoorstepAuditRead          = "doorstep:audit.read"
+	permDoorstepPricesReview       = "doorstep:prices.review"
 )
 
 const (
@@ -72,13 +73,15 @@ const (
 //	             bytes, one audit row each), professional suspend / reinstate /
 //	             block, booking cancel (refunds the customer), every money
 //	             setting (prices, rate cards, cancellation and commission
-//	             rules), an incident resolve that lifts a suspension, and the
-//	             refund
+//	             rules, approving a professional's own price), an incident
+//	             resolve that lifts a suspension, and the refund
 //	two-person   the refund, always
 //	idempotent   the refund needs an Idempotency-Key, stored with the
 //	             approval and replayed by the approver; every other write
 //	             forwards the console's key when it sends one
 var DoorstepRoutes = []productRoute{
+	{method: http.MethodGet, path: "/professionals/:id/tax-registration", operation: "doorstep.professional.tax_registration.read", permission: permDoorstepProsApprove, stepUp: true, targetType: "doorstep_professional"},
+	{method: http.MethodPost, path: "/professionals/:id/tax-registration", operation: "doorstep.professional.tax_registration.write", permission: permDoorstepProsApprove, stepUp: true, targetType: "doorstep_professional"},
 	{method: http.MethodGet, path: "/stats", operation: "doorstep.stats", permission: permDoorstepStatsRead},
 
 	// Catalogue and config (lane A1).
@@ -156,6 +159,15 @@ var DoorstepRoutes = []productRoute{
 
 	{method: http.MethodGet, path: "/settlements", operation: "doorstep.settlements.list", permission: permDoorstepSettlementsRead},
 	{method: http.MethodGet, path: "/audit-logs", operation: "doorstep.audit.list", permission: permDoorstepAuditRead},
+
+	// Professionals' own prices (lane B1): the review queue, approve, reject.
+	// Nothing approves itself; doorstep-service audits each decision in the
+	// same transaction. Approving makes a price customers pay live now, so it
+	// is a money setting: step-up, as the city price. Rejecting changes no
+	// price and the queue shows no personal data beyond the display name.
+	{method: http.MethodGet, path: "/pro-prices", operation: "doorstep.pro_prices.list", permission: permDoorstepPricesReview},
+	{method: http.MethodPost, path: "/pro-prices/:id/approve", operation: "doorstep.pro_price.approve", permission: permDoorstepPricesReview, stepUp: true, targetType: "doorstep_pro_price"},
+	{method: http.MethodPost, path: "/pro-prices/:id/reject", operation: "doorstep.pro_price.reject", permission: permDoorstepPricesReview, targetType: "doorstep_pro_price"},
 }
 
 // RegisterDoorstepRoutes adds the Doorstep dashboard under /v1/admin/doorstep.

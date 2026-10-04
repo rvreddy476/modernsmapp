@@ -89,6 +89,7 @@ fun AccountScreen(
                 }
             }
             item { SectionLabel("Work settings") }
+            item { PricesCard() }
             item { ActionRow(UsIcons.Clock, "Working hours and days off", null, onClick = { onOpenStep(OnboardingStep.WEEKLY_HOURS) }) }
             item {
                 ActionRow(

@@ -4,7 +4,7 @@ Doorstep is home services in the Urban Company style: a fixed-price catalogue bo
 
 | File | What it pins |
 |---|---|
-| `openapi.yaml` | Every customer route, every `/pro` route, every `/internal/admin` route, and the background-check webhook (139 paths, 166 operations). It also holds the booking state enum and transitions (`x-doorstep-booking-states`), the stable error codes (`x-doorstep-error-codes`), the 19 admin permissions (`x-doorstep-permissions`) and the payments references (`x-doorstep-payments`). Each route carries `x-lane` (the lane that builds it) and, on admin routes, `x-permission`. |
+| `openapi.yaml` | Every customer route, every `/pro` route, every `/internal/admin` route, and the background-check webhook (142 paths, 170 operations). It also holds the booking state enum and transitions (`x-doorstep-booking-states`), the stable error codes (`x-doorstep-error-codes`), the 19 admin permissions (`x-doorstep-permissions`) and the payments references (`x-doorstep-payments`). Each route carries `x-lane` (the lane that builds it) and, on admin routes, `x-permission`. |
 | `asyncapi.yaml` | The Kafka topic `doorstep.events` (38 event types, every payload carries `customer_user_id` and/or `pro_user_id`), the realtime topics `doorstep.booking.<id>`, `doorstep.pro.<user_id>` and `doorstep.admin.live`, and the push-type registry (`x-push-types`): 19 Momentum types (`doorstep.*`) and 18 `doorstep_pro` types (`doorstep.pro.*`), each mapped to its source event. |
 
 ## Conventions
@@ -55,7 +55,32 @@ doorstep-service produces these through its real handlers, in `Architecture/serv
 | `pro_prices_get_200.json`, `pro_price_post_201.json`, `pro_price_post_400.json`, `pro_price_post_403_skill.json`, `pro_price_post_409_unchanged.json`, `pro_price_withdraw_200.json`, `pro_price_withdraw_409.json`, `pro_same_day_put_200.json` | B1: the professional's own prices (always pending until an admin approves) and the same-day opt-in |
 | `admin_pro_prices_get_200.json`, `admin_pro_price_approve_200.json`, `admin_pro_price_approve_409.json`, `admin_pro_price_reject_200.json`, `admin_pro_price_reject_400_reason.json`, `admin_pro_price_403_scope.json` | B1: the price review queue (`doorstep:prices.review`, audited) |
 
-## Status (A1)
+## Completion update (5 Oct 2026)
+
+A1–A6 and the B1 pick-a-professional model are implemented. The historical
+status sections below describe the original lane boundaries, not pending work.
+See `docs/handoff/doorstep-completion-report.md` for verification and launch
+restrictions and `docs/handoff/doorstep-dev-readiness.md` for founder-run setup.
+
+Additional handler-generated contract families:
+
+| Fixtures | Coverage |
+| --- | --- |
+| `pro_en_route_200`, `pro_arrived_200`, `pro_photo_201`, `pro_start_200`, `pro_start_422_photos`, `pro_start_400_otp`, `pro_finish_200`, `pro_complete_200`, `pro_complete_409_extras`, `pro_no_show_200` | Geo arrival, private evidence, OTP-gated visit transitions |
+| `extras_get_200`, `extra_approve_post_200`, `extra_decline_post_200`, `extras_bill_get_200`, `extras_payment_intent_post_200`, `outstanding_get_200`, `pro_extra_options_get_200`, `pro_extra_post_201`, `pro_extras_get_200` | Catalogue/rate-card extras, decisions, payment and outstanding balances |
+| `messages_get_200`, `message_post_201`, `pro_messages_get_200`, `pro_message_post_201` | Participant-only visit conversations |
+| `rating_post_201`, `pro_rating_201`, `rework_post_201`, `rework_get_200`, `pro_earnings_get_200` | Ratings, zero-price rework and compute-only earnings |
+| `share_post_201`, `sos_post_201`, `pro_sos_201`, `pro_unsafe_exit_201`, `trusted_contact_get_200`, `trusted_contact_get_200_empty`, `trusted_contact_put_200` | Capability links, safety incidents and sealed trusted contacts |
+| `ticket_post_201`, `ticket_get_200`, `tickets_get_200` | Customer support with request bodies and status |
+| `admin_incidents_get_200`, `admin_incident_ack_200`, `admin_incident_resolve_200`, `admin_incidents_403_scope`, `admin_tickets_get_200`, `admin_ticket_status_200`, `admin_ratings_get_200`, `admin_rating_hide_200`, `admin_settlements_get_200` | Audited aftercare queues and decisions |
+| `admin_tax_registration_get_200`, `admin_tax_registration_post_200`, `admin_tax_registration_403_scope`, `admin_tax_registration_400_unverified` | Step-up manual GST registration review; no automatic approval |
+
+Names above omit `.json`. JSON bodies are captured by the actual HTTP handlers,
+then copied byte-identical to the relevant client test directories. Binary
+photo reads and 204 withdrawal/read/revocation responses are tested without
+inventing JSON fixtures.
+
+## Status (A1, historical)
 
 **Built and tested:**
 

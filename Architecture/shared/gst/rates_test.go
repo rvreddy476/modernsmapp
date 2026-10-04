@@ -144,6 +144,14 @@ func TestDefaultRateTable_Seed(t *testing.T) {
 		CategoryPaintingViaECO:               {SupplierServiceProfessional, true, 1800, false, "995473"},
 		CategoryPaintingRegistered:           {SupplierServiceProfessional, false, 1800, true, "995473"},
 		CategoryBeautySalonRegistered:        {SupplierServiceProfessional, false, 500, false, "999722"},
+		// Doorstep B1 families.
+		CategoryCarCareRegistered:         {SupplierServiceProfessional, false, 1800, true, "998714"},
+		CategoryHomeStaffingRegistered:    {SupplierServiceProfessional, false, 1800, true, "999800"},
+		CategoryRelocationRegistered:      {SupplierServiceProfessional, false, 1800, true, "996791"},
+		CategoryPhotographyRegistered:     {SupplierServiceProfessional, false, 1800, true, "998383"},
+		CategoryFitnessWellnessRegistered: {SupplierServiceProfessional, false, 500, false, "999723"},
+		CategoryConstructionViaECO:        {SupplierServiceProfessional, true, 1800, false, "995457"},
+		CategoryConstructionRegistered:    {SupplierServiceProfessional, false, 1800, true, "995457"},
 	}
 	tab := DefaultRateTable()
 	rows := tab.Rows()

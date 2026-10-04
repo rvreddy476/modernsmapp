@@ -62,6 +62,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		d.GET("/categories/:slug", h.getCategory)
 		d.GET("/services/:id", h.getService)
 		d.POST("/serviceability", h.postServiceability)
+		d.GET("/share/:token", func(c *gin.Context) {
+			c.Header("Cache-Control", "private, no-store")
+			v, e := h.svc.SharedVisit(c.Request.Context(), c.Param("token"))
+			careRespond(c, 200, v, e)
+		})
 		// Background-check vendor webhook (A2): signed, no identity; no
 		// vendor is enabled, so every provider answers 404.
 		d.POST("/webhooks/background-check/:provider", h.backgroundCheckWebhook)
@@ -84,6 +89,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 			// Professionals' prices, picking a professional, pro_unavailable (B1).
 			h.registerPricingRoutes(user)
+			h.registerVisitRoutes(user)
+			h.registerAftercareRoutes(user)
 		}
 	}
 	h.registerInternalAdminRoutes(r)

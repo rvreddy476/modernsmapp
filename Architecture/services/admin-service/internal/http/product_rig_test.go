@@ -80,7 +80,7 @@ var (
 		permDoorstepProsRead, permDoorstepProsApprove, permDoorstepProsSuspend, permDoorstepDocumentsReview,
 		permDoorstepBookingsRead, permDoorstepBookingsCancel, permDoorstepBookingsRedispatch, permDoorstepRefundsIssue,
 		permDoorstepIncidentsRead, permDoorstepIncidentsAct, permDoorstepTicketsAct, permDoorstepRatingsModerate,
-		permDoorstepSettlementsRead, permDoorstepStatsRead, permDoorstepAuditRead,
+		permDoorstepSettlementsRead, permDoorstepStatsRead, permDoorstepAuditRead, permDoorstepPricesReview,
 	}
 )
 

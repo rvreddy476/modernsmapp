@@ -10,6 +10,10 @@ import javax.inject.Inject
  */
 @Suppress("TooManyFunctions")
 interface DoorstepProRepository {
+    suspend fun prices(): ProResult<List<ProServicePricingDto>>
+    suspend fun submitPrice(request: ProPriceRequest): ProResult<ProPriceDto>
+    suspend fun withdrawPrice(id: String): ProResult<ProPriceDto>
+    suspend fun sameDay(serviceId: String, enabled: Boolean): ProResult<SameDaySettingDto>
     // Onboarding (A2)
     suspend fun apply(displayName: String, cityCode: String): ProResult<ProfessionalDto>
     suspend fun me(): ProResult<ProfessionalDto>
@@ -62,6 +66,7 @@ interface DoorstepProRepository {
     suspend fun rateCustomer(bookingId: String, stars: Int, tags: List<String>, comment: String?): ProResult<RatingDto>
     suspend fun messages(bookingId: String, cursor: String?): ProResult<MessagePageDto>
     suspend fun sendMessage(bookingId: String, body: String): ProResult<MessageDto>
+    suspend fun readMessage(bookingId: String, messageId: String): ProResult<Unit>
     suspend fun earnings(from: String?, to: String?): ProResult<EarningsDto>
 }
 
@@ -70,6 +75,10 @@ class RealDoorstepProRepository @Inject constructor(
     private val api: DoorstepProApi,
     private val json: Json,
 ) : DoorstepProRepository {
+    override suspend fun prices() = proCall(json) { api.prices() }.map { it.items }
+    override suspend fun submitPrice(request: ProPriceRequest) = proCall(json) { api.submitPrice(request) }
+    override suspend fun withdrawPrice(id: String) = proCall(json) { api.withdrawPrice(id) }
+    override suspend fun sameDay(serviceId: String, enabled: Boolean) = proCall(json) { api.sameDay(serviceId, SameDayRequest(enabled)) }
 
     override suspend fun apply(displayName: String, cityCode: String) =
         proCall(json) { api.apply(ProApplyRequest(displayName = displayName, cityCode = cityCode)) }
@@ -184,6 +193,7 @@ class RealDoorstepProRepository @Inject constructor(
     override suspend fun messages(bookingId: String, cursor: String?) = proCall(json) { api.messages(bookingId, cursor) }
 
     override suspend fun sendMessage(bookingId: String, body: String) = proCall(json) { api.sendMessage(bookingId, MessageRequest(body)) }
+    override suspend fun readMessage(bookingId: String, messageId: String) = proUnitCall(json) { api.readMessage(bookingId, messageId) }
 
     override suspend fun earnings(from: String?, to: String?) = proCall(json) { api.earnings(from, to) }
 }

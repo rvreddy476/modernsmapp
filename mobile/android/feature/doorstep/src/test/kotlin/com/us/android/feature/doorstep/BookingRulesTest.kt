@@ -179,10 +179,10 @@ class BookingRulesTest {
     // ── Finish OTP, history timeline, visit photos ──
 
     @Test
-    fun `the finish OTP shows only while the job is in progress`() {
+    fun `the finish OTP shows in progress or after the extras grace period`() {
         BookingStatus.entries.forEach { status ->
             val otp = BookingRules.visibleEndOtp(booking(status = status.wire, endOtp = "7310"))
-            if (status == BookingStatus.IN_PROGRESS) {
+            if (status == BookingStatus.IN_PROGRESS || status == BookingStatus.AWAITING_EXTRAS_PAYMENT) {
                 assertThat(otp).isEqualTo("7310")
             } else {
                 assertThat(otp).isNull()

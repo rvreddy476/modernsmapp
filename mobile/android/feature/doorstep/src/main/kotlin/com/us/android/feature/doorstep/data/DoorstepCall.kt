@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import retrofit2.Response
 import java.io.IOException
 
@@ -68,6 +69,15 @@ object DoorstepCodes {
     const val BOOKING_NOT_FOUND = "DOORSTEP_BOOKING_NOT_FOUND"
     const val INVALID_TRANSITION = "DOORSTEP_INVALID_TRANSITION"
 
+    /** B1: the picked professional has no approved, live price for part of the selection (details.item_ids). */
+    const val PRICE_UNAVAILABLE = "DOORSTEP_PRICE_UNAVAILABLE"
+
+    /** B1: the 30 minutes to pick another professional for a pro_unavailable booking are over. */
+    const val CHOICE_WINDOW_CLOSED = "DOORSTEP_CHOICE_WINDOW_CLOSED"
+
+    /** B1: pricing a service whose skill is not declared — the professionals' app's code; never a customer's. */
+    const val SKILL_REQUIRED = "DOORSTEP_SKILL_REQUIRED"
+
     /** The dev stub-confirm route outside a development stack. */
     const val NOT_FOUND = "DOORSTEP_NOT_FOUND"
 
@@ -83,9 +93,12 @@ val DoorstepError.code: String?
 fun DoorstepError.userMessage(): String = when (this) {
     is DoorstepError.Refused -> when (code) {
         DoorstepCodes.OUTSTANDING_DUE -> "Clear your pending dues to book again."
-        DoorstepCodes.SLOT_TAKEN -> "That slot was just taken. Please pick another time."
-        DoorstepCodes.HOLD_EXPIRED -> "Your 10-minute hold ended. Please pick a slot again."
-        DoorstepCodes.QUOTE_EXPIRED -> "Prices were refreshed. Please review and pick a slot again."
+        DoorstepCodes.SLOT_TAKEN -> "That professional was just booked for this time. Please pick again."
+        DoorstepCodes.HOLD_EXPIRED -> "Your hold ended. Please pick a professional and time again."
+        DoorstepCodes.QUOTE_EXPIRED -> "Prices were refreshed. Please review and pick again."
+        DoorstepCodes.PRICE_UNAVAILABLE -> "This professional's price changed. Please pick again from the fresh list."
+        DoorstepCodes.CHOICE_WINDOW_CLOSED -> "The time to pick another professional is over. You get a full refund."
+        DoorstepCodes.SLOT_UNAVAILABLE -> slotUnavailableMessage(details)
         DoorstepCodes.PAYMENTS_UNAVAILABLE -> "Payments are unavailable right now. Please try again shortly."
         else -> message.ifBlank { "That didn't work ($code)." }
     }
@@ -94,6 +107,20 @@ fun DoorstepError.userMessage(): String = when (this) {
     is DoorstepError.Network -> "You're offline. Check your connection and try again."
     is DoorstepError.Unexpected -> "Something went wrong. Please try again."
 }
+
+/** `details.reason` of a refusal (DOORSTEP_SLOT_UNAVAILABLE's professional_excluded, not_available_now, …); null when absent. */
+val DoorstepError.reason: String?
+    get() = ((this as? DoorstepError.Refused)?.details?.get("reason") as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+private fun slotUnavailableMessage(details: JsonObject?): String =
+    when (((details?.get("reason")) as? JsonPrimitive)?.takeIf { it.isString }?.content) {
+        "professional_excluded" -> "This professional let this booking go. Please pick someone else."
+        "professional_unavailable" -> "This professional can't take that time any more. Please pick again."
+        "not_available_now" -> "This professional isn't free right now. Pick a time instead, or someone else."
+        "inside_lead_time" -> "That time is too soon. Please pick a later one."
+        "beyond_horizon" -> "That day is too far ahead. Please pick an earlier one."
+        else -> "That time can't be booked any more. Please pick again."
+    }
 
 /** A result carrying a typed failure rather than a thrown exception. */
 sealed interface DoorstepResult<out T> {
@@ -124,6 +151,16 @@ suspend fun <T> doorstepCall(
     when {
         response.isSuccessful && data != null -> DoorstepResult.Success(data)
         response.isSuccessful -> DoorstepResult.Failure(DoorstepError.Unexpected(response.code(), "2xx response carried no data"))
+        else -> DoorstepResult.Failure(DoorstepError.from(response.code(), response.errorBody()?.string(), json))
+    }
+}
+
+/** Only endpoints whose contract explicitly allows data:null use this. */
+suspend fun <T> doorstepNullableCall(json: Json, block: suspend () -> Response<ApiEnvelope<T>>): DoorstepResult<T?> = guarded {
+    val response = block()
+    when {
+        response.isSuccessful && response.body() != null -> DoorstepResult.Success(response.body()?.data)
+        response.isSuccessful -> DoorstepResult.Failure(DoorstepError.Unexpected(response.code(), "Missing response envelope"))
         else -> DoorstepResult.Failure(DoorstepError.from(response.code(), response.errorBody()?.string(), json))
     }
 }

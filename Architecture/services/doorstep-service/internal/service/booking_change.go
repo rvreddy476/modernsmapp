@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"github.com/atpost/doorstep-service/internal/events"
 	"log/slog"
 	"math"
 	"net/http"
@@ -318,6 +319,8 @@ func (s *Service) AfterPaymentEvent(ctx context.Context, a payments.Applied) {
 		s.SubmitRefunds(ctx, a.RefundIDs...)
 	}
 	switch a.Decision.Outcome {
+	case payments.OutcomeVisitExtrasPaid:
+		s.publishBookingNow(ctx, a.BookingID)
 	case payments.OutcomeConfirmed, payments.OutcomeLateCaptureConfirmed, payments.OutcomeProChanged:
 		s.publishBookingNow(ctx, a.BookingID)
 		if err := s.Dispatch(ctx, a.BookingID); err != nil {
@@ -356,6 +359,29 @@ func (s *Service) RunWorkers(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
+		if s.visit != nil {
+			if s.ds.Store != nil {
+				ids, e := s.visit.SuspendedVisitBookings(ctx, 100)
+				if e != nil {
+					slog.ErrorContext(ctx, "doorstep: suspension sweep", "error", e)
+				} else {
+					for _, id := range ids {
+						_, e := s.proUnavailable(ctx, id, unavailableSpec{from: []string{"confirmed", "assigned", "en_route", "arrived", "in_progress", "awaiting_extras_payment"}, cause: events.UnavailableProSuspended, actor: "system", reason: "professional suspended"})
+						if e != nil {
+							slog.ErrorContext(ctx, "doorstep: suspended job release", "booking_id", id, "error", e)
+						}
+					}
+				}
+			}
+			if _, err := s.visit.ExpireVisitBills(ctx, s.nowUTC(), 100); err != nil {
+				slog.ErrorContext(ctx, "doorstep: visit bills expiry failed", "error", err)
+			}
+			if s.careAdmin != nil {
+				if _, err := s.careAdmin.ComputeVisitSettlements(ctx, s.nowUTC()); err != nil {
+					slog.ErrorContext(ctx, "doorstep settlements compute", "error", err)
+				}
+			}
+		}
 		if n, err := s.ExpireHolds(ctx); err != nil {
 			slog.ErrorContext(ctx, "doorstep: hold sweeper failed", "error", err)
 		} else if n > 0 {

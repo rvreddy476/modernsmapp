@@ -19,6 +19,7 @@ var doorstepHolders = map[string][]string{
 	"doorstep:pros.approve":        nil,
 	"doorstep:pros.suspend":        nil,
 	"doorstep:documents.review":    {RoleKYCReviewer},
+	"doorstep:prices.review":       {RoleKYCReviewer},
 	"doorstep:bookings.read":       {RoleModerator, RoleFinance, RoleSupport},
 	"doorstep:bookings.cancel":     nil,
 	"doorstep:bookings.redispatch": {RoleSupport},
@@ -34,7 +35,7 @@ var doorstepHolders = map[string][]string{
 
 // TestCatalogue_DoorstepMirrorsIdentity: the doorstep app is in the
 // vocabulary between rider and trust_safety, holds exactly the contract's
-// eighteen permissions, and each one names exactly identity's holders.
+// nineteen permissions, and each one names exactly identity's holders.
 func TestCatalogue_DoorstepMirrorsIdentity(t *testing.T) {
 	cat := Catalogue()
 	idx := map[string]int{}
@@ -80,7 +81,7 @@ func TestCatalogue_DoorstepRoleViews(t *testing.T) {
 			"doorstep:incidents.read,doorstep:pros.read,doorstep:stats.read,doorstep:tickets.act",
 		RoleFinance: "doorstep:bookings.read,doorstep:catalogue.read,doorstep:refunds.issue,doorstep:settlements.read," +
 			"doorstep:stats.read",
-		RoleKYCReviewer: "doorstep:documents.review,doorstep:pros.read",
+		RoleKYCReviewer: "doorstep:documents.review,doorstep:prices.review,doorstep:pros.read",
 		RoleAuditor:     "doorstep:audit.read",
 	} {
 		if got := view(role); got != want {

@@ -177,6 +177,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// bytes of a ready image, for commerce-service only
 			// (image_bytes_handler.go). Never a URL.
 			internal.GET(ImageBytesRoute, refuseGatewayIdentity(), h.requireImageBytesCaller(), h.GetImageBytes)
+			internal.POST("/:mediaId/doorstep-photo", refuseGatewayIdentity(), h.requireDoorstepPhotoCaller(), h.PrepareDoorstepPhoto)
 			// Live recordings (2026-10-01): live-service-v2 registers a
 			// finished stream's egress MP4 as the host's video
 			// (recording_import_handler.go).

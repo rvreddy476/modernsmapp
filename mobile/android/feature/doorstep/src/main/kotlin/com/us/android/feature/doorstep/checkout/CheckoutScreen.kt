@@ -90,7 +90,8 @@ fun CheckoutScreen(
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 DoorstepCard {
-                    Text(visitText(s.slotStart, s.quote.durationMinutes), style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
+                    Text(if (s.asap) s.etaMinutes?.let { "As soon as possible · about $it min" } ?: "As soon as possible" else s.slotStart?.let { visitText(it, s.quote.durationMinutes) }.orEmpty(), style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
+                    s.proFirstName?.let { Text("With $it", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted) }
                     Text(
                         "${durationText(s.quote.durationMinutes)} · ${s.address.label}: ${s.address.line1}, ${s.address.locality}",
                         style = MaterialTheme.typography.bodySmall,

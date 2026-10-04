@@ -1,0 +1,1 @@
+{"error":{"code":"ADMIN_PERMISSION_NOT_IN_TOKEN","message":"the token does not carry the permission this route requires","details":{"required":"doorstep:incidents.read"}},"meta":{"request_id":"fixture"}}

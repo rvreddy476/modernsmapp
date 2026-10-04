@@ -278,6 +278,7 @@ func (h *Handler) registerInternalAdminRoutes(r *gin.Engine) {
 	routes := append(h.adminRoutes(), h.proAdminRoutes()...)
 	routes = append(routes, h.bookingAdminRoutes()...)
 	routes = append(routes, h.pricingAdminRoutes()...)
+	routes = append(routes, h.aftercareAdminRoutes()...)
 	for _, rt := range append(routes, h.dispatchAdminRoutes()...) {
 		g.Handle(rt.method, rt.path, h.requireAdminToken(rt.perm), rt.handler)
 	}

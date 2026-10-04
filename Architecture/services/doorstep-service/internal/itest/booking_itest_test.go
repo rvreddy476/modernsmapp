@@ -56,8 +56,12 @@ func (f *fakePayments) CreateIntent(_ context.Context, in paymentsclient.CreateI
 	if i, ok := f.intents[in.IdempotencyKey]; ok {
 		return i, nil
 	}
+	ref := payments.RefBooking
+	if strings.HasPrefix(in.IdempotencyKey, "doorstep:extras:") {
+		ref = payments.RefExtras
+	}
 	i := &paymentsclient.Intent{ID: uuid.New(), Status: "pending", AmountMinor: in.AmountMinor, Currency: in.Currency,
-		ReferenceType: payments.RefBooking, ReferenceID: in.ReferenceID, PayerID: in.PayerID, PayeeID: in.PayeeID,
+		ReferenceType: ref, ReferenceID: in.ReferenceID, PayerID: in.PayerID, PayeeID: in.PayeeID,
 		ProviderRef: "order_stub_" + in.ReferenceID.String()[:8], ApplicationID: in.ApplicationID,
 		ClientSession: &paymentsclient.ClientSession{Provider: f.provider, OrderID: "order_stub_" + in.ReferenceID.String()[:8],
 			MerchantDisplayName: "Doorstep"}}
@@ -278,6 +282,7 @@ func (br *bkRig) addPro(t *testing.T, gender string) (proID, userID uuid.UUID) {
 		exec(`INSERT INTO doorstep.professionals (id, user_id, status, display_name, city_code, gender, gender_source, home_point,
 			service_radius_m, approved_at, approved_by) VALUES ($1, $2, 'approved', 'Asha Rao', 'HYD', $3, 'digilocker',
 			ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, 15000, NOW(), $6)`, proID, userID, gender, w.lat+0.01, w.lng, itAdmin)
+		exec(`UPDATE doorstep.professionals SET gstin=$2 WHERE id=$1`, proID, gstin(t))
 		exec(`INSERT INTO doorstep.pro_skills (pro_id, skill_code, status, verified_at, verified_by) VALUES ($1, $2, 'verified', NOW(), $3)`,
 			proID, w.skill, itAdmin)
 		exec(`INSERT INTO doorstep.pro_zones (pro_id, zone_id) VALUES ($1, $2)`, proID, w.zone)
@@ -1016,6 +1021,9 @@ func TestCancelFeeTierOnTheDatabase(t *testing.T) {
 		VALUES ($1, $2, 'accepted', NOW(), NOW())`, b, pro)
 	br.exec(t, `UPDATE doorstep.bookings SET status = 'assigned', assigned_at = NOW() WHERE id = $1`, b)
 	// No cancel after the start OTP.
+	br.exec(t, `UPDATE doorstep.bookings SET status = 'arrived', arrived_at = NOW() WHERE id = $1`, b)
+	br.exec(t, `INSERT INTO doorstep.booking_otps (booking_id,kind,otp_hash,otp_sealed,verified_at) VALUES ($1,'start','test-hash',$2,NOW())`, b, []byte("sealed-test"))
+	br.exec(t, `INSERT INTO doorstep.booking_photos (booking_id,pro_id,phase,media_id) SELECT $1,$2,'before',gen_random_uuid()::text FROM doorstep.services s JOIN doorstep.bookings b ON b.service_id=s.id CROSS JOIN LATERAL generate_series(1,s.min_before_photos) WHERE b.id=$1`, b, pro)
 	br.exec(t, `UPDATE doorstep.bookings SET status = 'in_progress' WHERE id = $1`, b)
 	status, body = br.user(customer, "POST", "/bookings/"+b.String()+"/cancel", `{"reason":"changed my mind"}`)
 	if status != 409 || errCode(body) != "DOORSTEP_CANCEL_NOT_ALLOWED" {

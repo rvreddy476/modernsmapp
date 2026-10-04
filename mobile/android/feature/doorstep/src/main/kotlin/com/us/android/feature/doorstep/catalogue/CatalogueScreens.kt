@@ -47,7 +47,6 @@ import com.us.android.feature.doorstep.ui.InfoNote
 import com.us.android.feature.doorstep.ui.LoadingPane
 import com.us.android.feature.doorstep.ui.MessagePane
 import com.us.android.feature.doorstep.ui.Pill
-import com.us.android.feature.doorstep.ui.PriceText
 import com.us.android.feature.doorstep.ui.Tone
 import com.us.android.feature.doorstep.ui.durationText
 import com.us.android.feature.doorstep.ui.listPadding
@@ -106,7 +105,7 @@ fun CatalogueScreen(
                             color = UsTheme.extended.textPrimary,
                         )
                         Text(
-                            text = "Fixed prices, GST included · ${state.cityName}",
+                            text = "Pick your professional, GST included · ${state.cityName}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = UsTheme.extended.textMuted,
                         )
@@ -158,12 +157,16 @@ private fun CategoryTile(category: CategorySummaryDto, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            text = "From ${Paise(category.startingPricePaise).toShortRupeeText()}",
+            text = fromText(category.startingPricePaise),
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textMuted,
         )
     }
 }
+
+/** "From ₹249" (the lowest bookable professional price), or "Prices coming soon" while nobody offers one. */
+internal fun fromText(startingPricePaise: Long?): String =
+    startingPricePaise?.let { "From ${Paise(it).toShortRupeeText()}" } ?: "Prices coming soon"
 
 /** Lucide glyphs by family: the identity is the label; the glyph only helps the eye. */
 internal fun familyIcon(family: String): ImageVector = when (family) {
@@ -224,9 +227,12 @@ fun CategoryScreen(
                             Icon(UsIcons.ChevronRight, contentDescription = null, tint = UsTheme.extended.textDim)
                         }
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            PriceText(
-                                price = Paise(service.startingPricePaise),
-                                mrp = service.startingMrpPaise?.let(::Paise),
+                            // The lowest professional price; the city's suggested price is never shown as one.
+                            Text(
+                                text = fromText(service.startingPricePaise),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = UsTheme.extended.textPrimary,
                                 modifier = Modifier.weight(1f),
                             )
                             Pill(durationText(service.durationMinutes), Tone.Neutral)

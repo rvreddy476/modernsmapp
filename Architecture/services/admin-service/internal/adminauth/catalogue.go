@@ -327,8 +327,9 @@ var catalogue = map[string][]entry{
 	},
 	// Doorstep (home services): moderator triages, support runs operations
 	// (tickets, incidents, re-dispatch) without refunds or cancellation,
-	// finance holds refunds and settlements, KYC reviewer the document queue;
-	// catalogue, config, approval, suspension and cancellation are admin only.
+	// finance holds refunds and settlements, KYC reviewer the document and price
+	// queues; catalogue, config, approval, suspension and cancellation are
+	// admin only.
 	AppDoorstep: {
 		p("catalogue.read", mod, fin, sup),
 		p("catalogue.write"),
@@ -337,6 +338,9 @@ var catalogue = map[string][]entry{
 		p("pros.approve"),
 		p("pros.suspend"),
 		p("documents.review", kyc),
+		// prices.review: a professional's own charge for a service, approved or
+		// rejected by the KYC reviewer (the seat that verifies the professional).
+		p("prices.review", kyc),
 		p("bookings.read", mod, fin, sup),
 		p("bookings.cancel"),
 		p("bookings.redispatch", sup),

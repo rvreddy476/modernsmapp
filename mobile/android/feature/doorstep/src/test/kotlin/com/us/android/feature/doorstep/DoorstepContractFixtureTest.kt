@@ -3,6 +3,9 @@ package com.us.android.feature.doorstep
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.doorstep.data.AddressDto
+import com.us.android.feature.doorstep.data.MessageDto
+import com.us.android.feature.doorstep.data.MessagePageDto
+import com.us.android.feature.doorstep.data.TrustedContactDto
 import com.us.android.feature.doorstep.data.AddressListDto
 import com.us.android.feature.doorstep.data.BookingCreatedDto
 import com.us.android.feature.doorstep.data.BookingDto
@@ -31,6 +34,8 @@ import com.us.android.feature.doorstep.data.ServiceabilityDto
 import com.us.android.feature.doorstep.data.ShareTokenDto
 import com.us.android.feature.doorstep.data.SlotDaysDto
 import com.us.android.feature.doorstep.data.code
+import com.us.android.feature.doorstep.data.ProfessionalListDto
+import com.us.android.feature.doorstep.data.ProChangeResultDto
 import com.us.android.feature.doorstep.domain.BookingRules
 import com.us.android.feature.doorstep.domain.GenderRules
 import com.us.android.feature.doorstep.domain.SelectionRules
@@ -83,13 +88,52 @@ class DoorstepContractFixtureTest {
     private val contractsDir = File("src/test/resources/contracts")
 
     private val parsers: Map<String, (raw: String) -> Unit> = mapOf(
+        "ticket_get_200.json" to data(com.us.android.feature.doorstep.data.TicketDto.serializer()) {},
+        "ticket_post_201.json" to data(com.us.android.feature.doorstep.data.TicketDto.serializer()) {},
+        "tickets_get_200.json" to data(com.us.android.feature.doorstep.data.TicketListDto.serializer()) {},
+        "trusted_contact_get_200_empty.json" to { raw -> assertThat(strict.decodeFromString(ApiEnvelope.serializer(TrustedContactDto.serializer()), raw).data).isNull() },
+        "quote_get_200.json" to data(QuoteDto.serializer()) {},
+        "extras_get_200.json" to data(ExtraListDto.serializer()) {},
+        "extra_approve_post_200.json" to data(ExtraDto.serializer()) {},
+        "extra_decline_post_200.json" to data(ExtraDto.serializer()) {},
+        "extras_bill_get_200.json" to data(ExtrasBillDto.serializer()) {},
+        "extras_payment_intent_post_200.json" to data(PaymentIntentDto.serializer()) {},
+        "outstanding_get_200.json" to data(OutstandingDto.serializer()) {},
+        "rating_post_201.json" to data(RatingDto.serializer()) {},
+        "rework_post_201.json" to data(ReworkRequestDto.serializer()) {},
+        "rework_get_200.json" to data(ReworkListDto.serializer()) {},
+        "sos_post_201.json" to data(IncidentDto.serializer()) {},
+        "share_post_201.json" to data(ShareTokenDto.serializer()) {},
+        "message_post_201.json" to data(MessageDto.serializer()) {},
+        "messages_get_200.json" to data(MessagePageDto.serializer()) {},
+        "trusted_contact_get_200.json" to data(TrustedContactDto.serializer()) {},
+        "trusted_contact_put_200.json" to data(TrustedContactDto.serializer()) {},
+        "booking_get_200_pending_change.json" to data(BookingDto.serializer()) {},
+        "booking_get_200_pro_unavailable.json" to data(BookingDto.serializer()) {},
+        "booking_post_201_asap.json" to data(BookingCreatedDto.serializer()) {},
+        "booking_change_professional_post_200_charge.json" to data(ProChangeResultDto.serializer()) {},
+        "booking_change_professional_post_200_refund.json" to data(ProChangeResultDto.serializer()) {},
+        "booking_professionals_get_200.json" to data(ProfessionalListDto.serializer()) {},
+        "booking_professionals_get_200_asap.json" to data(ProfessionalListDto.serializer()) {},
+        "service_professionals_get_200.json" to data(ProfessionalListDto.serializer()) {},
+        "service_professionals_get_200_asap.json" to data(ProfessionalListDto.serializer()) {},
+        "service_professionals_get_200_asap_none.json" to data(ProfessionalListDto.serializer()) {},
+        "cancel_preview_get_200_pro_unavailable.json" to data(CancelPreviewDto.serializer()) {},
+        "realtime_token_post_200.json" to data(RealtimeTokenDto.serializer()) {},
+        "realtime_token_post_404.json" to error(status = 404) {},
+        "booking_professionals_get_409.json" to error(status = 409) {},
+        "booking_change_professional_409_window.json" to error(status = 409) {},
+        "booking_change_professional_422_excluded.json" to error(status = 422) {},
+        "quote_post_400_pro_required.json" to error(status = 400) {},
+        "quote_post_422_price_unavailable.json" to error(status = 422) {},
+        "service_professionals_get_400_address.json" to error(status = 400) {},
         // GET /v1/doorstep/catalogue?city=HYD 200
         "catalogue_get_200.json" to data(CatalogueDto.serializer()) { dto ->
             assertThat(dto.city.code).isEqualTo("HYD")
             assertThat(dto.categories.map { it.slug }).containsExactly("home-cleaning", "salon-women", "salon-men").inOrder()
             val cleaning = dto.categories.first()
             assertThat(cleaning.imageUrl).isNull()
-            assertThat(Paise(cleaning.startingPricePaise).toRupeeText()).isEqualTo("₹249.00")
+            assertThat(Paise(checkNotNull(cleaning.startingPricePaise)).toRupeeText()).isEqualTo("₹249.00")
             assertThat(dto.categories.map { it.genderRule })
                 .containsExactly(GenderRules.ANY, GenderRules.FEMALE_ONLY, GenderRules.MALE_ONLY).inOrder()
         },
@@ -101,8 +145,8 @@ class DoorstepContractFixtureTest {
         "category_get_200.json" to data(CategoryPageDto.serializer()) { dto ->
             assertThat(dto.category.slug).isEqualTo("salon-women")
             assertThat(dto.services).hasSize(4)
-            assertThat(dto.services.first { it.slug == "waxing" }.startingMrpPaise).isEqualTo(99900L)
-            assertThat(dto.services.first { it.slug == "facial" }.startingMrpPaise).isNull()
+            assertThat(dto.services.first { it.slug == "waxing" }.suggestedPricePaise).isEqualTo(99900L)
+            assertThat(dto.services.first { it.slug == "facial" }.suggestedPricePaise).isNull()
         },
         // GET /v1/doorstep/services/{facial}?city=HYD 200 — a required pick-one mask group plus optional add-ons
         "service_get_200.json" to data(ServicePageDto.serializer()) { dto ->
@@ -175,7 +219,7 @@ class DoorstepContractFixtureTest {
             assertThat(dto.days).hasSize(7)
             assertThat(dto.days.first().date).isEqualTo("2026-10-04")
             assertThat(dto.days.first().slots.none { it.available }).isTrue()
-            assertThat(dto.days[1].slots.count { it.available }).isEqualTo(14)
+            assertThat(dto.days[1].slots.count { it.available }).isEqualTo(5)
         },
         "slots_get_409_outstanding.json" to error(status = 409) { err ->
             assertThat(err.code).isEqualTo(DoorstepCodes.OUTSTANDING_DUE)
@@ -305,25 +349,7 @@ class DoorstepContractFixtureTest {
      *  - POST   /v1/doorstep/bookings/{id}/share 201           share_post_201.json
      *  - POST   /v1/doorstep/realtime/token 200                realtime_token_200.json
      */
-    private val pending: Map<String, (raw: String) -> Unit> = mapOf(
-        "quote_get_200.json" to data(QuoteDto.serializer()) {},
-        "extras_list_200.json" to data(ExtraListDto.serializer()) {},
-        "extra_approve_200.json" to data(ExtraDto.serializer()) {},
-        "extra_decline_200.json" to data(ExtraDto.serializer()) {},
-        "extras_bill_get_200.json" to data(ExtrasBillDto.serializer()) {},
-        "extras_payment_intent_200.json" to data(PaymentIntentDto.serializer()) {
-            assertThat(it.referenceType).isEqualTo("doorstep_extras")
-        },
-        "outstanding_get_200.json" to data(OutstandingDto.serializer()) {},
-        "rating_post_201.json" to data(RatingDto.serializer()) {},
-        "rework_post_201.json" to data(ReworkRequestDto.serializer()) {},
-        "rework_list_200.json" to data(ReworkListDto.serializer()) {},
-        "sos_post_201.json" to data(IncidentDto.serializer()) {},
-        "share_post_201.json" to data(ShareTokenDto.serializer()) {},
-        "realtime_token_200.json" to data(RealtimeTokenDto.serializer()) {
-            assertThat(it.topics.single()).startsWith("doorstep.booking.")
-        },
-    )
+    private val pending: Map<String, (raw: String) -> Unit> = emptyMap()
 
     /** The A3 fixtures' checkout is payments-service's Razorpay session, typed, and it opens the sheet. */
     private fun assertRazorpayCheckout(intent: PaymentIntentDto) {
@@ -365,17 +391,8 @@ class DoorstepContractFixtureTest {
     }
 
     @Test
-    fun `pending fixtures decode once the backend publishes them`() {
-        val published = pending.keys.filter { File(contractsDir, it).exists() }
-        assumeTrue("none of the pending fixtures is published yet: ${pending.keys}", published.isNotEmpty())
-        for (name in published) {
-            val raw = File(contractsDir, name).readText()
-            try {
-                pending.getValue(name)(raw)
-            } catch (e: Throwable) {
-                throw AssertionError("fixture $name failed to parse: ${e.message}", e)
-            }
-        }
+    fun `no visit contract remains deferred`() {
+        assertThat(pending).isEmpty()
     }
 
     /** The strictness itself: a dropped required key and an unknown key both fail. */

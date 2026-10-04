@@ -93,13 +93,40 @@ const (
 	doorstepEventProOfferCreated         = "doorstep.pro.offer_created"
 	doorstepEventProOfferClosed          = "doorstep.pro.offer_closed"
 	doorstepEventProSettlementComputed   = "doorstep.pro.settlement_computed"
+
+	// A3/A4 events the push registry does not cover.
+	doorstepEventBookingProLate          = "doorstep.booking.pro_late"
+	doorstepEventBookingRefundFailed     = "doorstep.booking.refund_failed"
+	doorstepEventBookingPaymentAttention = "doorstep.booking.payment_attention"
+
+	// B1 (4 Oct 2026): professionals' prices and the pick-a-professional flow.
+	doorstepEventProPriceSubmitted     = "doorstep.pro.price_submitted"
+	doorstepEventProPriceReviewed      = "doorstep.pro.price_reviewed"
+	doorstepEventBookingProUnavailable = "doorstep.booking.pro_unavailable"
+	doorstepEventBookingProChanged     = "doorstep.booking.pro_changed"
 )
 
 // doorstepSilentEvents are known events with no push: a booking awaiting
 // payment and a fresh application are nobody's news yet.
+//
+// doorstep.booking.pro_late has no push type in the contract's x-push-types
+// (the asyncapi says so); the customer learns it from the booking's realtime
+// frame (doorstep.booking.pro_late, free_cancel) while the app is open. A
+// customer push needs a registry entry first; until then it is known and
+// silent rather than counted unknown.
 var doorstepSilentEvents = map[string]bool{
 	doorstepEventBookingCreated: true,
 	doorstepEventProApplied:     true,
+	doorstepEventBookingProLate: true,
+}
+
+// doorstepOpsEvents become ops alert rows (the admin console's live feed),
+// never a push: the price review queue and payment trouble.
+var doorstepOpsEvents = map[string]bool{
+	doorstepEventBookingUnassignedAlert:  true,
+	doorstepEventProPriceSubmitted:       true,
+	doorstepEventBookingRefundFailed:     true,
+	doorstepEventBookingPaymentAttention: true,
 }
 
 // Safety notification type and ops alert kinds.
@@ -110,6 +137,9 @@ const (
 	OpsAlertDoorstepIncidentNoResponder = "doorstep_incident_no_responder"
 	OpsAlertDoorstepIncidentRaised      = "doorstep_incident_raised"
 	OpsAlertDoorstepBookingUnassigned   = "doorstep_booking_unassigned"
+	OpsAlertDoorstepPriceSubmitted      = "doorstep_pro_price_submitted"
+	OpsAlertDoorstepRefundFailed        = "doorstep_refund_failed"
+	OpsAlertDoorstepPaymentAttention    = "doorstep_payment_attention"
 )
 
 type doorstepOutcome string
@@ -120,7 +150,7 @@ const (
 	doorstepOutcomeUnknown          doorstepOutcome = "unknown"   // an event type this build does not know
 	doorstepOutcomeMalformed        doorstepOutcome = "malformed" // no event type, bad JSON, or a missing id
 	doorstepOutcomeMissingRecipient doorstepOutcome = "missing_recipient"
-	doorstepOutcomeOfferExpired     doorstepOutcome = "offer_expired" // offer already lapsed: no push
+	doorstepOutcomeOfferExpired     doorstepOutcome = "offer_expired" // offer (or B1 choice window) already lapsed: no push
 	doorstepOutcomePIIBlocked       doorstepOutcome = "pii_blocked"
 	doorstepOutcomeDeliveryError    doorstepOutcome = "delivery_error"
 	doorstepOutcomeIncident         doorstepOutcome = "incident"
@@ -272,6 +302,25 @@ type doorstepFields struct {
 	RaisedByKind     string `json:"raised_by_kind"`
 	ProAutoSuspended bool   `json:"pro_auto_suspended"`
 	MinutesToSlot    *int64 `json:"minutes_to_slot"`
+
+	// B1. new_pro_user_id only gates the pro_changed push (the change went
+	// through); nothing is ever sent to it from here. previous_pro_user_id is
+	// not decoded: the contract has no doorstep_pro push type for a
+	// professional who lost a job.
+	Cause              string `json:"cause"`
+	ChoiceDeadline     string `json:"choice_deadline"`
+	DifferencePaise    *int64 `json:"difference_paise"`
+	NewProUserID       string `json:"new_pro_user_id"`
+	PriceID            string `json:"price_id"`
+	ServiceID          string `json:"service_id"`
+	ItemKind           string `json:"item_kind"`
+	Unit               string `json:"unit"`
+	PricePaise         *int64 `json:"price_paise"`
+	PreviousPricePaise *int64 `json:"previous_price_paise"`
+
+	// Payment trouble (ops only).
+	RefundID         string `json:"refund_id"`
+	PaymentEventType string `json:"payment_event_type"`
 }
 
 // doorstepEvent is one decoded doorstep.events message.
@@ -384,6 +433,10 @@ func (c *DoorstepConsumer) processMessage(ctx context.Context, m kafka.Message) 
 		c.count(doorstepOutcomeOpsAlert)
 		recordDoorstepUnassigned(ctx, c.safety, ev)
 		return
+	case doorstepEventProPriceSubmitted, doorstepEventBookingRefundFailed, doorstepEventBookingPaymentAttention:
+		c.count(doorstepOutcomeOpsAlert)
+		recordDoorstepOpsEvent(ctx, c.safety, ev)
+		return
 	}
 
 	plan := planDoorstepPushes(ev, doorstepDedupBase(ev, m), now)
@@ -478,10 +531,46 @@ var doorstepRules = []doorstepRule{
 			}
 			return "Professional assigned", "A professional has accepted your booking."
 		}},
+	// B1: reassigned is emitted only when the customer moved the slot to a
+	// time the accepted professional cannot take (cause rescheduled). A
+	// professional who drops out is doorstep.booking.pro_unavailable: the
+	// customer chooses, nobody is reassigned silently.
 	{pushType: service.DoorstepTypeBookingReassigned, fromEvent: doorstepEventBookingReassigned,
 		deeplink: "momentum://doorstep/bookings/{booking_id}", entityKey: "booking_id", collapse: "doorstep_booking",
-		copy: func(*doorstepFields) (string, string) {
-			return "Finding a new professional", "Your professional can't make it. We're assigning someone else for the same slot."
+		when: func(f *doorstepFields) bool { return f.Cause == "rescheduled" },
+		copy: func(f *doorstepFields) (string, string) {
+			if at := doorstepDayClock(f.SlotStart); at != "" {
+				return "Booking moved", "Your professional can't make " + at + ", so we're offering the new time to another professional."
+			}
+			return "Booking moved", "Your professional can't make the new time, so we're offering it to another professional."
+		}},
+	{pushType: service.DoorstepTypeBookingProUnavailable, fromEvent: doorstepEventBookingProUnavailable,
+		deeplink: "momentum://doorstep/bookings/{booking_id}/professionals", entityKey: "booking_id", collapse: "doorstep_booking",
+		when: func(f *doorstepFields) bool { return doorstepValidTime(f.ChoiceDeadline) },
+		copy: func(f *doorstepFields) (string, string) {
+			what := "Your professional can't take this booking."
+			switch f.Cause {
+			case "declined", "offer_expired":
+				what = "Your professional couldn't accept this booking."
+			case "pro_no_show":
+				what = "Your professional didn't arrive."
+			case "no_professional":
+				what = "No professional is free for this booking."
+			}
+			if at := doorstepClock(f.ChoiceDeadline); at != "" {
+				return "Choose another professional", what + " Pick another or cancel for a full refund by " + at + "."
+			}
+			return "Choose another professional", what + " Pick another or cancel for a full refund."
+		}},
+	{pushType: service.DoorstepTypeBookingProChanged, fromEvent: doorstepEventBookingProChanged,
+		deeplink: "momentum://doorstep/bookings/{booking_id}", entityKey: "booking_id", collapse: "doorstep_booking",
+		when: func(f *doorstepFields) bool { return strings.TrimSpace(f.NewProUserID) != "" },
+		copy: func(f *doorstepFields) (string, string) {
+			if f.DifferencePaise != nil && *f.DifferencePaise < 0 {
+				return "New professional confirmed", "Your booking is confirmed with your new professional. " +
+					doorstepRupees(-*f.DifferencePaise) + " will be refunded to you."
+			}
+			return "New professional confirmed", "Your booking is confirmed with your new professional."
 		}},
 	{pushType: service.DoorstepTypeBookingProEnRoute, fromEvent: doorstepEventBookingEnRoute,
 		deeplink: "momentum://doorstep/bookings/{booking_id}", entityKey: "booking_id", collapse: "doorstep_booking",
@@ -699,6 +788,15 @@ var doorstepRules = []doorstepRule{
 			}
 			return "Earnings statement ready", "Your statement for this period is ready."
 		}},
+	{pushType: service.DoorstepTypeProPriceReviewed, fromEvent: doorstepEventProPriceReviewed, audience: doorstepToPro,
+		deeplink: "doorstep-pro://prices", entityKey: "price_id", collapse: "doorstep_pro_price",
+		when: func(f *doorstepFields) bool { return f.Decision == "approved" || f.Decision == "rejected" },
+		copy: func(f *doorstepFields) (string, string) {
+			if f.Decision == "rejected" {
+				return "Price not approved", "A price you submitted wasn't approved. Open your prices to see why."
+			}
+			return "Price approved", "A price you submitted is approved. Customers can book you at it now."
+		}},
 }
 
 // doorstepRulesByEvent indexes the rules by source event.
@@ -713,8 +811,10 @@ var doorstepRulesByEvent = func() map[string][]doorstepRule {
 // doorstepKnownEvents is every event of the contract this build handles.
 var doorstepKnownEvents = func() map[string]bool {
 	out := map[string]bool{
-		doorstepEventIncidentRaised:         true,
-		doorstepEventBookingUnassignedAlert: true,
+		doorstepEventIncidentRaised: true,
+	}
+	for e := range doorstepOpsEvents {
+		out[e] = true
 	}
 	for e := range doorstepSilentEvents {
 		out[e] = true
@@ -786,8 +886,27 @@ func doorstepValue(f *doorstepFields, key string) (string, bool) {
 		return str(f.SettlementID)
 	case "net_paise":
 		return num(f.NetPaise)
+	case "cause":
+		return str(f.Cause)
+	case "choice_deadline":
+		if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(f.ChoiceDeadline)); err == nil {
+			return t.UTC().Format(time.RFC3339), true
+		}
+		return "", false
+	case "difference_paise":
+		return num(f.DifferencePaise)
+	case "price_id":
+		return str(f.PriceID)
+	case "service_id":
+		return str(f.ServiceID)
 	}
 	return "", false
+}
+
+// doorstepValidTime reports whether s is an RFC 3339 time.
+func doorstepValidTime(s string) bool {
+	_, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(s))
+	return err == nil
 }
 
 // renderDoorstepDeepLink fills the contract template. Momentum links lose
@@ -902,6 +1021,18 @@ func planDoorstepPushes(ev doorstepEvent, base string, now time.Time) doorstepPu
 			if ttl <= 0 {
 				// The matcher has moved on; waking a professional for a
 				// dead offer wastes a tap.
+				plan.expired = append(plan.expired, r.pushType)
+				continue
+			}
+			p.TTL = ttl
+		}
+		if r.pushType == service.DoorstepTypeBookingProUnavailable {
+			// The choice window: after choice_deadline the booking is
+			// cancelled with a full refund (its own push), so this one is
+			// worthless and must not arrive late.
+			deadline, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(f.ChoiceDeadline))
+			ttl := deadline.Sub(now)
+			if ttl <= 0 {
 				plan.expired = append(plan.expired, r.pushType)
 				continue
 			}
@@ -1307,6 +1438,85 @@ func recordDoorstepUnassigned(ctx context.Context, deps doorstepSafetyDeps, ev d
 		Detail: detail,
 	}); err != nil {
 		slog.Error("ops alert not recorded", "kind", OpsAlertDoorstepBookingUnassigned, "subject_id", booking, "error", err)
+	}
+}
+
+// recordDoorstepOpsEvent turns the ops-only events into ops alert rows:
+//
+//	doorstep.pro.price_submitted        info      the price review queue has a new entry
+//	doorstep.booking.refund_failed      critical  a customer's refund did not go through
+//	doorstep.booking.payment_attention  warning   a payment event did not match its booking
+//
+// The detail carries ids, amounts and enums only: never a user id, a name,
+// an address or free text (refund_failed's reason and payment_attention's
+// detail stay in doorstep-service, where the console reads them).
+func recordDoorstepOpsEvent(ctx context.Context, deps doorstepSafetyDeps, ev doorstepEvent) {
+	f := ev.Fields
+	var (
+		kind, severity, subjectRaw, dedupe string
+		detail                             = map[string]any{}
+	)
+	switch ev.Type {
+	case doorstepEventProPriceSubmitted:
+		kind, severity, subjectRaw = OpsAlertDoorstepPriceSubmitted, "info", f.PriceID
+		dedupe = "doorstep_price_submitted:" + strings.TrimSpace(f.PriceID)
+		for k, v := range map[string]string{"pro_id": f.ProID, "service_id": f.ServiceID, "item_kind": f.ItemKind, "unit": f.Unit} {
+			if v = strings.TrimSpace(v); v != "" {
+				detail[k] = v
+			}
+		}
+		if f.PricePaise != nil {
+			detail["price_paise"] = *f.PricePaise
+		}
+		if f.PreviousPricePaise != nil {
+			detail["previous_price_paise"] = *f.PreviousPricePaise
+		}
+	case doorstepEventBookingRefundFailed:
+		kind, severity, subjectRaw = OpsAlertDoorstepRefundFailed, "critical", f.BookingID
+		key := strings.TrimSpace(f.RefundID)
+		if key == "" {
+			key = strings.TrimSpace(f.BookingID)
+		}
+		dedupe = "doorstep_refund_failed:" + key
+		detail["city_code"], detail["category_slug"] = f.CityCode, f.CategorySlug
+		if id := strings.TrimSpace(f.RefundID); id != "" {
+			detail["refund_id"] = id
+		}
+		if f.AmountPaise != nil {
+			detail["amount_paise"] = *f.AmountPaise
+		}
+		if c := strings.TrimSpace(f.Cause); c != "" {
+			detail["cause"] = c
+		}
+	case doorstepEventBookingPaymentAttention:
+		kind, severity, subjectRaw = OpsAlertDoorstepPaymentAttention, "warning", f.BookingID
+		// One row per event: one booking can mismatch more than once.
+		key := ev.ID
+		if key == "" {
+			key = strings.TrimSpace(f.BookingID) + ":" + strings.TrimSpace(f.PaymentEventType)
+		}
+		dedupe = "doorstep_payment_attention:" + key
+		detail["city_code"], detail["category_slug"] = f.CityCode, f.CategorySlug
+		if t := strings.TrimSpace(f.PaymentEventType); t != "" {
+			detail["payment_event_type"] = t
+		}
+	default:
+		return
+	}
+	subject, err := uuid.Parse(strings.TrimSpace(subjectRaw))
+	if err != nil || subject == uuid.Nil {
+		slog.Warn("doorstep ops event without a valid subject id", "event", ev.Type)
+		return
+	}
+	if deps == nil {
+		slog.Error("doorstep ops event received but ops alerts are not wired", "event", ev.Type, "subject_id", subject)
+		return
+	}
+	if err := deps.RecordOpsAlert(ctx, postgres.OpsAlert{
+		Source: "doorstep-service", Kind: kind, Severity: severity,
+		SubjectID: subject, DedupeKey: dedupe, Detail: detail,
+	}); err != nil {
+		slog.Error("ops alert not recorded", "kind", kind, "subject_id", subject, "error", err)
 	}
 }
 

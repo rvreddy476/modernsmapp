@@ -221,7 +221,7 @@ func TestBuildQuoteRefusesAnUnpricedItem(t *testing.T) {
 // A B1 family the tax lane has not mapped is not visible and not priced.
 func TestUnmappedFamilyIsNotOffered(t *testing.T) {
 	f := newFixture()
-	f.b.Category.Family = tax.FamilyHomeStaffing
+	f.b.Category.Family = "UNMAPPED_FAMILY"
 	if f.b.Visible() {
 		t.Fatal("an unmapped family is visible")
 	}

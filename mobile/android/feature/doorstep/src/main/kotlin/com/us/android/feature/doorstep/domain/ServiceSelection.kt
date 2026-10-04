@@ -11,9 +11,10 @@ import com.us.android.feature.doorstep.model.sum
  * and add-ons. Pure, so the rules are plain unit tests.
  *
  * The server re-validates everything on `POST /quotes` (DOORSTEP_OPTION_INVALID,
- * DOORSTEP_QUANTITY_INVALID, DOORSTEP_ADDON_INVALID) and prices it from its own
- * rows; these rules exist so the page never offers a Continue the server will
- * refuse, and so the preview total matches the quote that follows.
+ * DOORSTEP_QUANTITY_INVALID, DOORSTEP_ADDON_INVALID) and the picked
+ * professional's approved prices; these rules exist so the page never offers a Continue the server will
+ * refuse. Since B1 the page shows no price of its own: professionals price
+ * the pick, on the professionals step.
  */
 data class ServiceSelection(
     val optionId: String?,
@@ -86,14 +87,18 @@ object SelectionRules {
     }
 
     /**
-     * The preview total, GST-inclusive like every catalogue price: the option
-     * per unit × quantity plus each chosen add-on once. The quote that follows
-     * states the real figure; this only has to agree with it.
+     * "From" for the pick (B1): the lowest bookable PROFESSIONAL price of the
+     * option per unit × quantity plus each chosen add-on's lowest, GST-inclusive.
+     * A lower bound only — each professional prices the selection, and the
+     * professionals list states the real figure. Null when any chosen item has
+     * no bookable price yet. The city's suggested price is never used: it is
+     * never charged.
      */
-    fun estimate(service: ServiceDetailDto, selection: ServiceSelection): Paise {
-        val option = option(service, selection) ?: return Paise.ZERO
-        val addons = chosenAddons(service, selection).map { Paise(it.pricePaise) }.sum()
-        return Paise(option.pricePaise) * selection.quantity + addons
+    fun fromEstimate(service: ServiceDetailDto, selection: ServiceSelection): Paise? {
+        val option = option(service, selection) ?: return null
+        val optionFrom = option.fromPricePaise ?: return null
+        val addons = chosenAddons(service, selection).map { addon -> addon.fromPricePaise?.let(::Paise) ?: return null }.sum()
+        return Paise(optionFrom) * selection.quantity + addons
     }
 
     /** Minutes: the option's unit duration × quantity plus each add-on's extra minutes. */

@@ -13,6 +13,8 @@ Each service family has two categories. The booking system picks one from the pr
 
 Beauty / salon has **only** `_REGISTERED`, because beauty services are not notified under s.9(5). An unregistered beautician's supply cannot be computed today (question 3).
 
+The families added on 4 October 2026 (car wash, home staffing, packers and movers, photography, yoga, construction) follow the same rule. Only construction (small masonry and tiling repairs at home) is treated as housekeeping and has both categories. The other five have `_REGISTERED` only (questions 23–31).
+
 ## Seeded rate table (effective 22 September 2025, IST)
 
 | Category | Supplier | Liable via ECO under s.9(5) | Rate | ITC | SAC |
@@ -28,6 +30,13 @@ Beauty / salon has **only** `_REGISTERED`, because beauty services are not notif
 | Painting, unregistered | Service professional | Yes | 18% | No | 995473 |
 | Painting, registered | Service professional | No (TCS) | 18% | Yes | 995473 |
 | Salon at home (women and men), registered only | Service professional | No (TCS) | 5% | No | 999722 |
+| Car wash at the customer's parking (`CAR_CARE_REGISTERED`), registered only | Service professional | No (TCS) | 18% | Yes | 998714 |
+| Home staffing: cook, house help, nanny, driver, hourly or monthly (`HOME_STAFFING_REGISTERED`), registered only | Service professional | No (TCS) | 18% | Yes | 999800 |
+| Packers and movers within the city (`RELOCATION_REGISTERED`), registered only | Service professional | No (TCS) | 18% | Yes | 996791 |
+| Photography at home: events, portraits (`PHOTOGRAPHY_REGISTERED`), registered only | Service professional | No (TCS) | 18% | Yes | 998383 |
+| Yoga trainer at home (`FITNESS_WELLNESS_REGISTERED`), registered only | Service professional | No (TCS) | 5% | No | 999723 |
+| Construction and masonry, unregistered (`CONSTRUCTION_VIA_ECO`) | Service professional | Yes | 18% | No | 995457 |
+| Construction and masonry, registered (`CONSTRUCTION_REGISTERED`) | Service professional | No (TCS) | 18% | Yes | 995457 |
 | Platform / convenience fee (shared with Feast) | Platform | n/a (own supply) | 18% | Yes | 998599 |
 
 ITC is shown as "No" on the unregistered rows because the professional cannot claim it and the platform pays a s.9(5) liability in cash.
@@ -59,6 +68,31 @@ ITC is shown as "No" on the unregistered rows because the professional cannot cl
 20. **A `_REGISTERED` line outside the platform** (not through the ECO) leaves the professional liable, with no TCS marker. Doorstep always sells through the platform, so this path is unused.
 21. **One rounding group per liable party, rate, SAC and place of supply**, as for Feast: several services from one professional in one booking are rounded together, then shared back to lines.
 22. **Effective date.** All Doorstep rows start on 22 September 2025, like Feast's. An invoice dated earlier is refused rather than given a guessed rate.
+
+## Families added on 4 October 2026
+
+Professionals now set their own price for each service, and an admin approves it. The catalogue gained the families below. Each row is seeded with the same effective date (22 September 2025) and the same `NeedsAdviserConfirmation` flag as the rows above. Questions 1–22 apply to these families too, especially 2, 3, 7, 11 and 17.
+
+23. **Unregistered professionals outside s.9(5): the general case.** Car wash, home staffing, packers and movers, photography and yoga are treated as **not** notified under s.9(5), so only a registered professional's supply is computed. Most of these professionals will be unregistered and below the threshold. Is their supply through the platform exempt from compulsory registration under Notification 65/2017-Central Tax, and so carries no GST? If yes, what does the customer receive, and does the platform collect TCS? This is question 3 again, for five more families. Until it is answered, those families can be booked only with registered professionals.
+24. **Car wash.** A car is washed at the customer's parking. We have treated this as servicing a vehicle, not housekeeping of the home, so it is outside s.9(5). Is that right? We use SAC 998714 (maintenance and repair of transport machinery and equipment), which we believe covers washing and polishing of motor vehicles, at 18% with ITC. Please confirm the SAC. If car washing is housekeeping, we will add a `CAR_CARE_VIA_ECO` row.
+25. **Home staffing: housekeeping, labour supply or employment.** A cook, house help, nanny or driver is booked by the hour or by the month (one visit a day). Please advise on each of these:
+    - (a) Is a monthly engagement a supply by the worker, or employment by the household (Schedule III, outside GST)? Does the platform's role change that?
+    - (b) Is hourly house help (sweeping, mopping, dishes, laundry) "housekeeping" under s.9(5), even though cooks, nannies and drivers are not? If so, should house help move to its own family with a `_VIA_ECO` row?
+    - (c) We use SAC 999800 (domestic services) at the 18% residual rate. Should it be 9985 (employment and labour supply, for example 998519) instead, especially if the platform is seen as the one supplying the worker?
+26. **Packers and movers.** These professionals supply packing, loading, transport within the city and unloading. We treat this as a composite supply with transport of goods as the principal supply. Please advise on each of these:
+    - (a) When the mover issues a consignment note, they are a goods transport agency (GTA). Is a GTA's supply to an unregistered individual exempt (Notification 12/2017-CT(Rate), the entry for GTA supplies to unregistered persons)? If so, the customer pays no GST and the row must become an explicit 0%.
+    - (b) Is transport by a mover who is not a GTA exempt (transport of goods by road other than GTA)?
+    - (c) For a taxable supply, we chose 18% with ITC, the GTA forward-charge option from 22 September 2025, under SAC 996791. Should it be 5% without ITC? Should it be 996511 (road transport of goods, including household furniture), or 998540 (packaging) for packing done alone?
+    - (d) The survey visit is a separate booking at ₹199. Is it a separate supply?
+27. **Photography.** Events and portrait sessions at home. We use SAC 998383 (event photography) at 18%, with portrait sessions strictly 998381. One SAC per family is used today. Must each invoice carry the session's own code? Are edited photos delivered digitally still part of the same service supply?
+28. **Yoga trainer: well-being or coaching.** We treat a personal yoga trainer at home as "physical well-being" (SAC 999723), which we believe moved to 5% without ITC on 22 September 2025 with gyms, yoga centres and salons. If it is commercial coaching instead (9992, 18%), the rate is wrong. Please cite the notification entry. Does the exemption for yoga by charitable entities ever apply to an individual trainer? (We assume not.)
+29. **Construction and masonry under s.9(5).** Masonry, tiling and small civil repairs at the customer's home are treated as housekeeping, like plumbing and carpentry, so both categories exist. Please advise on each of these:
+    - (a) Is that right? Or is any masonry or tiling "construction" outside the housekeeping entry?
+    - (b) Cement and tiles are charged from the rate card. Does that make the job a works contract (s.2(119)), and does that change the rate, the SAC or the s.9(5) position (as in question 8 for painting)?
+    - (c) We use SAC 995457 (masonry) at family level, with tiling strictly 995474. Is a single family-level code acceptable?
+    - (d) Is the inspection visit (₹299) a separate supply?
+30. **Appliance families widened.** Laptop and computer repair and mobile phone repair joined `APPLIANCE_REPAIR` (SAC 998715). Their own codes are 998713 (computers and peripherals) and 998716 (telecommunication equipment), and repairing a phone is not obviously "housekeeping". Should these move to their own registered-only family? TV, refrigerator, microwave, geyser, chimney and hob repair stay under 998715. Disinfection joined `PEST_CONTROL` (998531, disinfecting).
+31. **Per-hour and per-month prices.** Staffing and yoga are priced per hour or per month, and monthly is a daily visit that we book one at a time. Is a monthly engagement one supply with a single time of supply, or a continuous supply of services (s.31(5))? Which invoice is due when?
 
 ## Non-tax items raised alongside (founder, not the adviser)
 

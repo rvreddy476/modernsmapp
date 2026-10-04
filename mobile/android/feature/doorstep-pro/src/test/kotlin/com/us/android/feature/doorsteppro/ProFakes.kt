@@ -79,6 +79,10 @@ object Jobs {
  */
 @Suppress("TooManyFunctions")
 class FakeProRepository : DoorstepProRepository {
+    override suspend fun prices(): ProResult<List<com.us.android.feature.doorsteppro.data.ProServicePricingDto>> = notScripted
+    override suspend fun submitPrice(request: com.us.android.feature.doorsteppro.data.ProPriceRequest): ProResult<com.us.android.feature.doorsteppro.data.ProPriceDto> = notScripted
+    override suspend fun withdrawPrice(id: String): ProResult<com.us.android.feature.doorsteppro.data.ProPriceDto> = notScripted
+    override suspend fun sameDay(serviceId: String, enabled: Boolean): ProResult<com.us.android.feature.doorsteppro.data.SameDaySettingDto> = notScripted
     val calls = mutableListOf<String>()
     private val notScripted: ProResult<Nothing> = ProResult.Failure(ProError.NotFound)
 
@@ -138,6 +142,7 @@ class FakeProRepository : DoorstepProRepository {
     override suspend fun rateCustomer(bookingId: String, stars: Int, tags: List<String>, comment: String?): ProResult<RatingDto> = notScripted
     override suspend fun messages(bookingId: String, cursor: String?): ProResult<MessagePageDto> = notScripted
     override suspend fun sendMessage(bookingId: String, body: String): ProResult<MessageDto> = notScripted
+    override suspend fun readMessage(bookingId: String, messageId: String): ProResult<Unit> = ProResult.Success(Unit)
     override suspend fun earnings(from: String?, to: String?): ProResult<EarningsDto> = notScripted
 }
 

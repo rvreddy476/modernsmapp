@@ -27,6 +27,10 @@ func doorstepCase(rt productRoute) (string, []reqOpt) {
 		return `{"decision":"approve","reason":"certificate is genuine"}`, nil
 	case "doorstep.professional.skill.verify":
 		return `{"verified":true,"reason":"trade certificate seen"}`, nil
+	case "doorstep.pro_price.approve":
+		return `{"reason":"in line with the market"}`, nil
+	case "doorstep.pro_price.reject":
+		return `{"reason":"far above the suggested price"}`, nil
 	case "doorstep.ticket.status":
 		return `{"status":"resolved","note":"refunded"}`, nil
 	case "doorstep.price.create":
@@ -40,19 +44,23 @@ func doorstepCase(rt productRoute) (string, []reqOpt) {
 
 // doorstepStepUp lists the operations that must be declared step-up: the
 // professional detail, the document queue and decisions (reveals),
-// suspend / reinstate / block, booking cancel, every money setting, and the
+// suspend / reinstate / block, booking cancel, every money setting (including
+// approving a professional's price, which makes it live), and the
 // refund (which is two-person as well).
 var doorstepStepUp = map[string]bool{
-	"doorstep.professional.read":    true,
-	"doorstep.documents.list":       true,
-	"doorstep.document.decide":      true,
-	opDoorstepDocumentView:          true,
-	"doorstep.professional.suspend": true, "doorstep.professional.reinstate": true, "doorstep.professional.block": true,
+	"doorstep.professional.tax_registration.read":  true,
+	"doorstep.professional.tax_registration.write": true,
+	"doorstep.professional.read":                   true,
+	"doorstep.documents.list":                      true,
+	"doorstep.document.decide":                     true,
+	opDoorstepDocumentView:                         true,
+	"doorstep.professional.suspend":                true, "doorstep.professional.reinstate": true, "doorstep.professional.block": true,
 	"doorstep.booking.cancel": true,
 	"doorstep.price.create":   true, "doorstep.rate_card.create": true, "doorstep.rate_card.update": true,
 	"doorstep.cancellation_rule.create": true, "doorstep.cancellation_rule.update": true,
 	"doorstep.commission_rule.create": true, "doorstep.commission_rule.update": true,
-	opDoorstepRefundIssue: true,
+	"doorstep.pro_price.approve": true,
+	opDoorstepRefundIssue:        true,
 }
 
 // The console paths the admin console lane calls, under /v1/admin/doorstep,
@@ -75,6 +83,7 @@ var doorstepContract = []string{
 	"GET /cancellation-rules doorstep:catalogue.read", "POST /cancellation-rules doorstep:config.write", "PATCH /cancellation-rules/:id doorstep:config.write",
 	"GET /commission-rules doorstep:catalogue.read", "POST /commission-rules doorstep:config.write", "PATCH /commission-rules/:id doorstep:config.write",
 	"GET /professionals doorstep:pros.read", "GET /professionals/:id doorstep:pros.read",
+	"GET /professionals/:id/tax-registration doorstep:pros.approve", "POST /professionals/:id/tax-registration doorstep:pros.approve",
 	"POST /professionals/:id/approve doorstep:pros.approve", "POST /professionals/:id/reject doorstep:pros.approve",
 	"POST /professionals/:id/suspend doorstep:pros.suspend", "POST /professionals/:id/reinstate doorstep:pros.suspend",
 	"POST /professionals/:id/block doorstep:pros.suspend", "POST /professionals/:id/skills/:code/verify doorstep:pros.approve",
@@ -86,6 +95,8 @@ var doorstepContract = []string{
 	"GET /tickets doorstep:tickets.act", "POST /tickets/:id/status doorstep:tickets.act",
 	"GET /ratings doorstep:ratings.moderate", "POST /ratings/:id/hide doorstep:ratings.moderate",
 	"GET /settlements doorstep:settlements.read", "GET /audit-logs doorstep:audit.read",
+	"GET /pro-prices doorstep:prices.review", "POST /pro-prices/:id/approve doorstep:prices.review",
+	"POST /pro-prices/:id/reject doorstep:prices.review",
 }
 
 func doorstepTable() []string {

@@ -46,7 +46,7 @@ sealed interface CheckoutState {
     data class Ready(
         val quote: QuoteDto,
         val address: AddressDto,
-        val slotStart: String,
+        val slotStart: String?,
         val requireFemalePro: Boolean,
         val notes: String = "",
         val placing: Boolean = false,
@@ -54,6 +54,9 @@ sealed interface CheckoutState {
         val refusal: String? = null,
         /** The refusal means the slot is gone: offer to pick another. */
         val pickAnotherSlot: Boolean = false,
+        val asap: Boolean = false,
+        val proFirstName: String? = null,
+        val etaMinutes: Int? = null,
     ) : CheckoutState
 
     /** The sheet is being opened from the Activity. */
@@ -118,7 +121,10 @@ class CheckoutViewModel @Inject constructor(
 
     private val quoteId: String = checkNotNull(savedStateHandle.get<String>("quoteId")) { "navigation argument 'quoteId' is missing" }
     private val addressId: String = checkNotNull(savedStateHandle.get<String>("addressId")) { "navigation argument 'addressId' is missing" }
-    private val slotStart: String = checkNotNull(savedStateHandle.get<String>("slotStart")) { "navigation argument 'slotStart' is missing" }
+    private val slotStart: String? = savedStateHandle.get<String>("slotStart")
+    private val asap: Boolean = savedStateHandle.get<Boolean>("asap") ?: false
+    private val proFirstName: String? = savedStateHandle.get<String>("proFirstName")
+    private val etaMinutes: Int? = savedStateHandle.get<Int>("etaMinutes")?.takeIf { it >= 0 }
     private val requireFemalePro: Boolean = savedStateHandle.get<Boolean>("requireFemalePro") ?: false
 
     private val saved = CheckoutContinuation(savedStateHandle)
@@ -207,7 +213,12 @@ class CheckoutViewModel @Inject constructor(
             _state.value = CheckoutState.Failed("That address was removed. Pick the address again.")
             return null
         }
-        val ready = CheckoutState.Ready(quote, address, slotStart, requireFemalePro, notes = saved.notes)
+        if (asap == (slotStart != null)) {
+            _state.value = CheckoutState.Failed("Choose a visit time or an available professional first.")
+            return null
+        }
+        val ready = CheckoutState.Ready(quote, address, slotStart, requireFemalePro, notes = saved.notes,
+            asap = asap, proFirstName = proFirstName, etaMinutes = etaMinutes)
         _state.value = ready
         return ready
     }
@@ -220,6 +231,7 @@ class CheckoutViewModel @Inject constructor(
             quoteId = quoteId,
             addressId = addressId,
             slotStart = slotStart,
+            asap = if (asap) true else null,
             requireFemalePro = requireFemalePro,
             notes = saved.notes.trim().ifBlank { null },
         )

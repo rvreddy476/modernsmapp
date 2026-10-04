@@ -26,6 +26,9 @@ enum class BookingStatus(val wire: String, val label: String, val terminal: Bool
     CUSTOMER_NO_SHOW("customer_no_show", "Missed visit", terminal = true),
     PRO_NO_SHOW("pro_no_show", "Professional didn't arrive", terminal = true),
 
+    /** B1: the picked professional is gone; the customer picks another (or cancels) before the deadline. Live: it moves on its own. */
+    PRO_UNAVAILABLE("pro_unavailable", "Pick another professional", terminal = false),
+
     /** A status this build does not know yet: shown neutrally, kept live so the screen keeps asking. */
     UNKNOWN("", "Updating", terminal = false),
     ;
@@ -64,7 +67,7 @@ object BookingRules {
      * whatever the server sent.
      */
     fun visibleEndOtp(booking: BookingDto): String? =
-        booking.endOtp?.trim()?.takeIf { it.isNotEmpty() && BookingStatus.of(booking.status) == BookingStatus.IN_PROGRESS }
+        booking.endOtp?.trim()?.takeIf { it.isNotEmpty() && BookingStatus.of(booking.status) in setOf(BookingStatus.IN_PROGRESS, BookingStatus.AWAITING_EXTRAS_PAYMENT) }
 
     /** The phases a customer is shown, in the order shown. */
     val CUSTOMER_PHOTO_PHASES = listOf(PHOTO_BEFORE, PHOTO_AFTER)

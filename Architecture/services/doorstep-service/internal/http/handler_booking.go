@@ -244,7 +244,12 @@ func (h *Handler) bookingStubConfirm(c *gin.Context) {
 // ---- admin ----
 
 func (h *Handler) adminListBookings(c *gin.Context) {
-	v, err := h.svc.AdminBookings(c.Request.Context(), c.Query("status"), c.Query("city"), c.Query("date"), c.Query("cursor"))
+	raw := c.Query("needs_attention")
+	if raw != "" && raw != "true" && raw != "false" {
+		writeErr(c, apperr.Invalid("needs_attention", "use true or false"))
+		return
+	}
+	v, err := h.svc.AdminBookings(c.Request.Context(), c.Query("status"), c.Query("city"), c.Query("date"), c.Query("cursor"), raw == "true")
 	respond(c, http.StatusOK, v, err)
 }
 

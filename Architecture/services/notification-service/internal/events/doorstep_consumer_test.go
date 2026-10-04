@@ -169,8 +169,8 @@ func TestDoorstepRegistryMatchesContract(t *testing.T) {
 	}
 
 	events := c.contractEvents(t)
-	if len(events) != 31 {
-		t.Fatalf("contract lists %d events; this test was written against 31 — re-check the registry", len(events))
+	if len(events) != 38 {
+		t.Fatalf("contract lists %d events; this test was written against 38 — re-check the registry", len(events))
 	}
 	for _, e := range events {
 		if !doorstepKnownEvents[e] {
@@ -264,6 +264,9 @@ func dsData() map[string]any {
 		"expires_at":          dsNow.Add(5 * time.Minute).Format(time.RFC3339),
 		"locality":            "Madhapur",
 		"pro_id":              dsProRecord.String(),
+		"price_id":            "a0000000-0000-4000-8000-000000000010",
+		"difference_paise":    -5000,
+		"choice_deadline":     dsNow.Add(30 * time.Minute).Format(time.RFC3339),
 		"document_id":         dsDocument.String(),
 		"kind":                "police_certificate",
 		"valid_until":         "2027-01-02",
@@ -314,6 +317,10 @@ func newTestDoorstepConsumer() (*DoorstepConsumer, *fakeDoorstepDeliverer) {
 
 // dsConditionOverrides makes each conditional push type's `when` true.
 var dsConditionOverrides = map[string]map[string]any{
+	service.DoorstepTypeBookingReassigned:      {"cause": "rescheduled"},
+	service.DoorstepTypeBookingProUnavailable:  {"choice_deadline": dsNow.Add(30 * time.Minute).Format(time.RFC3339), "cause": "declined"},
+	service.DoorstepTypeBookingProChanged:      {"difference_paise": -5000, "new_pro_user_id": dsPro.String()},
+	service.DoorstepTypeProPriceReviewed:       {"decision": "approved"},
 	service.DoorstepTypeBookingProNoShow:       {"party": "pro"},
 	service.DoorstepTypeMessageNew:             {"sender_kind": "pro"},
 	service.DoorstepTypeProMessageNew:          {"sender_kind": "customer"},

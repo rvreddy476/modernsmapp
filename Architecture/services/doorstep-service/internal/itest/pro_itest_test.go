@@ -36,6 +36,8 @@ import (
 // image bytes.
 type ownAll struct{}
 
+func (ownAll) PrepareVisitPhoto(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+
 func (ownAll) VerifyOwned(context.Context, uuid.UUID, uuid.UUID, ...mediaclient.Kind) error {
 	return nil
 }

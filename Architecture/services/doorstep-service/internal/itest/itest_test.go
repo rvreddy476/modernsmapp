@@ -382,10 +382,10 @@ func TestCatalogueFromSeed(t *testing.T) {
 		!strings.Contains(string(body), `"suggested_price_paise":129900`) {
 		t.Fatalf("service page: %d %s", status, body)
 	}
-	// A seeded staffing service exists but is not offered yet.
+	// The registered-only staffing tax lane is now supported.
 	status, body = rg.call("GET", "/v1/doorstep/services/"+id("service", "home-staffing/cook")+"?city=HYD", "", nil)
-	if status != 422 || errCode(body) != "DOORSTEP_SERVICE_NOT_AVAILABLE" || !strings.Contains(string(body), "tax_category_pending") {
-		t.Fatalf("staffing before the tax lane: %d %s", status, body)
+	if status != 200 || !strings.Contains(string(body), `"unit":"per_hour"`) {
+		t.Fatalf("staffing catalogue: %d %s", status, body)
 	}
 	if status, body := rg.call("GET", "/v1/doorstep/catalogue?city=BLR", "", nil); status != 404 || errCode(body) != "DOORSTEP_CITY_NOT_FOUND" {
 		t.Fatalf("unknown city: %d %s", status, body)

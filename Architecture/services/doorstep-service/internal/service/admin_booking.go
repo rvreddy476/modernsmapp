@@ -25,7 +25,7 @@ var bookingStatuses = map[string]bool{"pending_payment": true, "confirmed": true
 	"expired": true, "customer_no_show": true, "pro_no_show": true, "pro_unavailable": true}
 
 // AdminBookings pages bookings (filters: status, city, IST date).
-func (s *Service) AdminBookings(ctx context.Context, status, city, date, cursor string) (*model.BookingPage, error) {
+func (s *Service) AdminBookings(ctx context.Context, status, city, date, cursor string, needsAttention ...bool) (*model.BookingPage, error) {
 	status, city, date = strings.TrimSpace(status), strings.ToUpper(strings.TrimSpace(city)), strings.TrimSpace(date)
 	if status != "" && !bookingStatuses[status] {
 		return nil, apperr.Invalid("status", "unknown booking status")
@@ -43,7 +43,7 @@ func (s *Service) AdminBookings(ctx context.Context, status, city, date, cursor 
 		return nil, aerr
 	}
 	const limit = 50
-	items, err := s.bk.Store.AdminBookings(ctx, store.AdminBookingFilter{Status: status, City: city, Date: date, After: after, Limit: limit})
+	items, err := s.bk.Store.AdminBookings(ctx, store.AdminBookingFilter{Status: status, City: city, Date: date, After: after, Limit: limit, NeedsAttention: len(needsAttention) > 0 && needsAttention[0]})
 	if err != nil {
 		return nil, internal(ctx, "admin bookings", err)
 	}

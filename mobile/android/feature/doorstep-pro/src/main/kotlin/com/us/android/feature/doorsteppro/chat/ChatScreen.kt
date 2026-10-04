@@ -17,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -55,6 +56,8 @@ import javax.inject.Inject
 data class ChatUiState(
     val loading: Boolean = true,
     val messages: List<MessageDto> = emptyList(),
+    val nextCursor: String? = null,
+    val loadingMore: Boolean = false,
     val open: Boolean = true,
     val draft: String = "",
     val sending: Boolean = false,
@@ -87,14 +90,30 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun load() {
-        when (val result = repository.messages(bookingId, cursor = null)) {
-            is ProResult.Success -> _state.update {
-                it.copy(loading = false, messages = result.value.items.sortedBy(MessageDto::createdAt), open = result.value.open)
-            }
-            is ProResult.Failure -> _state.update { it.copy(loading = false, message = it.message ?: result.error.asMessage()) }
-        }
+    private var fetching = false
+    private suspend fun load(more: Boolean = false) {
+        if (fetching) return
+        fetching = true
+        _state.update { it.copy(loadingMore = more) }
+        try {
+            val target = _state.value.messages.size
+            var cursor = if (more) _state.value.nextCursor else null
+            if (more && cursor == null) return
+            val gathered = if (more) _state.value.messages.toMutableList() else mutableListOf()
+            do {
+                when (val result = repository.messages(bookingId, cursor)) {
+                    is ProResult.Success -> {
+                        gathered.addAll(result.value.items)
+                        cursor = result.value.nextCursor
+                        _state.update { it.copy(loading = false, messages = gathered.distinctBy { m -> m.id }.sortedBy(MessageDto::createdAt), nextCursor = cursor, open = result.value.open) }
+                        result.value.items.filter { m -> m.senderKind == "customer" && m.readAt == null }.forEach { m -> repository.readMessage(bookingId, m.id) }
+                    }
+                    is ProResult.Failure -> { _state.update { it.copy(loading = false, message = it.message ?: result.error.asMessage()) }; return }
+                }
+            } while (!more && cursor != null && gathered.size < target)
+        } finally { fetching = false; _state.update { it.copy(loadingMore = false) } }
     }
+    fun loadMore() { viewModelScope.launch { load(more = true) } }
 
     fun onDraft(text: String) = _state.update { it.copy(draft = text.take(MAX_BODY)) }
 
@@ -156,6 +175,7 @@ fun ChatScreen(onBack: () -> Unit, viewModel: ChatViewModel = hiltViewModel()) {
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
         ) {
             if (!state.open) item { InfoNote("Chat closes two hours after the job.") }
+            if (state.nextCursor != null) item { TextButton(onClick = viewModel::loadMore, enabled = !state.loadingMore) { Text(if (state.loadingMore) "Loading…" else "More messages") } }
             if (state.messages.isEmpty() && state.open) item { InfoNote("Say hello, or tell the customer when you'll arrive.") }
             items(state.messages, key = { it.id }) { message -> Bubble(message) }
         }

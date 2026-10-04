@@ -71,6 +71,13 @@ func Supported(family string) bool {
 	return err == nil
 }
 
+// RegisteredOnly keeps families without an adviser-approved unregistered
+// treatment unavailable until the professional's GSTIN is admin-verified.
+func RegisteredOnly(family string) bool {
+	category, err := QuoteCategory(family)
+	return err == nil && strings.HasSuffix(string(category), "_REGISTERED")
+}
+
 // ErrUnknownFamily is returned for a family with no GST category.
 var ErrUnknownFamily = errors.New("tax: unknown family")
 
@@ -85,6 +92,7 @@ type Line struct {
 
 // Input is one quote's tax request.
 type Input struct {
+	ProfessionalGSTIN  string // completion only; the actual supplier
 	Family             string
 	PlaceOfSupplyState string // two-digit GST state code of the city (HYD: 36)
 	At                 time.Time
@@ -131,6 +139,18 @@ func QuoteCategory(family string) (gst.Category, error) {
 	case FamilyBeautySalon:
 		// Not under s.9(5): only the registered category exists.
 		return gst.CategoryBeautySalonRegistered, nil
+	case FamilyCarCare:
+		return gst.CategoryCarCareRegistered, nil
+	case FamilyHomeStaffing:
+		return gst.CategoryHomeStaffingRegistered, nil
+	case FamilyRelocation:
+		return gst.CategoryRelocationRegistered, nil
+	case FamilyPhotography:
+		return gst.CategoryPhotographyRegistered, nil
+	case FamilyFitnessWellness:
+		return gst.CategoryFitnessWellnessRegistered, nil
+	case FamilyConstruction:
+		return gst.CategoryConstructionViaECO, nil
 	}
 	return "", fmt.Errorf("%w: %q", ErrUnknownFamily, family)
 }
@@ -167,10 +187,30 @@ func (g *GST) SplitInclusive(in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if in.ProfessionalGSTIN != "" {
+		valid, e := kyc.ValidateGSTIN(in.ProfessionalGSTIN)
+		if e != nil {
+			return Result{}, e
+		}
+		cat = gst.Category(in.Family + "_REGISTERED")
+		gin := gst.Input{Mode: gst.ModeInclusive, InvoiceDate: in.At, ThroughECO: true, Platform: gst.Party{GSTIN: g.platformGSTIN}, ServiceProfessional: gst.Party{GSTIN: valid.Normalized}, PlaceOfSupplyState: in.PlaceOfSupplyState}
+		for _, l := range in.Lines {
+			gin.Lines = append(gin.Lines, gst.Line{Ref: l.Ref, Category: cat, Amount: gst.Paise(l.GrossPaise)})
+		}
+		res, e := gst.Compute(g.table, gin)
+		if e != nil {
+			return Result{}, e
+		}
+		out := Result{Provisional: res.NeedsAdviserConfirmation, Note: Note, Lines: make([]LineResult, len(res.Lines))}
+		for i, l := range res.Lines {
+			out.Lines[i] = LineResult{Ref: l.Ref, Category: string(l.Category), SAC: l.SAC, RateBPS: int(l.RateBP), GrossPaise: int64(l.Gross), TaxablePaise: int64(l.Taxable), TaxPaise: int64(l.Tax)}
+		}
+		return out, nil
+	}
 	if len(in.Lines) == 0 {
 		return Result{Note: Note, Provisional: true}, nil
 	}
-	if g.platformGSTIN != "" && in.Family != FamilyBeautySalon {
+	if g.platformGSTIN != "" && strings.HasSuffix(string(cat), "_VIA_ECO") {
 		return g.compute(cat, in)
 	}
 	return g.estimate(cat, in)

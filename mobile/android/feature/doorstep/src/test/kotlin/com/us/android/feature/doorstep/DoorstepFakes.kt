@@ -120,6 +120,10 @@ fun booking(
     canReschedule = true,
     createdAt = "2026-10-04T06:30:00Z",
     updatedAt = "2026-10-04T06:30:00Z",
+    asap = false,
+    choiceDeadline = null,
+    unavailableCause = null,
+    pendingChange = null,
 )
 
 fun checkout(orderId: String = "order_RZP1", provider: String = "razorpay") = CheckoutSessionDto(
@@ -221,6 +225,9 @@ class FakeDoorstepRepository : DoorstepRepository {
     }
 
     override suspend fun quote(quoteId: String) = quoteResult
+    override suspend fun serviceProfessionals(query: com.us.android.feature.doorstep.data.ProfessionalQuery): DoorstepResult<com.us.android.feature.doorstep.data.ProfessionalListDto> = unused()
+    override suspend fun bookingProfessionals(bookingId: String, date: String?, asap: Boolean, sort: String): DoorstepResult<com.us.android.feature.doorstep.data.ProfessionalListDto> = unused()
+    override suspend fun changeProfessional(idempotencyKey: String, bookingId: String, request: com.us.android.feature.doorstep.data.ProChangeRequestDto): DoorstepResult<com.us.android.feature.doorstep.data.ProChangeResultDto> = unused()
 
     override suspend fun addresses() = addressesResult
 
@@ -248,10 +255,18 @@ class FakeDoorstepRepository : DoorstepRepository {
     override suspend fun extrasPaymentIntent(billId: String): DoorstepResult<PaymentIntentDto> = extrasIntentResult
     override suspend fun outstanding(): DoorstepResult<OutstandingDto> = unused()
     override suspend fun rate(bookingId: String, stars: Int, comment: String?): DoorstepResult<RatingDto> = unused()
-    override suspend fun requestRework(bookingId: String, reason: String): DoorstepResult<ReworkRequestDto> = unused()
+    override suspend fun requestRework(bookingId: String, reason: String, slotStart: String?): DoorstepResult<ReworkRequestDto> = unused()
     override suspend fun rework(bookingId: String): DoorstepResult<List<ReworkRequestDto>> = unused()
     override suspend fun sos(bookingId: String, note: String?): DoorstepResult<IncidentDto> = unused()
     override suspend fun share(bookingId: String): DoorstepResult<ShareTokenDto> = unused()
+    override suspend fun revokeShare(bookingId: String): DoorstepResult<Unit> = unused()
+    override suspend fun messages(bookingId: String, cursor: String?): DoorstepResult<com.us.android.feature.doorstep.data.MessagePageDto> = unused()
+    override suspend fun sendMessage(bookingId: String, body: String): DoorstepResult<com.us.android.feature.doorstep.data.MessageDto> = unused()
+    override suspend fun readMessage(bookingId: String, messageId: String): DoorstepResult<Unit> = unused()
+    override suspend fun trustedContact(): DoorstepResult<com.us.android.feature.doorstep.data.TrustedContactDto?> = unused()
+    override suspend fun tickets(): DoorstepResult<List<com.us.android.feature.doorstep.data.TicketDto>> = unused()
+    override suspend fun openTicket(body: com.us.android.feature.doorstep.data.TicketInputDto): DoorstepResult<com.us.android.feature.doorstep.data.TicketDto> = unused()
+    override suspend fun saveTrustedContact(name: String, phone: String): DoorstepResult<com.us.android.feature.doorstep.data.TrustedContactDto> = unused()
     override suspend fun realtimeToken(bookingId: String): DoorstepResult<RealtimeTokenDto> = unused()
 
     private fun <T> unused(): DoorstepResult<T> = DoorstepResult.Failure(DoorstepError.Unexpected(null, "not faked"))

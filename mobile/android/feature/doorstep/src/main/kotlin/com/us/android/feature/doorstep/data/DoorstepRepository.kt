@@ -37,6 +37,15 @@ interface DoorstepRepository {
      */
     suspend fun stubConfirmBookingPayment(bookingId: String): DoorstepResult<Unit>
 
+    /** B1: `GET /services/{id}/professionals` for [query]. */
+    suspend fun serviceProfessionals(query: ProfessionalQuery): DoorstepResult<ProfessionalListDto>
+
+    /** B1: `GET /bookings/{id}/professionals` — alternatives for a pro_unavailable booking. */
+    suspend fun bookingProfessionals(bookingId: String, date: String?, asap: Boolean, sort: String): DoorstepResult<ProfessionalListDto>
+
+    /** B1: `POST /bookings/{id}/change-professional` under [idempotencyKey] (the same key on a resend answers the same change). */
+    suspend fun changeProfessional(idempotencyKey: String, bookingId: String, request: ProChangeRequestDto): DoorstepResult<ProChangeResultDto>
+
     suspend fun extras(bookingId: String): DoorstepResult<List<ExtraDto>>
     suspend fun approveExtra(bookingId: String, extraId: String): DoorstepResult<ExtraDto>
     suspend fun declineExtra(bookingId: String, extraId: String): DoorstepResult<ExtraDto>
@@ -45,11 +54,19 @@ interface DoorstepRepository {
     suspend fun outstanding(): DoorstepResult<OutstandingDto>
 
     suspend fun rate(bookingId: String, stars: Int, comment: String?): DoorstepResult<RatingDto>
-    suspend fun requestRework(bookingId: String, reason: String): DoorstepResult<ReworkRequestDto>
+    suspend fun requestRework(bookingId: String, reason: String, slotStart: String? = null): DoorstepResult<ReworkRequestDto>
     suspend fun rework(bookingId: String): DoorstepResult<List<ReworkRequestDto>>
 
     suspend fun sos(bookingId: String, note: String?): DoorstepResult<IncidentDto>
     suspend fun share(bookingId: String): DoorstepResult<ShareTokenDto>
+    suspend fun revokeShare(bookingId: String): DoorstepResult<Unit>
+    suspend fun messages(bookingId: String, cursor: String? = null): DoorstepResult<MessagePageDto>
+    suspend fun sendMessage(bookingId: String, body: String): DoorstepResult<MessageDto>
+    suspend fun readMessage(bookingId: String, messageId: String): DoorstepResult<Unit>
+    suspend fun trustedContact(): DoorstepResult<TrustedContactDto?>
+    suspend fun saveTrustedContact(name: String, phone: String): DoorstepResult<TrustedContactDto>
+    suspend fun tickets(): DoorstepResult<List<TicketDto>>
+    suspend fun openTicket(body: TicketInputDto): DoorstepResult<TicketDto>
 
     suspend fun realtimeToken(bookingId: String): DoorstepResult<RealtimeTokenDto>
 
@@ -60,6 +77,22 @@ interface DoorstepRepository {
         const val PAGE_SIZE = 20
     }
 }
+
+/**
+ * What `GET /services/{id}/professionals` is asked: the customer's selection,
+ * the address, and how to list (a [date] or [asap], never both; [sort]).
+ */
+data class ProfessionalQuery(
+    val serviceId: String,
+    val optionId: String,
+    val quantity: Int,
+    val addonIds: Set<String>,
+    val addressId: String,
+    val date: String?,
+    val asap: Boolean,
+    val sort: String,
+    val requireFemalePro: Boolean,
+)
 
 /**
  * doorstep-service over the shared client. The platform [Json] ignores
@@ -119,6 +152,26 @@ class RealDoorstepRepository @Inject constructor(
     override suspend fun stubConfirmBookingPayment(bookingId: String) =
         doorstepCall(json) { api.stubConfirmBookingPayment(bookingId) }.map { }
 
+    override suspend fun serviceProfessionals(query: ProfessionalQuery) = doorstepCall(json) {
+        api.serviceProfessionals(
+            serviceId = query.serviceId,
+            optionId = query.optionId,
+            quantity = query.quantity,
+            addonIds = query.addonIds.sorted(),
+            addressId = query.addressId,
+            date = query.date.takeUnless { query.asap },
+            asap = true.takeIf { query.asap },
+            sort = query.sort,
+            requireFemalePro = true.takeIf { query.requireFemalePro },
+        )
+    }
+
+    override suspend fun bookingProfessionals(bookingId: String, date: String?, asap: Boolean, sort: String) =
+        doorstepCall(json) { api.bookingProfessionals(bookingId, date.takeUnless { asap }, true.takeIf { asap }, sort) }
+
+    override suspend fun changeProfessional(idempotencyKey: String, bookingId: String, request: ProChangeRequestDto) =
+        doorstepCall(json) { api.changeProfessional(idempotencyKey, bookingId, request) }
+
     override suspend fun extras(bookingId: String) = doorstepCall(json) { api.extras(bookingId) }.map { it.items }
 
     override suspend fun approveExtra(bookingId: String, extraId: String) = doorstepCall(json) { api.approveExtra(bookingId, extraId) }
@@ -134,8 +187,8 @@ class RealDoorstepRepository @Inject constructor(
     override suspend fun rate(bookingId: String, stars: Int, comment: String?) =
         doorstepCall(json) { api.rate(bookingId, RatingInputDto(stars = stars, comment = comment?.takeIf { it.isNotBlank() })) }
 
-    override suspend fun requestRework(bookingId: String, reason: String) =
-        doorstepCall(json) { api.requestRework(bookingId, ReworkInputDto(reason = reason)) }
+    override suspend fun requestRework(bookingId: String, reason: String, slotStart: String?) =
+        doorstepCall(json) { api.requestRework(bookingId, ReworkInputDto(reason = reason, slotStart = slotStart)) }
 
     override suspend fun rework(bookingId: String) = doorstepCall(json) { api.rework(bookingId) }.map { it.items }
 
@@ -143,6 +196,15 @@ class RealDoorstepRepository @Inject constructor(
         doorstepCall(json) { api.sos(bookingId, SosInputDto(note = note?.takeIf { it.isNotBlank() })) }
 
     override suspend fun share(bookingId: String) = doorstepCall(json) { api.share(bookingId) }
+
+    override suspend fun revokeShare(bookingId: String) = doorstepUnitCall(json) { api.revokeShare(bookingId) }
+    override suspend fun messages(bookingId: String, cursor: String?) = doorstepCall(json) { api.messages(bookingId, cursor) }
+    override suspend fun sendMessage(bookingId: String, body: String) = doorstepCall(json) { api.sendMessage(bookingId, MessageInputDto(body)) }
+    override suspend fun readMessage(bookingId: String, messageId: String) = doorstepUnitCall(json) { api.readMessage(bookingId, messageId) }
+    override suspend fun trustedContact() = doorstepNullableCall(json) { api.trustedContact() }
+    override suspend fun saveTrustedContact(name: String, phone: String) = doorstepCall(json) { api.saveTrustedContact(TrustedContactInputDto(name, phone)) }
+    override suspend fun tickets() = doorstepCall(json) { api.tickets() }.map { it.items }
+    override suspend fun openTicket(body: TicketInputDto) = doorstepCall(json) { api.openTicket(body) }
 
     override suspend fun realtimeToken(bookingId: String) =
         doorstepCall(json) { api.realtimeToken(RealtimeTokenRequestDto(bookingId)) }

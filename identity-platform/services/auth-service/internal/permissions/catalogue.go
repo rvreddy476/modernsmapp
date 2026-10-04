@@ -376,6 +376,12 @@ var catalogue = map[string][]entry{
 		p("pros.suspend"),
 		// documents.review: DigiLocker, selfie and police clearance certificates.
 		p("documents.review", kyc),
+		// prices.review: approve or reject the charge a professional sets for
+		// a service (B1; nothing approves itself). The KYC reviewer already
+		// verifies the professional, the skills and the documents, so the
+		// price queue is the same seat. Never finance (a professional's own
+		// price is not a payment or refund), moderator or support.
+		p("prices.review", kyc),
 		p("bookings.read", mod, fin, sup),
 		p("bookings.cancel"),
 		// bookings.redispatch: re-run dispatch excluding a professional, never

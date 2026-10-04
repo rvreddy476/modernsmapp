@@ -15,6 +15,7 @@
 package mediaclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,6 +65,7 @@ type Client struct {
 	internalKey string
 	http        *http.Client
 	minter      TokenMinter
+	photoMinter TokenMinter
 }
 
 // New builds a client; a blank base URL yields nil (the caller refuses).
@@ -171,6 +173,52 @@ type TokenMinter func() (string, error)
 // ImageFetcher reads one image's display bytes.
 type ImageFetcher interface {
 	FetchImage(ctx context.Context, mediaID uuid.UUID) ([]byte, string, error)
+}
+
+const PhotoPrepareOperation = "media:doorstep-photo.prepare"
+
+// VisitPhotoPreparer verifies ownership and atomically disables public delivery.
+type VisitPhotoPreparer interface {
+	PrepareVisitPhoto(context.Context, uuid.UUID, uuid.UUID) error
+}
+
+func (c *Client) WithPhotoScopeToken(m TokenMinter) *Client {
+	if c != nil {
+		c.photoMinter = m
+	}
+	return c
+}
+
+func (c *Client) PrepareVisitPhoto(ctx context.Context, id, owner uuid.UUID) error {
+	if c == nil {
+		return ErrUnavailable
+	}
+	body, _ := json.Marshal(map[string]uuid.UUID{"owner_id": owner})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/media/internal/"+id.String()+"/doorstep-photo", bytes.NewReader(body))
+	if err != nil {
+		return ErrUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	if c.photoMinter != nil {
+		token, err := c.photoMinter()
+		if err != nil {
+			return ErrUnavailable
+		}
+		req.Header.Set("X-Service-Authorization", "Bearer "+token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return ErrUnavailable
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrNotFound
+	}
+	return ErrUnavailable
 }
 
 // WithImageToken makes FetchImage present a doorstep-service token. nil

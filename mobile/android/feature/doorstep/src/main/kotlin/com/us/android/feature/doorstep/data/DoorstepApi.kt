@@ -8,6 +8,7 @@ import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.PATCH
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -104,6 +105,40 @@ interface DoorstepApi {
     @POST("v1/doorstep/bookings/{id}/payment/stub-confirm")
     suspend fun stubConfirmBookingPayment(@Path("id") bookingId: String): Response<ApiEnvelope<BookingPaymentsDto>>
 
+    // ── The customer picks the professional (B1) ──
+
+    /** The professionals for a selection at an address: scheduled (next free starts, or a [date]) or [asap] with an ETA. */
+    @Suppress("LongParameterList")
+    @GET("v1/doorstep/services/{id}/professionals")
+    suspend fun serviceProfessionals(
+        @Path("id") serviceId: String,
+        @Query("option_id") optionId: String,
+        @Query("quantity") quantity: Int,
+        @Query("addon_id") addonIds: List<String>,
+        @Query("address_id") addressId: String,
+        @Query("date") date: String?,
+        @Query("asap") asap: Boolean?,
+        @Query("sort") sort: String,
+        @Query("require_female_pro") requireFemalePro: Boolean?,
+    ): Response<ApiEnvelope<ProfessionalListDto>>
+
+    /** Alternatives for a pro_unavailable booking; each card carries difference_paise. 409 in any other status. */
+    @GET("v1/doorstep/bookings/{id}/professionals")
+    suspend fun bookingProfessionals(
+        @Path("id") bookingId: String,
+        @Query("date") date: String?,
+        @Query("asap") asap: Boolean?,
+        @Query("sort") sort: String,
+    ): Response<ApiEnvelope<ProfessionalListDto>>
+
+    /** Pick another professional for a pro_unavailable booking (no new payment; dearer: a pro_change bill). */
+    @POST("v1/doorstep/bookings/{id}/change-professional")
+    suspend fun changeProfessional(
+        @Header("Idempotency-Key") idempotencyKey: String,
+        @Path("id") bookingId: String,
+        @Body body: ProChangeRequestDto,
+    ): Response<ApiEnvelope<ProChangeResultDto>>
+
     // ── The visit (A5) ──
     @GET("v1/doorstep/bookings/{id}/extras")
     suspend fun extras(@Path("id") bookingId: String): Response<ApiEnvelope<ExtraListDto>>
@@ -142,7 +177,28 @@ interface DoorstepApi {
     @DELETE("v1/doorstep/bookings/{id}/share")
     suspend fun revokeShare(@Path("id") bookingId: String): Response<Unit>
 
+    @GET("v1/doorstep/bookings/{id}/messages")
+    suspend fun messages(@Path("id") bookingId: String, @Query("cursor") cursor: String?): Response<ApiEnvelope<MessagePageDto>>
+
+    @POST("v1/doorstep/bookings/{id}/messages")
+    suspend fun sendMessage(@Path("id") bookingId: String, @Body body: MessageInputDto): Response<ApiEnvelope<MessageDto>>
+
+    @POST("v1/doorstep/bookings/{id}/messages/{messageId}/read")
+    suspend fun readMessage(@Path("id") bookingId: String, @Path("messageId") messageId: String): Response<Unit>
+
+    @GET("v1/doorstep/trusted-contact")
+    suspend fun trustedContact(): Response<ApiEnvelope<TrustedContactDto>>
+
+    @PUT("v1/doorstep/trusted-contact")
+    suspend fun saveTrustedContact(@Body body: TrustedContactInputDto): Response<ApiEnvelope<TrustedContactDto>>
+
     // ── Realtime (A4) ──
+    @GET("v1/doorstep/tickets")
+    suspend fun tickets(): Response<ApiEnvelope<TicketListDto>>
+
+    @POST("v1/doorstep/tickets")
+    suspend fun openTicket(@Body body: TicketInputDto): Response<ApiEnvelope<TicketDto>>
+
     @POST("v1/doorstep/realtime/token")
     suspend fun realtimeToken(@Body body: RealtimeTokenRequestDto): Response<ApiEnvelope<RealtimeTokenDto>>
 }

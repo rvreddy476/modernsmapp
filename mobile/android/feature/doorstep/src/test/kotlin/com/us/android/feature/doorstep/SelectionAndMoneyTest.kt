@@ -47,13 +47,13 @@ class SelectionAndMoneyTest {
     // ── Selection ──
 
     @Test
-    fun `the preview matches the server's quote for the same pick`() {
+    fun `the selection keeps picks and duration without inventing a professional price`() {
         // quote_post_201_salon.json: Gold facial + Charcoal mask + Head massage = 179700 paise, 85 minutes.
         var s = SelectionRules.initial(facial)
         s = SelectionRules.toggleAddon(facial, s, charcoal)
         s = SelectionRules.toggleAddon(facial, s, massage)
         val quote = Fixtures.quote("quote_post_201_salon.json")
-        assertThat(SelectionRules.estimate(facial, s)).isEqualTo(Paise(quote.totalPaise))
+        assertThat(s.addonIds).containsExactly(charcoal, massage)
         assertThat(SelectionRules.durationMinutes(facial, s)).isEqualTo(quote.durationMinutes)
         assertThat(SelectionRules.isComplete(facial, s)).isTrue()
     }
@@ -95,14 +95,14 @@ class SelectionAndMoneyTest {
         var s = SelectionRules.toggleAddon(service, SelectionRules.initial(service), peel)
         s = SelectionRules.setQuantity(service, s, 5)
         assertThat(s.quantity).isEqualTo(3)
-        assertThat(SelectionRules.estimate(service, s)).isEqualTo(Paise(129900) * 3 + Paise(9900))
+        assertThat(s.addonIds).containsExactly(peel)
         s = SelectionRules.setQuantity(service, s, 0)
         assertThat(s.quantity).isEqualTo(1)
         // Moving to an option with a smaller max clamps the quantity.
         s = SelectionRules.setQuantity(service, s, 3)
         s = SelectionRules.selectOption(service, s, fruit)
         assertThat(s.quantity).isEqualTo(1)
-        assertThat(SelectionRules.estimate(service, s)).isEqualTo(Paise(69900) + Paise(9900))
+        assertThat(s.optionId).isEqualTo(fruit)
     }
 
     // ── Gender rule ──

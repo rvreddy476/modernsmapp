@@ -31,7 +31,7 @@ func registeredPro() Party { return Party{GSTIN: gstinFor(hyd, 'P')} }
 
 type doorstepFamily struct {
 	name     string
-	via, reg Category // via is "" for beauty (registered only)
+	via, reg Category // via is "" for a family not under s.9(5) (registered only)
 	sac      string
 	rate     RateBP
 	itcReg   bool
@@ -44,6 +44,13 @@ var doorstepFamilies = []doorstepFamily{
 	{"installation and repair", CategoryInstallationRepairViaECO, CategoryInstallationRepairRegistered, "995469", 1800, true},
 	{"painting", CategoryPaintingViaECO, CategoryPaintingRegistered, "995473", 1800, true},
 	{"beauty / salon", "", CategoryBeautySalonRegistered, "999722", 500, false},
+	// B1 families (4 Oct 2026): construction has both; the rest registered only.
+	{"car care", "", CategoryCarCareRegistered, "998714", 1800, true},
+	{"home staffing", "", CategoryHomeStaffingRegistered, "999800", 1800, true},
+	{"relocation", "", CategoryRelocationRegistered, "996791", 1800, true},
+	{"photography", "", CategoryPhotographyRegistered, "998383", 1800, true},
+	{"fitness and wellness", "", CategoryFitnessWellnessRegistered, "999723", 500, false},
+	{"construction", CategoryConstructionViaECO, CategoryConstructionRegistered, "995457", 1800, true},
 }
 
 func TestSyntheticProfessionalGSTINIsValid(t *testing.T) {
@@ -74,9 +81,32 @@ func TestDoorstep_RateRows(t *testing.T) {
 		}
 		check(f.reg, false, f.rate, f.itcReg, f.sac)
 	}
-	// Beauty is not under s.9(5): there must be no _VIA_ECO row for it.
-	if _, err := tab.Lookup(Category("BEAUTY_SALON_VIA_ECO"), onDate); !errors.Is(err, ErrUnknownCategory) {
-		t.Errorf("beauty via ECO must not exist: %v", err)
+	// Families not under s.9(5) (beauty, and the B1 families other than
+	// construction) must have no _VIA_ECO row: the platform never takes on a
+	// liability the notification may not create.
+	for _, c := range []Category{"BEAUTY_SALON_VIA_ECO", "CAR_CARE_VIA_ECO", "HOME_STAFFING_VIA_ECO", "RELOCATION_VIA_ECO",
+		"PHOTOGRAPHY_VIA_ECO", "FITNESS_WELLNESS_VIA_ECO"} {
+		if _, err := tab.Lookup(c, onDate); !errors.Is(err, ErrUnknownCategory) {
+			t.Errorf("%s must not exist: %v", c, err)
+		}
+	}
+}
+
+// The B1 category names are the strings doorstep-service maps its families
+// to; renaming one silently hides that family again.
+func TestDoorstep_B1CategoryNames(t *testing.T) {
+	for c, want := range map[Category]string{
+		CategoryCarCareRegistered:         "CAR_CARE_REGISTERED",
+		CategoryHomeStaffingRegistered:    "HOME_STAFFING_REGISTERED",
+		CategoryRelocationRegistered:      "RELOCATION_REGISTERED",
+		CategoryPhotographyRegistered:     "PHOTOGRAPHY_REGISTERED",
+		CategoryFitnessWellnessRegistered: "FITNESS_WELLNESS_REGISTERED",
+		CategoryConstructionViaECO:        "CONSTRUCTION_VIA_ECO",
+		CategoryConstructionRegistered:    "CONSTRUCTION_REGISTERED",
+	} {
+		if string(c) != want {
+			t.Errorf("category %q, want %q", c, want)
+		}
 	}
 }
 
@@ -106,6 +136,21 @@ func TestDoorstep_InclusiveGoldens(t *testing.T) {
 		{CategoryPaintingRegistered, 1250000, 1059322, 190678, 95339, 95339},
 		// 999.00 incl 5%.
 		{CategoryBeautySalonRegistered, 99900, 95142, 4758, 2379, 2379},
+		// B1 families at their seed prices; amount x 10000 = 11800 x taxable
+		// + remainder (remainder < 11800, or < 10500 at 5%).
+		// 399.00 (hatchback exterior wash) incl 18%: 11800 x 33813 = 398,993,400 r 6,600.
+		{CategoryCarCareRegistered, 39900, 33813, 6087, 3043, 3044},
+		// 8,999.00 (a monthly cook) incl 18%: 11800 x 762627 = 8,998,998,600 r 1,400.
+		{CategoryHomeStaffingRegistered, 899900, 762627, 137273, 68636, 68637},
+		// 14,999.00 (2 BHK shifting) incl 18%: 11800 x 1271101 = 14,998,991,800 r 8,200.
+		{CategoryRelocationRegistered, 1499900, 1271101, 228799, 114399, 114400},
+		// 2,999.00 (portrait session) incl 18%: 11800 x 254152 = 2,998,993,600 r 6,400.
+		{CategoryPhotographyRegistered, 299900, 254152, 45748, 22874, 22874},
+		// 699.00 (yoga hour) incl 5%: 10500 x 66571 = 698,995,500 r 4,500.
+		{CategoryFitnessWellnessRegistered, 69900, 66571, 3329, 1664, 1665},
+		// 3,192.00 (8 hours of masonry) incl 18%: 11800 x 270508 = 3,191,994,400 r 5,600.
+		{CategoryConstructionViaECO, 319200, 270508, 48692, 24346, 24346},
+		{CategoryConstructionRegistered, 319200, 270508, 48692, 24346, 24346},
 	}
 	tab := DefaultRateTable()
 	for _, c := range cases {
@@ -192,6 +237,15 @@ func TestDoorstep_Refusals(t *testing.T) {
 			func(in *Input) { in.ServiceProfessional = Party{StateCode: hyd} }, ErrLiablePartyUnregistered},
 		{"unregistered beautician", CategoryBeautySalonRegistered,
 			func(in *Input) {}, ErrLiablePartyUnregistered},
+		{"unregistered car washer", CategoryCarCareRegistered, func(in *Input) {}, ErrLiablePartyUnregistered},
+		{"unregistered domestic worker", CategoryHomeStaffingRegistered, func(in *Input) {}, ErrLiablePartyUnregistered},
+		{"unregistered mover", CategoryRelocationRegistered, func(in *Input) {}, ErrLiablePartyUnregistered},
+		{"unregistered photographer", CategoryPhotographyRegistered, func(in *Input) {}, ErrLiablePartyUnregistered},
+		{"unregistered yoga trainer", CategoryFitnessWellnessRegistered, func(in *Input) {}, ErrLiablePartyUnregistered},
+		{"registered mason on the _VIA_ECO line", CategoryConstructionViaECO,
+			func(in *Input) { in.ServiceProfessional = registeredPro() }, ErrUnsupportedSupply},
+		{"B1 family before the seed date", CategoryConstructionViaECO,
+			func(in *Input) { in.InvoiceDate = rateRationalisationDate.AddDate(0, 0, -1) }, ErrNoRateInEffect},
 		{"registered professional on a _VIA_ECO line", CategoryApplianceRepairViaECO,
 			func(in *Input) { in.ServiceProfessional = registeredPro() }, ErrUnsupportedSupply},
 		{"registered professional on a _VIA_ECO line outside the ECO", CategoryApplianceRepairViaECO,

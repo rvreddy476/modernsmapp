@@ -324,8 +324,8 @@ func TestDoorstepPush_ValidateRefusesBadPushes(t *testing.T) {
 
 func TestDoorstepRegistryShape(t *testing.T) {
 	types := DoorstepPushTypes()
-	if len(types) != 34 {
-		t.Fatalf("%d push types, the contract has 34", len(types))
+	if len(types) != 37 {
+		t.Fatalf("%d push types, the contract has 37", len(types))
 	}
 	for _, typ := range types {
 		spec, _ := DoorstepPushSpecFor(typ)

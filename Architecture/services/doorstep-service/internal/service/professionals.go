@@ -77,6 +77,7 @@ type pickPlace struct {
 	exclude   map[uuid.UUID]bool
 	booking   *uuid.UUID
 	baseTotal *int64 // the booking's total (alternatives)
+	rework    bool   // a covered child always remains zero-price
 }
 
 func sortOf(raw string) (string, *apperr.Error) {
@@ -256,6 +257,9 @@ func (s *Service) cards(ctx context.Context, p *pickPlace, now, day time.Time, a
 		}
 		if err != nil {
 			return nil, internal(ctx, "price selection", err)
+		}
+		if p.rework {
+			zeroReworkPrice(priced)
 		}
 		card := model.ProfessionalCard{ProID: pr.ID, FirstName: firstNameOf(pr.DisplayName), PhotoMediaID: pr.PhotoMediaID,
 			RatingCount: pr.RatingCount, JobsCompleted: pr.JobsCompleted, NextSlots: []model.NextSlot{}, SameDay: pr.SameDay,

@@ -48,6 +48,7 @@ func scanProPrice(r pgx.Row) (model.ProPrice, error) {
 type PricingFacts struct {
 	Status            string
 	IncidentSuspended bool
+	GSTIN             *string
 }
 
 // ProPricing lists the services the professional may price (skill declared
@@ -57,8 +58,8 @@ type PricingFacts struct {
 func (s *Store) ProPricing(ctx context.Context, proID uuid.UUID, at time.Time) (*PricingFacts, []model.ProServicePricing, error) {
 	var f PricingFacts
 	var city string
-	if err := s.db.QueryRow(ctx, `SELECT status, incident_suspended, city_code FROM doorstep.professionals WHERE id = $1`, proID).
-		Scan(&f.Status, &f.IncidentSuspended, &city); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT status, incident_suspended, city_code, gstin FROM doorstep.professionals WHERE id = $1`, proID).
+		Scan(&f.Status, &f.IncidentSuspended, &city, &f.GSTIN); err != nil {
 		return nil, nil, mapErr(err)
 	}
 	rows, err := s.db.Query(ctx, `

@@ -12,6 +12,7 @@ import com.us.android.core.payments.PaymentStateStore
 import com.us.android.feature.doorstep.data.DoorstepCodes
 import com.us.android.feature.doorstep.data.DoorstepRepository
 import com.us.android.feature.doorstep.data.DoorstepResult
+import com.us.android.feature.doorstep.data.PaymentIntentDto
 import com.us.android.feature.doorstep.data.code
 import com.us.android.feature.doorstep.data.userMessage
 import kotlinx.coroutines.CoroutineScope
@@ -114,21 +115,41 @@ class BillPayment(
                 } else {
                     _state.value = BillPayState.Failed(billId, result.error.userMessage())
                 }
-                is DoorstepResult.Success -> {
-                    // The dev stub-confirm route settles bookings only: a stub extras session has no
-                    // sheet and no confirm path, so it is unavailable rather than a sheet that refuses.
-                    val session = result.value.takeIf { it.checkout.provider != STUB_PROVIDER }
-                        ?.toPaymentSession(description = "Doorstep extras")
-                    if (session == null) {
-                        _state.value = BillPayState.Failed(billId, "Online payment isn't available right now.")
-                        return@launch
-                    }
-                    val attempt = PaymentAttempt(DOORSTEP_PAYMENT_APPLICATION_ID, billId, repository.newIdempotencyKey())
-                    inFlight.attempt = attempt
-                    _state.value = BillPayState.Opening(DoorstepPaymentRequest(attempt, session))
-                }
+                is DoorstepResult.Success -> open(billId, result.value, description = "Doorstep extras")
             }
         }
+    }
+
+    /**
+     * B1: pays the difference of a change of professional — a `pro_change`
+     * extras bill whose intent the server already opened and sent with the
+     * change (`ProChange.payment_intent`, reference `doorstep_extras`, the
+     * reference id is the bill). Nothing is POSTed here: the sheet opens on
+     * that intent and, as for every bill, only `GET /bookings/{id}/payment`'s
+     * succeeded row for THIS bill settles it. An intent that is not an extras
+     * one is refused before any sheet.
+     */
+    fun payIntent(bookingId: String, intent: PaymentIntentDto) {
+        if (_state.value is BillPayState.Starting || _state.value is BillPayState.Opening || _state.value is BillPayState.Confirming) return
+        if (intent.referenceType != DoorstepReference.EXTRAS || intent.amountPaise <= 0) {
+            _state.value = BillPayState.Failed(intent.referenceId, "This payment can't be opened. Please pick again.")
+            return
+        }
+        billBooking.bookingId = bookingId
+        open(intent.referenceId, intent, description = "Doorstep change of professional")
+    }
+
+    private fun open(billId: String, intent: PaymentIntentDto, description: String) {
+        // The dev stub-confirm route settles bookings only: a stub extras session has no
+        // sheet and no confirm path, so it is unavailable rather than a sheet that refuses.
+        val session = intent.takeIf { it.checkout.provider != STUB_PROVIDER }?.toPaymentSession(description = description)
+        if (session == null) {
+            _state.value = BillPayState.Failed(billId, "Online payment isn't available right now.")
+            return
+        }
+        val attempt = PaymentAttempt(DOORSTEP_PAYMENT_APPLICATION_ID, billId, repository.newIdempotencyKey())
+        inFlight.attempt = attempt
+        _state.value = BillPayState.Opening(DoorstepPaymentRequest(attempt, session))
     }
 
     fun reset() {

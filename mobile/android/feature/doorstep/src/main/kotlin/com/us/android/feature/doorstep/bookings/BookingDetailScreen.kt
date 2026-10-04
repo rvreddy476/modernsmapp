@@ -85,6 +85,7 @@ import com.us.android.feature.doorstep.ui.toneColor
 fun BookingDetailScreen(
     onBack: () -> Unit,
     onReschedule: (bookingId: String) -> Unit,
+    onChooseProfessional: (bookingId: String) -> Unit,
     onOpenPayment: (DoorstepPaymentRequest) -> Unit,
     onAbandonPayment: (DoorstepPaymentRequest) -> Unit,
     viewModel: BookingDetailViewModel = hiltViewModel(),
@@ -115,6 +116,18 @@ fun BookingDetailScreen(
     }
 
     var askSos by rememberSaveable { mutableStateOf(false) }
+    var showChat by rememberSaveable { mutableStateOf(false) }
+    var showContact by rememberSaveable { mutableStateOf(false) }
+    var showSupport by rememberSaveable { mutableStateOf(false) }
+    if (showSupport) SupportDialog(state, onDismiss = { showSupport = false }, onSend = viewModel::openTicket)
+    DisposableEffect(showChat) {
+        if (showChat) viewModel.openChat()
+        onDispose { viewModel.closeChat() }
+    }
+    if (showChat) VisitChatDialog(state, onDismiss = { showChat = false }, onSend = viewModel::sendMessage, onMore = { viewModel.loadMoreMessages() })
+    if (showContact) TrustedContactDialog(state.trustedContact, state.contactBusy, state.contactError, onDismiss = { showContact = false }, onSave = { name, phone ->
+        viewModel.saveTrustedContact(name, phone) { showContact = false }
+    })
     state.cancelPreview?.let { preview ->
         CancelDialog(preview = preview, busy = state.cancelling, onConfirm = viewModel::confirmCancel, onDismiss = viewModel::dismissCancel)
     }
@@ -149,6 +162,28 @@ fun BookingDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 item { StatusHeader(booking, state.status, state.live) }
+                if (booking.professional != null) item {
+                    UsSecondaryButton(text = "Visit conversation", onClick = { showChat = true }, modifier = Modifier.fillMaxWidth())
+                }
+                item { UsSecondaryButton(text = "Visit support", onClick = { viewModel.loadTickets(); showSupport = true }, modifier = Modifier.fillMaxWidth()) }
+                if (state.status == BookingStatus.PRO_UNAVAILABLE) item {
+                    DoorstepCard {
+                        Text("Choose another professional", style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
+                        com.us.android.feature.doorstep.ui.ChoiceDeadline(booking, onLapsed = viewModel::refreshNow)
+                        InfoNote("You stay in control. A lower price is refunded; a higher price needs your approval and payment.")
+                        UsButton(text = "See available professionals", onClick = { onChooseProfessional(booking.id) }, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                if (booking.pendingChange?.status == "pending_payment") item {
+                    DoorstepCard {
+                        Text("Confirm your new professional", style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
+                        booking.pendingChange?.let { change ->
+                            MoneyRow("Price difference", Paise(change.differencePaise), emphasise = true)
+                            InfoNote("The new professional is confirmed only after the server confirms this payment.")
+                            UsButton(text = "Pay difference", onClick = viewModel::payProfessionalDifference, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
 
                 // Off the happy path (cancelled, expired, no-shows): say what happened above the history.
                 if (BookingRules.timeline(state.status) == null) item { OffRamp(booking, state.status) }
@@ -205,7 +240,7 @@ fun BookingDetailScreen(
                 if (state.photos.isNotEmpty()) {
                     item { SectionLabel("Visit photos") }
                     items(state.photos, key = { (phase, _) -> "photos-$phase" }) { (phase, photos) ->
-                        PhotoGroup(phase = phase, urls = photos.map { viewModel.mediaUrls.serve(it.mediaId) })
+                        PhotoGroup(phase = phase, urls = photos.map { viewModel.mediaUrls.visit(booking.id,it.mediaId) })
                     }
                 }
 
@@ -214,7 +249,7 @@ fun BookingDetailScreen(
                     items(state.extrasSummary.proposed, key = { it.id }) { extra ->
                         ProposedExtra(
                             extra = extra,
-                            evidenceUrl = extra.evidenceMediaId?.takeIf { it.isNotBlank() }?.let(viewModel.mediaUrls::serve),
+                            evidenceUrl = extra.evidenceMediaId?.takeIf { it.isNotBlank() }?.let { viewModel.mediaUrls.visit(booking.id,it) },
                             busy = state.decidingExtraId == extra.id,
                             onApprove = { viewModel.approveExtra(extra.id) },
                             onDecline = { viewModel.declineExtra(extra.id) },
@@ -262,9 +297,11 @@ fun BookingDetailScreen(
                     item { RatingCard(rated = state.rated, busy = state.submitting, onRate = viewModel::rate) }
                     item {
                         ReworkCard(
-                            requested = state.reworkRequested || state.rework.isNotEmpty(),
+                            requested = state.rework.any { it.childBookingId!=null },
                             statuses = state.rework.map { it.status },
                             busy = state.submitting,
+                            slots = state.reworkSlots,
+                            onLoadSlots = viewModel::loadReworkSlots,
                             onRequest = viewModel::requestRework,
                         )
                     }
@@ -276,6 +313,10 @@ fun BookingDetailScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
                             UsPillButton(text = "SOS", onClick = { askSos = true })
                             UsPillButton(text = "Share status", onClick = viewModel::share, filled = false)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                            UsPillButton(text = "Trusted contact", onClick = { viewModel.loadTrustedContact(); showContact = true }, filled = false)
+                            UsPillButton(text = "Revoke link", onClick = { viewModel.revokeShare() }, filled = false)
                         }
                     }
                 }
@@ -462,13 +503,14 @@ private fun RatingCard(rated: Boolean, busy: Boolean, onRate: (Int, String) -> U
 }
 
 @Composable
-private fun ReworkCard(requested: Boolean, statuses: List<String>, busy: Boolean, onRequest: (String) -> Unit) {
+private fun ReworkCard(requested: Boolean, statuses: List<String>, busy: Boolean, slots: List<com.us.android.feature.doorstep.data.SlotDto>, onLoadSlots: () -> Unit, onRequest: (String,String) -> Unit) {
     var reason by rememberSaveable { mutableStateOf("") }
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
     DoorstepCard {
         Text("Not happy with the work?", style = MaterialTheme.typography.titleSmall, color = UsTheme.extended.textPrimary)
         if (requested) {
             val status = statuses.lastOrNull()?.replace('_', ' ') ?: "requested"
-            InfoNote("Rework $status. We'll schedule a free visit.", tone = Tone.Accent)
+            InfoNote("Rework $status. See your bookings for the free visit.", tone = Tone.Accent)
             return@DoorstepCard
         }
         Text(
@@ -477,7 +519,11 @@ private fun ReworkCard(requested: Boolean, statuses: List<String>, busy: Boolean
             color = UsTheme.extended.textMuted,
         )
         UsTextField(reason, { reason = it.take(MAX_COMMENT) }, "What needs redoing?", Modifier.fillMaxWidth(), singleLine = false)
-        UsPillButton(text = "Request rework", onClick = { onRequest(reason) }, enabled = reason.isNotBlank(), busy = busy, filled = false)
+        UsPillButton(text = "Find available times", onClick = onLoadSlots, filled = false)
+        LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) { items(slots,key={it.start}) { slot ->
+            UsPillButton(text=momentText(slot.start),onClick={selected=slot.start},filled=selected==slot.start)
+        } }
+        UsPillButton(text = "Schedule free rework", onClick = { selected?.let { onRequest(reason,it) } }, enabled = reason.isNotBlank() && selected!=null, busy = busy, filled = false)
     }
 }
 
@@ -523,7 +569,7 @@ private fun SosDialog(onSend: (String) -> Unit, onDismiss: () -> Unit) {
         title = { Text("Alert our safety team?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-                Text("We'll call you right away. If you're in immediate danger, call 112 first.")
+                Text("Send a safety alert. If you're in immediate danger, call 112 first; do not wait for a response.")
                 UsTextField(note, { note = it.take(MAX_COMMENT) }, "What's happening? (optional)", Modifier.fillMaxWidth(), singleLine = false)
             }
         },

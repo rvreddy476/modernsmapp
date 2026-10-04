@@ -91,7 +91,9 @@ func ResolveDatingPhotoURLTTL(getenv func(string) string) (time.Duration, error)
 // A dating clip (access_scope 'dating_clip', dating_clip.go) is held to the
 // same rule: every route guarded here refuses it to anyone but its uploader.
 func DatingScopeDenies(m *postgres.MediaAsset, viewerID uuid.UUID) bool {
-	if m == nil || !postgres.IsDatingScope(m.AccessScope) {
+	// Doorstep visit photos have the same owner-only public-read rule;
+	// other participants receive sanitized bytes through doorstep-service.
+	if m == nil || (!postgres.IsDatingScope(m.AccessScope) && m.AccessScope != postgres.AccessScopeDoorstepPhoto) {
 		return false
 	}
 	return viewerID == uuid.Nil || viewerID != m.UploaderID

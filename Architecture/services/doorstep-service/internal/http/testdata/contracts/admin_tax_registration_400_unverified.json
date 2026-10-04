@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"confirm you checked the active registration and its ownership before recording it","details":{"field":"verified"}},"meta":{"request_id":"fixture"}}

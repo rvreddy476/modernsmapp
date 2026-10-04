@@ -146,7 +146,7 @@ func TestExtractInclusive(t *testing.T) {
 // family is.
 func TestSupportedFamilies(t *testing.T) {
 	want := map[string]bool{FamilyHomeCleaning: true, FamilyPestControl: true, FamilyApplianceRepair: true,
-		FamilyInstallationRepair: true, FamilyPainting: true, FamilyBeautySalon: true}
+		FamilyInstallationRepair: true, FamilyPainting: true, FamilyBeautySalon: true, FamilyCarCare: true, FamilyHomeStaffing: true, FamilyRelocation: true, FamilyPhotography: true, FamilyFitnessWellness: true, FamilyConstruction: true}
 	for _, f := range Families {
 		if Supported(f) != want[f] {
 			t.Errorf("Supported(%s) = %v", f, Supported(f))

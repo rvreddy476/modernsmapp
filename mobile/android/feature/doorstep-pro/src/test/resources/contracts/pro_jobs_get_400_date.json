@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"date must be YYYY-MM-DD","details":{"field":"date"}},"meta":{"request_id":"fixture"}}

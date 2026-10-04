@@ -233,6 +233,9 @@ func main() {
 		bookingDeps.Cache = slotcache.New(rdb)
 	}
 	svc = svc.WithBookings(bookingDeps)
+	svc = svc.WithVisit(pgStore)
+	svc = svc.WithAftercare(pgStore)
+	svc = svc.WithAdminAftercare(pgStore)
 
 	// Dispatch, presence and realtime (A4). Live frames go onto Redis
 	// Streams (shared/realtime StreamPublisher; notification-service's SSE
@@ -344,6 +347,9 @@ func professionalDeps(ctx context.Context, cfg config.Config, st *store.Store) (
 		}
 		media.WithImageToken(func() (string, error) {
 			return signer.Mint(mediaclient.ImageBytesAudience, config.ServiceTokenIssuer, []string{mediaclient.ImageBytesOperation}, nil, time.Minute)
+		})
+		media.WithPhotoScopeToken(func() (string, error) {
+			return signer.Mint(mediaclient.ImageBytesAudience, config.ServiceTokenIssuer, []string{mediaclient.PhotoPrepareOperation}, nil, time.Minute)
 		})
 	}
 	return service.ProDeps{

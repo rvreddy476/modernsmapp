@@ -45,7 +45,8 @@ data class CategorySummaryDto(
     @SerialName("image_url") val imageUrl: String?,
     @SerialName("sort_order") val sortOrder: Int,
     @SerialName("service_count") val serviceCount: Int,
-    @SerialName("starting_price_paise") val startingPricePaise: Long,
+    /** B1: the lowest bookable PROFESSIONAL price in the category now; null while nobody offers one. */
+    @SerialName("starting_price_paise") val startingPricePaise: Long?,
 )
 
 /** `GET /v1/doorstep/categories/{slug}?city=` — category_get_200.json. */
@@ -65,8 +66,10 @@ data class ServiceSummaryDto(
     @SerialName("description") val description: String,
     @SerialName("duration_minutes") val durationMinutes: Int,
     @SerialName("image_url") val imageUrl: String?,
-    @SerialName("starting_price_paise") val startingPricePaise: Long,
-    @SerialName("starting_mrp_paise") val startingMrpPaise: Long?,
+    /** B1: the lowest bookable professional price of its options; null while nobody offers one. */
+    @SerialName("starting_price_paise") val startingPricePaise: Long?,
+    /** B1: the city's lowest SUGGESTED price: informational, never charged (replaces starting_mrp_paise). */
+    @SerialName("suggested_price_paise") val suggestedPricePaise: Long?,
 )
 
 /** `GET /v1/doorstep/services/{id}?city=` — service_get_200.json. */
@@ -111,13 +114,17 @@ data class ServiceOptionDto(
     @SerialName("id") val id: String,
     @SerialName("name") val name: String,
     @SerialName("description") val description: String,
-    /** Duration of ONE unit. */
+    /** Duration of ONE unit (per_month: the first visit, which the calendar reserves). */
     @SerialName("duration_minutes") val durationMinutes: Int,
     @SerialName("max_quantity") val maxQuantity: Int,
+    /** per_job | per_hour | per_month: what the quantity counts ([com.us.android.feature.doorstep.domain.Units]). */
+    @SerialName("unit") val unit: String,
     @SerialName("is_default") val isDefault: Boolean,
-    /** GST-inclusive, per unit. */
-    @SerialName("price_paise") val pricePaise: Long,
+    /** The city's suggested price per unit: informational, NEVER charged. Every bookable price is a professional's. */
+    @SerialName("suggested_price_paise") val suggestedPricePaise: Long?,
     @SerialName("mrp_paise") val mrpPaise: Long?,
+    /** The lowest bookable professional price per unit now; null while nobody prices it. */
+    @SerialName("from_price_paise") val fromPricePaise: Long?,
 )
 
 @Serializable
@@ -136,7 +143,10 @@ data class AddonDto(
     @SerialName("name") val name: String,
     @SerialName("description") val description: String,
     @SerialName("extra_duration_minutes") val extraDurationMinutes: Int,
-    @SerialName("price_paise") val pricePaise: Long,
+    /** Informational, never charged. */
+    @SerialName("suggested_price_paise") val suggestedPricePaise: Long?,
+    /** The lowest bookable professional price now; null while nobody prices it. */
+    @SerialName("from_price_paise") val fromPricePaise: Long?,
 )
 
 @Serializable
@@ -166,6 +176,8 @@ data class ZoneRefDto(
 @Serializable
 data class QuoteRequestDto(
     @SerialName("service_id") val serviceId: String,
+    /** B1: the professional the customer picked; every line is priced with THEIR approved price. */
+    @SerialName("pro_id") val proId: String,
     @SerialName("option_id") val optionId: String,
     @SerialName("quantity") val quantity: Int,
     @SerialName("addons") val addons: List<QuoteAddonDto>,
@@ -185,6 +197,8 @@ data class QuoteDto(
     @SerialName("service_id") val serviceId: String,
     @SerialName("option_id") val optionId: String,
     @SerialName("quantity") val quantity: Int,
+    /** B1: the picked professional. */
+    @SerialName("pro_id") val proId: String,
     @SerialName("city_code") val cityCode: String,
     @SerialName("zone_id") val zoneId: String,
     @SerialName("lines") val lines: List<QuoteLineDto>,
@@ -207,6 +221,9 @@ data class QuoteLineDto(
     @SerialName("ref_id") val refId: String,
     @SerialName("price_id") val priceId: String,
     @SerialName("name") val name: String,
+    /** per_job | per_hour | per_month */
+    @SerialName("unit") val unit: String,
+    /** Units (hours, months) for per_hour and per_month. */
     @SerialName("quantity") val quantity: Int,
     @SerialName("unit_price_paise") val unitPricePaise: Long,
     @SerialName("line_total_paise") val lineTotalPaise: Long,
@@ -275,11 +292,18 @@ data class SlotDto(
     @SerialName("available") val available: Boolean,
 )
 
+/**
+ * `POST /bookings`. Exactly one of [slotStart] or [asap] = true (B1). The
+ * platform Json drops nulls (explicitNulls = false), so the absent one is
+ * never sent.
+ */
 @Serializable
 data class BookingCreateRequestDto(
     @SerialName("quote_id") val quoteId: String,
     @SerialName("address_id") val addressId: String,
-    @SerialName("slot_start") val slotStart: String,
+    @SerialName("slot_start") val slotStart: String? = null,
+    /** B1: same day, as soon as possible: true or absent, never false. */
+    @SerialName("asap") val asap: Boolean? = null,
     @SerialName("require_female_pro") val requireFemalePro: Boolean,
     @SerialName("notes") val notes: String? = null,
 )
@@ -348,6 +372,14 @@ data class BookingDto(
     @SerialName("status_history") val statusHistory: List<StatusStepDto>,
     @SerialName("can_cancel") val canCancel: Boolean,
     @SerialName("can_reschedule") val canReschedule: Boolean,
+    /** B1: a same-day, as-soon-as-possible booking. */
+    @SerialName("asap") val asap: Boolean,
+    /** B1: while pro_unavailable, pick another professional (or cancel) by then, else a full refund. */
+    @SerialName("choice_deadline") val choiceDeadline: String?,
+    /** B1: why the professional is gone (pro_unavailable only). */
+    @SerialName("unavailable_cause") val unavailableCause: String?,
+    /** B1: a change of professional waiting for its difference to be paid, else null. */
+    @SerialName("pending_change") val pendingChange: ProChangeDto?,
     @SerialName("created_at") val createdAt: String,
     @SerialName("updated_at") val updatedAt: String,
 )
@@ -386,7 +418,7 @@ data class CancelPreviewDto(
     @SerialName("allowed") val allowed: Boolean,
     @SerialName("fee_paise") val feePaise: Long,
     @SerialName("refund_paise") val refundPaise: Long,
-    /** free_before_assignment | lt_3h | lt_1h_or_en_route | arrived | … */
+    /** free_before_assignment | lt_3h | lt_1h_or_en_route | arrived | pro_late_free | pro_unavailable_free (B1) */
     @SerialName("rule") val rule: String,
 )
 
@@ -396,7 +428,118 @@ data class CancelRequestDto(@SerialName("reason") val reason: String)
 @Serializable
 data class RescheduleRequestDto(@SerialName("slot_start") val slotStart: String)
 
-// ── Payments (A3/A5) ───────────────────────────────────────────────────────
+// ── The customer picks the professional (B1) ───────────────────────────────
+
+/** One line of a professional's price for the selection (`PriceLine`): GST-inclusive, no per-line tax split. */
+@Serializable
+data class PriceLineDto(
+    /** option | addon */
+    @SerialName("kind") val kind: String,
+    @SerialName("ref_id") val refId: String,
+    @SerialName("name") val name: String,
+    @SerialName("unit") val unit: String,
+    @SerialName("quantity") val quantity: Int,
+    @SerialName("unit_price_paise") val unitPricePaise: Long,
+    @SerialName("line_total_paise") val lineTotalPaise: Long,
+)
+
+/** A professional's GST-inclusive price for the whole selection. */
+@Serializable
+data class ProfessionalPriceDto(
+    @SerialName("total_paise") val totalPaise: Long,
+    @SerialName("taxable_paise") val taxablePaise: Long,
+    @SerialName("tax_paise") val taxPaise: Long,
+    @SerialName("lines") val lines: List<PriceLineDto>,
+)
+
+@Serializable
+data class NextSlotDto(
+    @SerialName("start") val start: String,
+    @SerialName("end") val end: String,
+)
+
+/** A professional the customer may pick (`ProfessionalCard`). Never an exact distance, a location or a phone. */
+@Serializable
+data class ProfessionalCardDto(
+    @SerialName("pro_id") val proId: String,
+    @SerialName("first_name") val firstName: String,
+    @SerialName("photo_media_id") val photoMediaId: String?,
+    @SerialName("rating_avg") val ratingAvg: Double?,
+    @SerialName("rating_count") val ratingCount: Int,
+    @SerialName("jobs_completed") val jobsCompleted: Int,
+    /** under_2_km | 2_to_5_km | 5_to_10_km | over_10_km */
+    @SerialName("distance_band") val distanceBand: String,
+    @SerialName("price") val price: ProfessionalPriceDto,
+    /** Scheduled: free starts (up to 3 from now, 6 on a chosen date); [] for asap. */
+    @SerialName("next_slots") val nextSlots: List<NextSlotDto>,
+    /** asap only. */
+    @SerialName("eta_minutes") val etaMinutes: Int?,
+    @SerialName("same_day") val sameDay: Boolean,
+    /** `GET /bookings/{id}/professionals` only: price minus the booking's total (negative: refunded). */
+    @SerialName("difference_paise") val differencePaise: Long?,
+)
+
+/** `GET /services/{id}/professionals` and `GET /bookings/{id}/professionals` (`ProfessionalList`). */
+@Serializable
+data class ProfessionalListDto(
+    @SerialName("service_id") val serviceId: String,
+    @SerialName("option_id") val optionId: String,
+    @SerialName("quantity") val quantity: Int,
+    @SerialName("addon_ids") val addonIds: List<String>,
+    @SerialName("booking_id") val bookingId: String?,
+    /** scheduled | asap */
+    @SerialName("mode") val mode: String,
+    @SerialName("date") val date: String?,
+    /** price | rating | soonest */
+    @SerialName("sort") val sort: String,
+    @SerialName("timezone") val timezone: String,
+    @SerialName("items") val items: List<ProfessionalCardDto>,
+    @SerialName("no_professional") val noProfessional: Boolean,
+    /** none_available_now | null */
+    @SerialName("no_professional_reason") val noProfessionalReason: String?,
+    /** ASAP with nobody: the same selection's next free starts (founder: "include schedule as well"). */
+    @SerialName("scheduled_alternatives") val scheduledAlternatives: List<ProfessionalCardDto>,
+)
+
+/** A change of professional for a pro_unavailable booking (`ProChange`). */
+@Serializable
+data class ProChangeDto(
+    @SerialName("id") val id: String,
+    /** pending_payment | applied | abandoned */
+    @SerialName("status") val status: String,
+    @SerialName("pro_id") val proId: String,
+    @SerialName("pro_first_name") val proFirstName: String,
+    @SerialName("asap") val asap: Boolean,
+    @SerialName("slot_start") val slotStart: String,
+    @SerialName("slot_end") val slotEnd: String,
+    @SerialName("previous_total_paise") val previousTotalPaise: Long,
+    @SerialName("new_total_paise") val newTotalPaise: Long,
+    /** new minus previous. */
+    @SerialName("difference_paise") val differencePaise: Long,
+    /** Refunded at once when the new professional is cheaper. */
+    @SerialName("refund_paise") val refundPaise: Long,
+    /** pending_payment only. */
+    @SerialName("hold_expires_at") val holdExpiresAt: String?,
+    /** pending_payment only: reference doorstep_extras (the pro_change bill), paid ONLY by the signed event. */
+    @SerialName("payment_intent") val paymentIntent: PaymentIntentDto?,
+    @SerialName("created_at") val createdAt: String,
+)
+
+/** `POST /bookings/{id}/change-professional`: exactly one of [slotStart] or [asap] = true. */
+@Serializable
+data class ProChangeRequestDto(
+    @SerialName("pro_id") val proId: String,
+    @SerialName("slot_start") val slotStart: String? = null,
+    @SerialName("asap") val asap: Boolean? = null,
+)
+
+@Serializable
+data class ProChangeResultDto(
+    @SerialName("booking") val booking: BookingDto,
+    @SerialName("change") val change: ProChangeDto,
+)
+
+// ── Payments (A3/A5)───────────────────────────────────────────────────────
 
 @Serializable
 data class PaymentIntentDto(
@@ -566,6 +709,36 @@ data class RealtimeTokenDto(
     @SerialName("expires_at") val expiresAt: String,
 )
 
+@Serializable
+data class MessageDto(
+    val id: String,
+    @SerialName("booking_id") val bookingId: String,
+    @SerialName("sender_kind") val senderKind: String,
+    val body: String,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("read_at") val readAt: String?,
+)
+
+@Serializable
+data class MessagePageDto(
+    val items: List<MessageDto>,
+    @SerialName("next_cursor") val nextCursor: String?,
+    val open: Boolean,
+)
+
+@Serializable
+data class MessageInputDto(val body: String)
+
+@Serializable
+data class TrustedContactDto(
+    val name: String,
+    @SerialName("phone_masked") val phoneMasked: String,
+    @SerialName("updated_at") val updatedAt: String,
+)
+
+@Serializable
+data class TrustedContactInputDto(val name: String, val phone: String)
+
 // ── Errors ─────────────────────────────────────────────────────────────────
 
 /** The error envelope, read from a 4xx/5xx body. Clients branch on [DoorstepErrorBodyDto.code], never the message. */
@@ -584,3 +757,10 @@ data class DoorstepErrorBodyDto(
 
 @Serializable
 data class DoorstepMetaDto(@SerialName("request_id") val requestId: String? = null)
+
+@Serializable
+data class TicketDto(val id: String, @SerialName("booking_id") val bookingId: String?, val category: String, val subject: String, val body: String, val status: String, @SerialName("created_at") val createdAt: String, @SerialName("updated_at") val updatedAt: String)
+@Serializable
+data class TicketListDto(val items: List<TicketDto>)
+@Serializable
+data class TicketInputDto(@SerialName("booking_id") val bookingId: String, val category: String, val subject: String, val body: String)

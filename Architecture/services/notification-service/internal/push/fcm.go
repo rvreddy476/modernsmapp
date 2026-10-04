@@ -104,6 +104,9 @@ var highPriorityTypes = map[string]bool{
 	// Doorstep professional job offer, channel doorstep_pro_offers: the offer
 	// window is minutes (contract x-push-types priority: high).
 	"doorstep.pro.offer.new": true,
+	// Doorstep customer whose picked professional is gone (B1): a 30-minute
+	// choice window before an automatic full refund (contract priority: high).
+	"doorstep.booking.pro_unavailable": true,
 }
 
 // BuildFCMMessage shapes one FCM v1 `message` object. Exported (and pure) so

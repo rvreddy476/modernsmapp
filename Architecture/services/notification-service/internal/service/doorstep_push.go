@@ -63,7 +63,7 @@ const (
 // Inbox entity types. The entity id is the booking for every customer push
 // and the professional's job pushes, the offer for offers (no inbox row), the
 // professional record for account pushes, the document and the settlement
-// for theirs.
+// for theirs, the submitted price for a price review.
 const (
 	DoorstepEntityBooking    = "doorstep_booking"
 	DoorstepEntityJob        = "doorstep_job"
@@ -71,6 +71,8 @@ const (
 	DoorstepEntityPro        = "doorstep_pro"
 	DoorstepEntityDocument   = "doorstep_pro_document"
 	DoorstepEntitySettlement = "doorstep_settlement"
+	// DoorstepEntityPrice is a professional's submitted price (B1).
+	DoorstepEntityPrice = "doorstep_pro_price"
 )
 
 // Push types — the x-push-types registry keys, verbatim.
@@ -92,6 +94,10 @@ const (
 	DoorstepTypeOutstandingDue          = "doorstep.outstanding.due"
 	DoorstepTypeMessageNew              = "doorstep.message.new"
 	DoorstepTypeReworkUpdated           = "doorstep.rework.updated"
+	// B1 (4 Oct 2026): the picked professional is gone, and the change of
+	// professional the customer then made.
+	DoorstepTypeBookingProUnavailable = "doorstep.booking.pro_unavailable"
+	DoorstepTypeBookingProChanged     = "doorstep.booking.pro_changed"
 
 	DoorstepTypeProOfferNew                = "doorstep.pro.offer.new"
 	DoorstepTypeProOfferExpired            = "doorstep.pro.offer.expired"
@@ -110,6 +116,8 @@ const (
 	DoorstepTypeProBackgroundCheckExpiring = "doorstep.pro.background_check.expiring"
 	DoorstepTypeProRatingReceived          = "doorstep.pro.rating.received"
 	DoorstepTypeProSettlementComputed      = "doorstep.pro.settlement.computed"
+	// B1: an admin approved or rejected a price the professional submitted.
+	DoorstepTypeProPriceReviewed = "doorstep.pro.price.reviewed"
 )
 
 // DoorstepPushSpec is one registry entry: where a push type goes and which
@@ -153,6 +161,8 @@ var doorstepPushSpecs = map[string]DoorstepPushSpec{
 	DoorstepTypeOutstandingDue:          momentumSpec("booking_id", "bill_id", "amount_paise"),
 	DoorstepTypeMessageNew:              momentumSpec("booking_id", "message_id"),
 	DoorstepTypeReworkUpdated:           momentumSpec("booking_id", "rework_id"),
+	DoorstepTypeBookingProUnavailable:   momentumSpec("booking_id", "cause", "choice_deadline"),
+	DoorstepTypeBookingProChanged:       momentumSpec("booking_id", "difference_paise"),
 
 	DoorstepTypeProOfferNew:                proSpec(DoorstepChannelProOffers, DoorstepEntityOffer, false, "offer_id", "booking_id", "expires_at"),
 	DoorstepTypeProOfferExpired:            proSpec(DoorstepChannelProOffers, DoorstepEntityOffer, false, "offer_id"),
@@ -171,6 +181,7 @@ var doorstepPushSpecs = map[string]DoorstepPushSpec{
 	DoorstepTypeProBackgroundCheckExpiring: proSpec(DoorstepChannelProAccount, DoorstepEntityPro, true, "valid_until"),
 	DoorstepTypeProRatingReceived:          proSpec(DoorstepChannelProJobs, DoorstepEntityJob, true, "booking_id", "stars"),
 	DoorstepTypeProSettlementComputed:      proSpec(DoorstepChannelProEarnings, DoorstepEntitySettlement, true, "settlement_id", "net_paise"),
+	DoorstepTypeProPriceReviewed:           proSpec(DoorstepChannelProAccount, DoorstepEntityPrice, true, "price_id", "service_id", "decision"),
 }
 
 // DoorstepPushSpecFor returns the registry entry of a push type.

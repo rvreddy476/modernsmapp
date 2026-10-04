@@ -82,7 +82,7 @@ func (s *Service) ProPrices(ctx context.Context, uid uuid.UUID) ([]model.ProServ
 				hasOption = true
 			}
 		}
-		v.Bookable = f.Status == "approved" && !f.IncidentSuspended && v.SkillStatus == "verified" && hasOption && tax.Supported(v.Family)
+		v.Bookable = f.Status == "approved" && !f.IncidentSuspended && v.SkillStatus == "verified" && hasOption && tax.Supported(v.Family) && (!tax.RegisteredOnly(v.Family) || f.GSTIN != nil)
 	}
 	return list, nil
 }

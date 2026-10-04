@@ -33,7 +33,8 @@ data class ServiceDetailUiState(
     /** Shown after Continue was pressed with a group still unfinished. */
     val showViolations: Boolean = false,
 ) {
-    val estimate: Paise get() = service?.let { SelectionRules.estimate(it, selection) } ?: Paise.ZERO
+    /** The lowest professional price for the pick (a lower bound); null while some item has none. */
+    val fromEstimate: Paise? get() = service?.let { SelectionRules.fromEstimate(it, selection) }
     val durationMinutes: Int get() = service?.let { SelectionRules.durationMinutes(it, selection) } ?: 0
     val violations: List<GroupViolation> get() = service?.let { SelectionRules.violations(it, selection) }.orEmpty()
     val complete: Boolean get() = service?.let { SelectionRules.isComplete(it, selection) } ?: false
@@ -42,10 +43,11 @@ data class ServiceDetailUiState(
 }
 
 /**
- * A service page: options with their GST-inclusive prices, the quantity, the
- * add-on groups with their min/max rules, and the "require a woman
- * professional" switch where the category allows it. Continue hands the pick
- * to the address and slot steps; the server prices it there.
+ * A service page (the menu): options with their unit and the lowest
+ * professional price, the quantity (jobs, hours or months), the add-on groups
+ * with their min/max rules, and the "require a woman professional" switch
+ * where the category allows it. Continue hands the pick to the address and
+ * professionals steps; each professional prices it there (B1).
  */
 @HiltViewModel
 class ServiceDetailViewModel @Inject constructor(

@@ -2310,6 +2310,46 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
+  /v1/doorstep/bookings/{id}/photos/{mediaId}:
+    get:
+      summary: Read private visit evidence as the booking customer or accepted professional
+      operationId: visitPhotoBytes
+      tags: [Booking]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - name: mediaId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Private sanitized image bytes, no-store and nosniff; never a public media URL
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+        '404':
+          $ref: '#/components/responses/Error'
+  /v1/doorstep/pro/jobs/{id}/photos/{mediaId}:
+    get:
+      summary: Read private visit evidence as the accepted professional
+      operationId: proVisitPhotoBytes
+      tags: [ProfessionalJob]
+      x-lane: A5
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - name: mediaId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Private sanitized image bytes, no-store and nosniff
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+        '404':
+          $ref: '#/components/responses/Error'
   /v1/doorstep/pro/jobs/{id}/extras/{extraId}:
     delete:
       summary: Withdraw a proposed extra
@@ -3451,6 +3491,59 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AdminProfessionalDetail'}
 
+  /v1/doorstep/internal/admin/professionals/{id}/tax-registration:
+    get:
+      summary: Read the reviewed GST registration (sensitive identity)
+      operationId: adminTaxRegistration
+      tags: [AdminProfessional]
+      x-lane: A6
+      x-permission: doorstep:pros.approve
+      x-step-up: true
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Registration; private and no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/TaxRegistration'}
+    post:
+      summary: Record a manually verified registration, or remove it; refuses active bookings
+      operationId: adminSetTaxRegistration
+      tags: [AdminProfessional]
+      x-lane: A6
+      x-permission: doorstep:pros.approve
+      x-step-up: true
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gstin, reason]
+              additionalProperties: false
+              properties:
+                gstin: {type: string, description: 'Blank removes the registration; otherwise a checksum-valid GSTIN'}
+                verified: {type: boolean, description: 'Required true for nonblank GSTIN after checking active registration and ownership'}
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        '200':
+          description: Recorded and audited atomically; does not approve the professional
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/TaxRegistration'}
+        '409':
+          description: Active bookings prevent tax treatment changes
   /v1/doorstep/internal/admin/professionals/{id}/approve:
     post:
       summary: Approve (refused while MissingSteps is not empty)
@@ -4767,9 +4860,10 @@ components:
       type: object
       required: [reason]
       properties:
-        reason: {type: string, maxLength: 1000}
-        media_ids: {type: array, items: {type: string, format: uuid}}
+        reason: {type: string, minLength: 1, maxLength: 2000}
+        media_ids: {type: array, maxItems: 5, items: {type: string, format: uuid}}
         slot_start: {type: string, format: date-time}
+        same_professional: {type: boolean, default: true}
     ReworkRequest:
       type: object
       required: [id, booking_id, child_booking_id, status, reason, created_at]
@@ -4785,7 +4879,7 @@ components:
       properties:
         lat: {type: number}
         lng: {type: number}
-        note: {type: string, maxLength: 1000}
+        note: {type: string, maxLength: 2000}
     Incident:
       type: object
       required: [id, booking_id, raised_by_kind, kind, severity, status, description, pro_auto_suspended, created_at]
@@ -4853,16 +4947,17 @@ components:
       properties:
         booking_id: {type: string, format: uuid}
         category: {type: string, enum: [payment, quality, safety, damage, professional, other]}
-        subject: {type: string, maxLength: 200}
+        subject: {type: string, minLength: 1, maxLength: 160}
         body: {type: string, maxLength: 4000}
     Ticket:
       type: object
-      required: [id, booking_id, category, subject, status, created_at, updated_at]
+      required: [id, booking_id, category, subject, body, status, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         booking_id: {type: string, format: uuid, nullable: true}
         category: {type: string}
         subject: {type: string}
+        body: {type: string}
         status: {type: string, enum: [open, in_progress, resolved, closed]}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
@@ -4884,6 +4979,13 @@ components:
         display_name: {type: string}
         city_code: {type: string}
         category_ids: {type: array, items: {type: string, format: uuid}}
+    TaxRegistration:
+      type: object
+      required: [pro_id, gstin, updated_at]
+      properties:
+        pro_id: {type: string, format: uuid}
+        gstin: {type: string, nullable: true, description: 'Admin only. Never included in public professional cards or audit metadata.'}
+        updated_at: {type: string, format: date-time}
     Professional:
       type: object
       required: [id, user_id, status, display_name, city_code, gender, photo_media_id, rating_avg, rating_count, jobs_completed, max_jobs_per_day, created_at, updated_at]

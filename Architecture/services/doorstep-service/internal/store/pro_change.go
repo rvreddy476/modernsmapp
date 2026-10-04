@@ -53,6 +53,7 @@ type Unavailable struct {
 
 // UnavailableResult is what the transition did.
 type UnavailableResult struct {
+	RefundIDs         []uuid.UUID
 	ClosedOfferID     *uuid.UUID
 	ClosedProUserID   *uuid.UUID
 	ClosedOutcome     string
@@ -133,6 +134,10 @@ func (s *Store) MakeProUnavailable(ctx context.Context, in Unavailable) (*Unavai
 		return nil, err
 	}
 	if err := releaseBlocksTx(ctx, tx, in.BookingID, at, "pro_unavailable"); err != nil {
+		return nil, err
+	}
+	res.RefundIDs, err = resetVisitTx(ctx, tx, in.BookingID, at)
+	if err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `

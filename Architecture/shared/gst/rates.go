@@ -67,6 +67,23 @@ const (
 	CategoryPaintingViaECO               Category = "PAINTING_VIA_ECO"
 	CategoryPaintingRegistered           Category = "PAINTING_REGISTERED"
 	CategoryBeautySalonRegistered        Category = "BEAUTY_SALON_REGISTERED"
+
+	// B1 families (4 Oct 2026). Only construction (small masonry and tiling
+	// repairs, the same building trades as plumbing and carpentry) is read
+	// as s.9(5) housekeeping and has a _VIA_ECO category. Car wash (a
+	// vehicle, not the household), home staffing (domestic workers by the
+	// hour or month: labour, possibly employment), packers and movers
+	// (goods transport), photography and fitness/wellness (yoga) are NOT
+	// read as notified under s.9(5), so, like beauty, they have _REGISTERED
+	// only and an unregistered professional's supply cannot be computed
+	// (docs/DOORSTEP-TAX-ADVISER-REVIEW.md, questions 23-31).
+	CategoryCarCareRegistered         Category = "CAR_CARE_REGISTERED"
+	CategoryHomeStaffingRegistered    Category = "HOME_STAFFING_REGISTERED"
+	CategoryRelocationRegistered      Category = "RELOCATION_REGISTERED"
+	CategoryPhotographyRegistered     Category = "PHOTOGRAPHY_REGISTERED"
+	CategoryFitnessWellnessRegistered Category = "FITNESS_WELLNESS_REGISTERED"
+	CategoryConstructionViaECO        Category = "CONSTRUCTION_VIA_ECO"
+	CategoryConstructionRegistered    Category = "CONSTRUCTION_REGISTERED"
 )
 
 // SupplierRole is who makes the supply (and who is liable, when not s.9(5)).
@@ -366,5 +383,62 @@ func doorstepRows(d time.Time) []RateRow {
 	}
 	rows = append(rows, RateRow{Category: CategoryBeautySalonRegistered, Supplier: SupplierServiceProfessional, ECOSection95: false, RateBP: 500, ITCAvailable: false, SAC: "999722", EffectiveFrom: d, NeedsAdviserConfirmation: true,
 		Note: "Salon at home (women and men), SAC 999722 cosmetic treatment (haircuts strictly 999721): beauty and physical well-being services at 5% without ITC from 22 Sep 2025; NOT notified under s.9(5), so only a registered professional's supply is computed." + registered + adviserNote})
-	return rows
+	return append(rows, doorstepB1Rows(d)...)
+}
+
+// doorstepB1Rows are the families added with professionals' own prices (B1,
+// 4 Oct 2026). Same effective date and adviser flag as every Doorstep row.
+//
+// s.9(5) reading (the adviser confirms each, questions 23-31):
+//
+//   - construction: masonry, tiling and small civil repairs at the customer's
+//     home are building trades of the same kind as "plumbing, carpentering"
+//     in the housekeeping entry, so both categories exist, as for painting
+//     (which raises the same works-contract question when materials are
+//     supplied);
+//   - car care: a car wash at the customer's parking services a vehicle, not
+//     the household: not read as housekeeping; registered only;
+//   - home staffing: a cook, house help, nanny or driver engaged by the hour
+//     or the month supplies labour (and may be the household's employee,
+//     outside GST under Schedule III): not housekeeping as notified;
+//     registered only;
+//   - relocation: packers and movers supply transport of goods (a goods
+//     transport agency when a consignment note is issued), not housekeeping;
+//     registered only. 18% with ITC is the GTA forward-charge option from
+//     22 Sep 2025; the exemption for a GTA's supply to an unregistered
+//     individual and the 5% option are for the adviser;
+//   - photography and fitness/wellness (yoga): personal services, not
+//     housekeeping; registered only. Yoga is read as physical well-being,
+//     moved to 5% without ITC on 22 Sep 2025 like beauty; if it is coaching
+//     instead it is 18% under 9992.
+//
+// SAC: car wash 998714 (maintenance and repair of transport machinery and
+// equipment, which includes washing and polishing of motor vehicles);
+// domestic services 999800 (heading 9998, cooks, maids, nannies, chauffeurs
+// working for households); GTA road transport 996791; event photography
+// 998383 (portraits strictly 998381); physical well-being 999723; masonry
+// 995457 (tiling strictly 995474).
+func doorstepB1Rows(d time.Time) []RateRow {
+	const viaECO = " Through the platform the ECO is liable under s.9(5) (housekeeping services, Notification 17/2017-CT(Rate) as amended), only where the professional is NOT liable to register under s.22(1); a professional with a GSTIN must use the _REGISTERED category."
+	const registered = " The registered professional is liable and must supply its GSTIN; through the platform the ECO collects TCS under s.52 (marker only)."
+	const notNotified = " Not read as notified under s.9(5), so only a registered professional's supply is computed; an unregistered professional below the threshold may be outside GST altogether (Notification 65/2017-CT)."
+	row := func(c Category, eco bool, rate RateBP, itc bool, sac, note string) RateRow {
+		return RateRow{Category: c, Supplier: SupplierServiceProfessional, ECOSection95: eco, RateBP: rate, ITCAvailable: itc, SAC: sac,
+			EffectiveFrom: d, NeedsAdviserConfirmation: true, Note: note + adviserNote}
+	}
+	const construction = "Construction and masonry (masonry, tiling, small civil repairs at home), SAC 995457 masonry (tiling 995474), 18%; materials supplied by the professional may make this a works contract (s.2(119)), which is not modelled."
+	return []RateRow{
+		row(CategoryCarCareRegistered, false, 1800, true, "998714",
+			"Car wash at the customer's parking, SAC 998714 maintenance and repair of motor vehicles (includes washing and polishing), 18%."+notNotified+registered),
+		row(CategoryHomeStaffingRegistered, false, 1800, true, "999800",
+			"Home staffing (cook, house help, nanny, driver; hourly or monthly), SAC 999800 domestic services, 18% residual rate; a monthly domestic worker may be the household's employee (Schedule III, outside GST)."+notNotified+registered),
+		row(CategoryRelocationRegistered, false, 1800, true, "996791",
+			"Packers and movers within the city, SAC 996791 goods transport agency (road), 18% with ITC (the GTA forward-charge option from 22 Sep 2025); a GTA's supply to an unregistered individual may be exempt and transport by a non-GTA is exempt, both for the adviser."+notNotified+registered),
+		row(CategoryPhotographyRegistered, false, 1800, true, "998383",
+			"Photography at home (events, portraits), SAC 998383 event photography (portraits 998381), 18%."+notNotified+registered),
+		row(CategoryFitnessWellnessRegistered, false, 500, false, "999723",
+			"Yoga trainer at home, SAC 999723 physical well-being services, read as within beauty and physical well-being at 5% without ITC from 22 Sep 2025 (18% if it is coaching under 9992)."+notNotified+registered),
+		row(CategoryConstructionViaECO, true, 1800, false, "995457", construction+viaECO),
+		row(CategoryConstructionRegistered, false, 1800, true, "995457", construction+registered),
+	}
 }
