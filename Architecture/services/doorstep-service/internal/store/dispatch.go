@@ -76,6 +76,8 @@ type DispatchFacts struct {
 	RescueUntil   *time.Time
 	RescueCause   *string
 	Exhausted     bool
+	// Asap: a same-day job (B1): its offer lapses after 3 minutes.
+	Asap bool
 	// Live is the open offer or the accepted assignment, if any.
 	Live *AssignmentRef
 	// Excluded are the professionals who already had this booking and let
@@ -98,7 +100,7 @@ func (s *Store) DispatchFacts(ctx context.Context, id uuid.UUID) (*DispatchFacts
 		       b.gender_rule, b.require_female_pro, ST_Y(b.location::geometry), ST_X(b.location::geometry), b.locality,
 		       b.slot_start, b.slot_end, b.duration_minutes, z.travel_buffer_minutes, b.reserved_pro_id,
 		       ci.offer_window_far_minutes, ci.offer_window_near_minutes, ci.offer_far_threshold_minutes,
-		       b.rescue_until, b.rescue_cause, b.dispatch_exhausted_at
+		       b.rescue_until, b.rescue_cause, b.dispatch_exhausted_at, b.asap
 		FROM doorstep.bookings b
 		JOIN doorstep.categories c ON c.id = b.category_id
 		JOIN doorstep.services s ON s.id = b.service_id
@@ -107,7 +109,7 @@ func (s *Store) DispatchFacts(ctx context.Context, id uuid.UUID) (*DispatchFacts
 		WHERE b.id = $1`, id).Scan(&f.BookingID, &f.Customer, &f.Status, &f.Version, &f.CityCode, &f.ZoneID, &f.CategoryID,
 		&f.CategorySlug, &f.Skill, &f.GenderRule, &f.RequireFemale, &f.Lat, &f.Lng, &f.Locality, &f.SlotStart, &f.SlotEnd,
 		&f.Duration, &f.BufferMinutes, &f.ReservedProID, &f.Windows.FarMinutes, &f.Windows.NearMinutes,
-		&f.Windows.FarThresholdMinutes, &f.RescueUntil, &f.RescueCause, &exhausted)
+		&f.Windows.FarThresholdMinutes, &f.RescueUntil, &f.RescueCause, &exhausted, &f.Asap)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -334,8 +336,10 @@ func (s *Store) Redispatch(ctx context.Context, in Redispatch) (*RedispatchResul
 	var blockID uuid.UUID
 	kept := false
 	if !in.MoveSlot && b.reserved != nil && len(in.Candidates) > 0 && in.Candidates[0] == *b.reserved {
+		// Any active booking block of theirs (an ASAP block starts at the
+		// booking time, not the slot).
 		err := tx.QueryRow(ctx, `SELECT id FROM doorstep.pro_calendar_blocks WHERE booking_id = $1 AND pro_id = $2 AND active
-			AND kind = 'booking' AND during = tstzrange($3, $4, '[)')`, in.BookingID, *b.reserved, in.Start, in.BlockEnd).Scan(&blockID)
+			AND kind = 'booking' LIMIT 1`, in.BookingID, *b.reserved).Scan(&blockID)
 		switch {
 		case err == nil:
 			pro, kept = *b.reserved, true
@@ -636,7 +640,7 @@ func (s *Store) AcceptOffer(ctx context.Context, in AcceptInput) (*AcceptResult,
 // doorstep.booking.no_show (party pro) — one transaction. It returns the
 // refund to submit.
 func (s *Store) EndProNoShow(ctx context.Context, id uuid.UUID, close *CloseAssignment, from []string, reason, refundCause, refundKey string,
-	at time.Time) (*uuid.UUID, error) {
+	at time.Time) ([]uuid.UUID, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -682,13 +686,11 @@ func (s *Store) EndProNoShow(ctx context.Context, id uuid.UUID, close *CloseAssi
 	if err := historyTx(ctx, tx, id, &fromStatus, "pro_no_show", "system", nil, &reason, at); err != nil {
 		return nil, err
 	}
-	var refundID *uuid.UUID
+	var refundIDs []uuid.UUID
 	if b.Refundable > 0 && b.PaymentID != nil {
-		rid, err := insertRefundTx(ctx, tx, *b.PaymentID, id, refundCause, refundKey, b.Refundable, nil, at)
-		if err != nil {
+		if refundIDs, err = refundAcrossTx(ctx, tx, id, b.Refundable, refundCause, refundKey, nil, at); err != nil {
 			return nil, err
 		}
-		refundID = &rid
 	}
 	core.Status = "pro_no_show"
 	if err := s.enqueueBookingEvent(ctx, tx, events.BookingNoShow, core, at, events.BookingNoShowData{
@@ -698,7 +700,7 @@ func (s *Store) EndProNoShow(ctx context.Context, id uuid.UUID, close *CloseAssi
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapErr(err)
 	}
-	return refundID, nil
+	return refundIDs, nil
 }
 
 // Contains reports whether v is in set.

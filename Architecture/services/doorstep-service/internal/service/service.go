@@ -92,6 +92,8 @@ type Service struct {
 	bk BookingDeps
 	// ds is dispatch, presence and realtime (A4), wired by WithDispatch.
 	ds DispatchDeps
+	// pr is professional pricing (B1), wired by WithPricing.
+	pr PricingStore
 }
 
 // New builds the service.
@@ -145,7 +147,14 @@ func (s *Service) Catalogue(ctx context.Context, city string) (*model.Catalogue,
 	if err != nil {
 		return nil, internal(ctx, "catalogue", err)
 	}
-	return &model.Catalogue{City: c, Categories: cats}, nil
+	// A family the tax computer cannot price yet is not offered (B1).
+	out := make([]model.CategorySummary, 0, len(cats))
+	for _, cat := range cats {
+		if tax.Supported(cat.Family) {
+			out = append(out, cat)
+		}
+	}
+	return &model.Catalogue{City: c, Categories: out}, nil
 }
 
 var slugRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -162,7 +171,7 @@ func (s *Service) Category(ctx context.Context, city, slug string) (*model.Categ
 	}
 	now := s.now()
 	cat, err := s.store.CategoryBySlug(ctx, c.Code, slug, now)
-	if errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) || (err == nil && !tax.Supported(cat.Family)) {
 		return nil, notFound
 	}
 	if err != nil {
@@ -177,11 +186,14 @@ func (s *Service) Category(ctx context.Context, city, slug string) (*model.Categ
 
 func (s *Service) bundle(ctx context.Context, city string, id uuid.UUID, at time.Time) (*catalogue.ServiceBundle, *apperr.Error) {
 	b, err := s.store.ServiceBundle(ctx, city, id, at)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !b.Visible()) {
+	if errors.Is(err, store.ErrNotFound) || (err == nil && !(b.Service.Active && b.Category.Active)) {
 		return nil, apperr.New(http.StatusNotFound, apperr.CodeServiceNotFound, "service not found")
 	}
 	if err != nil {
 		return nil, internal(ctx, "service bundle", err)
+	}
+	if !b.Visible() {
+		return nil, catalogue.TaxPending() // a B1 family the tax lane has not mapped yet
 	}
 	return b, nil
 }
@@ -238,10 +250,15 @@ func (s *Service) Serviceability(ctx context.Context, req model.ServiceabilityRe
 	return &model.Serviceability{Serviceable: true, City: &city, Zone: &zone}, nil
 }
 
-// CreateQuote validates and prices a selection for the customer.
+// CreateQuote validates a selection and prices it with the professional the
+// customer picked: only that professional's approved, live prices (B1); an
+// item they have no approved price for is 422 DOORSTEP_PRICE_UNAVAILABLE.
 func (s *Service) CreateQuote(ctx context.Context, customer uuid.UUID, req model.QuoteRequest) (*model.Quote, error) {
 	if req.ServiceID == nil || *req.ServiceID == uuid.Nil {
 		return nil, apperr.Invalid("service_id", "service_id is required")
+	}
+	if req.ProID == nil || *req.ProID == uuid.Nil {
+		return nil, apperr.Invalid("pro_id", "pro_id is required: pick a professional from the professionals list")
 	}
 	if req.OptionID == nil || *req.OptionID == uuid.Nil {
 		return nil, apperr.Invalid("option_id", "option_id is required")
@@ -279,8 +296,16 @@ func (s *Service) CreateQuote(ctx context.Context, customer uuid.UUID, req model
 	if _, ok := catalogue.DetailView(b); !ok {
 		return nil, notAvailable()
 	}
-	q, err := catalogue.BuildQuote(b, sel, catalogue.QuoteInput{
-		QuoteID: s.newID(), ZoneID: hit.Zone.ID, PlaceOfSupplyState: hit.StateCode, Now: now, TTL: s.quoteTTL,
+	ps, err := s.pricing(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prices, err := ps.ProItemPrices(ctx, hit.City.Code, now, []uuid.UUID{*req.ProID}, sel.ItemIDs())
+	if err != nil {
+		return nil, internal(ctx, "professional prices", err)
+	}
+	q, err := catalogue.BuildQuote(b, sel, prices[*req.ProID], catalogue.QuoteInput{
+		QuoteID: s.newID(), ProID: *req.ProID, ZoneID: hit.Zone.ID, PlaceOfSupplyState: hit.StateCode, Now: now, TTL: s.quoteTTL,
 	}, s.tax)
 	if err != nil {
 		var ae *apperr.Error

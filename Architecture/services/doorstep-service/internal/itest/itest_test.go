@@ -157,7 +157,8 @@ func newRig(t *testing.T, now time.Time) *itRig {
 		t.Fatal(err)
 	}
 	rg := &itRig{t: t, admin: signer, actor: uuid.New(), now: now}
-	svc := service.New(store.New(p), tc, 15*time.Minute).WithClock(func() time.Time { return rg.now }, uuid.New)
+	st := store.New(p)
+	svc := service.New(st, tc, 15*time.Minute).WithClock(func() time.Time { return rg.now }, uuid.New).WithPricing(st)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -336,23 +337,37 @@ func TestCatalogueFromSeed(t *testing.T) {
 	var cat struct {
 		Categories []struct {
 			Slug         string `json:"slug"`
+			Family       string `json:"family"`
 			GenderRule   string `json:"gender_rule"`
 			ServiceCount int    `json:"service_count"`
-			Starting     int64  `json:"starting_price_paise"`
+			Starting     *int64 `json:"starting_price_paise"`
 		} `json:"categories"`
 	}
 	if status != 200 {
 		t.Fatalf("%d %s", status, body)
 	}
 	data(t, body, &cat)
-	wantCats, wantSvcs, _, _, _ := devseed.Counts()
+	// B1: the customer catalogue shows the families the tax computer can
+	// price; the new families (car care, staffing, relocation, photography,
+	// fitness, construction) wait for the tax lane.
+	wantCats, wantSvcs := 0, 0
+	for _, c := range devseed.CategoryFamilies() {
+		if tax.Supported(c.Family) {
+			wantCats++
+			wantSvcs += c.Services
+		}
+	}
 	total := 0
 	for _, c := range cat.Categories {
 		total += c.ServiceCount
-		if c.Starting <= 0 {
-			t.Errorf("%s starting price %d", c.Slug, c.Starting)
+		if !tax.Supported(c.Family) {
+			t.Errorf("%s (%s) offered before the tax lane maps it", c.Slug, c.Family)
 		}
-		if (c.Slug == "salon-women" && c.GenderRule != "female_pros_only") || (c.Slug == "salon-men" && c.GenderRule != "male_pros_only") {
+		if c.Starting != nil && *c.Starting <= 0 {
+			t.Errorf("%s starting price %d", c.Slug, *c.Starting)
+		}
+		if (c.Slug == "salon-women" && c.GenderRule != "female_pros_only") || (c.Slug == "salon-men" && c.GenderRule != "male_pros_only") ||
+			(c.Slug == "makeup-artist" && c.GenderRule != "female_pros_only") {
 			t.Errorf("%s gender rule %s", c.Slug, c.GenderRule)
 		}
 	}
@@ -363,8 +378,14 @@ func TestCatalogueFromSeed(t *testing.T) {
 		t.Fatalf("category page: %d %s", status, body)
 	}
 	status, body = rg.call("GET", "/v1/doorstep/services/"+id("service", "salon-women/facial")+"?city=HYD", "", nil)
-	if status != 200 || !strings.Contains(string(body), `"name":"Choose a mask"`) || !strings.Contains(string(body), `"mrp_paise":149900`) {
+	if status != 200 || !strings.Contains(string(body), `"name":"Choose a mask"`) || !strings.Contains(string(body), `"mrp_paise":149900`) ||
+		!strings.Contains(string(body), `"suggested_price_paise":129900`) {
 		t.Fatalf("service page: %d %s", status, body)
+	}
+	// A seeded staffing service exists but is not offered yet.
+	status, body = rg.call("GET", "/v1/doorstep/services/"+id("service", "home-staffing/cook")+"?city=HYD", "", nil)
+	if status != 422 || errCode(body) != "DOORSTEP_SERVICE_NOT_AVAILABLE" || !strings.Contains(string(body), "tax_category_pending") {
+		t.Fatalf("staffing before the tax lane: %d %s", status, body)
 	}
 	if status, body := rg.call("GET", "/v1/doorstep/catalogue?city=BLR", "", nil); status != 404 || errCode(body) != "DOORSTEP_CITY_NOT_FOUND" {
 		t.Fatalf("unknown city: %d %s", status, body)
@@ -374,7 +395,15 @@ func TestCatalogueFromSeed(t *testing.T) {
 // ---- quotes ----
 
 func quote(service, option string, addons []string, lat, lng float64) string {
+	return quotePro(uuid.Nil, service, option, addons, lat, lng)
+}
+
+// quotePro is a quote body naming the professional the customer picked.
+func quotePro(pro uuid.UUID, service, option string, addons []string, lat, lng float64) string {
 	b := map[string]any{"service_id": service, "option_id": option, "lat": lat, "lng": lng}
+	if pro != uuid.Nil {
+		b["pro_id"] = pro.String()
+	}
 	list := []map[string]string{}
 	for _, a := range addons {
 		list = append(list, map[string]string{"addon_id": a})
@@ -387,21 +416,40 @@ func quote(service, option string, addons []string, lat, lng float64) string {
 func TestQuotesOnTheDatabase(t *testing.T) {
 	rg := newRig(t, time.Now())
 	f := "salon-women/facial"
-	status, body := rg.customer("POST", "/v1/doorstep/quotes",
-		quote(id("service", f), id("option", f+"/gold"), []string{id("addon", f+"/mask/charcoal")}, 17.4504, 78.3808))
+	// B1: a quote prices with the picked professional's approved prices.
+	woman := seededPro(t, pool(t), "female", "salon_women", 17.4504, 78.3808, id("service", f), map[string]int64{
+		"option:" + f + "/gold": 129900, "addon:" + f + "/mask/charcoal": 19900, "addon:" + f + "/mask/peel-off": 9900})
+	status, body := rg.customer("POST", "/v1/doorstep/quotes", quote(id("service", f), id("option", f+"/gold"),
+		[]string{id("addon", f+"/mask/charcoal")}, 17.4504, 78.3808))
+	if status != 400 || errCode(body) != "DOORSTEP_INVALID_REQUEST" {
+		t.Fatalf("quote without a professional: %d %s", status, body)
+	}
+	status, body = rg.customer("POST", "/v1/doorstep/quotes",
+		quotePro(woman, id("service", f), id("option", f+"/gold"), []string{id("addon", f+"/mask/charcoal")}, 17.4504, 78.3808))
 	if status != 201 {
 		t.Fatalf("salon quote: %d %s", status, body)
 	}
 	var q struct {
 		ID    string `json:"id"`
 		Total int64  `json:"total_paise"`
+		ProID string `json:"pro_id"`
 		Lines []struct {
 			PriceID string `json:"price_id"`
 		} `json:"lines"`
 	}
 	data(t, body, &q)
-	if q.Total != 129900+19900 || len(q.Lines) != 2 || q.Lines[0].PriceID != id("price", f+"/gold") {
+	ctx := context.Background()
+	var goldPrice, lineProPrice uuid.UUID
+	if err := pool(t).QueryRow(ctx, `SELECT id FROM doorstep.pro_service_prices WHERE pro_id = $1 AND option_id = $2`,
+		woman, id("option", f+"/gold")).Scan(&goldPrice); err != nil {
+		t.Fatal(err)
+	}
+	if q.Total != 129900+19900 || len(q.Lines) != 2 || q.Lines[0].PriceID != goldPrice.String() || q.ProID != woman.String() {
 		t.Fatalf("quote %+v", q)
+	}
+	if err := pool(t).QueryRow(ctx, `SELECT pro_price_id FROM doorstep.quote_items WHERE quote_id = $1 AND line_no = 1`, q.ID).
+		Scan(&lineProPrice); err != nil || lineProPrice != goldPrice {
+		t.Fatalf("quote line pro_price_id %v %v", lineProPrice, err)
 	}
 	status, got := rg.customer("GET", "/v1/doorstep/quotes/"+q.ID, "")
 	if status != 200 || !bytes.Contains(got, []byte(`"total_paise":149800`)) || !bytes.Contains(got, []byte(`"status":"open"`)) {
@@ -419,35 +467,41 @@ func TestQuotesOnTheDatabase(t *testing.T) {
 	rg.now = time.Now()
 
 	for name, c := range map[string]struct {
-		body string
-		code string
+		body   string
+		status int
+		code   string
 	}{
-		"required mask missing": {quote(id("service", f), id("option", f+"/gold"), nil, 17.4504, 78.3808), "DOORSTEP_ADDON_INVALID"},
-		"two masks": {quote(id("service", f), id("option", f+"/gold"),
-			[]string{id("addon", f+"/mask/charcoal"), id("addon", f+"/mask/peel-off")}, 17.4504, 78.3808), "DOORSTEP_ADDON_INVALID"},
-		"add-on of another service": {quote(id("service", f), id("option", f+"/gold"),
-			[]string{id("addon", f+"/mask/charcoal"), id("addon", "salon-men/haircut/add-ons/head-massage")}, 17.4504, 78.3808), "DOORSTEP_ADDON_INVALID"},
-		"outside the zones": {quote(id("service", f), id("option", f+"/gold"),
-			[]string{id("addon", f+"/mask/charcoal")}, 17.4399, 78.4983), "DOORSTEP_OUTSIDE_SERVICE_AREA"},
-		"option of another service": {quote(id("service", f), id("option", "salon-men/haircut/haircut"),
-			[]string{id("addon", f+"/mask/charcoal")}, 17.4504, 78.3808), "DOORSTEP_OPTION_INVALID"},
+		"required mask missing": {quotePro(woman, id("service", f), id("option", f+"/gold"), nil, 17.4504, 78.3808), 422, "DOORSTEP_ADDON_INVALID"},
+		"two masks": {quotePro(woman, id("service", f), id("option", f+"/gold"),
+			[]string{id("addon", f+"/mask/charcoal"), id("addon", f+"/mask/peel-off")}, 17.4504, 78.3808), 422, "DOORSTEP_ADDON_INVALID"},
+		"add-on of another service": {quotePro(woman, id("service", f), id("option", f+"/gold"),
+			[]string{id("addon", f+"/mask/charcoal"), id("addon", "salon-men/haircut/add-ons/head-massage")}, 17.4504, 78.3808), 422, "DOORSTEP_ADDON_INVALID"},
+		"outside the zones": {quotePro(woman, id("service", f), id("option", f+"/gold"),
+			[]string{id("addon", f+"/mask/charcoal")}, 17.4399, 78.4983), 422, "DOORSTEP_OUTSIDE_SERVICE_AREA"},
+		"option of another service": {quotePro(woman, id("service", f), id("option", "salon-men/haircut/haircut"),
+			[]string{id("addon", f+"/mask/charcoal")}, 17.4504, 78.3808), 422, "DOORSTEP_OPTION_INVALID"},
+		// No approved price for the item (cleanup): never the city's.
+		"an item the professional has not priced": {quotePro(woman, id("service", f), id("option", f+"/cleanup"),
+			[]string{id("addon", f+"/mask/charcoal")}, 17.4504, 78.3808), 422, "DOORSTEP_PRICE_UNAVAILABLE"},
 	} {
 		status, body := rg.customer("POST", "/v1/doorstep/quotes", c.body)
-		if status != 422 || errCode(body) != c.code {
-			t.Errorf("%s: %d %s, want 422 %s", name, status, body, c.code)
+		if status != c.status || errCode(body) != c.code {
+			t.Errorf("%s: %d %s, want %d %s", name, status, body, c.status, c.code)
 		}
 	}
 
 	// HOME_CLEANING through shared/gst at 18%.
 	k := "home-cleaning/kitchen-deep-cleaning"
+	cleaner := seededPro(t, pool(t), "male", "deep_cleaning", 17.4156, 78.4347, id("service", k), map[string]int64{
+		"option:" + k + "/occupied": 179900, "addon:" + k + "/appliances/chimney": 44900})
 	status, body = rg.customer("POST", "/v1/doorstep/quotes",
-		quote(id("service", k), id("option", k+"/occupied"), []string{id("addon", k+"/appliances/chimney")}, 17.4156, 78.4347))
+		quotePro(cleaner, id("service", k), id("option", k+"/occupied"), []string{id("addon", k+"/appliances/chimney")}, 17.4156, 78.4347))
 	if status != 201 || !bytes.Contains(body, []byte(`"gst_category":"HOME_CLEANING_VIA_ECO"`)) || !bytes.Contains(body, []byte(`"tax_paise":34292`)) {
 		t.Fatalf("kitchen quote: %d %s", status, body)
 	}
 }
 
-// ---- prices are effective-dated ----
+// ---- city (suggested) prices are effective-dated ----
 
 func TestPriceEffectiveDating(t *testing.T) {
 	rg := newRig(t, time.Now())
@@ -471,12 +525,14 @@ func TestPriceEffectiveDating(t *testing.T) {
 	if len(list.Items) != 2 || list.Items[0].Price != 34900 || list.Items[0].To != nil || list.Items[1].To == nil || !list.Items[1].To.Equal(from) {
 		t.Fatalf("price history %+v", list.Items)
 	}
-	body2 := quote(id("service", f), opt, nil, 17.4504, 78.3808)
-	_, now := rg.customer("POST", "/v1/doorstep/quotes", body2)
+	// The service page's suggested price follows the dates (B1: a city price
+	// is a suggestion, never charged).
+	page := "/v1/doorstep/services/" + id("service", f) + "?city=HYD"
+	_, now := rg.call("GET", page, "", nil)
 	rg.now = from.Add(time.Minute)
-	_, later := rg.customer("POST", "/v1/doorstep/quotes", body2)
+	_, later := rg.call("GET", page, "", nil)
 	rg.now = time.Now()
-	if !bytes.Contains(now, []byte(`"total_paise":29900`)) || !bytes.Contains(later, []byte(`"total_paise":34900`)) {
+	if !bytes.Contains(now, []byte(`"suggested_price_paise":29900`)) || !bytes.Contains(later, []byte(`"suggested_price_paise":34900`)) {
 		t.Fatalf("effective dating: now %s later %s", now, later)
 	}
 	// Starting at or before the open row's start overlaps.

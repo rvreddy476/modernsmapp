@@ -108,9 +108,15 @@ func TestKeys(t *testing.T) {
 }
 
 type recorder struct {
-	got []Event
-	out Outcome
-	err error
+	got    []Event
+	extras []Event
+	out    Outcome
+	err    error
+}
+
+func (r *recorder) ApplyExtrasPaymentEvent(_ context.Context, ev Event) (Applied, error) {
+	r.extras = append(r.extras, ev)
+	return Applied{Decision: Decision{Outcome: OutcomeUnclaimed}}, r.err
 }
 
 func (r *recorder) ApplyPaymentEvent(_ context.Context, ev Event) (Applied, error) {
@@ -137,9 +143,8 @@ func TestConsumerFilters(t *testing.T) {
 	c := NewHandler(r, nil)
 	ctx := context.Background()
 	for _, e := range []*events.EventEnvelope{
-		env("a", events.EventPaymentSucceeded, succeeded("feast", RefBooking)),      // another application
-		env("b", events.EventPaymentSucceeded, succeeded("", RefBooking)),           // no application stated
-		env("c", events.EventPaymentSucceeded, succeeded(ApplicationID, RefExtras)), // extras: the visit lane
+		env("a", events.EventPaymentSucceeded, succeeded("feast", RefBooking)), // another application
+		env("b", events.EventPaymentSucceeded, succeeded("", RefBooking)),      // no application stated
 		env("d", events.EventPaymentSucceeded, succeeded(ApplicationID, "food_order")),
 		env("e", "post.created", map[string]any{}),
 	} {
@@ -147,8 +152,16 @@ func TestConsumerFilters(t *testing.T) {
 			t.Fatalf("%s: %v", e.EventID, err)
 		}
 	}
-	if len(r.got) != 0 {
-		t.Fatalf("filtered events reached the store: %+v", r.got)
+	if len(r.got) != 0 || len(r.extras) != 0 {
+		t.Fatalf("filtered events reached the store: %+v %+v", r.got, r.extras)
+	}
+	// doorstep_extras goes to the extras path with the bill as reference (B1);
+	// a visit-extras bill comes back unclaimed (left for A5), never an error.
+	if err := c.Handle(ctx, env("c", events.EventPaymentSucceeded, succeeded(ApplicationID, RefExtras))); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.extras) != 1 || r.extras[0].ExtrasBillID != booking || r.extras[0].BookingID != uuid.Nil || len(r.got) != 0 {
+		t.Fatalf("extras routed %+v / %+v", r.extras, r.got)
 	}
 	if err := c.Handle(ctx, env("f", events.EventPaymentSucceeded, succeeded(ApplicationID, RefBooking))); err != nil {
 		t.Fatal(err)

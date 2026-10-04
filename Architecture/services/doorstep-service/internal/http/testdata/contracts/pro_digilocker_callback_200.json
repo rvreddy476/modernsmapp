@@ -1,1 +1,1 @@
-{"data":{"status":"draft","missing_steps":["selfie_face_match","service_area","weekly_hours","bank","police_certificate","agreement"],"completed_steps":["profile","aadhaar_digilocker","skills"],"recommended_steps":["pan"],"can_go_on_duty":false},"meta":{"request_id":"fixture"}}
+{"data":{"status":"draft","missing_steps":["selfie_face_match","skills","service_area","weekly_hours","bank","police_certificate","agreement"],"completed_steps":["profile","aadhaar_digilocker"],"recommended_steps":["pan"],"can_go_on_duty":false},"meta":{"request_id":"fixture"}}

@@ -34,6 +34,8 @@ type fakeBookingStore struct {
 	refunds     []*fakeRefund
 	audits      []store.Actor
 	loseRace    bool
+	// prices answers whether a line's price is still bookable (B1).
+	prices *fakePricingStore
 }
 
 type fakeBooking struct {
@@ -49,6 +51,19 @@ type fakeBooking struct {
 	history     []model.HistoryEntry
 	updated     time.Time
 	block       slots.Interval
+	// B1: pro_unavailable and changes of professional.
+	deadline *time.Time
+	cause    *string
+	excluded []uuid.UUID
+	changes  []*fakeChange
+	extra    []store.PaymentRow
+}
+
+type fakeChange struct {
+	in      store.ChangeInput
+	status  string
+	prev    int64
+	refunds []uuid.UUID
 }
 
 type fakeRefund struct {
@@ -60,7 +75,8 @@ type fakeRefund struct {
 
 func newFakeBookingStore() *fakeBookingStore {
 	return &fakeBookingStore{addresses: map[uuid.UUID]*store.AddressRow{}, quotes: map[uuid.UUID]*store.QuoteFacts{},
-		bookings: map[uuid.UUID]*fakeBooking{}, outstanding: map[uuid.UUID][]uuid.UUID{}, pros: fakeSlotPros()}
+		bookings: map[uuid.UUID]*fakeBooking{}, outstanding: map[uuid.UUID][]uuid.UUID{}, pros: fakeSlotPros(),
+		prices: newFakePricingStore()}
 }
 
 var (
@@ -83,6 +99,12 @@ func fakeSlotPros() []slots.Pro {
 		return p
 	}
 	asha, ravi := mk(fakePro1, "female", 1200), mk(fakePro2, "male", 4800)
+	asha.DisplayName, asha.RatingSum, asha.RatingCount, asha.JobsCompleted = "Asha Rao", 47, 10, 12
+	asha.ServiceRadiusM = 8000
+	// Ravi is on duty 3.2 km away with a fresh fix and takes same-day jobs.
+	fix := time.Date(2026, 10, 4, 6, 29, 0, 0, time.UTC)
+	ravi.DisplayName, ravi.JobsCompleted, ravi.ServiceRadiusM = "Ravi Kumar", 3, 8000
+	ravi.OnDuty, ravi.LastFixAt, ravi.HasLive, ravi.LiveDistanceM, ravi.SameDay = true, &fix, true, 3200, true
 	asha.Blocks = []slots.Interval{{Start: time.Date(2026, 10, 5, 10, 0, 0, 0, slots.IST), End: time.Date(2026, 10, 5, 13, 30, 0, 0, slots.IST)}}
 	asha.JobsByDay["2026-10-05"] = 1
 	return []slots.Pro{asha, ravi}
@@ -193,7 +215,14 @@ func (f *fakeBookingStore) SlotCandidates(_ context.Context, q store.CandidateQu
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]slots.Pro, 0, len(f.pros))
+	want := map[uuid.UUID]bool{}
+	for _, id := range q.ProIDs {
+		want[id] = true
+	}
 	for _, p := range f.pros {
+		if len(want) > 0 && !want[p.ID] {
+			continue
+		}
 		cp := p
 		cp.Blocks = append([]slots.Interval(nil), p.Blocks...)
 		cp.JobsByDay = map[string]int{}
@@ -202,7 +231,8 @@ func (f *fakeBookingStore) SlotCandidates(_ context.Context, q store.CandidateQu
 		}
 		for _, id := range f.order {
 			b := f.bookings[id]
-			if b.pro == p.ID && b.status != "cancelled" && b.status != "expired" && (q.ExcludeBooking == nil || *q.ExcludeBooking != id) {
+			if b.pro == p.ID && b.status != "cancelled" && b.status != "expired" && b.status != "pro_unavailable" &&
+				(q.ExcludeBooking == nil || *q.ExcludeBooking != id) {
 				cp.Blocks = append(cp.Blocks, b.block)
 				cp.JobsByDay[slots.DayKey(b.block.Start)]++
 			}
@@ -232,7 +262,7 @@ func (f *fakeBookingStore) busy(pro uuid.UUID, iv slots.Interval, except uuid.UU
 		}
 	}
 	for id, b := range f.bookings {
-		if id != except && b.pro == pro && b.status != "cancelled" && b.status != "expired" && b.block.Overlaps(iv) {
+		if id != except && b.pro == pro && b.status != "cancelled" && b.status != "expired" && b.status != "pro_unavailable" && b.block.Overlaps(iv) {
 			return true
 		}
 	}
@@ -251,16 +281,16 @@ func (f *fakeBookingStore) CreateBooking(_ context.Context, nb store.NewBooking)
 	if q == nil || q.Quote.Status != model.QuoteOpen || !nb.At.Before(q.Quote.ExpiresAt) {
 		return uuid.Nil, store.ErrQuoteGone
 	}
-	block := slots.Interval{Start: nb.SlotStart, End: nb.BlockEnd}
-	pro := uuid.Nil
-	for _, c := range nb.Candidates {
-		if !f.loseRace && !f.busy(c, block, uuid.Nil) {
-			pro = c
-			break
-		}
-	}
-	if pro == uuid.Nil {
+	block := slots.Interval{Start: nb.BlockStart, End: nb.BlockEnd}
+	// The hold goes on the picked professional only (B1).
+	pro := nb.ProID
+	if f.loseRace || f.busy(pro, block, uuid.Nil) {
 		return uuid.Nil, store.ErrSlotTaken
+	}
+	for _, l := range nb.Items {
+		if !f.priceLive(pro, l.PriceID) {
+			return uuid.Nil, store.ErrPriceGone
+		}
 	}
 	q.Quote.Status = model.QuoteConsumed
 	hold := nb.HoldExpiresAt
@@ -289,7 +319,8 @@ func (f *fakeBookingStore) BookingByKey(_ context.Context, customer uuid.UUID, k
 	defer f.mu.Unlock()
 	for _, b := range f.bookings {
 		if b.nb.Customer == customer && b.nb.IdempotencyKey == key {
-			return &store.BookingKeyed{ID: b.nb.ID, QuoteID: b.nb.QuoteID, AddressID: b.nb.Address.AddressID, SlotStart: b.nb.SlotStart}, nil
+			return &store.BookingKeyed{ID: b.nb.ID, QuoteID: b.nb.QuoteID, AddressID: b.nb.Address.AddressID, SlotStart: b.nb.SlotStart,
+				Asap: b.nb.Asap}, nil
 		}
 	}
 	return nil, store.ErrNotFound
@@ -317,6 +348,15 @@ func (f *fakeBookingStore) AttachIntent(_ context.Context, paymentID uuid.UUID, 
 			}
 			return nil
 		}
+		for i := range b.extra {
+			if p := &b.extra[i]; p.ID == paymentID {
+				p.IntentID, p.Checkout = &intentID, checkout
+				if p.Status == "created" {
+					p.Status = "pending"
+				}
+				return nil
+			}
+		}
 	}
 	return store.ErrNotFound
 }
@@ -331,8 +371,19 @@ func (f *fakeBookingStore) BookingRecord(_ context.Context, id uuid.UUID, custom
 	nb := b.nb
 	a := nb.Address
 	rec := &store.BookingRecord{CustomerUserID: nb.Customer, CategoryID: nb.CategoryID, GenderRule: nb.GenderRule,
-		RequiredSkill: "deep_cleaning", ReservedProID: &b.pro, AddressSealed: nb.AddressSealed, RescheduleCount: b.reschedules,
-		BufferMinutes: 30, Lat: a.Lat, Lng: a.Lng, History: append([]model.HistoryEntry(nil), b.history...)}
+		RequiredSkill: "deep_cleaning", AddressSealed: nb.AddressSealed, RescheduleCount: b.reschedules,
+		BufferMinutes: 30, Lat: a.Lat, Lng: a.Lng, History: append([]model.HistoryEntry(nil), b.history...),
+		ExcludedProIDs: append([]uuid.UUID{}, b.excluded...), CityState: "36"}
+	if b.pro != uuid.Nil {
+		pro := b.pro
+		rec.ReservedProID = &pro
+	}
+	for _, c := range b.changes {
+		if c.status == "pending_payment" {
+			id := c.in.ID
+			rec.PendingChangeID = &id
+		}
+	}
 	var outstanding int64
 	rec.Booking = model.Booking{ID: nb.ID, Status: b.status, ServiceID: nb.ServiceID, ServiceName: "Kitchen deep cleaning",
 		CategorySlug: nb.CategorySlug, CityCode: nb.CityCode, ZoneID: nb.ZoneID, SlotStart: nb.SlotStart, SlotEnd: nb.SlotEnd,
@@ -341,7 +392,15 @@ func (f *fakeBookingStore) BookingRecord(_ context.Context, id uuid.UUID, custom
 		CancellationFeePaise: b.fee, OutstandingPaise: outstanding, HoldExpiresAt: b.hold,
 		Address: model.Address{ID: a.AddressID, Label: a.Label, Locality: a.Locality, CityCode: a.CityCode, Pincode: a.Pincode,
 			Lat: a.Lat, Lng: a.Lng, ZoneID: a.ZoneID, CreatedAt: a.CreatedAt},
-		Photos: []model.Photo{}, CreatedAt: nb.At, UpdatedAt: b.updated}
+		Photos: []model.Photo{}, CreatedAt: nb.At, UpdatedAt: b.updated, Asap: nb.Asap, ChoiceDeadline: b.deadline, UnavailableCause: b.cause}
+	if b.pro != uuid.Nil {
+		for _, p := range f.pros {
+			if p.ID == b.pro {
+				rec.Booking.Professional = &model.BookingProfessional{FirstName: firstNameOfFake(p.DisplayName), PhotoMediaID: p.PhotoMediaID,
+					JobsCompleted: p.JobsCompleted}
+			}
+		}
+	}
 	for _, h := range b.history {
 		rec.Booking.StatusHistory = append(rec.Booking.StatusHistory, model.StatusStep{FromStatus: h.FromStatus, ToStatus: h.ToStatus, CreatedAt: h.CreatedAt})
 	}
@@ -407,10 +466,22 @@ func (f *fakeBookingStore) locked(b *fakeBooking) *store.LockedBooking {
 		}
 	}
 	pid := b.payment.ID
-	return &store.LockedBooking{ID: b.nb.ID, Customer: b.nb.Customer, CategoryID: b.nb.CategoryID, CityCode: b.nb.CityCode,
+	lb := &store.LockedBooking{ID: b.nb.ID, Customer: b.nb.Customer, CategoryID: b.nb.CategoryID, CityCode: b.nb.CityCode,
 		Status: b.status, SlotStart: b.nb.SlotStart, SlotEnd: b.nb.SlotEnd, Duration: b.nb.Duration, PaidPaise: b.paid,
 		RefundedPaise: b.refunded, Refundable: b.paid - pending, PaymentID: &pid, PaymentStatus: b.payment.Status,
-		RescheduleCount: b.reschedules, ReservedProID: &b.pro}
+		RescheduleCount: b.reschedules, TotalPaise: b.nb.TotalPaise, ChoiceDeadline: b.deadline,
+		ExcludedProIDs: append([]uuid.UUID{}, b.excluded...)}
+	if b.pro != uuid.Nil {
+		pro := b.pro
+		lb.ReservedProID = &pro
+	}
+	for _, c := range b.changes {
+		if c.status == "pending_payment" {
+			t := c.in.HoldExpiresAt
+			lb.PendingChangeUntil = &t
+		}
+	}
+	return lb
 }
 
 func (f *fakeBookingStore) addRefund(b *fakeBooking, cause, key string, amount int64, at time.Time) uuid.UUID {
@@ -422,7 +493,7 @@ func (f *fakeBookingStore) addRefund(b *fakeBooking, cause, key string, amount i
 }
 
 func (f *fakeBookingStore) CancelBooking(_ context.Context, id uuid.UUID, customer *uuid.UUID, audit *store.Actor, at time.Time,
-	decide func(*store.LockedBooking) (*store.CancelDecision, error)) (*uuid.UUID, error) {
+	decide func(*store.LockedBooking) (*store.CancelDecision, error)) ([]uuid.UUID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	b := f.bookings[id]
@@ -439,9 +510,15 @@ func (f *fakeBookingStore) CancelBooking(_ context.Context, id uuid.UUID, custom
 	if audit != nil {
 		f.audits = append(f.audits, *audit)
 	}
+	b.deadline, b.cause = nil, nil
+	for _, c := range b.changes {
+		if c.status == "pending_payment" {
+			c.status = "abandoned"
+		}
+	}
 	if d.RefundPaise > 0 {
 		rid := f.addRefund(b, d.RefundCause, d.RefundKey, d.RefundPaise, at)
-		return &rid, nil
+		return []uuid.UUID{rid}, nil
 	}
 	return nil, nil
 }

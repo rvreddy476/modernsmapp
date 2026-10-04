@@ -130,6 +130,31 @@ var wantRoutes = []string{
 	"POST /v1/doorstep/pro/jobs/:id/cancel",
 	"POST /v1/doorstep/pro/realtime/token",
 	"POST /v1/doorstep/internal/admin/bookings/:id/redispatch",
+	// Professionals' prices, picking a professional, pro_unavailable (B1).
+	"GET /v1/doorstep/services/:id/professionals",
+	"GET /v1/doorstep/bookings/:id/professionals",
+	"POST /v1/doorstep/bookings/:id/change-professional",
+	"GET /v1/doorstep/pro/me/prices",
+	"POST /v1/doorstep/pro/me/prices",
+	"POST /v1/doorstep/pro/me/prices/:id/withdraw",
+	"PUT /v1/doorstep/pro/me/services/:id/same-day",
+	"GET /v1/doorstep/internal/admin/pro-prices",
+	"POST /v1/doorstep/internal/admin/pro-prices/:id/approve",
+	"POST /v1/doorstep/internal/admin/pro-prices/:id/reject",
+}
+
+// The B1 price review routes need doorstep:prices.review, nothing else.
+func TestPricingAdminRoutePermissions(t *testing.T) {
+	h := &Handler{}
+	rts := h.pricingAdminRoutes()
+	if len(rts) != 3 {
+		t.Fatalf("pricing admin routes %d", len(rts))
+	}
+	for _, rt := range rts {
+		if rt.perm != PermPricesReview {
+			t.Errorf("%s %s needs %s, table says %s", rt.method, rt.path, PermPricesReview, rt.perm)
+		}
+	}
 }
 
 // The A3 admin routes carry exactly the contract's permissions.
@@ -195,8 +220,8 @@ func TestAdminRoutePermissions(t *testing.T) {
 			t.Errorf("permission %q outside the doorstep: namespace", p)
 		}
 	}
-	if len(AdminPermissions) != 18 {
-		t.Fatalf("AdminPermissions has %d entries, the contract pins 18", len(AdminPermissions))
+	if len(AdminPermissions) != 19 {
+		t.Fatalf("AdminPermissions has %d entries, the contract pins 19 (B1 added doorstep:prices.review)", len(AdminPermissions))
 	}
 }
 

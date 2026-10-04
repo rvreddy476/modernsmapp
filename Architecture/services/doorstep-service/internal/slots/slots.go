@@ -103,6 +103,20 @@ type Pro struct {
 	OffersAccepted int
 	Cancellations  int
 	JobsCompleted  int
+
+	// B1: the card the customer sees, and same-day presence. LiveDistanceM
+	// is from the latest location fix to the address (HasLive: there is a
+	// fix); LastFixAt and OnDuty decide whether the fix is fresh;
+	// ServiceRadiusM bounds how far an ASAP job may be; SameDay is the
+	// opt-in for the service.
+	DisplayName    string
+	PhotoMediaID   *string
+	OnDuty         bool
+	LastFixAt      *time.Time
+	HasLive        bool
+	LiveDistanceM  float64
+	ServiceRadiusM int
+	SameDay        bool
 }
 
 // Request is what a slot must fit.
@@ -411,4 +425,167 @@ func HaversineM(lat1, lng1, lat2, lng2 float64) float64 {
 	dLng := (lng2 - lng1) * rad
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLng/2)*math.Sin(dLng/2)
 	return 2 * r * math.Asin(math.Min(1, math.Sqrt(a)))
+}
+
+// ---------------------------------------------------------------- B1: picked professional, ASAP
+
+// Same-day ("as soon as possible") rules (B1, 4 Oct 2026).
+const (
+	// StaleFix: a location fix older than this is not live (the presence
+	// worker takes the professional off duty at the same age).
+	StaleFix = 5 * time.Minute
+	// ASAPPrepMinutes is added to the travel time before an ASAP job can
+	// start (the professional packs up and sets out).
+	ASAPPrepMinutes = 5
+	// ReasonNotOnDuty, ReasonNoSameDay, ReasonOutOfRange: ASAP hard filters.
+	ReasonNotOnDuty  = "not_on_duty"
+	ReasonNoSameDay  = "no_same_day"
+	ReasonOutOfRange = "out_of_range"
+)
+
+// QualifiesASAP applies the date-independent hard filters for an ASAP job:
+// those of Qualifies, except that the distance that counts is from the
+// professional's live location (fresh at now) to the address, within their
+// service radius; and the professional must be on duty and have opted in
+// to same-day jobs for the service.
+func QualifiesASAP(p Pro, r Request, now time.Time) (string, bool) {
+	switch {
+	case p.Status != StatusApproved:
+		return ReasonNotApproved, false
+	case p.IncidentSuspended:
+		return ReasonIncident, false
+	case !p.SkillVerified:
+		return ReasonSkill, false
+	case !GenderAllowed(r.GenderRule, r.RequireFemale, p.Gender):
+		return ReasonGender, false
+	case !p.InZone:
+		return ReasonZone, false
+	case !p.SameDay:
+		return ReasonNoSameDay, false
+	case !p.OnDuty || !p.HasLive || p.LastFixAt == nil || now.Sub(*p.LastFixAt) > StaleFix:
+		return ReasonNotOnDuty, false
+	case p.ServiceRadiusM <= 0 || p.LiveDistanceM > float64(p.ServiceRadiusM):
+		return ReasonOutOfRange, false
+	}
+	return "", true
+}
+
+// EtaMinutes is how long until an on-duty professional can start at the
+// address: travel at 20 km/h in city traffic plus ASAPPrepMinutes, rounded
+// up to five minutes.
+func EtaMinutes(distanceM float64) int {
+	m := int(math.Ceil(distanceM/1000/20*60)) + ASAPPrepMinutes
+	if r := m % 5; r != 0 {
+		m += 5 - r
+	}
+	return m
+}
+
+// ASAPWindow is an ASAP job: the calendar block runs from now (the
+// professional sets out at once) to the job's end plus the travel buffer;
+// the job itself starts at now + ETA.
+type ASAPWindow struct {
+	Start      time.Time // the job start (arrival)
+	End        time.Time // the job end
+	BlockStart time.Time
+	BlockEnd   time.Time
+	EtaMinutes int
+}
+
+// ASAPFor computes a professional's ASAP window at now (minute precision).
+func ASAPFor(p Pro, now time.Time, r Request) ASAPWindow {
+	eta := EtaMinutes(p.LiveDistanceM)
+	start := now.Truncate(time.Minute).Add(time.Duration(eta) * time.Minute)
+	end := start.Add(time.Duration(r.DurationMinutes) * time.Minute)
+	return ASAPWindow{Start: start, End: end, BlockStart: now.Truncate(time.Minute),
+		BlockEnd: end.Add(time.Duration(r.BufferMinutes) * time.Minute), EtaMinutes: eta}
+}
+
+// FreeASAP reports whether a qualified (QualifiesASAP) professional can
+// take the ASAP job: background check valid today, the window inside the
+// city's open hours, no overlapping block, under the daily cap. Weekly
+// hours do not apply: being on duty is the professional's availability.
+func FreeASAP(p Pro, w ASAPWindow, cfg Config) (string, bool) {
+	day := midnight(w.Start)
+	clear := false
+	for _, bg := range p.BackgroundClear {
+		if !bg.From.After(day) && bg.Until.After(day) {
+			clear = true
+			break
+		}
+	}
+	if !clear {
+		return ReasonBackground, false
+	}
+	open := day.Add(time.Duration(cfg.OpenMinute) * time.Minute)
+	close := day.Add(time.Duration(cfg.CloseMinute) * time.Minute)
+	if w.Start.Before(open) || w.End.After(close) || DayKey(w.Start) != DayKey(w.End) {
+		return ReasonHours, false
+	}
+	block := Interval{Start: w.BlockStart, End: w.BlockEnd}
+	for _, b := range p.Blocks {
+		if b.Overlaps(block) {
+			return ReasonBusy, false
+		}
+	}
+	if p.MaxJobsPerDay > 0 && p.JobsByDay[DayKey(w.Start)] >= p.MaxJobsPerDay {
+		return ReasonDailyCap, false
+	}
+	return "", true
+}
+
+// NextFree lists up to limit grid starts at which the professional can take
+// the job: on `date` (an IST day) when it is non-zero, else from today over
+// the horizon; never inside the lead time.
+func NextFree(p Pro, now time.Time, cfg Config, r Request, date time.Time, limit int) []Slot {
+	earliest := now.Add(time.Duration(cfg.LeadMinutes) * time.Minute)
+	var days []time.Time
+	if !date.IsZero() {
+		days = []time.Time{midnight(date)}
+	} else {
+		today := midnight(now)
+		for d := 0; d < cfg.HorizonDays; d++ {
+			days = append(days, today.AddDate(0, 0, d))
+		}
+	}
+	var out []Slot
+	for _, day := range days {
+		for _, s := range Starts(day, cfg, r.DurationMinutes) {
+			if s.Before(earliest) {
+				continue
+			}
+			if _, ok := FreeAt(p, s, r); ok {
+				out = append(out, Slot{Start: s.UTC(), End: s.Add(time.Duration(r.DurationMinutes) * time.Minute).UTC(), Available: true})
+				if len(out) >= limit {
+					return out
+				}
+			}
+		}
+	}
+	return out
+}
+
+// InHorizon reports whether an IST date is within today .. horizon.
+func InHorizon(now, date time.Time, cfg Config) bool {
+	d := midnight(date)
+	today := midnight(now)
+	return !d.Before(today) && d.Before(today.AddDate(0, 0, cfg.HorizonDays))
+}
+
+// ParseDay parses YYYY-MM-DD as that IST day's midnight.
+func ParseDay(raw string) (time.Time, error) {
+	return time.ParseInLocation("2006-01-02", raw, IST)
+}
+
+// DistanceBand is the only distance a customer sees (never exact).
+func DistanceBand(m float64) string {
+	switch {
+	case m < 2000:
+		return "under_2_km"
+	case m < 5000:
+		return "2_to_5_km"
+	case m < 10000:
+		return "5_to_10_km"
+	}
+	return "over_10_km"
 }

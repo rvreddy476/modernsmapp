@@ -38,6 +38,12 @@ const (
 	// StaleFix: an on-duty professional with no location fix for this long
 	// is taken off duty.
 	StaleFix = 5 * time.Minute
+	// ChoiceWindow (B1): a booking whose professional is gone waits this long
+	// in pro_unavailable for the customer to pick another one (or cancel);
+	// then it is cancelled with a full refund.
+	ChoiceWindow = 30 * time.Minute
+	// ASAPOfferWindow (B1): an ASAP job's offer lapses after 3 minutes.
+	ASAPOfferWindow = 3 * time.Minute
 	// RetryEvery: a confirmed booking with no live offer (dispatch found
 	// nobody, or a crash between the confirm and the offer) is dispatched
 	// again at most this often.

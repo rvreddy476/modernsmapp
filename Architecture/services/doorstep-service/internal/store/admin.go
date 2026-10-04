@@ -364,11 +364,11 @@ func (s *Store) UpdateService(ctx context.Context, a Actor, id uuid.UUID, p mode
 	return &out, nil
 }
 
-const optionCols = `id, service_id, name, description, duration_minutes, max_quantity, is_default, sort_order, active, created_at, updated_at`
+const optionCols = `id, service_id, name, description, duration_minutes, max_quantity, unit, is_default, sort_order, active, created_at, updated_at`
 
 func scanOption(r pgx.Row) (model.AdminOption, error) {
 	var o model.AdminOption
-	err := r.Scan(&o.ID, &o.ServiceID, &o.Name, &o.Description, &o.DurationMinutes, &o.MaxQuantity, &o.IsDefault, &o.SortOrder,
+	err := r.Scan(&o.ID, &o.ServiceID, &o.Name, &o.Description, &o.DurationMinutes, &o.MaxQuantity, &o.Unit, &o.IsDefault, &o.SortOrder,
 		&o.Active, &o.CreatedAt, &o.UpdatedAt)
 	o.CreatedAt, o.UpdatedAt = o.CreatedAt.UTC(), o.UpdatedAt.UTC()
 	return o, err
@@ -446,10 +446,11 @@ func (s *Store) CreateOption(ctx context.Context, a Actor, serviceID uuid.UUID, 
 		}
 		var err error
 		out, err = scanOption(tx.QueryRow(ctx, `
-			INSERT INTO doorstep.service_options (service_id, name, description, duration_minutes, max_quantity, is_default, sort_order, active)
-			VALUES ($1, $2, COALESCE($3::text, ''), $4, COALESCE($5::int, 1), COALESCE($6::bool, FALSE), COALESCE($7::int, 0), COALESCE($8::bool, TRUE))
+			INSERT INTO doorstep.service_options (service_id, name, description, duration_minutes, max_quantity, is_default, sort_order, active, unit)
+			VALUES ($1, $2, COALESCE($3::text, ''), $4, COALESCE($5::int, 1), COALESCE($6::bool, FALSE), COALESCE($7::int, 0), COALESCE($8::bool, TRUE),
+			        COALESCE($9::text, 'per_job'))
 			RETURNING `+optionCols,
-			serviceID, in.Name, in.Description, in.DurationMinutes, in.MaxQuantity, in.IsDefault, in.SortOrder, in.Active))
+			serviceID, in.Name, in.Description, in.DurationMinutes, in.MaxQuantity, in.IsDefault, in.SortOrder, in.Active, in.Unit))
 		return out.ID.String(), err
 	})
 	if err != nil {
@@ -468,9 +469,9 @@ func (s *Store) UpdateOption(ctx context.Context, a Actor, id uuid.UUID, p model
 			    name = COALESCE($2::text, name), description = COALESCE($3::text, description),
 			    duration_minutes = COALESCE($4::int, duration_minutes), max_quantity = COALESCE($5::int, max_quantity),
 			    is_default = COALESCE($6::bool, is_default), sort_order = COALESCE($7::int, sort_order),
-			    active = COALESCE($8::bool, active), updated_at = NOW()
+			    active = COALESCE($8::bool, active), unit = COALESCE($9::text, unit), updated_at = NOW()
 			WHERE id = $1 RETURNING `+optionCols,
-			id, p.Name, p.Description, p.DurationMinutes, p.MaxQuantity, p.IsDefault, p.SortOrder, p.Active))
+			id, p.Name, p.Description, p.DurationMinutes, p.MaxQuantity, p.IsDefault, p.SortOrder, p.Active, p.Unit))
 		return id.String(), err
 	})
 	if err != nil {

@@ -71,10 +71,11 @@ func (s *Store) enqueueProEvent(ctx context.Context, tx pgx.Tx, eventType string
 	return s.events.Enqueue(ctx, tx, eventType, key, payload)
 }
 
-// SkillDecl is one declared skill and whether declaring verifies it.
+// SkillDecl is one declared skill. Declaring never verifies it: every
+// declared skill is pending until an admin verifies it (an approved trade
+// certificate, or the admin skill-verify route), founder rule 4 Oct 2026.
 type SkillDecl struct {
-	Code     string
-	Verified bool
+	Code string
 }
 
 // NewProfessional is an application.
@@ -123,18 +124,14 @@ func (s *Store) CreateProfessional(ctx context.Context, in NewProfessional) (*mo
 	return &p, nil
 }
 
-// insertSkills declares skills. A certificate-free skill is verified at once;
-// a certificate skill is verified when an approved trade certificate for it
-// already exists, else pending. Existing rows keep their status.
+// insertSkills declares skills, always pending: only an audited admin
+// review verifies one (doorstep.require_admin_review refuses anything else,
+// migration 005). Existing rows keep their status.
 func insertSkills(ctx context.Context, tx pgx.Tx, proID uuid.UUID, decls []SkillDecl) error {
 	for _, d := range decls {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO doorstep.pro_skills (pro_id, skill_code, status, verified_at)
-			SELECT $1, $2, CASE WHEN v THEN 'verified' ELSE 'pending' END, CASE WHEN v THEN NOW() END
-			FROM (SELECT $3::bool OR EXISTS (
-			          SELECT 1 FROM doorstep.pro_documents d
-			           WHERE d.pro_id = $1 AND d.kind = 'trade_certificate' AND d.skill_code = $2 AND d.status = 'approved') AS v) x
-			ON CONFLICT (pro_id, skill_code) DO NOTHING`, proID, d.Code, d.Verified); err != nil {
+			INSERT INTO doorstep.pro_skills (pro_id, skill_code, status) VALUES ($1, $2, 'pending')
+			ON CONFLICT (pro_id, skill_code) DO NOTHING`, proID, d.Code); err != nil {
 			return err
 		}
 	}
@@ -200,9 +197,11 @@ func proFacts(ctx context.Context, q querier, proID uuid.UUID, today time.Time, 
 		           AND k.status = 'passed' AND (k.expires_at IS NULL OR k.expires_at > NOW()))),
 		    EXISTS (SELECT 1 FROM doorstep.pro_kyc_checks k WHERE k.pro_id = p.id AND k.kind = 'selfie_face_match' AND k.status = 'passed'),
 		    (SELECT count(*) FROM doorstep.pro_skills ps WHERE ps.pro_id = p.id AND ps.status = 'verified'),
-		    (SELECT count(*) FROM doorstep.pro_skills ps WHERE ps.pro_id = p.id AND ps.status = 'pending' AND EXISTS (
+		    (SELECT count(*) FROM doorstep.pro_skills ps JOIN doorstep.skills k ON k.code = ps.skill_code
+		      WHERE ps.pro_id = p.id AND ps.status = 'pending' AND (NOT k.requires_certificate OR EXISTS (
 		        SELECT 1 FROM doorstep.pro_documents d WHERE d.pro_id = p.id AND d.kind = 'trade_certificate'
-		           AND d.skill_code = ps.skill_code AND d.status = 'pending')),
+		           AND d.skill_code = ps.skill_code AND d.status IN ('pending', 'approved')))),
+		    EXISTS (SELECT 1 FROM doorstep.pro_documents d WHERE d.pro_id = p.id AND d.kind = 'selfie' AND d.status = 'pending'),
 		    (p.home_point IS NOT NULL AND EXISTS (SELECT 1 FROM doorstep.pro_zones z WHERE z.pro_id = p.id)),
 		    EXISTS (SELECT 1 FROM doorstep.pro_weekly_hours h WHERE h.pro_id = p.id),
 		    EXISTS (SELECT 1 FROM doorstep.pro_payout_accounts a WHERE a.pro_id = p.id AND a.active AND a.status <> 'failed'),
@@ -212,7 +211,7 @@ func proFacts(ctx context.Context, q querier, proID uuid.UUID, today time.Time, 
 		    COALESCE(p.agreement_version, ''), p.pan_sealed IS NOT NULL
 		FROM doorstep.professionals p WHERE p.id = $1`+forUpdate, proID, today.Format("2006-01-02")).Scan(
 		&st.ProID, &st.UserID, &st.Status, &st.Gender, &st.IncidentSuspended, &st.DisplayName, &st.HasPhoto,
-		&st.AadhaarVerified, &st.SelfieMatched, &verified, &awaiting, &st.HasServiceArea, &st.HasWeeklyHours,
+		&st.AadhaarVerified, &st.SelfieMatched, &verified, &awaiting, &st.SelfieAwaitingReview, &st.HasServiceArea, &st.HasWeeklyHours,
 		&st.HasPayoutAccount, &st.BackgroundClear, &st.PoliceCertificatePending, &st.AgreementVersion, &st.HasPAN)
 	if err != nil {
 		return nil, mapErr(err)
@@ -374,12 +373,15 @@ func (s *Store) AadhaarReference(ctx context.Context, proID uuid.UUID) (bool, *u
 }
 
 // RecordSelfie records one selfie face-match attempt and the selfie as a
-// document (so an admin can view it, and decide it when the match left it
-// pending): passed → approved, pending → pending, failed → rejected. A
-// selfie still pending review is superseded by the new one.
+// document. The face match is advisory (founder rule 4 Oct 2026): whatever
+// the score, the selfie document stays pending until an admin approves it
+// (DecideDocument), and the check row is pending with the score for the
+// admin to read. Only an image that cannot be compared or shows no face is
+// refused at once (failed → rejected). A selfie still pending review is
+// superseded by the new one.
 func (s *Store) RecordSelfie(ctx context.Context, proID, mediaID uuid.UUID, status, provider string, score *float64, details map[string]any) (*model.KycCheck, error) {
 	raw, _ := json.Marshal(details)
-	docStatus := map[string]string{"passed": "approved", "pending": "pending", "failed": "rejected"}[status]
+	docStatus := map[string]string{"pending": "pending", "failed": "rejected"}[status]
 	if docStatus == "" {
 		return nil, ErrInvalid
 	}
@@ -393,7 +395,7 @@ func (s *Store) RecordSelfie(ctx context.Context, proID, mediaID uuid.UUID, stat
 		return nil, err
 	}
 	var reason *string
-	if r, ok := details["reason"].(string); ok && docStatus != "approved" {
+	if r, ok := details["reason"].(string); ok {
 		reason = &r
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO doorstep.pro_documents (pro_id, kind, media_id, status, reason, reviewed_at)
@@ -401,8 +403,8 @@ func (s *Store) RecordSelfie(ctx context.Context, proID, mediaID uuid.UUID, stat
 		return nil, mapErr(err)
 	}
 	var out model.KycCheck
-	err = tx.QueryRow(ctx, `INSERT INTO doorstep.pro_kyc_checks (pro_id, kind, status, provider, score, details, verified_at)
-		VALUES ($1, 'selfie_face_match', $2, $3, $4, $5, CASE WHEN $2 = 'passed' THEN NOW() END)
+	err = tx.QueryRow(ctx, `INSERT INTO doorstep.pro_kyc_checks (pro_id, kind, status, provider, score, details)
+		VALUES ($1, 'selfie_face_match', $2, $3, $4, $5)
 		RETURNING kind, status, score::float8, verified_at`, proID, status, provider, score, raw).
 		Scan(&out.Kind, &out.Status, &out.Score, &out.VerifiedAt)
 	if err != nil {
@@ -575,9 +577,8 @@ type BackgroundInit struct {
 
 // UploadDocument stores a certificate pending review. A police certificate
 // also starts a background_checks row (source uploaded_document) bound to
-// it. When the provider cleared the check at once (mock, development only)
-// the certificate is approved in the same transaction, because the database
-// refuses a clear check whose certificate is not approved. A trade
+// it, pending: only an admin's approval of the certificate clears it; the
+// provider's first answer is kept as provider_verdict (advisory). A trade
 // certificate needs the skill declared (else ErrNotFound). One certificate
 // under review at a time (else ErrConflict).
 func (s *Store) UploadDocument(ctx context.Context, d NewDocument, bg *BackgroundInit) (*model.ProDocument, error) {
@@ -591,13 +592,9 @@ func (s *Store) UploadDocument(ctx context.Context, d NewDocument, bg *Backgroun
 			return nil, err
 		}
 	}
+	// Always pending: an admin decides every certificate; a provider's
+	// verdict is advisory (founder rule 4 Oct 2026).
 	status, reason := "pending", (*string)(nil)
-	autoClear := bg != nil && bg.Status == "clear"
-	if autoClear {
-		status = "approved"
-		r := "cleared by the " + bg.Provider + " background check"
-		reason = &r
-	}
 	doc, err := scanDoc(tx.QueryRow(ctx, `
 		INSERT INTO doorstep.pro_documents (id, pro_id, kind, skill_code, media_id, number_sealed, number_last4, status, issued_on, expires_on, reason, reviewed_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CASE WHEN $8 = 'approved' THEN NOW() END)
@@ -608,9 +605,9 @@ func (s *Store) UploadDocument(ctx context.Context, d NewDocument, bg *Backgroun
 	}
 	if bg != nil {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO doorstep.background_checks (pro_id, source, provider, document_id, status, valid_from, valid_until)
-			VALUES ($1, 'uploaded_document', $2, $3, $4, $5, $6)`,
-			d.ProID, bg.Provider, d.ID, bg.Status, datePtr(bg.ValidFrom), datePtr(bg.ValidUntil)); err != nil {
+			INSERT INTO doorstep.background_checks (pro_id, source, provider, document_id, status, provider_verdict)
+			VALUES ($1, 'uploaded_document', $2, $3, 'pending', NULLIF($4, ''))`,
+			d.ProID, bg.Provider, d.ID, bg.Status); err != nil {
 			return nil, mapErr(err)
 		}
 	}
@@ -822,9 +819,14 @@ func (s *Store) AcceptAgreement(ctx context.Context, proID uuid.UUID, version st
 // ---------------------------------------------------------------- vendor webhook
 
 // ApplyProviderCheck updates a provider-sourced check from a verified
-// webhook (no vendor exists yet; the route answers 404 until one does).
+// webhook (no vendor exists yet; the route answers 404 until one does). The
+// vendor's verdict is advisory (founder rule 4 Oct 2026): it is kept in
+// provider_verdict, and "clear" leaves the check as it was (pending) until
+// an admin clears it; any other verdict applies (failing closed approves
+// nothing).
 func (s *Store) ApplyProviderCheck(ctx context.Context, provider, externalRef, status string, from, until *time.Time) error {
-	tag, err := s.db.Exec(ctx, `UPDATE doorstep.background_checks SET status = $3, valid_from = COALESCE($4::date, valid_from),
+	tag, err := s.db.Exec(ctx, `UPDATE doorstep.background_checks SET provider_verdict = $3,
+		status = CASE WHEN $3 = 'clear' THEN status ELSE $3 END, valid_from = COALESCE($4::date, valid_from),
 		valid_until = COALESCE($5::date, valid_until), updated_at = NOW()
 		WHERE source = 'provider' AND provider = $1 AND external_ref = $2`, provider, externalRef, status, datePtr(from), datePtr(until))
 	if err != nil {

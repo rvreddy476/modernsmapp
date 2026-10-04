@@ -77,7 +77,7 @@ var AdminPermissions = []string{
 	PermCatalogueRead, PermCatalogueWrite, PermConfigWrite, PermProsRead, PermProsApprove, PermProsSuspend,
 	PermDocumentsReview, PermBookingsRead, PermBookingsCancel, PermBookingsRedispatch, PermRefundsIssue,
 	PermIncidentsRead, PermIncidentsAct, PermTicketsAct, PermRatingsModerate, PermSettlementsRead, PermStatsRead,
-	PermAuditRead,
+	PermAuditRead, PermPricesReview,
 }
 
 // Error codes for the token path (same strings as food and rider).
@@ -277,6 +277,7 @@ func (h *Handler) registerInternalAdminRoutes(r *gin.Engine) {
 	g := r.Group(InternalAdminPrefix)
 	routes := append(h.adminRoutes(), h.proAdminRoutes()...)
 	routes = append(routes, h.bookingAdminRoutes()...)
+	routes = append(routes, h.pricingAdminRoutes()...)
 	for _, rt := range append(routes, h.dispatchAdminRoutes()...) {
 		g.Handle(rt.method, rt.path, h.requireAdminToken(rt.perm), rt.handler)
 	}

@@ -46,9 +46,29 @@ info:
     (A1 catalogue/zones/quotes/admin catalogue+config, A2 professional
     onboarding, A3 calendar/holds/bookings/payments, A4 dispatch/offers/
     realtime, A5 visit/extras/ratings/rework/safety/chat/tickets/settlements,
-    A6 remaining admin). Golden bytes: doorstep-service
+    A6 remaining admin, B1 the 4 Oct 2026 change of model). Golden bytes: doorstep-service
     internal/http/testdata/contracts/*.json (copied byte-identical to web and
     Android).
+
+
+    B1 (4 Oct 2026, the change of model): the platform catalogue is the
+    menu (categories, services, options with a unit per_job / per_hour /
+    per_month, add-ons); every bookable price is a professional's own
+    (doorstep.pro_service_prices), pending until an admin approves it
+    (doorstep:prices.review). A city price is only a SUGGESTED price, never
+    charged. The customer lists the professionals for a selection and an
+    address (GET /services/{id}/professionals: price, rating, a distance
+    band, next free starts, or for asap=true the on-duty professionals in
+    range with an ETA), picks one, quotes with them (pro_id), books them
+    (slot_start or asap=true; the hold is on them and nobody else). A
+    booking whose professional is gone goes to pro_unavailable: the customer
+    picks another professional (difference refunded at once, or charged as a
+    pro_change extras bill) or cancels for a full refund; 30 minutes without
+    a choice refund it in full. Nobody is reassigned silently. Founder rule
+    (same day): nothing a professional submits is approved by itself — the
+    face match, a vendor background-check verdict and skill declarations are
+    advisory until an admin decides, and the database refuses any approval
+    without an audit row of an admin in its transaction.
 servers:
   - url: https://api.atpost.app
     description: Production API Gateway
@@ -87,27 +107,28 @@ x-doorstep-booking-states:
     - cancelled              # by customer, professional (before start), ops or a worker; refunds per cancellation rules
     - expired                # hold lapsed before payment; a late capture is fully refunded
     - customer_no_show       # professional waited, customer absent; no-show fee applies
-    - pro_no_show            # professional never arrived and no replacement could be found; full refund
+    - pro_no_show            # professional never arrived and no replacement could be found; full refund (A4 rescue rows only since B1)
+    - pro_unavailable        # B1: the picked professional declined, let the offer lapse, gave the job back, was not on duty, did not turn up, or ops took it off them; payment kept, calendar released; the customer picks another professional (no new payment; difference refunded or charged) or cancels (full refund); 30 min without a choice: cancelled, full refund
   transitions:
     - {from: pending_payment, to: confirmed, by: payment_event}
     - {from: pending_payment, to: expired, by: worker}
     - {from: expired, to: confirmed, by: payment_event_late_capture}  # only while the reserved professional is still free and the slot ahead; else a full refund and it stays expired
     - {from: pending_payment, to: cancelled, by: customer}
     - {from: confirmed, to: assigned, by: pro_accept}
-    - {from: confirmed, to: confirmed, by: [pro_decline, worker_offer_expired, ops_redispatch, reschedule_other_pro]}  # the offer moves to the next professional; the calendar block moves in the same transaction
-    - {from: confirmed, to: cancelled, by: [customer, ops, worker_t_minus_45, worker_rescue_failed]}
-    - {from: confirmed, to: pro_no_show, by: worker_rescue_failed}  # a no-show replacement nobody accepted
-    - {from: assigned, to: confirmed, by: [pro_cancel, ops_redispatch, worker_not_on_duty, worker_pro_no_show, reschedule_other_pro]}
-    - {from: assigned, to: pro_no_show, by: worker_pro_no_show}  # nobody can start within 60 min
+    - {from: confirmed, to: pro_unavailable, by: [pro_decline, worker_offer_expired, ops_redispatch, no_professional]}  # B1: never moved to someone else silently
+    - {from: confirmed, to: cancelled, by: [customer, ops, worker_t_minus_45, worker_rescue_failed]}  # T-45 never applies to an ASAP booking
+    - {from: confirmed, to: pro_no_show, by: worker_rescue_failed}  # A4 rescue rows only (no new rescue since B1)
+    - {from: assigned, to: pro_unavailable, by: [pro_cancel, ops_redispatch, worker_not_on_duty, worker_pro_no_show]}
     - {from: assigned, to: en_route, by: pro}
     - {from: assigned, to: cancelled, by: [customer, ops]}
     - {from: en_route, to: arrived, by: pro_geo_checked}
-    - {from: en_route, to: confirmed, by: [pro_cancel, pro_unsafe_exit, ops_redispatch, worker_pro_no_show]}
-    - {from: en_route, to: pro_no_show, by: worker_pro_no_show}
+    - {from: en_route, to: pro_unavailable, by: [pro_cancel, pro_unsafe_exit, ops_redispatch, worker_pro_no_show]}
     - {from: en_route, to: cancelled, by: [customer, ops]}
     - {from: arrived, to: in_progress, by: pro_start_otp_and_photos}
     - {from: arrived, to: customer_no_show, by: pro}
-    - {from: arrived, to: confirmed, by: [pro_unsafe_exit, ops_redispatch]}
+    - {from: arrived, to: pro_unavailable, by: [pro_unsafe_exit, ops_redispatch]}
+    - {from: pro_unavailable, to: confirmed, by: [customer_change_professional, payment_event_change_difference]}  # the picked professional is offered the job
+    - {from: pro_unavailable, to: cancelled, by: [customer, ops, worker_choice_timeout]}  # full refund
     - {from: arrived, to: cancelled, by: [customer, ops]}
     - {from: in_progress, to: awaiting_extras_payment, by: pro_finish}
     - {from: in_progress, to: completed, by: pro_end_otp_and_photos}
@@ -119,31 +140,39 @@ x-doorstep-booking-states:
     confirmed) that follows the same lifecycle.
   offer_window: >-
     2 h when the slot starts more than 12 h after the offer, else 10 min (city
-    config offer_window_far/near_minutes, offer_far_threshold_minutes); never
-    past a rescue deadline. One open offer per booking; the professional
-    whose calendar holds the slot (reserved_pro_id) is offered first.
+    config offer_window_far/near_minutes, offer_far_threshold_minutes); 3 min
+    for an ASAP booking (B1); never past a rescue deadline. One open offer per
+    booking, always to the professional the customer picked (reserved_pro_id,
+    whose calendar holds the slot).
   dispatch: >-
-    A4. Decline, expiry, a job given back, not on duty, a no-show and ops
-    redispatch close that professional's assignment and re-run the matcher
-    (hard filters as for slots; score: rating, acceptance, cancellations and
-    no-shows, distance from the professional's previous job that day else
-    home, weekly load) excluding everyone who already let the booking go; the
-    old calendar block is released and the next one inserted in the same
-    transaction. Nobody left: the booking stays confirmed with no
-    professional and ops get doorstep.booking.unassigned_alert
-    (reason no_professional_left) once. Ops never choose the professional.
-    Penalties (placeholders, negative earning lines): job given back >= 24 h
-    before 0, 3-24 h 100 rupees, < 3 h 200 rupees, once travelling 300
-    rupees; no-show 300 rupees.
+    B1 (supersedes A4 auto-reassignment). The job is offered to the
+    professional the customer picked and to nobody else. Decline, expiry, a
+    job given back, not on duty, a no-show and ops redispatch close that
+    professional's assignment (penalties as before), release the calendar
+    and move the booking to pro_unavailable (doorstep.booking.pro_unavailable
+    + realtime doorstep.booking.pro_unavailable): the customer lists
+    alternatives (GET /bookings/{id}/professionals, everyone who let it go
+    excluded) and picks one (POST /bookings/{id}/change-professional) — a
+    cheaper or equal professional is confirmed at once (difference refunded,
+    key doorstep:refund:{id}:pro_change_<hash>), a dearer one is held while
+    the difference is paid (extras bill kind pro_change, payments reference
+    doorstep_extras, intent key doorstep:extras:{bill}, applied ONLY by the
+    signed payment.succeeded) — or cancels for a full refund. Ops never
+    choose the professional; an ops redispatch produces the choice for the
+    customer. Penalties (placeholders, negative earning lines): job given
+    back >= 24 h before 0, 3-24 h 100 rupees, < 3 h 200 rupees, once
+    travelling 300 rupees; no-show 300 rupees.
   workers:
-    - offer past its expiry -> expired, next professional offered
-    - confirmed with no live offer -> dispatched again (at most every 2 min, while the slot is > 45 min away or a rescue runs)
-    - T-2h unassigned -> doorstep.booking.unassigned_alert (reason t_minus_2h, once) + doorstep.admin.live
-    - T-45min unassigned -> cancelled by the system + full refund (doorstep:refund:{id}:unassigned)
-    - assigned professional not on duty by T-90min (accepted >= 15 min earlier) -> reassign (re-run dispatch excluding them)
+    - offer past its expiry -> expired, booking pro_unavailable (never the next professional)
+    - confirmed with no live offer -> offered again to the picked professional (at most every 2 min, ASAP always, scheduled while the slot is > 45 min away)
+    - T-2h unassigned (scheduled only) -> doorstep.booking.unassigned_alert (reason t_minus_2h, once) + doorstep.admin.live
+    - T-45min unassigned (scheduled only) -> cancelled by the system + full refund (doorstep:refund:{id}:unassigned)
+    - assigned professional not on duty by T-90min (accepted >= 15 min earlier) -> pro_unavailable (cause not_on_duty)
     - slot start + 15 min not arrived -> doorstep.booking.pro_late; the customer may cancel free (cancel-preview rule pro_late_free)
-    - slot start + 30 min not arrived -> pro no-show (penalty, no_show_count): the job moves to the earliest a replacement can start (now + travel buffer, within 60 min) under a 30-min rescue window; nobody -> pro_no_show + full refund (doorstep:refund:{id}:pro_no_show)
-    - rescue window over with nobody accepting -> pro_no_show (after a no-show) or cancelled by the system, full refund
+    - slot start + 30 min not arrived -> pro no-show (penalty, no_show_count) -> pro_unavailable (cause pro_no_show)
+    - pro_unavailable for 30 min with no change being paid for -> cancelled by the system, full refund over every payment (doorstep:refund:{id}:pro_unavailable)
+    - a change of professional whose difference was not paid before its hold lapsed -> abandoned (hold released; the customer may pick again until the deadline; a later capture is refunded)
+    - A4 rescue window over with nobody accepting (rows from before B1) -> pro_no_show or cancelled by the system, full refund
     - on duty with no location fix for 5 min -> off duty
 
 x-doorstep-error-codes:
@@ -161,16 +190,16 @@ x-doorstep-error-codes:
   DOORSTEP_CITY_NOT_FOUND: {status: 404, meaning: unknown or inactive city code}
   DOORSTEP_CATEGORY_NOT_FOUND: {status: 404}
   DOORSTEP_SERVICE_NOT_FOUND: {status: 404}
-  DOORSTEP_SERVICE_NOT_AVAILABLE: {status: 422, meaning: service has no current price in the city}
+  DOORSTEP_SERVICE_NOT_AVAILABLE: {status: 422, meaning: "service has no active option in the city, or (details.reason tax_category_pending) its family has no GST category yet (B1 families: the tax lane maps them)"}
   DOORSTEP_OUTSIDE_SERVICE_AREA: {status: 422, meaning: point is in no active zone of an active city}
-  DOORSTEP_OPTION_INVALID: {status: 422, meaning: option unknown, inactive, unpriced or of another service}
+  DOORSTEP_OPTION_INVALID: {status: 422, meaning: option unknown, inactive or of another service}
   DOORSTEP_QUANTITY_INVALID: {status: 422, meaning: quantity outside 1..option.max_quantity}
-  DOORSTEP_ADDON_INVALID: {status: 422, meaning: add-on unknown, of another service, inactive, unpriced, duplicated, or a group's min/max broken; details.group_id, details.min_select, details.max_select when a group rule failed}
+  DOORSTEP_ADDON_INVALID: {status: 422, meaning: add-on unknown, of another service, inactive, duplicated, or a group's min/max broken; details.group_id, details.min_select, details.max_select when a group rule failed}
   DOORSTEP_QUOTE_NOT_FOUND: {status: 404}
   DOORSTEP_QUOTE_EXPIRED: {status: 410}
   DOORSTEP_ADDRESS_NOT_FOUND: {status: 404}
-  DOORSTEP_SLOT_UNAVAILABLE: {status: 422, meaning: slot outside lead time, horizon, open hours or not offered}
-  DOORSTEP_SLOT_TAKEN: {status: 409, meaning: no qualified professional can be held for the slot (exclusion constraint lost the race)}
+  DOORSTEP_SLOT_UNAVAILABLE: {status: 422, meaning: "details.reason: inside_lead_time, beyond_horizon, not_on_grid, no_professional, professional_unavailable (the picked professional fails a hard filter or is busy then), professional_excluded (they let this booking go, or ops excluded them), not_available_now (ASAP: not on duty in range, no same-day opt-in, busy, or outside open hours)"}
+  DOORSTEP_SLOT_TAKEN: {status: 409, meaning: the picked professional could not be held (the exclusion constraint lost a race); list the professionals again}
   DOORSTEP_HOLD_EXPIRED: {status: 410, meaning: the 10-minute hold lapsed; book again}
   DOORSTEP_OUTSTANDING_DUE: {status: 409, meaning: customer has unpaid extras; details.outstanding_paise, details.extras_bill_ids}
   DOORSTEP_BOOKING_NOT_FOUND: {status: 404}
@@ -218,6 +247,9 @@ x-doorstep-error-codes:
   DOORSTEP_MEDIA_UNAVAILABLE: {status: 503, meaning: media-service could not verify an upload or serve a document image}
   DOORSTEP_CERTIFICATE_REQUIRED: {status: 422, meaning: a skill with requires_certificate is verified only through an approved trade certificate; details.skill_code}
   DOORSTEP_WEBHOOK_SIGNATURE_INVALID: {status: 401, meaning: background-check vendor webhook signature does not verify}
+  DOORSTEP_PRICE_UNAVAILABLE: {status: 422, meaning: "B1: the picked professional has no approved, live price for an item of the selection (details.item_ids), or a price was withdrawn or replaced after the quote"}
+  DOORSTEP_SKILL_REQUIRED: {status: 403, meaning: "B1: pricing (or same-day for) a service whose skill the professional has not declared or an admin revoked"}
+  DOORSTEP_CHOICE_WINDOW_CLOSED: {status: 409, meaning: "B1: the 30 minutes to pick another professional for a pro_unavailable booking are over"}
   DOORSTEP_INTERNAL: {status: 500}
 
 x-doorstep-permissions:
@@ -240,15 +272,18 @@ x-doorstep-permissions:
   - doorstep:settlements.read
   - doorstep:stats.read
   - doorstep:audit.read
+  - doorstep:prices.review       # B1: review professionals' prices (identity catalogue, admin-service mirror and BFF, console "Prices" approvals tab)
 
 x-doorstep-payments:
   application: doorstep
   reference_types:
     doorstep_booking: {reference_id: booking id, intent_key: "doorstep:booking:{booking_id}"}
-    doorstep_extras: {reference_id: extras bill id, intent_key: "doorstep:extras:{bill_id}"}
+    doorstep_extras: {reference_id: extras bill id, intent_key: "doorstep:extras:{bill_id}", bill_kinds: "visit_extras (A5) | pro_change (B1: the difference when the customer picks a dearer professional for a pro_unavailable booking)"}
   rules:
     - A booking or extras bill is paid ONLY by the signed payment.succeeded event applied once (shared/paymentevents ApplyOnce); client callbacks are advisory.
     - No cash method exists in this API.
+    - "B1: a refund is spread over the booking's payments (the booking payment first, then each paid pro_change bill); the first row carries the cause's key, a further row <key>:<hash of the payment>."
+    - "B1: refund causes pro_unavailable (no choice in 30 min), pro_change_<hash of the change> (a cheaper professional picked), late_change_<hash of the bill> (a difference captured after its change lapsed)."
     - Refund idempotency key per cause, e.g. doorstep:refund:{booking_id}:{cause}.
 
 paths:
@@ -266,7 +301,7 @@ paths:
         - $ref: '#/components/parameters/CityQuery'
       responses:
         '200':
-          description: Active categories with at least one priced service. Golden bytes catalogue_get_200.json.
+          description: Active categories of a family the tax computer prices (B1 families wait for the tax lane) with at least one active service; starting_price_paise is the lowest bookable professional price (null while nobody offers one). Golden bytes catalogue_get_200.json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Catalogue'}
@@ -300,7 +335,7 @@ paths:
 
   /v1/doorstep/services/{id}:
     get:
-      summary: Service detail with options and add-on groups priced for the city
+      summary: Service detail (the menu) with options, units, add-on groups, suggested and from prices
       operationId: getService
       tags: [Catalogue]
       security: []
@@ -310,7 +345,7 @@ paths:
         - $ref: '#/components/parameters/CityQuery'
       responses:
         '200':
-          description: Only active, currently priced options and add-ons are listed. Golden bytes service_get_200.json.
+          description: Active options (with unit, the city's suggested price and the lowest bookable professional price) and active add-ons; prices are the professionals', picked through GET /services/{id}/professionals. Golden bytes service_get_200.json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ServicePage'}
@@ -320,7 +355,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         '422':
-          description: DOORSTEP_SERVICE_NOT_AVAILABLE (no current price in the city)
+          description: DOORSTEP_SERVICE_NOT_AVAILABLE (no active option, or details.reason tax_category_pending)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
@@ -381,17 +416,19 @@ paths:
   # ===================================================================
   /v1/doorstep/quotes:
     post:
-      summary: Price a service selection (GST-inclusive)
+      summary: Price a service selection with the picked professional (GST-inclusive)
       operationId: createQuote
       tags: [Customer]
       x-lane: A1
       description: >-
-        Validates the option (active, of this service, priced in the zone's
-        city), the quantity (1..max_quantity) and the add-ons with the food
+        B1: pro_id (required) is the professional the customer picked; every
+        line is priced with that professional's approved, live price (no city
+        price ever fills a gap: DOORSTEP_PRICE_UNAVAILABLE, details.item_ids)
+        and price_id is that price row. Validates the option (active, of this
+        service), the quantity (1..max_quantity) and the add-ons with the food
         add-on group rules (each group: count >= max(min_select, is_required ?
         1 : 0) and count <= max_select; no duplicates; add-on of this service,
-        active and priced). Prices come from the effective-dated city price
-        rows current at quote time and are GST-inclusive; tax is split by
+        active). Prices are GST-inclusive; tax is split by
         the TaxComputer (provisional until shared/gst lands; the invoice is
         recomputed at completion with the actual professional). Expires after
         15 minutes. Golden bytes quote_post_201.json, quote_post_422_*.json.
@@ -414,7 +451,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         '422':
-          description: DOORSTEP_OUTSIDE_SERVICE_AREA, DOORSTEP_OPTION_INVALID, DOORSTEP_QUANTITY_INVALID, DOORSTEP_ADDON_INVALID, DOORSTEP_SERVICE_NOT_AVAILABLE
+          description: DOORSTEP_OUTSIDE_SERVICE_AREA, DOORSTEP_OPTION_INVALID, DOORSTEP_QUANTITY_INVALID, DOORSTEP_ADDON_INVALID, DOORSTEP_SERVICE_NOT_AVAILABLE, DOORSTEP_PRICE_UNAVAILABLE (quote_post_422_price_unavailable.json; quote_post_400_pro_required.json without pro_id)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
@@ -525,7 +562,9 @@ paths:
       tags: [Booking]
       x-lane: A3
       description: >-
-        A slot is offered only when at least one professional passes the hard
+        B1: the grid of the quote's professional (or, with booking_id, the
+        booking's professional) only; GET /services/{id}/professionals is the
+        primary picker.         A slot is offered only when at least one professional passes the hard
         dispatch filters (approved, background check clear on the date, skill,
         gender rule + preference, zone, calendar fit incl. travel buffer, daily
         cap). Earliest slot = now + min_lead_minutes (2 h); horizon from the
@@ -566,25 +605,32 @@ paths:
 
   /v1/doorstep/bookings:
     post:
-      summary: Book a slot (holds a professional for 10 minutes, then pay)
+      summary: Book the picked professional for a slot or as soon as possible (hold, then pay)
       operationId: createBooking
       tags: [Booking]
       x-lane: A3
       description: >-
-        Picks the best-fitting professional for the slot and inserts a `hold`
+        B1: the hold goes on the quote's professional (the customer's pick)
+        and nobody else; on a lost race DOORSTEP_SLOT_TAKEN and the client
+        lists again. Send exactly one of slot_start (the grid) or asap=true
+        (an on-duty professional in range who opted in to same-day jobs: the
+        block runs from now, the job starts at now + ETA, the hold lasts 5
+        minutes, the offer 3 minutes; booking_post_201_asap.json). Every
+        line's price must still be the professional's approved, live price
+        (else DOORSTEP_PRICE_UNAVAILABLE). Inserts a `hold`
         calendar block (EXCLUDE USING gist makes a double hold impossible),
         creates the booking in pending_payment and the payments-service
         intent (application doorstep, reference doorstep_booking). Idempotent
         on the Idempotency-Key header per customer. A replay with the same body answers the
         same booking (and opens the intent if it was never opened); the same key with another
-        quote, address or slot is 400. Professionals are ranked (distance, smoothed rating,
-        acceptance, cancellations, weekly load) and the first whose hold the exclusion
-        constraint admits is reserved (reserved_pro_id). The hold is [slot_start, slot_end +
-        the zone travel buffer). Outstanding extras refuse with 409. Golden bytes
+        quote, address or slot (or asap) is 400. The professional is reserved (reserved_pro_id).
+        The hold is [slot_start, slot_end + the zone travel buffer) (ASAP: from the booking
+        time). Outstanding extras refuse with 409. Golden bytes
         booking_post_201.json, booking_post_400_idempotency_key.json,
         booking_post_409_slot_taken.json, booking_post_409_outstanding.json,
         booking_post_410_quote_expired.json, booking_post_422_slot_unavailable.json
-        (details.reason inside_lead_time, beyond_horizon, not_on_grid or no_professional).
+        (details.reason inside_lead_time, beyond_horizon, not_on_grid, no_professional,
+        professional_unavailable or not_available_now).
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -609,7 +655,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         '422':
-          description: DOORSTEP_SLOT_UNAVAILABLE, DOORSTEP_OUTSIDE_SERVICE_AREA
+          description: DOORSTEP_SLOT_UNAVAILABLE, DOORSTEP_OUTSIDE_SERVICE_AREA, DOORSTEP_PRICE_UNAVAILABLE
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
@@ -716,10 +762,10 @@ paths:
       tags: [Booking]
       x-lane: A3
       description: >-
-        From confirmed or assigned, once, at least 3 h before the slot. The current professional
-        is kept when free, else the best other one is held; an assigned booking that changes
-        professional goes back to confirmed (offered again). New block then the old one
-        released, in one transaction. Golden bytes booking_reschedule_post_200.json,
+        From confirmed or assigned, once, at least 3 h before the slot, with the same professional
+        only (B1: the customer picked them and their price; a slot they cannot take is 422
+        DOORSTEP_SLOT_UNAVAILABLE, nobody else is held). New block then the old one released, in
+        one transaction. Golden bytes booking_reschedule_post_200.json,
         booking_reschedule_post_409.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
@@ -824,6 +870,149 @@ paths:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         '409':
           description: DOORSTEP_STUB_UNAVAILABLE, DOORSTEP_INVALID_TRANSITION
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  # ===================================================================
+  # B1 (4 Oct 2026): the customer picks the professional
+  # ===================================================================
+  /v1/doorstep/services/{id}/professionals:
+    get:
+      summary: The professionals the customer may pick for a selection at an address
+      operationId: listServiceProfessionals
+      tags: [Booking]
+      x-lane: B1
+      description: >-
+        Every approved professional who passes every hard filter (approved and not
+        incident-suspended, background check clear on the date, the service's skill verified,
+        the category gender rule and the customer's woman-professional preference against
+        the DigiLocker gender, the address's zone among theirs and within their radius, the
+        calendar incl. the travel buffer, the daily cap) AND has an approved, live price for
+        every item of the selection. Each card: first name, photo, rating, a distance band
+        (never an exact distance or location), the GST-inclusive price split by the tax
+        computer, and up to 3 next free starts (6 on a chosen date). asap=true: the
+        professionals on duty with a location fix younger than 5 min, within their radius of
+        the address (from that fix), who opted in to same-day jobs for the service and are
+        free from now, each with eta_minutes (travel at 20 km/h + 5 min prep, rounded to 5);
+        nobody -> no_professional true, no_professional_reason none_available_now and
+        scheduled_alternatives (the same selection's next free starts). At most 20, sorted by
+        price (default), rating (smoothed) or soonest. Golden bytes
+        service_professionals_get_200.json, service_professionals_get_200_asap.json,
+        service_professionals_get_200_asap_none.json, service_professionals_get_400_address.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - {name: option_id, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: quantity, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: addon_id, in: query, description: Repeat for each add-on, schema: {type: array, items: {type: string, format: uuid}}, style: form, explode: true}
+        - {name: address_id, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: date, in: query, description: "YYYY-MM-DD (IST) within the horizon; omitted: the next free starts from now", schema: {type: string, format: date}}
+        - {name: asap, in: query, description: Same day, as soon as possible (not with date), schema: {type: boolean, default: false}}
+        - {name: sort, in: query, schema: {type: string, enum: [price, rating, soonest], default: price}}
+        - {name: require_female_pro, in: query, schema: {type: boolean, default: false}}
+      responses:
+        '200':
+          description: The list
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfessionalList'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          description: DOORSTEP_SERVICE_NOT_FOUND, DOORSTEP_ADDRESS_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '422':
+          description: DOORSTEP_OPTION_INVALID, DOORSTEP_QUANTITY_INVALID, DOORSTEP_ADDON_INVALID, DOORSTEP_OUTSIDE_SERVICE_AREA, DOORSTEP_SERVICE_NOT_AVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/professionals:
+    get:
+      summary: Alternatives for a pro_unavailable booking
+      operationId: listBookingProfessionals
+      tags: [Booking]
+      x-lane: B1
+      description: >-
+        The same list for the booking's own selection and address, the professionals who let
+        it go (and any ops excluded) left out, each card with difference_paise against the
+        booking's total (negative: refunded on the change; positive: charged). date, asap
+        and sort as on the service list. Only while the booking is pro_unavailable (else 409
+        DOORSTEP_INVALID_TRANSITION). Golden bytes booking_professionals_get_200.json,
+        booking_professionals_get_200_asap.json, booking_professionals_get_409.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - {name: date, in: query, schema: {type: string, format: date}}
+        - {name: asap, in: query, schema: {type: boolean, default: false}}
+        - {name: sort, in: query, schema: {type: string, enum: [price, rating, soonest], default: price}}
+      responses:
+        '200':
+          description: The list
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfessionalList'}
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: DOORSTEP_INVALID_TRANSITION
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/bookings/{id}/change-professional:
+    post:
+      summary: Pick another professional and a time for a pro_unavailable booking (no new payment)
+      operationId: changeBookingProfessional
+      tags: [Booking]
+      x-lane: B1
+      description: >-
+        Idempotency-Key required (a replay answers the same change; the same key with another
+        body is 400). Exactly one of slot_start or asap=true. Before choice_deadline (else 409
+        DOORSTEP_CHOICE_WINDOW_CLOSED); the professional must not be excluded (422
+        DOORSTEP_SLOT_UNAVAILABLE reason professional_excluded), must pass every hard filter for
+        the time (reason professional_unavailable or not_available_now) and price the booking's
+        selection (DOORSTEP_PRICE_UNAVAILABLE). Cheaper or equal: confirmed at once with the new
+        professional, lines, slot and total; the difference refunded (change.refund_paise); the
+        job offered to them (doorstep.booking.pro_changed). Dearer: the professional is held
+        (hold_expires_at) while the difference is paid — change.status pending_payment with a
+        payment_intent (reference doorstep_extras, intent key doorstep:extras:{bill}); only the
+        signed payment.succeeded applies it (poll GET /bookings/{id}); a pending change keeps the
+        30-minute timeout off until its hold lapses. A new pick abandons a pending one. Golden
+        bytes booking_change_professional_post_200_refund.json,
+        booking_change_professional_post_200_charge.json,
+        booking_change_professional_422_excluded.json, booking_change_professional_409_window.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProChangeRequest'}
+      responses:
+        '200':
+          description: The booking and the change
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProChangeResult'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: DOORSTEP_INVALID_TRANSITION, DOORSTEP_CHOICE_WINDOW_CLOSED, DOORSTEP_SLOT_TAKEN
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '422':
+          description: DOORSTEP_SLOT_UNAVAILABLE, DOORSTEP_PRICE_UNAVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '503':
+          description: DOORSTEP_PAYMENTS_UNAVAILABLE (a dearer change with no extras payments client)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
@@ -1360,7 +1549,7 @@ paths:
                 media_id: {type: string, format: uuid}
       responses:
         '200':
-          description: Result (below threshold stays pending review)
+          description: Advisory result (founder rule 4 Oct 2026, nothing approves itself) - status pending with the similarity score whatever it is; the selfie document waits for an admin (documents/decide); failed only for an image that cannot be compared or has no face (422)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/KycCheck'}
@@ -1409,7 +1598,11 @@ paths:
                     type: array
                     items: {$ref: '#/components/schemas/ProSkill'}
     put:
-      summary: Declare my skills (verified by ops)
+      summary: Declare my skills (every one pending until an admin verifies it)
+      description: >-
+        Founder rule (4 Oct 2026): declaring never verifies a skill, certificate-free
+        ones included. An admin verifies it (skills/{code}/verify, or approving its trade
+        certificate); the database refuses a verification without an audited admin.
       operationId: proPutSkills
       tags: [Professional]
       x-lane: A2
@@ -2361,6 +2554,125 @@ paths:
   # ===================================================================
   # Background-check vendor webhook (future vendor; signed, no identity)
   # ===================================================================
+  # ---------- B1: the professional's own prices ----------
+  /v1/doorstep/pro/me/prices:
+    get:
+      summary: The services I may price, with my prices
+      operationId: proListPrices
+      tags: [Professional]
+      x-lane: B1
+      description: >-
+        Every active service whose skill I declared (pending or verified; not revoked), each
+        item (options with their unit, add-ons per job) with the city's suggested price, my
+        live approved price, my submission waiting for review and my newest rejection (with
+        its reason). bookable: customers can book me for the service now (approved, skill
+        verified, an approved option price, a family the tax computer prices). Golden bytes
+        pro_prices_get_200.json.
+      responses:
+        '200':
+          description: Services
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProServicePricing'}
+    post:
+      summary: Submit a price (pending until an admin approves it)
+      operationId: proSubmitPrice
+      tags: [Professional]
+      x-lane: B1
+      description: >-
+        GST-inclusive paise per unit, 100..10000000. Pending until an admin approves it (nothing
+        approves itself); my approved price for the item stays live meanwhile; a submission
+        already pending for the item is withdrawn (superseded). The live price again with
+        nothing pending is 409 DOORSTEP_CONFLICT (details.reason unchanged). Emits
+        doorstep.pro.price_submitted. Golden bytes pro_price_post_201.json,
+        pro_price_post_400.json, pro_price_post_403_skill.json, pro_price_post_409_unchanged.json.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProPriceInput'}
+      responses:
+        '201':
+          description: The pending price
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProPrice'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          description: DOORSTEP_SKILL_REQUIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '404':
+          description: DOORSTEP_SERVICE_NOT_FOUND (no such active service, option or add-on)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '409':
+          description: DOORSTEP_CONFLICT (unchanged), DOORSTEP_INVALID_TRANSITION (rejected or blocked professional)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/me/prices/{id}/withdraw:
+    post:
+      summary: Withdraw a pending price, or stop my live price now
+      operationId: proWithdrawPrice
+      tags: [Professional]
+      x-lane: B1
+      description: >-
+        A pending price is withdrawn; the live approved one stops now (effective_to) and the
+        item is no longer bookable with me. Anything else is 409. Golden bytes
+        pro_price_withdraw_200.json, pro_price_withdraw_409.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: The withdrawn price
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProPrice'}
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: DOORSTEP_INVALID_TRANSITION (details.status)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/me/services/{id}/same-day:
+    put:
+      summary: Opt in or out of same-day (as soon as possible) jobs for one service
+      operationId: proSetSameDay
+      tags: [Professional]
+      x-lane: B1
+      description: Golden bytes pro_same_day_put_200.json. A service whose skill I have not declared is 403 DOORSTEP_SKILL_REQUIRED.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SameDayInput'}
+      responses:
+        '200':
+          description: The setting
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SameDaySetting'}
+        '403':
+          description: DOORSTEP_SKILL_REQUIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
   /v1/doorstep/webhooks/background-check/{provider}:
     post:
       summary: Background-check vendor callback (AuthBridge / IDfy / OnGrid, later)
@@ -3458,17 +3770,18 @@ paths:
 
   /v1/doorstep/internal/admin/bookings/{id}/redispatch:
     post:
-      summary: Re-run dispatch excluding the current professional and any listed (never hand-picking)
+      summary: Take the job off the current professional; the customer picks another (never hand-picking)
       operationId: adminRedispatchBooking
       tags: [Admin]
       security: [{adminServiceToken: []}]
       x-permission: doorstep:bookings.redispatch
       x-lane: A4
       description: >-
-        From confirmed, assigned, en_route or arrived. The current professional's offer or
-        job is released (no penalty), the booking goes back to confirmed and the matcher
-        offers it to the best free professional not excluded; nobody left keeps it
-        confirmed with an ops alert. The body cannot name a professional (strict
+        From confirmed, assigned, en_route or arrived. B1: the current professional's offer or
+        job is released (no penalty) and the booking goes to pro_unavailable (cause
+        ops_redispatch): the customer picks another professional (the current one and
+        exclude_pro_ids are excluded from their list) or cancels; nobody is offered the job by
+        ops. The body cannot name a professional (strict
         decoding: 400). Audited in the same transaction. Golden bytes
         admin_booking_redispatch_200.json, admin_booking_redispatch_400_pick.json.
       parameters:
@@ -3480,7 +3793,7 @@ paths:
             schema: {$ref: '#/components/schemas/AdminRedispatchInput'}
       responses:
         '200':
-          description: Booking (confirmed, new offer out unless nobody is left)
+          description: Booking (pro_unavailable)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Booking'}
@@ -3537,6 +3850,99 @@ paths:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         '422':
           description: DOORSTEP_REFUND_EXCEEDS_PAID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  # ---------- B1: professionals' price review ----------
+  /v1/doorstep/internal/admin/pro-prices:
+    get:
+      summary: Professionals' prices by status (default pending, the review queue, oldest first)
+      operationId: adminListProPrices
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:prices.review
+      x-lane: B1
+      description: >-
+        Each row with the professional, the service and item, the city's suggested price and
+        the professional's current approved price for the item (to compare). Keyset pages
+        (submitted_at, id). Golden bytes admin_pro_prices_get_200.json.
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [pending, approved, rejected, withdrawn], default: pending}}
+        - {name: city, in: query, schema: {type: string}}
+        - {name: pro_id, in: query, schema: {type: string, format: uuid}}
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminProPricePage'}
+
+  /v1/doorstep/internal/admin/pro-prices/{id}/approve:
+    post:
+      summary: Approve a pending price (it becomes live now)
+      operationId: adminApproveProPrice
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:prices.review
+      x-lane: B1
+      description: >-
+        The professional's live approved price for the item is closed now and this one is live
+        from now; reason optional. Audited in the same transaction (the database refuses an
+        approval without it) and doorstep.pro.price_reviewed. A price already decided is 409.
+        Golden bytes admin_pro_price_approve_200.json, admin_pro_price_approve_409.json,
+        admin_pro_price_403_scope.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PriceDecisionInput'}
+      responses:
+        '200':
+          description: The approved price
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminProPrice'}
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: DOORSTEP_INVALID_TRANSITION (details.status)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/internal/admin/pro-prices/{id}/reject:
+    post:
+      summary: Reject a pending price (reason required)
+      operationId: adminRejectProPrice
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:prices.review
+      x-lane: B1
+      description: Audited in the same transaction; doorstep.pro.price_reviewed. Golden bytes admin_pro_price_reject_200.json, admin_pro_price_reject_400_reason.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PriceDecisionInput'}
+      responses:
+        '200':
+          description: The rejected price
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminProPrice'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: DOORSTEP_INVALID_TRANSITION
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
@@ -3852,8 +4258,12 @@ components:
     # ---------- enums ----------
     Family:
       type: string
-      description: Drives the GST category (shared/gst `<FAMILY>_VIA_ECO` / `<FAMILY>_REGISTERED`)
-      enum: [HOME_CLEANING, PEST_CONTROL, APPLIANCE_REPAIR, INSTALLATION_REPAIR, PAINTING, BEAUTY_SALON]
+      description: >-
+        Drives the GST category (shared/gst `<FAMILY>_VIA_ECO` / `<FAMILY>_REGISTERED`). B1 added
+        CAR_CARE, HOME_STAFFING, RELOCATION, PHOTOGRAPHY, FITNESS_WELLNESS and CONSTRUCTION: no
+        shared/gst category yet (the tax lane maps them); until then their services are not
+        offered to customers (professionals can declare the skills and submit prices).
+      enum: [HOME_CLEANING, PEST_CONTROL, APPLIANCE_REPAIR, INSTALLATION_REPAIR, PAINTING, BEAUTY_SALON, CAR_CARE, HOME_STAFFING, RELOCATION, PHOTOGRAPHY, FITNESS_WELLNESS, CONSTRUCTION]
     GenderRule:
       type: string
       enum: [any, female_pros_only, male_pros_only]
@@ -3862,7 +4272,7 @@ components:
       enum: [rate_card, catalogue_addons_only]
     BookingStatus:
       type: string
-      enum: [pending_payment, confirmed, assigned, en_route, arrived, in_progress, awaiting_extras_payment, completed, cancelled, expired, customer_no_show, pro_no_show]
+      enum: [pending_payment, confirmed, assigned, en_route, arrived, in_progress, awaiting_extras_payment, completed, cancelled, expired, customer_no_show, pro_no_show, pro_unavailable]
     ProStatus:
       type: string
       enum: [draft, pending_verification, approved, suspended, rejected, blocked]
@@ -3894,8 +4304,8 @@ components:
         gender_rule: {$ref: '#/components/schemas/GenderRule'}
         image_url: {type: string, nullable: true}
         sort_order: {type: integer}
-        service_count: {type: integer, description: Active services with a current price in the city}
-        starting_price_paise: {type: integer, format: int64, description: Lowest current option price in the city}
+        service_count: {type: integer, description: Active services with an active option}
+        starting_price_paise: {type: integer, format: int64, nullable: true, description: "B1: the lowest bookable professional price of the category's options in the city now; null while no professional offers one"}
     CategoryPage:
       type: object
       required: [city, category, services]
@@ -3907,7 +4317,7 @@ components:
           items: {$ref: '#/components/schemas/ServiceSummary'}
     ServiceSummary:
       type: object
-      required: [id, category_id, slug, name, description, duration_minutes, image_url, starting_price_paise, starting_mrp_paise]
+      required: [id, category_id, slug, name, description, duration_minutes, image_url, starting_price_paise, suggested_price_paise]
       properties:
         id: {type: string, format: uuid}
         category_id: {type: string, format: uuid}
@@ -3916,8 +4326,8 @@ components:
         description: {type: string}
         duration_minutes: {type: integer}
         image_url: {type: string, nullable: true}
-        starting_price_paise: {type: integer, format: int64}
-        starting_mrp_paise: {type: integer, format: int64, nullable: true, description: Strike-through price of the cheapest option}
+        starting_price_paise: {type: integer, format: int64, nullable: true, description: "B1: lowest bookable professional price of its options (null: nobody yet)"}
+        suggested_price_paise: {type: integer, format: int64, nullable: true, description: "B1: lowest city suggested price of its options (informational, never charged); replaces starting_mrp_paise"}
     ServicePage:
       type: object
       required: [city, service]
@@ -3958,16 +4368,19 @@ components:
           items: {$ref: '#/components/schemas/AddonGroup'}
     ServiceOption:
       type: object
-      required: [id, name, description, duration_minutes, max_quantity, is_default, price_paise, mrp_paise]
+      description: "B1: the menu. price_paise is gone: every bookable price is a professional's (GET /services/{id}/professionals)."
+      required: [id, name, description, duration_minutes, max_quantity, unit, is_default, suggested_price_paise, mrp_paise, from_price_paise]
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
         description: {type: string}
-        duration_minutes: {type: integer, description: Duration of one unit}
+        duration_minutes: {type: integer, description: "Duration of one unit (per_month: the first visit, which the calendar reserves)"}
         max_quantity: {type: integer}
+        unit: {type: string, enum: [per_job, per_hour, per_month], description: quantity counts units}
         is_default: {type: boolean}
-        price_paise: {type: integer, format: int64, description: GST-inclusive, per unit}
+        suggested_price_paise: {type: integer, format: int64, nullable: true, description: The city's suggested price per unit (informational, never charged)}
         mrp_paise: {type: integer, format: int64, nullable: true}
+        from_price_paise: {type: integer, format: int64, nullable: true, description: The lowest bookable professional price per unit now}
     AddonGroup:
       type: object
       required: [id, name, min_select, max_select, is_required, addons]
@@ -3982,13 +4395,14 @@ components:
           items: {$ref: '#/components/schemas/Addon'}
     Addon:
       type: object
-      required: [id, name, description, extra_duration_minutes, price_paise]
+      required: [id, name, description, extra_duration_minutes, suggested_price_paise, from_price_paise]
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
         description: {type: string}
         extra_duration_minutes: {type: integer}
-        price_paise: {type: integer, format: int64}
+        suggested_price_paise: {type: integer, format: int64, nullable: true}
+        from_price_paise: {type: integer, format: int64, nullable: true}
 
     ServiceabilityRequest:
       type: object
@@ -4018,9 +4432,10 @@ components:
 
     QuoteRequest:
       type: object
-      required: [service_id, option_id, lat, lng]
+      required: [service_id, pro_id, option_id, lat, lng]
       properties:
         service_id: {type: string, format: uuid}
+        pro_id: {type: string, format: uuid, description: "B1: the professional the customer picked (GET /services/{id}/professionals)"}
         option_id: {type: string, format: uuid}
         quantity: {type: integer, minimum: 1, default: 1}
         addons:
@@ -4034,13 +4449,14 @@ components:
         lng: {type: number, format: double}
     Quote:
       type: object
-      required: [id, status, service_id, option_id, quantity, city_code, zone_id, lines, total_paise, taxable_paise, tax_paise, prices_include_tax, tax_provisional, tax_note, duration_minutes, expires_at, created_at]
+      required: [id, status, service_id, option_id, quantity, pro_id, city_code, zone_id, lines, total_paise, taxable_paise, tax_paise, prices_include_tax, tax_provisional, tax_note, duration_minutes, expires_at, created_at]
       properties:
         id: {type: string, format: uuid}
         status: {type: string, enum: [open, expired, consumed]}
         service_id: {type: string, format: uuid}
         option_id: {type: string, format: uuid}
         quantity: {type: integer}
+        pro_id: {type: string, format: uuid, description: "B1: the picked professional; the quote is priced with their approved prices"}
         city_code: {type: string}
         zone_id: {type: string, format: uuid}
         lines:
@@ -4059,13 +4475,14 @@ components:
         created_at: {type: string, format: date-time}
     QuoteLine:
       type: object
-      required: [kind, ref_id, price_id, name, quantity, unit_price_paise, line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac]
+      required: [kind, ref_id, price_id, name, unit, quantity, unit_price_paise, line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac]
       properties:
         kind: {type: string, enum: [option, addon]}
         ref_id: {type: string, format: uuid}
-        price_id: {type: string, format: uuid, description: The doorstep.city_prices row used}
+        price_id: {type: string, format: uuid, description: "B1: the professional's doorstep.pro_service_prices row used (always an approved one)"}
         name: {type: string}
-        quantity: {type: integer}
+        unit: {type: string, enum: [per_job, per_hour, per_month]}
+        quantity: {type: integer, description: Units (hours, months) for per_hour and per_month}
         unit_price_paise: {type: integer, format: int64}
         line_total_paise: {type: integer, format: int64}
         taxable_paise: {type: integer, format: int64}
@@ -4128,11 +4545,13 @@ components:
                     available: {type: boolean}
     BookingCreateRequest:
       type: object
-      required: [quote_id, address_id, slot_start]
+      description: Exactly one of slot_start or asap=true (B1).
+      required: [quote_id, address_id]
       properties:
         quote_id: {type: string, format: uuid}
         address_id: {type: string, format: uuid}
         slot_start: {type: string, format: date-time}
+        asap: {type: boolean, description: "B1: same day, as soon as possible (the quote's professional on duty in range, opted in to same-day jobs)"}
         require_female_pro: {type: boolean, default: false}
         notes: {type: string, maxLength: 500}
     BookingCreated:
@@ -4169,7 +4588,7 @@ components:
         status_history closed the A3 contract gaps: end_otp stays null until the visit lane
         (A5) sets it, photos stays [] until A5 uploads before/after photos (customers see
         only those two phases), status_history is the timeline oldest first.
-      required: [id, status, service_id, service_name, category_slug, city_code, zone_id, slot_start, slot_end, duration_minutes, require_female_pro, items, total_paise, taxable_paise, tax_paise, paid_paise, refunded_paise, cancellation_fee_paise, extras_total_paise, outstanding_paise, hold_expires_at, address, professional, parent_booking_id, start_otp, end_otp, photos, status_history, can_cancel, can_reschedule, created_at, updated_at]
+      required: [id, status, service_id, service_name, category_slug, city_code, zone_id, slot_start, slot_end, duration_minutes, require_female_pro, items, total_paise, taxable_paise, tax_paise, paid_paise, refunded_paise, cancellation_fee_paise, extras_total_paise, outstanding_paise, hold_expires_at, address, professional, parent_booking_id, start_otp, end_otp, photos, status_history, can_cancel, can_reschedule, asap, choice_deadline, unavailable_cause, pending_change, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         status: {$ref: '#/components/schemas/BookingStatus'}
@@ -4198,7 +4617,7 @@ components:
         professional:
           type: object
           nullable: true
-          description: Present from assigned on; first name, photo, rating, phone never exposed
+          description: "B1: the professional the customer picked (from booking on), else the one who accepted; null while nobody holds the job (pro_unavailable). First name, photo, rating; a phone never."
           required: [first_name, photo_media_id, rating_avg, jobs_completed]
           properties:
             first_name: {type: string}
@@ -4216,7 +4635,14 @@ components:
           type: array
           items: {$ref: '#/components/schemas/StatusStep'}
         can_cancel: {type: boolean}
-        can_reschedule: {type: boolean, description: "confirmed or assigned, never rescheduled before, and at least 3 h before the slot"}
+        can_reschedule: {type: boolean, description: "confirmed or assigned, never rescheduled before, and at least 3 h before the slot (same professional only)"}
+        asap: {type: boolean, description: "B1: a same-day, as-soon-as-possible booking"}
+        choice_deadline: {type: string, format: date-time, nullable: true, description: "B1: while pro_unavailable, pick another professional (or cancel) by then, else it is cancelled with a full refund"}
+        unavailable_cause: {type: string, nullable: true, enum: [declined, offer_expired, pro_cancel, not_on_duty, pro_no_show, ops_redispatch, no_professional, null], description: "B1: why the professional is gone (pro_unavailable only)"}
+        pending_change:
+          allOf: [{$ref: '#/components/schemas/ProChange'}]
+          nullable: true
+          description: "B1: a change of professional waiting for its difference to be paid (with the payment intent), else null"
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     CancelRequest:
@@ -4231,7 +4657,7 @@ components:
         allowed: {type: boolean}
         fee_paise: {type: integer, format: int64}
         refund_paise: {type: integer, format: int64}
-        rule: {type: string, description: e.g. free_before_assignment, lt_3h, lt_1h_or_en_route, arrived}
+        rule: {type: string, description: "e.g. free_before_assignment, lt_3h, lt_1h_or_en_route, arrived, pro_late_free, pro_unavailable_free (B1: always free, a full refund)"}
     PaymentIntent:
       type: object
       required: [payment_id, reference_type, reference_id, amount_paise, status, checkout]
@@ -4496,6 +4922,11 @@ components:
       enum: [profile, aadhaar_digilocker, selfie_face_match, skills, service_area, weekly_hours, bank, police_certificate, agreement, pan]
     KycCheck:
       type: object
+      description: >-
+        Founder rule (4 Oct 2026): a selfie face match is advisory. The service writes it
+        pending (with the score) or failed; passed is written only by an admin approving the
+        selfie document, and the database refuses a passed selfie check without an audited
+        admin in its transaction.
       required: [kind, status, score, verified_at]
       properties:
         kind: {type: string, enum: [digilocker_aadhaar, selfie_face_match, pan, bank]}
@@ -4972,7 +5403,7 @@ components:
                   addons: {type: array, items: {$ref: '#/components/schemas/AdminAddon'}}
     AdminOption:
       type: object
-      required: [id, service_id, name, description, duration_minutes, max_quantity, is_default, sort_order, active, created_at, updated_at]
+      required: [id, service_id, name, description, duration_minutes, max_quantity, unit, is_default, sort_order, active, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         service_id: {type: string, format: uuid}
@@ -4980,6 +5411,7 @@ components:
         description: {type: string}
         duration_minutes: {type: integer}
         max_quantity: {type: integer}
+        unit: {type: string, enum: [per_job, per_hour, per_month], description: "B1"}
         is_default: {type: boolean}
         sort_order: {type: integer}
         active: {type: boolean}
@@ -4993,6 +5425,7 @@ components:
         description: {type: string}
         duration_minutes: {type: integer}
         max_quantity: {type: integer, default: 1}
+        unit: {type: string, enum: [per_job, per_hour, per_month], default: per_job, description: "B1"}
         is_default: {type: boolean}
         sort_order: {type: integer}
         active: {type: boolean, default: true}
@@ -5003,6 +5436,7 @@ components:
         description: {type: string}
         duration_minutes: {type: integer}
         max_quantity: {type: integer}
+        unit: {type: string, enum: [per_job, per_hour, per_month], description: "B1"}
         is_default: {type: boolean}
         sort_order: {type: integer}
         active: {type: boolean}
@@ -5286,7 +5720,7 @@ components:
       description: >-
         Golden bytes admin_booking_get_200.json. booking.start_otp and booking.end_otp are
         always null here (never exposed to admins); photos lists every phase.
-      required: [booking, customer_user_id, reserved_pro_id, needs_attention, attention_reason, history, assignments, payments, refunds, extras, photos]
+      required: [booking, customer_user_id, reserved_pro_id, needs_attention, attention_reason, history, assignments, payments, refunds, extras, photos, excluded_pro_ids, pro_changes]
       properties:
         booking: {$ref: '#/components/schemas/Booking'}
         customer_user_id: {type: string, format: uuid}
@@ -5321,6 +5755,8 @@ components:
         refunds: {type: array, items: {$ref: '#/components/schemas/Refund'}}
         extras: {type: array, items: {$ref: '#/components/schemas/Extra'}}
         photos: {type: array, items: {$ref: '#/components/schemas/Photo'}}
+        excluded_pro_ids: {type: array, items: {type: string, format: uuid}, description: "B1: professionals the customer may not pick again (they let it go, or ops excluded them)"}
+        pro_changes: {type: array, items: {$ref: '#/components/schemas/ProChange'}, description: "B1: every change of professional, oldest first"}
     AdminStats:
       type: object
       required: [bookings_today, bookings_in_progress, unassigned_within_2h, bookings_needing_attention, pros_approved, pros_pending_verification, documents_pending, incidents_open, gmv_today_paise, refunds_today_paise, outstanding_paise]
@@ -5349,3 +5785,209 @@ components:
         entity_id: {type: string}
         details: {type: object, additionalProperties: true}
         created_at: {type: string, format: date-time}
+
+    # ---------- B1 (4 Oct 2026): professionals' prices, the pick, pro_unavailable ----------
+    ProPrice:
+      type: object
+      description: One of a professional's price rows (GST-inclusive paise per unit). An approved row is live from effective_from until effective_to (null - still live).
+      required: [id, service_id, item_kind, item_id, unit, price_paise, status, effective_from, effective_to, submitted_at, reviewed_at, reason]
+      properties:
+        id: {type: string, format: uuid}
+        service_id: {type: string, format: uuid}
+        item_kind: {type: string, enum: [option, addon]}
+        item_id: {type: string, format: uuid}
+        unit: {type: string, enum: [per_job, per_hour, per_month]}
+        price_paise: {type: integer, format: int64}
+        status: {type: string, enum: [pending, approved, rejected, withdrawn]}
+        effective_from: {type: string, format: date-time, nullable: true}
+        effective_to: {type: string, format: date-time, nullable: true}
+        submitted_at: {type: string, format: date-time}
+        reviewed_at: {type: string, format: date-time, nullable: true}
+        reason: {type: string, nullable: true}
+    ProPriceItem:
+      type: object
+      required: [item_kind, item_id, name, unit, max_quantity, suggested_price_paise, approved, pending, rejected]
+      properties:
+        item_kind: {type: string, enum: [option, addon]}
+        item_id: {type: string, format: uuid}
+        name: {type: string}
+        unit: {type: string, enum: [per_job, per_hour, per_month]}
+        max_quantity: {type: integer}
+        suggested_price_paise: {type: integer, format: int64, nullable: true}
+        approved:
+          allOf: [{$ref: '#/components/schemas/ProPrice'}]
+          nullable: true
+        pending:
+          allOf: [{$ref: '#/components/schemas/ProPrice'}]
+          nullable: true
+        rejected:
+          allOf: [{$ref: '#/components/schemas/ProPrice'}]
+          nullable: true
+          description: The newest rejection, when newer than what is live or pending
+    ProServicePricing:
+      type: object
+      required: [service_id, service_name, category_slug, category_name, family, skill_code, skill_status, same_day, bookable, items]
+      properties:
+        service_id: {type: string, format: uuid}
+        service_name: {type: string}
+        category_slug: {type: string}
+        category_name: {type: string}
+        family: {$ref: '#/components/schemas/Family'}
+        skill_code: {type: string}
+        skill_status: {type: string, enum: [pending, verified]}
+        same_day: {type: boolean}
+        bookable: {type: boolean, description: "approved professional, skill verified, an approved option price, a family the tax computer prices"}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ProPriceItem'}
+    ProPriceInput:
+      type: object
+      required: [service_id, item_kind, item_id, price_paise]
+      properties:
+        service_id: {type: string, format: uuid}
+        item_kind: {type: string, enum: [option, addon]}
+        item_id: {type: string, format: uuid}
+        price_paise: {type: integer, format: int64, minimum: 100, maximum: 10000000, description: GST-inclusive, per unit}
+    SameDayInput:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: {type: boolean}
+    SameDaySetting:
+      type: object
+      required: [service_id, same_day, updated_at]
+      properties:
+        service_id: {type: string, format: uuid}
+        same_day: {type: boolean}
+        updated_at: {type: string, format: date-time}
+    AdminProPrice:
+      allOf:
+        - $ref: '#/components/schemas/ProPrice'
+        - type: object
+          required: [pro_id, pro_display_name, pro_status, city_code, service_name, category_slug, item_name, suggested_price_paise, current_approved_paise, reviewed_by]
+          properties:
+            pro_id: {type: string, format: uuid}
+            pro_display_name: {type: string}
+            pro_status: {$ref: '#/components/schemas/ProStatus'}
+            city_code: {type: string}
+            service_name: {type: string}
+            category_slug: {type: string}
+            item_name: {type: string}
+            suggested_price_paise: {type: integer, format: int64, nullable: true}
+            current_approved_paise: {type: integer, format: int64, nullable: true, description: The professional's live approved price for the item (another row)}
+            reviewed_by: {type: string, format: uuid, nullable: true}
+    AdminProPricePage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminProPrice'}
+        next_cursor: {type: string, nullable: true}
+    PriceDecisionInput:
+      type: object
+      properties:
+        reason: {type: string, maxLength: 1000, description: Required to reject}
+    PriceLine:
+      type: object
+      required: [kind, ref_id, name, unit, quantity, unit_price_paise, line_total_paise]
+      properties:
+        kind: {type: string, enum: [option, addon]}
+        ref_id: {type: string, format: uuid}
+        name: {type: string}
+        unit: {type: string, enum: [per_job, per_hour, per_month]}
+        quantity: {type: integer}
+        unit_price_paise: {type: integer, format: int64}
+        line_total_paise: {type: integer, format: int64}
+    NextSlot:
+      type: object
+      required: [start, end]
+      properties:
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+    ProfessionalCard:
+      type: object
+      description: A professional the customer may pick. Never an exact distance, location or phone.
+      required: [pro_id, first_name, photo_media_id, rating_avg, rating_count, jobs_completed, distance_band, price, next_slots, eta_minutes, same_day, difference_paise]
+      properties:
+        pro_id: {type: string, format: uuid}
+        first_name: {type: string}
+        photo_media_id: {type: string, nullable: true}
+        rating_avg: {type: number, nullable: true}
+        rating_count: {type: integer}
+        jobs_completed: {type: integer}
+        distance_band: {type: string, enum: [under_2_km, 2_to_5_km, 5_to_10_km, over_10_km], description: "scheduled: from home; asap: from the live fix"}
+        price:
+          type: object
+          required: [total_paise, taxable_paise, tax_paise, lines]
+          properties:
+            total_paise: {type: integer, format: int64, description: GST-inclusive}
+            taxable_paise: {type: integer, format: int64}
+            tax_paise: {type: integer, format: int64}
+            lines:
+              type: array
+              items: {$ref: '#/components/schemas/PriceLine'}
+        next_slots:
+          type: array
+          description: "scheduled: free starts on the date (up to 6) or from now (up to 3); [] for asap"
+          items: {$ref: '#/components/schemas/NextSlot'}
+        eta_minutes: {type: integer, nullable: true, description: asap only}
+        same_day: {type: boolean}
+        difference_paise: {type: integer, format: int64, nullable: true, description: "GET /bookings/{id}/professionals only: price minus the booking's total"}
+    ProfessionalList:
+      type: object
+      required: [service_id, option_id, quantity, addon_ids, booking_id, mode, date, sort, timezone, items, no_professional, no_professional_reason, scheduled_alternatives]
+      properties:
+        service_id: {type: string, format: uuid}
+        option_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        addon_ids: {type: array, items: {type: string, format: uuid}}
+        booking_id: {type: string, format: uuid, nullable: true}
+        mode: {type: string, enum: [scheduled, asap]}
+        date: {type: string, format: date, nullable: true}
+        sort: {type: string, enum: [price, rating, soonest]}
+        timezone: {type: string, example: Asia/Kolkata}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ProfessionalCard'}
+        no_professional: {type: boolean}
+        no_professional_reason: {type: string, nullable: true, enum: [none_available_now, null]}
+        scheduled_alternatives:
+          type: array
+          description: "asap with nobody: the next free starts for the same selection and address (founder: include schedule as well in case no worker found)"
+          items: {$ref: '#/components/schemas/ProfessionalCard'}
+    ProChange:
+      type: object
+      required: [id, status, pro_id, pro_first_name, asap, slot_start, slot_end, previous_total_paise, new_total_paise, difference_paise, refund_paise, hold_expires_at, payment_intent, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [pending_payment, applied, abandoned]}
+        pro_id: {type: string, format: uuid}
+        pro_first_name: {type: string}
+        asap: {type: boolean}
+        slot_start: {type: string, format: date-time}
+        slot_end: {type: string, format: date-time}
+        previous_total_paise: {type: integer, format: int64}
+        new_total_paise: {type: integer, format: int64}
+        difference_paise: {type: integer, format: int64, description: new - previous}
+        refund_paise: {type: integer, format: int64, description: Refunded at once when the new professional is cheaper}
+        hold_expires_at: {type: string, format: date-time, nullable: true, description: pending_payment only}
+        payment_intent:
+          allOf: [{$ref: '#/components/schemas/PaymentIntent'}]
+          nullable: true
+          description: "pending_payment only: reference doorstep_extras (the pro_change bill), paid only by the signed event"
+        created_at: {type: string, format: date-time}
+    ProChangeRequest:
+      type: object
+      description: Exactly one of slot_start or asap=true.
+      required: [pro_id]
+      properties:
+        pro_id: {type: string, format: uuid}
+        slot_start: {type: string, format: date-time}
+        asap: {type: boolean}
+    ProChangeResult:
+      type: object
+      required: [booking, change]
+      properties:
+        booking: {$ref: '#/components/schemas/Booking'}
+        change: {$ref: '#/components/schemas/ProChange'}

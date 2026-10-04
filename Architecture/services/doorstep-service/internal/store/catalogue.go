@@ -10,26 +10,42 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// curOptionPrices is the CTE of option prices current at $2 in city $1.
+// liveProPrice is the predicate of a professional price a customer can book
+// at time $2 in city $1 (B1): an approved row live at $2, of an approved,
+// unsuspended professional of the city whose skill for the service is
+// verified. Aliases: pp (pro_service_prices), p (professionals), sv
+// (services).
+const liveProPrice = `pp.status = 'approved' AND pp.effective_from <= $2 AND (pp.effective_to IS NULL OR pp.effective_to > $2)
+	AND p.city_code = $1 AND p.status = 'approved' AND NOT p.incident_suspended
+	AND EXISTS (SELECT 1 FROM doorstep.pro_skills ps WHERE ps.pro_id = p.id AND ps.skill_code = sv.required_skill AND ps.status = 'verified')`
+
+// curOptionPrices is the CTE of the services offered in city $1 at $2: every
+// active service with an active option, with the lowest bookable
+// professional price of its options (from_paise, NULL when nobody offers it
+// yet) and the lowest city suggested price (suggested_paise, informational).
 const curOptionPrices = `
-	cur AS (
-		SELECT p.id, p.option_id, p.price_paise, p.mrp_paise
-		FROM doorstep.city_prices p
-		WHERE p.city_code = $1 AND p.option_id IS NOT NULL
-		  AND p.effective_from <= $2 AND (p.effective_to IS NULL OR p.effective_to > $2)
+	from_opt AS (
+		SELECT pp.option_id, min(pp.price_paise) AS price_paise
+		FROM doorstep.pro_service_prices pp
+		JOIN doorstep.professionals p ON p.id = pp.pro_id
+		JOIN doorstep.services sv ON sv.id = pp.service_id
+		WHERE pp.option_id IS NOT NULL AND ` + liveProPrice + `
+		GROUP BY pp.option_id
 	),
-	cheapest AS (
-		SELECT DISTINCT ON (o.service_id) o.service_id, cur.price_paise, cur.mrp_paise
-		FROM doorstep.service_options o
-		JOIN cur ON cur.option_id = o.id
-		WHERE o.active
-		ORDER BY o.service_id, cur.price_paise, o.sort_order, o.id
+	sug_opt AS (
+		SELECT cp.option_id, cp.price_paise
+		FROM doorstep.city_prices cp
+		WHERE cp.city_code = $1 AND cp.option_id IS NOT NULL
+		  AND cp.effective_from <= $2 AND (cp.effective_to IS NULL OR cp.effective_to > $2)
 	),
 	svc AS (
-		SELECT s.id, s.category_id, ch.price_paise, ch.mrp_paise
+		SELECT s.id, s.category_id, min(f.price_paise) AS from_paise, min(sg.price_paise) AS suggested_paise
 		FROM doorstep.services s
-		JOIN cheapest ch ON ch.service_id = s.id
+		JOIN doorstep.service_options o ON o.service_id = s.id AND o.active
+		LEFT JOIN from_opt f ON f.option_id = o.id
+		LEFT JOIN sug_opt sg ON sg.option_id = o.id
 		WHERE s.active
+		GROUP BY s.id, s.category_id
 	)`
 
 // City returns an active city and its GST state code.
@@ -50,11 +66,12 @@ func scanCategorySummary(r pgx.Rows) (model.CategorySummary, error) {
 
 const categorySummarySelect = `
 	SELECT c.id, c.slug, c.name, c.description, c.family, c.gender_rule, c.image_url, c.sort_order,
-	       COUNT(svc.id)::int, COALESCE(MIN(svc.price_paise), 0)::bigint
+	       COUNT(svc.id)::int, MIN(svc.from_paise)::bigint
 	FROM doorstep.categories c`
 
-// CategorySummaries lists active categories with at least one active, priced
-// service in the city at `at`.
+// CategorySummaries lists active categories with at least one active service
+// (an active option) at `at`; starting price is the lowest bookable
+// professional price (NULL when nobody offers one yet).
 func (s *Store) CategorySummaries(ctx context.Context, city string, at time.Time) ([]model.CategorySummary, error) {
 	rows, err := s.db.Query(ctx, `WITH `+curOptionPrices+categorySummarySelect+`
 		JOIN svc ON svc.category_id = c.id
@@ -86,11 +103,11 @@ func (s *Store) CategoryBySlug(ctx context.Context, city, slug string, at time.T
 	return &list[0], nil
 }
 
-// ServiceSummaries lists a category's active, priced services in the city.
+// ServiceSummaries lists a category's offered services in the city.
 func (s *Store) ServiceSummaries(ctx context.Context, city string, categoryID uuid.UUID, at time.Time) ([]model.ServiceSummary, error) {
 	rows, err := s.db.Query(ctx, `WITH `+curOptionPrices+`
 		SELECT s.id, s.category_id, s.slug, s.name, s.description, s.duration_minutes, s.image_url,
-		       svc.price_paise, svc.mrp_paise
+		       svc.from_paise, svc.suggested_paise
 		FROM doorstep.services s
 		JOIN svc ON svc.id = s.id
 		WHERE s.category_id = $3
@@ -101,20 +118,22 @@ func (s *Store) ServiceSummaries(ctx context.Context, city string, categoryID uu
 	return collect(rows, func(r pgx.Rows) (model.ServiceSummary, error) {
 		var v model.ServiceSummary
 		err := r.Scan(&v.ID, &v.CategoryID, &v.Slug, &v.Name, &v.Description, &v.DurationMinutes, &v.ImageURL,
-			&v.StartingPricePaise, &v.StartingMRPPaise)
+			&v.StartingPricePaise, &v.SuggestedPricePaise)
 		return v, err
 	})
 }
 
 // ServiceBundle loads one service with its category, options and add-on
-// groups, priced for the city at `at`. ErrNotFound when the service or an
-// active city does not exist; visibility is the caller's decision.
+// groups for the city at `at`: each option and add-on with the city's
+// suggested price (if any) and the lowest bookable professional price (if
+// any). ErrNotFound when the service or an active city does not exist;
+// visibility is the caller's decision.
 func (s *Store) ServiceBundle(ctx context.Context, city string, serviceID uuid.UUID, at time.Time) (*catalogue.ServiceBundle, error) {
 	b := &catalogue.ServiceBundle{}
 	err := s.db.QueryRow(ctx, `
 		SELECT ci.code, ci.name,
 		       c.id, c.slug, c.name, c.family, c.gender_rule, c.extras_policy, c.active,
-		       s.id, s.slug, s.name, s.description, s.duration_minutes, s.inclusions, s.exclusions, s.image_url,
+		       s.id, s.slug, s.name, s.description, s.duration_minutes, s.required_skill, s.inclusions, s.exclusions, s.image_url,
 		       s.crew_size, s.rework_days, s.min_before_photos, s.min_after_photos, s.active
 		FROM doorstep.services s
 		JOIN doorstep.categories c ON c.id = s.category_id
@@ -122,31 +141,37 @@ func (s *Store) ServiceBundle(ctx context.Context, city string, serviceID uuid.U
 		WHERE s.id = $2`, city, serviceID).Scan(
 		&b.City.Code, &b.City.Name,
 		&b.Category.ID, &b.Category.Slug, &b.Category.Name, &b.Category.Family, &b.Category.GenderRule, &b.Category.ExtrasPolicy, &b.Category.Active,
-		&b.Service.ID, &b.Service.Slug, &b.Service.Name, &b.Service.Description, &b.Service.DurationMinutes,
+		&b.Service.ID, &b.Service.Slug, &b.Service.Name, &b.Service.Description, &b.Service.DurationMinutes, &b.Service.RequiredSkill,
 		&b.Service.Inclusions, &b.Service.Exclusions, &b.Service.ImageURL,
 		&b.Service.CrewSize, &b.Service.ReworkDays, &b.Service.MinBeforePhotos, &b.Service.MinAfterPhotos, &b.Service.Active)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-
+	// The lowest bookable professional price of an item (alias i).
+	fromPrice := func(col string) string {
+		return `(SELECT min(pp.price_paise) FROM doorstep.pro_service_prices pp
+			JOIN doorstep.professionals p ON p.id = pp.pro_id
+			JOIN doorstep.services sv ON sv.id = pp.service_id
+			WHERE pp.` + col + ` = i.id AND ` + liveProPrice + `)`
+	}
 	rows, err := s.db.Query(ctx, `
-		SELECT o.id, o.name, o.description, o.duration_minutes, o.max_quantity, o.is_default, o.active,
-		       p.id, p.price_paise, p.mrp_paise
-		FROM doorstep.service_options o
-		LEFT JOIN doorstep.city_prices p
-		       ON p.option_id = o.id AND p.city_code = $1
-		      AND p.effective_from <= $3 AND (p.effective_to IS NULL OR p.effective_to > $3)
-		WHERE o.service_id = $2
-		ORDER BY o.sort_order, o.name, o.id`, city, serviceID, at)
+		SELECT i.id, i.name, i.description, i.duration_minutes, i.max_quantity, i.unit, i.is_default, i.active,
+		       cp.id, cp.price_paise, cp.mrp_paise, `+fromPrice("option_id")+`
+		FROM doorstep.service_options i
+		LEFT JOIN doorstep.city_prices cp
+		       ON cp.option_id = i.id AND cp.city_code = $1
+		      AND cp.effective_from <= $2 AND (cp.effective_to IS NULL OR cp.effective_to > $2)
+		WHERE i.service_id = $3
+		ORDER BY i.sort_order, i.name, i.id`, city, at, serviceID)
 	if err != nil {
 		return nil, err
 	}
 	b.Options, err = collect(rows, func(r pgx.Rows) (catalogue.OptionRow, error) {
 		var o catalogue.OptionRow
 		var pid *uuid.UUID
-		var price *int64
-		var mrp *int64
-		if err := r.Scan(&o.ID, &o.Name, &o.Description, &o.DurationMinutes, &o.MaxQuantity, &o.IsDefault, &o.Active, &pid, &price, &mrp); err != nil {
+		var price, mrp *int64
+		if err := r.Scan(&o.ID, &o.Name, &o.Description, &o.DurationMinutes, &o.MaxQuantity, &o.Unit, &o.IsDefault, &o.Active,
+			&pid, &price, &mrp, &o.FromPaise); err != nil {
 			return o, err
 		}
 		if pid != nil && price != nil {
@@ -178,15 +203,15 @@ func (s *Store) ServiceBundle(ctx context.Context, city string, serviceID uuid.U
 		byGroup[g.ID] = i
 	}
 	rows, err = s.db.Query(ctx, `
-		SELECT a.group_id, a.id, a.name, a.description, a.extra_duration_minutes, a.active,
-		       p.id, p.price_paise, p.mrp_paise
-		FROM doorstep.addons a
-		JOIN doorstep.addon_groups g ON g.id = a.group_id
-		LEFT JOIN doorstep.city_prices p
-		       ON p.addon_id = a.id AND p.city_code = $1
-		      AND p.effective_from <= $3 AND (p.effective_to IS NULL OR p.effective_to > $3)
-		WHERE g.service_id = $2
-		ORDER BY a.sort_order, a.name, a.id`, city, serviceID, at)
+		SELECT i.group_id, i.id, i.name, i.description, i.extra_duration_minutes, i.active,
+		       cp.id, cp.price_paise, cp.mrp_paise, `+fromPrice("addon_id")+`
+		FROM doorstep.addons i
+		JOIN doorstep.addon_groups g ON g.id = i.group_id
+		LEFT JOIN doorstep.city_prices cp
+		       ON cp.addon_id = i.id AND cp.city_code = $1
+		      AND cp.effective_from <= $2 AND (cp.effective_to IS NULL OR cp.effective_to > $2)
+		WHERE g.service_id = $3
+		ORDER BY i.sort_order, i.name, i.id`, city, at, serviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +223,8 @@ func (s *Store) ServiceBundle(ctx context.Context, city string, serviceID uuid.U
 		var v addonWithGroup
 		var pid *uuid.UUID
 		var price, mrp *int64
-		if err := r.Scan(&v.group, &v.row.ID, &v.row.Name, &v.row.Description, &v.row.ExtraDurationMinutes, &v.row.Active, &pid, &price, &mrp); err != nil {
+		if err := r.Scan(&v.group, &v.row.ID, &v.row.Name, &v.row.Description, &v.row.ExtraDurationMinutes, &v.row.Active,
+			&pid, &price, &mrp, &v.row.FromPaise); err != nil {
 			return v, err
 		}
 		if pid != nil && price != nil {
@@ -249,19 +275,19 @@ func (s *Store) InsertQuote(ctx context.Context, q *model.Quote, customer uuid.U
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO doorstep.quotes (id, customer_user_id, service_id, option_id, quantity, city_code, zone_id, location,
 		                             total_paise, taxable_paise, tax_paise, tax_provisional, tax_note, duration_minutes,
-		                             status, expires_at, created_at)
+		                             status, expires_at, created_at, pro_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, ST_SetSRID(ST_MakePoint($9, $8), 4326)::geography,
-		        $10, $11, $12, $13, $14, $15, 'open', $16, $17)`,
+		        $10, $11, $12, $13, $14, $15, 'open', $16, $17, $18)`,
 		q.ID, customer, q.ServiceID, q.OptionID, q.Quantity, q.CityCode, q.ZoneID, lat, lng,
-		q.TotalPaise, q.TaxablePaise, q.TaxPaise, q.TaxProvisional, q.TaxNote, q.DurationMinutes, q.ExpiresAt, q.CreatedAt); err != nil {
+		q.TotalPaise, q.TaxablePaise, q.TaxPaise, q.TaxProvisional, q.TaxNote, q.DurationMinutes, q.ExpiresAt, q.CreatedAt, q.ProID); err != nil {
 		return mapErr(err)
 	}
 	for i, l := range q.Lines {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO doorstep.quote_items (quote_id, line_no, kind, ref_id, price_id, name, quantity, unit_price_paise,
+			INSERT INTO doorstep.quote_items (quote_id, line_no, kind, ref_id, price_id, pro_price_id, name, unit, quantity, unit_price_paise,
 			                                  line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-			q.ID, i+1, l.Kind, l.RefID, l.PriceID, l.Name, l.Quantity, l.UnitPricePaise, l.LineTotalPaise,
+			VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			q.ID, i+1, l.Kind, l.RefID, l.PriceID, l.Name, l.Unit, l.Quantity, l.UnitPricePaise, l.LineTotalPaise,
 			l.TaxablePaise, l.TaxPaise, l.TaxRateBPS, l.GSTCategory, l.SAC); err != nil {
 			return mapErr(err)
 		}
@@ -274,17 +300,17 @@ func (s *Store) InsertQuote(ctx context.Context, q *model.Quote, customer uuid.U
 func (s *Store) Quote(ctx context.Context, id, customer uuid.UUID) (*model.Quote, error) {
 	q := &model.Quote{PricesIncludeTax: true}
 	err := s.db.QueryRow(ctx, `
-		SELECT id, status, service_id, option_id, quantity, city_code, zone_id, total_paise, taxable_paise, tax_paise,
-		       tax_provisional, tax_note, duration_minutes, expires_at, created_at
+		SELECT id, status, service_id, option_id, quantity, COALESCE(pro_id, '00000000-0000-0000-0000-000000000000'::uuid), city_code, zone_id,
+		       total_paise, taxable_paise, tax_paise, tax_provisional, tax_note, duration_minutes, expires_at, created_at
 		FROM doorstep.quotes WHERE id = $1 AND customer_user_id = $2`, id, customer).Scan(
-		&q.ID, &q.Status, &q.ServiceID, &q.OptionID, &q.Quantity, &q.CityCode, &q.ZoneID, &q.TotalPaise, &q.TaxablePaise,
+		&q.ID, &q.Status, &q.ServiceID, &q.OptionID, &q.Quantity, &q.ProID, &q.CityCode, &q.ZoneID, &q.TotalPaise, &q.TaxablePaise,
 		&q.TaxPaise, &q.TaxProvisional, &q.TaxNote, &q.DurationMinutes, &q.ExpiresAt, &q.CreatedAt)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	q.ExpiresAt, q.CreatedAt = q.ExpiresAt.UTC(), q.CreatedAt.UTC()
 	rows, err := s.db.Query(ctx, `
-		SELECT kind, ref_id, price_id, name, quantity, unit_price_paise, line_total_paise, taxable_paise, tax_paise,
+		SELECT kind, ref_id, price_id, name, unit, quantity, unit_price_paise, line_total_paise, taxable_paise, tax_paise,
 		       tax_rate_bps, gst_category, sac
 		FROM doorstep.quote_items WHERE quote_id = $1 ORDER BY line_no`, id)
 	if err != nil {
@@ -292,7 +318,7 @@ func (s *Store) Quote(ctx context.Context, id, customer uuid.UUID) (*model.Quote
 	}
 	q.Lines, err = collect(rows, func(r pgx.Rows) (model.QuoteLine, error) {
 		var l model.QuoteLine
-		err := r.Scan(&l.Kind, &l.RefID, &l.PriceID, &l.Name, &l.Quantity, &l.UnitPricePaise, &l.LineTotalPaise,
+		err := r.Scan(&l.Kind, &l.RefID, &l.PriceID, &l.Name, &l.Unit, &l.Quantity, &l.UnitPricePaise, &l.LineTotalPaise,
 			&l.TaxablePaise, &l.TaxPaise, &l.TaxRateBPS, &l.GSTCategory, &l.SAC)
 		return l, err
 	})

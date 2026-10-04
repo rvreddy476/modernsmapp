@@ -41,6 +41,7 @@ func newDispatchFixtureRig(t *testing.T) *dispatchRig {
 	// Lakshmi joins the slot candidates, nearest of the three.
 	l := fakeSlotPros()[1]
 	l.ID, l.UserID, l.Gender, l.DistanceM, l.Blocks, l.JobsByDay = lakshmiPro, proUser, "female", 600, nil, map[string]int{}
+	l.DisplayName, l.JobsCompleted, l.OnDuty, l.LastFixAt, l.HasLive, l.SameDay = "Lakshmi Devi", 0, false, nil, false, false
 	bk.pros = append(bk.pros, l)
 	crypto, err := propii.New(context.Background(), []config.PIIKey{{Version: 1, Key: bytes.Repeat([]byte{0x24}, 32)}})
 	if err != nil {
@@ -51,7 +52,7 @@ func newDispatchFixtureRig(t *testing.T) *dispatchRig {
 	dr.ds = newFakeDispatchStore(bk, pros)
 	n := 0
 	pr := newProRigExt(t, func(svc *service.Service) *service.Service {
-		dr.svc = svc.WithBookings(service.BookingDeps{Store: bk, Payments: newFakePaymentsAPI(), PII: crypto,
+		dr.svc = svc.WithPricing(bk.prices).WithBookings(service.BookingDeps{Store: bk, Payments: newFakePaymentsAPI(), PII: crypto,
 			NewID: func() uuid.UUID { n++; return devseed.ID("fixture", fmt.Sprintf("dispatch-flow-%d", n)) }}).
 			WithDispatch(service.DispatchDeps{Store: dr.ds, Realtime: dr.frames, Signer: fixtureSigner{}})
 		return dr.svc
@@ -78,7 +79,7 @@ func (dr *dispatchRig) paidBooking(t *testing.T) uuid.UUID {
 	completeSteps(t, dr.proRig, proUser, "mock-female")
 	mustStatus(t, "approve", dr.admin(PermProsApprove, "POST", "/professionals/"+lakshmiPro.String()+"/approve", ""), 200)
 
-	w := dr.customer(fixtureUser, "POST", "/quotes", quoteBody(idOf("service", kitchen), idOf("option", kitchen+"/occupied"),
+	w := dr.customer(fixtureUser, "POST", "/quotes", quoteBodyPro(lakshmiPro, idOf("service", kitchen), idOf("option", kitchen+"/occupied"),
 		[]string{idOf("addon", kitchen+"/appliances/chimney")}, inZoneLat, inZoneLng, 0))
 	mustStatus(t, "quote", w, 201)
 	var qv struct {
@@ -174,17 +175,64 @@ func TestContract_DispatchJourney(t *testing.T) {
 	assertFixture(t, "pro_me_documents_get_200.json", dr.call(proUser, "GET", "/me/documents", ""), 200)
 	assertFixture(t, "pro_duty_off_200.json", dr.call(proUser, "POST", "/duty/off", ""), 200)
 
-	// Ops redispatch excluding Asha: Lakshmi's job goes back to confirmed
-	// and Ravi is offered it. Ops never name him.
+	// Ops take the job off Lakshmi, excluding Asha too. B1: nobody is
+	// reassigned silently — the booking goes to pro_unavailable and the
+	// customer picks another professional (ops never name one).
 	w = dr.admin(PermBookingsRedispatch, "POST", "/bookings/"+b.String()+"/redispatch",
 		fmt.Sprintf(`{"reason":"Customer asked for someone else","exclude_pro_ids":["%s"]}`, fakePro1))
 	assertFixture(t, "admin_booking_redispatch_200.json", w, 200)
-	if last := dr.ds.assigns[len(dr.ds.assigns)-1]; last.pro != fakePro2 || last.status != "offered" {
-		t.Fatalf("redispatch offered %+v", last)
+	if s := dr.bk.bookings[b].status; s != "pro_unavailable" {
+		t.Fatalf("after redispatch: %s", s)
+	}
+	for _, a := range dr.ds.assigns {
+		if a.status == "offered" || a.status == "accepted" {
+			t.Fatalf("someone still holds the job after redispatch: %+v", a)
+		}
 	}
 	assertFixture(t, "admin_booking_redispatch_400_pick.json", dr.admin(PermBookingsRedispatch, "POST", "/bookings/"+b.String()+"/redispatch",
 		fmt.Sprintf(`{"reason":"pick","pro_id":"%s"}`, fakePro2)), 400)
 	assertFixture(t, "pro_offer_accept_409_taken.json", dr.call(proUser, "POST", "/offers/"+offer.String()+"/accept", ""), 409)
+	if !strings.Contains(strings.Join(dr.frames.frames, "\n"), service.FrameProUnavailable) {
+		t.Fatal("the customer was not told to pick again")
+	}
+
+	// The customer is told and picks: the booking's own selection and
+	// address, Lakshmi and Asha excluded, each with the difference.
+	assertFixture(t, "booking_get_200_pro_unavailable.json", dr.customer(fixtureUser, "GET", "/bookings/"+b.String(), ""), 200)
+	assertFixture(t, "cancel_preview_get_200_pro_unavailable.json", dr.customer(fixtureUser, "GET", "/bookings/"+b.String()+"/cancel-preview", ""), 200)
+	w = dr.customer(fixtureUser, "GET", "/bookings/"+b.String()+"/professionals?date=2026-10-05", "")
+	assertFixture(t, "booking_professionals_get_200.json", w, 200)
+	if s := w.Body.String(); strings.Contains(s, lakshmiPro.String()) || strings.Contains(s, fakePro1.String()) || !strings.Contains(s, fakePro2.String()) {
+		t.Fatalf("alternatives: %s", s)
+	}
+	assertFixture(t, "booking_professionals_get_200_asap.json",
+		dr.customer(fixtureUser, "GET", "/bookings/"+b.String()+"/professionals?asap=true", ""), 200)
+	assertFixture(t, "booking_change_professional_422_excluded.json", dr.customer(fixtureUser, "POST", "/bookings/"+b.String()+"/change-professional",
+		fmt.Sprintf(`{"pro_id":"%s","slot_start":"%s"}`, lakshmiPro, mon14), "Idempotency-Key", "change-0"), 422)
+	mustCode(t, "change without a key", dr.customer(fixtureUser, "POST", "/bookings/"+b.String()+"/change-professional",
+		fmt.Sprintf(`{"pro_id":"%s","slot_start":"%s"}`, fakePro2, mon14)), 400, "DOORSTEP_INVALID_REQUEST")
+	// Ravi, cheaper, Monday 14:00: confirmed again at once, the difference
+	// refunded, and Ravi (only Ravi) is offered the job.
+	body := fmt.Sprintf(`{"pro_id":"%s","slot_start":"%s"}`, fakePro2, mon14)
+	w = dr.customer(fixtureUser, "POST", "/bookings/"+b.String()+"/change-professional", body, "Idempotency-Key", "change-1")
+	assertFixture(t, "booking_change_professional_post_200_refund.json", w, 200)
+	if again := dr.customer(fixtureUser, "POST", "/bookings/"+b.String()+"/change-professional", body, "Idempotency-Key", "change-1"); again.Body.String() != w.Body.String() {
+		t.Fatalf("change replay differs:\n%s\n%s", again.Body.String(), w.Body.String())
+	}
+	if last := dr.ds.assigns[len(dr.ds.assigns)-1]; last.pro != fakePro2 || last.status != "offered" {
+		t.Fatalf("after the change the offer went to %+v", last)
+	}
+	var refunded int64
+	for _, r := range dr.bk.refunds {
+		if r.booking == b && strings.HasPrefix(r.r.Cause, payments.CauseProChangePrefix) {
+			refunded += r.r.AmountPaise
+		}
+	}
+	if refunded != 15000 {
+		t.Fatalf("difference refunded %d, want 15000", refunded)
+	}
+	mustCode(t, "change once confirmed", dr.customer(fixtureUser, "POST", "/bookings/"+b.String()+"/change-professional",
+		body, "Idempotency-Key", "change-2"), 409, "DOORSTEP_INVALID_TRANSITION")
 
 	// Not a professional: no duty, no token.
 	mustCode(t, "stranger duty", dr.call(otherUser, "POST", "/duty/on", ""), 404, "DOORSTEP_PRO_NOT_FOUND")

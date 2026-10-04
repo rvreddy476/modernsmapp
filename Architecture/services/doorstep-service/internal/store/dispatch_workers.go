@@ -47,7 +47,7 @@ func (s *Store) BookingsAwaitingOffer(ctx context.Context, now time.Time, limit 
 		SELECT b.id FROM doorstep.bookings b
 		WHERE b.status = 'confirmed'
 		  AND (b.dispatch_attempted_at IS NULL OR b.dispatch_attempted_at <= $1::timestamptz - make_interval(secs => $2))
-		  AND (b.rescue_until IS NOT NULL OR b.slot_start > $1::timestamptz + make_interval(secs => $3))
+		  AND (b.asap OR b.rescue_until IS NOT NULL OR b.slot_start > $1::timestamptz + make_interval(secs => $3))
 		  AND NOT EXISTS (SELECT 1 FROM doorstep.booking_assignments a WHERE a.booking_id = b.id AND a.status IN ('offered', 'accepted'))
 		ORDER BY b.slot_start LIMIT $4`, now, dispatch.RetryEvery.Seconds(), dispatch.CancelBefore.Seconds(), limit)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *Store) AlertUnassigned(ctx context.Context, now time.Time, limit int) (
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows, err := tx.Query(ctx, `SELECT id FROM doorstep.bookings
-		WHERE status = 'confirmed' AND unassigned_alerted_at IS NULL AND rescue_until IS NULL
+		WHERE status = 'confirmed' AND unassigned_alerted_at IS NULL AND rescue_until IS NULL AND NOT asap
 		  AND slot_start <= $1::timestamptz + make_interval(secs => $2)
 		ORDER BY slot_start LIMIT $3 FOR UPDATE SKIP LOCKED`, now, dispatch.AlertBefore.Seconds(), limit)
 	if err != nil {
@@ -106,7 +106,7 @@ func (s *Store) AlertUnassigned(ctx context.Context, now time.Time, limit int) (
 // is inside the unassigned-cancel deadline: nobody accepted in time.
 func (s *Store) UnassignedPastCancel(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `SELECT id FROM doorstep.bookings
-		WHERE status = 'confirmed' AND rescue_until IS NULL AND slot_start <= $1::timestamptz + make_interval(secs => $2)
+		WHERE status = 'confirmed' AND rescue_until IS NULL AND NOT asap AND slot_start <= $1::timestamptz + make_interval(secs => $2)
 		ORDER BY slot_start LIMIT $3`, now, dispatch.CancelBefore.Seconds(), limit)
 	if err != nil {
 		return nil, err

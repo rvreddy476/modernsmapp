@@ -81,6 +81,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 			// Dispatch, presence and realtime (A4).
 			h.registerDispatchRoutes(user)
+
+			// Professionals' prices, picking a professional, pro_unavailable (B1).
+			h.registerPricingRoutes(user)
 		}
 	}
 	h.registerInternalAdminRoutes(r)

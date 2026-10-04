@@ -119,6 +119,45 @@ type bkRig struct {
 	pay   *fakePayments
 	cons  *payments.Consumer
 	world *bkWorld
+	// pros are the professionals added, in order; pick, when set, is the one
+	// quoteAndAddress picks (B1: the customer picks), else the first that
+	// suits the quote (a woman for the women's service).
+	pros []itPro
+	pick *uuid.UUID
+}
+
+type itPro struct {
+	id, user uuid.UUID
+	gender   string
+}
+
+// itAdmin is the admin every seeded approval is audited under: the
+// database refuses an approval without an audit row in its transaction
+// (doorstep.require_admin_review, migration 005).
+var itAdmin = uuid.MustParse("0d1e2f3a-4b5c-4d6e-8f70-819203a4b5c6")
+
+// adminTx runs seeding statements in one transaction with an admin audit
+// row, as an admin review would.
+func adminTx(t *testing.T, p *pgxpool.Pool, stmts func(exec func(sql string, args ...any))) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `INSERT INTO doorstep.admin_audit_log (actor_user_id, permission, action, entity, entity_id)
+		VALUES ($1, 'doorstep:pros.approve', 'itest.seed', 'itest', 'seed')`, itAdmin); err != nil {
+		t.Fatal(err)
+	}
+	stmts(func(sql string, args ...any) {
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", strings.Fields(sql)[0], err)
+		}
+	})
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("admin seed commit: %v", err)
+	}
 }
 
 // bkWorld is the suite's own catalogue slice: a skill, two categories
@@ -167,8 +206,8 @@ func newBookingRig(t *testing.T, extend ...func(*service.Service, *store.Store, 
 	br := &bkRig{itRig: rg, p: p, pay: newFakePayments()}
 	br.st = store.New(p).WithClock(func() time.Time { return br.now })
 	tc, _ := tax.NewGST(nil, gstin(t))
-	br.svc = service.New(br.st, tc, 15*time.Minute).WithClock(func() time.Time { return br.now }, uuid.New).
-		WithBookings(service.BookingDeps{Store: br.st, Payments: br.pay, PII: crypto, DevStubPayments: true})
+	br.svc = service.New(br.st, tc, 15*time.Minute).WithClock(func() time.Time { return br.now }, uuid.New).WithPricing(br.st).
+		WithBookings(service.BookingDeps{Store: br.st, Payments: br.pay, ExtrasPayments: br.pay, PII: crypto, DevStubPayments: true})
 	for _, x := range extend {
 		br.svc = x(br.svc, br.st, crypto)
 	}
@@ -228,23 +267,36 @@ func (br *bkRig) seedWorld(t *testing.T) *bkWorld {
 }
 
 // addPro inserts an approved, verified professional who works every day
-// 08:00-20:00 IST in the suite's zone, with a clear background check.
+// 08:00-20:00 IST in the suite's zone, with a clear background check and
+// approved prices (br.world.pricePaise) for both of the suite's options —
+// all reviewed by an admin (audited), as the database demands.
 func (br *bkRig) addPro(t *testing.T, gender string) (proID, userID uuid.UUID) {
 	t.Helper()
 	proID, userID = uuid.New(), uuid.New()
-	br.exec(t, `INSERT INTO doorstep.professionals (id, user_id, status, display_name, city_code, gender, gender_source, home_point,
-		service_radius_m, approved_at) VALUES ($1, $2, 'approved', 'Asha Rao', 'HYD', $3, 'digilocker',
-		ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, 15000, NOW())`, proID, userID, gender, br.world.lat+0.01, br.world.lng)
-	br.exec(t, `INSERT INTO doorstep.pro_skills (pro_id, skill_code, status, verified_at) VALUES ($1, $2, 'verified', NOW())`, proID, br.world.skill)
-	br.exec(t, `INSERT INTO doorstep.pro_zones (pro_id, zone_id) VALUES ($1, $2)`, proID, br.world.zone)
-	for d := 0; d < 7; d++ {
-		br.exec(t, `INSERT INTO doorstep.pro_weekly_hours (pro_id, weekday, start_time, end_time) VALUES ($1, $2, '08:00', '20:00')`, proID, d)
-	}
-	doc := uuid.New()
-	br.exec(t, `INSERT INTO doorstep.pro_documents (id, pro_id, kind, media_id, status, issued_on) VALUES ($1, $2, 'police_certificate', $3, 'approved', CURRENT_DATE - 10)`,
-		doc, proID, uuid.NewString())
-	br.exec(t, `INSERT INTO doorstep.background_checks (pro_id, source, document_id, status, valid_from, valid_until)
-		VALUES ($1, 'uploaded_document', $2, 'clear', CURRENT_DATE - 10, CURRENT_DATE + 355)`, proID, doc)
+	w := br.world
+	adminTx(t, br.p, func(exec func(string, ...any)) {
+		exec(`INSERT INTO doorstep.professionals (id, user_id, status, display_name, city_code, gender, gender_source, home_point,
+			service_radius_m, approved_at, approved_by) VALUES ($1, $2, 'approved', 'Asha Rao', 'HYD', $3, 'digilocker',
+			ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, 15000, NOW(), $6)`, proID, userID, gender, w.lat+0.01, w.lng, itAdmin)
+		exec(`INSERT INTO doorstep.pro_skills (pro_id, skill_code, status, verified_at, verified_by) VALUES ($1, $2, 'verified', NOW(), $3)`,
+			proID, w.skill, itAdmin)
+		exec(`INSERT INTO doorstep.pro_zones (pro_id, zone_id) VALUES ($1, $2)`, proID, w.zone)
+		for d := 0; d < 7; d++ {
+			exec(`INSERT INTO doorstep.pro_weekly_hours (pro_id, weekday, start_time, end_time) VALUES ($1, $2, '08:00', '20:00')`, proID, d)
+		}
+		doc := uuid.New()
+		exec(`INSERT INTO doorstep.pro_documents (id, pro_id, kind, media_id, status, issued_on, reviewed_by, reviewed_at)
+			VALUES ($1, $2, 'police_certificate', $3, 'approved', CURRENT_DATE - 10, $4, NOW())`, doc, proID, uuid.NewString(), itAdmin)
+		exec(`INSERT INTO doorstep.background_checks (pro_id, source, document_id, status, valid_from, valid_until, reviewed_by)
+			VALUES ($1, 'uploaded_document', $2, 'clear', CURRENT_DATE - 10, CURRENT_DATE + 355, $3)`, proID, doc, itAdmin)
+		for _, o := range []struct{ service, option uuid.UUID }{{w.anyService, w.anyOption}, {w.womenService, w.womenOption}} {
+			exec(`INSERT INTO doorstep.pro_service_prices (pro_id, service_id, item_kind, option_id, unit, price_paise, status,
+				effective_from, submitted_at, reviewed_by, reviewed_at)
+				VALUES ($1, $2, 'option', $3, 'per_job', $4, 'approved', NOW() - INTERVAL '30 days', NOW() - INTERVAL '30 days', $5, NOW())`,
+				proID, o.service, o.option, w.pricePaise, itAdmin)
+		}
+	})
+	br.pros = append(br.pros, itPro{id: proID, user: userID, gender: gender})
 	return proID, userID
 }
 
@@ -264,8 +316,9 @@ func (br *bkRig) quoteAndAddress(t *testing.T, customer uuid.UUID, women bool) (
 	if women {
 		svc, opt = br.world.womenService, br.world.womenOption
 	}
-	status, body := br.user(customer, "POST", "/quotes", fmt.Sprintf(`{"service_id":"%s","option_id":"%s","lat":%f,"lng":%f}`,
-		svc, opt, br.world.lat, br.world.lng))
+	pro := br.pickFor(t, women)
+	status, body := br.user(customer, "POST", "/quotes", fmt.Sprintf(`{"service_id":"%s","pro_id":"%s","option_id":"%s","lat":%f,"lng":%f}`,
+		svc, pro, opt, br.world.lat, br.world.lng))
 	want(t, "quote", status, body, 201)
 	var q struct {
 		ID uuid.UUID `json:"id"`
@@ -589,7 +642,7 @@ func TestTwoHoldsSameProfessionalExactlyOneWins(t *testing.T) {
 					Lat: br.world.lat, Lng: br.world.lng, ZoneID: br.world.zone},
 				SlotStart: start, SlotEnd: start.Add(time.Hour), BlockEnd: start.Add(90 * time.Minute), Duration: 60, GenderRule: "any",
 				TotalPaise: f.Quote.TotalPaise, TaxablePaise: f.Quote.TaxablePaise, TaxPaise: f.Quote.TaxPaise, Items: f.Quote.Lines,
-				HoldExpiresAt: br.now.Add(10 * time.Minute), Candidates: []uuid.UUID{pro}, PaymentID: uuid.New(),
+				HoldExpiresAt: br.now.Add(10 * time.Minute), ProID: pro, BlockStart: start, PaymentID: uuid.New(),
 				IntentKey: payments.IntentKey(bid), At: br.now,
 			})
 		}(i, a)
@@ -836,9 +889,23 @@ func TestSlotsApplyGenderRules(t *testing.T) {
 	if slotAvailable(t, slotsOf(qAny, "&require_female_pro=true"), start) {
 		t.Fatal("woman-professional preference ignored")
 	}
-	br.addPro(t, "female")
-	if !slotAvailable(t, slotsOf(qWomen, ""), start) {
+	woman, _ := br.addPro(t, "female")
+	// B1: a quote is for the professional the customer picked; the woman's
+	// quote is offered, the man's never.
+	qWoman, _ := br.quoteAndAddress(t, customer, true)
+	if !slotAvailable(t, slotsOf(qWoman, ""), start) {
 		t.Fatal("women's salon not offered with a woman professional")
+	}
+	if slotAvailable(t, slotsOf(qWomen, ""), start) {
+		t.Fatal("the man's quote for the women's salon became bookable")
+	}
+	// The professionals list for the women's salon: the woman only, though
+	// the man has an approved price for it.
+	status, body = br.user(customer, "GET", fmt.Sprintf("/services/%s/professionals?option_id=%s&address_id=%s&date=%s",
+		br.world.womenService, br.world.womenOption, address, start.In(slots.IST).Format("2006-01-02")), "")
+	want(t, "women's list", status, body, 200)
+	if !strings.Contains(string(body), woman.String()) || strings.Contains(string(body), br.pros[0].id.String()) {
+		t.Fatalf("women's salon list: %s", body)
 	}
 }
 
@@ -971,4 +1038,23 @@ func TestCancelFeeTierOnTheDatabase(t *testing.T) {
 		b.String()); v == nil || v.(string) != proUser.String() {
 		t.Fatalf("cancelled event pro_user_id %v", v)
 	}
+}
+
+// pickFor is the professional the customer picks for a quote: br.pick when
+// set, else the first added who suits it.
+func (br *bkRig) pickFor(t *testing.T, women bool) uuid.UUID {
+	t.Helper()
+	if br.pick != nil {
+		return *br.pick
+	}
+	for _, p := range br.pros {
+		if !women || p.gender == "female" {
+			return p.id
+		}
+	}
+	if len(br.pros) > 0 {
+		return br.pros[0].id
+	}
+	t.Fatal("no professional to pick: add one first")
+	return uuid.Nil
 }

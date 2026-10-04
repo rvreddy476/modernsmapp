@@ -65,9 +65,11 @@ type SlotDays struct {
 
 // BookingCreateRequest is the POST /bookings body.
 type BookingCreateRequest struct {
-	QuoteID          *uuid.UUID `json:"quote_id"`
-	AddressID        *uuid.UUID `json:"address_id"`
+	QuoteID   *uuid.UUID `json:"quote_id"`
+	AddressID *uuid.UUID `json:"address_id"`
+	// Exactly one of SlotStart (scheduled) or Asap=true (same day, now).
 	SlotStart        *time.Time `json:"slot_start"`
+	Asap             *bool      `json:"asap"`
 	RequireFemalePro *bool      `json:"require_female_pro"`
 	Notes            *string    `json:"notes"`
 }
@@ -131,8 +133,17 @@ type Booking struct {
 	StatusHistory        []StatusStep         `json:"status_history"`
 	CanCancel            bool                 `json:"can_cancel"`
 	CanReschedule        bool                 `json:"can_reschedule"`
-	CreatedAt            time.Time            `json:"created_at"`
-	UpdatedAt            time.Time            `json:"updated_at"`
+	// B1. Asap: a same-day "as soon as possible" booking. ChoiceDeadline and
+	// UnavailableCause are set while the booking is pro_unavailable (pick
+	// another professional by then, or it is cancelled with a full refund).
+	// PendingChange is a change of professional waiting for the difference
+	// to be paid.
+	Asap             bool       `json:"asap"`
+	ChoiceDeadline   *time.Time `json:"choice_deadline"`
+	UnavailableCause *string    `json:"unavailable_cause"`
+	PendingChange    *ProChange `json:"pending_change"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // BookingSummary is one row of a bookings list.
@@ -270,6 +281,11 @@ type AdminBookingDetail struct {
 	Refunds         []Refund         `json:"refunds"`
 	Extras          []Extra          `json:"extras"`
 	Photos          []Photo          `json:"photos"`
+	// B1: the professionals the customer may not pick again for this booking
+	// (they let it go, or ops excluded them) and every change of
+	// professional, oldest first.
+	ExcludedProIDs []uuid.UUID `json:"excluded_pro_ids"`
+	ProChanges     []ProChange `json:"pro_changes"`
 }
 
 // AdminStats is the dashboard counts.

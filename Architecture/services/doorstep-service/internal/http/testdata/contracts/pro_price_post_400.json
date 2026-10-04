@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"price_paise must be between 100 and 10000000 (GST-inclusive paise per unit)","details":{"field":"price_paise"}},"meta":{"request_id":"fixture"}}

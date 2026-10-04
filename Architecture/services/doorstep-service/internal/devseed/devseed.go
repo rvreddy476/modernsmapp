@@ -106,9 +106,13 @@ func Seed(ctx context.Context, db *pgxpool.Pool) error {
 			for oi, o := range s.options {
 				okey := skey + "/" + o.key
 				optID := ID("option", okey)
-				ex(`INSERT INTO doorstep.service_options (id, service_id, name, duration_minutes, max_quantity, is_default, sort_order, active)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE) ON CONFLICT DO NOTHING`,
-					optID, svcID, o.name, o.duration, o.maxQty, o.isDefault, (oi+1)*10)
+				unit := optionUnits[okey]
+				if unit == "" {
+					unit = "per_job"
+				}
+				ex(`INSERT INTO doorstep.service_options (id, service_id, name, duration_minutes, max_quantity, is_default, sort_order, active, unit)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8) ON CONFLICT DO NOTHING`,
+					optID, svcID, o.name, o.duration, o.maxQty, o.isDefault, (oi+1)*10, unit)
 				price("option", optID, okey, o.price, o.mrp)
 			}
 			for gi, g := range s.groups {
@@ -169,4 +173,24 @@ func Counts() (cats, services, options, addons, rates int) {
 		}
 	}
 	return
+}
+
+// CategoryFamilies maps every seeded category slug to its family and its
+// number of services (tests compare the customer catalogue, which hides
+// the families the tax computer cannot price yet).
+func CategoryFamilies() map[string]struct {
+	Family   string
+	Services int
+} {
+	out := map[string]struct {
+		Family   string
+		Services int
+	}{}
+	for _, c := range categories {
+		out[c.slug] = struct {
+			Family   string
+			Services int
+		}{c.family, len(c.services)}
+	}
+	return out
 }

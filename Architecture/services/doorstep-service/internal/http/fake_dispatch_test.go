@@ -73,7 +73,8 @@ func (f *fakeDispatchStore) DispatchFacts(_ context.Context, id uuid.UUID) (*sto
 	fa := &store.DispatchFacts{BookingID: id, Customer: nb.Customer, Status: b.status, Version: 1, CityCode: nb.CityCode,
 		ZoneID: nb.ZoneID, CategoryID: nb.CategoryID, CategorySlug: nb.CategorySlug, Skill: "deep_cleaning", GenderRule: nb.GenderRule,
 		RequireFemale: nb.RequireFemale, Lat: nb.Address.Lat, Lng: nb.Address.Lng, Locality: nb.Address.Locality,
-		SlotStart: nb.SlotStart, SlotEnd: nb.SlotEnd, Duration: nb.Duration, BufferMinutes: 30, Windows: dispatch.DefaultWindows}
+		SlotStart: nb.SlotStart, SlotEnd: nb.SlotEnd, Duration: nb.Duration, BufferMinutes: 30, Windows: dispatch.DefaultWindows,
+		Asap: nb.Asap}
 	if pro != uuid.Nil {
 		fa.ReservedProID = &pro
 	}
@@ -191,7 +192,7 @@ func (f *fakeDispatchStore) AcceptOffer(_ context.Context, in store.AcceptInput)
 	return nil, store.ErrOfferNotFound
 }
 
-func (f *fakeDispatchStore) EndProNoShow(context.Context, uuid.UUID, *store.CloseAssignment, []string, string, string, string, time.Time) (*uuid.UUID, error) {
+func (f *fakeDispatchStore) EndProNoShow(context.Context, uuid.UUID, *store.CloseAssignment, []string, string, string, string, time.Time) ([]uuid.UUID, error) {
 	return nil, errors.New("fake: EndProNoShow is pinned by internal/itest")
 }
 

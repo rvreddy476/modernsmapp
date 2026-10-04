@@ -31,7 +31,7 @@ func TestSeedDataShape(t *testing.T) {
 	for _, k := range skills {
 		skillSet[k[0]] = true
 	}
-	want := map[string]string{"salon-women": "female_pros_only", "salon-men": "male_pros_only"}
+	want := map[string]string{"salon-women": "female_pros_only", "salon-men": "male_pros_only", "makeup-artist": "female_pros_only"}
 	launch := []string{"home-cleaning", "ac-service-repair", "appliance-ro-repair", "electrician", "plumber", "carpenter",
 		"painting", "pest-control", "salon-women", "salon-men"}
 	seen := map[string]bool{}
@@ -96,5 +96,46 @@ func TestSeedDataShape(t *testing.T) {
 	}
 	if ID("service", "a") == ID("service", "b") || ID("service", "a") != ID("service", "a") {
 		t.Fatal("ID must be deterministic and distinct")
+	}
+}
+
+// B1: every service group the founder asked for is seeded, each appliance
+// category with an inspection visit, staffing by the hour and the month.
+func TestSeedHasEveryB1Group(t *testing.T) {
+	bySlug := map[string]categorySeed{}
+	for _, c := range categories {
+		bySlug[c.slug] = c
+	}
+	for _, slug := range []string{"tv-repair", "refrigerator-repair", "washing-machine-repair", "microwave-repair", "geyser-repair",
+		"chimney-hob-repair", "computer-repair", "mobile-repair"} {
+		c, ok := bySlug[slug]
+		if !ok || c.family != "APPLIANCE_REPAIR" || c.services[0].slug != "inspection-visit" {
+			t.Errorf("%s: %+v", slug, ok)
+		}
+	}
+	for slug, family := range map[string]string{"car-wash": "CAR_CARE", "disinfection": "PEST_CONTROL", "home-staffing": "HOME_STAFFING",
+		"packers-movers": "RELOCATION", "photography": "PHOTOGRAPHY", "makeup-artist": "BEAUTY_SALON", "yoga-trainer": "FITNESS_WELLNESS",
+		"construction": "CONSTRUCTION"} {
+		if c, ok := bySlug[slug]; !ok || c.family != family {
+			t.Errorf("%s family %s", slug, c.family)
+		}
+	}
+	for _, s := range []string{"cook", "house-help", "nanny", "driver"} {
+		if optionUnits["home-staffing/"+s+"/hourly"] != "per_hour" || optionUnits["home-staffing/"+s+"/monthly"] != "per_month" {
+			t.Errorf("%s units", s)
+		}
+	}
+	for key := range optionUnits {
+		found := false
+		for _, c := range categories {
+			for _, s := range c.services {
+				for _, o := range s.options {
+					found = found || c.slug+"/"+s.slug+"/"+o.key == key
+				}
+			}
+		}
+		if !found {
+			t.Errorf("unit for an unknown option %s", key)
+		}
 	}
 }

@@ -245,3 +245,81 @@ func ProOffer(eventType string, bookingID, customer, proUserID uuid.UUID, at tim
 		BookingID: &b, CustomerUserID: &c, ProUserID: &p, Data: data})
 	return proUserID.String(), payload, err
 }
+
+// B1 event types (4 Oct 2026): professionals' prices and the customer's
+// choice when a professional is gone.
+const (
+	// ProPriceSubmitted: a professional submitted a price (pending review).
+	ProPriceSubmitted = "doorstep.pro.price_submitted"
+	// ProPriceReviewed: an admin approved or rejected a price.
+	ProPriceReviewed = "doorstep.pro.price_reviewed"
+	// BookingProUnavailable: the chosen professional declined, let the offer
+	// lapse, gave the job back, was not on duty, did not turn up, or ops took
+	// the job off them. The customer picks another professional and a time,
+	// or cancels for a full refund, by choice_deadline (else a full refund).
+	BookingProUnavailable = "doorstep.booking.pro_unavailable"
+	// BookingProChanged: the customer picked another professional for a
+	// pro_unavailable booking; it is confirmed again and offered to them.
+	BookingProChanged = "doorstep.booking.pro_changed"
+)
+
+// Unavailable causes (bookings.unavailable_cause).
+const (
+	UnavailableDeclined       = "declined"
+	UnavailableOfferExpired   = "offer_expired"
+	UnavailableProCancel      = "pro_cancel"
+	UnavailableNotOnDuty      = "not_on_duty"
+	UnavailableProNoShow      = "pro_no_show"
+	UnavailableOpsRedispatch  = "ops_redispatch"
+	UnavailableNoProfessional = "no_professional"
+)
+
+// ProPriceSubmittedData is doorstep.pro.price_submitted's data (ops review
+// queue; previous_price_paise is the live approved price, if any).
+type ProPriceSubmittedData struct {
+	PriceID            uuid.UUID `json:"price_id"`
+	ProID              uuid.UUID `json:"pro_id"`
+	ProUserID          uuid.UUID `json:"pro_user_id"`
+	ServiceID          uuid.UUID `json:"service_id"`
+	ItemKind           string    `json:"item_kind"`
+	ItemID             uuid.UUID `json:"item_id"`
+	Unit               string    `json:"unit"`
+	PricePaise         int64     `json:"price_paise"`
+	PreviousPricePaise *int64    `json:"previous_price_paise"`
+}
+
+// ProPriceReviewedData is doorstep.pro.price_reviewed's data.
+type ProPriceReviewedData struct {
+	PriceID    uuid.UUID `json:"price_id"`
+	ProID      uuid.UUID `json:"pro_id"`
+	ProUserID  uuid.UUID `json:"pro_user_id"`
+	ServiceID  uuid.UUID `json:"service_id"`
+	ItemKind   string    `json:"item_kind"`
+	ItemID     uuid.UUID `json:"item_id"`
+	PricePaise int64     `json:"price_paise"`
+	Decision   string    `json:"decision"`
+	Reason     *string   `json:"reason"`
+}
+
+// BookingProUnavailableData is doorstep.booking.pro_unavailable's data. The
+// envelope pro_user_id is null (nobody holds the job); previous_pro_user_id
+// names the professional who let it go (null when there was none).
+type BookingProUnavailableData struct {
+	BookingCore
+	PreviousProUserID *uuid.UUID `json:"previous_pro_user_id"`
+	Cause             string     `json:"cause"`
+	ChoiceDeadline    time.Time  `json:"choice_deadline"`
+}
+
+// BookingProChangedData is doorstep.booking.pro_changed's data: the booking
+// is confirmed again with the professional the customer picked
+// (new_pro_user_id is offered the job next; the envelope pro_user_id stays
+// null until they accept).
+type BookingProChangedData struct {
+	BookingCore
+	ChangeID          uuid.UUID  `json:"change_id"`
+	PreviousProUserID *uuid.UUID `json:"previous_pro_user_id"`
+	NewProUserID      uuid.UUID  `json:"new_pro_user_id"`
+	DifferencePaise   int64      `json:"difference_paise"`
+	Asap              bool       `json:"asap"`
+}

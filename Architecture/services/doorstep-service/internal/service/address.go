@@ -47,7 +47,7 @@ type BookingStore interface {
 	BookingMoney(ctx context.Context, bookingID uuid.UUID) ([]store.PaymentRow, []model.Refund, error)
 	CancellationRules(ctx context.Context, city string) ([]cancelrules.Rule, error)
 	CancelBooking(ctx context.Context, id uuid.UUID, customer *uuid.UUID, audit *store.Actor, at time.Time,
-		decide func(*store.LockedBooking) (*store.CancelDecision, error)) (*uuid.UUID, error)
+		decide func(*store.LockedBooking) (*store.CancelDecision, error)) ([]uuid.UUID, error)
 	RescheduleBooking(ctx context.Context, id, customer uuid.UUID, mv store.RescheduleMove, at time.Time,
 		decide func(*store.LockedBooking) error) (uuid.UUID, error)
 	ExpireHolds(ctx context.Context, limit int) (int, error)
@@ -62,6 +62,13 @@ type BookingStore interface {
 	BookingAssignments(ctx context.Context, id uuid.UUID) ([]model.AssignmentView, error)
 	BookingExtras(ctx context.Context, id uuid.UUID) ([]model.Extra, error)
 	AdminStats(ctx context.Context, now time.Time) (*model.AdminStats, error)
+
+	// B1: changes of professional on pro_unavailable bookings.
+	ChangeProfessional(ctx context.Context, in store.ChangeInput, decide func(*store.LockedBooking) error) (*store.ChangeResult, error)
+	ProChanges(ctx context.Context, bookingID uuid.UUID) ([]store.ChangeView, error)
+	PaymentByID(ctx context.Context, id uuid.UUID) (*store.PaymentRow, error)
+	ChoiceTimeouts(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error)
+	AbandonLapsedChanges(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error)
 }
 
 // PaymentsAPI is payments-service as bookings use it (*paymentsclient.Client
@@ -91,8 +98,12 @@ type SlotCache interface {
 type BookingDeps struct {
 	Store    BookingStore
 	Payments PaymentsAPI // nil: payment routes answer 503
-	PII      AddressSealer
-	Cache    SlotCache // nil: no cache
+	// ExtrasPayments is payments-service bound to doorstep_extras (B1: a
+	// change-of-professional difference; A5: visit extras). nil: a dearer
+	// change answers 503.
+	ExtrasPayments PaymentsAPI
+	PII            AddressSealer
+	Cache          SlotCache // nil: no cache
 	// DevStubPayments admits POST .../payment/stub-confirm (local/dev only;
 	// it still refuses when payments-service has a real provider).
 	DevStubPayments bool
@@ -111,6 +122,9 @@ func (s *Service) WithBookings(d BookingDeps) *Service {
 	}
 	if p, ok := d.Payments.(*paymentsclient.Client); ok && p == nil {
 		d.Payments = nil
+	}
+	if p, ok := d.ExtrasPayments.(*paymentsclient.Client); ok && p == nil {
+		d.ExtrasPayments = nil
 	}
 	s.bk = d
 	return s

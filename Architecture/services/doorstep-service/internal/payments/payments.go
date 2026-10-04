@@ -44,6 +44,10 @@ var PayeeID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://momentum.app/payee
 // IntentKey is the booking intent's idempotency key.
 func IntentKey(bookingID uuid.UUID) string { return "doorstep:booking:" + bookingID.String() }
 
+// ExtrasIntentKey is an extras bill's intent key (a visit-extras bill, or
+// a change-of-professional difference, B1).
+func ExtrasIntentKey(billID uuid.UUID) string { return "doorstep:extras:" + billID.String() }
+
 // RefundKey is a refund's idempotency key: one per booking and cause, so a
 // retry (or a worker resubmission) can never become a second refund.
 func RefundKey(bookingID uuid.UUID, cause string) string {
@@ -57,10 +61,17 @@ const (
 	CauseLateCapture    = "late_capture"
 	// A4: nobody accepted in time (T-45 or a failed rescue), and a
 	// professional who never arrived with no replacement.
-	CauseUnassigned     = "unassigned"
-	CauseProNoShow      = "pro_no_show"
-	CauseAdminPrefix    = "admin_"    // + a hash of the forwarded Idempotency-Key
-	CauseExternalPrefix = "external_" // a refund made outside Doorstep, seen in an event
+	CauseUnassigned  = "unassigned"
+	CauseProNoShow   = "pro_no_show"
+	CauseAdminPrefix = "admin_" // + a hash of the forwarded Idempotency-Key
+	// B1: no choice of professional within 30 minutes of pro_unavailable;
+	// a cheaper professional picked (+ a hash of the change id); a
+	// change-of-professional difference captured after the change lapsed
+	// (+ a hash of the bill id).
+	CauseProUnavailable   = "pro_unavailable"
+	CauseProChangePrefix  = "pro_change_"
+	CauseLateChangePrefix = "late_change_"
+	CauseExternalPrefix   = "external_" // a refund made outside Doorstep, seen in an event
 )
 
 // Config builds the client.
@@ -113,6 +124,9 @@ type Event struct {
 	ProviderRef string
 	CommandID   string // refund events
 	Reason      string // payment.refund_failed
+	// ExtrasBillID is the reference of a doorstep_extras event (the bill);
+	// BookingID is then resolved from the bill by the store (B1).
+	ExtrasBillID uuid.UUID
 }
 
 // Snapshot is the booking and its booking payment row, read FOR UPDATE in
@@ -149,6 +163,12 @@ const (
 	// Decided by the store.
 	OutcomeDuplicate       Outcome = "duplicate"
 	OutcomeBookingNotFound Outcome = "booking_not_found"
+	// B1: a change-of-professional difference was paid and the change
+	// applied (the booking is confirmed again with the new professional).
+	OutcomeProChanged Outcome = "pro_changed"
+	// OutcomeUnclaimed: a doorstep_extras event for a visit-extras bill (A5)
+	// is left unapplied and unrecorded, for the visit lane.
+	OutcomeUnclaimed Outcome = "unclaimed"
 )
 
 // Effect is what the store writes in the same transaction.
@@ -239,3 +259,23 @@ func decideSucceeded(s Snapshot, ev Event) Decision {
 // Method is the method an intent is opened with; the checkout lets the
 // customer pay by any method payments enables for the application.
 const Method = paymentmethod.UPI
+
+// NewExtrasClient binds the shared client to doorstep_extras (B1: a
+// change-of-professional difference; A5: visit extras). Same credentials
+// as NewClient.
+func NewExtrasClient(cfg Config) (*paymentsclient.Client, error) {
+	if cfg.TokenKey == "" && (!cfg.LegacyAllowed || strings.TrimSpace(cfg.InternalKey) == "") {
+		return nil, ErrNotConfigured
+	}
+	return paymentsclient.New(paymentsclient.Config{
+		BaseURL:       cfg.BaseURL,
+		Service:       Service,
+		ReferenceType: RefExtras,
+		Auth: paymentsclient.Auth{TokenKey: cfg.TokenKey, TokenKID: cfg.TokenKID,
+			InternalKey: cfg.InternalKey, LegacyAllowed: cfg.LegacyAllowed},
+		MaxResponseBytes:      1 << 20,
+		ValidateMethod:        paymentmethod.Validate,
+		VerifyReferenceEcho:   true,
+		RequirePositiveRefund: true,
+	})
+}

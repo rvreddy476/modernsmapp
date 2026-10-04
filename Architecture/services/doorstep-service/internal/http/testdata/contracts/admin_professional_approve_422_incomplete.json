@@ -1,1 +1,1 @@
-{"error":{"code":"DOORSTEP_ONBOARDING_INCOMPLETE","message":"onboarding steps are missing","details":{"missing_steps":["police_certificate"]}},"meta":{"request_id":"fixture"}}
+{"error":{"code":"DOORSTEP_ONBOARDING_INCOMPLETE","message":"onboarding steps are missing","details":{"missing_steps":["selfie_face_match","skills","police_certificate"]}},"meta":{"request_id":"fixture"}}

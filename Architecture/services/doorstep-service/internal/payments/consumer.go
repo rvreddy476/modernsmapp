@@ -10,9 +10,10 @@ package payments
 // Filters before the store: one of the four payment types; stamped for
 // application doorstep (ForApplication drops another application, and an
 // event that states none is dropped here too, because Doorstep postdates
-// payments stamping applications); reference type doorstep_booking.
-// doorstep_extras events are left unclaimed for the visit lane (A5) — no
-// extras intent exists before it.
+// payments stamping applications); reference type doorstep_booking, or
+// doorstep_extras for a change-of-professional difference bill (B1). A
+// doorstep_extras event for a visit-extras bill is left unclaimed (not even
+// recorded in the inbox) for the visit lane (A5).
 
 import (
 	"context"
@@ -49,6 +50,9 @@ type Applied struct {
 // a nil error; an error is transient and is retried.
 type Applier interface {
 	ApplyPaymentEvent(ctx context.Context, ev Event) (Applied, error)
+	// ApplyExtrasPaymentEvent applies a doorstep_extras event (B1:
+	// change-of-professional bills; OutcomeUnclaimed otherwise).
+	ApplyExtrasPaymentEvent(ctx context.Context, ev Event) (Applied, error)
 }
 
 // Consumer applies payment events for Doorstep bookings.
@@ -141,33 +145,40 @@ func (c *Consumer) apply(ctx context.Context, env *events.EventEnvelope, p field
 	if p.applicationID != ApplicationID {
 		return nil
 	}
-	if p.referenceType != RefBooking {
-		return nil // doorstep_extras: the visit lane (A5)
+	if p.referenceType != RefBooking && p.referenceType != RefExtras {
+		return nil
 	}
 	if strings.TrimSpace(env.EventID) == "" {
 		slog.Error("doorstep: payment event has no event_id; refusing to apply it without a dedupe key",
 			"event_type", env.EventType, "reference_id", p.referenceID)
 		return sharedkafka.Permanent(errNoEventID)
 	}
-	bookingID, err := uuid.Parse(p.referenceID)
+	refID, err := uuid.Parse(p.referenceID)
 	if err != nil {
-		slog.Error("doorstep: payment event has an unparseable booking reference", "event_id", env.EventID)
+		slog.Error("doorstep: payment event has an unparseable reference", "event_id", env.EventID)
 		return sharedkafka.Permanent(fmt.Errorf("unprocessable payment event %s", env.EventID))
 	}
 	payer, _ := uuid.Parse(p.payerID) // Nil when absent; CheckCapture refuses a nil payer
-	ev := Event{EventID: env.EventID, EventType: env.EventType, IntentID: p.intentID, BookingID: bookingID,
+	ev := Event{EventID: env.EventID, EventType: env.EventType, IntentID: p.intentID, BookingID: refID,
 		PayerID: payer, AmountMinor: p.amountMinor, Currency: p.currency, Status: p.status,
 		ProviderRef: p.providerRef, CommandID: p.commandID, Reason: p.reason}
-	applied, err := c.store.ApplyPaymentEvent(ctx, ev)
+	var applied Applied
+	if p.referenceType == RefExtras {
+		ev.BookingID, ev.ExtrasBillID = uuid.Nil, refID
+		applied, err = c.store.ApplyExtrasPaymentEvent(ctx, ev)
+	} else {
+		applied, err = c.store.ApplyPaymentEvent(ctx, ev)
+	}
+	bookingID := applied.BookingID
 	if err != nil {
-		return fmt.Errorf("apply %s for doorstep booking %s: %w", env.EventType, bookingID, err)
+		return fmt.Errorf("apply %s for doorstep %s %s: %w", env.EventType, p.referenceType, refID, err)
 	}
 	switch applied.Decision.Outcome {
-	case OutcomeDuplicate:
+	case OutcomeDuplicate, OutcomeUnclaimed:
 		return nil
 	case OutcomeBookingNotFound:
-		slog.Error("doorstep: payment event references an unknown booking", "booking_id", bookingID, "event_id", env.EventID)
-		return sharedkafka.Permanent(fmt.Errorf("payment event %s: booking %s not found", env.EventID, bookingID))
+		slog.Error("doorstep: payment event references an unknown booking or bill", "reference_id", refID, "event_id", env.EventID)
+		return sharedkafka.Permanent(fmt.Errorf("payment event %s: %s %s not found", env.EventID, p.referenceType, refID))
 	case OutcomeMismatch:
 		slog.Error("doorstep: PAYMENT MISMATCH — booking not confirmed, flagged for attention",
 			"booking_id", bookingID, "event_id", env.EventID, "event_type", env.EventType, "detail", applied.Decision.Detail)

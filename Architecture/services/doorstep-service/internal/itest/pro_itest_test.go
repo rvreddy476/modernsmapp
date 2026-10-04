@@ -155,6 +155,21 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 	}
 	chk(t, "selfie", 200)(rg.as(u, "POST", "/selfie", `{"media_id":"`+m()+`"}`))
 	chk(t, "skills", 200)(rg.as(u, "PUT", "/me/skills", `{"skill_codes":["deep_cleaning","electrician","salon_women"]}`))
+	// Founder rule (4 Oct 2026): nothing approves itself. The face match is
+	// advisory (the selfie waits for an admin) and every declared skill is
+	// pending, the certificate-free ones too.
+	var selfieDoc string
+	var pendingSkills int
+	if err := p.QueryRow(ctx, `SELECT d.id::text, (SELECT count(*) FROM doorstep.pro_skills s WHERE s.pro_id = d.pro_id AND s.status = 'pending')
+		FROM doorstep.pro_documents d JOIN doorstep.professionals pr ON pr.id = d.pro_id
+		WHERE pr.user_id = $1 AND d.kind = 'selfie' AND d.status = 'pending'`, u).Scan(&selfieDoc, &pendingSkills); err != nil || pendingSkills != 3 {
+		t.Fatalf("selfie pending %q, pending skills %d: %v", selfieDoc, pendingSkills, err)
+	}
+	var passed int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM doorstep.pro_kyc_checks k JOIN doorstep.professionals pr ON pr.id = k.pro_id
+		WHERE pr.user_id = $1 AND k.kind = 'selfie_face_match' AND k.status = 'passed'`, u).Scan(&passed); err != nil || passed != 0 {
+		t.Fatalf("a selfie passed by itself: %d %v", passed, err)
+	}
 	status, body = rg.as(u, "POST", "/me/skills/electrician/certificate", `{"media_id":"`+m()+`","issued_on":"2019-06-01","certificate_number":"ITI/EL/2019/4471"}`)
 	want(t, "trade certificate", status, body, 201)
 	var trade struct {
@@ -269,6 +284,12 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 	}
 	chk(t, "approve trade", 200)(rg.adminCall("POST", "/documents/"+trade.ID+"/decide", doorstephttp.PermDocumentsReview, `{"decision":"approve","reason":"ok"}`))
 
+	// The admin reviews what the professional submitted: the selfie, and the
+	// certificate-free skills (electrician was verified by its certificate).
+	chk(t, "approve selfie", 200)(rg.adminCall("POST", "/documents/"+selfieDoc+"/decide", doorstephttp.PermDocumentsReview, `{"decision":"approve"}`))
+	for _, code := range []string{"deep_cleaning", "salon_women"} {
+		chk(t, "verify "+code, 200)(rg.adminCall("POST", proPath+"/skills/"+code+"/verify", doorstephttp.PermProsApprove, `{"verified":true}`))
+	}
 	// Approve (woman: women's salon is fine; salon needs the clear check: it is).
 	status, body = rg.adminCall("POST", proPath+"/approve", doorstephttp.PermProsApprove, `{"reason":"checked"}`)
 	if status != 200 || !bytes.Contains(body, []byte(`"status":"approved"`)) {
@@ -319,7 +340,7 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 		types = append(types, et)
 	}
 	rows.Close()
-	if got := strings.Join(types, ","); got != "doorstep.pro.applied,doorstep.pro.status_changed,doorstep.pro.document_reviewed,doorstep.pro.document_reviewed,"+
+	if got := strings.Join(types, ","); got != "doorstep.pro.applied,doorstep.pro.status_changed,doorstep.pro.document_reviewed,doorstep.pro.document_reviewed,doorstep.pro.document_reviewed,"+
 		"doorstep.pro.status_changed,doorstep.pro.status_changed,doorstep.pro.status_changed,doorstep.pro.status_changed" {
 		t.Fatalf("events %s", got)
 	}
@@ -369,9 +390,10 @@ func TestBackgroundCheckClearNeedsApprovedDocument(t *testing.T) {
 	}
 	// Another professional's approved certificate does not count.
 	_, otherDoc, _ := mk()
-	if _, err := p.Exec(ctx, `UPDATE doorstep.pro_documents SET status = 'approved' WHERE id = $1`, otherDoc); err != nil {
-		t.Fatal(err)
-	}
+	// (Approvals are an audited admin's: migration 005.)
+	adminTx(t, p, func(exec func(string, ...any)) {
+		exec(`UPDATE doorstep.pro_documents SET status = 'approved', reviewed_by = $2 WHERE id = $1`, otherDoc, itAdmin)
+	})
 	if _, err := p.Exec(ctx, `UPDATE doorstep.background_checks SET document_id = $2 WHERE id = $1`, check, otherDoc); err != nil {
 		t.Fatal(err)
 	}
@@ -381,12 +403,11 @@ func TestBackgroundCheckClearNeedsApprovedDocument(t *testing.T) {
 	if _, err := p.Exec(ctx, `UPDATE doorstep.background_checks SET document_id = $2 WHERE id = $1`, check, doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Exec(ctx, `UPDATE doorstep.pro_documents SET status = 'approved' WHERE id = $1`, doc); err != nil {
-		t.Fatal(err)
-	}
-	if err := clear(check); err != nil {
-		t.Fatalf("clear with its approved certificate: %v", err)
-	}
+	adminTx(t, p, func(exec func(string, ...any)) {
+		exec(`UPDATE doorstep.pro_documents SET status = 'approved', reviewed_by = $2 WHERE id = $1`, doc, itAdmin)
+		exec(`UPDATE doorstep.background_checks SET status = 'clear', valid_from = CURRENT_DATE - 10, valid_until = CURRENT_DATE + 355,
+			reviewed_by = $2 WHERE id = $1`, check, itAdmin)
+	})
 	// A clear INSERT without an approved certificate is refused too.
 	_, pendingDoc, _ := mk()
 	_, err := p.Exec(ctx, `INSERT INTO doorstep.background_checks (pro_id, source, document_id, status, valid_from, valid_until)

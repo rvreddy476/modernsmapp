@@ -225,11 +225,11 @@ func (s *Store) settleRefundTx(ctx context.Context, tx pgx.Tx, ev payments.Event
 	err := tx.QueryRow(ctx, `
 		UPDATE doorstep.refunds SET status = 'succeeded', payments_refund_id = COALESCE(payments_refund_id, NULLIF($3, '')), updated_at = $4
 		 WHERE id = (SELECT id FROM doorstep.refunds
-		              WHERE booking_id = $1 AND status IN ('requested', 'pending', 'failed')
+		              WHERE booking_id = $1 AND payment_id = $5 AND status IN ('requested', 'pending', 'failed')
 		                AND ((NULLIF($3, '') IS NOT NULL AND payments_refund_id = $3)
 		                  OR (amount_paise = $2 AND (payments_refund_id IS NULL OR NULLIF($3, '') IS NULL)))
 		              ORDER BY (payments_refund_id = NULLIF($3, '')) DESC NULLS LAST, created_at LIMIT 1)
-		RETURNING id, cause`, ev.BookingID, ev.AmountMinor, ev.CommandID, at).Scan(&rid, &cause)
+		RETURNING id, cause`, ev.BookingID, ev.AmountMinor, ev.CommandID, at, l.paymentID).Scan(&rid, &cause)
 	if errors.Is(err, pgx.ErrNoRows) {
 		cause = payments.CauseExternalPrefix + shortHash(ev.EventID)
 		err = tx.QueryRow(ctx, `
@@ -268,10 +268,10 @@ func (s *Store) refundFailedTx(ctx context.Context, tx pgx.Tx, ev payments.Event
 	var amount int64
 	err := tx.QueryRow(ctx, `
 		UPDATE doorstep.refunds SET status = 'failed', last_error = $3, updated_at = $4
-		 WHERE id = (SELECT id FROM doorstep.refunds WHERE booking_id = $1 AND status IN ('requested', 'pending')
+		 WHERE id = (SELECT id FROM doorstep.refunds WHERE booking_id = $1 AND payment_id = $5 AND status IN ('requested', 'pending')
 		              AND (payments_refund_id = NULLIF($2, '') OR NULLIF($2, '') IS NULL)
 		              ORDER BY created_at LIMIT 1)
-		RETURNING id, cause, amount_paise`, ev.BookingID, ev.CommandID, truncateText(ev.Reason, 300), at).Scan(&rid, &cause, &amount)
+		RETURNING id, cause, amount_paise`, ev.BookingID, ev.CommandID, truncateText(ev.Reason, 300), at, l.paymentID).Scan(&rid, &cause, &amount)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}

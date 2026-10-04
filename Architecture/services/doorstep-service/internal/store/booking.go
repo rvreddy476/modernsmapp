@@ -28,6 +28,9 @@ var (
 	ErrSlotTaken = errors.New("store: no candidate professional could be held for the slot")
 	ErrQuoteGone = errors.New("store: the quote is no longer open")
 	ErrReplay    = errors.New("store: idempotency key already used")
+	// ErrPriceGone: a line's professional price is no longer approved and
+	// live (withdrawn, superseded or the professional changed) (B1).
+	ErrPriceGone = errors.New("store: a professional price is no longer bookable")
 )
 
 // WithClock pins the store's clock (payment events and workers); nil keeps
@@ -111,6 +114,12 @@ type CandidateQuery struct {
 	From, To time.Time
 	// ExcludeBooking leaves a booking's own blocks out (reschedule).
 	ExcludeBooking *uuid.UUID
+	// ServiceID reads each professional's same-day opt-in for the service
+	// (B1); uuid.Nil reads none.
+	ServiceID uuid.UUID
+	// ProIDs, when set, loads only these professionals (a booking on the
+	// professional the customer picked).
+	ProIDs []uuid.UUID
 }
 
 // SlotCandidates loads every approved professional of the city with the
@@ -127,10 +136,13 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 		       COALESCE(ST_Distance(p.home_point, pt.g), 0)::float8,
 		       p.max_jobs_per_day, p.rating_sum, p.rating_count, p.offers_received, p.offers_accepted,
 		       p.cancellations_count + p.no_show_count, p.jobs_completed,
-		       p.home_point IS NOT NULL, COALESCE(ST_Y(p.home_point::geometry), 0)::float8, COALESCE(ST_X(p.home_point::geometry), 0)::float8
+		       p.home_point IS NOT NULL, COALESCE(ST_Y(p.home_point::geometry), 0)::float8, COALESCE(ST_X(p.home_point::geometry), 0)::float8,
+		       p.display_name, p.photo_media_id, p.on_duty, p.last_fix_at, p.last_point IS NOT NULL,
+		       COALESCE(ST_Distance(p.last_point, pt.g), 0)::float8, p.service_radius_m,
+		       COALESCE((SELECT st.same_day FROM doorstep.pro_service_settings st WHERE st.pro_id = p.id AND st.service_id = $6), FALSE)
 		FROM doorstep.professionals p, pt
-		WHERE p.city_code = $1 AND p.status = 'approved'
-		ORDER BY p.id`, q.City, q.ZoneID, q.Lat, q.Lng, q.Skill)
+		WHERE p.city_code = $1 AND p.status = 'approved' AND ($7::uuid[] IS NULL OR p.id = ANY($7))
+		ORDER BY p.id`, q.City, q.ZoneID, q.Lat, q.Lng, q.Skill, q.ServiceID, proIDs(q.ProIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +150,12 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 		var p slots.Pro
 		err := r.Scan(&p.ID, &p.UserID, &p.Status, &p.IncidentSuspended, &p.Gender, &p.SkillVerified, &p.InZone,
 			&p.WithinRadius, &p.DistanceM, &p.MaxJobsPerDay, &p.RatingSum, &p.RatingCount, &p.OffersReceived,
-			&p.OffersAccepted, &p.Cancellations, &p.JobsCompleted, &p.HasHome, &p.HomeLat, &p.HomeLng)
+			&p.OffersAccepted, &p.Cancellations, &p.JobsCompleted, &p.HasHome, &p.HomeLat, &p.HomeLng,
+			&p.DisplayName, &p.PhotoMediaID, &p.OnDuty, &p.LastFixAt, &p.HasLive, &p.LiveDistanceM, &p.ServiceRadiusM, &p.SameDay)
+		if p.LastFixAt != nil {
+			t := p.LastFixAt.UTC()
+			p.LastFixAt = &t
+		}
 		p.JobsByDay = map[string]int{}
 		return p, err
 	})
@@ -271,7 +288,9 @@ type NewBooking struct {
 	AddressSealed  []byte
 	SlotStart      time.Time
 	SlotEnd        time.Time
+	BlockStart     time.Time // the slot start; an ASAP job blocks from the booking time
 	BlockEnd       time.Time // slot end + the zone's travel buffer
+	Asap           bool
 	Duration       int
 	GenderRule     string
 	RequireFemale  bool
@@ -281,19 +300,22 @@ type NewBooking struct {
 	TaxPaise       int64
 	Items          []model.QuoteLine
 	HoldExpiresAt  time.Time
-	// Candidates are the ranked professionals; the first whose hold the
-	// exclusion constraint admits is reserved.
-	Candidates []uuid.UUID
-	PaymentID  uuid.UUID
-	IntentKey  string
-	At         time.Time
+	// ProID is the professional the customer picked (the quote's): the hold
+	// goes on them and nobody else; the exclusion constraint decides.
+	ProID     uuid.UUID
+	PaymentID uuid.UUID
+	IntentKey string
+	At        time.Time
 }
 
-// CreateBooking inserts the booking (pending_payment), consumes the quote,
-// holds the best candidate whose calendar admits the slot, opens the payment
-// row and enqueues doorstep.booking.created — one transaction. ErrReplay: the
-// customer already used the idempotency key; ErrQuoteGone: the quote was
-// consumed or expired meanwhile; ErrSlotTaken: every candidate lost.
+// CreateBooking inserts the booking (pending_payment) on the professional
+// the customer picked, consumes the quote, checks every line still carries
+// that professional's approved, live price, holds the professional (the
+// exclusion constraint decides), opens the payment row and enqueues
+// doorstep.booking.created — one transaction. ErrReplay: the customer
+// already used the idempotency key; ErrQuoteGone: the quote was consumed or
+// expired meanwhile; ErrPriceGone: a price is no longer approved and live;
+// ErrSlotTaken: the professional's calendar refused the hold.
 func (s *Store) CreateBooking(ctx context.Context, nb NewBooking) (uuid.UUID, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -307,14 +329,15 @@ func (s *Store) CreateBooking(ctx context.Context, nb NewBooking) (uuid.UUID, er
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO doorstep.bookings (id, customer_user_id, idempotency_key, quote_id, city_code, zone_id, category_id, service_id,
 		    address_id, address_snapshot, address_sealed, locality, location, slot_start, slot_end, duration_minutes, status,
-		    gender_rule, require_female_pro, notes, total_paise, taxable_paise, tax_paise, hold_expires_at, created_at, updated_at)
+		    gender_rule, require_female_pro, notes, total_paise, taxable_paise, tax_paise, hold_expires_at, created_at, updated_at,
+		    reserved_pro_id, asap)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, ST_SetSRID(ST_MakePoint($14, $13), 4326)::geography,
-		    $15, $16, $17, 'pending_payment', $18, $19, $20, $21, $22, $23, $24, $25, $25)
+		    $15, $16, $17, 'pending_payment', $18, $19, $20, $21, $22, $23, $24, $25, $25, $26, $27)
 		ON CONFLICT (customer_user_id, idempotency_key) DO NOTHING`,
 		nb.ID, nb.Customer, nb.IdempotencyKey, nb.QuoteID, nb.CityCode, nb.ZoneID, nb.CategoryID, nb.ServiceID,
 		nb.Address.AddressID, snap, nb.AddressSealed, nb.Address.Locality, nb.Address.Lat, nb.Address.Lng,
 		nb.SlotStart, nb.SlotEnd, nb.Duration, nb.GenderRule, nb.RequireFemale, nb.Notes, nb.TotalPaise, nb.TaxablePaise,
-		nb.TaxPaise, nb.HoldExpiresAt, nb.At)
+		nb.TaxPaise, nb.HoldExpiresAt, nb.At, nb.ProID, nb.Asap)
 	if err != nil {
 		return uuid.Nil, mapErr(err)
 	}
@@ -329,24 +352,18 @@ func (s *Store) CreateBooking(ctx context.Context, nb NewBooking) (uuid.UUID, er
 	if tag.RowsAffected() == 0 {
 		return uuid.Nil, ErrQuoteGone
 	}
-	for i, l := range nb.Items {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO doorstep.booking_items (booking_id, line_no, kind, ref_id, price_id, name, quantity, unit_price_paise,
-			                                    line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-			nb.ID, i+1, l.Kind, l.RefID, l.PriceID, l.Name, l.Quantity, l.UnitPricePaise, l.LineTotalPaise,
-			l.TaxablePaise, l.TaxPaise, l.TaxRateBPS, l.GSTCategory, l.SAC); err != nil {
-			return uuid.Nil, mapErr(err)
-		}
+	if err := insertItemsTx(ctx, tx, nb.ID, nb.Items); err != nil {
+		return uuid.Nil, err
+	}
+	if err := requireLivePricesTx(ctx, tx, nb.ID, nb.ProID, nb.At); err != nil {
+		return uuid.Nil, err
 	}
 	if err := historyTx(ctx, tx, nb.ID, nil, "pending_payment", "customer", &nb.Customer, nil, nb.At); err != nil {
 		return uuid.Nil, err
 	}
-	pro, err := holdFirstTx(ctx, tx, nb.ID, nb.Candidates, "hold", nb.SlotStart, nb.BlockEnd, &nb.HoldExpiresAt)
+	// The hold goes on the picked professional only: nobody else is tried.
+	pro, err := holdFirstTx(ctx, tx, nb.ID, []uuid.UUID{nb.ProID}, "hold", nb.BlockStart, nb.BlockEnd, &nb.HoldExpiresAt)
 	if err != nil {
-		return uuid.Nil, err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE doorstep.bookings SET reserved_pro_id = $2 WHERE id = $1`, nb.ID, pro); err != nil {
 		return uuid.Nil, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -435,14 +452,15 @@ type BookingKeyed struct {
 	QuoteID   uuid.UUID
 	AddressID uuid.UUID
 	SlotStart time.Time
+	Asap      bool
 }
 
 // BookingByKey finds the customer's booking made with an idempotency key.
 func (s *Store) BookingByKey(ctx context.Context, customer uuid.UUID, key string) (*BookingKeyed, error) {
 	var b BookingKeyed
 	var quote, addr *uuid.UUID
-	err := s.db.QueryRow(ctx, `SELECT id, quote_id, address_id, slot_start FROM doorstep.bookings
-		WHERE customer_user_id = $1 AND idempotency_key = $2`, customer, key).Scan(&b.ID, &quote, &addr, &b.SlotStart)
+	err := s.db.QueryRow(ctx, `SELECT id, quote_id, address_id, slot_start, asap FROM doorstep.bookings
+		WHERE customer_user_id = $1 AND idempotency_key = $2`, customer, key).Scan(&b.ID, &quote, &addr, &b.SlotStart, &b.Asap)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -535,4 +553,51 @@ func (s *Store) CancellationRules(ctx context.Context, city string) ([]cancelrul
 		err := r.Scan(&x.ID, &x.CategoryID, &x.Stage, &x.MinutesBeforeLT, &x.FeePaise, &x.Allowed, &x.SortOrder)
 		return x, err
 	})
+}
+
+// proIDs is nil (every professional) for an empty filter.
+func proIDs(ids []uuid.UUID) []uuid.UUID {
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
+
+// insertItemsTx writes a booking's priced lines (the professional's price
+// row in price_id and pro_price_id; the database refuses a line whose price
+// is not an approved row of the booking's reserved professional).
+func insertItemsTx(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, items []model.QuoteLine) error {
+	for i, l := range items {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO doorstep.booking_items (booking_id, line_no, kind, ref_id, price_id, pro_price_id, name, unit, quantity,
+			                                    unit_price_paise, line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac)
+			VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			bookingID, i+1, l.Kind, l.RefID, l.PriceID, l.Name, l.Unit, l.Quantity, l.UnitPricePaise, l.LineTotalPaise,
+			l.TaxablePaise, l.TaxPaise, l.TaxRateBPS, l.GSTCategory, l.SAC); err != nil {
+			var pg *pgconn.PgError
+			if errors.As(err, &pg) && pg.ConstraintName == "ck_doorstep_line_price_approved" {
+				return ErrPriceGone
+			}
+			return mapErr(err)
+		}
+	}
+	return nil
+}
+
+// requireLivePricesTx: every line of the booking carries an approved price
+// of pro that is live at `at` (else ErrPriceGone). Only approved prices are
+// bookable (B1).
+func requireLivePricesTx(ctx context.Context, tx pgx.Tx, bookingID, pro uuid.UUID, at time.Time) error {
+	var lines, live int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE EXISTS (
+		    SELECT 1 FROM doorstep.pro_service_prices pp WHERE pp.id = bi.pro_price_id AND pp.pro_id = $2 AND pp.status = 'approved'
+		       AND pp.effective_from <= $3 AND (pp.effective_to IS NULL OR pp.effective_to > $3)))
+		FROM doorstep.booking_items bi WHERE bi.booking_id = $1`, bookingID, pro, at).Scan(&lines, &live); err != nil {
+		return err
+	}
+	if lines == 0 || live != lines {
+		return ErrPriceGone
+	}
+	return nil
 }

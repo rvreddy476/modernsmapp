@@ -524,9 +524,11 @@ func (s *Service) ProDigiLockerCallback(ctx context.Context, uid uuid.UUID, in m
 // ---- selfie face match ----
 
 // ProSelfie compares the caller's selfie with the DigiLocker reference face.
-// At or above the threshold it passes; below it, or when media-service
-// cannot answer, it stays pending (never passed on an error); an image that
-// cannot be compared or has no face fails with 422.
+// The result is advisory (founder rule 4 Oct 2026: nothing is approved by
+// itself): the check and the selfie stay pending, with the similarity score
+// and an advisory reason (match, below_threshold, unavailable,
+// no_reference_photo) for the admin who approves or rejects the selfie. An
+// image that cannot be compared or has no face fails with 422.
 func (s *Service) ProSelfie(ctx context.Context, uid uuid.UUID, in model.MediaInput) (*model.KycCheck, error) {
 	p, err := s.editable(ctx, uid)
 	if err != nil {
@@ -590,9 +592,10 @@ func (s *Service) ProSelfie(ctx context.Context, uid uuid.UUID, in model.MediaIn
 		return nil, apperr.New(http.StatusUnprocessableEntity, apperr.CodeFaceMatchFailed, "no face found in this selfie")
 	}
 	if res.Similarity >= s.pro.SelfieMinSimilarity {
-		return record("passed", &score)
+		details["reason"] = "match"
+	} else {
+		details["reason"] = "below_threshold"
 	}
-	details["reason"] = "below_threshold"
 	return record("pending", &score)
 }
 
@@ -614,7 +617,7 @@ func (s *Service) ProSkillCatalogue(ctx context.Context) ([]model.Skill, error) 
 
 // declarations turns codes into declarations: unknown codes are refused, a
 // known gender the skill's categories refuse is 403 DOORSTEP_GENDER_RULE,
-// certificate-free skills are verified on declaration.
+// every declared skill is pending until an admin verifies it.
 func (s *Service) declarations(ctx context.Context, codes []string, gender string) ([]store.SkillDecl, error) {
 	rules, err := s.pro.Store.SkillRules(ctx, codes)
 	if err != nil {
@@ -630,7 +633,7 @@ func (s *Service) declarations(ctx context.Context, codes []string, gender strin
 			return nil, apperr.New(http.StatusForbidden, apperr.CodeGenderRule,
 				"your DigiLocker gender does not match this skill's category rule").WithDetails(map[string]any{"skill_code": c})
 		}
-		decls = append(decls, store.SkillDecl{Code: c, Verified: !r.RequiresCertificate})
+		decls = append(decls, store.SkillDecl{Code: c})
 	}
 	return decls, nil
 }
@@ -927,8 +930,9 @@ func (s *Service) ProPutBank(ctx context.Context, uid uuid.UUID, in model.BankIn
 
 // ProPoliceCertificate uploads a Police Clearance Certificate: a document
 // pending review and a background check (source uploaded_document) bound to
-// it. In uploaded_document mode an admin decides; the check is clear only
-// once the certificate is approved, valid 12 months from issue.
+// it. An admin always decides (the provider's answer, the development mock's
+// included, is only recorded as an advisory verdict); the check is clear only
+// once an admin approves the certificate, valid 12 months from issue.
 func (s *Service) ProPoliceCertificate(ctx context.Context, uid uuid.UUID, in model.CertificateInput) (*model.ProDocument, error) {
 	p, err := s.editable(ctx, uid)
 	if err != nil {

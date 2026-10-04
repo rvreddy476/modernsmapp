@@ -93,6 +93,18 @@ const (
 	// A4 addition: realtime is not wired on this deployment (no Redis or no
 	// token secret).
 	CodeRealtimeUnavailable = "DOORSTEP_REALTIME_UNAVAILABLE"
+
+	// B1 (4 Oct 2026): professionals' own prices, the customer picks a
+	// professional, pro_unavailable.
+	// CodePriceUnavailable: the professional has no approved, live price for
+	// an item of the selection (422; details.item_ids).
+	CodePriceUnavailable = "DOORSTEP_PRICE_UNAVAILABLE"
+	// CodeSkillRequired: a price for a service whose skill the professional
+	// has not declared (or an admin revoked) (403; details.skill_code).
+	CodeSkillRequired = "DOORSTEP_SKILL_REQUIRED"
+	// CodeChoiceWindowClosed: the 30 minutes to pick another professional
+	// for a pro_unavailable booking are over (409).
+	CodeChoiceWindowClosed = "DOORSTEP_CHOICE_WINDOW_CLOSED"
 )
 
 // Invalid is a 400 DOORSTEP_INVALID_REQUEST naming the offending field.

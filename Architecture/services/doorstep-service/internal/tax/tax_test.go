@@ -140,3 +140,19 @@ func TestExtractInclusive(t *testing.T) {
 		}
 	}
 }
+
+// The B1 families exist in the catalogue but have no shared/gst category
+// yet: they are not Supported (the tax lane maps them), every original
+// family is.
+func TestSupportedFamilies(t *testing.T) {
+	want := map[string]bool{FamilyHomeCleaning: true, FamilyPestControl: true, FamilyApplianceRepair: true,
+		FamilyInstallationRepair: true, FamilyPainting: true, FamilyBeautySalon: true}
+	for _, f := range Families {
+		if Supported(f) != want[f] {
+			t.Errorf("Supported(%s) = %v", f, Supported(f))
+		}
+	}
+	if len(Families) != 12 {
+		t.Fatalf("%d families", len(Families))
+	}
+}

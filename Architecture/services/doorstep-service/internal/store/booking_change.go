@@ -35,6 +35,13 @@ type LockedBooking struct {
 	// ProLateAt: the professional had not arrived 15 min after the slot
 	// (A4); the customer may cancel free of charge.
 	ProLateAt *time.Time
+	// B1: the booking's total, the pro_unavailable choice deadline, the
+	// professionals who may not be picked again, and when a pending change
+	// of professional's hold lapses (nil: none pending).
+	TotalPaise         int64
+	ChoiceDeadline     *time.Time
+	ExcludedProIDs     []uuid.UUID
+	PendingChangeUntil *time.Time
 }
 
 func lockBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, customer *uuid.UUID) (*LockedBooking, error) {
@@ -43,12 +50,15 @@ func lockBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, customer *uuid.
 	err := tx.QueryRow(ctx, `
 		SELECT b.id, b.customer_user_id, b.category_id, b.city_code, b.status, b.slot_start, b.slot_end, b.duration_minutes,
 		       b.paid_paise, b.refunded_paise, b.reschedule_count, b.reserved_pro_id, b.pro_late_at,
+		       b.total_paise, b.choice_deadline, b.excluded_pro_ids,
+		       (SELECT pc.hold_expires_at FROM doorstep.booking_pro_changes pc WHERE pc.booking_id = b.id AND pc.status = 'pending_payment'),
 		       (SELECT p.id FROM doorstep.payments p WHERE p.booking_id = b.id AND p.reference_type = 'doorstep_booking'),
 		       (SELECT p.status FROM doorstep.payments p WHERE p.booking_id = b.id AND p.reference_type = 'doorstep_booking')
 		FROM doorstep.bookings b
 		WHERE b.id = $1 AND ($2::uuid IS NULL OR b.customer_user_id = $2)
 		FOR UPDATE OF b`, id, customer).Scan(&b.ID, &b.Customer, &b.CategoryID, &b.CityCode, &b.Status, &b.SlotStart, &b.SlotEnd,
-		&b.Duration, &b.PaidPaise, &b.RefundedPaise, &b.RescheduleCount, &b.ReservedProID, &b.ProLateAt, &b.PaymentID, &payStatus)
+		&b.Duration, &b.PaidPaise, &b.RefundedPaise, &b.RescheduleCount, &b.ReservedProID, &b.ProLateAt,
+		&b.TotalPaise, &b.ChoiceDeadline, &b.ExcludedProIDs, &b.PendingChangeUntil, &b.PaymentID, &payStatus)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -81,10 +91,12 @@ type CancelDecision struct {
 // CancelBooking cancels a booking in one transaction: status, the calendar
 // blocks released, open offers cancelled, history, the refund row (with its
 // deterministic key) when money goes back, doorstep.booking.cancelled and —
-// for an admin — the audit row. decide sees the locked row; its error
-// aborts. It returns the refund row to submit, if any.
+// for an admin — the audit row. A pending change of professional is
+// abandoned (its hold released with the rest, its bill cancelled). decide
+// sees the locked row; its error aborts. It returns the refund rows to
+// submit (the refund is spread over the booking's payments, B1).
 func (s *Store) CancelBooking(ctx context.Context, id uuid.UUID, customer *uuid.UUID, audit *Actor, at time.Time,
-	decide func(*LockedBooking) (*CancelDecision, error)) (*uuid.UUID, error) {
+	decide func(*LockedBooking) (*CancelDecision, error)) ([]uuid.UUID, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -108,6 +120,9 @@ func (s *Store) CancelBooking(ctx context.Context, id uuid.UUID, customer *uuid.
 	if err := releaseBlocksTx(ctx, tx, id, at, d.ActorKind+"_cancel"); err != nil {
 		return nil, err
 	}
+	if err := abandonChangesTx(ctx, tx, id, at); err != nil {
+		return nil, err
+	}
 	// The event core names the accepted professional, so read it before the
 	// assignment is cancelled below.
 	core, err := bookingCoreTx(ctx, tx, id)
@@ -122,16 +137,14 @@ func (s *Store) CancelBooking(ctx context.Context, id uuid.UUID, customer *uuid.
 	if err := historyTx(ctx, tx, id, &from, "cancelled", d.ActorKind, d.ActorID, &reason, at); err != nil {
 		return nil, err
 	}
-	var refundID *uuid.UUID
+	var refundIDs []uuid.UUID
 	if d.RefundPaise > 0 {
 		if b.PaymentID == nil {
 			return nil, errors.New("store: a refund was decided for a booking with no payment")
 		}
-		rid, err := insertRefundTx(ctx, tx, *b.PaymentID, id, d.RefundCause, d.RefundKey, d.RefundPaise, d.ActorID, at)
-		if err != nil {
+		if refundIDs, err = refundAcrossTx(ctx, tx, id, d.RefundPaise, d.RefundCause, d.RefundKey, d.ActorID, at); err != nil {
 			return nil, err
 		}
-		refundID = &rid
 	}
 	if err := s.enqueueBookingEvent(ctx, tx, events.BookingCancelled, core, at, events.BookingCancelledData{
 		BookingCore: core, CancelledBy: d.ActorKind, Reason: reason, FeePaise: d.FeePaise, RefundPaise: d.RefundPaise}); err != nil {
@@ -146,7 +159,7 @@ func (s *Store) CancelBooking(ctx context.Context, id uuid.UUID, customer *uuid.
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapErr(err)
 	}
-	return refundID, nil
+	return refundIDs, nil
 }
 
 func releaseBlocksTx(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, at time.Time, reason string) error {

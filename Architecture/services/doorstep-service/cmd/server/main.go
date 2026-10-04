@@ -8,10 +8,13 @@
 // admin professional and document review, service_professional roles). A3:
 // addresses, calendar-derived slots, holds, bookings, payments (confirmed only
 // from the signed payments-service event), refunds, cancel and reschedule, and
-// the admin booking pages. A4: offers and dispatch (matcher, accept/decline,
-// reassignment and no-show workers), presence (duty, location, Redis GEO)
-// and realtime (Redis Streams + scoped tokens). A5 adds the
-// visit.
+// the admin booking pages. A4: offers and dispatch (accept/decline, the
+// no-show and not-on-duty workers), presence (duty, location, Redis GEO)
+// and realtime (Redis Streams + scoped tokens). B1 (4 Oct 2026):
+// professionals price their own services (admin-approved), the customer
+// picks the professional (scheduled or same-day ASAP), and a booking whose
+// professional is gone waits in pro_unavailable for the customer's choice.
+// A5 adds the visit.
 package main
 
 import (
@@ -59,6 +62,7 @@ var (
 	_ service.ProStore      = (*store.Store)(nil)
 	_ service.BookingStore  = (*store.Store)(nil)
 	_ service.DispatchStore = (*store.Store)(nil)
+	_ service.PricingStore  = (*store.Store)(nil)
 	_ payments.Applier      = (*store.Store)(nil)
 )
 
@@ -182,7 +186,9 @@ func main() {
 		"digilocker", cfg.DigiLockerMode, "face_compare", cfg.FaceCompareMode,
 		"background_check", proDeps.BGV.Name(), "pii_sealing", proDeps.PII.Configured())
 
-	svc := service.New(pgStore, taxComputer, cfg.QuoteTTL).WithPro(proDeps)
+	// B1: professionals price their own work; only admin-approved prices
+	// are listed, quoted or booked.
+	svc := service.New(pgStore, taxComputer, cfg.QuoteTTL).WithPro(proDeps).WithPricing(pgStore)
 	slog.Info("doorstep-service: pricing", "gst_computed", taxComputer.Computed(), "quote_ttl", cfg.QuoteTTL)
 
 	// Bookings and payments (A3). The payments client is doorstep's own
@@ -201,6 +207,15 @@ func main() {
 	default:
 		bookingDeps.Payments = payClient
 		slog.Info("doorstep-service: payments client ready", "legacy_internal_key", payClient.LegacyAuth())
+	}
+	// The same identity bound to doorstep_extras (B1: a change-of-professional
+	// difference). Without it a dearer change answers 503.
+	if extrasClient, err := payments.NewExtrasClient(payments.Config{BaseURL: cfg.PaymentsServiceURL, TokenKey: cfg.ServiceTokenKey,
+		TokenKID: cfg.ServiceTokenKID, InternalKey: cfg.InternalKey, LegacyAllowed: !cfg.Production}); err == nil {
+		bookingDeps.ExtrasPayments = extrasClient
+	} else if !errors.Is(err, payments.ErrNotConfigured) {
+		slog.Error("refusing to start: payments extras client", "error", err)
+		os.Exit(1)
 	}
 	// Slot answers are cached ≤30 s in Redis; Redis down only means no cache.
 	// The same client carries realtime (Redis Streams) and presence (GEO).

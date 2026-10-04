@@ -54,6 +54,8 @@ type rig struct {
 	rogue *servicetoken.Signer // claims admin-service with an unregistered key
 	v     *servicetoken.Verifier
 	actor uuid.UUID
+	// prices are the professionals' approved prices (B1).
+	prices *fakePricingStore
 }
 
 func newRig(t *testing.T) *rig {
@@ -92,7 +94,7 @@ func newRig(t *testing.T) *rig {
 		}
 		return s
 	}
-	rg := &rig{t: t, store: newFakeStore(), v: v, actor: uuid.MustParse("9e1f0c3a-6b2d-4a8e-b7c5-1d2e3f4a5b6c"),
+	rg := &rig{t: t, store: newFakeStore(), v: v, prices: newFakePricingStore(), actor: uuid.MustParse("9e1f0c3a-6b2d-4a8e-b7c5-1d2e3f4a5b6c"),
 		admin: mk(IssuerAdminService, "a1", aPriv), other: mk("notification-service", "n1", oPriv), rogue: mk(IssuerAdminService, "a1", rPriv)}
 	rg.r = rg.router(testInternalKey, v)
 	return rg
@@ -104,7 +106,7 @@ func (rg *rig) router(key string, v *servicetoken.Verifier) *gin.Engine {
 		rg.t.Fatal(err)
 	}
 	svc := service.New(rg.store, tc, 15*time.Minute).
-		WithClock(func() time.Time { return fixtureNow }, func() uuid.UUID { return fixtureQuoteID })
+		WithClock(func() time.Time { return fixtureNow }, func() uuid.UUID { return fixtureQuoteID }).WithPricing(rg.prices)
 	return mount(svc, key, v)
 }
 
@@ -246,9 +248,11 @@ func TestContract_Service(t *testing.T) {
 	rg := newRig(t)
 	w := rg.do(req{method: "GET", path: "/v1/doorstep/services/" + devseed.ID("service", "salon-women/facial").String() + "?city=HYD"})
 	assertFixture(t, "service_get_200.json", w, 200)
-	// The inactive option and the unpriced add-on are never offered.
-	if s := w.Body.String(); strings.Contains(s, "O3+") || strings.Contains(s, "Unpriced") {
-		t.Fatalf("inactive or unpriced item offered: %s", s)
+	// The inactive option is never offered; an add-on with no suggested
+	// price is on the menu (B1: prices come from professionals), with a
+	// null suggestion.
+	if s := w.Body.String(); strings.Contains(s, "O3+") || !strings.Contains(s, `"name":"Unpriced add-on","description":"","extra_duration_minutes":0,"suggested_price_paise":null`) {
+		t.Fatalf("menu: %s", s)
 	}
 	w = rg.do(req{method: "GET", path: "/v1/doorstep/services/" + uuid.NewString() + "?city=HYD"})
 	if code, _ := errorCode(t, w); w.Code != 404 || code != "DOORSTEP_SERVICE_NOT_FOUND" {
@@ -276,8 +280,13 @@ func TestContract_Serviceability(t *testing.T) {
 
 // ---- quotes ----
 
+// quoteBody quotes with Asha (fakePro1), the professional the fixtures pick.
 func quoteBody(service, option string, addons []string, lat, lng float64, qty int) string {
-	b := map[string]any{"service_id": service, "option_id": option, "lat": lat, "lng": lng}
+	return quoteBodyPro(fakePro1, service, option, addons, lat, lng, qty)
+}
+
+func quoteBodyPro(pro uuid.UUID, service, option string, addons []string, lat, lng float64, qty int) string {
+	b := map[string]any{"service_id": service, "pro_id": pro.String(), "option_id": option, "lat": lat, "lng": lng}
 	if qty > 0 {
 		b["quantity"] = qty
 	}

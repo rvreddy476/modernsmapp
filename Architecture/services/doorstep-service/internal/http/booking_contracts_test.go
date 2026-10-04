@@ -46,8 +46,8 @@ func newBookingRig(t *testing.T, devStub bool) *bookingRig {
 	n := 0
 	svc := service.New(rg.store, tc, 15*time.Minute).
 		WithClock(func() time.Time { return fixtureNow }, func() uuid.UUID { return fixtureQuoteID }).
-		WithBookings(service.BookingDeps{Store: br.bk, Payments: br.pay, PII: crypto, DevStubPayments: devStub,
-			NewID: func() uuid.UUID { n++; return devseed.ID("fixture", fmt.Sprintf("booking-flow-%d", n)) }})
+		WithPricing(br.bk.prices).WithBookings(service.BookingDeps{Store: br.bk, Payments: br.pay, ExtrasPayments: br.pay, PII: crypto, DevStubPayments: devStub,
+		NewID: func() uuid.UUID { n++; return devseed.ID("fixture", fmt.Sprintf("booking-flow-%d", n)) }})
 	rg.r = mount(svc, testInternalKey, rg.v)
 	return br
 }

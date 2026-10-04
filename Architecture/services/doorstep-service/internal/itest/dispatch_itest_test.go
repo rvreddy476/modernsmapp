@@ -11,9 +11,12 @@ import (
 
 	"github.com/atpost/doorstep-service/internal/dispatch"
 	doorstephttp "github.com/atpost/doorstep-service/internal/http"
+	"github.com/atpost/doorstep-service/internal/payments"
 	"github.com/atpost/doorstep-service/internal/propii"
 	"github.com/atpost/doorstep-service/internal/service"
+	"github.com/atpost/doorstep-service/internal/slots"
 	"github.com/atpost/doorstep-service/internal/store"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 )
 
@@ -306,49 +309,21 @@ func TestOfferAcceptOnTheDatabase(t *testing.T) {
 	_ = customer
 }
 
-func TestDeclineMovesTheBlockAtomically(t *testing.T) {
-	dr := newDispatchRig(t)
-	a, au := dr.addPro(t, "male")
-	b, bu := dr.addPro(t, "male")
-	booking, _ := dr.confirmed(t, dr.tomorrowAt(11, 0))
-	first, firstUser, second, secondUser := pair(t, dr, booking, a, au, b, bu)
-	offer, _ := dr.liveOffer(t, booking)
+// changePro is the customer's pick for a pro_unavailable booking.
+func (dr *dsRig) changePro(customer, booking, pro uuid.UUID, start *time.Time, key string) (int, []byte) {
+	body := fmt.Sprintf(`{"pro_id":"%s","asap":true}`, pro)
+	if start != nil {
+		body = fmt.Sprintf(`{"pro_id":"%s","slot_start":"%s"}`, pro, start.Format(time.RFC3339))
+	}
+	return dr.user(customer, "POST", "/bookings/"+booking.String()+"/change-professional", body, "Idempotency-Key", key)
+}
 
-	status, body := dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/decline", `{"reason":"too_far"}`)
-	want(t, "decline", status, body, 204)
-	// One transaction: the first professional's block released, the
-	// second's inserted, the offer moved.
-	if blocks := dr.activeBlocks(t, booking); len(blocks) != 1 || blocks[0] != second {
-		t.Fatalf("active blocks after decline: %v", blocks)
-	}
-	if r := reservedOf(t, dr, booking); r == nil || *r != second {
-		t.Fatal("reserved professional not moved")
-	}
-	offer2, pro2 := dr.liveOffer(t, booking)
-	if pro2 != second {
-		t.Fatal("next offer not to the second professional")
-	}
-	if v := dr.one(t, `SELECT decline_reason FROM doorstep.booking_assignments WHERE id = $1`, offer); v.(string) != "too_far" {
-		t.Fatalf("decline reason %v", v)
-	}
-	// Declining twice is a no-op; the declined professional cannot accept.
-	status, _ = dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/decline", "")
-	want(t, "decline replay", status, nil, 204)
-	status, body = dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/accept", "")
-	if status != 409 || errCode(body) != "DOORSTEP_OFFER_TAKEN" {
-		t.Fatalf("accept after decline: %d %s", status, body)
-	}
-	status, body = dr.pro(firstUser, "GET", "/offers/"+offer.String(), "")
-	if status != 200 || !strings.Contains(string(body), `"status":"declined"`) {
-		t.Fatalf("declined offer read: %d %s", status, body)
-	}
-
-	// The second declines: nobody left. Confirmed, no professional, no
-	// block, ops alerted once.
-	status, body = dr.pro(secondUser, "POST", "/offers/"+offer2.String()+"/decline", "")
-	want(t, "second decline", status, body, 204)
-	if s := dr.status(t, booking); s != "confirmed" {
-		t.Fatalf("booking %s", s)
+// assertProUnavailable: the booking waits for the customer — nobody holds
+// it, no live offer, the professional excluded, the event and the frame out.
+func (dr *dsRig) assertProUnavailable(t *testing.T, booking, customer, gone uuid.UUID, cause string) {
+	t.Helper()
+	if s := dr.status(t, booking); s != "pro_unavailable" {
+		t.Fatalf("booking %s, want pro_unavailable", s)
 	}
 	if blocks := dr.activeBlocks(t, booking); len(blocks) != 0 {
 		t.Fatalf("blocks left: %v", blocks)
@@ -356,29 +331,124 @@ func TestDeclineMovesTheBlockAtomically(t *testing.T) {
 	if r := reservedOf(t, dr, booking); r != nil {
 		t.Fatal("a professional is still reserved")
 	}
-	alerts := dr.events(t, booking, "doorstep.booking.unassigned_alert")
-	if len(alerts) != 1 || !strings.Contains(alerts[0], `"reason":"no_professional_left"`) {
-		t.Fatalf("alerts: %v", alerts)
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.booking_assignments WHERE booking_id = $1 AND status IN ('offered', 'accepted')`, booking); v.(int64) != 0 {
+		t.Fatalf("%v live assignments: nobody may be reassigned silently", v)
 	}
-	closed := dr.events(t, booking, "doorstep.pro.offer_closed")
-	if len(closed) != 2 || !strings.Contains(closed[0], `"outcome":"declined"`) {
-		t.Fatalf("offer_closed: %v", closed)
+	if v := dr.one(t, `SELECT $2 = ANY(excluded_pro_ids) FROM doorstep.bookings WHERE id = $1`, booking, gone); v.(bool) != true {
+		t.Fatal("the professional who let it go is not excluded")
 	}
-	// The retry worker finds nobody either and does not alert again.
-	dr.now = dr.now.Add(dispatch.RetryEvery + time.Minute)
-	dr.tick(t)
-	if n := len(dr.events(t, booking, "doorstep.booking.unassigned_alert")); n != 1 {
-		t.Fatalf("%d alerts after retry", n)
+	ev := dr.events(t, booking, "doorstep.booking.pro_unavailable")
+	if len(ev) == 0 || !strings.Contains(ev[len(ev)-1], `"cause":"`+cause+`"`) || !strings.Contains(ev[len(ev)-1], `"choice_deadline"`) ||
+		!strings.Contains(ev[len(ev)-1], customer.String()) {
+		t.Fatalf("pro_unavailable events: %v", ev)
 	}
-	_ = first
+	if dr.frames.count(service.BookingTopic(booking), service.FrameProUnavailable) < 1 {
+		t.Fatal("the customer was not told live")
+	}
+	if v := dr.one(t, `SELECT choice_deadline FROM doorstep.bookings WHERE id = $1`, booking).(time.Time); !v.Equal(dr.now.Add(dispatch.ChoiceWindow)) {
+		t.Fatalf("choice deadline %v (now %v)", v, dr.now)
+	}
 }
 
+// B1: a decline never moves the job to someone else silently: the booking
+// goes to pro_unavailable and the customer picks (here the second
+// professional, cheaper: the difference is refunded and only they are
+// offered the job).
+func TestDeclineGoesProUnavailableThenCustomerPicks(t *testing.T) {
+	dr := newDispatchRig(t)
+	a, au := dr.addPro(t, "male")
+	b, bu := dr.addPro(t, "male")
+	dr.exec(t, `UPDATE doorstep.pro_service_prices SET price_paise = price_paise - 10000 WHERE pro_id = $1`, b)
+	start := dr.tomorrowAt(11, 0)
+	booking, customer := dr.confirmed(t, start)
+	if r := reservedOf(t, dr, booking); r == nil || *r != a {
+		t.Fatal("the hold is not on the professional the customer picked")
+	}
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.pro_calendar_blocks WHERE pro_id = $1 AND booking_id = $2 AND active`, b, booking); v.(int64) != 0 {
+		t.Fatal("a professional the customer did not pick holds the slot")
+	}
+	offer, _ := dr.liveOffer(t, booking)
+
+	status, body := dr.pro(au, "POST", "/offers/"+offer.String()+"/decline", `{"reason":"too_far"}`)
+	want(t, "decline", status, body, 204)
+	dr.assertProUnavailable(t, booking, customer, a, "declined")
+	if v := dr.one(t, `SELECT decline_reason FROM doorstep.booking_assignments WHERE id = $1`, offer); v.(string) != "too_far" {
+		t.Fatalf("decline reason %v", v)
+	}
+	closed := dr.events(t, booking, "doorstep.pro.offer_closed")
+	if len(closed) != 1 || !strings.Contains(closed[0], `"outcome":"declined"`) {
+		t.Fatalf("offer_closed: %v", closed)
+	}
+	// The workers never reassign it either.
+	dr.now = dr.now.Add(dispatch.RetryEvery + time.Minute)
+	dr.tick(t)
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.booking_assignments WHERE booking_id = $1 AND pro_id = $2`, booking, b); v.(int64) != 0 {
+		t.Fatal("the second professional was offered the job without the customer choosing")
+	}
+	dr.now = dr.now.Add(-(dispatch.RetryEvery + time.Minute))
+	// Declining twice is a no-op; the declined professional cannot accept.
+	status, _ = dr.pro(au, "POST", "/offers/"+offer.String()+"/decline", "")
+	want(t, "decline replay", status, nil, 204)
+	status, body = dr.pro(au, "POST", "/offers/"+offer.String()+"/accept", "")
+	if status != 409 || errCode(body) != "DOORSTEP_OFFER_TAKEN" {
+		t.Fatalf("accept after decline: %d %s", status, body)
+	}
+
+	// The alternatives: the second professional, not the first.
+	status, body = dr.user(customer, "GET", "/bookings/"+booking.String()+"/professionals?date="+start.In(slots.IST).Format("2006-01-02"), "")
+	want(t, "alternatives", status, body, 200)
+	if !strings.Contains(string(body), b.String()) || strings.Contains(string(body), a.String()) ||
+		!strings.Contains(string(body), `"difference_paise":-10000`) {
+		t.Fatalf("alternatives: %s", body)
+	}
+	status, body = dr.changePro(customer, booking, a, &start, "pick-a")
+	if status != 422 || errCode(body) != "DOORSTEP_SLOT_UNAVAILABLE" {
+		t.Fatalf("picked the professional who declined: %d %s", status, body)
+	}
+	status, body = dr.changePro(customer, booking, b, &start, "pick-b")
+	want(t, "pick b", status, body, 200)
+	if s := dr.status(t, booking); s != "confirmed" {
+		t.Fatalf("after the pick: %s", s)
+	}
+	if !strings.Contains(string(body), `"status":"applied"`) || !strings.Contains(string(body), `"refund_paise":10000`) {
+		t.Fatalf("change: %s", body)
+	}
+	if _, p := dr.liveOffer(t, booking); p != b {
+		t.Fatal("the picked professional was not offered the job")
+	}
+	if blocks := dr.activeBlocks(t, booking); len(blocks) != 1 || blocks[0] != b {
+		t.Fatalf("blocks %v", blocks)
+	}
+	if v := dr.one(t, `SELECT total_paise FROM doorstep.bookings WHERE id = $1`, booking); v.(int64) != dr.world.pricePaise-10000 {
+		t.Fatalf("total %v", v)
+	}
+	var key string
+	if err := dr.p.QueryRow(context.Background(), `SELECT idempotency_key FROM doorstep.refunds WHERE booking_id = $1 AND cause LIKE 'pro_change_%'`,
+		booking).Scan(&key); err != nil || dr.pay.calls(key) != 1 {
+		t.Fatalf("difference refund %q %v", key, err)
+	}
+	if v := dr.one(t, `SELECT amount_paise FROM doorstep.refunds WHERE idempotency_key = $1`, key); v.(int64) != 10000 {
+		t.Fatalf("difference refund %v", v)
+	}
+	if ev := dr.events(t, booking, "doorstep.booking.pro_changed"); len(ev) != 1 || !strings.Contains(ev[0], `"new_pro_user_id":"`+bu.String()) ||
+		!strings.Contains(ev[0], `"previous_pro_user_id":"`+au.String()) || !strings.Contains(ev[0], `"difference_paise":-10000`) {
+		t.Fatalf("pro_changed: %v", ev)
+	}
+	// The same key replays the change; nothing else moves.
+	status, again := dr.changePro(customer, booking, b, &start, "pick-b")
+	want(t, "replay", status, again, 200)
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.booking_pro_changes WHERE booking_id = $1`, booking); v.(int64) != 1 {
+		t.Fatalf("%v changes after a replay", v)
+	}
+	dr.noPII(t)
+}
+
+// An offer that lapses: pro_unavailable, never the next professional.
 func TestOfferExpiryWorker(t *testing.T) {
 	dr := newDispatchRig(t)
 	a, au := dr.addPro(t, "female")
-	b, bu := dr.addPro(t, "female")
-	booking, _ := dr.confirmed(t, dr.tomorrowAt(12, 0))
-	_, firstUser, second, _ := pair(t, dr, booking, a, au, b, bu)
+	b, _ := dr.addPro(t, "female")
+	booking, customer := dr.confirmed(t, dr.tomorrowAt(12, 0))
 	offer, _ := dr.liveOffer(t, booking)
 	exp := dr.one(t, `SELECT offer_expires_at FROM doorstep.booking_assignments WHERE id = $1`, offer).(time.Time)
 
@@ -388,9 +458,8 @@ func TestOfferExpiryWorker(t *testing.T) {
 	if v := dr.one(t, `SELECT status FROM doorstep.booking_assignments WHERE id = $1`, offer); v.(string) != "offered" {
 		t.Fatalf("offer %v before expiry", v)
 	}
-	// Due: expired, next professional offered, block moved.
 	dr.now = exp.Add(time.Second)
-	status, body := dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/accept", "")
+	status, body := dr.pro(au, "POST", "/offers/"+offer.String()+"/accept", "")
 	if status != 410 || errCode(body) != "DOORSTEP_OFFER_EXPIRED" {
 		t.Fatalf("accept of a lapsed offer: %d %s", status, body)
 	}
@@ -398,13 +467,11 @@ func TestOfferExpiryWorker(t *testing.T) {
 	if v := dr.one(t, `SELECT status FROM doorstep.booking_assignments WHERE id = $1`, offer); v.(string) != "expired" {
 		t.Fatalf("offer %v after expiry", v)
 	}
-	if _, p := dr.liveOffer(t, booking); p != second {
-		t.Fatal("expired offer not passed on")
+	dr.assertProUnavailable(t, booking, customer, a, "offer_expired")
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.booking_assignments WHERE booking_id = $1 AND pro_id = $2`, booking, b); v.(int64) != 0 {
+		t.Fatal("the next professional was offered the job silently")
 	}
-	if blocks := dr.activeBlocks(t, booking); len(blocks) != 1 || blocks[0] != second {
-		t.Fatalf("blocks %v", blocks)
-	}
-	if dr.frames.count(service.ProTopic(firstUser), service.FrameOfferClosed) != 1 {
+	if dr.frames.count(service.ProTopic(au), service.FrameOfferClosed) != 1 {
 		t.Fatal("no offer.closed frame to the first professional")
 	}
 }
@@ -476,13 +543,13 @@ func TestUnassignedAlertAndTMinus45CancelRefund(t *testing.T) {
 	dr.addPro(t, "female")
 	start := dr.tomorrowAt(10, 30)
 	booking, _ := dr.confirmed(t, start)
+	// The professional keeps the offer open (unanswered) up to the slot.
+	dr.exec(t, `UPDATE doorstep.booking_assignments SET offer_expires_at = $2 WHERE booking_id = $1 AND status = 'offered'`, booking, start)
 
 	// T-2 h: one alert, never twice.
 	dr.now = start.Add(-dispatch.AlertBefore + time.Minute)
 	dr.tick(t)
 	dr.tick(t)
-	// (The lone professional's offer lapsed on the way, so dispatch also
-	// raised its own "nobody left" alert.)
 	tMinus2 := 0
 	for _, a := range dr.events(t, booking, "doorstep.booking.unassigned_alert") {
 		if strings.Contains(a, `"reason":"t_minus_2h"`) {
@@ -522,15 +589,14 @@ func TestUnassignedAlertAndTMinus45CancelRefund(t *testing.T) {
 	}
 }
 
-func TestLateNoShowAndReassign(t *testing.T) {
+func TestLateNoShowThenCustomerPicksAgain(t *testing.T) {
 	dr := newDispatchRig(t)
 	a, au := dr.addPro(t, "male")
 	b, bu := dr.addPro(t, "male")
 	start := dr.tomorrowAt(10, 0)
 	booking, customer := dr.confirmed(t, start)
-	first, firstUser, second, secondUser := pair(t, dr, booking, a, au, b, bu)
 	offer, _ := dr.liveOffer(t, booking)
-	status, body := dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/accept", "")
+	status, body := dr.pro(au, "POST", "/offers/"+offer.String()+"/accept", "")
 	want(t, "accept", status, body, 200)
 
 	// Slot + 16: late; the customer may cancel free.
@@ -548,159 +614,183 @@ func TestLateNoShowAndReassign(t *testing.T) {
 		t.Fatal("no late frame")
 	}
 
-	// Slot + 31: no-show. Penalty and counter; the second professional can
-	// start within the hour: offered, slot moved, rescue deadline set.
+	// Slot + 31: no-show (penalty, counter); the customer chooses.
 	dr.now = start.Add(dispatch.NoShowAfter + time.Minute)
 	dr.tick(t)
-	if v := dr.one(t, `SELECT status FROM doorstep.booking_assignments WHERE booking_id = $1 AND pro_id = $2`, booking, first); v.(string) != "no_show" {
+	if v := dr.one(t, `SELECT status FROM doorstep.booking_assignments WHERE booking_id = $1 AND pro_id = $2`, booking, a); v.(string) != "no_show" {
 		t.Fatalf("first assignment %v", v)
 	}
-	if v := dr.one(t, `SELECT no_show_count FROM doorstep.professionals WHERE id = $1`, first); v.(int32) != 1 {
+	if v := dr.one(t, `SELECT no_show_count FROM doorstep.professionals WHERE id = $1`, a); v.(int32) != 1 {
 		t.Fatalf("no_show_count %v", v)
 	}
-	if v := dr.one(t, `SELECT amount_paise FROM doorstep.earning_lines WHERE booking_id = $1 AND pro_id = $2 AND kind = 'penalty'`, booking, first); v.(int64) != -dispatch.PenaltyNoShowPaise {
+	if v := dr.one(t, `SELECT amount_paise FROM doorstep.earning_lines WHERE booking_id = $1 AND pro_id = $2 AND kind = 'penalty'`, booking, a); v.(int64) != -dispatch.PenaltyNoShowPaise {
 		t.Fatalf("penalty %v", v)
 	}
-	if s := dr.status(t, booking); s != "confirmed" {
-		t.Fatalf("booking %s after no-show", s)
+	dr.assertProUnavailable(t, booking, customer, a, "pro_no_show")
+	if dr.frames.count(service.ProTopic(au), service.FrameJobRemoved) != 1 {
+		t.Fatal("the professional who did not turn up was not told")
 	}
+	// The customer picks the second professional later today.
+	later := start.Add(3 * time.Hour)
+	status, body = dr.changePro(customer, booking, b, &later, "after-no-show")
+	want(t, "pick", status, body, 200)
 	offer2, p2 := dr.liveOffer(t, booking)
-	if p2 != second {
-		t.Fatal("replacement not offered")
+	if p2 != b || dr.status(t, booking) != "confirmed" {
+		t.Fatal("the picked professional was not offered the job")
 	}
-	newStart := dr.one(t, `SELECT slot_start FROM doorstep.bookings WHERE id = $1`, booking).(time.Time)
-	if !newStart.After(dr.now) || newStart.After(dr.now.Add(dispatch.RescueWithin)) {
-		t.Fatalf("rescue slot %v (now %v)", newStart, dr.now)
-	}
-	re := dr.events(t, booking, "doorstep.booking.reassigned")
-	if len(re) != 1 || !strings.Contains(re[0], `"cause":"pro_no_show"`) || !strings.Contains(re[0], firstUser.String()) {
-		t.Fatalf("reassigned: %v", re)
-	}
-	status, body = dr.pro(secondUser, "POST", "/offers/"+offer2.String()+"/accept", "")
+	status, body = dr.pro(bu, "POST", "/offers/"+offer2.String()+"/accept", "")
 	want(t, "replacement accept", status, body, 200)
-	if v := dr.one(t, `SELECT rescue_until IS NULL FROM doorstep.bookings WHERE id = $1`, booking); v.(bool) != true {
-		t.Fatal("rescue not cleared on accept")
-	}
 }
 
-func TestNoShowWithoutReplacementRefunds(t *testing.T) {
+// No choice within 30 minutes: cancelled with a full refund (not a minute
+// before).
+func TestProUnavailableTimeoutRefundsInFull(t *testing.T) {
 	dr := newDispatchRig(t)
-	_, u := dr.addPro(t, "female")
+	a, au := dr.addPro(t, "female")
 	start := dr.tomorrowAt(9, 0)
-	booking, _ := dr.confirmed(t, start)
+	booking, customer := dr.confirmed(t, start)
 	offer, _ := dr.liveOffer(t, booking)
-	status, body := dr.pro(u, "POST", "/offers/"+offer.String()+"/accept", "")
-	want(t, "accept", status, body, 200)
-	dr.now = start.Add(dispatch.NoShowAfter + time.Minute)
+	status, body := dr.pro(au, "POST", "/offers/"+offer.String()+"/decline", "")
+	want(t, "decline", status, body, 204)
+	dr.assertProUnavailable(t, booking, customer, a, "declined")
+	deadline := dr.now.Add(dispatch.ChoiceWindow)
+	dr.now = deadline.Add(-time.Minute)
 	dr.tick(t)
-	if s := dr.status(t, booking); s != "pro_no_show" {
-		t.Fatalf("booking %s", s)
+	if s := dr.status(t, booking); s != "pro_unavailable" {
+		t.Fatalf("booking %s before the deadline", s)
 	}
-	key := "doorstep:refund:" + booking.String() + ":pro_no_show"
+	dr.now = deadline.Add(time.Second)
+	if r := dr.tick(t); r.ChoiceTimeouts != 1 {
+		t.Fatalf("choice timeouts %d", r.ChoiceTimeouts)
+	}
+	if s := dr.status(t, booking); s != "cancelled" {
+		t.Fatalf("booking %s after the deadline", s)
+	}
+	key := "doorstep:refund:" + booking.String() + ":pro_unavailable"
 	if v := dr.one(t, `SELECT amount_paise FROM doorstep.refunds WHERE idempotency_key = $1`, key); v.(int64) != dr.world.pricePaise {
 		t.Fatalf("refund %v", v)
 	}
-	ns := dr.events(t, booking, "doorstep.booking.no_show")
-	if len(ns) != 1 || !strings.Contains(ns[0], `"party":"pro"`) {
-		t.Fatalf("no_show events: %v", ns)
+	if dr.pay.calls(key) != 1 {
+		t.Fatal("refund not submitted")
 	}
-	if len(dr.events(t, booking, "doorstep.booking.reassigned")) != 0 {
-		t.Fatal("reassigned with nobody to take it")
+	if v := dr.one(t, `SELECT cancelled_by_kind FROM doorstep.bookings WHERE id = $1`, booking); v.(string) != "system" {
+		t.Fatalf("cancelled by %v", v)
+	}
+	// Too late to pick now.
+	status, body = dr.changePro(customer, booking, a, &start, "too-late")
+	if status != 409 {
+		t.Fatalf("pick after the timeout: %d %s", status, body)
 	}
 }
 
-func TestNotOnDutyReassignsAndProCancelPenalty(t *testing.T) {
+// The customer may cancel a pro_unavailable booking free, in full.
+func TestProUnavailableCustomerCancelIsFree(t *testing.T) {
+	dr := newDispatchRig(t)
+	_, au := dr.addPro(t, "female")
+	booking, customer := dr.confirmed(t, dr.tomorrowAt(16, 0))
+	offer, _ := dr.liveOffer(t, booking)
+	want(t, "decline", func() int { s, _ := dr.pro(au, "POST", "/offers/"+offer.String()+"/decline", ""); return s }(), nil, 204)
+	status, body := dr.user(customer, "GET", "/bookings/"+booking.String()+"/cancel-preview", "")
+	if status != 200 || !strings.Contains(string(body), `"rule":"pro_unavailable_free"`) ||
+		!strings.Contains(string(body), fmt.Sprintf(`"refund_paise":%d`, dr.world.pricePaise)) {
+		t.Fatalf("preview: %d %s", status, body)
+	}
+	status, body = dr.user(customer, "POST", "/bookings/"+booking.String()+"/cancel", `{"reason":"no thanks"}`)
+	want(t, "cancel", status, body, 200)
+	if v := dr.one(t, `SELECT sum(amount_paise)::bigint FROM doorstep.refunds WHERE booking_id = $1`, booking); v.(int64) != dr.world.pricePaise {
+		t.Fatalf("refund %v", v)
+	}
+}
+
+func TestNotOnDutyAndProCancelGoProUnavailable(t *testing.T) {
 	dr := newDispatchRig(t)
 	a, au := dr.addPro(t, "male")
 	b, bu := dr.addPro(t, "male")
 	start := dr.tomorrowAt(14, 0)
-	booking, _ := dr.confirmed(t, start)
-	first, firstUser, second, secondUser := pair(t, dr, booking, a, au, b, bu)
+	booking, customer := dr.confirmed(t, start)
 	offer, _ := dr.liveOffer(t, booking)
-	status, body := dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/accept", "")
+	status, body := dr.pro(au, "POST", "/offers/"+offer.String()+"/accept", "")
 	want(t, "accept", status, body, 200)
 
 	// On duty at T-89: kept.
 	dr.exec(t, `UPDATE doorstep.professionals SET on_duty = TRUE, on_duty_since = $2, last_fix_at = $3 WHERE id = $1`,
-		first, start.Add(-3*time.Hour), start.Add(-dispatch.DutyBefore+time.Minute))
+		a, start.Add(-3*time.Hour), start.Add(-dispatch.DutyBefore+time.Minute))
 	dr.now = start.Add(-dispatch.DutyBefore + time.Minute)
 	dr.tick(t)
 	if s := dr.status(t, booking); s != "assigned" {
 		t.Fatalf("on-duty professional lost the job: %s", s)
 	}
-	// Off duty: reassigned (no penalty), the second professional offered.
-	dr.exec(t, `UPDATE doorstep.professionals SET on_duty = FALSE, on_duty_since = NULL WHERE id = $1`, first)
+	// Off duty: pro_unavailable (no penalty).
+	dr.exec(t, `UPDATE doorstep.professionals SET on_duty = FALSE, on_duty_since = NULL WHERE id = $1`, a)
 	dr.tick(t)
-	if s := dr.status(t, booking); s != "confirmed" {
-		t.Fatalf("booking %s", s)
-	}
-	re := dr.events(t, booking, "doorstep.booking.reassigned")
-	if len(re) != 1 || !strings.Contains(re[0], `"cause":"not_on_duty"`) || !strings.Contains(re[0], firstUser.String()) {
-		t.Fatalf("reassigned: %v", re)
-	}
-	if dr.frames.count(service.ProTopic(firstUser), service.FrameJobRemoved) != 1 {
+	dr.assertProUnavailable(t, booking, customer, a, "not_on_duty")
+	if dr.frames.count(service.ProTopic(au), service.FrameJobRemoved) != 1 {
 		t.Fatal("first professional not told")
 	}
-	offer2, p2 := dr.liveOffer(t, booking)
-	if p2 != second {
-		t.Fatal("second not offered")
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.earning_lines WHERE booking_id = $1 AND pro_id = $2`, booking, a); v.(int64) != 0 {
+		t.Fatal("a penalty for not being on duty")
 	}
-	status, body = dr.pro(secondUser, "POST", "/offers/"+offer2.String()+"/accept", "")
+	// The customer picks the second at 17:00; they accept, then give it back
+	// (4.5 h out: the 3-24 h tier), counted, and the customer chooses again.
+	later := start.Add(3 * time.Hour)
+	status, body = dr.changePro(customer, booking, b, &later, "pick-second")
+	want(t, "pick", status, body, 200)
+	offer2, _ := dr.liveOffer(t, booking)
+	status, body = dr.pro(bu, "POST", "/offers/"+offer2.String()+"/accept", "")
 	want(t, "accept 2", status, body, 200)
-
-	// The second gives it back 89 min before: the under-3 h tier, counted,
-	// and nobody left (the first was excluded).
-	status, body = dr.pro(secondUser, "POST", "/jobs/"+booking.String()+"/cancel", `{"reason":"family emergency"}`)
+	status, body = dr.pro(bu, "POST", "/jobs/"+booking.String()+"/cancel", `{"reason":"family emergency"}`)
 	want(t, "give back", status, body, 204)
-	if v := dr.one(t, `SELECT amount_paise FROM doorstep.earning_lines WHERE booking_id = $1 AND pro_id = $2 AND kind = 'penalty'`, booking, second); v.(int64) != -dispatch.PenaltyHighPaise {
+	if v := dr.one(t, `SELECT amount_paise FROM doorstep.earning_lines WHERE booking_id = $1 AND pro_id = $2 AND kind = 'penalty'`, booking, b); v.(int64) != -dispatch.PenaltyLowPaise {
 		t.Fatalf("penalty %v", v)
 	}
-	if v := dr.one(t, `SELECT cancellations_count FROM doorstep.professionals WHERE id = $1`, second); v.(int32) != 1 {
+	if v := dr.one(t, `SELECT cancellations_count FROM doorstep.professionals WHERE id = $1`, b); v.(int32) != 1 {
 		t.Fatalf("cancellations %v", v)
 	}
-	if s := dr.status(t, booking); s != "confirmed" {
-		t.Fatalf("booking %s", s)
-	}
+	dr.assertProUnavailable(t, booking, customer, b, "pro_cancel")
 	// Someone else's job cannot be given back.
-	status, _ = dr.pro(firstUser, "POST", "/jobs/"+booking.String()+"/cancel", `{"reason":"x"}`)
+	status, _ = dr.pro(au, "POST", "/jobs/"+booking.String()+"/cancel", `{"reason":"x"}`)
 	if status != 404 {
 		t.Fatalf("give back of a job not yours: %d", status)
 	}
 }
 
-func TestRescheduleToAnotherProReoffers(t *testing.T) {
+// Reschedule keeps the professional the customer picked: never moved to
+// someone else silently (B1).
+func TestRescheduleKeepsThePickedProfessional(t *testing.T) {
 	dr := newDispatchRig(t)
 	a, au := dr.addPro(t, "female")
-	b, bu := dr.addPro(t, "female")
+	b, _ := dr.addPro(t, "female")
 	start := dr.tomorrowAt(10, 0)
 	booking, customer := dr.confirmed(t, start)
-	first, firstUser, second, _ := pair(t, dr, booking, a, au, b, bu)
 	offer, _ := dr.liveOffer(t, booking)
-	status, body := dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/accept", "")
+	status, body := dr.pro(au, "POST", "/offers/"+offer.String()+"/accept", "")
 	want(t, "accept", status, body, 200)
 
-	// The first professional is busy at the new slot.
-	newStart := dr.tomorrowAt(15, 0)
+	// The picked professional is busy at 15:00: refused, nobody else held.
+	busy := dr.tomorrowAt(15, 0)
 	dr.exec(t, `INSERT INTO doorstep.pro_calendar_blocks (pro_id, kind, during) VALUES ($1, 'break', tstzrange($2, $3, '[)'))`,
-		first, newStart.Add(-30*time.Minute), newStart.Add(3*time.Hour))
+		a, busy.Add(-30*time.Minute), busy.Add(3*time.Hour))
 	status, body = dr.user(customer, "POST", "/bookings/"+booking.String()+"/reschedule",
-		fmt.Sprintf(`{"slot_start":"%s"}`, newStart.Format(time.RFC3339)))
+		fmt.Sprintf(`{"slot_start":"%s"}`, busy.Format(time.RFC3339)))
+	if status != 422 || errCode(body) != "DOORSTEP_SLOT_UNAVAILABLE" {
+		t.Fatalf("reschedule to a slot only another professional can take: %d %s", status, body)
+	}
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.pro_calendar_blocks WHERE pro_id = $1 AND booking_id = $2 AND active`, b, booking); v.(int64) != 0 {
+		t.Fatal("another professional was held")
+	}
+	// A slot they can take: moved, still theirs, still assigned.
+	free := dr.tomorrowAt(12, 0)
+	status, body = dr.user(customer, "POST", "/bookings/"+booking.String()+"/reschedule",
+		fmt.Sprintf(`{"slot_start":"%s"}`, free.Format(time.RFC3339)))
 	want(t, "reschedule", status, body, 200)
-	if s := dr.status(t, booking); s != "confirmed" {
-		t.Fatalf("booking %s after moving to another professional", s)
+	if s := dr.status(t, booking); s != "assigned" {
+		t.Fatalf("booking %s after a reschedule with the same professional", s)
 	}
-	if _, p := dr.liveOffer(t, booking); p != second {
-		t.Fatal("not re-offered to the professional holding the new slot")
-	}
-	re := dr.events(t, booking, "doorstep.booking.reassigned")
-	if len(re) != 1 || !strings.Contains(re[0], `"cause":"rescheduled"`) || !strings.Contains(re[0], `"previous_pro_user_id":"`+firstUser.String()) {
-		t.Fatalf("reassigned: %v", re)
-	}
-	if dr.frames.count(service.ProTopic(firstUser), service.FrameJobRemoved) != 1 {
-		t.Fatal("previous professional not told live")
-	}
-	if blocks := dr.activeBlocks(t, booking); len(blocks) != 1 || blocks[0] != second {
+	if blocks := dr.activeBlocks(t, booking); len(blocks) != 1 || blocks[0] != a {
 		t.Fatalf("blocks %v", blocks)
+	}
+	if dr.frames.count(service.ProTopic(au), service.FrameJobUpdated) != 1 {
+		t.Fatal("the professional was not told the slot moved")
 	}
 }
 
@@ -754,8 +844,11 @@ func TestRealtimeTokenScope(t *testing.T) {
 func (dr *dsRig) completePro(t *testing.T, pro uuid.UUID) {
 	t.Helper()
 	dr.exec(t, `UPDATE doorstep.professionals SET photo_media_id = $2, agreement_version = '2026-10-04' WHERE id = $1`, pro, uuid.NewString())
-	dr.exec(t, `INSERT INTO doorstep.pro_kyc_checks (pro_id, kind, status, verified_at) VALUES ($1, 'digilocker_aadhaar', 'passed', NOW()),
-		($1, 'selfie_face_match', 'passed', NOW())`, pro)
+	// A passed selfie is an admin's decision (audited in its transaction).
+	adminTx(t, dr.p, func(exec func(string, ...any)) {
+		exec(`INSERT INTO doorstep.pro_kyc_checks (pro_id, kind, status, verified_at) VALUES ($1, 'digilocker_aadhaar', 'passed', NOW()),
+			($1, 'selfie_face_match', 'passed', NOW())`, pro)
+	})
 	dr.exec(t, `INSERT INTO doorstep.pro_payout_accounts (pro_id, account_holder, account_number_sealed, account_last4, ifsc, key_version)
 		VALUES ($1, 'Asha Rao', '\x00', '1234', 'HDFC0001234', '1')`, pro)
 }
@@ -823,44 +916,139 @@ func TestDutyLocationAndStaleFix(t *testing.T) {
 	}
 }
 
-func TestAdminRedispatchExcludesAndAudits(t *testing.T) {
+func TestAdminRedispatchGivesTheCustomerTheChoice(t *testing.T) {
 	dr := newDispatchRig(t)
 	a, au := dr.addPro(t, "male")
-	b, bu := dr.addPro(t, "male")
-	booking, _ := dr.confirmed(t, dr.tomorrowAt(18, 0))
-	_, firstUser, second, _ := pair(t, dr, booking, a, au, b, bu)
+	b, _ := dr.addPro(t, "male")
+	booking, customer := dr.confirmed(t, dr.tomorrowAt(18, 0))
 	offer, _ := dr.liveOffer(t, booking)
-	status, body := dr.pro(firstUser, "POST", "/offers/"+offer.String()+"/accept", "")
+	status, body := dr.pro(au, "POST", "/offers/"+offer.String()+"/accept", "")
 	want(t, "accept", status, body, 200)
 
 	// Ops cannot name who gets the job.
 	status, body = dr.adminCall("POST", "/bookings/"+booking.String()+"/redispatch", doorstephttp.PermBookingsRedispatch,
-		fmt.Sprintf(`{"reason":"customer complaint","pro_id":"%s"}`, second))
+		fmt.Sprintf(`{"reason":"customer complaint","pro_id":"%s"}`, b))
 	if status != 400 {
 		t.Fatalf("hand-pick accepted: %d %s", status, body)
 	}
-	// Excluding the only other professional: nobody left.
+	// Ops take it off the first and exclude the second: the customer picks
+	// (nobody is offered it by ops).
 	status, body = dr.adminCall("POST", "/bookings/"+booking.String()+"/redispatch", doorstephttp.PermBookingsRedispatch,
-		fmt.Sprintf(`{"reason":"customer complaint","exclude_pro_ids":["%s"]}`, second))
+		fmt.Sprintf(`{"reason":"customer complaint","exclude_pro_ids":["%s"]}`, b))
 	want(t, "redispatch", status, body, 200)
-	if !strings.Contains(string(body), `"status":"confirmed"`) || strings.Contains(string(body), `"start_otp":"`) {
+	if !strings.Contains(string(body), `"status":"pro_unavailable"`) || strings.Contains(string(body), `"start_otp":"`) {
 		t.Fatalf("redispatch answer: %s", body)
 	}
-	if blocks := dr.activeBlocks(t, booking); len(blocks) != 0 {
-		t.Fatalf("blocks %v", blocks)
+	dr.assertProUnavailable(t, booking, customer, a, "ops_redispatch")
+	if v := dr.one(t, `SELECT $2 = ANY(excluded_pro_ids) FROM doorstep.bookings WHERE id = $1`, booking, b); v.(bool) != true {
+		t.Fatal("ops' exclusion not kept")
 	}
-	if v := dr.one(t, `SELECT count(*) FROM doorstep.admin_audit_log WHERE action = 'booking.redispatch' AND entity_id = $1`, booking.String()); v.(int64) != 1 {
+	// Audited in the same transaction as the change.
+	if v := dr.one(t, `SELECT count(*) FROM doorstep.admin_audit_log a JOIN doorstep.bookings b ON b.id::text = a.entity_id
+		WHERE a.action = 'booking.redispatch' AND a.entity_id = $1 AND a.actor_user_id = $2`, booking.String(), dr.actor); v.(int64) != 1 {
 		t.Fatalf("%v audit rows", v)
 	}
-	re := dr.events(t, booking, "doorstep.booking.reassigned")
-	if len(re) != 1 || !strings.Contains(re[0], `"cause":"ops_redispatch"`) {
-		t.Fatalf("reassigned: %v", re)
+	// Excluded professionals are not listed for the customer.
+	status, body = dr.user(customer, "GET", "/bookings/"+booking.String()+"/professionals", "")
+	want(t, "alternatives", status, body, 200)
+	if strings.Contains(string(body), a.String()) || strings.Contains(string(body), b.String()) {
+		t.Fatalf("excluded professionals listed: %s", body)
 	}
 	// Wrong permission: refused.
 	status, _ = dr.adminCall("POST", "/bookings/"+booking.String()+"/redispatch", doorstephttp.PermBookingsCancel, `{"reason":"x"}`)
 	if status != 403 {
 		t.Fatalf("redispatch with bookings.cancel: %d", status)
 	}
+}
+
+// A dearer professional: held while the difference is paid through
+// payments-service (doorstep_extras, key doorstep:extras:{bill}); the signed
+// capture applies the change once; money for a lapsed change is refunded.
+func TestDearerChangeChargesTheDifference(t *testing.T) {
+	dr := newDispatchRig(t)
+	a, au := dr.addPro(t, "female")
+	b, bu := dr.addPro(t, "female")
+	dr.exec(t, `UPDATE doorstep.pro_service_prices SET price_paise = price_paise + 20000 WHERE pro_id = $1`, b)
+	start := dr.tomorrowAt(13, 0)
+	booking, customer := dr.confirmed(t, start)
+	offer, _ := dr.liveOffer(t, booking)
+	want(t, "decline", func() int { s, _ := dr.pro(au, "POST", "/offers/"+offer.String()+"/decline", ""); return s }(), nil, 204)
+
+	status, body := dr.changePro(customer, booking, b, &start, "dearer")
+	want(t, "dearer change", status, body, 200)
+	if !strings.Contains(string(body), `"status":"pending_payment"`) || !strings.Contains(string(body), `"difference_paise":20000`) ||
+		!strings.Contains(string(body), `"reference_type":"doorstep_extras"`) {
+		t.Fatalf("dearer change: %s", body)
+	}
+	if s := dr.status(t, booking); s != "pro_unavailable" {
+		t.Fatalf("booking %s before the difference is paid", s)
+	}
+	var bill, change uuid.UUID
+	if err := dr.p.QueryRow(context.Background(), `SELECT extras_bill_id, id FROM doorstep.booking_pro_changes WHERE booking_id = $1
+		AND status = 'pending_payment'`, booking).Scan(&bill, &change); err != nil {
+		t.Fatal(err)
+	}
+	if v := dr.one(t, `SELECT kind FROM doorstep.pro_calendar_blocks WHERE booking_id = $1 AND pro_id = $2 AND active`, booking, b); v.(string) != "hold" {
+		t.Fatalf("block %v", v)
+	}
+	intent, ok := dr.pay.intents[payments.ExtrasIntentKey(bill)]
+	if !ok {
+		t.Fatal("no intent on doorstep:extras:{bill}")
+	}
+	// The customer's view carries the pending change and its checkout.
+	status, body = dr.user(customer, "GET", "/bookings/"+booking.String(), "")
+	if status != 200 || !strings.Contains(string(body), `"pending_change":{"id":"`+change.String()) {
+		t.Fatalf("booking view: %s", body)
+	}
+	// The window does not close on a change being paid for.
+	dr.now = dr.now.Add(dispatch.ChoiceWindow + time.Second)
+	if v := dr.one(t, `SELECT hold_expires_at > $2 FROM doorstep.booking_pro_changes WHERE id = $1`, change, dr.now); v.(bool) {
+		dr.tick(t)
+		if s := dr.status(t, booking); s != "pro_unavailable" {
+			t.Fatalf("timed out while the change was being paid: %s", s)
+		}
+	}
+	dr.now = dr.now.Add(-(dispatch.ChoiceWindow + time.Second))
+
+	// A capture for another amount: flagged, never applied.
+	extras := func(eventID string, amount int64) {
+		dr.event(t, eventID, events.EventPaymentSucceeded, map[string]any{"id": intent.ID.String(), "payer_id": customer.String(),
+			"payee_id": intent.PayeeID.String(), "reference_type": payments.RefExtras, "reference_id": bill.String(),
+			"amount_minor": amount, "currency": "INR", "method": "upi", "status": "succeeded", "provider_ref": "pay_it_change",
+			"application_id": payments.ApplicationID})
+	}
+	extras("evt-change-bad", 19999)
+	if s := dr.status(t, booking); s != "pro_unavailable" {
+		t.Fatalf("a mismatched capture applied the change: %s", s)
+	}
+	extras("evt-change-ok", 20000)
+	extras("evt-change-ok", 20000) // a duplicate is a no-op
+	if s := dr.status(t, booking); s != "confirmed" {
+		t.Fatalf("booking %s after the difference was paid", s)
+	}
+	if v := dr.one(t, `SELECT paid_paise FROM doorstep.bookings WHERE id = $1`, booking); v.(int64) != dr.world.pricePaise+20000 {
+		t.Fatalf("paid %v", v)
+	}
+	if v := dr.one(t, `SELECT kind FROM doorstep.pro_calendar_blocks WHERE booking_id = $1 AND pro_id = $2 AND active`, booking, b); v.(string) != "booking" {
+		t.Fatalf("block %v after payment", v)
+	}
+	if _, p := dr.liveOffer(t, booking); p != b {
+		t.Fatal("the picked professional was not offered the job after payment")
+	}
+	if ev := dr.events(t, booking, "doorstep.booking.pro_changed"); len(ev) != 1 || !strings.Contains(ev[0], bu.String()) ||
+		!strings.Contains(ev[0], `"difference_paise":20000`) {
+		t.Fatalf("pro_changed: %v", ev)
+	}
+	// Cancelling now refunds both payments in full.
+	status, body = dr.user(customer, "POST", "/bookings/"+booking.String()+"/cancel", `{"reason":"changed my mind"}`)
+	want(t, "cancel", status, body, 200)
+	if v := dr.one(t, `SELECT count(DISTINCT payment_id) FROM doorstep.refunds WHERE booking_id = $1 AND cause = 'customer_cancel'`, booking); v.(int64) != 2 {
+		t.Fatalf("refunds over %v payments", v)
+	}
+	if v := dr.one(t, `SELECT sum(amount_paise)::bigint FROM doorstep.refunds WHERE booking_id = $1 AND cause = 'customer_cancel'`, booking); v.(int64) != dr.world.pricePaise+20000 {
+		t.Fatalf("refunded %v", v)
+	}
+	_ = a
 }
 
 // The move is one transaction: a failure after the old block is released

@@ -45,7 +45,31 @@ const (
 	FamilyInstallationRepair = "INSTALLATION_REPAIR"
 	FamilyPainting           = "PAINTING"
 	FamilyBeautySalon        = "BEAUTY_SALON"
+
+	// B1 families (4 Oct 2026). shared/gst has no category for them yet:
+	// the tax lane maps them (adviser-flagged). Until then they are not
+	// Supported: their services are hidden from customers and cannot be
+	// quoted (professionals may still declare the skills and submit prices).
+	FamilyCarCare         = "CAR_CARE"
+	FamilyHomeStaffing    = "HOME_STAFFING"
+	FamilyRelocation      = "RELOCATION"
+	FamilyPhotography     = "PHOTOGRAPHY"
+	FamilyFitnessWellness = "FITNESS_WELLNESS"
+	FamilyConstruction    = "CONSTRUCTION"
 )
+
+// Families is every doorstep.categories.family value (migration 005).
+var Families = []string{FamilyHomeCleaning, FamilyPestControl, FamilyApplianceRepair, FamilyInstallationRepair,
+	FamilyPainting, FamilyBeautySalon, FamilyCarCare, FamilyHomeStaffing, FamilyRelocation, FamilyPhotography,
+	FamilyFitnessWellness, FamilyConstruction}
+
+// Supported reports whether quotes of a family can be taxed (shared/gst has
+// its category). An unsupported family's services are not offered to
+// customers: fail closed rather than invent a rate.
+func Supported(family string) bool {
+	_, err := QuoteCategory(family)
+	return err == nil
+}
 
 // ErrUnknownFamily is returned for a family with no GST category.
 var ErrUnknownFamily = errors.New("tax: unknown family")

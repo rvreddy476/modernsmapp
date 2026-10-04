@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/atpost/doorstep-service/internal/apperr"
+	"github.com/atpost/doorstep-service/internal/catalogue"
 	"github.com/atpost/doorstep-service/internal/matcher"
 	"github.com/atpost/doorstep-service/internal/model"
 	"github.com/atpost/doorstep-service/internal/payments"
@@ -65,13 +66,17 @@ func (s *Service) outstanding(ctx context.Context, user uuid.UUID) *apperr.Error
 
 // slotPlace is where and what a slot search or booking is for.
 type slotPlace struct {
-	City          string
-	ZoneID        uuid.UUID
-	CategoryID    uuid.UUID
-	Lat, Lng      float64
-	Skill         string
-	Req           slots.Request
-	Exclude       *uuid.UUID
+	City       string
+	ZoneID     uuid.UUID
+	CategoryID uuid.UUID
+	Lat, Lng   float64
+	Skill      string
+	Req        slots.Request
+	Exclude    *uuid.UUID
+	// ProIDs narrows the search to these professionals (B1: the one the
+	// quote or the booking is for).
+	ProIDs        []uuid.UUID
+	ServiceID     uuid.UUID
 	Address       *store.AddressRow
 	QuoteFacts    *store.QuoteFacts
 	BookingRecord *store.BookingRecord
@@ -92,8 +97,11 @@ func (s *Service) quotePlace(ctx context.Context, user, quoteID uuid.UUID, addre
 	if !f.Bookable {
 		return nil, notAvailable()
 	}
+	if f.Quote.ProID == uuid.Nil {
+		return nil, quoteExpired() // a quote from before professionals priced their own work
+	}
 	p := &slotPlace{City: f.Quote.CityCode, ZoneID: f.Quote.ZoneID, CategoryID: f.CategoryID, Lat: f.Lat, Lng: f.Lng,
-		Skill: f.RequiredSkill, QuoteFacts: f,
+		Skill: f.RequiredSkill, QuoteFacts: f, ProIDs: []uuid.UUID{f.Quote.ProID}, ServiceID: f.Quote.ServiceID,
 		Req: slots.Request{DurationMinutes: f.Quote.DurationMinutes, GenderRule: f.GenderRule, RequireFemale: requireFemale}}
 	if addressID != nil {
 		a, err := s.bk.Store.Address(ctx, user, *addressID)
@@ -124,8 +132,14 @@ func (s *Service) quotePlace(ctx context.Context, user, quoteID uuid.UUID, addre
 // its own calendar block.
 func (s *Service) bookingPlace(ctx context.Context, rec *store.BookingRecord) *slotPlace {
 	id := rec.Booking.ID
+	var pros []uuid.UUID
+	if rec.ReservedProID != nil {
+		pros = []uuid.UUID{*rec.ReservedProID}
+	} else {
+		pros = []uuid.UUID{uuid.Nil} // nobody: the search finds no one
+	}
 	return &slotPlace{City: rec.Booking.CityCode, ZoneID: rec.Booking.ZoneID, CategoryID: rec.CategoryID, Lat: rec.Lat, Lng: rec.Lng,
-		Skill: rec.RequiredSkill, Exclude: &id, BookingRecord: rec,
+		Skill: rec.RequiredSkill, Exclude: &id, BookingRecord: rec, ProIDs: pros, ServiceID: rec.Booking.ServiceID,
 		Req: slots.Request{DurationMinutes: rec.Booking.DurationMinutes, BufferMinutes: rec.BufferMinutes,
 			GenderRule: rec.GenderRule, RequireFemale: rec.Booking.RequireFemalePro}}
 }
@@ -143,7 +157,7 @@ func (s *Service) slotConfig(ctx context.Context, p *slotPlace) (slots.Config, *
 
 func (s *Service) candidates(ctx context.Context, p *slotPlace, from, to time.Time) ([]slots.Pro, *apperr.Error) {
 	pros, err := s.bk.Store.SlotCandidates(ctx, store.CandidateQuery{City: p.City, ZoneID: p.ZoneID, Lat: p.Lat, Lng: p.Lng,
-		Skill: p.Skill, From: from, To: to, ExcludeBooking: p.Exclude})
+		Skill: p.Skill, From: from, To: to, ExcludeBooking: p.Exclude, ProIDs: p.ProIDs, ServiceID: p.ServiceID})
 	if err != nil {
 		return nil, internal(ctx, "slot candidates", err)
 	}
@@ -223,10 +237,10 @@ func slotCacheKey(p *slotPlace, cfg slots.Config) string {
 	if p.Exclude != nil {
 		exclude = p.Exclude.String()
 	}
-	raw := fmt.Sprintf("%s|%s|%s|%.5f|%.5f|%s|%d|%d|%s|%t|%s|%+v", p.City, p.ZoneID, p.CategoryID, p.Lat, p.Lng, p.Skill,
-		p.Req.DurationMinutes, p.Req.BufferMinutes, p.Req.GenderRule, p.Req.RequireFemale, exclude, cfg)
+	raw := fmt.Sprintf("%s|%s|%s|%.5f|%.5f|%s|%d|%d|%s|%t|%s|%v|%+v", p.City, p.ZoneID, p.CategoryID, p.Lat, p.Lng, p.Skill,
+		p.Req.DurationMinutes, p.Req.BufferMinutes, p.Req.GenderRule, p.Req.RequireFemale, exclude, p.ProIDs, cfg)
 	sum := sha256.Sum256([]byte(raw))
-	return "doorstep:slots:v1:" + hex.EncodeToString(sum[:16])
+	return "doorstep:slots:v2:" + hex.EncodeToString(sum[:16])
 }
 
 // ranked returns the professionals free for start, best first: the hard
@@ -275,10 +289,14 @@ func slotReason(err error) string {
 // maxIdempotencyKey bounds the Idempotency-Key header.
 const maxIdempotencyKey = 128
 
-// CreateBooking re-validates the quote, picks and holds the best-fitting
-// professional, creates the booking (pending_payment) and opens the payment
-// intent. Idempotent on (customer, Idempotency-Key): a replay answers the
-// same booking (and retries the intent if it was never opened).
+// CreateBooking re-validates the quote and books the professional the
+// customer picked (the quote's): the hold goes on them only (the exclusion
+// constraint decides; a lost race is 409 DOORSTEP_SLOT_TAKEN and the client
+// lists again). Scheduled (slot_start on the grid) or same-day asap=true (an
+// on-duty professional in range who opted in: the block runs from now, the
+// job starts at now + ETA). Creates the booking (pending_payment) and opens
+// the payment intent. Idempotent on (customer, Idempotency-Key): a replay
+// answers the same booking (and retries the intent if it was never opened).
 func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey string, req model.BookingCreateRequest) (*model.BookingCreated, error) {
 	idemKey = strings.TrimSpace(idemKey)
 	if idemKey == "" || len(idemKey) > maxIdempotencyKey {
@@ -290,8 +308,9 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 	if req.AddressID == nil || *req.AddressID == uuid.Nil {
 		return nil, apperr.Invalid("address_id", "address_id is required")
 	}
-	if req.SlotStart == nil {
-		return nil, apperr.Invalid("slot_start", "slot_start is required")
+	asap := req.Asap != nil && *req.Asap
+	if (req.SlotStart == nil) == !asap {
+		return nil, apperr.Invalid("slot_start", "send exactly one of slot_start or asap=true")
 	}
 	notes, aerr := optText("notes", req.Notes, 500)
 	if aerr != nil {
@@ -316,21 +335,42 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 		return nil, aerr
 	}
 	now := s.nowUTC()
-	start := req.SlotStart.UTC()
-	if err := slots.Validate(now, start, cfg, p.Req.DurationMinutes); err != nil {
-		return nil, slotUnavailable(slotReason(err))
-	}
-	day := slots.Interval{Start: start.AddDate(0, 0, -1), End: start.AddDate(0, 0, 7)}
-	pros, aerr := s.candidates(ctx, p, day.Start, day.End)
-	if aerr != nil {
-		return nil, aerr
-	}
-	order := ranked(pros, start, p.Req, nil, p.Lat, p.Lng, nil)
-	if len(order) == 0 {
-		return nil, slotUnavailable("no_professional")
-	}
 	f, a := p.QuoteFacts, p.Address
-	block := slots.BlockFor(start, p.Req)
+	pro := f.Quote.ProID
+	var start, end, blockStart, blockEnd time.Time
+	holdMinutes := cfg.HoldMinutes
+	if asap {
+		pros, aerr := s.candidates(ctx, p, now.AddDate(0, 0, -1), now.AddDate(0, 0, 2))
+		if aerr != nil {
+			return nil, aerr
+		}
+		if len(pros) != 1 {
+			return nil, slotUnavailable("professional_unavailable")
+		}
+		if _, ok := slots.QualifiesASAP(pros[0], p.Req, now); !ok {
+			return nil, slotUnavailable("not_available_now")
+		}
+		w := slots.ASAPFor(pros[0], now, p.Req)
+		if _, ok := slots.FreeASAP(pros[0], w, cfg); !ok {
+			return nil, slotUnavailable("not_available_now")
+		}
+		start, end, blockStart, blockEnd = w.Start, w.End, w.BlockStart, w.BlockEnd
+		holdMinutes = min(holdMinutes, ASAPHoldMinutes)
+	} else {
+		start = req.SlotStart.UTC()
+		if err := slots.Validate(now, start, cfg, p.Req.DurationMinutes); err != nil {
+			return nil, slotUnavailable(slotReason(err))
+		}
+		pros, aerr := s.candidates(ctx, p, start.AddDate(0, 0, -1), start.AddDate(0, 0, 7))
+		if aerr != nil {
+			return nil, aerr
+		}
+		if len(pros) != 1 || len(slots.Available(pros, start, p.Req)) != 1 {
+			return nil, slotUnavailable("professional_unavailable")
+		}
+		block := slots.BlockFor(start, p.Req)
+		end, blockStart, blockEnd = start.Add(time.Duration(p.Req.DurationMinutes)*time.Minute), block.Start, block.End
+	}
 	id := s.bk.NewID()
 	nb := store.NewBooking{
 		ID: id, Customer: user, IdempotencyKey: idemKey, QuoteID: f.Quote.ID, CityCode: p.City, ZoneID: p.ZoneID,
@@ -338,10 +378,10 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 		Address: store.AddressSnapshot{AddressID: a.ID, Label: a.Label, Locality: a.Locality, CityCode: a.CityCode, Pincode: a.Pincode,
 			Lat: a.Lat, Lng: a.Lng, ZoneID: a.ZoneID, CreatedAt: a.CreatedAt},
 		AddressSealed: a.LinesSealed,
-		SlotStart:     start, SlotEnd: start.Add(time.Duration(p.Req.DurationMinutes) * time.Minute), BlockEnd: block.End,
+		SlotStart:     start, SlotEnd: end, BlockStart: blockStart, BlockEnd: blockEnd, Asap: asap,
 		Duration: p.Req.DurationMinutes, GenderRule: p.Req.GenderRule, RequireFemale: requireFemale, Notes: notes,
 		TotalPaise: f.Quote.TotalPaise, TaxablePaise: f.Quote.TaxablePaise, TaxPaise: f.Quote.TaxPaise, Items: f.Quote.Lines,
-		HoldExpiresAt: now.Add(time.Duration(cfg.HoldMinutes) * time.Minute), Candidates: order,
+		HoldExpiresAt: now.Add(time.Duration(holdMinutes) * time.Minute), ProID: pro,
 		PaymentID: s.bk.NewID(), IntentKey: payments.IntentKey(id), At: now,
 	}
 	_, err := s.bk.Store.CreateBooking(ctx, nb)
@@ -353,17 +393,23 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 		return nil, internal(ctx, "booking replay", errors.New("idempotency key used but no booking found"))
 	case errors.Is(err, store.ErrQuoteGone):
 		return nil, quoteExpired()
+	case errors.Is(err, store.ErrPriceGone):
+		return nil, catalogue.PriceUnavailable(nil)
 	case errors.Is(err, store.ErrSlotTaken):
-		return nil, apperr.New(http.StatusConflict, apperr.CodeSlotTaken, "this slot was just taken; pick another")
+		return nil, apperr.New(http.StatusConflict, apperr.CodeSlotTaken, "this professional was just booked for this time; pick again")
 	case err != nil:
 		return nil, internal(ctx, "create booking", err)
 	}
 	return s.created(ctx, user, id)
 }
 
+// ASAPHoldMinutes caps an ASAP booking's payment hold: the professional is
+// blocked from the booking time, so the customer pays quickly or loses them.
+const ASAPHoldMinutes = 5
+
 // replay answers an Idempotency-Key the customer already used: the same
-// booking when the body names the same quote, address and slot, a 400 when
-// it does not. (nil, nil): the key is new.
+// booking when the body names the same quote, address and slot (or asap),
+// a 400 when it does not. (nil, nil): the key is new.
 func (s *Service) replay(ctx context.Context, user uuid.UUID, key string, req model.BookingCreateRequest) (*model.BookingCreated, error) {
 	prev, err := s.bk.Store.BookingByKey(ctx, user, key)
 	if errors.Is(err, store.ErrNotFound) {
@@ -372,7 +418,9 @@ func (s *Service) replay(ctx context.Context, user uuid.UUID, key string, req mo
 	if err != nil {
 		return nil, internal(ctx, "booking by key", err)
 	}
-	if prev.QuoteID != *req.QuoteID || prev.AddressID != *req.AddressID || !prev.SlotStart.Equal(req.SlotStart.UTC()) {
+	asap := req.Asap != nil && *req.Asap
+	sameSlot := asap == prev.Asap && (asap || (req.SlotStart != nil && prev.SlotStart.Equal(req.SlotStart.UTC())))
+	if prev.QuoteID != *req.QuoteID || prev.AddressID != *req.AddressID || !sameSlot {
 		return nil, apperr.Invalid("Idempotency-Key", "this Idempotency-Key was used for a different booking")
 	}
 	return s.created(ctx, user, prev.ID)
@@ -442,7 +490,8 @@ func paymentView(p store.PaymentRow) model.PaymentIntent {
 
 // customerCancellable are the statuses a customer may cancel from (in
 // progress is refused by the rules: no cancel after the start OTP).
-var customerCancellable = map[string]bool{"pending_payment": true, "confirmed": true, "assigned": true, "en_route": true, "arrived": true}
+var customerCancellable = map[string]bool{"pending_payment": true, "confirmed": true, "assigned": true, "en_route": true, "arrived": true,
+	"pro_unavailable": true}
 
 // reschedulable are the statuses a booking can move from.
 var reschedulable = map[string]bool{"confirmed": true, "assigned": true}
@@ -476,6 +525,12 @@ func (s *Service) bookingView(ctx context.Context, rec *store.BookingRecord) (*m
 	now := s.now()
 	b.CanCancel = customerCancellable[b.Status]
 	b.CanReschedule = reschedulable[b.Status] && rec.RescheduleCount == 0 && !now.Add(RescheduleCutoff).After(b.SlotStart)
+	if b.Status != "pro_unavailable" {
+		b.ChoiceDeadline, b.UnavailableCause = nil, nil
+	}
+	if b.PendingChange, aerr = s.pendingChange(ctx, rec); aerr != nil {
+		return nil, aerr
+	}
 	return &b, nil
 }
 

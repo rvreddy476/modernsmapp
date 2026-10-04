@@ -22,7 +22,7 @@ var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 var bookingStatuses = map[string]bool{"pending_payment": true, "confirmed": true, "assigned": true, "en_route": true,
 	"arrived": true, "in_progress": true, "awaiting_extras_payment": true, "completed": true, "cancelled": true,
-	"expired": true, "customer_no_show": true, "pro_no_show": true}
+	"expired": true, "customer_no_show": true, "pro_no_show": true, "pro_unavailable": true}
 
 // AdminBookings pages bookings (filters: status, city, IST date).
 func (s *Service) AdminBookings(ctx context.Context, status, city, date, cursor string) (*model.BookingPage, error) {
@@ -95,12 +95,19 @@ func (s *Service) AdminBooking(ctx context.Context, id uuid.UUID) (*model.AdminB
 	if d.Photos == nil {
 		d.Photos = []model.Photo{}
 	}
+	d.ExcludedProIDs = rec.ExcludedProIDs
+	if d.ExcludedProIDs == nil {
+		d.ExcludedProIDs = []uuid.UUID{}
+	}
+	if d.ProChanges, err = s.proChanges(ctx, id); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 
 // adminCancellable: ops may cancel up to and including in progress.
 var adminCancellable = map[string]bool{"pending_payment": true, "confirmed": true, "assigned": true, "en_route": true,
-	"arrived": true, "in_progress": true}
+	"arrived": true, "in_progress": true, "pro_unavailable": true}
 
 // AdminCancel cancels for ops: a full refund unless fee_paise is given
 // (capped at what is refundable). Audited in the same transaction.

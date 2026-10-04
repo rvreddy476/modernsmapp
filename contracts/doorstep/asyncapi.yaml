@@ -60,6 +60,10 @@ channels:
           - $ref: '#/components/messages/ProOfferCreated'
           - $ref: '#/components/messages/ProOfferClosed'
           - $ref: '#/components/messages/ProSettlementComputed'
+          - $ref: '#/components/messages/ProPriceSubmitted'
+          - $ref: '#/components/messages/ProPriceReviewed'
+          - $ref: '#/components/messages/BookingProUnavailable'
+          - $ref: '#/components/messages/BookingProChanged'
 
   doorstep.booking.{booking_id}:
     description: >-
@@ -67,7 +71,7 @@ channels:
       (POST /realtime/token), the accepted professional (POST
       /pro/realtime/token), admin console. Frames (A4): see x-realtime-frames
       (doorstep.booking.status, doorstep.booking.pro_late,
-      doorstep.booking.pro_location while en_route). Ids, statuses and times
+      doorstep.booking.pro_location while en_route, B1 doorstep.booking.pro_unavailable). Ids, statuses and times
       only: never an address, phone or OTP. Clients refetch on reconnect;
       Kafka is the durable copy.
     parameters:
@@ -101,18 +105,19 @@ x-realtime-frames:
     REALTIME_TOKEN_SECRET, 5-minute lifetime. No frame carries an address, a
     phone number or an OTP.
   doorstep.booking.<booking_id>:
-    doorstep.booking.status: {data: [booking_id, status, slot_start, slot_end, at], when: "every status change (confirmed, assigned, back to confirmed, cancelled, pro_no_show) and a slot moved by a reschedule or a no-show rescue"}
+    doorstep.booking.status: {data: [booking_id, status, slot_start, slot_end, at], when: "every status change (confirmed, assigned, back to confirmed, pro_unavailable, confirmed again after a change of professional, cancelled, pro_no_show) and a slot moved by a reschedule or a no-show rescue"}
     doorstep.booking.pro_late: {data: [booking_id, minutes_late, free_cancel, at], when: "slot + 15 min, not arrived"}
     doorstep.booking.pro_location: {data: [booking_id, lat, lng, eta_minutes, at], when: "a location fix while the professional is en_route to this booking"}
+    doorstep.booking.pro_unavailable: {data: [booking_id, cause, choice_deadline, at], cause: [declined, offer_expired, pro_cancel, not_on_duty, pro_no_show, ops_redispatch, no_professional], when: "B1: the picked professional is gone; the customer picks another (GET /bookings/{id}/professionals) or cancels by choice_deadline (30 min, then a full refund). Sent right after the status frame"}
   doorstep.pro.<user_id>:
     doorstep.pro.offer.new: {data: [offer_id, booking_id, expires_at, slot_start, slot_end, at]}
-    doorstep.pro.offer.closed: {data: [offer_id, booking_id, outcome, at], outcome: [accepted, declined, expired, withdrawn]}
+    doorstep.pro.offer.closed: {data: [offer_id, booking_id, outcome, at], outcome: [accepted, declined, expired, withdrawn], when: "B1: a decline or an expiry moves the booking to pro_unavailable; it is never offered to anyone else"}
     doorstep.pro.job.assigned: {data: [booking_id, status, at]}
-    doorstep.pro.job.removed: {data: [booking_id, cause, at], cause: [pro_cancel, pro_no_show, not_on_duty, ops_redispatch, rescheduled, booking_cancelled]}
+    doorstep.pro.job.removed: {data: [booking_id, cause, at], cause: [pro_cancel, pro_no_show, not_on_duty, ops_redispatch, rescheduled, booking_cancelled], when: "B1: pro_cancel, pro_no_show, not_on_duty and ops_redispatch now leave the booking pro_unavailable (the customer chooses) instead of re-dispatching it"}
     doorstep.pro.job.updated: {data: [booking_id, status, cause, at], when: "the customer moved the slot and the professional keeps the job"}
     doorstep.pro.duty: {data: [on_duty, since, reason, at], reason: [professional, no_location]}
   doorstep.admin.live:
-    doorstep.admin.unassigned: {data: [booking_id, reason, minutes_to_slot, at], reason: [t_minus_2h, no_professional_left]}
+    doorstep.admin.unassigned: {data: [booking_id, reason, minutes_to_slot, at], reason: [t_minus_2h, no_professional_left], when: "B1: no_professional_left when the picked professional's calendar no longer admits the job (the booking then goes to pro_unavailable)"}
 
 x-push-types:
   description: >-
@@ -124,7 +129,9 @@ x-push-types:
   momentum:
     doorstep.booking.confirmed: {from_event: doorstep.booking.confirmed, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
     doorstep.booking.assigned: {from_event: doorstep.booking.assigned, data: [booking_id, pro_first_name], deeplink: "momentum://doorstep/bookings/{booking_id}"}
-    doorstep.booking.reassigned: {from_event: doorstep.booking.reassigned, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
+    doorstep.booking.reassigned: {from_event: doorstep.booking.reassigned, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}", when: "B1: only a reschedule to a slot the accepted professional cannot take (cause rescheduled)"}
+    doorstep.booking.pro_unavailable: {from_event: doorstep.booking.pro_unavailable, data: [booking_id, cause, choice_deadline], deeplink: "momentum://doorstep/bookings/{booking_id}/professionals", priority: high, when: "B1: pick another professional or cancel for a full refund before choice_deadline"}
+    doorstep.booking.pro_changed: {from_event: doorstep.booking.pro_changed, data: [booking_id, difference_paise], deeplink: "momentum://doorstep/bookings/{booking_id}", when: "B1: the new professional is confirmed (difference_paise < 0 - refunded)"}
     doorstep.booking.pro_en_route: {from_event: doorstep.booking.en_route, data: [booking_id, eta_minutes], deeplink: "momentum://doorstep/bookings/{booking_id}"}
     doorstep.booking.pro_arrived: {from_event: doorstep.booking.arrived, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
     doorstep.booking.started: {from_event: doorstep.booking.started, data: [booking_id], deeplink: "momentum://doorstep/bookings/{booking_id}"}
@@ -153,6 +160,7 @@ x-push-types:
     doorstep.pro.application.rejected: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://onboarding", when: "data.to_status == 'rejected'"}
     doorstep.pro.account.suspended: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://account", when: "data.to_status == 'suspended'"}
     doorstep.pro.account.reinstated: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://home", when: "data.to_status == 'approved' && data.from_status == 'suspended'"}
+    doorstep.pro.price.reviewed: {from_event: doorstep.pro.price_reviewed, data: [price_id, service_id, decision], deeplink: "doorstep-pro://prices", when: "B1: an admin approved or rejected a submitted price"}
     doorstep.pro.document.reviewed: {from_event: doorstep.pro.document_reviewed, data: [document_id, decision], deeplink: "doorstep-pro://onboarding"}
     doorstep.pro.background_check.expiring: {from_event: doorstep.pro.background_check_expiring, data: [valid_until], deeplink: "doorstep-pro://onboarding/police-certificate"}
     doorstep.pro.rating.received: {from_event: doorstep.booking.rated, data: [booking_id, stars], deeplink: "doorstep-pro://jobs/{booking_id}", when: "data.rater_kind == 'customer'"}
@@ -237,6 +245,8 @@ components:
     BookingReassigned:
       name: doorstep.booking.reassigned
       summary: >-
+        B1: emitted only for cause rescheduled (decline, give-back, no-show,
+        not on duty and ops redispatch now emit doorstep.booking.pro_unavailable).
         Back to confirmed; dispatch re-runs excluding previous_pro_user_id. The
         envelope pro_user_id is null (nobody has accepted); previous_pro_user_id
         names the professional who lost the job so they can be told (A4: also a
@@ -550,3 +560,85 @@ components:
           net_paise: {type: integer, format: int64}
           period_start: {type: string, format: date}
           period_end: {type: string, format: date}
+    # ---------- B1 (4 Oct 2026) ----------
+    ProPriceSubmitted:
+      name: doorstep.pro.price_submitted
+      summary: >-
+        A professional submitted a price; it is pending until an admin approves
+        it (nothing approves itself). For the ops review queue. Partition key
+        pro_user_id. previous_price_paise is the professional's live approved
+        price for the item, if any.
+      payload:
+        type: object
+        required: [price_id, pro_id, pro_user_id, service_id, item_kind, item_id, unit, price_paise, previous_price_paise]
+        properties:
+          price_id: {type: string, format: uuid}
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          service_id: {type: string, format: uuid}
+          item_kind: {type: string, enum: [option, addon]}
+          item_id: {type: string, format: uuid}
+          unit: {type: string, enum: [per_job, per_hour, per_month]}
+          price_paise: {type: integer, format: int64, description: GST-inclusive, per unit}
+          previous_price_paise: {type: integer, format: int64, nullable: true}
+    ProPriceReviewed:
+      name: doorstep.pro.price_reviewed
+      summary: >-
+        An admin approved (live from now; the previous approved price for the
+        item closed) or rejected a price, audited in the same transaction.
+        Partition key pro_user_id.
+      payload:
+        type: object
+        required: [price_id, pro_id, pro_user_id, service_id, item_kind, item_id, price_paise, decision, reason]
+        properties:
+          price_id: {type: string, format: uuid}
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          service_id: {type: string, format: uuid}
+          item_kind: {type: string, enum: [option, addon]}
+          item_id: {type: string, format: uuid}
+          price_paise: {type: integer, format: int64}
+          decision: {type: string, enum: [approved, rejected]}
+          reason: {type: string, nullable: true}
+    BookingProUnavailable:
+      name: doorstep.booking.pro_unavailable
+      summary: >-
+        The professional the customer picked is gone: declined, let the offer
+        expire (3 min for ASAP), gave the job back, was not on duty, did not
+        turn up, ops took the job off them, or their calendar no longer admits
+        it. Nothing is reassigned silently: the customer picks another
+        professional and a time (GET /bookings/{id}/professionals, POST
+        /bookings/{id}/change-professional) or cancels for a full refund, by
+        choice_deadline (30 min; then a full refund and doorstep.booking.cancelled).
+        The envelope pro_user_id is null; previous_pro_user_id names the
+        professional who let it go (null when none was offered).
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [previous_pro_user_id, cause, choice_deadline]
+            properties:
+              previous_pro_user_id: {type: string, format: uuid, nullable: true}
+              cause: {type: string, enum: [declined, offer_expired, pro_cancel, not_on_duty, pro_no_show, ops_redispatch, no_professional]}
+              choice_deadline: {type: string, format: date-time}
+    BookingProChanged:
+      name: doorstep.booking.pro_changed
+      summary: >-
+        The customer picked another professional for a pro_unavailable booking:
+        confirmed again with the new professional, slot, lines and total, and
+        offered to them next (doorstep.pro.offer_created follows). Emitted at
+        once for a cheaper or equal change (the difference refunded;
+        doorstep.booking.refunded when it settles), or when the signed payment for a
+        dearer one succeeds (reference doorstep_extras, a pro_change bill). The
+        envelope pro_user_id stays null until the new professional accepts.
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [change_id, previous_pro_user_id, new_pro_user_id, difference_paise, asap]
+            properties:
+              change_id: {type: string, format: uuid}
+              previous_pro_user_id: {type: string, format: uuid, nullable: true}
+              new_pro_user_id: {type: string, format: uuid}
+              difference_paise: {type: integer, format: int64, description: new total - previous total (negative - refunded)}
+              asap: {type: boolean}

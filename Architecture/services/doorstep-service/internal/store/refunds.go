@@ -32,13 +32,18 @@ type RefundJob struct {
 	AmountPaise int64
 	Status      string
 	Attempts    int
+	// ReferenceType is the payment's (doorstep_booking or doorstep_extras):
+	// the refund goes to payments-service under that reference.
+	ReferenceType string
 }
 
-const refundJobCols = `r.id, r.booking_id, r.payment_id, p.payments_intent_id, r.cause, r.idempotency_key, r.amount_paise, r.status, r.attempts`
+const refundJobCols = `r.id, r.booking_id, r.payment_id, p.payments_intent_id, r.cause, r.idempotency_key, r.amount_paise, r.status, r.attempts,
+	p.reference_type`
 
 func scanRefundJob(r pgx.Row) (RefundJob, error) {
 	var j RefundJob
-	err := r.Scan(&j.ID, &j.BookingID, &j.PaymentID, &j.IntentID, &j.Cause, &j.Key, &j.AmountPaise, &j.Status, &j.Attempts)
+	err := r.Scan(&j.ID, &j.BookingID, &j.PaymentID, &j.IntentID, &j.Cause, &j.Key, &j.AmountPaise, &j.Status, &j.Attempts,
+		&j.ReferenceType)
 	return j, err
 }
 
@@ -139,6 +144,17 @@ func (s *Store) AdminRequestRefund(ctx context.Context, a Actor, in AdminRefundR
 		return nil, false, err
 	}
 	if b.PaymentID == nil || in.AmountPaise > b.Refundable {
+		return nil, false, ErrExceedsPaid
+	}
+	// An ops refund is made on the booking payment: never more than that
+	// payment still has (a paid change-of-professional difference is its own
+	// payment, B1).
+	var left int64
+	if err := tx.QueryRow(ctx, `SELECT p.amount_paise - COALESCE((SELECT sum(r.amount_paise) FROM doorstep.refunds r
+		WHERE r.payment_id = p.id AND r.status <> 'failed'), 0) FROM doorstep.payments p WHERE p.id = $1`, *b.PaymentID).Scan(&left); err != nil {
+		return nil, false, err
+	}
+	if in.AmountPaise > left {
 		return nil, false, ErrExceedsPaid
 	}
 	rid, err := insertRefundTx(ctx, tx, *b.PaymentID, in.BookingID, in.Cause, in.Key, in.AmountPaise, &a.UserID, at)

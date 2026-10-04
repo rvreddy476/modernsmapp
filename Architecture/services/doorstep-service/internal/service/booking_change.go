@@ -25,12 +25,19 @@ func cancelNotAllowed() *apperr.Error {
 // RuleProLate is the cancel-preview rule when the professional is late.
 const RuleProLate = "pro_late_free"
 
+// RuleProUnavailable is the cancel-preview rule of a pro_unavailable
+// booking: always free, a full refund (B1).
+const RuleProUnavailable = "pro_unavailable_free"
+
 func minutesLeft(now, slotStart time.Time) int {
 	return int(math.Floor(slotStart.Sub(now).Minutes()))
 }
 
 // customerVerdict applies the cancellation rules to a booking.
 func (s *Service) customerVerdict(ctx context.Context, b *store.LockedBooking) (cancelrules.Verdict, *apperr.Error) {
+	if b.Status == "pro_unavailable" {
+		return cancelrules.Verdict{Allowed: true, RefundPaise: b.Refundable, Rule: RuleProUnavailable}, nil
+	}
 	stage, ok := cancelrules.Stage(b.Status)
 	if !ok || !customerCancellable[b.Status] && b.Status != "in_progress" {
 		return cancelrules.Verdict{}, bookingTransition(b.Status)
@@ -60,7 +67,7 @@ func (s *Service) CancelPreview(ctx context.Context, user, id uuid.UUID) (*model
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := cancelrules.Stage(lb.Status); !ok {
+	if _, ok := cancelrules.Stage(lb.Status); !ok && lb.Status != "pro_unavailable" {
 		return &model.CancelPreview{Allowed: false, Rule: lb.Status}, nil
 	}
 	v, aerr := s.customerVerdict(ctx, lb)
@@ -138,17 +145,12 @@ func cancelErr(ctx context.Context, err error) *apperr.Error {
 	return internal(ctx, "change booking", err)
 }
 
-func refundIDs(id *uuid.UUID) []uuid.UUID {
-	if id == nil {
-		return nil
-	}
-	return []uuid.UUID{*id}
-}
+func refundIDs(ids []uuid.UUID) []uuid.UUID { return ids }
 
 // Reschedule moves the booking to another slot: free once, up to 3 h
-// before. The current professional is kept when still free; otherwise the
-// best other one is held (an assigned booking then goes back to confirmed
-// and is offered again). New block then old released, one transaction.
+// before, with the same professional only (B1: the customer picked them and
+// their price; nobody else is held silently). New block then old released,
+// one transaction; a slot they cannot take is 422 (pick another time).
 func (s *Service) Reschedule(ctx context.Context, user, id uuid.UUID, req model.RescheduleRequest) (*model.Booking, error) {
 	if req.SlotStart == nil {
 		return nil, apperr.Invalid("slot_start", "slot_start is required")
@@ -257,7 +259,13 @@ func (s *Service) submitRefund(ctx context.Context, j store.RefundJob) bool {
 		return false
 	}
 	next := s.nowUTC().Add(refundBackoff[min(j.Attempts, len(refundBackoff)-1)])
-	if s.bk.Payments == nil || j.IntentID == nil {
+	// The refund goes back under the payment's own reference (B1: a
+	// change-of-professional difference is a doorstep_extras payment).
+	client := s.bk.Payments
+	if j.ReferenceType == payments.RefExtras {
+		client = s.bk.ExtrasPayments
+	}
+	if client == nil || j.IntentID == nil {
 		_ = s.bk.Store.MarkRefundAttempt(ctx, j.ID, "payments not configured or intent unknown", false, next)
 		return false
 	}
@@ -266,7 +274,7 @@ func (s *Service) submitRefund(ctx context.Context, j store.RefundJob) bool {
 		_ = s.bk.Store.MarkRefundAttempt(ctx, j.ID, "intent id is not a UUID", true, next)
 		return false
 	}
-	acc, err := s.bk.Payments.Refund(ctx, intentID, paymentsclient.RefundRequest{ApplicationID: payments.ApplicationID,
+	acc, err := client.Refund(ctx, intentID, paymentsclient.RefundRequest{ApplicationID: payments.ApplicationID,
 		AmountMinor: j.AmountPaise, Reason: "doorstep " + j.Cause, IdempotencyKey: j.Key})
 	if err != nil {
 		terminal := errors.Is(err, paymentsclient.ErrRefused)
@@ -310,7 +318,7 @@ func (s *Service) AfterPaymentEvent(ctx context.Context, a payments.Applied) {
 		s.SubmitRefunds(ctx, a.RefundIDs...)
 	}
 	switch a.Decision.Outcome {
-	case payments.OutcomeConfirmed, payments.OutcomeLateCaptureConfirmed:
+	case payments.OutcomeConfirmed, payments.OutcomeLateCaptureConfirmed, payments.OutcomeProChanged:
 		s.publishBookingNow(ctx, a.BookingID)
 		if err := s.Dispatch(ctx, a.BookingID); err != nil {
 			slog.ErrorContext(ctx, "doorstep: dispatch after confirm failed; the worker retries", "booking_id", a.BookingID, "error", err)
@@ -318,9 +326,18 @@ func (s *Service) AfterPaymentEvent(ctx context.Context, a payments.Applied) {
 	}
 }
 
-// ExpireHolds runs the hold sweeper once.
+// ExpireHolds runs the hold sweeper once: lapsed booking holds, and (B1)
+// changes of professional whose difference was not paid before their hold
+// lapsed (abandoned; the customer may pick again until the deadline).
 func (s *Service) ExpireHolds(ctx context.Context) (int, error) {
 	total := 0
+	if ids, err := s.bk.Store.AbandonLapsedChanges(ctx, s.nowUTC(), 100); err != nil {
+		return 0, err
+	} else {
+		for _, id := range ids {
+			s.publishBookingNow(ctx, id)
+		}
+	}
 	for i := 0; i < 20; i++ {
 		n, err := s.bk.Store.ExpireHolds(ctx, 100)
 		total += n

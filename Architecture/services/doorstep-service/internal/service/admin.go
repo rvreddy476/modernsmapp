@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/doorstep-service/internal/apperr"
 	"github.com/atpost/doorstep-service/internal/model"
 	"github.com/atpost/doorstep-service/internal/store"
+	"github.com/atpost/doorstep-service/internal/tax"
 	"github.com/atpost/shared/kyc"
 	"github.com/google/uuid"
 )
@@ -21,7 +22,8 @@ import (
 // store writes each change and its audit row in one transaction.
 
 var (
-	families      = set("HOME_CLEANING", "PEST_CONTROL", "APPLIANCE_REPAIR", "INSTALLATION_REPAIR", "PAINTING", "BEAUTY_SALON")
+	families      = set(tax.Families...)
+	optionUnits   = set("per_job", "per_hour", "per_month")
 	genderRules   = set("any", "female_pros_only", "male_pros_only")
 	extrasPolices = set("rate_card", "catalogue_addons_only")
 	units         = set("per_item", "per_metre", "per_hour", "per_visit")
@@ -327,11 +329,17 @@ func (s *Service) AdminCreateOption(ctx context.Context, a store.Actor, serviceI
 	if in.MaxQuantity != nil && (*in.MaxQuantity < 1 || *in.MaxQuantity > 20) {
 		return nil, apperr.Invalid("max_quantity", "max_quantity must be between 1 and 20")
 	}
+	if err := oneOf("unit", in.Unit, optionUnits); err != nil {
+		return nil, err
+	}
 	v, err := s.store.CreateOption(ctx, a, serviceID, in)
 	return v, adminErr(ctx, "create option", err)
 }
 
 func (s *Service) AdminUpdateOption(ctx context.Context, a store.Actor, id uuid.UUID, p model.AdminOptionPatch) (*model.AdminOption, error) {
+	if err := oneOf("unit", p.Unit, optionUnits); err != nil {
+		return nil, err
+	}
 	v, err := s.store.UpdateOption(ctx, a, id, p)
 	return v, adminErr(ctx, "update option", err)
 }

@@ -30,6 +30,12 @@ type BookingRecord struct {
 	ProLateAt     *time.Time
 	BufferMinutes int
 	Lat, Lng      float64
+	// B1: the professionals the customer may not pick again, and the
+	// pending change of professional (if any; its payment intent is the
+	// service's to attach).
+	ExcludedProIDs  []uuid.UUID
+	PendingChangeID *uuid.UUID
+	CityState       string
 	// History is the full status history (actor kinds and reasons are for
 	// the admin view; the customer gets StatusSteps).
 	History []model.HistoryEntry
@@ -48,25 +54,30 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 		       b.extras_total_paise, b.hold_expires_at, b.address_snapshot, b.address_sealed, b.parent_booking_id,
 		       b.reschedule_count, b.reserved_pro_id, b.needs_attention, b.attention_reason, b.pro_late_at,
 		       ST_Y(b.location::geometry), ST_X(b.location::geometry), z.travel_buffer_minutes, b.created_at, b.updated_at,
-		       COALESCE((SELECT sum(o.amount_paise) FROM doorstep.outstanding o WHERE o.booking_id = b.id AND o.status = 'open'), 0)::bigint
+		       COALESCE((SELECT sum(o.amount_paise) FROM doorstep.outstanding o WHERE o.booking_id = b.id AND o.status = 'open'), 0)::bigint,
+		       b.asap, b.choice_deadline, b.unavailable_cause, b.excluded_pro_ids, ci.state_code,
+		       (SELECT pc.id FROM doorstep.booking_pro_changes pc WHERE pc.booking_id = b.id AND pc.status = 'pending_payment')
 		FROM doorstep.bookings b
 		JOIN doorstep.services s ON s.id = b.service_id
 		JOIN doorstep.categories c ON c.id = b.category_id
 		JOIN doorstep.zones z ON z.id = b.zone_id
+		JOIN doorstep.cities ci ON ci.code = b.city_code
 		WHERE b.id = $1 AND ($2::uuid IS NULL OR b.customer_user_id = $2)`, id, customer).Scan(
 		&b.ID, &r.CustomerUserID, &b.Status, &b.ServiceID, &b.ServiceName, &b.CategorySlug, &r.CategoryID, &b.CityCode, &b.ZoneID,
 		&b.SlotStart, &b.SlotEnd, &b.DurationMinutes, &b.RequireFemalePro, &r.GenderRule, &r.RequiredSkill,
 		&b.TotalPaise, &b.TaxablePaise, &b.TaxPaise, &b.PaidPaise, &b.RefundedPaise, &b.CancellationFeePaise,
 		&b.ExtrasTotalPaise, &b.HoldExpiresAt, &snap, &r.AddressSealed, &b.ParentBookingID,
 		&r.RescheduleCount, &r.ReservedProID, &r.NeedsAttention, &r.AttentionReason, &r.ProLateAt,
-		&r.Lat, &r.Lng, &r.BufferMinutes, &b.CreatedAt, &b.UpdatedAt, &b.OutstandingPaise)
+		&r.Lat, &r.Lng, &r.BufferMinutes, &b.CreatedAt, &b.UpdatedAt, &b.OutstandingPaise,
+		&b.Asap, &b.ChoiceDeadline, &b.UnavailableCause, &r.ExcludedProIDs, &r.CityState, &r.PendingChangeID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	b.SlotStart, b.SlotEnd, b.CreatedAt, b.UpdatedAt = b.SlotStart.UTC(), b.SlotEnd.UTC(), b.CreatedAt.UTC(), b.UpdatedAt.UTC()
-	if b.HoldExpiresAt != nil {
-		t := b.HoldExpiresAt.UTC()
-		b.HoldExpiresAt = &t
+	utcPtr(&b.HoldExpiresAt)
+	utcPtr(&b.ChoiceDeadline)
+	if r.ExcludedProIDs == nil {
+		r.ExcludedProIDs = []uuid.UUID{}
 	}
 	var a AddressSnapshot
 	if err := json.Unmarshal(snap, &a); err != nil {
@@ -76,7 +87,7 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 		Lat: a.Lat, Lng: a.Lng, ZoneID: a.ZoneID, CreatedAt: a.CreatedAt.UTC()}
 
 	rows, err := s.db.Query(ctx, `
-		SELECT kind, ref_id, COALESCE(price_id, '00000000-0000-0000-0000-000000000000'::uuid), name, quantity, unit_price_paise,
+		SELECT kind, ref_id, COALESCE(price_id, '00000000-0000-0000-0000-000000000000'::uuid), name, unit, quantity, unit_price_paise,
 		       line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac
 		FROM doorstep.booking_items WHERE booking_id = $1 ORDER BY line_no`, id)
 	if err != nil {
@@ -84,7 +95,7 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 	}
 	b.Items, err = collect(rows, func(r pgx.Rows) (model.QuoteLine, error) {
 		var l model.QuoteLine
-		err := r.Scan(&l.Kind, &l.RefID, &l.PriceID, &l.Name, &l.Quantity, &l.UnitPricePaise, &l.LineTotalPaise,
+		err := r.Scan(&l.Kind, &l.RefID, &l.PriceID, &l.Name, &l.Unit, &l.Quantity, &l.UnitPricePaise, &l.LineTotalPaise,
 			&l.TaxablePaise, &l.TaxPaise, &l.TaxRateBPS, &l.GSTCategory, &l.SAC)
 		return l, err
 	})
@@ -115,16 +126,20 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 		return nil, err
 	}
 
-	// The professional, from acceptance on: first name, photo, rating.
+	// The professional: the one who accepted, else the one the customer
+	// picked (B1: the customer chose them, so the card is theirs to see):
+	// first name, photo, rating; never a phone.
 	var name string
 	var photo *string
 	var sum int64
 	var count, jobs int
 	err = s.db.QueryRow(ctx, `
 		SELECT p.display_name, p.photo_media_id, p.rating_sum, p.rating_count, p.jobs_completed
-		FROM doorstep.booking_assignments a JOIN doorstep.professionals p ON p.id = a.pro_id
-		WHERE a.booking_id = $1 AND a.role = 'lead' AND a.status IN ('accepted', 'completed')
-		ORDER BY a.updated_at DESC LIMIT 1`, id).Scan(&name, &photo, &sum, &count, &jobs)
+		FROM doorstep.professionals p
+		WHERE p.id = COALESCE((SELECT a.pro_id FROM doorstep.booking_assignments a
+		                        WHERE a.booking_id = $1 AND a.role = 'lead' AND a.status IN ('accepted', 'completed')
+		                        ORDER BY a.updated_at DESC LIMIT 1),
+		                       (SELECT b.reserved_pro_id FROM doorstep.bookings b WHERE b.id = $1))`, id).Scan(&name, &photo, &sum, &count, &jobs)
 	switch mapped := mapErr(err); {
 	case mapped == ErrNotFound:
 	case err != nil:

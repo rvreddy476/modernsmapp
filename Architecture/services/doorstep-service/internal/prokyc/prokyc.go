@@ -55,9 +55,14 @@ type Facts struct {
 	SelfieMatched bool
 	// VerifiedSkills counts pro_skills rows in status verified.
 	VerifiedSkills int
-	// SkillsAwaitingReview counts declared, unverified skills with a trade
-	// certificate under admin review.
+	// SkillsAwaitingReview counts declared skills waiting for an admin: a
+	// certificate-free skill (every declaration is pending until an admin
+	// verifies it), or one whose trade certificate is under review or
+	// approved.
 	SkillsAwaitingReview int
+	// SelfieAwaitingReview: a selfie is pending an admin's decision (the face
+	// match is advisory).
+	SelfieAwaitingReview bool
 	// HasServiceArea: at least one zone and a home point.
 	HasServiceArea bool
 	HasWeeklyHours bool
@@ -130,14 +135,16 @@ func RecommendedSteps(f Facts) []Step {
 }
 
 // AwaitingReviewOnly reports whether the professional has done everything
-// they can and only admin reviews remain: every missing step is skills with
-// a trade certificate under review, or the police certificate under review.
+// they can and only admin reviews remain: every missing step is skills
+// awaiting an admin, the selfie awaiting an admin, or the police
+// certificate under review.
 // A draft professional in this state moves to pending_verification. Nothing
 // missing at all also counts.
 func AwaitingReviewOnly(f Facts) bool {
 	for _, s := range MissingSteps(f) {
 		switch {
 		case s == StepSkills && f.SkillsAwaitingReview > 0:
+		case s == StepSelfie && f.SelfieAwaitingReview:
 		case s == StepPoliceCertificate && f.PoliceCertificatePending:
 		default:
 			return false

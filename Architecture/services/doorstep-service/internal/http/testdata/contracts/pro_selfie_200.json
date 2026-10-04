@@ -1,1 +1,1 @@
-{"data":{"kind":"selfie_face_match","status":"passed","score":96,"verified_at":"2026-10-04T06:30:00Z"},"meta":{"request_id":"fixture"}}
+{"data":{"kind":"selfie_face_match","status":"pending","score":96,"verified_at":null},"meta":{"request_id":"fixture"}}

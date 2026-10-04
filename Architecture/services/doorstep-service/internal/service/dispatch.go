@@ -36,7 +36,8 @@ type DispatchStore interface {
 	Redispatch(ctx context.Context, in store.Redispatch) (*store.RedispatchResult, error)
 	AcceptOffer(ctx context.Context, in store.AcceptInput) (*store.AcceptResult, error)
 	EndProNoShow(ctx context.Context, id uuid.UUID, close *store.CloseAssignment, from []string, reason, refundCause, refundKey string,
-		at time.Time) (*uuid.UUID, error)
+		at time.Time) ([]uuid.UUID, error)
+	MakeProUnavailable(ctx context.Context, in store.Unavailable) (*store.UnavailableResult, error)
 
 	DueOfferExpiries(ctx context.Context, now time.Time, limit int) ([]store.AssignmentRef, error)
 	BookingsAwaitingOffer(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error)
@@ -92,138 +93,77 @@ func offerTaken() *apperr.Error {
 	return apperr.New(http.StatusConflict, apperr.CodeOfferTaken, "this offer is no longer open")
 }
 
-// spec is one redispatch.
-type spec struct {
-	from    []string
-	close   *store.CloseAssignment
-	cause   string // reassigned cause when an assigned booking goes back
-	actor   string
-	actorID *uuid.UUID
-	reason  string
-	exclude []uuid.UUID
-	// rescue: a cause to rescue the booking under when its slot is already
-	// inside the unassigned-cancel deadline.
-	rescue string
-	// moveNow: a no-show; the job moves to the earliest a replacement can
-	// start (within an hour) and is rescued.
-	moveNow bool
-	audit   *store.Actor
-	// endIfNone ends the booking instead of leaving it confirmed when no
-	// professional is free (a no-show with no replacement).
-	endIfNone bool
-}
-
-// redispatch reads the booking, ranks the free professionals (minus every
-// exclusion) and runs store.Redispatch, retrying when the booking moved
-// under it. It then publishes the live frames and ends a rescue nobody can
-// take.
-func (s *Service) redispatch(ctx context.Context, id uuid.UUID, sp spec) (*store.RedispatchResult, error) {
-	var lastErr error
+// offerReserved offers a confirmed booking to the professional the
+// customer picked (reserved_pro_id, whose block holds the slot) — and to
+// nobody else (B1). Idempotent: a booking with a live offer or an accepted
+// professional is left alone. A booking with no professional left (no
+// reserved professional, or their block cannot be kept) goes to
+// pro_unavailable for the customer to choose.
+func (s *Service) offerReserved(ctx context.Context, id uuid.UUID) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		f, err := s.ds.Store.DispatchFacts(ctx, id)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if !store.Contains(sp.from, f.Status) {
-			return nil, store.ErrStale
+		if f.Status != "confirmed" || f.Live != nil {
+			return nil
 		}
-		if sp.close == nil && f.Live != nil {
-			return &store.RedispatchResult{NoOp: true, Status: f.Status, Customer: f.Customer}, nil
+		if f.ReservedProID == nil {
+			_, err := s.proUnavailable(ctx, id, unavailableSpec{from: []string{"confirmed"}, version: f.Version, actor: "system",
+				cause: events.UnavailableNoProfessional, reason: "no professional holds the job"})
+			if errors.Is(err, store.ErrStale) {
+				continue
+			}
+			return err
 		}
 		now := s.nowUTC()
-		exclude := map[uuid.UUID]bool{}
-		for _, p := range f.Excluded {
-			exclude[p] = true
-		}
-		for _, p := range sp.exclude {
-			exclude[p] = true
-		}
-		if sp.close != nil {
-			exclude[sp.close.ProID] = true
-		}
-		in := store.Redispatch{BookingID: id, From: sp.from, Version: f.Version, Close: sp.close, Cause: sp.cause,
-			ActorKind: sp.actor, ActorID: sp.actorID, Reason: sp.reason, Start: f.SlotStart, End: f.SlotEnd, Audit: sp.audit, At: now}
 		req := f.Request()
-		rescueUntil := f.RescueUntil
-		feasible := true
-		switch {
-		case sp.moveNow:
-			start, ok := dispatch.RescueStart(now, f.BufferMinutes)
-			feasible = ok
-			in.Start, in.End, in.MoveSlot = start, start.Add(time.Duration(f.Duration)*time.Minute), true
-			ru := now.Add(dispatch.RescueWindow)
-			in.RescueUntil, in.RescueCause, rescueUntil = &ru, sp.rescue, &ru
-		case sp.rescue != "" && f.RescueUntil == nil && dispatch.NeedsRescue(now, f.SlotStart):
-			ru := now.Add(dispatch.RescueWindow)
-			in.RescueUntil, in.RescueCause, rescueUntil = &ru, sp.rescue, &ru
-		}
-		in.BlockEnd = slots.BlockFor(in.Start, req).End
-		if feasible {
-			pros, err := s.bk.Store.SlotCandidates(ctx, store.CandidateQuery{City: f.CityCode, ZoneID: f.ZoneID, Lat: f.Lat, Lng: f.Lng,
-				Skill: f.Skill, From: in.Start.AddDate(0, 0, -1), To: in.Start.AddDate(0, 0, 7), ExcludeBooking: &id})
-			if err != nil {
-				return nil, err
-			}
-			in.Candidates = ranked(pros, in.Start, req, f.ReservedProID, f.Lat, f.Lng, exclude)
-		}
-		if len(in.Candidates) == 0 && sp.endIfNone {
-			return nil, s.endUnserved(ctx, id, sp.close, sp.from, "the professional did not arrive and nobody could replace them")
-		}
-		in.OfferExpiresAt = dispatch.OfferExpiry(now, in.Start, f.Windows, rescueUntil)
+		in := store.Redispatch{BookingID: id, From: []string{"confirmed"}, Version: f.Version, ActorKind: "system",
+			Start: f.SlotStart, End: f.SlotEnd, BlockEnd: slots.BlockFor(f.SlotStart, req).End,
+			Candidates: []uuid.UUID{*f.ReservedProID}, OfferExpiresAt: s.offerExpiry(now, f), At: now}
 		res, err := s.ds.Store.Redispatch(ctx, in)
 		if errors.Is(err, store.ErrStale) {
-			lastErr = err
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
-		s.afterRedispatch(ctx, id, f, in, res)
-		if res.Exhausted && res.Rescue {
-			cause := sp.rescue
-			if f.RescueCause != nil {
-				cause = *f.RescueCause
+		if res.Exhausted {
+			// The picked professional's calendar no longer admits the job.
+			_, err := s.proUnavailable(ctx, id, unavailableSpec{from: []string{"confirmed"}, actor: "system",
+				cause: events.UnavailableNoProfessional, reason: "the professional's calendar no longer admits the job",
+				exclude: []uuid.UUID{*f.ReservedProID}})
+			if errors.Is(err, store.ErrStale) {
+				return nil
 			}
-			if err := s.endRescue(ctx, id, cause); err != nil {
-				return res, err
-			}
+			return err
 		}
-		return res, nil
+		if res.OfferID != nil && res.ProUserID != nil {
+			s.publish(ctx, ProTopic(*res.ProUserID), FrameOfferNew, OfferFrame{OfferID: *res.OfferID, BookingID: id,
+				ExpiresAt: res.ExpiresAt, SlotStart: f.SlotStart.UTC(), SlotEnd: f.SlotEnd.UTC(), At: now})
+		}
+		return nil
 	}
-	return nil, lastErr
+	return store.ErrStale
 }
 
-// afterRedispatch publishes what a run changed.
-func (s *Service) afterRedispatch(ctx context.Context, id uuid.UUID, f *store.DispatchFacts, in store.Redispatch, res *store.RedispatchResult) {
-	at := s.nowUTC()
-	if res.ClosedOutcome != "" && res.ClosedProUserID != nil && res.ClosedOfferID != nil {
-		s.publish(ctx, ProTopic(*res.ClosedProUserID), FrameOfferClosed, OfferClosedFrame{OfferID: *res.ClosedOfferID, BookingID: id,
-			Outcome: res.ClosedOutcome, At: at})
+// offerExpiry is when an offer made now lapses: 3 minutes for an ASAP job,
+// else the city's windows (2 h when the slot is > 12 h away, else 10 min),
+// never past a rescue deadline.
+func (s *Service) offerExpiry(now time.Time, f *store.DispatchFacts) time.Time {
+	if f.Asap {
+		return now.Add(dispatch.ASAPOfferWindow)
 	}
-	if res.PreviousProUserID != nil {
-		s.publish(ctx, ProTopic(*res.PreviousProUserID), FrameJobRemoved, JobFrame{BookingID: id, Cause: in.Cause, At: at})
-	}
-	if res.Status != f.Status || in.MoveSlot {
-		s.publishBooking(ctx, id, res.Status, in.Start, in.End)
-	}
-	if res.OfferID != nil && res.ProUserID != nil {
-		s.publish(ctx, ProTopic(*res.ProUserID), FrameOfferNew, OfferFrame{OfferID: *res.OfferID, BookingID: id,
-			ExpiresAt: res.ExpiresAt, SlotStart: in.Start.UTC(), SlotEnd: in.End.UTC(), At: at})
-	}
-	if res.Exhausted {
-		s.publish(ctx, AdminLiveTopic, FrameAdminUnassigned, AdminUnassignedFrame{BookingID: id,
-			Reason: events.AlertNoProfessionalLeft, MinutesToSlot: int(in.Start.Sub(at) / time.Minute), At: at})
-	}
+	return dispatch.OfferExpiry(now, f.SlotStart, f.Windows, f.RescueUntil)
 }
 
-// Dispatch offers a confirmed booking to the professional its slot is held
-// for (else the best free one). Idempotent: a booking with a live offer or
-// an accepted professional is left alone.
+// Dispatch offers a confirmed booking to the professional the customer
+// picked. Idempotent.
 func (s *Service) Dispatch(ctx context.Context, id uuid.UUID) error {
 	if s.ds.Store == nil {
 		return nil
 	}
-	_, err := s.redispatch(ctx, id, spec{from: []string{"confirmed"}, actor: "system"})
+	err := s.offerReserved(ctx, id)
 	if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound) {
 		return nil // no longer confirmed: nothing to offer
 	}
@@ -364,7 +304,10 @@ func (s *Service) DeclineOffer(ctx context.Context, user, offerID uuid.UUID, in 
 	if ref == nil || err != nil {
 		return err
 	}
-	_, err = s.redispatch(ctx, ref.BookingID, spec{from: []string{"confirmed"}, actor: "pro", actorID: &user,
+	// B1: the booking waits for the customer to pick again (pro_unavailable);
+	// nobody else is offered the job silently.
+	_, err = s.proUnavailable(ctx, ref.BookingID, unavailableSpec{from: []string{"confirmed"}, actor: "pro", actorID: &user,
+		cause: events.UnavailableDeclined, reason: "the professional declined the job",
 		close: &store.CloseAssignment{ID: ref.ID, ProID: p.ID, From: []string{"offered"}, To: "declined", DeclineReason: in.Reason}})
 	if errors.Is(err, store.ErrStale) {
 		if _, err := check(); err != nil {
@@ -383,8 +326,8 @@ func (s *Service) DeclineOffer(ctx context.Context, user, offerID uuid.UUID, in 
 var proCancellable = []string{"assigned", "en_route"}
 
 // ProCancelJob gives an accepted job back before it starts: the penalty
-// tier by how close the slot is, the cancellation counted, and the job
-// re-offered to the next professional in the same transaction.
+// tier by how close the slot is, the cancellation counted, and the booking
+// waits in pro_unavailable for the customer to pick again (B1).
 func (s *Service) ProCancelJob(ctx context.Context, user, bookingID uuid.UUID, in model.ProCancelInput) error {
 	reason, aerr := text("reason", in.Reason, 1, 500)
 	if aerr != nil {
@@ -408,8 +351,8 @@ func (s *Service) ProCancelJob(ctx context.Context, user, bookingID uuid.UUID, i
 		return bookingTransition(f.Status)
 	}
 	penalty, _ := dispatch.CancelPenalty(s.nowUTC(), f.SlotStart, f.Status)
-	_, err = s.redispatch(ctx, bookingID, spec{from: proCancellable, actor: "pro", actorID: &user, reason: reason,
-		cause: events.CauseProCancel, rescue: events.CauseProCancel,
+	_, err = s.proUnavailable(ctx, bookingID, unavailableSpec{from: proCancellable, actor: "pro", actorID: &user, reason: reason,
+		cause: events.UnavailableProCancel,
 		close: &store.CloseAssignment{ID: f.Live.ID, ProID: p.ID, From: []string{"accepted"}, To: "cancelled",
 			Cause: events.CauseProCancel, PenaltyPaise: penalty, CountCancel: true}})
 	if errors.Is(err, store.ErrStale) {
@@ -424,9 +367,11 @@ func (s *Service) ProCancelJob(ctx context.Context, user, bookingID uuid.UUID, i
 // adminRedispatchable: ops may re-run dispatch up to arrival.
 var adminRedispatchable = []string{"confirmed", "assigned", "en_route", "arrived"}
 
-// AdminRedispatch re-runs dispatch for ops, excluding the current
-// professional (offered or accepted) and anyone ops list. Ops never choose
-// who gets the job. Audited with the change.
+// AdminRedispatch takes the job off the current professional for ops (B1):
+// the booking goes to pro_unavailable and the customer picks another
+// professional (the current one and anyone ops list excluded). Ops never
+// choose who gets the job, and nobody is reassigned silently. Audited with
+// the change.
 func (s *Service) AdminRedispatch(ctx context.Context, a store.Actor, id uuid.UUID, in model.AdminRedispatchInput) (*model.Booking, error) {
 	reason, aerr := text("reason", in.Reason, 1, 1000)
 	if aerr != nil {
@@ -446,8 +391,8 @@ func (s *Service) AdminRedispatch(ctx context.Context, a store.Actor, id uuid.UU
 		return nil, bookingTransition(f.Status)
 	}
 	actor := a.UserID
-	sp := spec{from: adminRedispatchable, actor: "admin", actorID: &actor, reason: reason, exclude: in.ExcludeProIDs,
-		cause: events.CauseOpsRedispatch, rescue: events.CauseOpsRedispatch, audit: &a}
+	sp := unavailableSpec{from: adminRedispatchable, actor: "admin", actorID: &actor, reason: reason, exclude: in.ExcludeProIDs,
+		cause: events.UnavailableOpsRedispatch, audit: &a}
 	if f.Live != nil {
 		from := "offered"
 		if f.Live.Status == "accepted" {
@@ -457,8 +402,10 @@ func (s *Service) AdminRedispatch(ctx context.Context, a store.Actor, id uuid.UU
 			Cause: events.CauseOpsRedispatch}
 	} else if f.Status != "confirmed" {
 		return nil, bookingTransition(f.Status)
+	} else if f.ReservedProID != nil {
+		sp.exclude = append(sp.exclude, *f.ReservedProID)
 	}
-	if _, err := s.redispatch(ctx, id, sp); errors.Is(err, store.ErrStale) {
+	if _, err := s.proUnavailable(ctx, id, sp); errors.Is(err, store.ErrStale) {
 		return nil, bookingTransition("changed")
 	} else if err != nil {
 		return nil, internal(ctx, "redispatch", err)
@@ -472,9 +419,10 @@ func (s *Service) AdminRedispatch(ctx context.Context, a store.Actor, id uuid.UU
 
 // ---------------------------------------------------------------- workers
 
-// DispatchReport counts what one worker tick did.
+// DispatchReport counts what one worker tick did. ChoiceTimeouts (B1):
+// pro_unavailable bookings nobody picked a professional for in time.
 type DispatchReport struct {
-	Expired, Rescued, NoShows, Late, OffDuty, Cancelled, Alerted, Dispatched, StaleOff int
+	Expired, Rescued, NoShows, Late, OffDuty, Cancelled, Alerted, Dispatched, StaleOff, ChoiceTimeouts int
 }
 
 const workerBatch = 100
@@ -494,12 +442,14 @@ func (s *Service) DispatchTick(ctx context.Context) (DispatchReport, error) {
 	}
 	now := s.nowUTC()
 
-	// Offers past their expiry: the next professional, in one transaction.
+	// Offers past their expiry: pro_unavailable, the customer picks again
+	// (B1; never the next professional silently).
 	if refs, err := s.ds.Store.DueOfferExpiries(ctx, now, workerBatch); err != nil {
 		note("offer expiries", err)
 	} else {
 		for _, a := range refs {
-			_, err := s.redispatch(ctx, a.BookingID, spec{from: []string{"confirmed"}, actor: "system",
+			_, err := s.proUnavailable(ctx, a.BookingID, unavailableSpec{from: []string{"confirmed"}, actor: "system",
+				cause: events.UnavailableOfferExpired, reason: "the professional did not answer the offer in time",
 				close: &store.CloseAssignment{ID: a.ID, ProID: a.ProID, From: []string{"offered"}, To: "expired"}})
 			if err == nil {
 				r.Expired++
@@ -530,15 +480,14 @@ func (s *Service) DispatchTick(ctx context.Context) (DispatchReport, error) {
 			r.Late++
 		}
 	}
-	// Slot + 30 min not arrived: no-show; a replacement who can start
-	// within the hour, else pro_no_show and a full refund.
+	// Slot + 30 min not arrived: no-show (penalty); pro_unavailable, the
+	// customer picks another professional (ASAP or a time) or cancels (B1).
 	if refs, err := s.ds.Store.NoShows(ctx, now, workerBatch); err != nil {
 		note("no-shows", err)
 	} else {
 		for _, a := range refs {
-			_, err := s.redispatch(ctx, a.BookingID, spec{from: []string{"assigned", "en_route"}, actor: "system",
-				reason: "the professional did not arrive", cause: events.CauseProNoShow, rescue: events.CauseProNoShow,
-				moveNow: true, endIfNone: true,
+			_, err := s.proUnavailable(ctx, a.BookingID, unavailableSpec{from: []string{"assigned", "en_route"}, actor: "system",
+				reason: "the professional did not arrive", cause: events.UnavailableProNoShow,
 				close: &store.CloseAssignment{ID: a.ID, ProID: a.ProID, From: []string{"accepted"}, To: "no_show",
 					Cause: events.CauseProNoShow, PenaltyPaise: dispatch.PenaltyNoShowPaise, CountNoShow: true}})
 			if err == nil {
@@ -548,14 +497,13 @@ func (s *Service) DispatchTick(ctx context.Context) (DispatchReport, error) {
 			}
 		}
 	}
-	// Not on duty 90 minutes before the slot: reassigned.
+	// Not on duty 90 minutes before the slot: pro_unavailable (B1).
 	if refs, err := s.ds.Store.AssignedNotOnDuty(ctx, now, workerBatch); err != nil {
 		note("not on duty", err)
 	} else {
 		for _, a := range refs {
-			_, err := s.redispatch(ctx, a.BookingID, spec{from: []string{"assigned"}, actor: "system",
-				reason: "the professional was not on duty 90 minutes before the slot", cause: events.CauseNotOnDuty,
-				rescue: events.CauseNotOnDuty,
+			_, err := s.proUnavailable(ctx, a.BookingID, unavailableSpec{from: []string{"assigned"}, actor: "system",
+				reason: "the professional was not on duty 90 minutes before the slot", cause: events.UnavailableNotOnDuty,
 				close: &store.CloseAssignment{ID: a.ID, ProID: a.ProID, From: []string{"accepted"}, To: "released",
 					Cause: events.CauseNotOnDuty}})
 			if err == nil {
@@ -611,6 +559,21 @@ func (s *Service) DispatchTick(ctx context.Context) (DispatchReport, error) {
 			}
 		}
 	}
+	// B1: pro_unavailable with no choice within 30 minutes: cancelled with a
+	// full refund.
+	if s.bk.Store != nil {
+		if ids, err := s.bk.Store.ChoiceTimeouts(ctx, now, workerBatch); err != nil {
+			note("choice timeouts", err)
+		} else {
+			for _, id := range ids {
+				if err := s.choiceTimeout(ctx, id); err != nil {
+					note("choice timeout", err)
+				} else {
+					r.ChoiceTimeouts++
+				}
+			}
+		}
+	}
 	return r, errors.Join(errs...)
 }
 
@@ -625,7 +588,7 @@ func (s *Service) RunDispatchWorkers(ctx context.Context, every time.Duration) {
 		if r, _ := s.DispatchTick(ctx); r != (DispatchReport{}) {
 			slog.InfoContext(ctx, "doorstep: dispatch tick", "expired", r.Expired, "rescued", r.Rescued, "no_shows", r.NoShows,
 				"late", r.Late, "off_duty", r.OffDuty, "cancelled", r.Cancelled, "alerted", r.Alerted, "dispatched", r.Dispatched,
-				"stale_off", r.StaleOff)
+				"stale_off", r.StaleOff, "choice_timeouts", r.ChoiceTimeouts)
 		}
 		select {
 		case <-ctx.Done():

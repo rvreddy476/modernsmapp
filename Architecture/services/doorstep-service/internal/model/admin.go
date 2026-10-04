@@ -234,6 +234,7 @@ type AdminOption struct {
 	Description     string    `json:"description"`
 	DurationMinutes int       `json:"duration_minutes"`
 	MaxQuantity     int       `json:"max_quantity"`
+	Unit            string    `json:"unit"`
 	IsDefault       bool      `json:"is_default"`
 	SortOrder       int       `json:"sort_order"`
 	Active          bool      `json:"active"`
@@ -246,6 +247,7 @@ type AdminOptionInput struct {
 	Description     *string `json:"description"`
 	DurationMinutes int     `json:"duration_minutes"`
 	MaxQuantity     *int    `json:"max_quantity"`
+	Unit            *string `json:"unit"`
 	IsDefault       *bool   `json:"is_default"`
 	SortOrder       *int    `json:"sort_order"`
 	Active          *bool   `json:"active"`
@@ -256,6 +258,7 @@ type AdminOptionPatch struct {
 	Description     *string `json:"description"`
 	DurationMinutes *int    `json:"duration_minutes"`
 	MaxQuantity     *int    `json:"max_quantity"`
+	Unit            *string `json:"unit"`
 	IsDefault       *bool   `json:"is_default"`
 	SortOrder       *int    `json:"sort_order"`
 	Active          *bool   `json:"active"`

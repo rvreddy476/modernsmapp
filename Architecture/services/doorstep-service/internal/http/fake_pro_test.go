@@ -133,12 +133,8 @@ func (fp *fakePro) declare(d store.SkillDecl) {
 	if _, ok := fp.skills[d.Code]; ok {
 		return
 	}
-	s := &model.ProSkill{SkillCode: d.Code, Status: "pending"}
-	if d.Verified {
-		at := fixtureTS
-		s.Status, s.VerifiedAt = "verified", &at
-	}
-	fp.skills[d.Code] = s
+	// Declaring never verifies (founder rule 4 Oct 2026): an admin does.
+	fp.skills[d.Code] = &model.ProSkill{SkillCode: d.Code, Status: "pending"}
 }
 
 func (f *fakeProStore) ProfessionalByUser(_ context.Context, uid uuid.UUID) (*model.Professional, error) {
@@ -192,9 +188,13 @@ func (f *fakeProStore) state(p *fakePro, today time.Time) *store.ProState {
 		if s.Status == "verified" {
 			st.VerifiedSkills++
 		} else if s.Status == "pending" {
+			if r := fakeSkillRules[code]; r != nil && !r.RequiresCertificate {
+				st.SkillsAwaitingReview++
+				continue
+			}
 			for _, id := range f.docOrder {
 				d := f.docs[id]
-				if d.ProID == p.p.ID && d.Kind == "trade_certificate" && d.Status == "pending" && d.SkillCode != nil && *d.SkillCode == code {
+				if d.ProID == p.p.ID && d.Kind == "trade_certificate" && (d.Status == "pending" || d.Status == "approved") && d.SkillCode != nil && *d.SkillCode == code {
 					st.SkillsAwaitingReview++
 					break
 				}
@@ -212,6 +212,9 @@ func (f *fakeProStore) state(p *fakePro, today time.Time) *store.ProState {
 		d := f.docs[id]
 		if d.ProID == p.p.ID && d.Kind == "police_certificate" && d.Status == "pending" {
 			st.PoliceCertificatePending = true
+		}
+		if d.ProID == p.p.ID && d.Kind == "selfie" && d.Status == "pending" {
+			st.SelfieAwaitingReview = true
 		}
 	}
 	st.AgreementVersion, st.HasPAN = p.agreement, p.pan
@@ -301,13 +304,13 @@ func (f *fakeProStore) RecordSelfie(_ context.Context, id, media uuid.UUID, stat
 	if err != nil {
 		return nil, err
 	}
+	// Advisory only: the selfie waits for an admin whatever the score.
 	c := model.KycCheck{Kind: "selfie_face_match", Status: status, Score: score}
-	if status == "passed" {
-		at := fixtureTS
-		c.VerifiedAt, p.selfie = &at, true
-	}
 	p.kyc = append(p.kyc, c)
-	docStatus := map[string]string{"passed": "approved", "pending": "pending", "failed": "rejected"}[status]
+	docStatus := map[string]string{"pending": "pending", "failed": "rejected"}[status]
+	if docStatus == "" {
+		return nil, store.ErrInvalid
+	}
 	for _, did := range f.docOrder {
 		if d := f.docs[did]; d.ProID == id && d.Kind == "selfie" && d.Status == "pending" {
 			r := "superseded by a newer selfie"

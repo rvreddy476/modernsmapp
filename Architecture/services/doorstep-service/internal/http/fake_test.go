@@ -66,13 +66,13 @@ func fakeCategories() []model.CategorySummary {
 	return []model.CategorySummary{
 		{ID: devseed.ID("category", "home-cleaning"), Slug: "home-cleaning", Name: "Home cleaning",
 			Description: "Bathroom, kitchen, full home, sofa and carpet", Family: "HOME_CLEANING", GenderRule: "any",
-			SortOrder: 10, ServiceCount: 4, StartingPricePaise: 24900},
+			SortOrder: 10, ServiceCount: 4, StartingPricePaise: i64p(24900)},
 		{ID: devseed.ID("category", "salon-women"), Slug: "salon-women", Name: "Salon for women",
 			Description: "Waxing, facials, threading, mani-pedi at home", Family: "BEAUTY_SALON", GenderRule: "female_pros_only",
-			SortOrder: 90, ServiceCount: 4, StartingPricePaise: 9900},
+			SortOrder: 90, ServiceCount: 4, StartingPricePaise: i64p(9900)},
 		{ID: devseed.ID("category", "salon-men"), Slug: "salon-men", Name: "Salon for men",
 			Description: "Haircut, beard, face care and massage at home", Family: "BEAUTY_SALON", GenderRule: "male_pros_only",
-			SortOrder: 100, ServiceCount: 3, StartingPricePaise: 29900},
+			SortOrder: 100, ServiceCount: 3, StartingPricePaise: i64p(29900)},
 	}
 }
 
@@ -96,13 +96,13 @@ func (f *fakeStore) ServiceSummaries(_ context.Context, _ string, categoryID uui
 	cat := devseed.ID("category", "salon-women")
 	return []model.ServiceSummary{
 		{ID: devseed.ID("service", "salon-women/waxing"), CategoryID: cat, Slug: "waxing", Name: "Waxing",
-			Description: "Single-use spatulas and sealed wax", DurationMinutes: 60, StartingPricePaise: 79900, StartingMRPPaise: i64p(99900)},
+			Description: "Single-use spatulas and sealed wax", DurationMinutes: 60, StartingPricePaise: i64p(79900), SuggestedPricePaise: i64p(99900)},
 		{ID: devseed.ID("service", "salon-women/facial"), CategoryID: cat, Slug: "facial", Name: "Facial",
-			Description: "Sealed single-use kit", DurationMinutes: 60, StartingPricePaise: 69900},
+			Description: "Sealed single-use kit", DurationMinutes: 60, StartingPricePaise: i64p(69900)},
 		{ID: devseed.ID("service", "salon-women/threading"), CategoryID: cat, Slug: "threading", Name: "Threading",
-			Description: "Eyebrows, upper lip or full face", DurationMinutes: 15, StartingPricePaise: 9900},
+			Description: "Eyebrows, upper lip or full face", DurationMinutes: 15, StartingPricePaise: i64p(9900)},
 		{ID: devseed.ID("service", "salon-women/manicure-pedicure"), CategoryID: cat, Slug: "manicure-pedicure", Name: "Manicure and pedicure",
-			Description: "Sterilised tools", DurationMinutes: 75, StartingPricePaise: 99900},
+			Description: "Sterilised tools", DurationMinutes: 75, StartingPricePaise: i64p(99900)},
 	}, nil
 }
 

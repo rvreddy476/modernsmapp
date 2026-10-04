@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -188,11 +189,12 @@ func TestContract_ProJourney(t *testing.T) {
 		t.Fatalf("gender from DigiLocker: %v", g)
 	}
 
-	// Selfie face match (mock 96 >= 80).
+	// Selfie face match (mock 96 >= 80): advisory, the selfie waits for an
+	// admin (founder rule 4 Oct 2026: nothing approves itself).
 	assertFixture(t, "pro_selfie_200.json", pr.call(u, "POST", "/selfie", `{"media_id":"`+mediaOf(u, "selfie").String()+`"}`), 200)
 
-	// Skills: the catalogue, then deep cleaning (verified on declaration) and
-	// electrician (needs a trade certificate).
+	// Skills: the catalogue, then deep cleaning and electrician (needs a trade
+	// certificate); both pending until an admin verifies them.
 	assertFixture(t, "pro_skills_list_200.json", pr.call(u, "GET", "/skills", ""), 200)
 	assertFixture(t, "pro_skills_put_200.json", pr.call(u, "PUT", "/me/skills", `{"skill_codes":["deep_cleaning","electrician"]}`), 200)
 	assertFixture(t, "pro_skills_put_400_unknown.json", pr.call(u, "PUT", "/me/skills", `{"skill_codes":["astrology"]}`), 400)
@@ -294,7 +296,9 @@ func TestContract_ProJourney(t *testing.T) {
 	mustStatus(t, "approve trade certificate", pr.admin(PermDocumentsReview, "POST", "/documents/"+tradeID+"/decide", `{"decision":"approve","reason":"ITI certificate checked"}`), 200)
 	assertFixture(t, "admin_skill_verify_200_revoke.json",
 		pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/skills/deep_cleaning/verify", `{"verified":false,"reason":"re-check"}`), 200)
-	mustStatus(t, "re-verify deep cleaning", pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/skills/deep_cleaning/verify", `{"verified":true}`), 200)
+	mustStatus(t, "verify deep cleaning", pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/skills/deep_cleaning/verify", `{"verified":true}`), 200)
+	// The selfie the face match left pending: an admin approves it.
+	adminReviewsRest(t, pr, u)
 
 	// Approve: nothing missing now.
 	assertFixture(t, "admin_professional_approve_200.json", pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/approve", `{"reason":"all documents checked"}`), 200)
@@ -359,7 +363,9 @@ func TestContract_ProGenderRules(t *testing.T) {
 	pr := newProRig(t)
 	u := otherUser
 	mustStatus(t, "apply", pr.call(u, "POST", "/apply", `{"display_name":"Ravi Kumar","city_code":"HYD","category_ids":["`+idOf("category", "salon-women")+`"]}`), 201)
-	// Declared before DigiLocker: allowed (gender unknown), verified (no certificate).
+	// Declared before DigiLocker: allowed (gender unknown); an admin verified
+	// it before DigiLocker said the gender (no certificate needed).
+	mustStatus(t, "verify before DigiLocker", pr.admin(PermProsApprove, "POST", "/professionals/"+devseed.ID("professional", u.String()).String()+"/skills/salon_women/verify", `{"verified":true}`), 200)
 	completeSteps(t, pr, u, "mock-male")
 	id := devseed.ID("professional", u.String()).String()
 	assertFixture(t, "admin_professional_approve_403_gender.json", pr.admin(PermProsApprove, "POST", "/professionals/"+id+"/approve", ""), 403)
@@ -367,6 +373,7 @@ func TestContract_ProGenderRules(t *testing.T) {
 	mustCode(t, "admin verify women's salon for a man", pr.admin(PermProsApprove, "POST", "/professionals/"+id+"/skills/salon_women/verify", `{"verified":true}`), 403, "DOORSTEP_GENDER_RULE")
 	// Dropping the salon skill clears the way.
 	mustStatus(t, "skills", pr.call(u, "PUT", "/me/skills", `{"skill_codes":["deep_cleaning","salon_men"]}`), 200)
+	adminReviewsRest(t, pr, u)
 	mustStatus(t, "approve", pr.admin(PermProsApprove, "POST", "/professionals/"+id+"/approve", ""), 200)
 }
 
@@ -402,6 +409,31 @@ func completeSteps(t *testing.T, pr *proRig, u uuid.UUID, code string) {
 	}
 	decodeData(t, w, &doc)
 	mustStatus(t, "decide police", pr.admin(PermDocumentsReview, "POST", "/documents/"+doc.ID+"/decide", `{"decision":"approve"}`), 200)
+	adminReviewsRest(t, pr, u)
+}
+
+// adminReviewsRest is what an admin does after the self-service steps
+// (nothing a professional submits approves itself, founder rule 4 Oct
+// 2026): approve the pending selfie and verify every declared skill still
+// pending.
+func adminReviewsRest(t *testing.T, pr *proRig, u uuid.UUID) {
+	t.Helper()
+	proID := devseed.ID("professional", u.String())
+	for _, id := range pr.pro.docOrder {
+		if d := pr.pro.docs[id]; d.ProID == proID && d.Kind == "selfie" && d.Status == "pending" {
+			mustStatus(t, "approve selfie", pr.admin(PermDocumentsReview, "POST", "/documents/"+id.String()+"/decide", `{"decision":"approve"}`), 200)
+		}
+	}
+	var pending []string
+	for code, s := range pr.pro.pros[proID].skills {
+		if s.Status == "pending" {
+			pending = append(pending, code)
+		}
+	}
+	sort.Strings(pending)
+	for _, code := range pending {
+		mustStatus(t, "verify "+code, pr.admin(PermProsApprove, "POST", "/professionals/"+proID.String()+"/skills/"+code+"/verify", `{"verified":true}`), 200)
+	}
 }
 
 // Approval is refused while any step is missing, step by step.
@@ -413,7 +445,7 @@ func TestProApprovalBlockedWhileStepsMissing(t *testing.T) {
 	w := pr.admin(PermProsApprove, "POST", "/professionals/"+id+"/approve", "")
 	mustCode(t, "fresh", w, 422, "DOORSTEP_ONBOARDING_INCOMPLETE")
 	_, details := errorCode(t, w)
-	if got := fmt.Sprint(details["missing_steps"]); got != "[profile aadhaar_digilocker selfie_face_match service_area weekly_hours bank police_certificate agreement]" {
+	if got := fmt.Sprint(details["missing_steps"]); got != "[profile aadhaar_digilocker selfie_face_match skills service_area weekly_hours bank police_certificate agreement]" {
 		t.Fatalf("missing %s", got)
 	}
 	completeSteps(t, pr, u, "mock-male")

@@ -1,15 +1,19 @@
 // Package catalogue is Doorstep's pure catalogue logic: which options and
 // add-ons a customer may see and pick in a city, and how a selection is
-// validated and priced into a quote. No I/O: the store loads a ServiceBundle,
-// these functions decide.
+// validated and priced. No I/O: the store loads a ServiceBundle and the
+// professional's prices, these functions decide.
 //
-// One rule feeds both the service page and the quote, so they cannot drift:
-// an option is offered when active and priced in the city; an add-on when
-// active and priced; an add-on group when active and offering at least one
-// add-on. Only offered groups impose their min/max on a quote.
+// The catalogue is the menu (B1, 4 Oct 2026): every bookable price is a
+// professional's own approved row (doorstep.pro_service_prices). A city
+// price is an optional "suggested" price shown beside the menu, never
+// charged. One rule feeds both the service page and the quote, so they
+// cannot drift: an option is offered when active; an add-on when active and
+// in an active group; an add-on group when active and offering at least one
+// add-on. Only offered groups impose their min/max on a selection.
 package catalogue
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -20,7 +24,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// Price is the current city price row of an option or add-on.
+// Units (doorstep.service_options.unit, migration 005). Add-ons are per job.
+const (
+	UnitPerJob   = "per_job"
+	UnitPerHour  = "per_hour"
+	UnitPerMonth = "per_month"
+)
+
+// Price is a city's suggested price row of an option or add-on (optional).
 type Price struct {
 	ID         uuid.UUID
 	PricePaise int64
@@ -34,6 +45,7 @@ type ServiceRow struct {
 	Name            string
 	Description     string
 	DurationMinutes int
+	RequiredSkill   string
 	Inclusions      []string
 	Exclusions      []string
 	ImageURL        *string
@@ -55,19 +67,23 @@ type CategoryRow struct {
 	Active       bool
 }
 
-// OptionRow is an option with its current price (nil when unpriced).
+// OptionRow is an option. Price is the city's suggested price (nil when
+// none); FromPaise is the lowest approved professional price in the city
+// now (nil when no professional offers it yet).
 type OptionRow struct {
 	ID              uuid.UUID
 	Name            string
 	Description     string
 	DurationMinutes int
 	MaxQuantity     int
+	Unit            string
 	IsDefault       bool
 	Active          bool
 	Price           *Price
+	FromPaise       *int64
 }
 
-// AddonRow is an add-on with its current price.
+// AddonRow is an add-on (Price and FromPaise as on OptionRow).
 type AddonRow struct {
 	ID                   uuid.UUID
 	Name                 string
@@ -75,6 +91,7 @@ type AddonRow struct {
 	ExtraDurationMinutes int
 	Active               bool
 	Price                *Price
+	FromPaise            *int64
 }
 
 // GroupRow is an add-on group with its add-ons.
@@ -89,7 +106,7 @@ type GroupRow struct {
 }
 
 // ServiceBundle is everything about one service in one city at one instant,
-// options and groups in display order (inactive and unpriced rows included).
+// options and groups in display order (inactive rows included).
 type ServiceBundle struct {
 	City     model.CityRef
 	Category CategoryRow
@@ -98,11 +115,14 @@ type ServiceBundle struct {
 	Groups   []GroupRow
 }
 
-// Visible reports whether the service may be shown at all.
-func (b *ServiceBundle) Visible() bool { return b.Service.Active && b.Category.Active }
+// Visible reports whether the service may be shown at all: active, in an
+// active category, and of a family the tax computer can price (B1 families
+// wait for the tax lane).
+func (b *ServiceBundle) Visible() bool {
+	return b.Service.Active && b.Category.Active && tax.Supported(b.Category.Family)
+}
 
-func (o OptionRow) offered() bool { return o.Active && o.Price != nil }
-func (a AddonRow) offered() bool  { return a.Active && a.Price != nil }
+func (o OptionRow) offered() bool { return o.Active }
 
 func (g GroupRow) offeredAddons() []AddonRow {
 	if !g.Active {
@@ -110,7 +130,7 @@ func (g GroupRow) offeredAddons() []AddonRow {
 	}
 	var out []AddonRow
 	for _, a := range g.Addons {
-		if a.offered() {
+		if a.Active {
 			out = append(out, a)
 		}
 	}
@@ -125,8 +145,23 @@ func (g GroupRow) MinRequired() int {
 	return g.MinSelect
 }
 
+func suggested(p *Price) (*int64, *int64) {
+	if p == nil {
+		return nil, nil
+	}
+	v := p.PricePaise
+	return &v, p.MRPPaise
+}
+
+func unitOr(u string) string {
+	if u == "" {
+		return UnitPerJob
+	}
+	return u
+}
+
 // DetailView is the customer's service page, or ok=false when no option is
-// offered in the city (DOORSTEP_SERVICE_NOT_AVAILABLE).
+// offered (DOORSTEP_SERVICE_NOT_AVAILABLE).
 func DetailView(b *ServiceBundle) (model.ServiceDetail, bool) {
 	d := model.ServiceDetail{
 		ID: b.Service.ID,
@@ -145,9 +180,11 @@ func DetailView(b *ServiceBundle) (model.ServiceDetail, bool) {
 		if !o.offered() {
 			continue
 		}
+		sp, mrp := suggested(o.Price)
 		d.Options = append(d.Options, model.ServiceOption{
 			ID: o.ID, Name: o.Name, Description: o.Description, DurationMinutes: o.DurationMinutes,
-			MaxQuantity: o.MaxQuantity, IsDefault: o.IsDefault, PricePaise: o.Price.PricePaise, MRPPaise: o.Price.MRPPaise,
+			MaxQuantity: o.MaxQuantity, Unit: unitOr(o.Unit), IsDefault: o.IsDefault,
+			SuggestedPricePaise: sp, MRPPaise: mrp, FromPricePaise: o.FromPaise,
 		})
 	}
 	for _, g := range b.Groups {
@@ -157,8 +194,10 @@ func DetailView(b *ServiceBundle) (model.ServiceDetail, bool) {
 		}
 		mg := model.AddonGroup{ID: g.ID, Name: g.Name, MinSelect: g.MinSelect, MaxSelect: g.MaxSelect, IsRequired: g.IsRequired, Addons: []model.Addon{}}
 		for _, a := range addons {
+			sp, _ := suggested(a.Price)
 			mg.Addons = append(mg.Addons, model.Addon{
-				ID: a.ID, Name: a.Name, Description: a.Description, ExtraDurationMinutes: a.ExtraDurationMinutes, PricePaise: a.Price.PricePaise,
+				ID: a.ID, Name: a.Name, Description: a.Description, ExtraDurationMinutes: a.ExtraDurationMinutes,
+				SuggestedPricePaise: sp, FromPricePaise: a.FromPaise,
 			})
 		}
 		d.AddonGroups = append(d.AddonGroups, mg)
@@ -166,20 +205,11 @@ func DetailView(b *ServiceBundle) (model.ServiceDetail, bool) {
 	return d, len(d.Options) > 0
 }
 
-// Selection is a validated-shape quote request.
+// Selection is a validated-shape selection.
 type Selection struct {
 	OptionID uuid.UUID
 	Quantity int
 	AddonIDs []uuid.UUID
-}
-
-// QuoteInput is everything BuildQuote needs besides the bundle.
-type QuoteInput struct {
-	QuoteID            uuid.UUID
-	ZoneID             uuid.UUID
-	PlaceOfSupplyState string
-	Now                time.Time
-	TTL                time.Duration
 }
 
 func optionInvalid(msg string) *apperr.Error {
@@ -205,11 +235,8 @@ func ValidateSelection(b *ServiceBundle, sel Selection) (OptionRow, []AddonRow, 
 	if opt == nil {
 		return OptionRow{}, nil, optionInvalid("the option does not belong to this service")
 	}
-	if !opt.Active {
+	if !opt.offered() {
 		return OptionRow{}, nil, optionInvalid("the option is not available")
-	}
-	if opt.Price == nil {
-		return OptionRow{}, nil, optionInvalid("the option has no price in this city")
 	}
 	if sel.Quantity < 1 || sel.Quantity > opt.MaxQuantity {
 		return OptionRow{}, nil, apperr.New(http.StatusUnprocessableEntity, apperr.CodeQuantityInvalid,
@@ -239,7 +266,7 @@ func ValidateSelection(b *ServiceBundle, sel Selection) (OptionRow, []AddonRow, 
 		if !ok {
 			return OptionRow{}, nil, addonInvalid("the add-on does not belong to this service", map[string]any{"addon_id": id.String()})
 		}
-		if !f.group.Active || !f.addon.offered() {
+		if !f.group.Active || !f.addon.Active {
 			return OptionRow{}, nil, addonInvalid("the add-on is not available", map[string]any{"addon_id": id.String()})
 		}
 		perGroup[f.group.ID]++
@@ -272,42 +299,98 @@ func ValidateSelection(b *ServiceBundle, sel Selection) (OptionRow, []AddonRow, 
 	return *opt, addons, nil
 }
 
-// BuildQuote validates sel against b and prices it with tc. Prices are the
-// city price rows current at in.Now and are GST-inclusive.
-func BuildQuote(b *ServiceBundle, sel Selection, in QuoteInput, tc tax.Computer) (*model.Quote, error) {
-	opt, addons, verr := ValidateSelection(b, sel)
-	if verr != nil {
-		return nil, verr
+// ItemPrice is one approved, live professional price row.
+type ItemPrice struct {
+	ID         uuid.UUID
+	PricePaise int64
+	Unit       string
+}
+
+// ProPrices are one professional's live approved prices by option/add-on id.
+type ProPrices map[uuid.UUID]ItemPrice
+
+// ItemIDs lists the items a selection needs a price for: the option, then
+// every add-on.
+func (sel Selection) ItemIDs() []uuid.UUID {
+	return append([]uuid.UUID{sel.OptionID}, sel.AddonIDs...)
+}
+
+// Priced is a selection priced with one professional's prices: GST-inclusive
+// lines split by the tax computer.
+type Priced struct {
+	Lines           []model.QuoteLine
+	TotalPaise      int64
+	TaxablePaise    int64
+	TaxPaise        int64
+	Provisional     bool
+	Note            string
+	DurationMinutes int
+}
+
+// PriceUnavailable is 422 DOORSTEP_PRICE_UNAVAILABLE: the professional has no
+// approved price for an item of the selection.
+func PriceUnavailable(missing []uuid.UUID) *apperr.Error {
+	ids := make([]string, 0, len(missing))
+	for _, m := range missing {
+		ids = append(ids, m.String())
+	}
+	return apperr.New(http.StatusUnprocessableEntity, apperr.CodePriceUnavailable,
+		"this professional has no approved price for part of this selection").WithDetails(map[string]any{"item_ids": ids})
+}
+
+// TaxPending is 422 DOORSTEP_SERVICE_NOT_AVAILABLE for a family the tax
+// computer cannot price yet.
+func TaxPending() *apperr.Error {
+	return apperr.New(http.StatusUnprocessableEntity, apperr.CodeServiceNotAvailable, "this service is not available yet").
+		WithDetails(map[string]any{"reason": "tax_category_pending"})
+}
+
+// PriceSelection prices a validated selection with one professional's
+// prices (only approved, live rows are ever passed in) and splits the tax.
+// Every item must be priced: no city price ever fills a gap.
+func PriceSelection(b *ServiceBundle, opt OptionRow, addons []AddonRow, quantity int, prices ProPrices, placeOfSupply string,
+	at time.Time, tc tax.Computer) (*Priced, error) {
+	var missing []uuid.UUID
+	op, ok := prices[opt.ID]
+	if !ok {
+		missing = append(missing, opt.ID)
+	}
+	for _, a := range addons {
+		if _, ok := prices[a.ID]; !ok {
+			missing = append(missing, a.ID)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, PriceUnavailable(missing)
 	}
 	lines := []model.QuoteLine{{
-		Kind: "option", RefID: opt.ID, PriceID: opt.Price.ID, Name: b.Service.Name + " - " + opt.Name,
-		Quantity: sel.Quantity, UnitPricePaise: opt.Price.PricePaise, LineTotalPaise: opt.Price.PricePaise * int64(sel.Quantity),
+		Kind: "option", RefID: opt.ID, PriceID: op.ID, Name: b.Service.Name + " - " + opt.Name, Unit: unitOr(opt.Unit),
+		Quantity: quantity, UnitPricePaise: op.PricePaise, LineTotalPaise: op.PricePaise * int64(quantity),
 	}}
-	duration := opt.DurationMinutes * sel.Quantity
+	duration := opt.DurationMinutes * quantity
 	for _, a := range addons {
+		ap := prices[a.ID]
 		lines = append(lines, model.QuoteLine{
-			Kind: "addon", RefID: a.ID, PriceID: a.Price.ID, Name: a.Name,
-			Quantity: 1, UnitPricePaise: a.Price.PricePaise, LineTotalPaise: a.Price.PricePaise,
+			Kind: "addon", RefID: a.ID, PriceID: ap.ID, Name: a.Name, Unit: UnitPerJob,
+			Quantity: 1, UnitPricePaise: ap.PricePaise, LineTotalPaise: ap.PricePaise,
 		})
 		duration += a.ExtraDurationMinutes
 	}
-	taxIn := tax.Input{Family: b.Category.Family, PlaceOfSupplyState: in.PlaceOfSupplyState, At: in.Now}
+	taxIn := tax.Input{Family: b.Category.Family, PlaceOfSupplyState: placeOfSupply, At: at}
 	for i, l := range lines {
 		taxIn.Lines = append(taxIn.Lines, tax.Line{Ref: lineRef(i), GrossPaise: l.LineTotalPaise})
 	}
 	split, err := tc.SplitInclusive(taxIn)
+	if errors.Is(err, tax.ErrUnknownFamily) {
+		return nil, TaxPending()
+	}
 	if err != nil {
 		return nil, err
 	}
 	if len(split.Lines) != len(lines) {
 		return nil, apperr.Internal()
 	}
-	q := &model.Quote{
-		ID: in.QuoteID, Status: model.QuoteOpen, ServiceID: b.Service.ID, OptionID: opt.ID, Quantity: sel.Quantity,
-		CityCode: b.City.Code, ZoneID: in.ZoneID, PricesIncludeTax: true, TaxProvisional: split.Provisional,
-		TaxNote: split.Note, DurationMinutes: duration,
-		ExpiresAt: in.Now.Add(in.TTL).UTC(), CreatedAt: in.Now.UTC(),
-	}
+	p := &Priced{Provisional: split.Provisional, Note: split.Note, DurationMinutes: duration}
 	for i := range lines {
 		s := split.Lines[i]
 		if s.GrossPaise != lines[i].LineTotalPaise || s.TaxablePaise+s.TaxPaise != s.GrossPaise {
@@ -315,12 +398,41 @@ func BuildQuote(b *ServiceBundle, sel Selection, in QuoteInput, tc tax.Computer)
 		}
 		lines[i].TaxablePaise, lines[i].TaxPaise = s.TaxablePaise, s.TaxPaise
 		lines[i].TaxRateBPS, lines[i].GSTCategory, lines[i].SAC = s.RateBPS, s.Category, s.SAC
-		q.TotalPaise += lines[i].LineTotalPaise
-		q.TaxablePaise += s.TaxablePaise
-		q.TaxPaise += s.TaxPaise
+		p.TotalPaise += lines[i].LineTotalPaise
+		p.TaxablePaise += s.TaxablePaise
+		p.TaxPaise += s.TaxPaise
 	}
-	q.Lines = lines
-	return q, nil
+	p.Lines = lines
+	return p, nil
+}
+
+// QuoteInput is everything BuildQuote needs besides the bundle.
+type QuoteInput struct {
+	QuoteID            uuid.UUID
+	ProID              uuid.UUID
+	ZoneID             uuid.UUID
+	PlaceOfSupplyState string
+	Now                time.Time
+	TTL                time.Duration
+}
+
+// BuildQuote validates sel against b and prices it with the professional's
+// approved prices. Prices are GST-inclusive.
+func BuildQuote(b *ServiceBundle, sel Selection, prices ProPrices, in QuoteInput, tc tax.Computer) (*model.Quote, error) {
+	opt, addons, verr := ValidateSelection(b, sel)
+	if verr != nil {
+		return nil, verr
+	}
+	p, err := PriceSelection(b, opt, addons, sel.Quantity, prices, in.PlaceOfSupplyState, in.Now, tc)
+	if err != nil {
+		return nil, err
+	}
+	return &model.Quote{
+		ID: in.QuoteID, Status: model.QuoteOpen, ServiceID: b.Service.ID, OptionID: opt.ID, Quantity: sel.Quantity,
+		ProID: in.ProID, CityCode: b.City.Code, ZoneID: in.ZoneID, Lines: p.Lines, TotalPaise: p.TotalPaise,
+		TaxablePaise: p.TaxablePaise, TaxPaise: p.TaxPaise, PricesIncludeTax: true, TaxProvisional: p.Provisional,
+		TaxNote: p.Note, DurationMinutes: p.DurationMinutes, ExpiresAt: in.Now.Add(in.TTL).UTC(), CreatedAt: in.Now.UTC(),
+	}, nil
 }
 
 func lineRef(i int) string { return "line-" + strconv.Itoa(i+1) }

@@ -4,8 +4,8 @@ Doorstep is home services in the Urban Company style: a fixed-price catalogue bo
 
 | File | What it pins |
 |---|---|
-| `openapi.yaml` | Every customer route, every `/pro` route, every `/internal/admin` route, and the background-check webhook (126 paths, 149 operations). It also holds the booking state enum and transitions (`x-doorstep-booking-states`), the stable error codes (`x-doorstep-error-codes`), the 18 admin permissions (`x-doorstep-permissions`) and the payments references (`x-doorstep-payments`). Each route carries `x-lane` (the lane that builds it) and, on admin routes, `x-permission`. |
-| `asyncapi.yaml` | The Kafka topic `doorstep.events` (33 event types, every payload carries `customer_user_id` and/or `pro_user_id`), the realtime topics `doorstep.booking.<id>`, `doorstep.pro.<user_id>` and `doorstep.admin.live`, and the push-type registry (`x-push-types`): 17 Momentum types (`doorstep.*`) and 17 `doorstep_pro` types (`doorstep.pro.*`), each mapped to its source event. |
+| `openapi.yaml` | Every customer route, every `/pro` route, every `/internal/admin` route, and the background-check webhook (139 paths, 166 operations). It also holds the booking state enum and transitions (`x-doorstep-booking-states`), the stable error codes (`x-doorstep-error-codes`), the 19 admin permissions (`x-doorstep-permissions`) and the payments references (`x-doorstep-payments`). Each route carries `x-lane` (the lane that builds it) and, on admin routes, `x-permission`. |
+| `asyncapi.yaml` | The Kafka topic `doorstep.events` (38 event types, every payload carries `customer_user_id` and/or `pro_user_id`), the realtime topics `doorstep.booking.<id>`, `doorstep.pro.<user_id>` and `doorstep.admin.live`, and the push-type registry (`x-push-types`): 19 Momentum types (`doorstep.*`) and 18 `doorstep_pro` types (`doorstep.pro.*`), each mapped to its source event. |
 
 ## Conventions
 
@@ -46,6 +46,14 @@ doorstep-service produces these through its real handlers, in `Architecture/serv
 | `booking_payment_intent_post_200.json`, `booking_payment_intent_410_hold_expired.json`, `booking_payment_get_200_pending.json`, `booking_payment_get_200.json`, `booking_payment_get_200_refund.json`, `booking_payment_stub_confirm_404.json` | payments: intent, the paid source, the dev stub confirm refused outside development |
 | `cancel_preview_get_200.json`, `booking_cancel_post_200.json`, `booking_reschedule_post_200.json`, `booking_reschedule_post_409.json` | cancel and reschedule |
 | `admin_bookings_list_200.json`, `admin_booking_get_200.json`, `admin_booking_cancel_200.json`, `admin_booking_refund_201.json`, `admin_booking_refund_422_exceeds.json`, `admin_stats_200.json` | admin booking pages (A3; never an OTP) |
+| `quote_post_400_pro_required.json`, `quote_post_422_price_unavailable.json` | B1: a quote needs `pro_id`; a selection the professional has no approved price for is `DOORSTEP_PRICE_UNAVAILABLE` (`details.missing`) |
+| `service_professionals_get_200.json`, `service_professionals_get_200_asap.json`, `service_professionals_get_200_asap_none.json`, `service_professionals_get_400_address.json` | B1: `GET /services/{id}/professionals` (scheduled, ASAP, ASAP with nobody plus `scheduled_alternatives`) |
+| `booking_post_201_asap.json` | B1: `POST /bookings` with `pro_id` from the quote and `asap: true` (the block runs from now) |
+| `booking_get_200_pro_unavailable.json`, `booking_get_200_pending_change.json`, `cancel_preview_get_200_pro_unavailable.json` | B1: a booking whose professional is gone (`choice_deadline`, `unavailable_cause`), one with a dearer change waiting for payment (`pending_change`), and its full-refund cancel preview |
+| `booking_professionals_get_200.json`, `booking_professionals_get_200_asap.json`, `booking_professionals_get_409.json` | B1: `GET /bookings/{id}/professionals` (each card with `difference_paise`) |
+| `booking_change_professional_post_200_refund.json`, `booking_change_professional_post_200_charge.json`, `booking_change_professional_422_excluded.json`, `booking_change_professional_409_window.json` | B1: `POST /bookings/{id}/change-professional` (cheaper: applied and refunded; dearer: `pending_payment` with a `doorstep_extras` intent) |
+| `pro_prices_get_200.json`, `pro_price_post_201.json`, `pro_price_post_400.json`, `pro_price_post_403_skill.json`, `pro_price_post_409_unchanged.json`, `pro_price_withdraw_200.json`, `pro_price_withdraw_409.json`, `pro_same_day_put_200.json` | B1: the professional's own prices (always pending until an admin approves) and the same-day opt-in |
+| `admin_pro_prices_get_200.json`, `admin_pro_price_approve_200.json`, `admin_pro_price_approve_409.json`, `admin_pro_price_reject_200.json`, `admin_pro_price_reject_400_reason.json`, `admin_pro_price_403_scope.json` | B1: the price review queue (`doorstep:prices.review`, audited) |
 
 ## Status (A1)
 
@@ -63,3 +71,16 @@ doorstep-service produces these through its real handlers, in `Architecture/serv
 - dispatch, offers and realtime (A4)
 - the visit, extras, ratings, rework, safety, chat and tickets (A5)
 - the remaining admin routes (A2 and A6)
+
+## Status (B1, 4 Oct 2026): professionals set prices, customers pick the professional
+
+**Built and tested** (migration `005_doorstep_pro_pricing.sql`):
+
+- Catalogue expansion: appliance repairs (TV, refrigerator, washing machine, microwave, geyser, chimney and hob, laptop/computer, mobile), car wash, disinfection, home staffing (hourly and monthly), packers and movers, photographer, makeup artist (women's beauty rules), yoga trainer and construction, each with a skill. `ServiceOption.unit` is `per_job`, `per_hour` or `per_month`. The city price is only `suggested_price_paise` now; the catalogue's starting prices are the lowest approved professional prices (`from_price_paise`, null when nobody prices it).
+- Families `CAR_CARE`, `HOME_STAFFING`, `RELOCATION`, `PHOTOGRAPHY`, `FITNESS_WELLNESS` and `CONSTRUCTION` are seeded but hidden from customers until shared/gst maps them (`tax_category_pending`).
+- Professional prices (`pro_service_prices`, effective-dated): submitted from `/pro/me/prices`, always `pending` until an admin approves under `doorstep:prices.review`, audited in the same transaction. Only an approved, live price is bookable; the database refuses a quote or booking line carrying anything else.
+- The customer picks the professional: `GET /services/{id}/professionals`; the quote and booking carry `pro_id`; the hold is on that professional only; `asap` holds from now with a 3-minute offer.
+- `pro_unavailable`: a decline, an expired offer, a give-back, a no-show, not on duty or an ops redispatch never reassigns silently. The customer picks another professional (the difference charged through a `doorstep_extras` pro_change bill, or refunded) or cancels for a full refund; no choice within 30 minutes is a full refund.
+- Nothing approves itself (founder, 4 Oct): the selfie face match is advisory (the selfie stays pending for an admin), every declared skill is pending until an admin verifies it, a background-check vendor verdict is advisory, and a deferred database trigger refuses any approval or verification without an admin audit row by the same reviewer in the same transaction.
+
+**Fixture changes the clients must copy:** every quote, booking, slots, catalogue and service fixture (units, suggested and from prices, `pro_id`, `asap`, `choice_deadline`, `unavailable_cause`, `pending_change`), `pro_selfie_200.json` (pending, not approved), `pro_skills_put_200.json` (pending), the readiness, DigiLocker, agreement and PAN fixtures, the A4 job fixtures, and the admin booking and document fixtures.

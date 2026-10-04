@@ -17,16 +17,19 @@ type CityRef struct {
 
 // CategorySummary is one catalogue tile.
 type CategorySummary struct {
-	ID                 uuid.UUID `json:"id"`
-	Slug               string    `json:"slug"`
-	Name               string    `json:"name"`
-	Description        string    `json:"description"`
-	Family             string    `json:"family"`
-	GenderRule         string    `json:"gender_rule"`
-	ImageURL           *string   `json:"image_url"`
-	SortOrder          int       `json:"sort_order"`
-	ServiceCount       int       `json:"service_count"`
-	StartingPricePaise int64     `json:"starting_price_paise"`
+	ID           uuid.UUID `json:"id"`
+	Slug         string    `json:"slug"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	Family       string    `json:"family"`
+	GenderRule   string    `json:"gender_rule"`
+	ImageURL     *string   `json:"image_url"`
+	SortOrder    int       `json:"sort_order"`
+	ServiceCount int       `json:"service_count"`
+	// StartingPricePaise is the lowest approved professional price of the
+	// category's services in the city now; null when no professional
+	// offers any yet.
+	StartingPricePaise *int64 `json:"starting_price_paise"`
 }
 
 // Catalogue is GET /v1/doorstep/catalogue.
@@ -37,15 +40,19 @@ type Catalogue struct {
 
 // ServiceSummary is one service in a category page.
 type ServiceSummary struct {
-	ID                 uuid.UUID `json:"id"`
-	CategoryID         uuid.UUID `json:"category_id"`
-	Slug               string    `json:"slug"`
-	Name               string    `json:"name"`
-	Description        string    `json:"description"`
-	DurationMinutes    int       `json:"duration_minutes"`
-	ImageURL           *string   `json:"image_url"`
-	StartingPricePaise int64     `json:"starting_price_paise"`
-	StartingMRPPaise   *int64    `json:"starting_mrp_paise"`
+	ID              uuid.UUID `json:"id"`
+	CategoryID      uuid.UUID `json:"category_id"`
+	Slug            string    `json:"slug"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description"`
+	DurationMinutes int       `json:"duration_minutes"`
+	ImageURL        *string   `json:"image_url"`
+	// StartingPricePaise: the lowest approved professional price of the
+	// service's options in the city now (null: no professional yet).
+	StartingPricePaise *int64 `json:"starting_price_paise"`
+	// SuggestedPricePaise: the lowest city suggested price of its options
+	// (informational; never charged).
+	SuggestedPricePaise *int64 `json:"suggested_price_paise"`
 }
 
 // CategoryPage is GET /v1/doorstep/categories/{slug}.
@@ -72,9 +79,15 @@ type ServiceOption struct {
 	Description     string    `json:"description"`
 	DurationMinutes int       `json:"duration_minutes"`
 	MaxQuantity     int       `json:"max_quantity"`
-	IsDefault       bool      `json:"is_default"`
-	PricePaise      int64     `json:"price_paise"`
-	MRPPaise        *int64    `json:"mrp_paise"`
+	// Unit: per_job, per_hour or per_month; quantity counts units.
+	Unit      string `json:"unit"`
+	IsDefault bool   `json:"is_default"`
+	// SuggestedPricePaise and MRPPaise: the city's suggested price
+	// (informational; prices come from professionals).
+	SuggestedPricePaise *int64 `json:"suggested_price_paise"`
+	MRPPaise            *int64 `json:"mrp_paise"`
+	// FromPricePaise: the lowest approved professional price now.
+	FromPricePaise *int64 `json:"from_price_paise"`
 }
 
 // Addon is a priced add-on.
@@ -83,7 +96,8 @@ type Addon struct {
 	Name                 string    `json:"name"`
 	Description          string    `json:"description"`
 	ExtraDurationMinutes int       `json:"extra_duration_minutes"`
-	PricePaise           int64     `json:"price_paise"`
+	SuggestedPricePaise  *int64    `json:"suggested_price_paise"`
+	FromPricePaise       *int64    `json:"from_price_paise"`
 }
 
 // AddonGroup is an add-on group with its selection rule.
@@ -141,6 +155,7 @@ type QuoteLine struct {
 	RefID          uuid.UUID `json:"ref_id"`
 	PriceID        uuid.UUID `json:"price_id"`
 	Name           string    `json:"name"`
+	Unit           string    `json:"unit"`
 	Quantity       int       `json:"quantity"`
 	UnitPricePaise int64     `json:"unit_price_paise"`
 	LineTotalPaise int64     `json:"line_total_paise"`
@@ -165,6 +180,7 @@ type Quote struct {
 	ServiceID        uuid.UUID   `json:"service_id"`
 	OptionID         uuid.UUID   `json:"option_id"`
 	Quantity         int         `json:"quantity"`
+	ProID            uuid.UUID   `json:"pro_id"`
 	CityCode         string      `json:"city_code"`
 	ZoneID           uuid.UUID   `json:"zone_id"`
 	Lines            []QuoteLine `json:"lines"`
@@ -182,6 +198,7 @@ type Quote struct {
 // QuoteRequest is the POST /v1/doorstep/quotes body.
 type QuoteRequest struct {
 	ServiceID *uuid.UUID          `json:"service_id"`
+	ProID     *uuid.UUID          `json:"pro_id"`
 	OptionID  *uuid.UUID          `json:"option_id"`
 	Quantity  *int                `json:"quantity"`
 	Addons    []QuoteAddonRequest `json:"addons"`
