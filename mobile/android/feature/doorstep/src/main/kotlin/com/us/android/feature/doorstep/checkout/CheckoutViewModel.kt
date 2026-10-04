@@ -22,11 +22,13 @@ import com.us.android.feature.doorstep.data.PaymentIntentDto
 import com.us.android.feature.doorstep.data.QuoteDto
 import com.us.android.feature.doorstep.data.code
 import com.us.android.feature.doorstep.data.userMessage
+import com.us.android.feature.doorstep.payment.CheckoutRoute
 import com.us.android.feature.doorstep.payment.DOORSTEP_PAYMENT_APPLICATION_ID
+import com.us.android.feature.doorstep.payment.DoorstepPaymentConfig
 import com.us.android.feature.doorstep.payment.DoorstepPaymentRequest
 import com.us.android.feature.doorstep.payment.DoorstepPaymentStatusSource
 import com.us.android.feature.doorstep.payment.DoorstepReference
-import com.us.android.feature.doorstep.payment.toPaymentSession
+import com.us.android.feature.doorstep.payment.checkoutRoute
 import com.us.android.feature.doorstep.ui.instantOrNull
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -100,6 +102,10 @@ sealed interface CheckoutState {
  *     re-booked.
  *  6. After process death the saved phase decides and the server is asked
  *     before anything is offered; a sheet is never reopened by itself.
+ *  7. A `stub` checkout (a dev stack's test gateway) opens no sheet: in a DEV
+ *     build it calls `POST /bookings/{id}/payment/stub-confirm` and then polls
+ *     like rule 3; in any other build it is "payment unavailable". The stub
+ *     route's answer is never read as paid.
  */
 @HiltViewModel
 class CheckoutViewModel @Inject constructor(
@@ -107,6 +113,7 @@ class CheckoutViewModel @Inject constructor(
     private val repository: DoorstepRepository,
     private val handoff: PaymentHandoff,
     private val payments: PaymentCoordinator,
+    private val paymentConfig: DoorstepPaymentConfig,
 ) : ViewModel() {
 
     private val quoteId: String = checkNotNull(savedStateHandle.get<String>("quoteId")) { "navigation argument 'quoteId' is missing" }
@@ -121,6 +128,7 @@ class CheckoutViewModel @Inject constructor(
     val state: StateFlow<CheckoutState> = _state.asStateFlow()
 
     private var confirmJob: Job? = null
+    private var stubJob: Job? = null
 
     init {
         observeHandoff()
@@ -150,6 +158,7 @@ class CheckoutViewModel @Inject constructor(
             else -> return
         }
         confirmJob?.cancel()
+        stubJob?.cancel()
         _state.value = CheckoutState.Loading
         viewModelScope.launch {
             when (val result = repository.bookingPaymentIntent(bookingId)) {
@@ -248,11 +257,17 @@ class CheckoutViewModel @Inject constructor(
     }
 
     private fun openPayment(bookingId: String, intent: PaymentIntentDto) {
-        val session = intent.toPaymentSession(description = "Doorstep booking")
-        if (session == null) {
-            saved.phase = CheckoutContinuation.Phase.SHEET_REQUESTED
-            _state.value = CheckoutState.PaymentFailed(bookingId, "Online payment isn't available right now.", saved.holdExpiresAt)
-            return
+        val session = when (val route = intent.checkoutRoute(description = "Doorstep booking", config = paymentConfig)) {
+            is CheckoutRoute.Sheet -> route.session
+            CheckoutRoute.DevStub -> {
+                stubConfirm(bookingId)
+                return
+            }
+            CheckoutRoute.Unavailable -> {
+                saved.phase = CheckoutContinuation.Phase.SHEET_REQUESTED
+                _state.value = CheckoutState.PaymentFailed(bookingId, "Online payment isn't available right now.", saved.holdExpiresAt)
+                return
+            }
         }
         val attempt = PaymentAttempt(
             applicationId = DOORSTEP_PAYMENT_APPLICATION_ID,
@@ -262,6 +277,46 @@ class CheckoutViewModel @Inject constructor(
         saved.inFlight.attempt = attempt
         saved.phase = CheckoutContinuation.Phase.SHEET_REQUESTED
         _state.value = CheckoutState.OpeningPayment(DoorstepPaymentRequest(attempt, session), saved.holdExpiresAt)
+    }
+
+    /**
+     * DEV BUILD, dev stack, `stub` provider: there is no sheet. Ask
+     * doorstep-service to have payments-service's stub gateway settle, then
+     * poll `GET /payment` exactly as after a real sheet. The stub-confirm
+     * answer is never read as paid (the repository drops its rows); only the
+     * signed event's `succeeded` row — through [confirm] — reaches
+     * [CheckoutState.Paid].
+     */
+    private fun stubConfirm(bookingId: String) {
+        // Recovery after process death asks the server; it never re-books.
+        saved.phase = CheckoutContinuation.Phase.SHEET_REQUESTED
+        saved.inFlight.clear()
+        confirmJob?.cancel()
+        stubJob?.cancel()
+        _state.value = CheckoutState.Confirming(bookingId, elapsedSeconds = 0)
+        stubJob = viewModelScope.launch {
+            when (val result = repository.stubConfirmBookingPayment(bookingId)) {
+                is DoorstepResult.Success -> confirm(bookingId)
+                is DoorstepResult.Failure -> stubRefused(bookingId, result.error)
+            }
+        }
+    }
+
+    private fun stubRefused(bookingId: String, error: DoorstepError) {
+        when {
+            // The settlement may have landed (or already had): only the server's rows can say.
+            error is DoorstepError.Network ||
+                error.code == DoorstepCodes.PAYMENT_ALREADY_SETTLED ||
+                error.code == DoorstepCodes.INVALID_TRANSITION -> confirm(bookingId)
+            error.code == DoorstepCodes.HOLD_EXPIRED -> expire()
+            error.code == DoorstepCodes.STUB_UNAVAILABLE || error.code == DoorstepCodes.NOT_FOUND ->
+                _state.value = CheckoutState.PaymentFailed(
+                    bookingId,
+                    "This server has no test payment gateway. Pay through checkout instead.",
+                    saved.holdExpiresAt,
+                )
+            else -> _state.value = CheckoutState.PaymentFailed(bookingId, error.userMessage(), saved.holdExpiresAt)
+        }
     }
 
     private fun observeHandoff() {

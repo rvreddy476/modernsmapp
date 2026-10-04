@@ -1,0 +1,1 @@
+{"data":{"payment_id":"9cd38d6a-7e60-5925-8f25-51121208478c","reference_type":"doorstep_booking","reference_id":"b5dbe726-3083-5696-8af3-e63f4620137e","amount_paise":224800,"status":"pending","checkout":{"key_id":"rzp_test_fixture","merchant_display_name":"Doorstep","order_id":"order_FixtureDoorstep01","provider":"razorpay"}},"meta":{"request_id":"fixture"}}

@@ -94,6 +94,16 @@ interface DoorstepApi {
     @GET("v1/doorstep/bookings/{id}/payment")
     suspend fun bookingPayments(@Path("id") bookingId: String): Response<ApiEnvelope<BookingPaymentsDto>>
 
+    /**
+     * DEVELOPMENT STACKS ONLY: asks payments-service's stub gateway to settle
+     * the booking's intent. It marks nothing paid — the signed event does, and
+     * the client reads that from [bookingPayments]. 404 DOORSTEP_NOT_FOUND on
+     * any other deployment, 409 DOORSTEP_STUB_UNAVAILABLE when payments has a
+     * real provider.
+     */
+    @POST("v1/doorstep/bookings/{id}/payment/stub-confirm")
+    suspend fun stubConfirmBookingPayment(@Path("id") bookingId: String): Response<ApiEnvelope<BookingPaymentsDto>>
+
     // ── The visit (A5) ──
     @GET("v1/doorstep/bookings/{id}/extras")
     suspend fun extras(@Path("id") bookingId: String): Response<ApiEnvelope<ExtraListDto>>

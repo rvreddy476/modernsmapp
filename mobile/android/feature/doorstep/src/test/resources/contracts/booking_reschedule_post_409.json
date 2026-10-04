@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_RESCHEDULE_NOT_ALLOWED","message":"a booking can be moved once, up to 3 hours before the slot"},"meta":{"request_id":"fixture"}}

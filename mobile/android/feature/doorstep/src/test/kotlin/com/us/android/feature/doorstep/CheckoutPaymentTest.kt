@@ -16,7 +16,9 @@ import com.us.android.feature.doorstep.data.DoorstepCodes
 import com.us.android.feature.doorstep.data.DoorstepError
 import com.us.android.feature.doorstep.data.DoorstepResult
 import com.us.android.feature.doorstep.payment.DOORSTEP_PAYMENT_APPLICATION_ID
+import com.us.android.feature.doorstep.payment.DoorstepPaymentConfig
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -54,7 +56,13 @@ class CheckoutPaymentTest {
         ),
     )
 
-    private fun vm(handle: SavedStateHandle = handle()) = CheckoutViewModel(handle, repo, handoff, confirmingOnlyCoordinator())
+    private fun vm(handle: SavedStateHandle = handle(), environment: String = "prod") =
+        CheckoutViewModel(handle, repo, handoff, confirmingOnlyCoordinator(), DoorstepPaymentConfig.forEnvironment(environment))
+
+    /** A booking whose intent carries payments-service's stub session (a development stack). */
+    private fun stubBooking() {
+        repo.createBookingResult = { _, _ -> DoorstepResult.Success(BookingCreatedDto(booking(), intent(status = "pending", checkout = stubCheckout()))) }
+    }
 
     private fun TestScope.ready(model: CheckoutViewModel) {
         advanceUntilIdle()
@@ -222,6 +230,100 @@ class CheckoutPaymentTest {
         assertThat(revived.state.value).isEqualTo(CheckoutState.Paid(BOOKING_ID))
         assertThat(repo.bookingKeys).hasSize(1)
         assertThat(repo.paymentIntentCalls).isEqualTo(0)
+    }
+
+    // ── The dev stub gateway ──
+
+    @Test
+    fun `a dev build settles a stub checkout through stub-confirm and is paid only when GET payment says so`() = runTest(dispatcher) {
+        stubBooking()
+        repo.paymentsResults.addAll(
+            listOf(
+                DoorstepResult.Success(payments(intent(status = "pending", checkout = stubCheckout()))),
+                DoorstepResult.Success(payments(intent(status = "succeeded", checkout = stubCheckout()))),
+            ),
+        )
+        val model = vm(environment = "dev")
+        ready(model)
+        model.book()
+        runCurrent()
+        // No sheet: the stub is asked to settle, and the customer sees "confirming".
+        assertThat(repo.stubConfirmCalls).isEqualTo(1)
+        assertThat(model.state.value).isInstanceOf(CheckoutState.Confirming::class.java)
+        assertThat(repo.paymentReads).isEqualTo(0)
+
+        advanceTimeBy(1_100) // first read: still pending — the stub-confirm success alone is NOT paid
+        runCurrent()
+        assertThat(model.state.value).isInstanceOf(CheckoutState.Confirming::class.java)
+        advanceTimeBy(2_100) // second read: succeeded (the signed event landed)
+        runCurrent()
+        assertThat(model.state.value).isEqualTo(CheckoutState.Paid(BOOKING_ID))
+        assertThat(repo.paymentReads).isEqualTo(2)
+        assertThat(repo.stubConfirmCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun `a stub-confirm that succeeds while the server never says succeeded is never paid`() = runTest(dispatcher) {
+        stubBooking()
+        repo.paymentsFallback = DoorstepResult.Success(payments(intent(status = "pending", checkout = stubCheckout())))
+        val model = vm(environment = "dev")
+        ready(model)
+        model.book()
+        val seen = mutableListOf<CheckoutState>()
+        val watcher = backgroundScope.launch { model.state.collect { seen += it } }
+        advanceUntilIdle()
+        watcher.cancel()
+        assertThat(repo.stubConfirmCalls).isEqualTo(1)
+        assertThat(repo.paymentReads).isGreaterThan(0)
+        assertThat(seen.none { it is CheckoutState.Paid }).isTrue()
+        assertThat(model.state.value).isEqualTo(CheckoutState.StillConfirming(BOOKING_ID))
+    }
+
+    @Test
+    fun `a stub checkout outside a dev build is unavailable and never calls stub-confirm`() = runTest(dispatcher) {
+        stubBooking()
+        val model = vm(environment = "prod")
+        ready(model)
+        model.book()
+        advanceUntilIdle()
+        assertThat(model.state.value).isInstanceOf(CheckoutState.PaymentFailed::class.java)
+        assertThat(repo.stubConfirmCalls).isEqualTo(0)
+        assertThat(repo.paymentReads).isEqualTo(0)
+    }
+
+    @Test
+    fun `a server with a real provider refuses the stub and nothing is polled or paid`() = runTest(dispatcher) {
+        stubBooking()
+        repo.stubConfirmResult = DoorstepResult.Failure(DoorstepError.Refused(409, DoorstepCodes.STUB_UNAVAILABLE, "real provider"))
+        val model = vm(environment = "dev")
+        ready(model)
+        model.book()
+        advanceUntilIdle()
+        val failed = model.state.value as CheckoutState.PaymentFailed
+        assertThat(failed.bookingId).isEqualTo(BOOKING_ID)
+        assertThat(repo.paymentReads).isEqualTo(0)
+
+        // Off a development stack the route is a 404: the same refusal.
+        repo.stubConfirmResult = DoorstepResult.Failure(DoorstepError.Refused(404, DoorstepCodes.NOT_FOUND, "not here"))
+        repo.paymentIntentResult = DoorstepResult.Success(intent(status = "pending", checkout = stubCheckout()))
+        model.retryPayment()
+        advanceUntilIdle()
+        assertThat(model.state.value).isInstanceOf(CheckoutState.PaymentFailed::class.java)
+        assertThat(repo.stubConfirmCalls).isEqualTo(2)
+        assertThat(repo.bookingKeys).hasSize(1)
+    }
+
+    @Test
+    fun `a lost stub-confirm response still asks the server, which alone decides`() = runTest(dispatcher) {
+        stubBooking()
+        repo.stubConfirmResult = DoorstepResult.Failure(DoorstepError.Network(IOException("lost")))
+        repo.paymentsFallback = DoorstepResult.Success(payments(intent(status = "succeeded", checkout = stubCheckout())))
+        val model = vm(environment = "dev")
+        ready(model)
+        model.book()
+        advanceUntilIdle()
+        assertThat(model.state.value).isEqualTo(CheckoutState.Paid(BOOKING_ID))
+        assertThat(repo.paymentReads).isGreaterThan(0)
     }
 
     @Test

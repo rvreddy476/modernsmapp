@@ -64,6 +64,15 @@ object DoorstepCodes {
     const val RESCHEDULE_NOT_ALLOWED = "DOORSTEP_RESCHEDULE_NOT_ALLOWED"
     const val RATING_EXISTS = "DOORSTEP_RATING_EXISTS"
     const val REWORK_WINDOW_CLOSED = "DOORSTEP_REWORK_WINDOW_CLOSED"
+    const val INVALID_REQUEST = "DOORSTEP_INVALID_REQUEST"
+    const val BOOKING_NOT_FOUND = "DOORSTEP_BOOKING_NOT_FOUND"
+    const val INVALID_TRANSITION = "DOORSTEP_INVALID_TRANSITION"
+
+    /** The dev stub-confirm route outside a development stack. */
+    const val NOT_FOUND = "DOORSTEP_NOT_FOUND"
+
+    /** The dev stub-confirm route while payments-service has a real provider: pay through checkout. */
+    const val STUB_UNAVAILABLE = "DOORSTEP_STUB_UNAVAILABLE"
 }
 
 /** The server's stable error code, when the failure carried one. */

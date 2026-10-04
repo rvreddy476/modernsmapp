@@ -11,6 +11,7 @@ import com.us.android.feature.doorstep.data.BookingPaymentsDto
 import com.us.android.feature.doorstep.data.CancelPreviewDto
 import com.us.android.feature.doorstep.data.CatalogueDto
 import com.us.android.feature.doorstep.data.CategoryPageDto
+import com.us.android.feature.doorstep.data.CheckoutSessionDto
 import com.us.android.feature.doorstep.data.DoorstepCodes
 import com.us.android.feature.doorstep.data.DoorstepError
 import com.us.android.feature.doorstep.data.DoorstepErrorEnvelopeDto
@@ -30,15 +31,24 @@ import com.us.android.feature.doorstep.data.ServiceabilityDto
 import com.us.android.feature.doorstep.data.ShareTokenDto
 import com.us.android.feature.doorstep.data.SlotDaysDto
 import com.us.android.feature.doorstep.data.code
+import com.us.android.feature.doorstep.domain.BookingRules
 import com.us.android.feature.doorstep.domain.GenderRules
 import com.us.android.feature.doorstep.domain.SelectionRules
+import com.us.android.feature.doorstep.domain.StepState
 import com.us.android.feature.doorstep.model.Paise
 import com.us.android.feature.doorstep.model.sum
 import com.us.android.feature.doorstep.model.toRupeeText
+import com.us.android.feature.doorstep.payment.CheckoutRoute
+import com.us.android.feature.doorstep.payment.DoorstepPaymentConfig
+import com.us.android.feature.doorstep.payment.DoorstepReference
+import com.us.android.feature.doorstep.payment.checkoutRoute
+import com.us.android.feature.doorstep.payment.readingFor
+import com.us.android.core.payments.PaymentStatusReading
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
@@ -61,6 +71,12 @@ import java.io.File
  * not the app's, and are not copied.
  */
 class DoorstepContractFixtureTest {
+
+    private companion object {
+        // The dev seed's deterministic ids (devseed.ID) the A3 fixtures carry.
+        const val FIXTURE_ADDRESS_ID = "e4329848-a88b-5702-87c4-4baa7bb8e509"
+        const val FIXTURE_BOOKING_ID = "b5dbe726-3083-5696-8af3-e63f4620137e"
+    }
 
     private val strict = Json { ignoreUnknownKeys = false }
 
@@ -135,26 +151,149 @@ class DoorstepContractFixtureTest {
         "quote_post_422_quantity.json" to error(status = 422) { err ->
             assertThat(err.code).isEqualTo("DOORSTEP_QUANTITY_INVALID")
         },
+
+        // ── Addresses (A3) ──
+        // POST /v1/doorstep/addresses 201
+        "address_post_201.json" to data(AddressDto.serializer()) { dto ->
+            assertThat(dto.id).isEqualTo(FIXTURE_ADDRESS_ID)
+            assertThat(dto.cityCode).isEqualTo("HYD")
+            assertThat(dto.locality).isEqualTo("HITEC City")
+            assertThat(dto.isDefault).isTrue()
+        },
+        "address_post_422_outside_area.json" to error(status = 422) { err ->
+            assertThat(err.code).isEqualTo(DoorstepCodes.OUTSIDE_SERVICE_AREA)
+        },
+        // GET /v1/doorstep/addresses 200
+        "addresses_get_200.json" to data(AddressListDto.serializer()) { dto ->
+            assertThat(dto.items.map { it.id }).containsExactly(FIXTURE_ADDRESS_ID)
+        },
+
+        // ── Slots (A3) ──
+        // GET /v1/doorstep/slots?quote_id=&address_id= 200 — Sunday (today) has no hours in the fixture world
+        "slots_get_200.json" to data(SlotDaysDto.serializer()) { dto ->
+            assertThat(dto.timezone).isEqualTo("Asia/Kolkata")
+            assertThat(dto.days).hasSize(7)
+            assertThat(dto.days.first().date).isEqualTo("2026-10-04")
+            assertThat(dto.days.first().slots.none { it.available }).isTrue()
+            assertThat(dto.days[1].slots.count { it.available }).isEqualTo(14)
+        },
+        "slots_get_409_outstanding.json" to error(status = 409) { err ->
+            assertThat(err.code).isEqualTo(DoorstepCodes.OUTSTANDING_DUE)
+            assertThat((err as DoorstepError.Refused).details!!["outstanding_paise"]!!.jsonPrimitive.long).isEqualTo(45000L)
+        },
+
+        // ── Bookings (A3) ──
+        // POST /v1/doorstep/bookings 201 (Idempotency-Key) — the booking plus its Razorpay-shaped checkout
+        "booking_post_201.json" to data(BookingCreatedDto.serializer()) { dto ->
+            assertThat(dto.booking.status).isEqualTo("pending_payment")
+            assertThat(dto.booking.holdExpiresAt).isEqualTo("2026-10-04T06:40:00Z")
+            assertThat(dto.paymentIntent.referenceType).isEqualTo(DoorstepReference.BOOKING)
+            assertThat(dto.paymentIntent.referenceId).isEqualTo(dto.booking.id)
+            assertThat(dto.paymentIntent.amountPaise).isEqualTo(dto.booking.totalPaise)
+            assertRazorpayCheckout(dto.paymentIntent)
+            // The intent is pending: nothing here says paid.
+            assertThat(payments(dto.paymentIntent).readingFor(DoorstepReference.BOOKING, dto.booking.id))
+                .isEqualTo(PaymentStatusReading.Confirming)
+        },
+        "booking_post_400_idempotency_key.json" to error(status = 400) { err ->
+            assertThat(err.code).isEqualTo(DoorstepCodes.INVALID_REQUEST)
+        },
+        "booking_post_409_slot_taken.json" to error(status = 409) { err -> assertThat(err.code).isEqualTo(DoorstepCodes.SLOT_TAKEN) },
+        "booking_post_409_outstanding.json" to error(status = 409) { err -> assertThat(err.code).isEqualTo(DoorstepCodes.OUTSTANDING_DUE) },
+        "booking_post_410_quote_expired.json" to error(status = 410) { err -> assertThat(err.code).isEqualTo(DoorstepCodes.QUOTE_EXPIRED) },
+        "booking_post_422_slot_unavailable.json" to error(status = 422) { err ->
+            assertThat(err.code).isEqualTo(DoorstepCodes.SLOT_UNAVAILABLE)
+        },
+        // GET /v1/doorstep/bookings/{id} 200 — awaiting payment: no OTPs, no photos, one history step
+        "booking_get_200_pending_payment.json" to data(BookingDto.serializer()) { dto ->
+            assertThat(dto.status).isEqualTo("pending_payment")
+            assertThat(dto.endOtp).isNull()
+            assertThat(dto.photos).isEmpty()
+            assertThat(dto.statusHistory.map { it.toStatus }).containsExactly("pending_payment")
+            assertThat(dto.statusHistory.single().fromStatus).isNull()
+            val steps = BookingRules.timeline(dto)
+            assertThat(steps.all { it.state == StepState.UPCOMING }).isTrue()
+            assertThat(steps.all { it.at == null }).isTrue()
+        },
+        // GET /v1/doorstep/bookings/{id} 200 — confirmed: "Booked" is done, with the time from status_history
+        "booking_get_200.json" to data(BookingDto.serializer()) { dto ->
+            assertThat(dto.status).isEqualTo("confirmed")
+            assertThat(dto.paidPaise).isEqualTo(dto.totalPaise)
+            assertThat(BookingRules.visibleStartOtp(dto)).isNull()
+            assertThat(BookingRules.visibleEndOtp(dto)).isNull()
+            assertThat(BookingRules.visitPhotos(dto)).isEmpty()
+            val steps = BookingRules.timeline(dto)
+            assertThat(steps.first().label).isEqualTo("Booked")
+            assertThat(steps.first().state).isEqualTo(StepState.CURRENT)
+            assertThat(steps.first().at).isEqualTo("2026-10-04T06:30:00Z")
+            assertThat(steps.drop(1).all { it.state == StepState.UPCOMING && it.at == null }).isTrue()
+        },
+        "booking_get_404.json" to error(status = 404) { err -> assertThat(err.code).isEqualTo(DoorstepCodes.BOOKING_NOT_FOUND) },
+        // GET /v1/doorstep/bookings 200
+        "bookings_get_200.json" to data(BookingPageDto.serializer()) { dto ->
+            assertThat(dto.items.single().status).isEqualTo("confirmed")
+            assertThat(dto.nextCursor).isNull()
+        },
+        // GET /v1/doorstep/bookings/{id}/cancel-preview 200
+        "cancel_preview_get_200.json" to data(CancelPreviewDto.serializer()) { dto ->
+            assertThat(dto.allowed).isTrue()
+            assertThat(dto.feePaise + dto.refundPaise).isEqualTo(224800L)
+            assertThat(dto.rule).isEqualTo("free_before_assignment")
+        },
+        // POST /v1/doorstep/bookings/{id}/cancel 200 — the timeline becomes the history, ending cancelled
+        "booking_cancel_post_200.json" to data(BookingDto.serializer()) { dto ->
+            assertThat(dto.status).isEqualTo("cancelled")
+            assertThat(dto.canCancel).isFalse()
+            val steps = BookingRules.timeline(dto)
+            assertThat(steps.map { it.label }).containsExactly("Awaiting payment", "Confirmed", "Cancelled").inOrder()
+            assertThat(steps.all { it.state == StepState.DONE }).isTrue()
+        },
+        // POST /v1/doorstep/bookings/{id}/reschedule 200 — moved once, so no second move
+        "booking_reschedule_post_200.json" to data(BookingDto.serializer()) { dto ->
+            assertThat(dto.status).isEqualTo("confirmed")
+            assertThat(dto.slotStart).isEqualTo("2026-10-06T04:30:00Z")
+            assertThat(dto.canReschedule).isFalse()
+        },
+        "booking_reschedule_post_409.json" to error(status = 409) { err ->
+            assertThat(err.code).isEqualTo(DoorstepCodes.RESCHEDULE_NOT_ALLOWED)
+        },
+
+        // ── Payments (A3) ──
+        // POST /v1/doorstep/bookings/{id}/payment/intent 200
+        "booking_payment_intent_post_200.json" to data(PaymentIntentDto.serializer()) { dto ->
+            assertThat(dto.referenceType).isEqualTo(DoorstepReference.BOOKING)
+            assertRazorpayCheckout(dto)
+        },
+        "booking_payment_intent_410_hold_expired.json" to error(status = 410) { err ->
+            assertThat(err.code).isEqualTo(DoorstepCodes.HOLD_EXPIRED)
+        },
+        // GET /v1/doorstep/bookings/{id}/payment 200 — the ONLY source of "paid"
+        "booking_payment_get_200_pending.json" to data(BookingPaymentsDto.serializer()) { dto ->
+            assertThat(dto.readingFor(DoorstepReference.BOOKING, FIXTURE_BOOKING_ID)).isEqualTo(PaymentStatusReading.Confirming)
+        },
+        "booking_payment_get_200.json" to data(BookingPaymentsDto.serializer()) { dto ->
+            assertThat(dto.readingFor(DoorstepReference.BOOKING, FIXTURE_BOOKING_ID)).isEqualTo(PaymentStatusReading.Paid)
+        },
+        // A refund in flight outranks the succeeded capture.
+        "booking_payment_get_200_refund.json" to data(BookingPaymentsDto.serializer()) { dto ->
+            assertThat(dto.refunds.single().cause).isEqualTo("customer_cancel")
+            assertThat(dto.readingFor(DoorstepReference.BOOKING, FIXTURE_BOOKING_ID)).isEqualTo(PaymentStatusReading.RefundPending)
+        },
+        // POST /v1/doorstep/bookings/{id}/payment/stub-confirm — refused outside a development stack
+        "booking_payment_stub_confirm_404.json" to error(status = 404) { err ->
+            assertThat(err.code).isEqualTo(DoorstepCodes.NOT_FOUND)
+        },
     )
 
     /**
      * Routes the app calls whose fixtures doorstep-service has NOT published
-     * yet (lanes A3–A5, contract only as of 2026-10-04). The names are what we
-     * expect; rename here when the backend publishes. Each is ASSUMED away
-     * until its file appears, then it must decode strictly.
+     * yet (lanes A4–A5, and GET /quotes/{id}; contract only as of 2026-10-04 —
+     * A3's addresses, slots, bookings and payments were published in
+     * 9def49e5 and moved to [parsers]). The names are what we expect; rename
+     * here when the backend publishes. Each is ASSUMED away until its file
+     * appears, then it must decode strictly.
      *
      *  - GET    /v1/doorstep/quotes/{id} 200                   quote_get_200.json
-     *  - GET    /v1/doorstep/addresses 200                     addresses_list_200.json
-     *  - POST   /v1/doorstep/addresses 201                     address_post_201.json
-     *  - GET    /v1/doorstep/slots 200                         slots_get_200.json
-     *  - POST   /v1/doorstep/bookings 201                      booking_post_201.json
-     *  - GET    /v1/doorstep/bookings 200                      bookings_list_200.json
-     *  - GET    /v1/doorstep/bookings/{id} 200                 booking_get_200.json
-     *  - GET    /v1/doorstep/bookings/{id}/cancel-preview 200  cancel_preview_200.json
-     *  - POST   /v1/doorstep/bookings/{id}/cancel 200          booking_cancel_200.json
-     *  - POST   /v1/doorstep/bookings/{id}/reschedule 200      booking_reschedule_200.json
-     *  - POST   /v1/doorstep/bookings/{id}/payment/intent 200  booking_payment_intent_200.json
-     *  - GET    /v1/doorstep/bookings/{id}/payment 200         booking_payment_get_200.json
      *  - GET    /v1/doorstep/bookings/{id}/extras 200          extras_list_200.json
      *  - POST   …/extras/{extraId}/approve|decline 200         extra_approve_200.json, extra_decline_200.json
      *  - GET    /v1/doorstep/bookings/{id}/extras-bill 200     extras_bill_get_200.json
@@ -165,26 +304,9 @@ class DoorstepContractFixtureTest {
      *  - POST   /v1/doorstep/bookings/{id}/sos 201             sos_post_201.json
      *  - POST   /v1/doorstep/bookings/{id}/share 201           share_post_201.json
      *  - POST   /v1/doorstep/realtime/token 200                realtime_token_200.json
-     *  - error  DOORSTEP_OUTSTANDING_DUE / SLOT_TAKEN / HOLD_EXPIRED  booking_post_409_outstanding.json,
-     *           booking_post_409_slot_taken.json, booking_payment_intent_410_hold_expired.json
      */
     private val pending: Map<String, (raw: String) -> Unit> = mapOf(
         "quote_get_200.json" to data(QuoteDto.serializer()) {},
-        "addresses_list_200.json" to data(AddressListDto.serializer()) {},
-        "address_post_201.json" to data(AddressDto.serializer()) {},
-        "slots_get_200.json" to data(SlotDaysDto.serializer()) { assertThat(it.timezone).isEqualTo("Asia/Kolkata") },
-        "booking_post_201.json" to data(BookingCreatedDto.serializer()) { dto ->
-            assertThat(dto.booking.status).isEqualTo("pending_payment")
-            assertThat(dto.paymentIntent.referenceType).isEqualTo("doorstep_booking")
-            assertThat(dto.paymentIntent.referenceId).isEqualTo(dto.booking.id)
-        },
-        "bookings_list_200.json" to data(BookingPageDto.serializer()) {},
-        "booking_get_200.json" to data(BookingDto.serializer()) {},
-        "cancel_preview_200.json" to data(CancelPreviewDto.serializer()) {},
-        "booking_cancel_200.json" to data(BookingDto.serializer()) {},
-        "booking_reschedule_200.json" to data(BookingDto.serializer()) {},
-        "booking_payment_intent_200.json" to data(PaymentIntentDto.serializer()) {},
-        "booking_payment_get_200.json" to data(BookingPaymentsDto.serializer()) {},
         "extras_list_200.json" to data(ExtraListDto.serializer()) {},
         "extra_approve_200.json" to data(ExtraDto.serializer()) {},
         "extra_decline_200.json" to data(ExtraDto.serializer()) {},
@@ -201,10 +323,23 @@ class DoorstepContractFixtureTest {
         "realtime_token_200.json" to data(RealtimeTokenDto.serializer()) {
             assertThat(it.topics.single()).startsWith("doorstep.booking.")
         },
-        "booking_post_409_outstanding.json" to error(status = 409) { assertThat(it.code).isEqualTo(DoorstepCodes.OUTSTANDING_DUE) },
-        "booking_post_409_slot_taken.json" to error(status = 409) { assertThat(it.code).isEqualTo(DoorstepCodes.SLOT_TAKEN) },
-        "booking_payment_intent_410_hold_expired.json" to error(status = 410) { assertThat(it.code).isEqualTo(DoorstepCodes.HOLD_EXPIRED) },
     )
+
+    /** The A3 fixtures' checkout is payments-service's Razorpay session, typed, and it opens the sheet. */
+    private fun assertRazorpayCheckout(intent: PaymentIntentDto) {
+        assertThat(intent.checkout).isEqualTo(
+            CheckoutSessionDto(
+                provider = "razorpay",
+                orderId = "order_FixtureDoorstep01",
+                keyId = "rzp_test_fixture",
+                merchantDisplayName = "Doorstep",
+            ),
+        )
+        val route = intent.checkoutRoute("Doorstep booking", DoorstepPaymentConfig.forEnvironment("dev")) as CheckoutRoute.Sheet
+        assertThat(route.session.providerOrderId).isEqualTo("order_FixtureDoorstep01")
+        assertThat(route.session.merchantDisplayName).isEqualTo("Doorstep")
+        assertThat(route.session.amountMinor).isEqualTo(intent.amountPaise)
+    }
 
     private fun fixtures(): Set<String> = contractsDir.listFiles { f -> f.name.endsWith(".json") }.orEmpty().map { it.name }.toSet()
 
@@ -252,6 +387,17 @@ class DoorstepContractFixtureTest {
         assertThat(runCatching { data(ServiceabilityDto.serializer()) {}(dropped) }.isFailure).isTrue()
         val added = raw.replace(""""serviceable":true""", """"serviceable":true,"surprise":1""")
         assertThat(runCatching { data(ServiceabilityDto.serializer()) {}(added) }.isFailure).isTrue()
+
+        // The A3 gap-closers are required on Booking: dropping any one fails.
+        val booking = File(contractsDir, "booking_get_200.json").readText()
+        listOf(""""end_otp":null,""", """"photos":[],""").forEach { key ->
+            val without = booking.replace(key, "")
+            assertThat(without).isNotEqualTo(booking)
+            assertThat(runCatching { data(BookingDto.serializer()) {}(without) }.isFailure).isTrue()
+        }
+        val noHistory = booking.replace(Regex(""""status_history":\[[^\]]*],"""), "")
+        assertThat(noHistory).isNotEqualTo(booking)
+        assertThat(runCatching { data(BookingDto.serializer()) {}(noHistory) }.isFailure).isTrue()
     }
 
     /** Lines add up to the totals, each line's split adds up to its total, and the rate is the category's. */

@@ -29,6 +29,10 @@ fun instantOrNull(text: String?): Instant? {
 /** "10:30 AM" in India time. */
 fun slotTimeText(rfc3339: String): String = instantOrNull(rfc3339)?.let { SLOT_TIME.format(it.atZone(IST)) } ?: rfc3339
 
+/** "Sat, 4 Oct · 12:00 PM" in India time, for a timeline step. */
+fun momentText(rfc3339: String): String =
+    instantOrNull(rfc3339)?.atZone(IST)?.let { "${SLOT_DAY.format(it)} · ${SLOT_TIME.format(it)}" } ?: rfc3339
+
 /** "Sat, 4 Oct · 10:30 AM – 12:00 PM" for a booked visit. */
 fun slotRangeText(start: String, end: String): String {
     val from = instantOrNull(start)?.atZone(IST) ?: return start

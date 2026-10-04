@@ -8,6 +8,7 @@ import com.us.android.core.payments.PaymentCoordinator
 import com.us.android.core.payments.PaymentHandoff
 import com.us.android.core.realtime.RealtimeEvent
 import com.us.android.feature.doorstep.data.BookingDto
+import com.us.android.feature.doorstep.data.BookingPhotoDto
 import com.us.android.feature.doorstep.data.CancelPreviewDto
 import com.us.android.feature.doorstep.data.DoorstepCodes
 import com.us.android.feature.doorstep.data.DoorstepError
@@ -25,6 +26,7 @@ import com.us.android.feature.doorstep.domain.TimelineStep
 import com.us.android.feature.doorstep.payment.BillPayment
 import com.us.android.feature.doorstep.realtime.BookingEventStream
 import com.us.android.feature.doorstep.realtime.DoorstepTopics
+import com.us.android.feature.doorstep.ui.DoorstepMediaUrls
 import com.us.android.feature.doorstep.ui.errorMessage
 import com.us.android.feature.doorstep.ui.successMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -64,7 +66,14 @@ data class BookingDetailUiState(
     /** The start OTP, only in the window the professional may ask for it. */
     val startOtp: String? get() = booking?.let(BookingRules::visibleStartOtp)
 
-    val timeline: List<TimelineStep>? get() = BookingRules.timeline(status)
+    /** The finish OTP, only while the job is in progress. */
+    val endOtp: String? get() = booking?.let(BookingRules::visibleEndOtp)
+
+    /** Drawn from the booking's `status_history`; empty before the booking loads. */
+    val timeline: List<TimelineStep> get() = booking?.let(BookingRules::timeline).orEmpty()
+
+    /** Before then After, each oldest first. */
+    val photos: List<Pair<String, List<BookingPhotoDto>>> get() = booking?.let(BookingRules::visitPhotos).orEmpty()
 
     val extrasSummary: ExtrasSummary get() = ExtrasSummary.of(extras)
 }
@@ -87,6 +96,8 @@ class BookingDetailViewModel @Inject constructor(
     private val stream: BookingEventStream,
     handoff: PaymentHandoff,
     payments: PaymentCoordinator,
+    /** Where visit photos and extras evidence load from. */
+    val mediaUrls: DoorstepMediaUrls,
 ) : ViewModel() {
 
     private val bookingId: String =
@@ -296,8 +307,8 @@ class BookingDetailViewModel @Inject constructor(
         _state.update { it.copy(live = false) }
     }
 
-    private fun DoorstepError.detailMessage(): String = when (this) {
-        DoorstepError.NotFound -> "We couldn't find that booking."
+    private fun DoorstepError.detailMessage(): String = when {
+        this == DoorstepError.NotFound || code == DoorstepCodes.BOOKING_NOT_FOUND -> "We couldn't find that booking."
         else -> userMessage()
     }
 

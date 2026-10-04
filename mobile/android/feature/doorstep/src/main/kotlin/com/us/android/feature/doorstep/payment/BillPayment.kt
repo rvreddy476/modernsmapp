@@ -115,7 +115,10 @@ class BillPayment(
                     _state.value = BillPayState.Failed(billId, result.error.userMessage())
                 }
                 is DoorstepResult.Success -> {
-                    val session = result.value.toPaymentSession(description = "Doorstep extras")
+                    // The dev stub-confirm route settles bookings only: a stub extras session has no
+                    // sheet and no confirm path, so it is unavailable rather than a sheet that refuses.
+                    val session = result.value.takeIf { it.checkout.provider != STUB_PROVIDER }
+                        ?.toPaymentSession(description = "Doorstep extras")
                     if (session == null) {
                         _state.value = BillPayState.Failed(billId, "Online payment isn't available right now.")
                         return@launch

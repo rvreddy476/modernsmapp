@@ -37,6 +37,10 @@ dependencies {
     // Geocoder and typed fields instead (Feast's address flow, copied).
     implementation(libs.play.services.location)
 
+    // Visit photos (before/after) and extras evidence, through the app's
+    // authenticated singleton image loader (set up in :app).
+    implementation(libs.coil.compose)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)

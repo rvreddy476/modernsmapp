@@ -1,5 +1,6 @@
 package com.us.android.feature.doorstep.di
 
+import com.us.android.core.network.ApiConfig
 import com.us.android.core.realtime.RealtimeEvent
 import com.us.android.core.realtime.SseClient
 import com.us.android.feature.doorstep.address.AddressLookup
@@ -9,6 +10,8 @@ import com.us.android.feature.doorstep.address.FusedCurrentLocationSource
 import com.us.android.feature.doorstep.data.DoorstepApi
 import com.us.android.feature.doorstep.data.DoorstepRepository
 import com.us.android.feature.doorstep.data.RealDoorstepRepository
+import com.us.android.feature.doorstep.payment.DoorstepPaymentConfig
+import com.us.android.feature.doorstep.ui.DoorstepMediaUrls
 import com.us.android.feature.doorstep.realtime.BookingEventStream
 import com.us.android.feature.doorstep.realtime.DoorstepClock
 import com.us.android.feature.doorstep.realtime.DoorstepRealtimeTokenSource
@@ -51,6 +54,15 @@ abstract class DoorstepModule {
 
         @Provides
         fun provideDoorstepClock(): DoorstepClock = DoorstepClock.System
+
+        /** The dev stub-confirm path is open only in the DEV flavour (`:app` supplies the environment). */
+        @Provides
+        fun provideDoorstepPaymentConfig(apiConfig: ApiConfig): DoorstepPaymentConfig =
+            DoorstepPaymentConfig.forEnvironment(apiConfig.environment)
+
+        /** Visit photos load through media-service's authorized serve route on the gateway. */
+        @Provides
+        fun provideDoorstepMediaUrls(apiConfig: ApiConfig): DoorstepMediaUrls = DoorstepMediaUrls(apiConfig.baseUrl)
 
         /**
          * The booking's live topic through notification-service SSE, with a

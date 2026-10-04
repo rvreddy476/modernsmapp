@@ -12,10 +12,13 @@ import com.us.android.feature.doorstep.data.BookingCreatedDto
 import com.us.android.feature.doorstep.data.BookingDto
 import com.us.android.feature.doorstep.data.BookingPageDto
 import com.us.android.feature.doorstep.data.BookingPaymentsDto
+import com.us.android.feature.doorstep.data.BookingPhotoDto
 import com.us.android.feature.doorstep.data.BookingProfessionalDto
 import com.us.android.feature.doorstep.data.CancelPreviewDto
 import com.us.android.feature.doorstep.data.CatalogueDto
 import com.us.android.feature.doorstep.data.CategoryPageDto
+import com.us.android.feature.doorstep.data.CheckoutSessionDto
+import com.us.android.feature.doorstep.data.StatusStepDto
 import com.us.android.feature.doorstep.data.DoorstepError
 import com.us.android.feature.doorstep.data.DoorstepRepository
 import com.us.android.feature.doorstep.data.DoorstepResult
@@ -36,8 +39,6 @@ import com.us.android.feature.doorstep.data.ShareTokenDto
 import com.us.android.feature.doorstep.data.SlotDaysDto
 import com.us.android.feature.doorstep.payment.DoorstepReference
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
 
 /*
@@ -83,6 +84,9 @@ fun booking(
     startOtp: String? = null,
     id: String = BOOKING_ID,
     holdExpiresAt: String? = "2026-10-04T06:40:00Z",
+    endOtp: String? = null,
+    photos: List<BookingPhotoDto> = emptyList(),
+    statusHistory: List<StatusStepDto> = listOf(StatusStepDto(null, "pending_payment", "2026-10-04T06:30:00Z")),
 ) = BookingDto(
     id = id,
     status = status,
@@ -109,27 +113,31 @@ fun booking(
     professional = if (status in setOf("pending_payment", "confirmed")) null else BookingProfessionalDto("Lakshmi", null, 4.8, 120),
     parentBookingId = null,
     startOtp = startOtp,
+    endOtp = endOtp,
+    photos = photos,
+    statusHistory = statusHistory,
     canCancel = true,
     canReschedule = true,
     createdAt = "2026-10-04T06:30:00Z",
     updatedAt = "2026-10-04T06:30:00Z",
 )
 
-fun checkout(orderId: String = "order_RZP1") = JsonObject(
-    mapOf(
-        "provider" to JsonPrimitive("razorpay"),
-        "order_id" to JsonPrimitive(orderId),
-        "key_id" to JsonPrimitive("rzp_test_publishable"),
-        "merchant_display_name" to JsonPrimitive("Doorstep"),
-    ),
+fun checkout(orderId: String = "order_RZP1", provider: String = "razorpay") = CheckoutSessionDto(
+    provider = provider,
+    orderId = orderId,
+    keyId = "rzp_test_publishable",
+    merchantDisplayName = "Doorstep",
 )
+
+/** What payments-service's stub gateway relays on a development stack. */
+fun stubCheckout() = CheckoutSessionDto(provider = "stub", orderId = "stub_order_1", keyId = "stub_key", merchantDisplayName = null)
 
 fun intent(
     referenceId: String = BOOKING_ID,
     referenceType: String = DoorstepReference.BOOKING,
     status: String = "created",
     paymentId: String = PAYMENT_ID,
-    checkout: JsonObject = checkout(),
+    checkout: CheckoutSessionDto = checkout(),
 ) = PaymentIntentDto(
     paymentId = paymentId,
     referenceType = referenceType,
@@ -152,6 +160,7 @@ fun extra(id: String, status: String, totalPaise: Long, quantity: Int = 1) = Ext
     unitPricePaise = totalPaise / quantity,
     totalPaise = totalPaise,
     status = status,
+    evidenceMediaId = null,
     createdAt = "2026-10-04T11:00:00Z",
 )
 
@@ -200,6 +209,15 @@ class FakeDoorstepRepository : DoorstepRepository {
     override suspend fun bookingPaymentIntent(bookingId: String): DoorstepResult<PaymentIntentDto> {
         paymentIntentCalls++
         return paymentIntentResult
+    }
+
+    /** The dev stub-confirm route's answer; [stubConfirmCalls] counts the calls. */
+    var stubConfirmResult: DoorstepResult<Unit> = DoorstepResult.Success(Unit)
+    var stubConfirmCalls = 0
+
+    override suspend fun stubConfirmBookingPayment(bookingId: String): DoorstepResult<Unit> {
+        stubConfirmCalls++
+        return stubConfirmResult
     }
 
     override suspend fun quote(quoteId: String) = quoteResult

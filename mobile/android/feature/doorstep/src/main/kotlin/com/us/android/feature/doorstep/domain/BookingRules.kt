@@ -1,11 +1,13 @@
 package com.us.android.feature.doorstep.domain
 
 import com.us.android.feature.doorstep.data.BookingDto
+import com.us.android.feature.doorstep.data.BookingPhotoDto
 import com.us.android.feature.doorstep.data.ExtraDto
 import com.us.android.feature.doorstep.data.ExtrasBillDto
 import com.us.android.feature.doorstep.data.OutstandingDto
 import com.us.android.feature.doorstep.model.Paise
 import com.us.android.feature.doorstep.model.sum
+import com.us.android.feature.doorstep.ui.instantOrNull
 import java.time.Duration
 import java.time.Instant
 
@@ -33,8 +35,11 @@ enum class BookingStatus(val wire: String, val label: String, val terminal: Bool
     }
 }
 
-/** One step of the tracking timeline. */
-data class TimelineStep(val label: String, val state: StepState)
+/** One step of the tracking timeline; [at] is when the booking reached it (RFC 3339), from `status_history`. */
+data class TimelineStep(val label: String, val state: StepState, val at: String? = null)
+
+const val PHOTO_BEFORE = "before"
+const val PHOTO_AFTER = "after"
 
 enum class StepState { DONE, CURRENT, UPCOMING }
 
@@ -51,6 +56,63 @@ object BookingRules {
 
     fun visibleStartOtp(booking: BookingDto): String? =
         booking.startOtp?.trim()?.takeIf { it.isNotEmpty() && BookingStatus.of(booking.status) in OTP_VISIBLE }
+
+    /**
+     * The finish OTP is shown ONLY while the job is in progress — the server
+     * sets it then, once the after photos are in. Any other status (extras to
+     * pay, completed, cancelled, a status this build does not know) hides it,
+     * whatever the server sent.
+     */
+    fun visibleEndOtp(booking: BookingDto): String? =
+        booking.endOtp?.trim()?.takeIf { it.isNotEmpty() && BookingStatus.of(booking.status) == BookingStatus.IN_PROGRESS }
+
+    /** The phases a customer is shown, in the order shown. */
+    val CUSTOMER_PHOTO_PHASES = listOf(PHOTO_BEFORE, PHOTO_AFTER)
+
+    /**
+     * The visit photos grouped Before then After, oldest first in each; any
+     * other phase is dropped (the server sends the customer none, this is the
+     * second line). Phases with no photo are left out.
+     */
+    fun visitPhotos(booking: BookingDto): List<Pair<String, List<BookingPhotoDto>>> =
+        CUSTOMER_PHOTO_PHASES.mapNotNull { phase ->
+            booking.photos.filter { it.phase == phase }
+                .sortedBy { instantOrNull(it.createdAt) ?: Instant.MAX }
+                .takeIf { it.isNotEmpty() }
+                ?.let { phase to it }
+        }
+
+    /**
+     * The timeline, drawn from the server's `status_history`.
+     *
+     * On the happy path (and pending payment / extras to pay) the six steps
+     * show done, current and upcoming, and each step the booking has reached
+     * carries WHEN it got there, from its latest entry in the history. An
+     * off-ramp (cancelled, expired, no-shows) or a status this build does not
+     * know shows the history itself — every step it took, oldest first —
+     * since there is no path ahead to draw.
+     */
+    fun timeline(booking: BookingDto): List<TimelineStep> {
+        val history = booking.statusHistory
+            .withIndex()
+            .sortedWith(compareBy({ instantOrNull(it.value.createdAt) ?: Instant.MAX }, { it.index }))
+            .map { it.value }
+        val status = BookingStatus.of(booking.status)
+        val path = timeline(status)
+        if (path == null) {
+            return history.map { step ->
+                TimelineStep(BookingStatus.of(step.toStatus).historyLabel(step.toStatus), StepState.DONE, step.createdAt)
+            }
+        }
+        val reachedAt = history.associate { it.toStatus to it.createdAt } // the latest entry wins
+        return path.mapIndexed { i, step ->
+            val at = if (step.state == StepState.UPCOMING) null else reachedAt[HAPPY_PATH[i].first.wire]
+            step.copy(at = at)
+        }
+    }
+
+    private fun BookingStatus.historyLabel(wire: String): String =
+        if (this == BookingStatus.UNKNOWN) wire.replace('_', ' ').replaceFirstChar { it.uppercase() } else label
 
     private val HAPPY_PATH = listOf(
         BookingStatus.CONFIRMED to "Booked",

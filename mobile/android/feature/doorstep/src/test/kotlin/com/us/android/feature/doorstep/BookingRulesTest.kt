@@ -2,8 +2,11 @@ package com.us.android.feature.doorstep
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.payments.PaymentStatusReading
+import com.us.android.feature.doorstep.data.BookingPhotoDto
+import com.us.android.feature.doorstep.data.CheckoutSessionDto
 import com.us.android.feature.doorstep.data.OutstandingDto
 import com.us.android.feature.doorstep.data.RefundDto
+import com.us.android.feature.doorstep.data.StatusStepDto
 import com.us.android.feature.doorstep.domain.BillRules
 import com.us.android.feature.doorstep.domain.BookingRules
 import com.us.android.feature.doorstep.domain.BookingStatus
@@ -11,11 +14,13 @@ import com.us.android.feature.doorstep.domain.ExtrasSummary
 import com.us.android.feature.doorstep.domain.OutstandingRules
 import com.us.android.feature.doorstep.domain.StepState
 import com.us.android.feature.doorstep.model.Paise
+import com.us.android.feature.doorstep.payment.CheckoutRoute
 import com.us.android.feature.doorstep.payment.DOORSTEP_PAYMENT_APPLICATION_ID
+import com.us.android.feature.doorstep.payment.DoorstepPaymentConfig
 import com.us.android.feature.doorstep.payment.DoorstepReference
+import com.us.android.feature.doorstep.payment.checkoutRoute
 import com.us.android.feature.doorstep.payment.readingFor
 import com.us.android.feature.doorstep.payment.toPaymentSession
-import kotlinx.serialization.json.JsonObject
 import org.junit.Test
 import java.time.Duration
 import java.time.Instant
@@ -151,6 +156,87 @@ class BookingRulesTest {
         assertThat(session.amountMinor).isEqualTo(224800)
         assertThat(session.currency).isEqualTo("INR")
         assertThat(session.merchantDisplayName).isEqualTo("Doorstep")
-        assertThat(intent(checkout = JsonObject(emptyMap())).toPaymentSession("x")).isNull()
+        assertThat(intent(checkout = CheckoutSessionDto()).toPaymentSession("x")).isNull()
+    }
+
+    @Test
+    fun `a stub checkout is the dev stub path in a dev build and unavailable in any other`() {
+        val dev = DoorstepPaymentConfig.forEnvironment("dev")
+        val prod = DoorstepPaymentConfig.forEnvironment("prod")
+        assertThat(dev.stubConfirmAllowed).isTrue()
+        assertThat(prod.stubConfirmAllowed).isFalse()
+        assertThat(DoorstepPaymentConfig.forEnvironment("staging").stubConfirmAllowed).isFalse()
+
+        assertThat(intent(checkout = stubCheckout()).checkoutRoute("x", dev)).isEqualTo(CheckoutRoute.DevStub)
+        assertThat(intent(checkout = stubCheckout()).checkoutRoute("x", prod)).isEqualTo(CheckoutRoute.Unavailable)
+        // A real provider always opens the sheet, dev build or not.
+        val sheet = intent().checkoutRoute("x", dev) as CheckoutRoute.Sheet
+        assertThat(sheet.session.provider).isEqualTo("razorpay")
+        assertThat(intent().checkoutRoute("x", prod)).isInstanceOf(CheckoutRoute.Sheet::class.java)
+        assertThat(intent(checkout = CheckoutSessionDto()).checkoutRoute("x", dev)).isEqualTo(CheckoutRoute.Unavailable)
+    }
+
+    // ── Finish OTP, history timeline, visit photos ──
+
+    @Test
+    fun `the finish OTP shows only while the job is in progress`() {
+        BookingStatus.entries.forEach { status ->
+            val otp = BookingRules.visibleEndOtp(booking(status = status.wire, endOtp = "7310"))
+            if (status == BookingStatus.IN_PROGRESS) {
+                assertThat(otp).isEqualTo("7310")
+            } else {
+                assertThat(otp).isNull()
+            }
+        }
+        assertThat(BookingRules.visibleEndOtp(booking(status = "in_progress", endOtp = " "))).isNull()
+        assertThat(BookingRules.visibleEndOtp(booking(status = "in_progress", endOtp = null))).isNull()
+        // The start code never leaks into the finish code's window, nor the reverse.
+        assertThat(BookingRules.visibleStartOtp(booking(status = "in_progress", startOtp = "4821"))).isNull()
+        assertThat(BookingRules.visibleEndOtp(booking(status = "arrived", endOtp = "7310"))).isNull()
+    }
+
+    @Test
+    fun `the timeline carries when each reached step happened, from status_history`() {
+        val history = listOf(
+            StatusStepDto("pending_payment", "confirmed", "2026-10-04T06:31:00Z"),
+            // Out of order on purpose: the timeline sorts oldest first.
+            StatusStepDto(null, "pending_payment", "2026-10-04T06:30:00Z"),
+            StatusStepDto("confirmed", "assigned", "2026-10-04T07:00:00Z"),
+            StatusStepDto("assigned", "en_route", "2026-10-05T08:00:00Z"),
+        )
+        val steps = BookingRules.timeline(booking(status = "en_route", statusHistory = history))
+        assertThat(steps.map { it.state }).containsExactly(
+            StepState.DONE, StepState.DONE, StepState.CURRENT, StepState.UPCOMING, StepState.UPCOMING, StepState.UPCOMING,
+        ).inOrder()
+        assertThat(steps.map { it.at }).containsExactly(
+            "2026-10-04T06:31:00Z", "2026-10-04T07:00:00Z", "2026-10-05T08:00:00Z", null, null, null,
+        ).inOrder()
+
+        // An off-ramp has no path ahead: the history itself, oldest first, all done.
+        val cancelled = BookingRules.timeline(
+            booking(status = "cancelled", statusHistory = history.take(2) + StatusStepDto("confirmed", "cancelled", "2026-10-04T09:00:00Z")),
+        )
+        assertThat(cancelled.map { it.label }).containsExactly("Awaiting payment", "Confirmed", "Cancelled").inOrder()
+        assertThat(cancelled.all { it.state == StepState.DONE }).isTrue()
+        assertThat(cancelled.last().at).isEqualTo("2026-10-04T09:00:00Z")
+    }
+
+    @Test
+    fun `visit photos are Before then After, oldest first, and nothing else`() {
+        fun photo(id: String, phase: String, at: String) = BookingPhotoDto(id, BOOKING_ID, phase, "m-$id", at)
+        val b = booking(
+            status = "in_progress",
+            photos = listOf(
+                photo("a2", "after", "2026-10-05T11:10:00Z"),
+                photo("k", "kit_seal", "2026-10-05T08:40:00Z"),
+                photo("b1", "before", "2026-10-05T08:45:00Z"),
+                photo("a1", "after", "2026-10-05T11:05:00Z"),
+                photo("e", "extra_evidence", "2026-10-05T10:00:00Z"),
+            ),
+        )
+        val groups = BookingRules.visitPhotos(b)
+        assertThat(groups.map { it.first }).containsExactly("before", "after").inOrder()
+        assertThat(groups[1].second.map { it.id }).containsExactly("a1", "a2").inOrder()
+        assertThat(BookingRules.visitPhotos(booking())).isEmpty()
     }
 }

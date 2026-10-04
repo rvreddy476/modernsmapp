@@ -31,6 +31,12 @@ interface DoorstepRepository {
     suspend fun bookingPaymentIntent(bookingId: String): DoorstepResult<PaymentIntentDto>
     suspend fun bookingPayments(bookingId: String): DoorstepResult<BookingPaymentsDto>
 
+    /**
+     * Dev stack only: `POST /bookings/{id}/payment/stub-confirm`. The rows it
+     * answers are NOT a verdict — callers ignore them and poll [bookingPayments].
+     */
+    suspend fun stubConfirmBookingPayment(bookingId: String): DoorstepResult<Unit>
+
     suspend fun extras(bookingId: String): DoorstepResult<List<ExtraDto>>
     suspend fun approveExtra(bookingId: String, extraId: String): DoorstepResult<ExtraDto>
     suspend fun declineExtra(bookingId: String, extraId: String): DoorstepResult<ExtraDto>
@@ -108,6 +114,10 @@ class RealDoorstepRepository @Inject constructor(
     override suspend fun bookingPaymentIntent(bookingId: String) = doorstepCall(json) { api.bookingPaymentIntent(bookingId) }
 
     override suspend fun bookingPayments(bookingId: String) = doorstepCall(json) { api.bookingPayments(bookingId) }
+
+    // The answer's rows are dropped on purpose: "paid" is read only from bookingPayments.
+    override suspend fun stubConfirmBookingPayment(bookingId: String) =
+        doorstepCall(json) { api.stubConfirmBookingPayment(bookingId) }.map { }
 
     override suspend fun extras(bookingId: String) = doorstepCall(json) { api.extras(bookingId) }.map { it.items }
 

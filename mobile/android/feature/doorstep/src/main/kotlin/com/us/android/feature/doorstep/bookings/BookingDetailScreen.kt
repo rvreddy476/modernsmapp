@@ -7,14 +7,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +34,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -39,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
@@ -51,6 +57,7 @@ import com.us.android.feature.doorstep.data.ExtraDto
 import com.us.android.feature.doorstep.domain.BillRules
 import com.us.android.feature.doorstep.domain.BookingRules
 import com.us.android.feature.doorstep.domain.BookingStatus
+import com.us.android.feature.doorstep.domain.PHOTO_BEFORE
 import com.us.android.feature.doorstep.domain.StepState
 import com.us.android.feature.doorstep.domain.TimelineStep
 import com.us.android.feature.doorstep.model.Paise
@@ -68,6 +75,7 @@ import com.us.android.feature.doorstep.ui.SectionLabel
 import com.us.android.feature.doorstep.ui.StarPicker
 import com.us.android.feature.doorstep.ui.Tone
 import com.us.android.feature.doorstep.ui.listPadding
+import com.us.android.feature.doorstep.ui.momentText
 import com.us.android.feature.doorstep.ui.slotRangeText
 import com.us.android.feature.doorstep.ui.tone
 import com.us.android.feature.doorstep.ui.toneColor
@@ -142,9 +150,28 @@ fun BookingDetailScreen(
             ) {
                 item { StatusHeader(booking, state.status, state.live) }
 
-                state.timeline?.let { steps -> item { Timeline(steps) } } ?: item { OffRamp(booking, state.status) }
+                // Off the happy path (cancelled, expired, no-shows): say what happened above the history.
+                if (BookingRules.timeline(state.status) == null) item { OffRamp(booking, state.status) }
+                if (state.timeline.isNotEmpty()) item { Timeline(state.timeline) }
 
-                state.startOtp?.let { otp -> item { OtpCard(otp) } }
+                state.startOtp?.let { otp ->
+                    item {
+                        OtpCard(
+                            title = "Start code",
+                            otp = otp,
+                            hint = "Share it only when the professional is at your door and about to start.",
+                        )
+                    }
+                }
+                state.endOtp?.let { otp ->
+                    item {
+                        OtpCard(
+                            title = "Finish code",
+                            otp = otp,
+                            hint = "Share it only once you've checked the work and the after photos below.",
+                        )
+                    }
+                }
 
                 booking.professional?.let { pro ->
                     item {
@@ -175,11 +202,19 @@ fun BookingDetailScreen(
                     }
                 }
 
+                if (state.photos.isNotEmpty()) {
+                    item { SectionLabel("Visit photos") }
+                    items(state.photos, key = { (phase, _) -> "photos-$phase" }) { (phase, photos) ->
+                        PhotoGroup(phase = phase, urls = photos.map { viewModel.mediaUrls.serve(it.mediaId) })
+                    }
+                }
+
                 if (BookingRules.extrasVisible(state.status) && (state.extras.isNotEmpty() || state.bill != null)) {
                     item { SectionLabel("Extras") }
                     items(state.extrasSummary.proposed, key = { it.id }) { extra ->
                         ProposedExtra(
                             extra = extra,
+                            evidenceUrl = extra.evidenceMediaId?.takeIf { it.isNotBlank() }?.let(viewModel.mediaUrls::serve),
                             busy = state.decidingExtraId == extra.id,
                             onApprove = { viewModel.approveExtra(extra.id) },
                             onDecline = { viewModel.declineExtra(extra.id) },
@@ -308,7 +343,11 @@ private fun Timeline(steps: List<TimelineStep>) {
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = if (step.state == StepState.CURRENT) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (step.state == StepState.UPCOMING) UsTheme.extended.textDim else UsTheme.extended.textPrimary,
+                    modifier = Modifier.weight(1f),
                 )
+                step.at?.let { at ->
+                    Text(momentText(at), style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.textDim)
+                }
             }
         }
     }
@@ -328,13 +367,14 @@ private fun OffRamp(booking: BookingDto, status: BookingStatus) {
 }
 
 /**
- * The start code. Large and centred: the professional reads it off this
- * screen at the door. Shown only while [BookingRules.visibleStartOtp] allows.
+ * A start or finish code. Large and centred: the professional reads it off
+ * this screen. Shown only while [BookingRules.visibleStartOtp] /
+ * [BookingRules.visibleEndOtp] allow.
  */
 @Composable
-private fun OtpCard(otp: String) {
+private fun OtpCard(title: String, otp: String, hint: String) {
     DoorstepCard(highlighted = true) {
-        Text("Start code", style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textDim)
+        Text(title, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textDim)
         Text(
             otp,
             style = MaterialTheme.typography.displaySmall,
@@ -344,19 +384,43 @@ private fun OtpCard(otp: String) {
             color = UsTheme.extended.textPrimary,
             modifier = Modifier.fillMaxWidth(),
         )
-        Text(
-            "Share it only when the professional is at your door and about to start.",
-            style = MaterialTheme.typography.bodySmall,
-            color = UsTheme.extended.textMuted,
-        )
+        Text(hint, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+    }
+}
+
+/** One phase of the visit photos ("Before" / "After"), in a horizontal strip. */
+@Composable
+private fun PhotoGroup(phase: String, urls: List<String>) {
+    val title = if (phase == PHOTO_BEFORE) "Before" else "After"
+    DoorstepCard {
+        Text(title, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textDim)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+            items(urls) { url -> VisitPhoto(url = url, description = "$title photo", modifier = Modifier.size(PHOTO_SIZE)) }
+        }
     }
 }
 
 @Composable
-private fun ProposedExtra(extra: ExtraDto, busy: Boolean, onApprove: () -> Unit, onDecline: () -> Unit) {
+private fun VisitPhoto(url: String, description: String, modifier: Modifier = Modifier) {
+    AsyncImage(
+        model = url,
+        contentDescription = description,
+        contentScale = ContentScale.Crop,
+        modifier = modifier
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.bgCard),
+    )
+}
+
+@Composable
+private fun ProposedExtra(extra: ExtraDto, evidenceUrl: String?, busy: Boolean, onApprove: () -> Unit, onDecline: () -> Unit) {
     DoorstepCard(highlighted = true) {
         Text("The professional suggests", style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textDim)
         MoneyRow(if (extra.quantity > 1) "${extra.name} × ${extra.quantity}" else extra.name, Paise(extra.totalPaise), emphasise = true)
+        evidenceUrl?.let { url ->
+            Text("Photo from the professional", style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.textDim)
+            VisitPhoto(url = url, description = "Photo for ${extra.name}", modifier = Modifier.fillMaxWidth().aspectRatio(EVIDENCE_ASPECT))
+        }
         Text(
             "Fixed rate-card price, GST included. Nothing is added unless you approve.",
             style = MaterialTheme.typography.bodySmall,
@@ -476,3 +540,5 @@ private fun SosDialog(onSend: (String) -> Unit, onDismiss: () -> Unit) {
 }
 
 private const val MAX_COMMENT = 1000
+private val PHOTO_SIZE = 120.dp
+private const val EVIDENCE_ASPECT = 4f / 3f

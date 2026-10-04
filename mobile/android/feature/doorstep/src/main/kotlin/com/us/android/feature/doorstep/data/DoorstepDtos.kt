@@ -2,7 +2,6 @@ package com.us.android.feature.doorstep.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 /*
@@ -337,10 +336,40 @@ data class BookingDto(
     @SerialName("parent_booking_id") val parentBookingId: String?,
     /** The server sends it from assigned until in_progress; the client shows it only then too. */
     @SerialName("start_otp") val startOtp: String?,
+    /**
+     * The finish code: the server sets it while the job is in_progress, once
+     * the after photos are in (A5); null before. The client shows it ONLY while
+     * in_progress (`BookingRules.visibleEndOtp`).
+     */
+    @SerialName("end_otp") val endOtp: String?,
+    /** Before/after visit photos (A5); [] until then. Customers are sent only those two phases. */
+    @SerialName("photos") val photos: List<BookingPhotoDto>,
+    /** The booking's timeline, oldest first: what the tracking timeline is drawn from. */
+    @SerialName("status_history") val statusHistory: List<StatusStepDto>,
     @SerialName("can_cancel") val canCancel: Boolean,
     @SerialName("can_reschedule") val canReschedule: Boolean,
     @SerialName("created_at") val createdAt: String,
     @SerialName("updated_at") val updatedAt: String,
+)
+
+/** One step of the customer's booking timeline (`StatusStep`). Actor and reason are admin-only. */
+@Serializable
+data class StatusStepDto(
+    /** null on the first step (the booking was created). */
+    @SerialName("from_status") val fromStatus: String?,
+    @SerialName("to_status") val toStatus: String,
+    @SerialName("created_at") val createdAt: String,
+)
+
+/** A visit photo (`Photo`): the professional's before/after evidence. */
+@Serializable
+data class BookingPhotoDto(
+    @SerialName("id") val id: String,
+    @SerialName("booking_id") val bookingId: String,
+    /** before | after for the customer (kit_seal and extra_evidence are not sent to them). */
+    @SerialName("phase") val phase: String,
+    @SerialName("media_id") val mediaId: String,
+    @SerialName("created_at") val createdAt: String,
 )
 
 /** First name, photo, rating — never a phone number. */
@@ -378,12 +407,24 @@ data class PaymentIntentDto(
     @SerialName("amount_paise") val amountPaise: Long,
     /** created | pending | succeeded | failed | refunded | partially_refunded */
     @SerialName("status") val status: String,
-    /**
-     * payments-service's checkout session, passed through unchanged — today
-     * `{provider, order_id, key_id, merchant_display_name?}` (shared
-     * paymentsclient.ClientSession). Only string values reach the sheet.
-     */
-    @SerialName("checkout") val checkout: JsonObject,
+    /** payments-service's client session, relayed unchanged; `{}` when payments attached none. */
+    @SerialName("checkout") val checkout: CheckoutSessionDto,
+)
+
+/**
+ * payments-service's client session (`paymentsclient.ClientSession`) as
+ * doorstep-service relays it in `PaymentIntent.checkout`: public fields only,
+ * never a secret. No key is required — the server sends `{}` when payments
+ * attached no session — so each defaults to null.
+ */
+@Serializable
+data class CheckoutSessionDto(
+    /** `razorpay`, or `stub` on a development stack (settled via the dev stub-confirm route, never a sheet). */
+    @SerialName("provider") val provider: String? = null,
+    @SerialName("order_id") val orderId: String? = null,
+    /** The PUBLISHABLE key id. */
+    @SerialName("key_id") val keyId: String? = null,
+    @SerialName("merchant_display_name") val merchantDisplayName: String? = null,
 )
 
 @Serializable
@@ -419,6 +460,8 @@ data class ExtraDto(
     @SerialName("total_paise") val totalPaise: Long,
     /** proposed | approved | declined | withdrawn | billed */
     @SerialName("status") val status: String,
+    /** The photo the professional attached to justify the extra; null when none. */
+    @SerialName("evidence_media_id") val evidenceMediaId: String?,
     @SerialName("created_at") val createdAt: String,
 )
 
@@ -541,7 +584,3 @@ data class DoorstepErrorBodyDto(
 
 @Serializable
 data class DoorstepMetaDto(@SerialName("request_id") val requestId: String? = null)
-
-/** A JSON value as plain text when it is a string or a number; null otherwise. */
-internal fun JsonElement.textOrNull(): String? =
-    (this as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.content

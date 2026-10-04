@@ -12,7 +12,6 @@ import com.us.android.feature.doorstep.data.BookingPaymentsDto
 import com.us.android.feature.doorstep.data.DoorstepRepository
 import com.us.android.feature.doorstep.data.DoorstepResult
 import com.us.android.feature.doorstep.data.PaymentIntentDto
-import com.us.android.feature.doorstep.data.textOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -112,8 +111,13 @@ private val REFUND_IN_FLIGHT = setOf("requested", "pending")
  * the provider order regardless.
  */
 fun PaymentIntentDto.toPaymentSession(description: String): PaymentSession? {
-    val session = checkout.mapNotNull { (key, value) -> value.textOrNull()?.let { key to it } }.toMap()
-    if (session[PaymentSession.CLIENT_SESSION_ORDER_ID].isNullOrBlank()) return null
+    if (checkout.orderId.isNullOrBlank()) return null
+    val session = listOfNotNull(
+        checkout.provider?.let { PaymentSession.CLIENT_SESSION_PROVIDER to it },
+        checkout.orderId.let { PaymentSession.CLIENT_SESSION_ORDER_ID to it },
+        checkout.keyId?.let { PaymentSession.CLIENT_SESSION_KEY_ID to it },
+        checkout.merchantDisplayName?.let { PaymentSession.CLIENT_SESSION_MERCHANT_DISPLAY_NAME to it },
+    ).toMap()
     return PaymentSession.fromClientSession(
         applicationId = DOORSTEP_PAYMENT_APPLICATION_ID,
         clientSession = session,
@@ -124,6 +128,48 @@ fun PaymentIntentDto.toPaymentSession(description: String): PaymentSession? {
 }
 
 private const val CURRENCY = "INR"
+
+/** payments-service's stub gateway, named in `checkout.provider` on a development stack. */
+const val STUB_PROVIDER = "stub"
+
+/**
+ * Whether this build may settle a `stub`-provider booking through
+ * `POST /bookings/{id}/payment/stub-confirm`. True only in the DEV flavour
+ * (the app passes `ApiConfig.environment == "dev"`); the server refuses the
+ * route anywhere but a development stack regardless.
+ */
+data class DoorstepPaymentConfig(val stubConfirmAllowed: Boolean) {
+    companion object {
+        const val DEV_ENVIRONMENT = "dev"
+
+        fun forEnvironment(environment: String): DoorstepPaymentConfig =
+            DoorstepPaymentConfig(stubConfirmAllowed = environment == DEV_ENVIRONMENT)
+    }
+}
+
+/** How a booking intent's `checkout` can be paid in this build. */
+sealed interface CheckoutRoute {
+    /** A real provider session: open the sheet. */
+    data class Sheet(val session: PaymentSession) : CheckoutRoute
+
+    /**
+     * A dev stack's stub gateway in a dev build: ask the stub-confirm route to
+     * settle, then poll `GET /payment` like any capture. Nothing is paid here.
+     */
+    data object DevStub : CheckoutRoute
+
+    /** No usable session (none attached, a stub outside a dev build): it cannot be paid now. */
+    data object Unavailable : CheckoutRoute
+}
+
+/**
+ * The route for paying [this] intent. A `stub` session never reaches the
+ * sheet (the launcher cannot open it); outside a dev build it is unavailable.
+ */
+fun PaymentIntentDto.checkoutRoute(description: String, config: DoorstepPaymentConfig): CheckoutRoute = when {
+    checkout.provider == STUB_PROVIDER -> if (config.stubConfirmAllowed) CheckoutRoute.DevStub else CheckoutRoute.Unavailable
+    else -> toPaymentSession(description)?.let { CheckoutRoute.Sheet(it) } ?: CheckoutRoute.Unavailable
+}
 
 /**
  * Opens the sheet for a Doorstep payment from the Activity (`MainActivity`),
