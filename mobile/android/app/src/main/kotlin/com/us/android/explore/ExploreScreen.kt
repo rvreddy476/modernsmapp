@@ -379,6 +379,8 @@ private val LauncherApp.icon: ImageVector
         LauncherApp.TUBE -> UsIcons.Tv
         // Lucide gauge: a speedometer for the ride app (2026-09-18).
         LauncherApp.RIDE -> UsIcons.Gauge
+        // Lucide wrench: home services (2026-10-04).
+        LauncherApp.DOORSTEP -> UsIcons.Wrench
     }
 
 // ── Metrics ─────────────────────────────────────────────────────────────

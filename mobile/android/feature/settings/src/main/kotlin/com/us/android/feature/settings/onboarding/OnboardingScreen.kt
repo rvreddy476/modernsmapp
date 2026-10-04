@@ -223,6 +223,7 @@ private val AppModule.description: String
         AppModule.QA -> "Ask and answer questions"
         AppModule.POSTTUBE -> "Long videos"
         AppModule.MOBILITY -> "Bike and auto rides across the city"
+        AppModule.HOME_SERVICES -> "Cleaning, repairs and salon at home"
     }
 
 private val SELECTED_BORDER = 2.dp

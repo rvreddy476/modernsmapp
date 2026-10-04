@@ -238,3 +238,16 @@ include(":core:mobility-model")
 include(":feature:mopedu-rider")
 include(":feature:mopedu-captain")
 include(":app-captain")
+
+// Doorstep — home services, Urban Company style (2026-10-04).
+//
+// :feature:doorstep is the CUSTOMER's flow inside Momentum: the catalogue,
+// service options and add-ons priced GST-inclusive by the server, addresses,
+// the calendar-derived slot picker with the 10-minute hold, checkout paid
+// through :core:payments as application "doorstep", bookings with live status
+// over :core:realtime, extras approval and payment, rating, rework, cancel,
+// reschedule, SOS and share, and the outstanding-dues block. Its DTOs, API and
+// repository live inside the feature (the Mopedu shape). moduleGraphCheck
+// rule (l) keeps it reachable only from :app — never a partner app, never the
+// professionals' app, never another feature.
+include(":feature:doorstep")

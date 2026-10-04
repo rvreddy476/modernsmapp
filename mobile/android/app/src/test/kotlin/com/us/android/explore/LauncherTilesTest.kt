@@ -13,7 +13,7 @@ import org.junit.Test
 class LauncherTilesTest {
 
     @Test
-    fun `all eleven tiles, in the founder's order`() {
+    fun `all twelve tiles, in the founder's order`() {
         assertThat(launcherTiles().map { it.app }).containsExactly(
             LauncherApp.CHAT,
             LauncherApp.FRIENDS,
@@ -27,7 +27,20 @@ class LauncherTilesTest {
             LauncherApp.TUBE,
             // Ride joined on 2026-09-18 (Mopedu): after Tube, at the end of the grid.
             LauncherApp.RIDE,
+            // Doorstep joined on 2026-10-04 (home services): after Ride, at the end of the grid.
+            LauncherApp.DOORSTEP,
         ).inOrder()
+    }
+
+    /** Doorstep has a screen since 2026-10-04: its tile opens, it is not "Soon", and it rides its own module. */
+    @Test
+    fun `doorstep opens rather than promising`() {
+        val doorstep = launcherTiles().single { it.app == LauncherApp.DOORSTEP }
+        assertThat(doorstep.soon).isFalse()
+        assertThat(doorstep.app.label).isEqualTo("Doorstep")
+        assertThat(doorstep.app.module).isEqualTo(AppModule.HOME_SERVICES)
+        assertThat(AppModule.HOME_SERVICES.id).isEqualTo("home_services")
+        assertThat(AppModule.HOME_SERVICES.hasScreen).isTrue()
     }
 
     /**

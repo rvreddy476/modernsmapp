@@ -916,6 +916,22 @@ object UsIcons {
         "M18 8A6 6 0 1 1 6 8a6 6 0 0 1 12 0",
     )
 
+    /** Lucide `wrench` — Doorstep, home services: the launcher tile and the repair categories (2026-10-04). */
+    val Wrench: ImageVector = lucideStroked(
+        "Wrench",
+        "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91" +
+            "a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
+    )
+
+    /** Lucide `shield-alert` — Doorstep's SOS during a visit (2026-10-04). */
+    val ShieldAlert: ImageVector = lucideStroked(
+        "ShieldAlert",
+        "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 " +
+            "6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
+        "M12 8v4",
+        "M12 16h.01",
+    )
+
     /** Lucide `clock` — a scheduled post: the Schedule button and the tile's badge. */
     val Clock: ImageVector = lucideStroked(
         "Clock",

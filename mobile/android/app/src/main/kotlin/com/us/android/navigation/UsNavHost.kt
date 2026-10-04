@@ -108,7 +108,13 @@ import com.us.android.feature.feast.navigation.navigateToFeast
 import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreens
 import com.us.android.feature.mopedu.rider.navigation.navigateToMopeduRider
 import com.us.android.feature.mopedu.rider.payment.MopeduPaymentRequest
+import com.us.android.feature.doorstep.navigation.doorstepScreens
+import com.us.android.feature.doorstep.navigation.navigateToDoorstep
+import com.us.android.feature.doorstep.navigation.navigateToDoorstepBooking
+import com.us.android.feature.doorstep.navigation.navigateToDoorstepOutstanding
+import com.us.android.feature.doorstep.payment.DoorstepPaymentRequest
 import com.us.android.push.DatingPushTarget
+import com.us.android.push.DoorstepPushTarget
 import com.us.android.push.PushDestinations
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
@@ -293,6 +299,9 @@ fun UsNavHost(
     // Mopedu's sheet, from the same Activity, stamped "mopedu" by :feature:mopedu-rider.
     onOpenMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
     onAbandonMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
+    // Doorstep's sheet, from the same Activity, stamped "doorstep" by :feature:doorstep.
+    onOpenDoorstepPayment: (DoorstepPaymentRequest) -> Unit = { _ -> },
+    onAbandonDoorstepPayment: (DoorstepPaymentRequest) -> Unit = { _ -> },
     navController: NavHostController = rememberNavController(),
 ) {
     val tabs = remember(shellState) {
@@ -418,6 +427,8 @@ fun UsNavHost(
                     onAbandonDatingPayment,
                     onOpenMopeduPayment,
                     onAbandonMopeduPayment,
+                    onOpenDoorstepPayment,
+                    onAbandonDoorstepPayment,
                     onOpenReel,
                 ) {
                     createScope = it
@@ -545,6 +556,13 @@ private fun NavHostController.openPushDestination(
         // Mopedu (2026-09-18): every ride push opens the ride screen, which
         // reads the active ride (or its receipt) from the server.
         in PushDestinations.RIDE_TYPES -> navigateToMopeduRider()
+        // Doorstep (2026-10-04): every customer push opens the booking (or the
+        // dues screen), which reads the real state from the server.
+        in PushDestinations.DOORSTEP_TYPES -> when (val target = PushDestinations.doorstepTargetOf(destination)) {
+            is DoorstepPushTarget.Booking -> navigateToDoorstepBooking(target.bookingId)
+            DoorstepPushTarget.Outstanding -> navigateToDoorstepOutstanding()
+            null -> navigateToDoorstep()
+        }
         else -> Unit // not a chat push; existing surfaces handle their own
     }
 }
@@ -623,6 +641,8 @@ private fun NavGraphBuilder.tabDestinations(
     onAbandonDatingPayment: (DatingPaymentRequest) -> Unit,
     onOpenMopeduPayment: (MopeduPaymentRequest) -> Unit,
     onAbandonMopeduPayment: (MopeduPaymentRequest) -> Unit,
+    onOpenDoorstepPayment: (DoorstepPaymentRequest) -> Unit,
+    onAbandonDoorstepPayment: (DoorstepPaymentRequest) -> Unit,
     /** A reel notification was tapped: the shell parks the id for Reels before the tab switch. */
     onOpenReel: (postId: String) -> Unit,
     /** A mini-app's "+" was pressed: the shell opens the Create sheet in that scope. */
@@ -778,6 +798,17 @@ private fun NavGraphBuilder.tabDestinations(
         navController = navController,
         onOpenPayment = onOpenMopeduPayment,
         onAbandonPayment = onAbandonMopeduPayment,
+    )
+
+    // Doorstep (2026-10-04): home services — catalogue, service options and
+    // add-ons, address, slot with the 10-minute hold, checkout, bookings with
+    // live status, extras, rating, rework, SOS. Entered from the Explore
+    // launcher's Doorstep tile and from its pushes. The payment sheet opens
+    // from the Activity like Mopedu's, stamped "doorstep".
+    doorstepScreens(
+        navController = navController,
+        onOpenPayment = onOpenDoorstepPayment,
+        onAbandonPayment = onAbandonDoorstepPayment,
     )
 
     // The classic composer route stays registered for any older entry point;
@@ -1080,6 +1111,7 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.FEAST -> navController.navigateToFeast()
                     LauncherApp.MATCH -> navController.navigateToDating()
                     LauncherApp.RIDE -> navController.navigateToMopeduRider()
+                    LauncherApp.DOORSTEP -> navController.navigateToDoorstep()
                     LauncherApp.ASK -> Unit
                 }
             },
@@ -1208,6 +1240,8 @@ fun UsApp(
     onAbandonDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
     onOpenMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
     onAbandonMopeduPayment: (MopeduPaymentRequest) -> Unit = { _ -> },
+    onOpenDoorstepPayment: (DoorstepPaymentRequest) -> Unit = { _ -> },
+    onAbandonDoorstepPayment: (DoorstepPaymentRequest) -> Unit = { _ -> },
 ) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val shellState by viewModel.shellState.collectAsStateWithLifecycle()
@@ -1229,6 +1263,8 @@ fun UsApp(
         onAbandonDatingPayment = onAbandonDatingPayment,
         onOpenMopeduPayment = onOpenMopeduPayment,
         onAbandonMopeduPayment = onAbandonMopeduPayment,
+        onOpenDoorstepPayment = onOpenDoorstepPayment,
+        onAbandonDoorstepPayment = onAbandonDoorstepPayment,
     )
 }
 

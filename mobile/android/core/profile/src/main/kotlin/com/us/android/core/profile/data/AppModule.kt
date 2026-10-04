@@ -30,10 +30,20 @@ enum class AppModule(
 
     /** Mopedu rides (2026-09-18). The id is PROPOSED until user-service accepts it in `modules`. */
     MOBILITY("mobility", "Mobility", hasScreen = true),
+
+    /**
+     * Doorstep home services (2026-10-04). The id is PROPOSED: identity
+     * user-service validates `modules` against a closed list (knownModules in
+     * internal/service/modules.go and the CHECK constraints on
+     * usr.module_preferences), which does not hold "home_services" yet — until
+     * it does, a save that includes this module is refused with 400
+     * INVALID_MODULE.
+     */
+    HOME_SERVICES("home_services", "Doorstep", hasScreen = true),
     ;
 
     companion object {
-        /** The optional modules the onboarding screen offers (eight since Mobility joined). */
+        /** The optional modules the onboarding screen offers (nine since Doorstep joined). */
         val selectable: List<AppModule> = entries.filter { it != FEED }
 
         fun fromId(id: String): AppModule? = entries.firstOrNull { it.id == id }

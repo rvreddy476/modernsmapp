@@ -88,6 +88,8 @@ dependencies {
     implementation(projects.feature.dating)
     // Mopedu — the customer's ride flow (2026-09-18). Paid through :core:payments as "mopedu".
     implementation(projects.feature.mopeduRider)
+    // Doorstep — home services (2026-10-04). Paid through :core:payments as "doorstep".
+    implementation(projects.feature.doorstep)
     // The payment attempt type the commerce routes carry.
     implementation(projects.core.commerce)
     // The payment sheet (2026-09-14). MainActivity is the ActivityPaymentHost

@@ -185,6 +185,21 @@ enum class NotificationChannelSpec(
     ),
 
     /**
+     * Doorstep (2026-10-04): the customer's home-service booking — confirmed,
+     * professional assigned, on the way, arrived, started, extras to approve
+     * or pay, completed, cancelled, refunds, reminders, dues. HIGH: "your
+     * professional has arrived" and "approve these extras" happen while the
+     * customer is waiting at home with the app closed. The id is the one
+     * notification-service posts to (doorstep_push.go DoorstepChannelUpdates).
+     */
+    DOORSTEP_UPDATES(
+        id = "doorstep_updates",
+        title = "Home services",
+        description = "Your Doorstep bookings, professionals and payments",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+    ),
+
+    /**
      * Mopedu Captain: a ride offered to this captain, with a short window to
      * accept (notification-service `captain.offer`). HIGH with the alarm
      * tone: an unheard offer goes to the next captain.
@@ -260,6 +275,8 @@ enum class NotificationChannelSpec(
             DATING,
             // The Mopedu customer flow ships only in Momentum (2026-09-18).
             RIDE_UPDATES,
+            // The Doorstep customer flow ships only in Momentum (2026-10-04).
+            DOORSTEP_UPDATES,
         )
 
         /**
@@ -360,6 +377,17 @@ enum class NotificationChannelSpec(
             "ride.assigned", "ride.arriving", "ride.arrived", "ride.started", "ride.completed", "ride.cancelled",
             "ride.payment.paid",
             -> RIDE_UPDATES
+            // Doorstep (2026-10-04): the 17 customer types of the registry
+            // (contracts/doorstep/asyncapi.yaml x-push-types.momentum). The
+            // professionals' doorstep.pro.* types are NOT here: they post to
+            // their own app's channels.
+            "doorstep.booking.confirmed", "doorstep.booking.assigned", "doorstep.booking.reassigned",
+            "doorstep.booking.pro_en_route", "doorstep.booking.pro_arrived", "doorstep.booking.started",
+            "doorstep.booking.extras_proposed", "doorstep.booking.extras_payment_due", "doorstep.booking.completed",
+            "doorstep.booking.cancelled", "doorstep.booking.expired", "doorstep.booking.refund_issued",
+            "doorstep.booking.reminder", "doorstep.booking.pro_no_show", "doorstep.outstanding.due",
+            "doorstep.message.new", "doorstep.rework.updated",
+            -> DOORSTEP_UPDATES
             "captain.offer" -> CAPTAIN_OFFER
             "captain.payment.received" -> CAPTAIN_EARNINGS
             // The captain's own account (2026-09-18): the plan's life cycle and

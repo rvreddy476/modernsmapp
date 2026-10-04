@@ -129,7 +129,79 @@ class PushDestinations @Inject constructor() {
         )
 
         fun isRidePush(type: String?): Boolean = type in RIDE_TYPES
+
+        // Doorstep pushes (2026-10-04): the 17 Momentum types of the registry
+        // (contracts/doorstep/asyncapi.yaml x-push-types.momentum), sent by
+        // notification-service on the doorstep_updates channel. The
+        // professionals' `doorstep.pro.*` types belong to their own app and are
+        // deliberately NOT here.
+        const val TYPE_DOORSTEP_OUTSTANDING_DUE = "doorstep.outstanding.due"
+
+        val DOORSTEP_TYPES: Set<String> = setOf(
+            "doorstep.booking.confirmed",
+            "doorstep.booking.assigned",
+            "doorstep.booking.reassigned",
+            "doorstep.booking.pro_en_route",
+            "doorstep.booking.pro_arrived",
+            "doorstep.booking.started",
+            "doorstep.booking.extras_proposed",
+            "doorstep.booking.extras_payment_due",
+            "doorstep.booking.completed",
+            "doorstep.booking.cancelled",
+            "doorstep.booking.expired",
+            "doorstep.booking.refund_issued",
+            "doorstep.booking.reminder",
+            "doorstep.booking.pro_no_show",
+            TYPE_DOORSTEP_OUTSTANDING_DUE,
+            "doorstep.message.new",
+            "doorstep.rework.updated",
+        )
+
+        fun isDoorstepPush(type: String?): Boolean = type in DOORSTEP_TYPES
+
+        /**
+         * Where a Doorstep push lands, or null when it is not one / carries no
+         * usable id. Pure string work, like [joinCodeOf].
+         *
+         *  - the dues push opens the dues screen;
+         *  - every other type opens the booking: the id in the deep link
+         *    (`/doorstep/bookings/{id}[/extras|/rate|/chat]`, bare or with the
+         *    registry's `momentum://` scheme), else `entity_id` (the booking id).
+         *
+         * The screen then reads the booking from the server; nothing in the
+         * push payload is trusted as state.
+         */
+        fun doorstepTargetOf(destination: PushDestination): DoorstepPushTarget? {
+            if (destination.type !in DOORSTEP_TYPES) return null
+            if (destination.type == TYPE_DOORSTEP_OUTSTANDING_DUE) return DoorstepPushTarget.Outstanding
+            val id = doorstepBookingIdOf(destination.deepLink) ?: destination.entityId.trim().takeIf { it.isValidId() }
+            return id?.let { DoorstepPushTarget.Booking(it) }
+        }
+
+        /** The id in `[momentum://]/doorstep/bookings/{id}[/…]` (query and fragment ignored); null for anything else. */
+        fun doorstepBookingIdOf(deepLink: String?): String? {
+            val path = deepLink?.trim()
+                ?.removePrefix(MOMENTUM_SCHEME)
+                ?.substringBefore('?')
+                ?.substringBefore('#')
+                ?: return null
+            val segments = path.split('/').filter { it.isNotBlank() }
+            if (segments.size < BOOKING_SEGMENTS || segments[0] != "doorstep" || segments[1] != "bookings") return null
+            return segments[2].takeIf { it.isValidId() }
+        }
+
+        private fun String.isValidId(): Boolean = isNotEmpty() && all { it.isLetterOrDigit() || it == '-' }
+
+        private const val MOMENTUM_SCHEME = "momentum://"
+        private const val BOOKING_SEGMENTS = 3
     }
+}
+
+/** Where a Doorstep notification tap lands. */
+sealed interface DoorstepPushTarget {
+    data class Booking(val bookingId: String) : DoorstepPushTarget
+
+    data object Outstanding : DoorstepPushTarget
 }
 
 /** Where a dating notification tap lands. */

@@ -18,6 +18,7 @@ import com.us.android.feature.commerce.checkout.CheckoutPaymentOpener
 import com.us.android.feature.dating.premium.DatingPaymentOpener
 import com.us.android.feature.feast.checkout.FeastPaymentOpener
 import com.us.android.feature.mopedu.rider.payment.MopeduPaymentOpener
+import com.us.android.feature.doorstep.payment.DoorstepPaymentOpener
 import com.us.android.navigation.MainViewModel
 import com.us.android.navigation.UsApp
 import com.us.android.push.PushDestinations
@@ -77,6 +78,10 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
     @Inject
     lateinit var mopeduPaymentOpener: MopeduPaymentOpener
 
+    /** Doorstep's opener: the booking or extras intent already exists; it opens the same sheet, stamped "doorstep". */
+    @Inject
+    lateinit var doorstepPaymentOpener: DoorstepPaymentOpener
+
     private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,6 +130,8 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
                     onAbandonDatingPayment = { request -> datingPaymentOpener.abandon(request) },
                     onOpenMopeduPayment = { request -> mopeduPaymentOpener.start(activity = this, request = request) },
                     onAbandonMopeduPayment = { request -> mopeduPaymentOpener.abandon(request) },
+                    onOpenDoorstepPayment = { request -> doorstepPaymentOpener.start(activity = this, request = request) },
+                    onAbandonDoorstepPayment = { request -> doorstepPaymentOpener.abandon(request) },
                 )
             }
         }

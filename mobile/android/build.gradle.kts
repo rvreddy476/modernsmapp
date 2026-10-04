@@ -82,6 +82,11 @@ tasks.register<Delete>("clean") {
  *      app for every rule above EXCEPT (e), so it carries no Banuba, creator,
  *      post, commerce, Feast or Dating code — but it does carry `:core:payments`,
  *      because the captain's plan is paid on the device.
+ *   l. Doorstep (2026-10-04): `:feature:doorstep` — the customer's
+ *      home-services flow — is reachable ONLY from `:app`. No other module may
+ *      reach it, directly or transitively: not a partner app (Kitchen, Rider,
+ *      Captain), not the professionals' own app (`:app-doorstep-pro`, when it
+ *      exists), not a core module. And it reaches no other `:feature:*`.
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -192,6 +197,20 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
         listOf(":feature:mopedu-rider", ":feature:mopedu-captain").filter { it in direct }.forEach { feature ->
             reach(feature).filter { it.startsWith(":feature:") && it != feature }.forEach { dep ->
                 add("$feature must not depend on $dep (directly or transitively) — Mopedu shares code through :core only.")
+            }
+        }
+        // (l) Doorstep: the customer feature is Momentum's alone. Every module
+        // other than :app that reaches it is a violation — which covers every
+        // partner app, the professionals' app and any core module that would
+        // smuggle it in — and it reaches no other feature.
+        direct.keys.filter { it != ":app" && it != ":feature:doorstep" }.forEach { module ->
+            if (":feature:doorstep" in reach(module)) {
+                add("$module must not depend on :feature:doorstep (directly or transitively) — the Doorstep customer flow ships only in Momentum.")
+            }
+        }
+        if (":feature:doorstep" in direct) {
+            reach(":feature:doorstep").filter { it.startsWith(":feature:") && it != ":feature:doorstep" }.forEach { dep ->
+                add(":feature:doorstep must not depend on $dep (directly or transitively) — Doorstep shares code through :core only.")
             }
         }
         // (d)
@@ -517,6 +536,57 @@ fun applicationBoundarySelfCheck(): List<String> {
             mapOf(":feature:mopedu-captain" to setOf(":core:x"), ":core:x" to setOf(":feature:mopedu-rider")),
             ":feature:mopedu-captain must not depend on :feature:mopedu-rider",
         ),
+        // Doorstep coverage (2026-10-04): rule (l). The graph that must stay
+        // legal is Momentum shipping the customer flow beside Feast and Mopedu,
+        // Doorstep paying and streaming through core modules only, and the
+        // professionals' app (to come) carrying payments-free core code of its own.
+        Triple(
+            "legal doorstep graph",
+            mapOf(
+                ":app" to setOf(":feature:doorstep", ":feature:feast", ":feature:mopedu-rider", ":core:payments"),
+                ":feature:doorstep" to setOf(":core:payments", ":core:realtime", ":core:network", ":core:designsystem"),
+                ":core:realtime" to setOf(":core:network"),
+                ":core:payments" to setOf(":core:common"),
+                ":feature:feast" to setOf(":core:food", ":core:payments", ":core:realtime"),
+                ":app-doorstep-pro" to setOf(":feature:doorstep-pro", ":core:realtime", ":core:media"),
+                ":feature:doorstep-pro" to setOf(":core:network", ":core:realtime", ":core:media"),
+                ":app-captain" to setOf(":feature:mopedu-captain", ":core:payments"),
+            ),
+            null,
+        ),
+        Triple("kitchen app -> doorstep", mapOf(":app-kitchen" to setOf(":feature:doorstep")), ":app-kitchen must not depend on :feature:doorstep"),
+        Triple(
+            "rider app -> doorstep, transitively",
+            mapOf(":app-rider" to setOf(":feature:rider"), ":feature:rider" to setOf(":core:y"), ":core:y" to setOf(":feature:doorstep")),
+            ":app-rider must not depend on :feature:doorstep",
+        ),
+        Triple("captain app -> doorstep", mapOf(":app-captain" to setOf(":feature:doorstep")), ":app-captain must not depend on :feature:doorstep"),
+        Triple(
+            "professionals' app -> customer doorstep",
+            mapOf(":app-doorstep-pro" to setOf(":feature:doorstep")),
+            ":app-doorstep-pro must not depend on :feature:doorstep",
+        ),
+        Triple(
+            "professionals' feature -> customer doorstep, transitively",
+            mapOf(":app-doorstep-pro" to setOf(":feature:doorstep-pro"), ":feature:doorstep-pro" to setOf(":core:x"), ":core:x" to setOf(":feature:doorstep")),
+            ":feature:doorstep-pro must not depend on :feature:doorstep",
+        ),
+        Triple(
+            "a core module -> doorstep, even under :app",
+            mapOf(":app" to setOf(":core:x"), ":core:x" to setOf(":feature:doorstep")),
+            ":core:x must not depend on :feature:doorstep",
+        ),
+        Triple(
+            "doorstep -> feast feature, transitively",
+            mapOf(":feature:doorstep" to setOf(":core:x"), ":core:x" to setOf(":feature:feast")),
+            ":feature:doorstep must not depend on :feature:feast",
+        ),
+        Triple(
+            "doorstep -> mopedu rider feature",
+            mapOf(":feature:doorstep" to setOf(":feature:mopedu-rider")),
+            ":feature:doorstep must not depend on :feature:mopedu-rider",
+        ),
+        Triple("doorstep -> :app", mapOf(":feature:doorstep" to setOf(":app")), ":feature:doorstep must not depend on :app"),
     )
     return cases.mapNotNull { (name, graph, expected) ->
         val found = applicationBoundaryViolations(graph)
@@ -693,6 +763,12 @@ tasks.register("moduleGraphCheck") {
                 add(":app-captain must depend on :feature:mopedu-captain directly — it is the only app that ships it.")
             }
         }
+        // Doorstep (2026-10-04): Momentum is the only app that ships the
+        // customer flow, and it must ship it directly — rule (l) refuses every
+        // other route in.
+        if (":feature:doorstep" in directEdges && ":feature:doorstep" !in directEdges[":app"].orEmpty()) {
+            add(":app must depend on :feature:doorstep directly — it is the only app that ships it.")
+        }
     }
     val moduleCount = subprojects.size
 
@@ -769,9 +845,18 @@ tasks.register("moduleGraphCheck") {
     //      feature to :app-captain, and :app-captain joins every partner-app
     //      rule, so it carries no payments, Banuba, creator, post, commerce,
     //      Feast or Dating code.
-    // Still to add, one module at a time, to reach 52: :core:location,
-    // :core:kyc-ui.
-    val expectedModuleCount = 50
+    // 51 = 50 + :feature:doorstep (2026-10-04): Doorstep home services inside
+    //      Momentum — catalogue, service options and add-ons, addresses, the
+    //      slot picker with the professional's 10-minute hold, checkout paid
+    //      through :core:payments as application "doorstep", bookings with
+    //      live status over :core:realtime, extras, rating, rework, SOS, dues.
+    //      Its DTOs live inside the feature (the Mopedu shape), so no core
+    //      module was added. Under the existing :feature phantom parent, so no
+    //      new parent is counted. Rule (l) keeps it to :app alone and off every
+    //      other feature. The professionals' app (:app-doorstep-pro +
+    //      :feature:doorstep-pro) is the next lane: 51 → 53.
+    // Still to add, one module at a time: :core:location, :core:kyc-ui.
+    val expectedModuleCount = 51
 
     doLast {
         val allViolations = buildList {

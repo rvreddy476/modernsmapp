@@ -47,6 +47,9 @@ enum class LauncherApp(val label: String, val module: AppModule?) {
 
     /** Mopedu: the customer's ride flow (2026-09-18). */
     RIDE("Ride", AppModule.MOBILITY),
+
+    /** Doorstep: home services, Urban Company style (2026-10-04). After Ride, at the end of the grid. */
+    DOORSTEP("Doorstep", AppModule.HOME_SERVICES),
 }
 
 /**
