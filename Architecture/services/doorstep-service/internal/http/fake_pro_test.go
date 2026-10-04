@@ -451,7 +451,7 @@ func (f *fakeProStore) SetArea(_ context.Context, id uuid.UUID, zones []uuid.UUI
 		}
 	}
 	p.zones, p.home = zones, true
-	return &model.ProArea{ZoneIDs: zones, HomeLat: lat, HomeLng: lng, RadiusM: r}, nil
+	return &model.ProArea{ZoneIDs: zones, HomeLat: &lat, HomeLng: &lng, RadiusM: r}, nil
 }
 
 func (f *fakeProStore) ProZoneIDs(_ context.Context, id uuid.UUID) ([]uuid.UUID, error) {

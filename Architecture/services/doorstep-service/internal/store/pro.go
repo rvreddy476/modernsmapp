@@ -662,7 +662,7 @@ func (s *Store) SetArea(ctx context.Context, proID uuid.UUID, zoneIDs []uuid.UUI
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapErr(err)
 	}
-	return &model.ProArea{ZoneIDs: zoneIDs, HomeLat: lat, HomeLng: lng, RadiusM: radiusM}, nil
+	return &model.ProArea{ZoneIDs: zoneIDs, HomeLat: &lat, HomeLng: &lng, RadiusM: radiusM}, nil
 }
 
 // ProZoneIDs lists the professional's zones.

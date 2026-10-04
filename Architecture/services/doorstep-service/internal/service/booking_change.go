@@ -22,6 +22,9 @@ func cancelNotAllowed() *apperr.Error {
 	return apperr.New(http.StatusConflict, apperr.CodeCancelNotAllowed, "this booking can no longer be cancelled (the job has started)")
 }
 
+// RuleProLate is the cancel-preview rule when the professional is late.
+const RuleProLate = "pro_late_free"
+
 func minutesLeft(now, slotStart time.Time) int {
 	return int(math.Floor(slotStart.Sub(now).Minutes()))
 }
@@ -36,7 +39,12 @@ func (s *Service) customerVerdict(ctx context.Context, b *store.LockedBooking) (
 	if err != nil {
 		return cancelrules.Verdict{}, internal(ctx, "cancellation rules", err)
 	}
-	return cancelrules.Decide(rules, b.CategoryID, stage, minutesLeft(s.now(), b.SlotStart), b.Refundable), nil
+	v := cancelrules.Decide(rules, b.CategoryID, stage, minutesLeft(s.now(), b.SlotStart), b.Refundable)
+	// A professional 15 minutes late (A4) makes cancelling free.
+	if b.ProLateAt != nil && v.Allowed && (b.Status == "assigned" || b.Status == "en_route") {
+		v.FeePaise, v.RefundPaise, v.Rule = 0, b.Refundable, RuleProLate
+	}
+	return v, nil
 }
 
 // CancelPreview is what cancelling now would cost.
@@ -76,7 +84,7 @@ func (s *Service) previewLock(ctx context.Context, rec *store.BookingRecord) (*s
 	}
 	lb := &store.LockedBooking{ID: rec.Booking.ID, Customer: rec.CustomerUserID, CategoryID: rec.CategoryID, CityCode: rec.Booking.CityCode,
 		Status: rec.Booking.Status, SlotStart: rec.Booking.SlotStart, PaidPaise: rec.Booking.PaidPaise, RefundedPaise: rec.Booking.RefundedPaise,
-		Refundable: rec.Booking.PaidPaise - pending, RescheduleCount: rec.RescheduleCount}
+		Refundable: rec.Booking.PaidPaise - pending, RescheduleCount: rec.RescheduleCount, ProLateAt: rec.ProLateAt}
 	if lb.Refundable < 0 {
 		lb.Refundable = 0
 	}
@@ -96,6 +104,7 @@ func (s *Service) CancelBooking(ctx context.Context, user, id uuid.UUID, req mod
 	if aerr != nil {
 		return nil, aerr
 	}
+	live := s.liveBefore(ctx, id)
 	refundID, err := s.bk.Store.CancelBooking(ctx, id, &user, nil, s.nowUTC(), func(b *store.LockedBooking) (*store.CancelDecision, error) {
 		v, aerr := s.customerVerdict(ctx, b)
 		if aerr != nil {
@@ -112,6 +121,7 @@ func (s *Service) CancelBooking(ctx context.Context, user, id uuid.UUID, req mod
 		return nil, aerr
 	}
 	s.SubmitRefunds(ctx, refundIDs(refundID)...)
+	s.afterCancelled(ctx, id, live)
 	return s.Booking(ctx, user, id)
 }
 
@@ -180,11 +190,12 @@ func (s *Service) Reschedule(ctx context.Context, user, id uuid.UUID, req model.
 	if aerr != nil {
 		return nil, aerr
 	}
-	order := ranked(pros, start, p.Req, rec.ReservedProID)
+	order := ranked(pros, start, p.Req, rec.ReservedProID, p.Lat, p.Lng, nil)
 	if len(order) == 0 {
 		return nil, slotUnavailable("no_professional")
 	}
-	_, err = s.bk.Store.RescheduleBooking(ctx, id, user, store.RescheduleMove{SlotStart: start,
+	live := s.liveBefore(ctx, id)
+	newPro, err := s.bk.Store.RescheduleBooking(ctx, id, user, store.RescheduleMove{SlotStart: start,
 		SlotEnd: start.Add(time.Duration(p.Req.DurationMinutes) * time.Minute), BlockEnd: slots.BlockFor(start, p.Req).End,
 		Candidates: order}, now, func(b *store.LockedBooking) error {
 		if aerr := check(b.Status, b.RescheduleCount, b.SlotStart); aerr != nil {
@@ -198,7 +209,27 @@ func (s *Service) Reschedule(ctx context.Context, user, id uuid.UUID, req model.
 	if aerr := cancelErr(ctx, err); aerr != nil {
 		return nil, aerr
 	}
+	s.afterReschedule(ctx, id, live, newPro)
 	return s.Booking(ctx, user, id)
+}
+
+// afterReschedule tells the professionals and re-offers (A4): a
+// professional who keeps the job hears it moved; one who lost it hears it
+// was taken back (the outbox carries doorstep.booking.reassigned naming
+// them); the booking is offered to whoever holds the new slot.
+func (s *Service) afterReschedule(ctx context.Context, id uuid.UUID, live *store.AssignmentRef, newPro uuid.UUID) {
+	s.publishBookingNow(ctx, id)
+	if live != nil {
+		if live.ProID == newPro {
+			s.publish(ctx, ProTopic(live.ProUserID), FrameJobUpdated, JobFrame{BookingID: id, Status: live.Status,
+				Cause: "rescheduled", At: s.nowUTC()})
+		} else {
+			s.tellRemoved(ctx, id, live, "rescheduled")
+		}
+	}
+	if err := s.Dispatch(ctx, id); err != nil {
+		slog.ErrorContext(ctx, "doorstep: re-offer after reschedule failed; the worker retries", "booking_id", id, "error", err)
+	}
 }
 
 // ---------------------------------------------------------------- refunds
@@ -271,10 +302,19 @@ func (s *Service) ResubmitPendingRefunds(ctx context.Context) (int, error) {
 }
 
 // AfterPaymentEvent runs after a payment event committed: it submits the
-// refunds the event created (late capture).
+// refunds the event created (late capture) and, for a booking the event
+// confirmed, publishes it and offers it to the professional its slot is held
+// for (A4; the dispatch worker retries any offer that does not go out here).
 func (s *Service) AfterPaymentEvent(ctx context.Context, a payments.Applied) {
 	if len(a.RefundIDs) > 0 {
 		s.SubmitRefunds(ctx, a.RefundIDs...)
+	}
+	switch a.Decision.Outcome {
+	case payments.OutcomeConfirmed, payments.OutcomeLateCaptureConfirmed:
+		s.publishBookingNow(ctx, a.BookingID)
+		if err := s.Dispatch(ctx, a.BookingID); err != nil {
+			slog.ErrorContext(ctx, "doorstep: dispatch after confirm failed; the worker retries", "booking_id", a.BookingID, "error", err)
+		}
 	}
 }
 

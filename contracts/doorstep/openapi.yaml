@@ -94,13 +94,16 @@ x-doorstep-booking-states:
     - {from: expired, to: confirmed, by: payment_event_late_capture}  # only while the reserved professional is still free and the slot ahead; else a full refund and it stays expired
     - {from: pending_payment, to: cancelled, by: customer}
     - {from: confirmed, to: assigned, by: pro_accept}
-    - {from: confirmed, to: cancelled, by: [customer, ops, worker_t_minus_45]}
-    - {from: confirmed, to: pro_no_show, by: worker}
-    - {from: assigned, to: confirmed, by: [pro_cancel, ops_redispatch, worker_not_on_duty, worker_pro_no_show]}
+    - {from: confirmed, to: confirmed, by: [pro_decline, worker_offer_expired, ops_redispatch, reschedule_other_pro]}  # the offer moves to the next professional; the calendar block moves in the same transaction
+    - {from: confirmed, to: cancelled, by: [customer, ops, worker_t_minus_45, worker_rescue_failed]}
+    - {from: confirmed, to: pro_no_show, by: worker_rescue_failed}  # a no-show replacement nobody accepted
+    - {from: assigned, to: confirmed, by: [pro_cancel, ops_redispatch, worker_not_on_duty, worker_pro_no_show, reschedule_other_pro]}
+    - {from: assigned, to: pro_no_show, by: worker_pro_no_show}  # nobody can start within 60 min
     - {from: assigned, to: en_route, by: pro}
     - {from: assigned, to: cancelled, by: [customer, ops]}
     - {from: en_route, to: arrived, by: pro_geo_checked}
-    - {from: en_route, to: confirmed, by: [pro_unsafe_exit, ops_redispatch]}
+    - {from: en_route, to: confirmed, by: [pro_cancel, pro_unsafe_exit, ops_redispatch, worker_pro_no_show]}
+    - {from: en_route, to: pro_no_show, by: worker_pro_no_show}
     - {from: en_route, to: cancelled, by: [customer, ops]}
     - {from: arrived, to: in_progress, by: pro_start_otp_and_photos}
     - {from: arrived, to: customer_no_show, by: pro}
@@ -114,12 +117,34 @@ x-doorstep-booking-states:
     A rework request on a completed booking within the service's rework_days
     creates a child booking (parent_booking_id set, total 0, status
     confirmed) that follows the same lifecycle.
-  offer_window: 2 h when the slot starts more than 12 h after confirmation, else 10 min (city config).
+  offer_window: >-
+    2 h when the slot starts more than 12 h after the offer, else 10 min (city
+    config offer_window_far/near_minutes, offer_far_threshold_minutes); never
+    past a rescue deadline. One open offer per booking; the professional
+    whose calendar holds the slot (reserved_pro_id) is offered first.
+  dispatch: >-
+    A4. Decline, expiry, a job given back, not on duty, a no-show and ops
+    redispatch close that professional's assignment and re-run the matcher
+    (hard filters as for slots; score: rating, acceptance, cancellations and
+    no-shows, distance from the professional's previous job that day else
+    home, weekly load) excluding everyone who already let the booking go; the
+    old calendar block is released and the next one inserted in the same
+    transaction. Nobody left: the booking stays confirmed with no
+    professional and ops get doorstep.booking.unassigned_alert
+    (reason no_professional_left) once. Ops never choose the professional.
+    Penalties (placeholders, negative earning lines): job given back >= 24 h
+    before 0, 3-24 h 100 rupees, < 3 h 200 rupees, once travelling 300
+    rupees; no-show 300 rupees.
   workers:
-    - T-2h unassigned -> ops alert (doorstep.admin.live)
-    - T-45min unassigned -> cancelled + full refund
-    - assigned professional not on duty by T-90min -> reassign (re-run dispatch excluding them)
-    - slot start + 30 min not arrived -> pro no-show: reassign, else pro_no_show + full refund
+    - offer past its expiry -> expired, next professional offered
+    - confirmed with no live offer -> dispatched again (at most every 2 min, while the slot is > 45 min away or a rescue runs)
+    - T-2h unassigned -> doorstep.booking.unassigned_alert (reason t_minus_2h, once) + doorstep.admin.live
+    - T-45min unassigned -> cancelled by the system + full refund (doorstep:refund:{id}:unassigned)
+    - assigned professional not on duty by T-90min (accepted >= 15 min earlier) -> reassign (re-run dispatch excluding them)
+    - slot start + 15 min not arrived -> doorstep.booking.pro_late; the customer may cancel free (cancel-preview rule pro_late_free)
+    - slot start + 30 min not arrived -> pro no-show (penalty, no_show_count): the job moves to the earliest a replacement can start (now + travel buffer, within 60 min) under a 30-min rescue window; nobody -> pro_no_show + full refund (doorstep:refund:{id}:pro_no_show)
+    - rescue window over with nobody accepting -> pro_no_show (after a no-show) or cancelled by the system, full refund
+    - on duty with no location fix for 5 min -> off duty
 
 x-doorstep-error-codes:
   # Shared middleware codes (not Doorstep-prefixed, emitted by shared code)
@@ -162,9 +187,9 @@ x-doorstep-error-codes:
   DOORSTEP_EXTRA_INVALID: {status: 422, meaning: rate-card item unknown/inactive, quantity over max, or free text}
   DOORSTEP_EXTRAS_NOT_ALLOWED: {status: 422, meaning: category allows catalogue add-ons only (salon)}
   DOORSTEP_EXTRAS_PENDING: {status: 409, meaning: finish attempted with undecided extras}
-  DOORSTEP_OFFER_NOT_FOUND: {status: 404}
-  DOORSTEP_OFFER_EXPIRED: {status: 410}
-  DOORSTEP_OFFER_TAKEN: {status: 409}
+  DOORSTEP_OFFER_NOT_FOUND: {status: 404, meaning: no such offer for this professional (another professional's offer reads the same)}
+  DOORSTEP_OFFER_EXPIRED: {status: 410, meaning: the offer lapsed (the next professional is offered by the worker)}
+  DOORSTEP_OFFER_TAKEN: {status: 409, meaning: the offer was declined, withdrawn or superseded, or the booking is no longer waiting for this professional}
   DOORSTEP_PRO_NOT_FOUND: {status: 404}
   DOORSTEP_PRO_EXISTS: {status: 409}
   DOORSTEP_PRO_NOT_APPROVED: {status: 403}
@@ -173,7 +198,8 @@ x-doorstep-error-codes:
   DOORSTEP_BACKGROUND_CHECK_REQUIRED: {status: 403, meaning: no clear check valid on the slot date}
   DOORSTEP_DIGILOCKER_UNAVAILABLE: {status: 503}
   DOORSTEP_FACE_MATCH_FAILED: {status: 422}
-  DOORSTEP_NOT_ON_DUTY: {status: 409}
+  DOORSTEP_NOT_ON_DUTY: {status: 409, meaning: a location fix from a professional who is off duty}
+  DOORSTEP_REALTIME_UNAVAILABLE: {status: 503, meaning: realtime is not wired on this deployment (no Redis or no token secret)}
   DOORSTEP_RATING_EXISTS: {status: 409}
   DOORSTEP_RATING_WINDOW_CLOSED: {status: 422}
   DOORSTEP_REWORK_WINDOW_CLOSED: {status: 422}
@@ -1155,15 +1181,24 @@ paths:
 
   /v1/doorstep/realtime/token:
     post:
-      summary: Scoped realtime token for doorstep.booking.<id> topics
+      summary: Scoped realtime token for one of the customer's bookings (doorstep.booking.<id>)
       operationId: issueCustomerRealtimeToken
       tags: [Booking]
       x-lane: A4
+      description: >-
+        shared/realtime TokenSigner token (REALTIME_TOKEN_SECRET) naming exactly
+        doorstep.booking.<booking_id>; lives 5 minutes (notification-service checks it
+        when an SSE connection opens; fetch one per connect). Someone else's booking is
+        404 DOORSTEP_BOOKING_NOT_FOUND. Frames carry ids, statuses and times only, never
+        an address, phone or OTP (asyncapi x-realtime-frames). Golden bytes
+        realtime_token_post_200.json, realtime_token_post_404.json.
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [booking_id]
               properties:
                 booking_id: {type: string, format: uuid}
       responses:
@@ -1172,6 +1207,18 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/RealtimeToken'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          description: DOORSTEP_BOOKING_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '503':
+          description: DOORSTEP_REALTIME_UNAVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   # ===================================================================
   # Professional (/pro) - gateway identity; role service_professional
@@ -1343,6 +1390,24 @@ paths:
                     items: {$ref: '#/components/schemas/Skill'}
 
   /v1/doorstep/pro/me/skills:
+    get:
+      summary: My declared skills and their review (A4 addition for the pro app)
+      operationId: proGetMySkills
+      tags: [Professional]
+      x-lane: A4
+      description: Golden bytes pro_me_skills_get_200.json.
+      responses:
+        '200':
+          description: Skills
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProSkill'}
     put:
       summary: Declare my skills (verified by ops)
       operationId: proPutSkills
@@ -1418,6 +1483,18 @@ paths:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/pro/me/area:
+    get:
+      summary: My saved service area (home null until one is saved; A4 addition)
+      operationId: proGetMyArea
+      tags: [Professional]
+      x-lane: A4
+      description: Golden bytes pro_me_area_get_200.json.
+      responses:
+        '200':
+          description: Area
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProArea'}
     put:
       summary: Service area (zones, home point, radius)
       operationId: proPutArea
@@ -1515,6 +1592,20 @@ paths:
           description: Removed
 
   /v1/doorstep/pro/me/bank:
+    get:
+      summary: My payout account, masked (data null before one is saved; A4 addition)
+      operationId: proGetMyBank
+      tags: [Professional]
+      x-lane: A4
+      description: Never the account number. Golden bytes pro_me_bank_get_200.json.
+      responses:
+        '200':
+          description: Masked account or null
+          content:
+            application/json:
+              schema:
+                allOf: [{$ref: '#/components/schemas/PayoutAccount'}]
+                nullable: true
     put:
       summary: Payout bank account (sealed; payouts OFF, settlements computed only)
       operationId: proPutBank
@@ -1606,13 +1697,72 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ProReadiness'}
 
+  /v1/doorstep/pro/me/documents:
+    get:
+      summary: My uploaded documents (police and trade certificates) and their review (A4 addition)
+      operationId: proGetMyDocuments
+      tags: [Professional]
+      x-lane: A4
+      description: Golden bytes pro_me_documents_get_200.json.
+      responses:
+        '200':
+          description: Documents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProDocument'}
+
+  /v1/doorstep/pro/zones:
+    get:
+      summary: Zones of my city I may pick for my service area (A4 addition)
+      operationId: proListZones
+      tags: [Professional]
+      x-lane: A4
+      description: Active zones of the professional's city with their GeoJSON boundary. Golden bytes pro_zones_get_200.json.
+      responses:
+        '200':
+          description: Zones
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProZone'}
+
+  /v1/doorstep/pro/me/duty:
+    get:
+      summary: My duty state (A4 addition)
+      operationId: proGetDuty
+      tags: [Professional]
+      x-lane: A4
+      description: Golden bytes pro_me_duty_get_200.json.
+      responses:
+        '200':
+          description: Duty state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DutyState'}
+
   /v1/doorstep/pro/duty/on:
     post:
-      summary: Go on duty
+      summary: Go on duty (optional location fix in the body)
       operationId: proDutyOn
       tags: [Professional]
       x-lane: A4
+      description: >-
+        Approved, every onboarding step done, not suspended, a background check clear
+        today. Idempotent. A fix in the body is recorded like POST /pro/location.
+        Golden bytes pro_duty_on_200.json, pro_duty_on_403_not_approved.json.
       requestBody:
+        required: false
         content:
           application/json:
             schema: {$ref: '#/components/schemas/LocationInput'}
@@ -1627,13 +1777,24 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '404':
+          description: DOORSTEP_PRO_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '422':
+          description: DOORSTEP_ONBOARDING_INCOMPLETE (details.missing_steps)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/pro/duty/off:
     post:
-      summary: Go off duty
+      summary: Go off duty (idempotent)
       operationId: proDutyOff
       tags: [Professional]
       x-lane: A4
+      description: Golden bytes pro_duty_off_200.json. The stale-GPS worker does the same after 5 minutes without a fix.
       responses:
         '200':
           description: Duty state
@@ -1643,10 +1804,16 @@ paths:
 
   /v1/doorstep/pro/location:
     post:
-      summary: Location ping (Redis GEO; travel to job)
+      summary: Location fix (latest only; Redis GEO per city; live position to the customer while en route)
       operationId: proLocation
       tags: [Professional]
       x-lane: A4
+      description: >-
+        Overwrites the professional's latest fix (no trail is kept) and mirrors it into
+        Redis GEO doorstep:pros:geo:<CITY>. While travelling to a job (en_route) a
+        doorstep.booking.pro_location frame goes to that booking's topic. Send at least
+        every 5 minutes on duty, or the stale-GPS worker takes you off duty. Golden bytes
+        pro_location_409_not_on_duty.json, pro_location_400.json.
       requestBody:
         required: true
         content:
@@ -1655,6 +1822,8 @@ paths:
       responses:
         '204':
           description: Accepted
+        '400':
+          $ref: '#/components/responses/Error'
         '409':
           description: DOORSTEP_NOT_ON_DUTY
           content:
@@ -1667,6 +1836,7 @@ paths:
       operationId: proListOffers
       tags: [ProfessionalJob]
       x-lane: A4
+      description: Open offers only (status open), soonest expiry first. Golden bytes pro_offers_get_200.json.
       responses:
         '200':
           description: Offers
@@ -1680,12 +1850,39 @@ paths:
                     type: array
                     items: {$ref: '#/components/schemas/Offer'}
 
+  /v1/doorstep/pro/offers/{id}:
+    get:
+      summary: One of my offers, in any state (A4 addition; the offer push deep link)
+      operationId: proGetOffer
+      tags: [ProfessionalJob]
+      x-lane: A4
+      description: status says whether it can still be accepted. Golden bytes pro_offer_get_200.json, pro_offer_get_404.json.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Offer
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Offer'}
+        '404':
+          description: DOORSTEP_OFFER_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
   /v1/doorstep/pro/offers/{id}/accept:
     post:
       summary: Accept an offer (row-locked; idempotent)
       operationId: proAcceptOffer
       tags: [ProfessionalJob]
       x-lane: A4
+      description: >-
+        Only the offered professional may accept (anyone else: 404). The booking row is
+        locked, the professional re-checked (approved, not suspended, gender rule,
+        background check valid on the slot date) and the booking moves confirmed to
+        assigned with a version compare. Accepting again answers the same job. Golden
+        bytes pro_offer_accept_200.json, _404.json, _409_taken.json, _410_expired.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       responses:
@@ -1695,7 +1892,12 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ProJob'}
         '403':
-          description: DOORSTEP_GENDER_RULE, DOORSTEP_BACKGROUND_CHECK_REQUIRED
+          description: DOORSTEP_GENDER_RULE, DOORSTEP_BACKGROUND_CHECK_REQUIRED, DOORSTEP_PRO_SUSPENDED, DOORSTEP_PRO_NOT_APPROVED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '404':
+          description: DOORSTEP_OFFER_NOT_FOUND, DOORSTEP_PRO_NOT_FOUND
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
@@ -1712,13 +1914,15 @@ paths:
 
   /v1/doorstep/pro/offers/{id}/decline:
     post:
-      summary: Decline an offer (next professional is offered automatically)
+      summary: Decline an offer (next professional is offered in the same transaction)
       operationId: proDeclineOffer
       tags: [ProfessionalJob]
       x-lane: A4
+      description: Body optional. Declining twice is a no-op. Golden bytes pro_offer_decline_400_reason.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
+        required: false
         content:
           application/json:
             schema:
@@ -1728,18 +1932,44 @@ paths:
       responses:
         '204':
           description: Declined
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          description: DOORSTEP_OFFER_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '409':
+          description: DOORSTEP_OFFER_TAKEN
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '410':
+          description: DOORSTEP_OFFER_EXPIRED
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/pro/jobs:
     get:
-      summary: My jobs
+      summary: My accepted jobs
       operationId: proListJobs
       tags: [ProfessionalJob]
       x-lane: A4
+      description: >-
+        upcoming (assigned, soonest first), active (en_route to awaiting_extras_payment,
+        soonest first), past (ended, latest first), all (latest first; the default).
+        date (YYYY-MM-DD, Asia/Kolkata) narrows to one day; paging continues with
+        next_cursor. Golden bytes pro_jobs_get_200.json, pro_jobs_get_400_date.json.
       parameters:
         - name: status
           in: query
-          schema: {type: string, enum: [upcoming, active, past]}
+          schema: {type: string, enum: [upcoming, active, past, all]}
+        - name: date
+          in: query
+          schema: {type: string, format: date}
         - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
       responses:
         '200':
           description: Jobs
@@ -1753,13 +1983,18 @@ paths:
                     type: array
                     items: {$ref: '#/components/schemas/ProJob'}
                   next_cursor: {type: string, nullable: true}
+        '400':
+          $ref: '#/components/responses/Error'
 
   /v1/doorstep/pro/jobs/{id}:
     get:
-      summary: One of my jobs
+      summary: One of my jobs, or a job offered to me (locality only until accepted)
       operationId: proGetJob
       tags: [ProfessionalJob]
       x-lane: A4
+      description: >-
+        address and chat_open only from acceptance to completion + 2 h. Golden bytes
+        pro_job_get_200.json (assigned), pro_job_get_200_offered.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       responses:
@@ -1768,6 +2003,11 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ProJob'}
+        '404':
+          description: DOORSTEP_BOOKING_NOT_FOUND (not offered to or accepted by me)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/pro/jobs/{id}/en-route:
     post:
@@ -1948,10 +2188,16 @@ paths:
 
   /v1/doorstep/pro/jobs/{id}/cancel:
     post:
-      summary: Professional gives the job back before start (counts against acceptance; dispatch re-runs)
+      summary: Professional gives the job back before arriving (penalty tier; dispatch re-runs)
       operationId: proJobCancel
       tags: [ProfessionalJob]
-      x-lane: A5
+      x-lane: A4
+      description: >-
+        From assigned or en_route. The penalty tier (x-doorstep-booking-states.dispatch)
+        is written as a negative earning line, the cancellation counts against the
+        matcher, the booking goes back to confirmed and the next professional is offered
+        it in the same transaction (doorstep.booking.reassigned, cause pro_cancel).
+        Inside 45 min of the slot a 30-min rescue window applies.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
@@ -1962,6 +2208,16 @@ paths:
       responses:
         '204':
           description: Released
+        '404':
+          description: DOORSTEP_BOOKING_NOT_FOUND (not my accepted job)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '409':
+          description: DOORSTEP_INVALID_TRANSITION (arrived or later; use unsafe-exit or no-show)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/pro/jobs/{id}/sos:
     post:
@@ -2077,16 +2333,30 @@ paths:
 
   /v1/doorstep/pro/realtime/token:
     post:
-      summary: Realtime token for doorstep.pro.<user_id> and accepted bookings
+      summary: Realtime token for doorstep.pro.<user_id> and the bookings the professional has accepted
       operationId: issueProRealtimeToken
       tags: [Professional]
       x-lane: A4
+      description: >-
+        Topics: doorstep.pro.<caller user id> first, then doorstep.booking.<id> for
+        every accepted booking still happening (assigned to awaiting_extras_payment).
+        No body. Golden bytes pro_realtime_token_post_200.json.
       responses:
         '200':
           description: Token
           content:
             application/json:
               schema: {$ref: '#/components/schemas/RealtimeToken'}
+        '404':
+          description: DOORSTEP_PRO_NOT_FOUND
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '503':
+          description: DOORSTEP_REALTIME_UNAVAILABLE
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   # ===================================================================
   # Background-check vendor webhook (future vendor; signed, no identity)
@@ -3188,25 +3458,41 @@ paths:
 
   /v1/doorstep/internal/admin/bookings/{id}/redispatch:
     post:
-      summary: Re-run dispatch excluding the current professional (never hand-picking)
+      summary: Re-run dispatch excluding the current professional and any listed (never hand-picking)
       operationId: adminRedispatchBooking
       tags: [Admin]
       security: [{adminServiceToken: []}]
       x-permission: doorstep:bookings.redispatch
-      x-lane: A6
+      x-lane: A4
+      description: >-
+        From confirmed, assigned, en_route or arrived. The current professional's offer or
+        job is released (no penalty), the booking goes back to confirmed and the matcher
+        offers it to the best free professional not excluded; nobody left keeps it
+        confirmed with an ops alert. The body cannot name a professional (strict
+        decoding: 400). Audited in the same transaction. Golden bytes
+        admin_booking_redispatch_200.json, admin_booking_redispatch_400_pick.json.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/ReasonInput'}
+            schema: {$ref: '#/components/schemas/AdminRedispatchInput'}
       responses:
         '200':
-          description: Booking (confirmed, new offer out)
+          description: Booking (confirmed, new offer out unless nobody is left)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Booking'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: DOORSTEP_INVALID_TRANSITION
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
 
   /v1/doorstep/internal/admin/bookings/{id}/refund:
     post:
@@ -4246,10 +4532,16 @@ components:
         zone_ids: {type: array, items: {type: string, format: uuid}}
         home_lat: {type: number}
         home_lng: {type: number}
-        radius_m: {type: integer, minimum: 1000, maximum: 30000}
+        radius_m: {type: integer, minimum: 1000, maximum: 15000}
     ProArea:
-      allOf:
-        - $ref: '#/components/schemas/ProAreaInput'
+      type: object
+      description: The saved service area. home_lat/home_lng are null until one is saved (GET /pro/me/area).
+      required: [zone_ids, home_lat, home_lng, radius_m]
+      properties:
+        zone_ids: {type: array, items: {type: string, format: uuid}}
+        home_lat: {type: number, nullable: true}
+        home_lng: {type: number, nullable: true}
+        radius_m: {type: integer, minimum: 1000, maximum: 15000}
     WeeklyHours:
       type: object
       required: [items]
@@ -4318,21 +4610,39 @@ components:
       type: object
       required: [lat, lng]
       properties:
-        lat: {type: number}
-        lng: {type: number}
-        accuracy_m: {type: number}
+        lat: {type: number, minimum: -90, maximum: 90}
+        lng: {type: number, minimum: -180, maximum: 180}
+        accuracy_m: {type: number, minimum: 0, maximum: 100000}
     DutyState:
       type: object
       required: [on_duty, since]
       properties:
         on_duty: {type: boolean}
         since: {type: string, format: date-time, nullable: true}
+    ProZone:
+      type: object
+      description: A zone a professional may pick (GET /pro/zones).
+      required: [id, city_code, name, slug, boundary]
+      properties:
+        id: {type: string, format: uuid}
+        city_code: {type: string}
+        name: {type: string}
+        slug: {type: string}
+        boundary: {$ref: '#/components/schemas/GeoJSONPolygon'}
     Offer:
       type: object
-      required: [id, booking_id, service_name, category_slug, locality, distance_m, slot_start, slot_end, earning_estimate_paise, expires_at]
+      description: >-
+        A job offered to a professional. Locality only, never the address.
+        status: open (can be accepted until expires_at), accepted, declined,
+        expired, withdrawn (released by ops, a reschedule, or the booking ended).
+        earning_estimate_paise = taxable value less the city/category commission
+        (settlement recomputes at completion). distance_m is from the
+        professional's previous job that day, else home.
+      required: [id, booking_id, status, service_name, category_slug, locality, distance_m, slot_start, slot_end, earning_estimate_paise, expires_at]
       properties:
         id: {type: string, format: uuid}
         booking_id: {type: string, format: uuid}
+        status: {type: string, enum: [open, accepted, declined, expired, withdrawn]}
         service_name: {type: string}
         category_slug: {type: string}
         locality: {type: string, description: Locality only before acceptance}
@@ -4341,9 +4651,20 @@ components:
         slot_end: {type: string, format: date-time}
         earning_estimate_paise: {type: integer, format: int64}
         expires_at: {type: string, format: date-time}
+    PhotoCounts:
+      type: object
+      required: [before, after, kit_seal]
+      properties:
+        before: {type: integer}
+        after: {type: integer}
+        kit_seal: {type: integer}
     ProJob:
       type: object
-      required: [booking_id, status, service_name, category_slug, slot_start, slot_end, items, locality, address, customer_first_name, chat_open, photos_required, earning_estimate_paise]
+      description: >-
+        A booking as its professional sees it (also an offered one, locality
+        only). photos_uploaded, arrived_at and finished let the app resume a
+        visit with no device memory (A4 additions).
+      required: [booking_id, status, service_name, category_slug, slot_start, slot_end, items, locality, address, customer_first_name, chat_open, photos_required, photos_uploaded, arrived_at, finished, earning_estimate_paise]
       properties:
         booking_id: {type: string, format: uuid}
         status: {$ref: '#/components/schemas/BookingStatus'}
@@ -4359,15 +4680,14 @@ components:
           allOf: [{$ref: '#/components/schemas/Address'}]
           nullable: true
           description: From acceptance to completion + 2 h only
-        customer_first_name: {type: string, nullable: true}
+        customer_first_name: {type: string, nullable: true, description: Always null until the user service exposes it}
         chat_open: {type: boolean}
         photos_required:
-          type: object
-          required: [before, after, kit_seal]
-          properties:
-            before: {type: integer}
-            after: {type: integer}
-            kit_seal: {type: integer}
+          allOf: [{$ref: '#/components/schemas/PhotoCounts'}]
+          description: kit_seal is 1 for salon categories
+        photos_uploaded: {$ref: '#/components/schemas/PhotoCounts'}
+        arrived_at: {type: string, format: date-time, nullable: true}
+        finished: {type: boolean, description: The professional has finished the work (finished_at set)}
         earning_estimate_paise: {type: integer, format: int64}
     PhotoInput:
       type: object
@@ -4426,6 +4746,16 @@ components:
       type: object
       properties:
         reason: {type: string, maxLength: 1000}
+    AdminRedispatchInput:
+      type: object
+      description: Ops re-run dispatch; they may only exclude professionals, never pick one (strict decoding refuses any other field).
+      required: [reason]
+      properties:
+        reason: {type: string, maxLength: 1000}
+        exclude_pro_ids:
+          type: array
+          maxItems: 50
+          items: {type: string, format: uuid}
     AdminCity:
       type: object
       required: [code, name, state_code, timezone, active, extras_charge_now_threshold_paise, extras_grace_minutes, max_jobs_per_day, offer_window_far_minutes, offer_window_near_minutes, offer_far_threshold_minutes, created_at, updated_at]

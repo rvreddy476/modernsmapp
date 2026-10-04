@@ -148,3 +148,100 @@ type BookingAttentionData struct {
 	EventType string `json:"payment_event_type"`
 	Detail    string `json:"detail"`
 }
+
+// Dispatch event types (A4).
+const (
+	BookingAssigned        = "doorstep.booking.assigned"
+	BookingReassigned      = "doorstep.booking.reassigned"
+	BookingUnassignedAlert = "doorstep.booking.unassigned_alert"
+	BookingNoShow          = "doorstep.booking.no_show"
+	// BookingProLate: slot + 15 min and the professional has not arrived;
+	// the customer may cancel free of charge.
+	BookingProLate  = "doorstep.booking.pro_late"
+	ProOfferCreated = "doorstep.pro.offer_created"
+	ProOfferClosed  = "doorstep.pro.offer_closed"
+)
+
+// Reassignment causes (asyncapi BookingReassigned.cause).
+const (
+	CauseProCancel     = "pro_cancel"
+	CauseProNoShow     = "pro_no_show"
+	CauseNotOnDuty     = "not_on_duty"
+	CauseUnsafeExit    = "unsafe_exit"
+	CauseOpsRedispatch = "ops_redispatch"
+	CauseProSuspended  = "pro_suspended"
+	CauseRescheduled   = "rescheduled"
+)
+
+// Unassigned alert reasons.
+const (
+	AlertTMinus2h           = "t_minus_2h"
+	AlertNoProfessionalLeft = "no_professional_left"
+)
+
+// BookingAssignedData is doorstep.booking.assigned's data.
+type BookingAssignedData struct {
+	BookingCore
+	ProFirstName string    `json:"pro_first_name"`
+	AssignmentID uuid.UUID `json:"assignment_id"`
+}
+
+// BookingReassignedData is doorstep.booking.reassigned's data: the booking is
+// back to confirmed and dispatch re-runs excluding previous_pro_user_id, who
+// is named so they are told the job is no longer theirs.
+type BookingReassignedData struct {
+	BookingCore
+	PreviousProUserID uuid.UUID `json:"previous_pro_user_id"`
+	Cause             string    `json:"cause"`
+}
+
+// BookingUnassignedAlertData is doorstep.booking.unassigned_alert's data
+// (ops only).
+type BookingUnassignedAlertData struct {
+	BookingCore
+	MinutesToSlot int    `json:"minutes_to_slot"`
+	Reason        string `json:"reason"`
+}
+
+// BookingNoShowData is doorstep.booking.no_show's data.
+type BookingNoShowData struct {
+	BookingCore
+	Party    string `json:"party"`
+	FeePaise int64  `json:"fee_paise"`
+}
+
+// BookingProLateData is doorstep.booking.pro_late's data.
+type BookingProLateData struct {
+	BookingCore
+	MinutesLate int  `json:"minutes_late"`
+	FreeCancel  bool `json:"free_cancel"`
+}
+
+// ProOfferCreatedData is doorstep.pro.offer_created's data. Locality only:
+// never the address before acceptance.
+type ProOfferCreatedData struct {
+	OfferID        uuid.UUID `json:"offer_id"`
+	BookingID      uuid.UUID `json:"booking_id"`
+	ProUserID      uuid.UUID `json:"pro_user_id"`
+	CustomerUserID uuid.UUID `json:"customer_user_id"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Locality       string    `json:"locality"`
+}
+
+// ProOfferClosedData is doorstep.pro.offer_closed's data.
+type ProOfferClosedData struct {
+	OfferID        uuid.UUID `json:"offer_id"`
+	BookingID      uuid.UUID `json:"booking_id"`
+	ProUserID      uuid.UUID `json:"pro_user_id"`
+	CustomerUserID uuid.UUID `json:"customer_user_id"`
+	Outcome        string    `json:"outcome"`
+}
+
+// ProOffer builds a doorstep.pro.offer_* event: partition key is the
+// professional's user id; the envelope names the booking and both users.
+func ProOffer(eventType string, bookingID, customer, proUserID uuid.UUID, at time.Time, data any) (key string, payload []byte, err error) {
+	b, c, p := bookingID, customer, proUserID
+	payload, err = json.Marshal(Envelope{EventID: uuid.New(), EventType: eventType, Version: 1, OccurredAt: at.UTC(),
+		BookingID: &b, CustomerUserID: &c, ProUserID: &p, Data: data})
+	return proUserID.String(), payload, err
+}

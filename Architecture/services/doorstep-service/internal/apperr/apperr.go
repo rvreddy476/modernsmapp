@@ -82,6 +82,17 @@ const (
 	// A3 addition: the dev stub confirm when payments-service has a real
 	// provider (the signed webhook settles there).
 	CodeStubUnavailable = "DOORSTEP_STUB_UNAVAILABLE"
+
+	// Dispatch, presence and realtime (A4), from the contract.
+	CodeOfferNotFound  = "DOORSTEP_OFFER_NOT_FOUND"
+	CodeOfferExpired   = "DOORSTEP_OFFER_EXPIRED"
+	CodeOfferTaken     = "DOORSTEP_OFFER_TAKEN"
+	CodeProNotApproved = "DOORSTEP_PRO_NOT_APPROVED"
+	CodeProSuspended   = "DOORSTEP_PRO_SUSPENDED"
+	CodeNotOnDuty      = "DOORSTEP_NOT_ON_DUTY"
+	// A4 addition: realtime is not wired on this deployment (no Redis or no
+	// token secret).
+	CodeRealtimeUnavailable = "DOORSTEP_REALTIME_UNAVAILABLE"
 )
 
 // Invalid is a 400 DOORSTEP_INVALID_REQUEST naming the offending field.

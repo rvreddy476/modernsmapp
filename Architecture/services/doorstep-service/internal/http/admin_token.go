@@ -276,7 +276,8 @@ func (h *Handler) adminRoutes() []adminRoute {
 func (h *Handler) registerInternalAdminRoutes(r *gin.Engine) {
 	g := r.Group(InternalAdminPrefix)
 	routes := append(h.adminRoutes(), h.proAdminRoutes()...)
-	for _, rt := range append(routes, h.bookingAdminRoutes()...) {
+	routes = append(routes, h.bookingAdminRoutes()...)
+	for _, rt := range append(routes, h.dispatchAdminRoutes()...) {
 		g.Handle(rt.method, rt.path, h.requireAdminToken(rt.perm), rt.handler)
 	}
 }

@@ -126,7 +126,8 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 		       (p.home_point IS NOT NULL AND ST_DWithin(p.home_point, pt.g, p.service_radius_m)),
 		       COALESCE(ST_Distance(p.home_point, pt.g), 0)::float8,
 		       p.max_jobs_per_day, p.rating_sum, p.rating_count, p.offers_received, p.offers_accepted,
-		       p.cancellations_count, p.jobs_completed
+		       p.cancellations_count + p.no_show_count, p.jobs_completed,
+		       p.home_point IS NOT NULL, COALESCE(ST_Y(p.home_point::geometry), 0)::float8, COALESCE(ST_X(p.home_point::geometry), 0)::float8
 		FROM doorstep.professionals p, pt
 		WHERE p.city_code = $1 AND p.status = 'approved'
 		ORDER BY p.id`, q.City, q.ZoneID, q.Lat, q.Lng, q.Skill)
@@ -137,7 +138,7 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 		var p slots.Pro
 		err := r.Scan(&p.ID, &p.UserID, &p.Status, &p.IncidentSuspended, &p.Gender, &p.SkillVerified, &p.InZone,
 			&p.WithinRadius, &p.DistanceM, &p.MaxJobsPerDay, &p.RatingSum, &p.RatingCount, &p.OffersReceived,
-			&p.OffersAccepted, &p.Cancellations, &p.JobsCompleted)
+			&p.OffersAccepted, &p.Cancellations, &p.JobsCompleted, &p.HasHome, &p.HomeLat, &p.HomeLng)
 		p.JobsByDay = map[string]int{}
 		return p, err
 	})
@@ -193,11 +194,13 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 	}
 
 	blocks, err := s.db.Query(ctx, `
-		SELECT pro_id, lower(during), upper(during), kind,
-		       to_char(lower(during) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')
-		FROM doorstep.pro_calendar_blocks
-		WHERE pro_id = ANY($1) AND active AND during && tstzrange($2, $3, '[)')
-		  AND ($4::uuid IS NULL OR booking_id IS DISTINCT FROM $4)`,
+		SELECT k.pro_id, lower(k.during), upper(k.during), k.kind,
+		       to_char(lower(k.during) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD'),
+		       b.id IS NOT NULL, COALESCE(ST_Y(b.location::geometry), 0)::float8, COALESCE(ST_X(b.location::geometry), 0)::float8
+		FROM doorstep.pro_calendar_blocks k
+		LEFT JOIN doorstep.bookings b ON b.id = k.booking_id
+		WHERE k.pro_id = ANY($1) AND k.active AND k.during && tstzrange($2, $3, '[)')
+		  AND ($4::uuid IS NULL OR k.booking_id IS DISTINCT FROM $4)`,
 		ids, q.From.AddDate(0, 0, -7), q.To, q.ExcludeBooking)
 	if err != nil {
 		return nil, err
@@ -206,7 +209,9 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 		var id uuid.UUID
 		var iv slots.Interval
 		var kind, day string
-		if err := blocks.Scan(&id, &iv.Start, &iv.End, &kind, &day); err != nil {
+		var located bool
+		var lat, lng float64
+		if err := blocks.Scan(&id, &iv.Start, &iv.End, &kind, &day, &located, &lat, &lng); err != nil {
 			blocks.Close()
 			return nil, err
 		}
@@ -214,6 +219,9 @@ func (s *Store) SlotCandidates(ctx context.Context, q CandidateQuery) ([]slots.P
 		p.Blocks = append(p.Blocks, iv)
 		if kind == "hold" || kind == "booking" {
 			p.JobsByDay[day]++
+			if located {
+				p.Jobs = append(p.Jobs, slots.JobAt{Start: iv.Start, Lat: lat, Lng: lng})
+			}
 		}
 	}
 	blocks.Close()

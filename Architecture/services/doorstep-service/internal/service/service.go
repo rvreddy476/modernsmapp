@@ -90,6 +90,8 @@ type Service struct {
 	pro ProDeps
 	// bk is bookings and payments (A3), wired by WithBookings.
 	bk BookingDeps
+	// ds is dispatch, presence and realtime (A4), wired by WithDispatch.
+	ds DispatchDeps
 }
 
 // New builds the service.

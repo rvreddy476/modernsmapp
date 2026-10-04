@@ -225,3 +225,33 @@ func TestBlockForAndAvailable(t *testing.T) {
 		t.Fatalf("available %v", got)
 	}
 }
+
+// The matcher's origin is the previous job that day, else home.
+func TestOriginPreviousJobElseHome(t *testing.T) {
+	day := time.Date(2026, 10, 5, 4, 30, 0, 0, time.UTC) // 10:00 IST
+	p := Pro{HasHome: true, HomeLat: 17.40, HomeLng: 78.40, DistanceM: 999, Jobs: []JobAt{
+		{Start: day.Add(-2 * time.Hour), Lat: 17.41, Lng: 78.41},  // 08:00 same day
+		{Start: day.Add(-1 * time.Hour), Lat: 17.42, Lng: 78.42},  // 09:00 same day: the latest earlier one
+		{Start: day.Add(2 * time.Hour), Lat: 17.43, Lng: 78.43},   // later that day: ignored
+		{Start: day.Add(-20 * time.Hour), Lat: 17.44, Lng: 78.44}, // previous day: ignored
+	}}
+	if lat, lng, ok := Origin(p, day); !ok || lat != 17.42 || lng != 78.42 {
+		t.Fatalf("origin %v %v %v", lat, lng, ok)
+	}
+	if lat, _, _ := Origin(p, day.Add(-90*time.Minute)); lat != 17.41 {
+		t.Fatalf("origin before the 09:00 job: %v", lat)
+	}
+	early := day.Add(-3 * time.Hour) // 07:00: no earlier job that day -> home
+	if lat, _, ok := Origin(p, early); !ok || lat != 17.40 {
+		t.Fatalf("home origin: %v", lat)
+	}
+	if d := DistanceFrom(Pro{DistanceM: 777}, day, 17.4, 78.4); d != 777 {
+		t.Fatalf("no home, no job: %v", d)
+	}
+	if d := DistanceFrom(p, day, 17.42, 78.42); d > 1 {
+		t.Fatalf("distance from the previous job: %v", d)
+	}
+	if d := HaversineM(17.0, 78.0, 18.0, 78.0); d < 110000 || d > 112500 {
+		t.Fatalf("one degree of latitude: %v", d)
+	}
+}

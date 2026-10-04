@@ -229,13 +229,19 @@ func slotCacheKey(p *slotPlace, cfg slots.Config) string {
 	return "doorstep:slots:v1:" + hex.EncodeToString(sum[:16])
 }
 
-// ranked returns the professionals free for start, best first.
-func ranked(pros []slots.Pro, start time.Time, req slots.Request, prefer *uuid.UUID) []uuid.UUID {
+// ranked returns the professionals free for start, best first: the hard
+// filters (slots.Available), minus anyone in exclude, scored by the matcher
+// with the distance from each one's previous job that day (else home) to
+// the job at (lat, lng). prefer, when free and not excluded, goes first.
+func ranked(pros []slots.Pro, start time.Time, req slots.Request, prefer *uuid.UUID, lat, lng float64, exclude map[uuid.UUID]bool) []uuid.UUID {
 	avail := slots.Available(pros, start, req)
 	cands := make([]matcher.Candidate, 0, len(avail))
 	for _, p := range avail {
-		cands = append(cands, matcher.Candidate{ProID: p.ID, DistanceM: p.DistanceM, RatingSum: p.RatingSum, RatingCount: p.RatingCount,
-			OffersReceived: p.OffersReceived, OffersAccepted: p.OffersAccepted, Cancellations: p.Cancellations,
+		if exclude[p.ID] {
+			continue
+		}
+		cands = append(cands, matcher.Candidate{ProID: p.ID, DistanceM: slots.DistanceFrom(p, start, lat, lng), RatingSum: p.RatingSum,
+			RatingCount: p.RatingCount, OffersReceived: p.OffersReceived, OffersAccepted: p.OffersAccepted, Cancellations: p.Cancellations,
 			JobsCompleted: p.JobsCompleted, WeekLoad: slots.WeekLoad(p, start)})
 	}
 	out := make([]uuid.UUID, 0, len(cands))
@@ -319,7 +325,7 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 	if aerr != nil {
 		return nil, aerr
 	}
-	order := ranked(pros, start, p.Req, nil)
+	order := ranked(pros, start, p.Req, nil, p.Lat, p.Lng, nil)
 	if len(order) == 0 {
 		return nil, slotUnavailable("no_professional")
 	}

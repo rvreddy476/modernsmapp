@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"reason must be too_far, busy, not_my_skill or other","details":{"field":"reason"}},"meta":{"request_id":"fixture"}}

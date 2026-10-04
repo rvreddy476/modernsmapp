@@ -8,8 +8,10 @@
 // admin professional and document review, service_professional roles). A3:
 // addresses, calendar-derived slots, holds, bookings, payments (confirmed only
 // from the signed payments-service event), refunds, cancel and reschedule, and
-// the admin booking pages. Later lanes add dispatch and realtime (A4) and the
-// visit (A5).
+// the admin booking pages. A4: offers and dispatch (matcher, accept/decline,
+// reassignment and no-show workers), presence (duty, location, Redis GEO)
+// and realtime (Redis Streams + scoped tokens). A5 adds the
+// visit.
 package main
 
 import (
@@ -30,6 +32,7 @@ import (
 	doorstephttp "github.com/atpost/doorstep-service/internal/http"
 	"github.com/atpost/doorstep-service/internal/mediaclient"
 	"github.com/atpost/doorstep-service/internal/payments"
+	"github.com/atpost/doorstep-service/internal/presence"
 	"github.com/atpost/doorstep-service/internal/propii"
 	"github.com/atpost/doorstep-service/internal/service"
 	"github.com/atpost/doorstep-service/internal/slotcache"
@@ -41,19 +44,22 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/realtime"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 // The pgx store is the service's store.
 var (
-	_ service.Store        = (*store.Store)(nil)
-	_ service.ProStore     = (*store.Store)(nil)
-	_ service.BookingStore = (*store.Store)(nil)
-	_ payments.Applier     = (*store.Store)(nil)
+	_ service.Store         = (*store.Store)(nil)
+	_ service.ProStore      = (*store.Store)(nil)
+	_ service.BookingStore  = (*store.Store)(nil)
+	_ service.DispatchStore = (*store.Store)(nil)
+	_ payments.Applier      = (*store.Store)(nil)
 )
 
 func main() {
@@ -197,18 +203,43 @@ func main() {
 		slog.Info("doorstep-service: payments client ready", "legacy_internal_key", payClient.LegacyAuth())
 	}
 	// Slot answers are cached ≤30 s in Redis; Redis down only means no cache.
-	if rdb, err := transport.NewRedisClientFromEnv(cfg.RedisAddr); err != nil {
-		slog.Warn("doorstep-service: redis client not configured; slot answers are not cached", "error", err)
+	// The same client carries realtime (Redis Streams) and presence (GEO).
+	var rdb *redis.Client
+	if c, err := transport.NewRedisClientFromEnv(cfg.RedisAddr); err != nil {
+		slog.Warn("doorstep-service: redis client not configured; slot answers are not cached, realtime and presence are off", "error", err)
 	} else {
+		rdb = c
 		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		if err := rdb.Ping(pingCtx).Err(); err != nil {
-			slog.Warn("doorstep-service: redis ping failed; the slot cache retries per call", "error", err)
+			slog.Warn("doorstep-service: redis ping failed; the slot cache, realtime and presence retry per call", "error", err)
 		}
 		cancel()
 		defer rdb.Close()
 		bookingDeps.Cache = slotcache.New(rdb)
 	}
 	svc = svc.WithBookings(bookingDeps)
+
+	// Dispatch, presence and realtime (A4). Live frames go onto Redis
+	// Streams (shared/realtime StreamPublisher; notification-service's SSE
+	// gateway reads them), tokens are signed with REALTIME_TOKEN_SECRET
+	// (outside production it falls back to the internal key; config refuses
+	// production without it). Without Redis or a secret the token routes
+	// answer 503 and nothing is published; dispatch itself never needs Redis.
+	dispatchDeps := service.DispatchDeps{Store: pgStore}
+	switch {
+	case rdb == nil:
+		slog.Warn("doorstep-service: realtime DISABLED — no Redis client; POST /realtime/token and /pro/realtime/token answer 503")
+	case cfg.RealtimeTokenSecret == "":
+		slog.Warn("doorstep-service: realtime DISABLED — neither REALTIME_TOKEN_SECRET nor INTERNAL_SERVICE_KEY is set")
+	default:
+		dispatchDeps.Realtime = realtime.NewStreamPublisher(rdb)
+		dispatchDeps.Signer = realtime.NewTokenSigner([]byte(cfg.RealtimeTokenSecret)).WithTTL(service.RealtimeTokenTTL)
+		slog.Info("doorstep-service: realtime wired (Redis Streams)")
+	}
+	if p := presence.New(rdb); p != nil {
+		dispatchDeps.Presence = p
+	}
+	svc = svc.WithDispatch(dispatchDeps)
 	if bookingDeps.DevStubPayments {
 		slog.Warn("doorstep-service: POST /bookings/{id}/payment/stub-confirm is enabled (development; refused when payments-service has a real provider)")
 	}
@@ -222,6 +253,9 @@ func main() {
 	slog.Info("doorstep payment consumer started", "group", payments.ConsumerGroup, "topic", payments.Topic)
 	// Hold sweeper (expire lapsed holds) and refund resubmission.
 	go svc.RunWorkers(bgCtx, 30*time.Second)
+	// Dispatch: expired offers, T-2 h alerts, T-45 cancels, not-on-duty and
+	// no-show reassignment, rescues, retries, stale GPS.
+	go svc.RunDispatchWorkers(bgCtx, 15*time.Second)
 	if serviceVerifier == nil {
 		slog.Warn("doorstep-service: SERVICE_CALLERS not set — admin-service tokens are refused; /v1/doorstep/internal/admin answers 401")
 	} else {

@@ -139,7 +139,7 @@ type bkWorld struct {
 	anyCategorySlug string
 }
 
-func newBookingRig(t *testing.T) *bkRig {
+func newBookingRig(t *testing.T, extend ...func(*service.Service, *store.Store, *propii.Crypto) *service.Service) *bkRig {
 	t.Helper()
 	rg := newRig(t, time.Now().UTC().Truncate(time.Minute))
 	p := pool(t)
@@ -169,6 +169,9 @@ func newBookingRig(t *testing.T) *bkRig {
 	tc, _ := tax.NewGST(nil, gstin(t))
 	br.svc = service.New(br.st, tc, 15*time.Minute).WithClock(func() time.Time { return br.now }, uuid.New).
 		WithBookings(service.BookingDeps{Store: br.st, Payments: br.pay, PII: crypto, DevStubPayments: true})
+	for _, x := range extend {
+		br.svc = x(br.svc, br.st, crypto)
+	}
 	br.cons = payments.NewHandler(br.st, br.svc.AfterPaymentEvent)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

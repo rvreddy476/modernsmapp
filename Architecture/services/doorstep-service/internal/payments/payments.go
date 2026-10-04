@@ -55,6 +55,10 @@ const (
 	CauseCustomerCancel = "customer_cancel"
 	CauseAdminCancel    = "admin_cancel"
 	CauseLateCapture    = "late_capture"
+	// A4: nobody accepted in time (T-45 or a failed rescue), and a
+	// professional who never arrived with no replacement.
+	CauseUnassigned     = "unassigned"
+	CauseProNoShow      = "pro_no_show"
 	CauseAdminPrefix    = "admin_"    // + a hash of the forwarded Idempotency-Key
 	CauseExternalPrefix = "external_" // a refund made outside Doorstep, seen in an event
 )

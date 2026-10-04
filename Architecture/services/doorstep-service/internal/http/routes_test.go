@@ -110,6 +110,26 @@ var wantRoutes = []string{
 	"POST /v1/doorstep/internal/admin/bookings/:id/cancel",
 	"POST /v1/doorstep/internal/admin/bookings/:id/refund",
 	"GET /v1/doorstep/internal/admin/stats",
+	// Dispatch, presence and realtime (A4).
+	"POST /v1/doorstep/realtime/token",
+	"GET /v1/doorstep/pro/me/duty",
+	"POST /v1/doorstep/pro/duty/on",
+	"POST /v1/doorstep/pro/duty/off",
+	"POST /v1/doorstep/pro/location",
+	"GET /v1/doorstep/pro/zones",
+	"GET /v1/doorstep/pro/me/skills",
+	"GET /v1/doorstep/pro/me/area",
+	"GET /v1/doorstep/pro/me/bank",
+	"GET /v1/doorstep/pro/me/documents",
+	"GET /v1/doorstep/pro/offers",
+	"GET /v1/doorstep/pro/offers/:id",
+	"POST /v1/doorstep/pro/offers/:id/accept",
+	"POST /v1/doorstep/pro/offers/:id/decline",
+	"GET /v1/doorstep/pro/jobs",
+	"GET /v1/doorstep/pro/jobs/:id",
+	"POST /v1/doorstep/pro/jobs/:id/cancel",
+	"POST /v1/doorstep/pro/realtime/token",
+	"POST /v1/doorstep/internal/admin/bookings/:id/redispatch",
 }
 
 // The A3 admin routes carry exactly the contract's permissions.
@@ -377,5 +397,14 @@ func TestServiceCallersFromEnv(t *testing.T) {
 		if v, err := ServiceCallersFromEnv(get(env)); err == nil || v != nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+}
+
+// The A4 admin route carries exactly the contract's permission.
+func TestDispatchAdminRoutePermissions(t *testing.T) {
+	h := &Handler{}
+	rts := h.dispatchAdminRoutes()
+	if len(rts) != 1 || rts[0].method != http.MethodPost || rts[0].path != "/bookings/:id/redispatch" || rts[0].perm != PermBookingsRedispatch {
+		t.Fatalf("dispatch admin routes: %+v", rts)
 	}
 }

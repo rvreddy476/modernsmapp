@@ -47,6 +47,13 @@ type proRig struct {
 
 func newProRig(t *testing.T, opts ...func(*service.ProDeps)) *proRig {
 	t.Helper()
+	return newProRigExt(t, nil, opts...)
+}
+
+// newProRigExt is newProRig with the service extended before mounting (the
+// A4 fixtures add bookings and dispatch).
+func newProRigExt(t *testing.T, ext func(*service.Service) *service.Service, opts ...func(*service.ProDeps)) *proRig {
+	t.Helper()
 	rg := newRig(t)
 	pr := &proRig{rig: rg, pro: newFakeProStore(), media: &fakeMedia{owner: map[uuid.UUID]uuid.UUID{}}}
 	for _, u := range []uuid.UUID{proUser, otherUser} {
@@ -93,6 +100,9 @@ func newProRig(t *testing.T, opts ...func(*service.ProDeps)) *proRig {
 	svc := service.New(rg.store, tc, 15*time.Minute).
 		WithClock(func() time.Time { return fixtureNow }, func() uuid.UUID { n++; return devseed.ID("fixture", fmt.Sprint(n)) }).
 		WithPro(deps)
+	if ext != nil {
+		svc = ext(svc)
+	}
 	rg.r = mount(svc, testInternalKey, rg.v)
 	return pr
 }

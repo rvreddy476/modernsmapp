@@ -101,11 +101,11 @@ type ProAreaInput struct {
 	RadiusM *int        `json:"radius_m"`
 }
 
-// ProArea is the saved service area.
+// ProArea is the saved service area (home null until one is saved).
 type ProArea struct {
 	ZoneIDs []uuid.UUID `json:"zone_ids"`
-	HomeLat float64     `json:"home_lat"`
-	HomeLng float64     `json:"home_lng"`
+	HomeLat *float64    `json:"home_lat"`
+	HomeLng *float64    `json:"home_lng"`
 	RadiusM int         `json:"radius_m"`
 }
 

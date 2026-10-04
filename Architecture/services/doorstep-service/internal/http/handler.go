@@ -78,6 +78,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 			// Addresses, slots, bookings, payments (A3).
 			h.registerBookingRoutes(user)
+
+			// Dispatch, presence and realtime (A4).
+			h.registerDispatchRoutes(user)
 		}
 	}
 	h.registerInternalAdminRoutes(r)

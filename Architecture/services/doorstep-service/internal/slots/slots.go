@@ -26,6 +26,7 @@ package slots
 
 import (
 	"errors"
+	"math"
 	"sort"
 	"time"
 
@@ -88,8 +89,14 @@ type Pro struct {
 	// ("2006-01-02").
 	JobsByDay map[string]int
 
-	// Scoring inputs (internal/matcher).
+	// Scoring inputs (internal/matcher). DistanceM is home to the address
+	// (the store's fallback); DistanceFrom refines it with the previous job
+	// that day (Jobs) when there is one.
 	DistanceM      float64
+	HomeLat        float64
+	HomeLng        float64
+	HasHome        bool
+	Jobs           []JobAt
 	RatingSum      int64
 	RatingCount    int
 	OffersReceived int
@@ -352,4 +359,56 @@ func WeekLoad(p Pro, t time.Time) int {
 // SortByID orders professionals deterministically (store output order).
 func SortByID(pros []Pro) {
 	sort.Slice(pros, func(i, j int) bool { return pros[i].ID.String() < pros[j].ID.String() })
+}
+
+// JobAt is one of a professional's held or booked jobs: where it is and
+// when it starts (the matcher's "previous job" origin).
+type JobAt struct {
+	Start    time.Time
+	Lat, Lng float64
+}
+
+// Origin is where a professional sets out from for a job starting at start:
+// the latest of their jobs that starts earlier the same IST day, else home.
+// ok is false with neither.
+func Origin(p Pro, start time.Time) (lat, lng float64, ok bool) {
+	day := DayKey(start)
+	var best *JobAt
+	for i := range p.Jobs {
+		j := &p.Jobs[i]
+		if !j.Start.Before(start) || DayKey(j.Start) != day {
+			continue
+		}
+		if best == nil || j.Start.After(best.Start) {
+			best = j
+		}
+	}
+	if best != nil {
+		return best.Lat, best.Lng, true
+	}
+	if p.HasHome {
+		return p.HomeLat, p.HomeLng, true
+	}
+	return 0, 0, false
+}
+
+// DistanceFrom is the matcher's distance for a job at (lat, lng) starting at
+// start: from the previous job that day, else from home; the store's home
+// distance when neither is known.
+func DistanceFrom(p Pro, start time.Time, lat, lng float64) float64 {
+	oLat, oLng, ok := Origin(p, start)
+	if !ok {
+		return p.DistanceM
+	}
+	return HaversineM(oLat, oLng, lat, lng)
+}
+
+// HaversineM is the great-circle distance in metres.
+func HaversineM(lat1, lng1, lat2, lng2 float64) float64 {
+	const r = 6371000.0
+	rad := math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLng := (lng2 - lng1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	return 2 * r * math.Asin(math.Min(1, math.Sqrt(a)))
 }

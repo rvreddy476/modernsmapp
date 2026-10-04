@@ -26,8 +26,10 @@ type BookingRecord struct {
 	RescheduleCount int
 	NeedsAttention  bool
 	AttentionReason *string
-	BufferMinutes   int
-	Lat, Lng        float64
+	// ProLateAt: the professional was late (A4); free cancellation.
+	ProLateAt     *time.Time
+	BufferMinutes int
+	Lat, Lng      float64
 	// History is the full status history (actor kinds and reasons are for
 	// the admin view; the customer gets StatusSteps).
 	History []model.HistoryEntry
@@ -44,7 +46,7 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 		       b.slot_start, b.slot_end, b.duration_minutes, b.require_female_pro, b.gender_rule, s.required_skill,
 		       b.total_paise, b.taxable_paise, b.tax_paise, b.paid_paise, b.refunded_paise, b.cancellation_fee_paise,
 		       b.extras_total_paise, b.hold_expires_at, b.address_snapshot, b.address_sealed, b.parent_booking_id,
-		       b.reschedule_count, b.reserved_pro_id, b.needs_attention, b.attention_reason,
+		       b.reschedule_count, b.reserved_pro_id, b.needs_attention, b.attention_reason, b.pro_late_at,
 		       ST_Y(b.location::geometry), ST_X(b.location::geometry), z.travel_buffer_minutes, b.created_at, b.updated_at,
 		       COALESCE((SELECT sum(o.amount_paise) FROM doorstep.outstanding o WHERE o.booking_id = b.id AND o.status = 'open'), 0)::bigint
 		FROM doorstep.bookings b
@@ -56,7 +58,7 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 		&b.SlotStart, &b.SlotEnd, &b.DurationMinutes, &b.RequireFemalePro, &r.GenderRule, &r.RequiredSkill,
 		&b.TotalPaise, &b.TaxablePaise, &b.TaxPaise, &b.PaidPaise, &b.RefundedPaise, &b.CancellationFeePaise,
 		&b.ExtrasTotalPaise, &b.HoldExpiresAt, &snap, &r.AddressSealed, &b.ParentBookingID,
-		&r.RescheduleCount, &r.ReservedProID, &r.NeedsAttention, &r.AttentionReason,
+		&r.RescheduleCount, &r.ReservedProID, &r.NeedsAttention, &r.AttentionReason, &r.ProLateAt,
 		&r.Lat, &r.Lng, &r.BufferMinutes, &b.CreatedAt, &b.UpdatedAt, &b.OutstandingPaise)
 	if err != nil {
 		return nil, mapErr(err)

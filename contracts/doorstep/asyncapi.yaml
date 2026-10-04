@@ -32,6 +32,7 @@ channels:
           - $ref: '#/components/messages/BookingAssigned'
           - $ref: '#/components/messages/BookingReassigned'
           - $ref: '#/components/messages/BookingUnassignedAlert'
+          - $ref: '#/components/messages/BookingProLate'
           - $ref: '#/components/messages/BookingEnRoute'
           - $ref: '#/components/messages/BookingArrived'
           - $ref: '#/components/messages/BookingStarted'
@@ -62,10 +63,13 @@ channels:
 
   doorstep.booking.{booking_id}:
     description: >-
-      Realtime topic for one booking. Token scope: the booking's customer, the
-      accepted professional, admin console. Frames are the same `event_type` +
-      `data` as Kafka plus `pro_location` frames (`{lat, lng, eta_minutes,
-      at}`) while en_route.
+      Realtime topic for one booking. Token scope: the booking's customer
+      (POST /realtime/token), the accepted professional (POST
+      /pro/realtime/token), admin console. Frames (A4): see x-realtime-frames
+      (doorstep.booking.status, doorstep.booking.pro_late,
+      doorstep.booking.pro_location while en_route). Ids, statuses and times
+      only: never an address, phone or OTP. Clients refetch on reconnect;
+      Kafka is the durable copy.
     parameters:
       booking_id:
         schema: {type: string, format: uuid}
@@ -87,6 +91,28 @@ channels:
     subscribe:
       message:
         $ref: '#/components/messages/RealtimeFrame'
+
+x-realtime-frames:
+  description: >-
+    A4. Published by doorstep-service after the change commits, through
+    shared/realtime StreamPublisher (Redis Streams rts:<topic>; read by
+    notification-service SSE). Wire shape: shared/realtime Event {topic,
+    event_type, data, emitted_at}. Tokens: shared/realtime TokenSigner with
+    REALTIME_TOKEN_SECRET, 5-minute lifetime. No frame carries an address, a
+    phone number or an OTP.
+  doorstep.booking.<booking_id>:
+    doorstep.booking.status: {data: [booking_id, status, slot_start, slot_end, at], when: "every status change (confirmed, assigned, back to confirmed, cancelled, pro_no_show) and a slot moved by a reschedule or a no-show rescue"}
+    doorstep.booking.pro_late: {data: [booking_id, minutes_late, free_cancel, at], when: "slot + 15 min, not arrived"}
+    doorstep.booking.pro_location: {data: [booking_id, lat, lng, eta_minutes, at], when: "a location fix while the professional is en_route to this booking"}
+  doorstep.pro.<user_id>:
+    doorstep.pro.offer.new: {data: [offer_id, booking_id, expires_at, slot_start, slot_end, at]}
+    doorstep.pro.offer.closed: {data: [offer_id, booking_id, outcome, at], outcome: [accepted, declined, expired, withdrawn]}
+    doorstep.pro.job.assigned: {data: [booking_id, status, at]}
+    doorstep.pro.job.removed: {data: [booking_id, cause, at], cause: [pro_cancel, pro_no_show, not_on_duty, ops_redispatch, rescheduled, booking_cancelled]}
+    doorstep.pro.job.updated: {data: [booking_id, status, cause, at], when: "the customer moved the slot and the professional keeps the job"}
+    doorstep.pro.duty: {data: [on_duty, since, reason, at], reason: [professional, no_location]}
+  doorstep.admin.live:
+    doorstep.admin.unassigned: {data: [booking_id, reason, minutes_to_slot, at], reason: [t_minus_2h, no_professional_left]}
 
 x-push-types:
   description: >-
@@ -210,7 +236,12 @@ components:
               assignment_id: {type: string, format: uuid}
     BookingReassigned:
       name: doorstep.booking.reassigned
-      summary: Back to confirmed; dispatch re-runs excluding previous_pro_user_id
+      summary: >-
+        Back to confirmed; dispatch re-runs excluding previous_pro_user_id. The
+        envelope pro_user_id is null (nobody has accepted); previous_pro_user_id
+        names the professional who lost the job so they can be told (A4: also a
+        doorstep.pro.job.removed realtime frame). cause rescheduled: the customer
+        moved the slot to one only another professional can take.
       payload:
         allOf:
           - $ref: '#/components/schemas/BookingCore'
@@ -218,17 +249,37 @@ components:
             required: [previous_pro_user_id, cause]
             properties:
               previous_pro_user_id: {type: string, format: uuid}
-              cause: {type: string, enum: [pro_cancel, pro_no_show, not_on_duty, unsafe_exit, ops_redispatch, pro_suspended]}
+              cause: {type: string, enum: [pro_cancel, pro_no_show, not_on_duty, unsafe_exit, ops_redispatch, pro_suspended, rescheduled]}
     BookingUnassignedAlert:
       name: doorstep.booking.unassigned_alert
-      summary: T-2h with no accepted professional (ops); T-45 min leads to cancel + refund
+      summary: >-
+        Ops only. reason t_minus_2h: two hours before the slot with no accepted
+        professional (once per booking; T-45 min then cancels with a full refund).
+        reason no_professional_left: dispatch found nobody free who has not
+        already let the booking go (once until an offer goes out again).
       payload:
         allOf:
           - $ref: '#/components/schemas/BookingCore'
           - type: object
-            required: [minutes_to_slot]
+            required: [minutes_to_slot, reason]
             properties:
               minutes_to_slot: {type: integer}
+              reason: {type: string, enum: [t_minus_2h, no_professional_left]}
+    BookingProLate:
+      name: doorstep.booking.pro_late
+      summary: >-
+        A4. Slot + 15 min and the professional has not arrived (assigned or
+        en_route); the customer may now cancel free of charge (cancel-preview rule
+        pro_late_free). Once per booking. No push type is registered yet
+        (notification-service counts it unknown until one is).
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/BookingCore'
+          - type: object
+            required: [minutes_late, free_cancel]
+            properties:
+              minutes_late: {type: integer}
+              free_cancel: {type: boolean}
     BookingEnRoute:
       name: doorstep.booking.en_route
       payload:

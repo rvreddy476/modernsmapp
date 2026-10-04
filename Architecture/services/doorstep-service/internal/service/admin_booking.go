@@ -117,6 +117,7 @@ func (s *Service) AdminCancel(ctx context.Context, a store.Actor, id uuid.UUID, 
 		fee = *in.FeePaise
 	}
 	actor := a.UserID
+	live := s.liveBefore(ctx, id)
 	refundID, err := s.bk.Store.CancelBooking(ctx, id, nil, &a, s.nowUTC(), func(b *store.LockedBooking) (*store.CancelDecision, error) {
 		if !adminCancellable[b.Status] {
 			return nil, bookingTransition(b.Status)
@@ -136,6 +137,7 @@ func (s *Service) AdminCancel(ctx context.Context, a store.Actor, id uuid.UUID, 
 		return nil, aerr
 	}
 	s.SubmitRefunds(ctx, refundIDs(refundID)...)
+	s.afterCancelled(ctx, id, live)
 	return s.AdminBooking(ctx, id)
 }
 

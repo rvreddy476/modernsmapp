@@ -32,6 +32,9 @@ type LockedBooking struct {
 	PaymentStatus   string
 	RescheduleCount int
 	ReservedProID   *uuid.UUID
+	// ProLateAt: the professional had not arrived 15 min after the slot
+	// (A4); the customer may cancel free of charge.
+	ProLateAt *time.Time
 }
 
 func lockBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, customer *uuid.UUID) (*LockedBooking, error) {
@@ -39,13 +42,13 @@ func lockBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, customer *uuid.
 	var payStatus *string
 	err := tx.QueryRow(ctx, `
 		SELECT b.id, b.customer_user_id, b.category_id, b.city_code, b.status, b.slot_start, b.slot_end, b.duration_minutes,
-		       b.paid_paise, b.refunded_paise, b.reschedule_count, b.reserved_pro_id,
+		       b.paid_paise, b.refunded_paise, b.reschedule_count, b.reserved_pro_id, b.pro_late_at,
 		       (SELECT p.id FROM doorstep.payments p WHERE p.booking_id = b.id AND p.reference_type = 'doorstep_booking'),
 		       (SELECT p.status FROM doorstep.payments p WHERE p.booking_id = b.id AND p.reference_type = 'doorstep_booking')
 		FROM doorstep.bookings b
 		WHERE b.id = $1 AND ($2::uuid IS NULL OR b.customer_user_id = $2)
 		FOR UPDATE OF b`, id, customer).Scan(&b.ID, &b.Customer, &b.CategoryID, &b.CityCode, &b.Status, &b.SlotStart, &b.SlotEnd,
-		&b.Duration, &b.PaidPaise, &b.RefundedPaise, &b.RescheduleCount, &b.ReservedProID, &b.PaymentID, &payStatus)
+		&b.Duration, &b.PaidPaise, &b.RefundedPaise, &b.RescheduleCount, &b.ReservedProID, &b.ProLateAt, &b.PaymentID, &payStatus)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -213,17 +216,35 @@ func (s *Store) RescheduleBooking(ctx context.Context, id, customer uuid.UUID, m
 		reserved_pro_id = $4, version = version + 1, updated_at = $5 WHERE id = $1`, id, mv.SlotStart, mv.SlotEnd, pro, at); err != nil {
 		return uuid.Nil, mapErr(err)
 	}
-	if b.Status == "assigned" && (b.ReservedProID == nil || *b.ReservedProID != pro) {
+	// A different professional now holds the slot (A4): the previous one's
+	// offer is withdrawn or their job taken back, an assigned booking goes
+	// back to confirmed (dispatch offers it again after commit), and the
+	// previous professional is named in doorstep.booking.reassigned (or
+	// told their offer was withdrawn) so they hear of it.
+	var previous *AssignmentRef
+	if b.ReservedProID == nil || *b.ReservedProID != pro {
+		if previous, err = liveAssignmentTx(ctx, tx, id); err != nil {
+			return uuid.Nil, err
+		}
 		if _, err := tx.Exec(ctx, `UPDATE doorstep.booking_assignments SET status = 'released', release_cause = 'rescheduled', updated_at = $2
 			WHERE booking_id = $1 AND status IN ('offered', 'accepted')`, id, at); err != nil {
 			return uuid.Nil, err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE doorstep.bookings SET status = 'confirmed', assigned_at = NULL WHERE id = $1`, id); err != nil {
-			return uuid.Nil, err
+		if previous != nil && previous.Status == "offered" {
+			if err := s.enqueueOfferEvent(ctx, tx, events.ProOfferClosed, id, b.Customer, previous.ProUserID, at, events.ProOfferClosedData{
+				OfferID: previous.ID, BookingID: id, ProUserID: previous.ProUserID, CustomerUserID: b.Customer,
+				Outcome: "withdrawn"}); err != nil {
+				return uuid.Nil, err
+			}
 		}
-		from, reason := "assigned", "rescheduled to a slot the assigned professional cannot take"
-		if err := historyTx(ctx, tx, id, &from, "confirmed", "customer", &customer, &reason, at); err != nil {
-			return uuid.Nil, err
+		if b.Status == "assigned" {
+			if _, err := tx.Exec(ctx, `UPDATE doorstep.bookings SET status = 'confirmed', assigned_at = NULL WHERE id = $1`, id); err != nil {
+				return uuid.Nil, err
+			}
+			from, reason := "assigned", "rescheduled to a slot the assigned professional cannot take"
+			if err := historyTx(ctx, tx, id, &from, "confirmed", "customer", &customer, &reason, at); err != nil {
+				return uuid.Nil, err
+			}
 		}
 	}
 	core, err := bookingCoreTx(ctx, tx, id)
@@ -233,6 +254,12 @@ func (s *Store) RescheduleBooking(ctx context.Context, id, customer uuid.UUID, m
 	if err := s.enqueueBookingEvent(ctx, tx, events.BookingRescheduled, core, at, events.BookingRescheduledData{
 		BookingCore: core, PreviousSlotStart: b.SlotStart.UTC()}); err != nil {
 		return uuid.Nil, err
+	}
+	if previous != nil && previous.Status == "accepted" {
+		if err := s.enqueueBookingEvent(ctx, tx, events.BookingReassigned, core, at, events.BookingReassignedData{
+			BookingCore: core, PreviousProUserID: previous.ProUserID, Cause: events.CauseRescheduled}); err != nil {
+			return uuid.Nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, mapErr(err)
