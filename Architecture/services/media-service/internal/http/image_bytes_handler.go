@@ -21,7 +21,8 @@ import (
 //
 // GET /v1/media/internal/:mediaId/image-bytes
 //
-// The bytes of one ready image, for commerce-service to stream (through
+// The bytes of one ready image, for commerce-service (seller KYC) or
+// doorstep-service (professional documents, 4 Oct 2026) to stream (through
 // admin-service) onto the admin console's canvas. Never a URL.
 //
 // Who may call:
@@ -34,8 +35,9 @@ import (
 //     service.
 //   - A service token in X-Service-Authorization (shared/servicetoken,
 //     audience "media", operation media:image-bytes.read) must verify AND be
-//     issued by commerce-service; anything else is 403
-//     SERVICE_TOKEN_REJECTED.
+//     issued by commerce-service or doorstep-service; anything else is 403
+//     SERVICE_TOKEN_REJECTED. Each caller's registered operations
+//     (SERVICE_CALLER_<NAME>_OPS) still bound what its token may carry.
 //   - With no token, the legacy internal key alone is accepted ONLY on
 //     local/dev (processing.IsLocalDevEnv). Elsewhere it is 401
 //     SERVICE_TOKEN_REQUIRED.
@@ -59,8 +61,18 @@ const AudienceMedia = "media"
 // OpImageBytesRead is the operation a token must carry for image-bytes.
 const OpImageBytesRead = "media:image-bytes.read"
 
-// IssuerCommerceService is the only issuer image-bytes accepts.
-const IssuerCommerceService = "commerce-service"
+// IssuerCommerceService and IssuerDoorstepService are the only issuers
+// image-bytes accepts.
+const (
+	IssuerCommerceService = "commerce-service"
+	IssuerDoorstepService = "doorstep-service"
+)
+
+// imageBytesIssuers is the closed set of services image-bytes answers.
+var imageBytesIssuers = map[string]bool{
+	IssuerCommerceService: true,
+	IssuerDoorstepService: true,
+}
 
 // callerLegacyKey names the caller in the log when only the internal key
 // authenticated it.
@@ -105,8 +117,9 @@ func (h *Handler) imageBytesSvc() imageBytesService {
 	return h.svc.ImageBytesReader()
 }
 
-// requireImageBytesCaller admits commerce-service (token) or, on local/dev,
-// the bare internal key. It runs after the group's internal-key check.
+// requireImageBytesCaller admits commerce-service or doorstep-service (token)
+// or, on local/dev, the bare internal key. It runs after the group's
+// internal-key check.
 func (h *Handler) requireImageBytesCaller() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
@@ -114,7 +127,7 @@ func (h *Handler) requireImageBytesCaller() gin.HandlerFunc {
 		if raw == "" {
 			if !h.imageBytesLegacyKey {
 				api.ErrorWithContext(ctx, c.Writer, http.StatusUnauthorized, CodeServiceTokenRequired,
-					"a commerce-service token is required", nil)
+					"a commerce-service or doorstep-service token is required", nil)
 				c.Abort()
 				return
 			}
@@ -135,8 +148,8 @@ func (h *Handler) requireImageBytesCaller() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		if verified.Issuer != IssuerCommerceService {
-			slog.WarnContext(ctx, "media-service: image-bytes called by a non-commerce service", "issuer", verified.Issuer)
+		if !imageBytesIssuers[verified.Issuer] {
+			slog.WarnContext(ctx, "media-service: image-bytes called by a service it does not answer", "issuer", verified.Issuer)
 			api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, CodeServiceTokenRejected, "service token rejected", nil)
 			c.Abort()
 			return
@@ -190,6 +203,9 @@ func (h *Handler) GetImageBytes(c *gin.Context) {
 //	SERVICE_CALLER_COMMERCE_SERVICE_KID=c1
 //	SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY=<base64 ed25519 public key>
 //	SERVICE_CALLER_COMMERCE_SERVICE_OPS=media:image-bytes.read
+//	SERVICE_CALLER_DOORSTEP_SERVICE_KID=doorstep-1
+//	SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY=<base64 ed25519 public key>
+//	SERVICE_CALLER_DOORSTEP_SERVICE_OPS=media:image-bytes.read
 //
 // A blank SERVICE_CALLERS returns (nil, nil): no token is accepted. A named
 // caller with a missing key or an empty operation list is a configuration

@@ -46,6 +46,7 @@ var doorstepStepUp = map[string]bool{
 	"doorstep.professional.read":    true,
 	"doorstep.documents.list":       true,
 	"doorstep.document.decide":      true,
+	opDoorstepDocumentView:          true,
 	"doorstep.professional.suspend": true, "doorstep.professional.reinstate": true, "doorstep.professional.block": true,
 	"doorstep.booking.cancel": true,
 	"doorstep.price.create":   true, "doorstep.rate_card.create": true, "doorstep.rate_card.update": true,
@@ -77,7 +78,7 @@ var doorstepContract = []string{
 	"POST /professionals/:id/approve doorstep:pros.approve", "POST /professionals/:id/reject doorstep:pros.approve",
 	"POST /professionals/:id/suspend doorstep:pros.suspend", "POST /professionals/:id/reinstate doorstep:pros.suspend",
 	"POST /professionals/:id/block doorstep:pros.suspend", "POST /professionals/:id/skills/:code/verify doorstep:pros.approve",
-	"GET /documents doorstep:documents.review", "POST /documents/:id/decide doorstep:documents.review",
+	"GET /documents doorstep:documents.review", "GET /documents/:id/view doorstep:documents.review", "POST /documents/:id/decide doorstep:documents.review",
 	"GET /bookings doorstep:bookings.read", "GET /bookings/:id doorstep:bookings.read",
 	"POST /bookings/:id/cancel doorstep:bookings.cancel", "POST /bookings/:id/redispatch doorstep:bookings.redispatch",
 	"POST /bookings/:id/refund doorstep:refunds.issue",
@@ -170,6 +171,8 @@ func TestDoorstepRoutes_CoverEveryContractRoute(t *testing.T) {
 
 func TestDoorstepRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
+	// The document view relays image bytes: doorstep-service answers one.
+	rg.onTemplate(http.MethodGet, service.DoorstepAdminPrefix+"/documents/:id/view", serveImage("image/jpeg", kycImage(2048), true))
 	seen := map[string]bool{}
 	for _, rt := range DoorstepRoutes {
 		if seen[rt.operation] {

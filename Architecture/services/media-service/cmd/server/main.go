@@ -278,7 +278,8 @@ func main() {
 	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey)
 
 	// Seller KYC documents, view-only (2026-10-01): GET
-	// /v1/media/internal/:mediaId/image-bytes answers commerce-service only.
+	// /v1/media/internal/:mediaId/image-bytes answers commerce-service (seller
+	// KYC) and doorstep-service (professional documents, 2026-10-04) only.
 	// Its service token is verified against SERVICE_CALLERS (audience
 	// "media"); the bare internal key is accepted on local/dev only.
 	imageBytesCallers, err := mediaHttp.ServiceCallersFromEnv(os.Getenv)
@@ -289,7 +290,7 @@ func main() {
 	imageBytesLegacyKey := processing.IsLocalDevEnv(os.Getenv)
 	mediaHandler.WithImageBytesAuth(imageBytesCallers, imageBytesLegacyKey)
 	if imageBytesCallers == nil && !imageBytesLegacyKey {
-		slog.Warn("media-service: SERVICE_CALLERS not set and not local/dev — /v1/media/internal/:mediaId/image-bytes refuses every caller until commerce-service is registered")
+		slog.Warn("media-service: SERVICE_CALLERS not set and not local/dev — /v1/media/internal/:mediaId/image-bytes refuses every caller until commerce-service or doorstep-service is registered")
 	}
 
 	// Live recordings (2026-10-01): POST /v1/media/internal/recordings/import

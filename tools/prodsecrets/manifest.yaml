@@ -328,6 +328,10 @@ secrets:
     # SERVICE_CALLER_LIVE_SERVICE_V2_PUBKEY: live-service-v2's recording import.
     caller_live_pubkey: shared-public:svc_live
     caller_live_kid: shared:svc_live_kid
+    # SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY: Doorstep professional documents
+    # (image-bytes). Pre-filled so enabling is uncommenting the values lines.
+    caller_doorstep_pubkey: shared-public:svc_doorstep
+    caller_doorstep_kid: shared:svc_doorstep_kid
     # Dubbing and auto-captions are off at launch (MEDIA_DUBBING_BACKEND unset).
     openai_api_key: prompt-optional:OpenAI API key for media dubbing and captions (empty at launch)
 

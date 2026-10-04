@@ -72,6 +72,15 @@ externalSecret:
     # payments-service verifies), one scope only.
     - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY, remoteRef: caller_commerce_pubkey }
     - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
+    # Doorstep professional documents: doorstep-service's PUBLIC key (the
+    # same one payments-service verifies), one scope only. NOT enabled yet:
+    # store caller_doorstep_pubkey / caller_doorstep_kid (prodsecrets does,
+    # kid doorstep-1), uncomment these two lines and the OPS line under env,
+    # then add doorstep-service to SERVICE_CALLERS — in that order. Listing it
+    # first fails the secret sync and the boot refuses, taking commerce KYC
+    # views and the live recording import down too.
+    # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY, remoteRef: caller_doorstep_pubkey }
+    # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_KID, remoteRef: caller_doorstep_kid }
     # Live recordings import: live-service-v2's PUBLIC key, one scope only.
     - { secretKey: SERVICE_CALLER_LIVE_SERVICE_V2_PUBKEY, remoteRef: caller_live_pubkey }
     - { secretKey: SERVICE_CALLER_LIVE_SERVICE_V2_KID, remoteRef: caller_live_kid }
@@ -129,6 +138,8 @@ env:
   SERVICE_CALLERS: 'commerce-service,live-service-v2'
   SERVICE_CALLER_COMMERCE_SERVICE_OPS: 'media:image-bytes.read'
   SERVICE_CALLER_LIVE_SERVICE_V2_OPS: 'media:recording.import'
+  # doorstep-service (see externalSecret for the order):
+  # SERVICE_CALLER_DOORSTEP_SERVICE_OPS: 'media:image-bytes.read'
 
   # Copyright Match (founder decision 2026-09-29, approved): SHADOW at
   # launch — uploads are fingerprinted and compared, matches are recorded

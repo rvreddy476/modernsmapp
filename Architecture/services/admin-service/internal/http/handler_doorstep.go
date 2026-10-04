@@ -53,6 +53,9 @@ const (
 	// Resolving an incident with lift_suspension=true puts a professional
 	// back on the platform: step-up, decided from the body.
 	opDoorstepIncidentResolve = "doorstep.incident.resolve"
+	// Viewing a document's image bytes: step-up, one audit row per view
+	// written before the first byte (relayDocumentImage).
+	opDoorstepDocumentView = "doorstep.document.view"
 	// Verifying a skill: the audit target is the professional, not the code.
 	opDoorstepSkillVerify = "doorstep.professional.skill.verify"
 )
@@ -65,7 +68,8 @@ const (
 //
 //	step-up      the professional detail (it carries the document media ids
 //	             and the payout account: a KYC reveal), the document queue
-//	             and document decisions, professional suspend / reinstate /
+//	             and document decisions, every document view (the image
+//	             bytes, one audit row each), professional suspend / reinstate /
 //	             block, booking cancel (refunds the customer), every money
 //	             setting (prices, rate cards, cancellation and commission
 //	             rules), an incident resolve that lifts a suspension, and the
@@ -129,6 +133,7 @@ var DoorstepRoutes = []productRoute{
 	{method: http.MethodPost, path: "/professionals/:id/skills/:code/verify", operation: opDoorstepSkillVerify, permission: permDoorstepProsApprove, targetType: "doorstep_professional"},
 	// Documents: the queue and each decision open the document itself.
 	{method: http.MethodGet, path: "/documents", operation: "doorstep.documents.list", permission: permDoorstepDocumentsReview, stepUp: true},
+	{method: http.MethodGet, path: "/documents/:id/view", operation: opDoorstepDocumentView, permission: permDoorstepDocumentsReview, stepUp: true, targetType: "doorstep_document"},
 	{method: http.MethodPost, path: "/documents/:id/decide", operation: "doorstep.document.decide", permission: permDoorstepDocumentsReview, stepUp: true, targetType: "doorstep_document"},
 
 	// Bookings and money (lane A6). Cancel refunds the customer (in full
@@ -167,6 +172,8 @@ func (h *Handler) RegisterDoorstepRoutes(r *gin.Engine) {
 			routes[i].decide = doorstepRefundDecision
 		case opDoorstepIncidentResolve:
 			routes[i].decide = doorstepIncidentResolveDecision
+		case opDoorstepDocumentView:
+			special[opDoorstepDocumentView] = h.viewDoorstepDocument(p)
 		case opDoorstepSkillVerify:
 			special[opDoorstepSkillVerify] = doorstepSkillVerify(h.forwardProduct(p, routes[i]))
 		}
@@ -330,5 +337,47 @@ func (h *Handler) doorstepExecutor(rt productRoute) approvals.Executor {
 		}
 		resp, err := h.doorstep.Do(ctx, pr)
 		return approvals.Result{Data: resp.Body, Status: resp.Status, Err: err}
+	}
+}
+
+// --- the document view (image bytes, one audit row per view) ---
+
+// doorstepDocumentImageTypes are the raster types the contract allows for a
+// document view (JPEG, PNG, WebP, GIF, AVIF); an SVG or HTML answer is never
+// relayed.
+var doorstepDocumentImageTypes = map[string]bool{
+	"image/jpeg": true, "image/png": true, "image/webp": true, "image/gif": true, "image/avif": true,
+}
+
+// viewDoorstepDocument answers GET /v1/admin/doorstep/documents/:id/view with
+// the document's image bytes, exactly as the commerce KYC view: the gate
+// (doorstep:documents.review + step-up) → doorstep-service's
+// /documents/:id/view, opened and judged (status, raster type, 15 MB cap,
+// never a redirect) → the ONE audit row (doorstep.document.view, target the
+// document) → only then the first byte, with Cache-Control no-store and the
+// pinned view headers. doorstep-service resolves the media id itself and
+// writes its own row; nothing here names a media id or a URL.
+func (h *Handler) viewDoorstepDocument(p product) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		info := auditFrom(c)
+		id, err := uuid.Parse(c.Param("id"))
+		if err != nil {
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, CodeInvalidPathParam, "Invalid path parameter", nil)
+			return
+		}
+		document := id.String()
+		info.targetType, info.targetID = "doorstep_document", document
+		perm, ok := kycPermission(c)
+		if !ok {
+			return
+		}
+		notFound := func() {
+			api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, CodeDocumentNotFound, "Document not found", nil)
+		}
+		h.relayDocumentImage(c, p, info, service.ProductRequest{
+			Method: http.MethodGet, Path: "/documents/" + document + "/view",
+			Permission: perm, Actor: actorFrom(c),
+		}, doorstepDocumentImageTypes, notFound, "doorstep document stream ended early", "document_id", document)
 	}
 }

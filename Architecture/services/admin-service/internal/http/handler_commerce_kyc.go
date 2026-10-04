@@ -226,90 +226,105 @@ func (h *Handler) viewSellerKYCDocument(p product) gin.HandlerFunc {
 		}
 		info.set("document_type", doc.DocumentType)
 
-		// 2. Open the image and judge it before anything is sent or recorded
-		// as a view.
-		up, err := p.client.Stream(productContext(c), service.ProductRequest{
+		// 2-4. Open the image, judge it, write the audit row, stream it.
+		h.relayDocumentImage(c, p, info, service.ProductRequest{
 			Method: http.MethodGet, Path: "/sellers/" + seller + "/documents/" + document + "/image",
 			Permission: perm, Actor: actorFrom(c),
-		})
+		}, kycImageTypes, notFound, "kyc document stream ended early", "seller_id", seller, "document_id", document)
+	}
+}
+
+// relayDocumentImage is the second half of every document view (seller KYC,
+// Doorstep professional documents): open the owning service's image stream
+// and judge it before anything is sent or recorded as a view (status, a type
+// in types, the size cap), write the request's ONE audit row, and only then
+// send the first byte, with a declared length and kycViewHeaders. A refusal
+// at any step is left to the gate's own row; if the audit row cannot be
+// written no byte is sent (503 AUDIT_UNAVAILABLE). The caller has already
+// passed the gate (permission, step-up) and set the audit target.
+func (h *Handler) relayDocumentImage(c *gin.Context, p product, info *auditInfo, pr service.ProductRequest,
+	types map[string]bool, notFound func(), earlyEndMsg string, logAttrs ...any) {
+	ctx := c.Request.Context()
+
+	// Open the image and judge it before anything is sent or recorded as a
+	// view.
+	up, err := p.client.Stream(productContext(c), pr)
+	if err != nil {
+		writeProduct(c, info, p.label, service.ProductResponse{}, err, false)
+		return
+	}
+	defer up.Body.Close()
+	switch {
+	case up.StatusCode == http.StatusNotFound:
+		info.set("upstream_status", up.StatusCode)
+		notFound()
+		return
+	case up.StatusCode != http.StatusOK:
+		// Includes every 3xx: a redirect is never followed or relayed.
+		upstreamError(c, info, up.StatusCode, "The owning service did not return the document")
+		return
+	}
+	mt, _, err := mime.ParseMediaType(up.Header.Get("Content-Type"))
+	if err != nil || !types[mt] {
+		info.outcome = postgres.AuditOutcomeFailure
+		info.set("error", "unsupported content type")
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, CodeDocumentUnsupported,
+			"The owning service returned something that is not a document image", nil)
+		return
+	}
+	tooLarge := func() {
+		info.outcome = postgres.AuditOutcomeFailure
+		info.set("error", "document over the size cap")
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, CodeDocumentTooLarge, "The document is too large to view", nil)
+	}
+	length := up.ContentLength
+	var body io.Reader = up.Body
+	if length > maxKYCDocumentBytes {
+		tooLarge()
+		return
+	}
+	if length < 0 {
+		// Unknown length (chunked): read at most the cap before answering,
+		// so an oversize document is refused whole instead of cut short
+		// behind a 200 the browser would take for a complete image.
+		buf, err := io.ReadAll(io.LimitReader(up.Body, maxKYCDocumentBytes+1))
 		if err != nil {
-			writeProduct(c, info, p.label, service.ProductResponse{}, err, false)
+			info.set("error", "document read failed")
+			upstreamError(c, info, 0, "The owning service did not return the document")
 			return
 		}
-		defer up.Body.Close()
-		switch {
-		case up.StatusCode == http.StatusNotFound:
-			info.set("upstream_status", up.StatusCode)
-			notFound()
-			return
-		case up.StatusCode != http.StatusOK:
-			// Includes every 3xx: a redirect is never followed or relayed.
-			upstreamError(c, info, up.StatusCode, "The owning service did not return the document")
-			return
-		}
-		mt, _, err := mime.ParseMediaType(up.Header.Get("Content-Type"))
-		if err != nil || !kycImageTypes[mt] {
-			info.outcome = postgres.AuditOutcomeFailure
-			info.set("error", "unsupported content type")
-			api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, CodeDocumentUnsupported,
-				"The owning service returned something that is not a document image", nil)
-			return
-		}
-		tooLarge := func() {
-			info.outcome = postgres.AuditOutcomeFailure
-			info.set("error", "document over the size cap")
-			api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, CodeDocumentTooLarge, "The document is too large to view", nil)
-		}
-		length := up.ContentLength
-		var body io.Reader = up.Body
-		if length > maxKYCDocumentBytes {
+		if len(buf) > maxKYCDocumentBytes {
 			tooLarge()
 			return
 		}
-		if length < 0 {
-			// Unknown length (chunked): read at most the cap before answering,
-			// so an oversize document is refused whole instead of cut short
-			// behind a 200 the browser would take for a complete image.
-			buf, err := io.ReadAll(io.LimitReader(up.Body, maxKYCDocumentBytes+1))
-			if err != nil {
-				info.set("error", "document read failed")
-				upstreamError(c, info, 0, "The owning service did not return the document")
-				return
-			}
-			if len(buf) > maxKYCDocumentBytes {
-				tooLarge()
-				return
-			}
-			body, length = bytes.NewReader(buf), int64(len(buf))
-		}
-		if length == 0 {
-			upstreamError(c, info, 0, "The owning service returned an empty document")
-			return
-		}
+		body, length = bytes.NewReader(buf), int64(len(buf))
+	}
+	if length == 0 {
+		upstreamError(c, info, 0, "The owning service returned an empty document")
+		return
+	}
 
-		// 3. The audit row, before the first byte.
-		if err := h.gate.recordNow(c, info, http.StatusOK); err != nil {
-			info.outcome = postgres.AuditOutcomeFailure
-			info.set("error", "audit row not written; document withheld")
-			api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, CodeAuditUnavailable,
-				"The view could not be recorded, so the document was not shown", nil)
-			return
-		}
+	// The audit row, before the first byte.
+	if err := h.gate.recordNow(c, info, http.StatusOK); err != nil {
+		info.outcome = postgres.AuditOutcomeFailure
+		info.set("error", "audit row not written; document withheld")
+		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, CodeAuditUnavailable,
+			"The view could not be recorded, so the document was not shown", nil)
+		return
+	}
 
-		// 4. The bytes, with a declared length: a stream that breaks part-way
-		// leaves the browser short of Content-Length, which it treats as a
-		// failed load, never as a whole image.
-		hdr := c.Writer.Header()
-		hdr.Set("Content-Type", mt)
-		hdr.Set("Content-Length", strconv.FormatInt(length, 10))
-		for _, kv := range kycViewHeaders {
-			hdr.Set(kv[0], kv[1])
-		}
-		c.Status(http.StatusOK)
-		c.Writer.WriteHeaderNow()
-		if n, err := io.CopyN(c.Writer, body, length); err != nil {
-			slog.WarnContext(ctx, "kyc document stream ended early",
-				"seller_id", seller, "document_id", document, "sent", n, "want", length, "error", err)
-		}
+	// The bytes, with a declared length: a stream that breaks part-way leaves
+	// the browser short of Content-Length, which it treats as a failed load,
+	// never as a whole image.
+	hdr := c.Writer.Header()
+	hdr.Set("Content-Type", mt)
+	hdr.Set("Content-Length", strconv.FormatInt(length, 10))
+	for _, kv := range kycViewHeaders {
+		hdr.Set(kv[0], kv[1])
+	}
+	c.Status(http.StatusOK)
+	c.Writer.WriteHeaderNow()
+	if n, err := io.CopyN(c.Writer, body, length); err != nil {
+		slog.WarnContext(ctx, earlyEndMsg, append(logAttrs, "sent", n, "want", length, "error", err)...)
 	}
 }

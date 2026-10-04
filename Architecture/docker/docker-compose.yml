@@ -921,6 +921,14 @@ services:
       SERVICE_CALLER_COMMERCE_SERVICE_KID: ${SERVICE_CALLER_COMMERCE_SERVICE_KID:-c1}
       SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY: ${SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY:-}
       SERVICE_CALLER_COMMERCE_SERVICE_OPS: media:image-bytes.read
+      # Doorstep professional documents (4 Oct 2026): doorstep-service signs
+      # its call to the same image-bytes route; this one scope only. The same
+      # public half payments-service verifies (gitignored .env). Takes effect
+      # only once MEDIA_SERVICE_CALLERS names doorstep-service AND the PUBKEY
+      # is set; naming it without the key refuses boot.
+      SERVICE_CALLER_DOORSTEP_SERVICE_KID: ${SERVICE_CALLER_DOORSTEP_SERVICE_KID:-ds1}
+      SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY: ${SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY:-}
+      SERVICE_CALLER_DOORSTEP_SERVICE_OPS: media:image-bytes.read
       # Live recordings (1 Oct 2026): live-service-v2 signs its call to
       # POST /v1/media/internal/recordings/import; this one scope only.
       SERVICE_CALLER_LIVE_SERVICE_V2_KID: ${LIVE_SERVICE_TOKEN_KID:-l1}

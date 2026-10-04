@@ -107,7 +107,7 @@ type imageBytesFixture struct {
 	objects *fakeImageObjects
 	reader  *service.ImageBytesReader
 
-	commerceSigner, postSigner, rogueSigner *servicetoken.Signer
+	commerceSigner, doorstepSigner, postSigner, rogueSigner *servicetoken.Signer
 	verifier                                *servicetoken.Verifier
 
 	photo, pngDoc, variantOnly, video, notReady, failed, deleted, rejected, gone, outage uuid.UUID
@@ -205,13 +205,17 @@ func newImageBytesFixture(t *testing.T) *imageBytesFixture {
 
 	f.reader = service.NewImageBytesReader(f.records, f.objects)
 
-	var commercePub, postPub, roguePub string
+	var commercePub, doorstepPub, postPub, roguePub string
 	f.commerceSigner, commercePub = mustSigner(t, IssuerCommerceService, "c1")
+	f.doorstepSigner, doorstepPub = mustSigner(t, IssuerDoorstepService, "doorstep-1")
 	f.postSigner, postPub = mustSigner(t, "post-service", "p1")
 	f.rogueSigner, roguePub = mustSigner(t, IssuerCommerceService, "c1") // same name, unregistered key
 	_ = roguePub
 	f.verifier = servicetoken.NewVerifier(AudienceMedia)
 	if err := f.verifier.RegisterBase64(IssuerCommerceService, "c1", commercePub, []string{OpImageBytesRead}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.verifier.RegisterBase64(IssuerDoorstepService, "doorstep-1", doorstepPub, []string{OpImageBytesRead}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.verifier.RegisterBase64("post-service", "p1", postPub, []string{OpImageBytesRead}, nil); err != nil {
@@ -539,5 +543,102 @@ func TestServiceCallersFromEnv_Media(t *testing.T) {
 		"SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY": pub,
 	})); err == nil {
 		t.Fatal("a caller with no ops must be a configuration error")
+	}
+}
+
+// Doorstep professional documents (4 Oct 2026): doorstep-service reads the
+// same bytes commerce does, with the same one operation, and nothing else.
+
+func TestImageBytes_DoorstepServiceReadsBytes(t *testing.T) {
+	f := newImageBytesFixture(t)
+	r := f.router(t, false)
+	w := getImageBytes(r, imageBytesPath(f.photo.String()), imageBytesKey, mint(t, f.doorstepSigner, AudienceMedia, OpImageBytesRead), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("doorstep token: status %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("Content-Type = %q, want image/jpeg", got)
+	}
+	assertNoStoreNoSniff(t, w)
+	if processing.JPEGHasMetadata(w.Body.Bytes()) || bytes.Contains(w.Body.Bytes(), []byte(datingGPSSecret)) {
+		t.Fatal("doorstep: served JPEG still carries metadata")
+	}
+	// The commerce caller is unchanged.
+	if w := getImageBytes(r, imageBytesPath(f.photo.String()), imageBytesKey, f.commerceToken(t), nil); w.Code != http.StatusOK {
+		t.Fatalf("commerce token after doorstep was added: status %d, want 200", w.Code)
+	}
+}
+
+func TestImageBytes_RefusesDoorstepTokenForAnotherOperationOrAudience(t *testing.T) {
+	f := newImageBytesFixture(t)
+	r := f.router(t, true) // even where the bare key is accepted
+	cases := map[string]string{
+		"doorstep token, recording import scope": mint(t, f.doorstepSigner, AudienceMedia, OpRecordingImport),
+		"doorstep token, other scope":            mint(t, f.doorstepSigner, AudienceMedia, "media:other.read"),
+		"doorstep token, payments audience":      mint(t, f.doorstepSigner, "payments", OpImageBytesRead),
+		"doorstep token, doorstep audience":      mint(t, f.doorstepSigner, "doorstep", OpImageBytesRead),
+	}
+	for name, tok := range cases {
+		w := getImageBytes(r, imageBytesPath(f.photo.String()), imageBytesKey, tok, nil)
+		if w.Code != http.StatusForbidden || imageBytesErrorCode(t, w) != CodeServiceTokenRejected {
+			t.Fatalf("%s: status %d, want 403 %s", name, w.Code, CodeServiceTokenRejected)
+		}
+	}
+}
+
+// Through the real env parsing: doorstep-service registered with its one
+// operation reads bytes; registered for another operation only, it is refused
+// even when its token claims image-bytes.
+func TestImageBytes_DoorstepCallerFromEnv(t *testing.T) {
+	f := newImageBytesFixture(t)
+	pub, priv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := servicetoken.NewSignerFromBase64(IssuerDoorstepService, "doorstep-1", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commercePub, commercePriv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commerce, err := servicetoken.NewSignerFromBase64(IssuerCommerceService, "c1", commercePriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(doorstepOps string) *gin.Engine {
+		v, err := ServiceCallersFromEnv(func(k string) string {
+			return map[string]string{
+				"SERVICE_CALLERS":                        "commerce-service,doorstep-service",
+				"SERVICE_CALLER_COMMERCE_SERVICE_KID":    "c1",
+				"SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY": commercePub,
+				"SERVICE_CALLER_COMMERCE_SERVICE_OPS":    OpImageBytesRead,
+				"SERVICE_CALLER_DOORSTEP_SERVICE_KID":    "doorstep-1",
+				"SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY": pub,
+				"SERVICE_CALLER_DOORSTEP_SERVICE_OPS":    doorstepOps,
+			}[k]
+		})
+		if err != nil || v == nil || v.Callers() != 2 {
+			t.Fatalf("env config: %v, %v", v, err)
+		}
+		gin.SetMode(gin.TestMode)
+		r := gin.New()
+		h := New(service.New(postgres.New(nil), nil)).WithInternalKey(imageBytesKey).WithImageBytesAuth(v, false)
+		h.imageBytes = f.reader
+		h.RegisterRoutes(r, passthrough, passthrough)
+		return r
+	}
+	path := imageBytesPath(f.photo.String())
+	ok := build(OpImageBytesRead)
+	if w := getImageBytes(ok, path, imageBytesKey, mint(t, signer, AudienceMedia, OpImageBytesRead), nil); w.Code != http.StatusOK {
+		t.Fatalf("doorstep with media:image-bytes.read: status %d, want 200", w.Code)
+	}
+	if w := getImageBytes(ok, path, imageBytesKey, mint(t, commerce, AudienceMedia, OpImageBytesRead), nil); w.Code != http.StatusOK {
+		t.Fatalf("commerce alongside doorstep: status %d, want 200", w.Code)
+	}
+	other := build(OpRecordingImport)
+	if w := getImageBytes(other, path, imageBytesKey, mint(t, signer, AudienceMedia, OpImageBytesRead), nil); w.Code != http.StatusForbidden {
+		t.Fatalf("doorstep registered without media:image-bytes.read: status %d, want 403", w.Code)
 	}
 }

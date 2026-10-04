@@ -42,6 +42,14 @@ externalSecret:
     - { secretKey: MEDIA_CDN_BASE_URL, remoteRef: media_cdn_base_url }
     - { secretKey: MEDIA_CLOUDFRONT_KEY_PAIR_ID, remoteRef: media_cloudfront_key_pair_id }
     - { secretKey: MEDIA_CLOUDFRONT_PRIVATE_KEY, remoteRef: media_cloudfront_private_key }
+    # Image-bytes callers (commerce KYC, Doorstep professional documents) are
+    # NOT configured on staging: SERVICE_CALLERS is unset, so the route
+    # refuses every token. To admit doorstep-service, store its PUBLIC key
+    # as caller_doorstep_pubkey / caller_doorstep_kid, uncomment these two
+    # lines, set SERVICE_CALLER_DOORSTEP_SERVICE_OPS: 'media:image-bytes.read'
+    # under env, then add doorstep-service to SERVICE_CALLERS — in that order.
+    # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY, remoteRef: caller_doorstep_pubkey }
+    # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_KID, remoteRef: caller_doorstep_kid }
     # Add remaining per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
     # KAFKA_BROKERS, etc.).
 
