@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Doorstep Pro (2026-10-04). Only what a professional uses:
+        INTERNET / ACCESS_NETWORK_STATE     - the API and the offer stream
+        POST_NOTIFICATIONS                  - offers, job changes and the on-duty
+                                              notification (runtime, 33+, asked from Home)
+        ACCESS_FINE / COARSE_LOCATION       - the home point (once, after a rationale),
+                                              arrival and on-duty pings (after the
+                                              prominent in-app disclosure)
+        FOREGROUND_SERVICE(_LOCATION)       - ProLocationService while on duty
+        CAMERA                              - the selfie (front camera, on that screen
+                                              alone) and job photos through the system camera
+      NO background location: the foreground service keeps while-in-use access
+      for as long as the professional is on duty. Removed explicitly below so no
+      library can merge it in.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission
+        android:name="android.permission.ACCESS_BACKGROUND_LOCATION"
+        tools:node="remove" />
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        android:required="false" />
+
+    <application
+        android:name=".DoorstepProApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.DoorstepPro">
+
+        <!-- Google Maps SDK key for THIS app (placeholder until the founder adds one). No map library ships. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <activity
+            android:name=".DoorstepProActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|keyboard|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              The DigiLocker return (DOORSTEP_PRO_APP_LINK_URL, else
+              <public base>/doorstep-pro/digilocker). Host per flavour from
+              build.gradle.kts. autoVerify needs the founder's real domain to
+              serve assetlinks.json; until then, on Android 12+ the professional
+              enables the link once under Settings > Apps > Doorstep Pro > Open by default.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:scheme="http" />
+                <data android:host="${doorstepProAppLinkHost}" />
+                <data android:path="/doorstep-pro/digilocker" />
+            </intent-filter>
+
+            <!--
+              In-app links: notification-service's deep links
+              (doorstep-pro://jobs/<id>, offers/<id>, onboarding, …). Navigation
+              only — the DigiLocker code is never taken from this scheme outside
+              the dev flavour (ProLinkConfig).
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="doorstep-pro" />
+                <data android:host="home" />
+                <data android:host="offers" />
+                <data android:host="jobs" />
+                <data android:host="onboarding" />
+                <data android:host="account" />
+                <data android:host="earnings" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          On duty: a location foreground service, started only after the
+          disclosure, the permission grant and the server accepting duty/on.
+        -->
+        <service
+            android:name="com.us.android.feature.doorsteppro.location.ProLocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!--
+          UsMessagingService arrives with :core:notifications and is KEPT: it
+          stores the FCM token and presents doorstep.pro.* pushes on this app's
+          channels (NotificationChannelSpec.forType). Inert until a
+          google-services.json exists — no token is ever issued without it.
+        -->
+    </application>
+
+</manifest>

@@ -251,3 +251,19 @@ include(":app-captain")
 // rule (l) keeps it reachable only from :app — never a partner app, never the
 // professionals' app, never another feature.
 include(":feature:doorstep")
+
+// Doorstep Pro — the professionals' app (2026-10-04, lane L-J).
+//
+// :feature:doorstep-pro is the PROFESSIONAL's screens: apply, the onboarding
+// checklist from the server's readiness (DigiLocker, selfie face match, skills
+// and trade certificates, service area, weekly hours and days off, bank, police
+// clearance certificate, agreement, PAN), duty with the location foreground
+// service, offers with a countdown, jobs for a date and the visit flow (start
+// and end OTP, before/after photos, extras, no-show, cancel, unsafe exit, SOS,
+// rating the customer), chat and read-only earnings. :app-doorstep-pro is its
+// own installable (applicationId com.us.doorstep.pro, proposed — founder
+// confirms before Play). moduleGraphCheck rule (m) keeps the feature to the
+// pro app, and the pro app free of payments, Banuba, creator, post, commerce
+// and every other product's feature, the customer's :feature:doorstep included.
+include(":feature:doorstep-pro")
+include(":app-doorstep-pro")

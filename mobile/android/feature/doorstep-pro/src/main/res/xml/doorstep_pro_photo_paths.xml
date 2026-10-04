@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the two capture directories are shareable, nothing else in cacheDir. -->
+<paths>
+    <cache-path name="selfies" path="selfies/" />
+    <cache-path name="job_photos" path="job_photos/" />
+</paths>

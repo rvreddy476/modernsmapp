@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      DEV FLAVOUR ONLY: the custom-scheme DigiLocker return,
+      doorstep-pro://digilocker?code=…&state=…
+
+      Android opens a custom scheme without App Link verification, which makes
+      the dev round trip reliable on a test phone. It is NOT registered in
+      staging or prod: any app can claim a custom scheme, and the app's
+      ProLinkConfig refuses the code from it outside dev as well.
+
+      doorstep-service cannot redirect here yet — its config refuses a
+      DOORSTEP_PRO_APP_LINK_URL that is not http(s). Until the backend allows a
+      custom scheme outside production, the dev round trip uses the http(s)
+      link in the main manifest (-PdoorstepProAppLinkHost=<tunnel host>), or a
+      hand-typed link in mock DigiLocker mode.
+    -->
+    <application>
+        <activity
+            android:name=".DoorstepProActivity"
+            tools:node="merge">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="doorstep-pro"
+                    android:host="digilocker" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

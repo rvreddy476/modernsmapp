@@ -248,6 +248,67 @@ enum class NotificationChannelSpec(
         description = "Your plan, payments and onboarding status",
         importance = NotificationManager.IMPORTANCE_DEFAULT,
     ),
+
+    /**
+     * Doorstep Pro (2026-10-04): a home-service job offered to this
+     * professional, with a short window to accept (notification-service
+     * `doorstep.pro.offer.new` / `.offer.expired`, priority high). HIGH with
+     * the alarm tone: an unheard offer goes to the next professional. The id
+     * is the one notification-service posts to (DoorstepChannelProOffers).
+     */
+    DOORSTEP_PRO_OFFERS(
+        id = "doorstep_pro_offers",
+        title = "Job offers",
+        description = "Home-service jobs offered to you, with time to accept",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        alertSound = true,
+    ),
+
+    /**
+     * Doorstep Pro: changes to a job the professional already holds — the
+     * customer cancelled or rescheduled, a reminder, extras approved, declined
+     * or paid, a chat message, a rating. HIGH: a cancelled visit frees the
+     * professional's afternoon, and an approved extra is the go-ahead they are
+     * waiting for in the customer's home.
+     */
+    DOORSTEP_PRO_JOBS(
+        id = "doorstep_pro_jobs",
+        title = "Your jobs",
+        description = "Changes to jobs you have accepted, extras and messages",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+    ),
+
+    /**
+     * Doorstep Pro: the professional's own account — application approved or
+     * not, suspended or reinstated, a document reviewed, a police certificate
+     * about to expire. DEFAULT: worth seeing the same day, never urgent.
+     */
+    DOORSTEP_PRO_ACCOUNT(
+        id = "doorstep_pro_account",
+        title = "Account",
+        description = "Your application, documents and account status",
+        importance = NotificationManager.IMPORTANCE_DEFAULT,
+    ),
+
+    /** Doorstep Pro: a weekly settlement was computed. DEFAULT: worth a sound, never urgent. */
+    DOORSTEP_PRO_EARNINGS(
+        id = "doorstep_pro_earnings",
+        title = "Earnings",
+        description = "Your computed earnings and settlements",
+        importance = NotificationManager.IMPORTANCE_DEFAULT,
+    ),
+
+    /**
+     * Doorstep Pro: the ongoing "you are on duty and sharing your location"
+     * notification of the location foreground service. Local only — no push
+     * posts here. LOW: always visible while on duty, never buzzing.
+     */
+    DOORSTEP_PRO_ON_DUTY(
+        id = "doorstep_pro_on_duty",
+        title = "On duty",
+        description = "Shown while you are on duty and sharing your location",
+        importance = NotificationManager.IMPORTANCE_LOW,
+    ),
     ;
 
     companion object {
@@ -308,6 +369,20 @@ enum class NotificationChannelSpec(
             CAPTAIN_ON_DUTY,
             CAPTAIN_EARNINGS,
             CAPTAIN_ACCOUNT,
+        )
+
+        /**
+         * Doorstep Pro's channels (2026-10-04) — nothing of Momentum's, the
+         * Feast partners' or the captain's. The four push channels
+         * notification-service posts to (doorstep_push.go) plus the on-duty
+         * notification of the location service.
+         */
+        val DOORSTEP_PRO: Set<NotificationChannelSpec> = setOf(
+            DOORSTEP_PRO_OFFERS,
+            DOORSTEP_PRO_JOBS,
+            DOORSTEP_PRO_ACCOUNT,
+            DOORSTEP_PRO_EARNINGS,
+            DOORSTEP_PRO_ON_DUTY,
         )
 
         /**
@@ -388,6 +463,19 @@ enum class NotificationChannelSpec(
             "doorstep.booking.reminder", "doorstep.booking.pro_no_show", "doorstep.outstanding.due",
             "doorstep.message.new", "doorstep.rework.updated",
             -> DOORSTEP_UPDATES
+            // Doorstep Pro (2026-10-04): the 17 professional types of the
+            // registry (contracts/doorstep/asyncapi.yaml x-push-types.doorstep_pro),
+            // channel for channel as notification-service's doorstepPushSpecs.
+            "doorstep.pro.offer.new", "doorstep.pro.offer.expired" -> DOORSTEP_PRO_OFFERS
+            "doorstep.pro.job.cancelled", "doorstep.pro.job.rescheduled", "doorstep.pro.job.reminder",
+            "doorstep.pro.extras.approved", "doorstep.pro.extras.declined", "doorstep.pro.extras.paid",
+            "doorstep.pro.message.new", "doorstep.pro.rating.received",
+            -> DOORSTEP_PRO_JOBS
+            "doorstep.pro.application.approved", "doorstep.pro.application.rejected",
+            "doorstep.pro.account.suspended", "doorstep.pro.account.reinstated",
+            "doorstep.pro.document.reviewed", "doorstep.pro.background_check.expiring",
+            -> DOORSTEP_PRO_ACCOUNT
+            "doorstep.pro.settlement.computed" -> DOORSTEP_PRO_EARNINGS
             "captain.offer" -> CAPTAIN_OFFER
             "captain.payment.received" -> CAPTAIN_EARNINGS
             // The captain's own account (2026-09-18): the plan's life cycle and
@@ -395,7 +483,12 @@ enum class NotificationChannelSpec(
             "captain.subscription.expiring", "captain.subscription.expired", "captain.subscription.renewed",
             "captain.subscription.payment_failed", "captain.approved", "captain.under_review",
             -> CAPTAIN_ACCOUNT
-            else -> SOCIAL
+            // A doorstep.pro.* type this build does not know yet still lands
+            // on a channel the pro app registers: SOCIAL does not exist there,
+            // and a post to a missing channel is dropped without a trace.
+            else -> if (type?.startsWith(DOORSTEP_PRO_PREFIX) == true) DOORSTEP_PRO_JOBS else SOCIAL
         }
+
+        private const val DOORSTEP_PRO_PREFIX = "doorstep.pro."
     }
 }

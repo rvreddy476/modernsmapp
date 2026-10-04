@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"pan must be an individual's PAN (fourth letter P)","details":{"field":"pan"}},"meta":{"request_id":"fixture"}}

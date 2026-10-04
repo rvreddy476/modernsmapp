@@ -87,6 +87,15 @@ tasks.register<Delete>("clean") {
  *      reach it, directly or transitively: not a partner app (Kitchen, Rider,
  *      Captain), not the professionals' own app (`:app-doorstep-pro`, when it
  *      exists), not a core module. And it reaches no other `:feature:*`.
+ *   m. Doorstep Pro (2026-10-04): `:feature:doorstep-pro` — the professionals'
+ *      screens — is reachable ONLY from `:app-doorstep-pro`, directly or
+ *      transitively (not `:app`, not another partner app, not a core module),
+ *      and reaches no other `:feature:*`. `:app-doorstep-pro` reaches no
+ *      `:core:payments` (a professional pays nothing on the device, so the
+ *      pro app is NOT exempt from (e)'s reasoning), no Face AR, creator
+ *      engine, posting or commerce, and no other product's feature (Feast,
+ *      Dating, Mopedu, the Feast partners', the customer's Doorstep). It must
+ *      depend on `:feature:doorstep-pro` directly.
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -211,6 +220,33 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
         if (":feature:doorstep" in direct) {
             reach(":feature:doorstep").filter { it.startsWith(":feature:") && it != ":feature:doorstep" }.forEach { dep ->
                 add(":feature:doorstep must not depend on $dep (directly or transitively) — Doorstep shares code through :core only.")
+            }
+        }
+        // (m) Doorstep Pro: the professionals' feature is :app-doorstep-pro's
+        // alone — every other module that reaches it is a violation — and it
+        // reaches no other feature; the pro app carries no payments and no
+        // other product's code.
+        direct.keys.filter { it != ":app-doorstep-pro" && it != ":feature:doorstep-pro" }.forEach { module ->
+            if (":feature:doorstep-pro" in reach(module)) {
+                add("$module must not depend on :feature:doorstep-pro (directly or transitively) — the professionals' screens ship only in :app-doorstep-pro.")
+            }
+        }
+        if (":feature:doorstep-pro" in direct) {
+            reach(":feature:doorstep-pro").filter { it.startsWith(":feature:") && it != ":feature:doorstep-pro" }.forEach { dep ->
+                add(":feature:doorstep-pro must not depend on $dep (directly or transitively) — Doorstep Pro shares code through :core only.")
+            }
+        }
+        if (":app-doorstep-pro" in direct) {
+            val bannedFromProApp = setOf(
+                ":core:payments", ":core:facear", ":core:creator-engine", ":feature:post", ":core:commerce",
+                ":feature:commerce", ":feature:feast", ":feature:dating", ":feature:doorstep", ":feature:mopedu-rider",
+                ":feature:mopedu-captain", ":feature:kitchen", ":feature:rider",
+            )
+            reach(":app-doorstep-pro").filter { it in bannedFromProApp }.forEach { dep ->
+                add(
+                    ":app-doorstep-pro must not depend on $dep (directly or transitively) — the professionals' app carries no " +
+                        "payments, Banuba, creator, post or commerce code, and no other product's feature.",
+                )
             }
         }
         // (d)
@@ -587,6 +623,76 @@ fun applicationBoundarySelfCheck(): List<String> {
             ":feature:doorstep must not depend on :feature:mopedu-rider",
         ),
         Triple("doorstep -> :app", mapOf(":feature:doorstep" to setOf(":app")), ":feature:doorstep must not depend on :app"),
+        // Doorstep Pro coverage (2026-10-04): rule (m). The graph that must stay
+        // legal is the pro app shipping its feature with sign-in, push, realtime
+        // and media through core modules — and no payments — beside Momentum
+        // shipping the customer flow.
+        Triple(
+            "legal doorstep pro graph",
+            mapOf(
+                ":app" to setOf(":feature:doorstep", ":core:payments"),
+                ":feature:doorstep" to setOf(":core:payments", ":core:realtime", ":core:network"),
+                ":app-doorstep-pro" to setOf(
+                    ":feature:doorstep-pro", ":feature:auth", ":core:notifications", ":core:realtime", ":core:media", ":core:auth",
+                ),
+                ":feature:doorstep-pro" to setOf(":core:network", ":core:realtime", ":core:media", ":core:notifications", ":core:auth"),
+                ":core:media" to setOf(":core:network", ":core:creator-model"),
+                ":core:realtime" to setOf(":core:network"),
+                ":core:payments" to setOf(":core:common"),
+            ),
+            null,
+        ),
+        Triple(":app -> pro feature", mapOf(":app" to setOf(":feature:doorstep-pro")), ":app must not depend on :feature:doorstep-pro"),
+        Triple(
+            "captain app -> pro feature, transitively",
+            mapOf(":app-captain" to setOf(":feature:mopedu-captain"), ":feature:mopedu-captain" to setOf(":core:x"), ":core:x" to setOf(":feature:doorstep-pro")),
+            ":app-captain must not depend on :feature:doorstep-pro",
+        ),
+        Triple(
+            "a core module -> pro feature, even under the pro app",
+            mapOf(":app-doorstep-pro" to setOf(":core:x", ":feature:doorstep-pro"), ":core:x" to setOf(":feature:doorstep-pro")),
+            ":core:x must not depend on :feature:doorstep-pro",
+        ),
+        Triple(
+            "pro feature -> another feature, transitively",
+            mapOf(":feature:doorstep-pro" to setOf(":core:x"), ":core:x" to setOf(":feature:rider")),
+            ":feature:doorstep-pro must not depend on :feature:rider",
+        ),
+        Triple("pro feature -> pro app", mapOf(":feature:doorstep-pro" to setOf(":app-doorstep-pro")), ":feature:doorstep-pro must not depend on :app-doorstep-pro"),
+        Triple("pro app -> payments", mapOf(":app-doorstep-pro" to setOf(":core:payments")), ":app-doorstep-pro must not depend on :core:payments"),
+        Triple(
+            "pro app -> payments, transitively through the pro feature",
+            mapOf(":app-doorstep-pro" to setOf(":feature:doorstep-pro"), ":feature:doorstep-pro" to setOf(":core:payments")),
+            ":app-doorstep-pro must not depend on :core:payments",
+        ),
+        Triple(
+            "pro app -> facear, transitively through commerce",
+            mapOf(":app-doorstep-pro" to setOf(":core:commerce"), ":core:commerce" to setOf(":core:facear")),
+            ":app-doorstep-pro must not depend on :core:facear",
+        ),
+        Triple(
+            "pro app -> creator engine, transitively",
+            mapOf(":app-doorstep-pro" to setOf(":core:auth"), ":core:auth" to setOf(":core:creator-engine")),
+            ":app-doorstep-pro must not depend on :core:creator-engine",
+        ),
+        Triple(
+            "pro app -> post, transitively through media",
+            mapOf(":app-doorstep-pro" to setOf(":core:media"), ":core:media" to setOf(":feature:post")),
+            ":app-doorstep-pro must not depend on :feature:post",
+        ),
+        Triple("pro app -> commerce", mapOf(":app-doorstep-pro" to setOf(":core:commerce")), ":app-doorstep-pro must not depend on :core:commerce"),
+        Triple("pro app -> feast", mapOf(":app-doorstep-pro" to setOf(":feature:feast")), ":app-doorstep-pro must not depend on :feature:feast"),
+        Triple(
+            "pro app -> dating, transitively",
+            mapOf(":app-doorstep-pro" to setOf(":core:x"), ":core:x" to setOf(":feature:dating")),
+            ":app-doorstep-pro must not depend on :feature:dating",
+        ),
+        Triple(
+            "pro app -> customer doorstep",
+            mapOf(":app-doorstep-pro" to setOf(":feature:doorstep")),
+            ":app-doorstep-pro must not depend on :feature:doorstep (directly or transitively) — the professionals' app",
+        ),
+        Triple("pro app -> :app", mapOf(":app-doorstep-pro" to setOf(":app")), ":app-doorstep-pro must not depend on :app"),
     )
     return cases.mapNotNull { (name, graph, expected) ->
         val found = applicationBoundaryViolations(graph)
@@ -769,6 +875,13 @@ tasks.register("moduleGraphCheck") {
         if (":feature:doorstep" in directEdges && ":feature:doorstep" !in directEdges[":app"].orEmpty()) {
             add(":app must depend on :feature:doorstep directly — it is the only app that ships it.")
         }
+        // Doorstep Pro (2026-10-04): the pro app is real, so it must actually
+        // ship the professionals' feature — rule (m) refuses every other route in.
+        directEdges[":app-doorstep-pro"]?.let { proApp ->
+            if (":feature:doorstep-pro" !in proApp) {
+                add(":app-doorstep-pro must depend on :feature:doorstep-pro directly — it is the only app that ships it.")
+            }
+        }
     }
     val moduleCount = subprojects.size
 
@@ -855,8 +968,16 @@ tasks.register("moduleGraphCheck") {
     //      new parent is counted. Rule (l) keeps it to :app alone and off every
     //      other feature. The professionals' app (:app-doorstep-pro +
     //      :feature:doorstep-pro) is the next lane: 51 → 53.
+    // 53 = 51 + Doorstep Pro (2026-10-04, lane L-J): :feature:doorstep-pro
+    //      (the professionals' screens — apply, the onboarding checklist from
+    //      readiness, duty with a location foreground service, offers, jobs and
+    //      the visit flow, chat, earnings; its DTOs inside the feature) under
+    //      the existing :feature phantom parent, and :app-doorstep-pro (its own
+    //      installable, applicationId com.us.doorstep.pro, proposed) at the top
+    //      level — no new phantom parent. Rule (m) keeps the feature to the pro
+    //      app and the pro app free of payments and every other product's code.
     // Still to add, one module at a time: :core:location, :core:kyc-ui.
-    val expectedModuleCount = 51
+    val expectedModuleCount = 53
 
     doLast {
         val allViolations = buildList {

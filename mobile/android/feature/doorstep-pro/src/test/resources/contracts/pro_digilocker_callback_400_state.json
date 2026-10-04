@@ -1,0 +1,1 @@
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"state is not a DigiLocker state issued to you","details":{"field":"state"}},"meta":{"request_id":"fixture"}}

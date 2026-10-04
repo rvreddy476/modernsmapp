@@ -62,6 +62,9 @@ enum class PushApp(val wire: String) {
 
     /** Mopedu Captain (2026-09-18). PROPOSED wire value: notification-service must accept it before offers push. */
     MOPEDU_CAPTAIN("mopedu_captain"),
+
+    /** Doorstep Pro (2026-10-04). notification-service migration 013 admits it (postgres.AppDoorstepPro). */
+    DOORSTEP_PRO("doorstep_pro"),
 }
 
 @Serializable

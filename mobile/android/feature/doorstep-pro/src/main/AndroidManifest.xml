@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          The selfie and the job photos are captured into cacheDir and handed to
+          the upload pipeline as content:// URIs, because :core:media resolves
+          type and size through the ContentResolver. A FileProvider SUBCLASS so
+          its manifest key can never collide with another library's entry, and
+          it shares only the two capture directories (res/xml/doorstep_pro_photo_paths.xml).
+        -->
+        <provider
+            android:name="com.us.android.feature.doorsteppro.camera.ProPhotoFileProvider"
+            android:authorities="${applicationId}.doorsteppro.photos"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+
+</manifest>

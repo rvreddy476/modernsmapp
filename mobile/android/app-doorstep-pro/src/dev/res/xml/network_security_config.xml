@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEV FLAVOUR ONLY. Cleartext to any host, for the local docker stack at the
+  emulator alias or a workstation LAN address (-PdevHost=...). A tunnel build
+  (-PdevApiUrl=https://...) never uses this exemption. Same policy as Kitchen.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

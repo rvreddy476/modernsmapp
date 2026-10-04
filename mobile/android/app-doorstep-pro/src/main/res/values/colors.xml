@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The window behind the first Compose frame: white in the light theme,
+      Momentum's navy in the dark one (values-night), so a cold start never
+      flashes the wrong ground. The ember accent draws the launcher mark.
+    -->
+    <color name="doorstep_pro_background">#FFFFFFFF</color>
+    <color name="doorstep_pro_launcher_background">#FF041122</color>
+    <color name="doorstep_pro_brand">#FFFB923C</color>
+</resources>

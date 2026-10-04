@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Doorstep Pro's mark: a house with a wrench across its door, ember strokes on
+  the navy adaptive background. Drawn inside the 66dp safe zone of the 108dp canvas.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- the house -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M32,52L54,33L76,52M38,47V76H70V47"
+        android:strokeWidth="4"
+        android:strokeColor="#FFFB923C"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- the wrench -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M47,70L60,57M60,57a5,5 0,1 0,6 -6l-3,3l-3,-3l3,-3"
+        android:strokeWidth="4"
+        android:strokeColor="#FFFB923C"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
