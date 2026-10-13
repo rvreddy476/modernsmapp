@@ -953,6 +953,14 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 		log.Printf("Failed to push to author's own home timeline: %v", err)
 	}
 
+	// 2a. Unlisted and private posts go no further: unlisted is link-only
+	// and private is the author's own (a share list is served by the
+	// single-post gate, never by a listing). Only the author's rows above
+	// are written. listingvisibility.go is the read-side half.
+	if !fansOutToAudience(visibility) {
+		return nil
+	}
+
 	// 2b. Trusted ("close friends") audience: fan out only to the author's
 	// Trusted Circle — not followers, not circle members — and only if the
 	// author has the close-friends-posts feature on (friends-sheets spec §3.3,

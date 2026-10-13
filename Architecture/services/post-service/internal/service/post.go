@@ -1881,6 +1881,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 	}
 	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
 	ageOK := s.ageAllowance(ctx, viewerID)
+	followed := s.followedAuthorsOfFollowersPosts(ctx, posts, viewerID)
 
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
@@ -1890,17 +1891,14 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 			if !viewableAuthor[post.AuthorID] {
 				continue
 			}
-		}
-
-		// Audit CF1: defense-in-depth visibility filter on the batch
-		// path. Feed-service's fanout writes recipient timelines without
-		// consulting post visibility, so a `private` post still ends up
-		// in follower timelines. Drop it here unconditionally unless the
-		// viewer is the author. `followers`/`circle` are trusted to be
-		// gated by the recipient-set the fanout produced; the broader
-		// fix (visibility-aware fanout) is tracked separately.
-		if strings.EqualFold(post.Visibility, "private") {
-			if viewerID == nil || *viewerID != post.AuthorID {
+			// Per-post visibility: the same rule as the direct read
+			// (viewerMayViewPost), so the batch is never a way round it.
+			// This used to drop only `private` and trust the fan-out
+			// recipient set for `followers` — but this route is reachable
+			// by any signed-in user with a post id, and a timeline row
+			// outlives an unfollow whose purge failed. Private sharing
+			// stays a single-post gate: a share list is never listed.
+			if !batchVisibilityAllows(post.Visibility, followed[post.AuthorID]) {
 				continue
 			}
 		}

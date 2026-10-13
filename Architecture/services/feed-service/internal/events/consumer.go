@@ -10,70 +10,79 @@ import (
 	"github.com/atpost/feed-service/internal/service"
 	"github.com/atpost/feed-service/internal/store/scylla"
 	"github.com/atpost/shared/events"
+	sharedkafka "github.com/atpost/shared/kafka"
+	"github.com/atpost/shared/o11y/metrics"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
+// DefaultDLQTopic is where a feed event lands once its retries are spent.
+// It already exists in every environment (infra/terraform/modules/msk/
+// topics-job/variables.tf) and is shared with the other social.events.v1
+// consumers; the x-dlq-consumer-group / x-dlq-original-topic headers the
+// shared consumer stamps say whose message it is.
+const DefaultDLQTopic = "social.events.v1.dlq"
+
+// Consumer applies social events to the feed's timelines and caches.
+//
+// Delivery is the shared at-least-once consumer (shared/kafka): the offset
+// is committed only after the handler succeeded or the message was durably
+// written to the DLQ, a failed handler is retried with backoff first, and a
+// processed event leaves a receipt so a redelivery of the same event_id is
+// skipped. It replaced a kafka-go ReadMessage loop that committed every
+// offset BEFORE the handler ran and only logged what came back — so any
+// transient Scylla, graph or Postgres error lost the fan-out, delete or
+// unfollow purge for good — and that exited on its first read error, after
+// which the pod stayed Ready and never consumed again.
+//
+// The shared reader uses MinBytes 1, so a quiet topic is still delivered at
+// once (the ten-second fan-out lag came from MinBytes 10 KB, not from here).
+//
+// Every handler must tolerate running twice for one event.
 type Consumer struct {
-	reader        *kafka.Reader
+	inner         *sharedkafka.Consumer
 	service       *service.Service
 	rdb           *redis.Client
 	timelineStore *scylla.TimelineStore
 }
 
-func NewConsumer(brokers []string, groupID string, topic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore) *Consumer {
-	return NewConsumerWithDialer(brokers, groupID, topic, svc, rdb, ts, nil)
+// NewConsumer builds the consumer for one topic. An empty dlqTopic disables
+// the DLQ: a message whose retries are spent then blocks its partition until
+// it succeeds (shared/kafka retryDurable) instead of being skipped.
+func NewConsumer(brokers []string, groupID, topic, dlqTopic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore, m *metrics.KafkaConsumerMetrics) *Consumer {
+	c := &Consumer{service: svc, rdb: rdb, timelineStore: ts}
+	c.inner = sharedkafka.NewConsumer(sharedkafka.ConsumerConfig{
+		Brokers:  brokers,
+		GroupID:  groupID,
+		Topic:    topic,
+		DLQTopic: dlqTopic,
+	}, rdb, m, c.handle)
+	return c
 }
 
-func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore, dialer *kafka.Dialer) *Consumer {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: brokers,
-		GroupID: groupID,
-		Topic:   topic,
-		/*
-			MinBytes asks the broker to hold a fetch open until it has this much
-			to return; MaxWait is how long it may hold it. kafka-go defaults
-			MaxWait to TEN SECONDS, and a PostCreated envelope is a few hundred
-			bytes — so on a quiet topic the broker sat waiting for a 10 KB batch
-			that would never fill, and every post reached its author's own feed
-			about ten seconds after it was written. Measured on dev: posts
-			created at 10:17:48.6 and 10:19:25.5 were fanned out at 10:17:57.5
-			and 10:19:36.5.
-
-			MinBytes 1 asks for whatever is there. MaxWait is still set
-			explicitly rather than left to the default, because the default is
-			exactly what caused this and a future reader should not have to know
-			it. MaxBytes keeps the per-fetch ceiling.
-		*/
-		MinBytes: 1,
-		MaxBytes: 10e6, // 10MB
-		MaxWait:  500 * time.Millisecond,
-		Dialer:   dialer,
-	})
-	return &Consumer{reader: reader, service: svc, rdb: rdb, timelineStore: ts}
-}
-
+// Start blocks until ctx is cancelled. A fetch error is logged and retried
+// by the shared consumer; it no longer ends consumption.
 func (c *Consumer) Start(ctx context.Context) {
-	for {
-		m, err := c.reader.ReadMessage(ctx)
-		if err != nil {
-			log.Printf("Consumer error: %v\n", err)
-			break
-		}
-
-		if err := c.processMessage(ctx, m); err != nil {
-			log.Printf("Failed to process message: %v\n", err)
-		}
-	}
+	c.inner.Start(ctx)
 }
 
+// handle is the shared consumer's handler; the envelope is already decoded.
+func (c *Consumer) handle(ctx context.Context, envelope *events.EventEnvelope) error {
+	return c.dispatch(ctx, *envelope)
+}
+
+// processMessage decodes a raw message and dispatches it. Production goes
+// through handle; tests feed raw messages here.
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
 		return err
 	}
+	return c.dispatch(ctx, envelope)
+}
 
+func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) error {
 	switch envelope.EventType {
 	case events.PostCreated:
 		return c.handlePostCreated(ctx, envelope)
@@ -236,9 +245,9 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 // established leaves everything in place — see unfollow_purge.go, FAILING
 // CLOSED. TestUnfollowPurgeIsGuardedByTheClaimCheck pins the gate.
 //
-// No retry exists: Start auto-commits the offset and only logs what comes
-// back from here, so everything this returns is a permanent outcome, not a
-// deferred one.
+// An error returned from here is retried by the shared consumer and then
+// parked on the DLQ, so a relationship that could not be established is
+// revisited rather than abandoned. The purge itself is idempotent.
 func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil
@@ -405,8 +414,8 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 		rev = 1
 	}
 	if err := c.service.RecordDistribution(ctx, postID, mainFeed, rev); err != nil {
-		// Fail the message so Kafka redelivers: losing this row would
-		// leak a PostTube-only video into social home.
+		// Fail the message so the consumer retries (then DLQs) it: losing
+		// this row would leak a PostTube-only video into social home.
 		return fmt.Errorf("record distribution for %s: %w", event.PostID, err)
 	}
 
@@ -677,5 +686,8 @@ func (c *Consumer) handlePostRepostUndone(ctx context.Context, envelope events.E
 }
 
 func (c *Consumer) Close() error {
-	return c.reader.Close()
+	if c.inner == nil {
+		return nil
+	}
+	return c.inner.Close()
 }

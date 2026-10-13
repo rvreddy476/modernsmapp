@@ -344,6 +344,9 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		// re-checks the cached rows too. Pure and viewer-keyed — see
 		// processingfilter.go.
 		merged = applyProcessingFilter(viewerID, merged)
+		// Unlisted / private posts are never listed to anyone but their
+		// author — see listingvisibility.go.
+		merged = applyListingVisibilityFilter(viewerID, merged)
 		// Viewer keyword filter ("Filter keywords"): every surface — home,
 		// reels, flicks, videos, watch — funnels through HydratePosts, so
 		// applying it here is the one place no surface can bypass. It runs
@@ -440,6 +443,8 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	// re-checks the cached rows too. Pure and viewer-keyed — see
 	// processingfilter.go.
 	merged = applyProcessingFilter(viewerID, merged)
+	// Listing visibility — same step as the cache-only path above.
+	merged = applyListingVisibilityFilter(viewerID, merged)
 	// Viewer keyword filter — same step as the cache-only path above; see
 	// that comment. Fail-closed by design.
 	merged, err = s.applyKeywordHideFilter(ctx, viewerID, merged)

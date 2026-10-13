@@ -166,17 +166,29 @@ func main() {
 		slog.Warn("feed-service: INTERNAL_SERVICE_KEY not set — every /v1/feed endpoint is unauthenticated. Do not run this configuration in production.")
 	}
 
-	// 11. Kafka Consumer (now also handles PostReacted and CommentCreated)
-	consumer := events.NewConsumerWithDialer(
+	// Consumers stop on this context at shutdown, before their readers are
+	// closed, so a closed reader is never mistaken for a fetch error.
+	consumerCtx, stopConsumers := context.WithCancel(ctx)
+	defer stopConsumers()
+
+	// One metrics set for both shared-consumer instances: the collectors
+	// are registered once per process and labelled by topic and group.
+	kafkaMetrics := metrics.NewKafkaConsumerMetrics("feed-service")
+	dlqTopic := env("FEED_DLQ_TOPIC", events.DefaultDLQTopic)
+
+	// 11. Kafka Consumer (now also handles PostReacted and CommentCreated).
+	// At-least-once with retry + DLQ — see events.Consumer.
+	consumer := events.NewConsumer(
 		[]string{kafkaBrokers},
 		"feed-service-group",
 		"social.events.v1",
+		dlqTopic,
 		feedSvc,
 		rdb,
 		timelineStore,
-		kafkaDialer,
+		kafkaMetrics,
 	)
-	go consumer.Start(ctx)
+	go consumer.Start(consumerCtx)
 	defer consumer.Close()
 
 	// 11b. Channel update feed-inject consumer
@@ -186,22 +198,23 @@ func main() {
 		rdb,
 		kafkaDialer,
 	)
-	go channelConsumer.Start(ctx)
+	go channelConsumer.Start(consumerCtx)
 	defer channelConsumer.Close()
 
 	// 11c. QA events live on a dedicated topic — reuse the main consumer
-	// type so QA question fan-out hits the same processMessage switch.
+	// type so QA question fan-out hits the same dispatch switch.
 	qaTopic := env("KAFKA_QA_TOPIC", "qa-events")
-	qaConsumer := events.NewConsumerWithDialer(
+	qaConsumer := events.NewConsumer(
 		[]string{kafkaBrokers},
 		"feed-service-qa-group",
 		qaTopic,
+		dlqTopic,
 		feedSvc,
 		rdb,
 		timelineStore,
-		kafkaDialer,
+		kafkaMetrics,
 	)
-	go qaConsumer.Start(ctx)
+	go qaConsumer.Start(consumerCtx)
 	defer qaConsumer.Close()
 
 	// 11d. Account control (auth-service 30-day deletion): hide the
@@ -238,8 +251,10 @@ func main() {
 		Port:            port,
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
+			stopConsumers()
 			consumer.Close()
 			channelConsumer.Close()
+			qaConsumer.Close()
 			rdb.Close()
 			scyllaSession.Close()
 			dbPool.Close()
