@@ -1,0 +1,22 @@
+# Local admin console build. Context: C:/workspace/atpost-web-ui.
+# Build only the admin application; do not rebuild unrelated workspace apps.
+FROM oven/bun:1.3.14 AS builder
+WORKDIR /app
+COPY . .
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --network-concurrency 8
+ENV NEXT_TELEMETRY_DISABLED=1
+ARG ADMIN_BASE_PATH=""
+ENV ADMIN_BASE_PATH=${ADMIN_BASE_PATH}
+RUN bun run --cwd apps/admin build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000 ZONE=admin
+RUN addgroup -g 1001 nodejs && adduser -u 1001 -G nodejs -S nextjs
+COPY --from=builder --chown=nextjs:nodejs /app/apps/admin/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/admin/.next/static ./apps/admin/.next/static
+COPY --from=builder /app/apps/admin/src/app/fonts/*OFL.txt /licenses/fonts/
+USER nextjs
+EXPOSE 3000
+CMD ["node", "apps/admin/server.js"]

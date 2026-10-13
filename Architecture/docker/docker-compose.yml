@@ -1857,6 +1857,8 @@ services:
       context: ..
       dockerfile: services/food-service/Dockerfile
     environment:
+      GOOGLE_MAPS_SERVER_KEY: ${GOOGLE_MAPS_SERVER_KEY:-}
+      FOOD_ROUTING_TIMEOUT_MS: ${FOOD_ROUTING_TIMEOUT_MS:-2000}
       <<: *redis_client_env
       HTTP_PORT: "8113"
       # Realtime (order tracking, kitchen queue, rider offers) is published to
@@ -2118,6 +2120,10 @@ services:
     environment:
       <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8122"
+      PARTNER_DEV_PHONE_OTP_ENABLED: ${PARTNER_DEV_PHONE_OTP_ENABLED:-false}
+      # Enable only after active administrator prices are configured. Existing
+      # bookings preserve their assignment mode during rollout or rollback.
+      DOORSTEP_AUTOMATIC_ASSIGNMENT_ENABLED: ${DOORSTEP_AUTOMATIC_ASSIGNMENT_ENABLED:-false}
       # Schema `doorstep` in the shared app database. `public` stays on the
       # path for the extensions (postgis, btree_gist) the migrations use.
       POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/app?sslmode=disable&search_path=doorstep,public
@@ -2148,6 +2154,8 @@ services:
       PAYMENTS_SERVICE_URL: http://payments-service:8102
       DOORSTEP_SERVICE_TOKEN_KEY: ${DOORSTEP_SERVICE_TOKEN_KEY:-}
       DOORSTEP_SERVICE_TOKEN_KID: ${DOORSTEP_SERVICE_TOKEN_KID:-}
+      DOORSTEP_MEDIA_TOKEN_KEY: ${DOORSTEP_MEDIA_TOKEN_KEY:-}
+      DOORSTEP_MEDIA_TOKEN_KID: ${DOORSTEP_MEDIA_TOKEN_KID:-}
       # PII sealing (addresses, Aadhaar-derived fields, PAN, payout accounts,
       # police certificates, OTPs). Dev-only random keys live in the
       # gitignored .env; never reuse a dev key in QA or production.
@@ -2762,6 +2770,7 @@ services:
         NEXT_PUBLIC_WS_BASE_URL: ""
         NEXT_PUBLIC_SITE_URL: "https://cleestudio.com"
         NEXT_PUBLIC_ENABLE_STUB_PAYMENTS: "true"
+        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY:-}
     ports:
       - "3000:3000"
     environment:

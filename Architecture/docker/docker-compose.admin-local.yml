@@ -1,0 +1,36 @@
+# OPTIONAL laptop-only admin login override. Not part of default compose.
+# Supply the same strong server-only key to the loopback-bound admin UI.
+# Temporary development portal only. Re-enable MFA before production use.
+services:
+  admin-web:
+    image: atpost/admin-cleestudio:20261008-zone-coverage
+    container_name: atpost-admin-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3002:3000"
+    environment:
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      API_GATEWAY_URL: http://api-gateway:8080
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?required}
+      ADMIN_LOCAL_PASSWORD_LOGIN_KEY: ${ADMIN_LOCAL_PASSWORD_LOGIN_KEY:?required}
+      ADMIN_DEV_PASSWORD_HOST: admin.cleestudio.com
+      SERVICE_NAME: admin-web
+  identity-auth:
+    environment:
+      APP_ENV: local
+      ADMIN_LOCAL_PASSWORD_LOGIN_KEY: ${ADMIN_LOCAL_PASSWORD_LOGIN_KEY:?local server-only key required}
+      ADMIN_COOKIE_SECURE: "${ADMIN_DEV_COOKIE_SECURE:-false}"
+  admin-service:
+    environment:
+      MEDIA_SERVICE_URL: http://media-service:8087
+      ADMIN_REQUIRE_MFA: "false"
+      ENV: local
+      ADMIN_DEV_DISABLE_2FA: "true"
+  media-service:
+    environment:
+      ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      ADMIN_SERVICE_TOKEN_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:?required}
+# Permission, CSRF, session-kind, audit and two-person checks stay on.
+  doorstep-service:
+    environment:
+      SERVICE_CALLERS: admin-service

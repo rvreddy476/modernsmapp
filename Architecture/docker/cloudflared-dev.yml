@@ -39,6 +39,9 @@ tunnel: d3774243-f647-4e35-991d-bd43db41cae7
 credentials-file: C:/Users/RVReddy/.cloudflared/d3774243-f647-4e35-991d-bd43db41cae7.json
 
 ingress:
+  # Dedicated admin portal; consumer and partner cookies stay host-only.
+  - hostname: admin.cleestudio.com
+    service: http://localhost:3002
   # The API gateway. Everything the app calls except media bytes.
   # The PSP webhook is the one payments path reachable from the edge, and it
   # goes straight to payments-service: the gateway refuses /v1/payments by
@@ -83,12 +86,19 @@ ingress:
   - hostname: www.cleestudio.com
     path: ^/v1/ws/
     service: http://localhost:8093
+  - hostname: partner.cleestudio.com
+    path: ^/v1/ws/
+    service: http://localhost:8093
 
   - hostname: cleestudio.com
     service: http://localhost:3000
     originRequest:
       connectTimeout: 30s
   - hostname: www.cleestudio.com
+    service: http://localhost:3000
+    originRequest:
+      connectTimeout: 30s
+  - hostname: partner.cleestudio.com
     service: http://localhost:3000
     originRequest:
       connectTimeout: 30s

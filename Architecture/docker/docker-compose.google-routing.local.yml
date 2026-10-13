@@ -1,0 +1,14 @@
+# Local only. Credentials stay outside the image and are mounted read-only.
+services:
+  food-service:
+    environment:
+      FOOD_BATCH_ROUTE_PREVIEW_ENABLED: "true"
+      GOOGLE_CLOUD_PROJECT_NUMBER: "710273050201"
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-route-optimization.json
+    volumes:
+      - type: bind
+        source: ../../.secrets/us-unified-services-1660fb4fcb1c.json
+        target: /run/secrets/google-route-optimization.json
+        read_only: true
+        bind:
+          create_host_path: false

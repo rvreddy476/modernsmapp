@@ -1,0 +1,25 @@
+# Explicit four-category Partner deployment. Local Commerce dispatch stays off
+# until coverage, seller participation and payouts are separately approved.
+services:
+  rider-service:
+    environment:
+      PARTNER_WORK_COORDINATION_ENABLED: "true"
+  food-service:
+    environment:
+      PARTNER_WORK_COORDINATION_ENABLED: "true"
+  doorstep-service:
+    environment:
+      PARTNER_WORK_COORDINATION_ENABLED: "true"
+  commerce-service:
+    environment:
+      PARTNER_WORK_URL: http://rider-service:8116
+      COMMERCE_LOCAL_DELIVERY_ENABLED: "false"
+  notification-service:
+    environment:
+      ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:?required}
+      ADMIN_SERVICE_TOKEN_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:?required}
+  admin-service:
+    environment:
+      NOTIFICATION_SERVICE_URL: http://notification-service:8088
+  admin-web:
+    image: atpost/qa-partner-admin:20261011

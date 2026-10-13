@@ -1,0 +1,16 @@
+# Opt-in development stack ONLY, including the founder's temporary test tunnel.
+# Never use for public onboarding or production. Connect SMS and remove the
+# development log transport before opening registration to real customers.
+services:
+  doorstep-service:
+    environment:
+      PARTNER_DEV_PHONE_OTP_ENABLED: "true"
+  identity-auth:
+    environment:
+      APP_ENV: local
+      PARTNER_DEV_PHONE_OTP_ENABLED: "true"
+  api-gateway:
+    environment:
+      DOORSTEP_PARTNER_ENABLED: "true"
+      # Customer discovery is open; enabled city/zone coverage still gates serviceability.
+      DOORSTEP_PUBLIC_ENABLED: "true"
