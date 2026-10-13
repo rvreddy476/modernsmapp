@@ -90,3 +90,19 @@ Long outputs were saved to the session scratchpad, not to the repo.
 | 46 | `grep -n 'partitions\|replication_factor' infra/terraform/modules/msk/topics-job/variables.tf` | 6 partitions, RF 2, retention 7 d; `social.events.v1.dlq` exists but feed never writes it |
 
 No command modified application code. No deploy, cloud or credential use.
+
+## Fix-status update (2026-10-13)
+
+The fixes were made on `claude/keen-heisenberg-gr4867` in both repos; `FEED_AUDIT.md` §0 maps each backlog item to its commit. Commands used for that mapping and for the checks it cites:
+
+| # | Command | Exit | Result |
+|---|---|---|---|
+| 47 | `git log --oneline origin/codex/module-01-02-launch-safety..claude/keen-heisenberg-gr4867` (modernsmapp) | 0 | 9 commits: `2abd1750`, `476b42cd`, `98362b9e`, `dd28cec8`, `433d840c`, `f63a190e`, `ece8b877`, `50bb7782`, `d5b128fe` |
+| 48 | `git log --oneline origin/codex/apps-ui-refresh..claude/keen-heisenberg-gr4867` (postbook-ui) | 0 | 1 commit: `34e95b2` |
+| 49 | `go vet ./... && go test -race ./...` (feed-service) | 0 | all packages pass |
+| 50 | `go build github.com/atpost/...` (from `Architecture/`) | 0 | builds |
+| 51 | `go test ./...` (`Architecture/tools/scyllaschema`) | 0 | prod and QA schema renders current |
+| 52 | `grep -n 'v1.POST("/batch"' post-service/internal/http/handler.go` | 0 | line 94: route unchanged (F-03 follow-up open) |
+| 53 | `grep -n 'otel\|InitTracer' feed-service/cmd/server/main.go` | 1 | no tracer init (F-13 follow-up open) |
+
+Android, Helm render, the maintenance Job and load tests were not run here; see `FEED_AUDIT.md` §0.
