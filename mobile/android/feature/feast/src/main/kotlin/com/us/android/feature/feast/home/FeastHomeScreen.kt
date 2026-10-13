@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -96,11 +97,12 @@ fun FeastHomeScreen(
                 Column {
                     Text(
                         text = "Good food, delivered",
-                        style = MaterialTheme.typography.headlineSmall.copy(fontFamily = MomentumWordmarkFontFamily),
+                        style = MaterialTheme.typography.headlineMedium,
                         color = UsTheme.extended.textPrimary,
                     )
                     DeliverTo(
-                        label = state.address?.let { it.label?.ifBlank { null } ?: "Deliver to" } ?: "Add a delivery address",
+                        label = state.address?.let { it.label?.ifBlank { null } ?: "Deliver to" }
+                            ?: "Add a delivery address",
                         line = state.address?.let { listOfNotNull(it.addressLine1, it.city).joinToString(", ") },
                         onClick = onOpenAddresses,
                         modifier = Modifier.padding(top = UsTheme.spacing.l),
@@ -120,10 +122,17 @@ fun FeastHomeScreen(
                     FeastCard(onClick = { onTrackOrder(order.id) }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                modifier = Modifier.size(40.dp).background(UsTheme.extended.ctaGradient, RoundedCornerShape(12.dp)),
+                                modifier = Modifier.size(
+                                    40.dp
+                                ).background(UsTheme.extended.ctaGradient, RoundedCornerShape(12.dp)),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Icon(UsIcons.Utensils, contentDescription = null, tint = UsTheme.extended.textPrimary, modifier = Modifier.size(20.dp))
+                                Icon(
+                                    UsIcons.Utensils,
+                                    contentDescription = null,
+                                    tint = UsTheme.extended.onAccent,
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
                             Spacer(Modifier.width(UsTheme.spacing.l))
                             Column(Modifier.weight(1f)) {
@@ -160,7 +169,11 @@ fun FeastHomeScreen(
                 state.restaurants.isEmpty() -> item {
                     MessagePane(
                         title = "No restaurants yet",
-                        body = if (state.query.isBlank()) "Feast isn't delivering here yet." else "Nothing matches \"${state.query}\".",
+                        body = if (state.query.isBlank()) {
+                            "Feast isn't delivering here yet."
+                        } else {
+                            "Nothing matches \"${state.query}\"."
+                        },
                         icon = UsIcons.Store,
                         modifier = Modifier.padding(top = 24.dp),
                     )
@@ -183,12 +196,28 @@ private fun DeliverTo(label: String, line: String?, onClick: () -> Unit, modifie
             .padding(vertical = UsTheme.spacing.s),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(UsIcons.MapPin, contentDescription = null, tint = UsTheme.extended.accentSolid, modifier = Modifier.size(20.dp))
+        Icon(
+            UsIcons.MapPin,
+            contentDescription = null,
+            tint = UsTheme.extended.accentSolid,
+            modifier = Modifier.size(20.dp)
+        )
         Spacer(Modifier.width(UsTheme.spacing.m))
         Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.textPrimary, fontWeight = FontWeight.SemiBold)
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                color = UsTheme.extended.textPrimary,
+                fontWeight = FontWeight.SemiBold
+            )
             if (line != null) {
-                Text(line, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    line,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
         Icon(UsIcons.ChevronDown, contentDescription = "Change address", tint = UsTheme.extended.textDim)
@@ -212,34 +241,54 @@ private fun RestaurantCard(row: RestaurantRow, onClick: () -> Unit) {
                 modifier = Modifier
                     .size(56.dp)
                     .clip(RoundedCornerShape(UsTheme.radii.medium))
-                    .background(if (card.enabled) UsTheme.extended.ctaGradient else UsTheme.extended.launcher.feast.brush)
+                    .background(
+                        if (card.enabled) UsTheme.extended.ctaGradient else UsTheme.extended.launcher.feast.brush
+                    )
                     .border(1.dp, UsTheme.extended.borderSubtle, RoundedCornerShape(UsTheme.radii.medium)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = r.name.take(1).uppercase(),
                     style = MaterialTheme.typography.headlineSmall.copy(fontFamily = MomentumWordmarkFontFamily),
-                    color = UsTheme.extended.textPrimary,
+                    color = UsTheme.extended.onAccent,
                 )
             }
             Spacer(Modifier.width(UsTheme.spacing.l))
             Column(Modifier.weight(1f)) {
-                Text(r.name, style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    r.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = UsTheme.extended.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
                 val cuisines = r.cuisines.joinToString(" · ").ifBlank { r.city }
-                Text(cuisines, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Row(
+                Text(
+                    cuisines,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                FlowRow(
                     modifier = Modifier.padding(top = UsTheme.spacing.s),
                     horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
                 ) {
                     Pill(card.statusLabel, if (card.enabled) Tone.Positive else Tone.Danger)
                     card.distance?.let {
                         Text(it, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary)
                     }
                     if (r.ratingCount > 0) {
-                        Text("★ ${r.avgRating.setScale(1, java.math.RoundingMode.HALF_UP).toPlainString()}", style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary)
+                        Text(
+                            "★ ${r.avgRating.setScale(1, java.math.RoundingMode.HALF_UP).toPlainString()}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = UsTheme.extended.textSecondary
+                        )
                     }
-                    val eta = r.estimatedDelivery.ifBlank { if (r.avgPreparationMinutes > 0) "${r.avgPreparationMinutes} min" else "" }
+                    val eta = r.estimatedDelivery.ifBlank {
+                        if (r.avgPreparationMinutes > 0) "${r.avgPreparationMinutes} min" else ""
+                    }
                     if (card.enabled && eta.isNotBlank()) {
                         Text(eta, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary)
                     }
@@ -248,7 +297,12 @@ private fun RestaurantCard(row: RestaurantRow, onClick: () -> Unit) {
         }
         card.unavailableMessage?.let { InfoNote(text = it, tone = Tone.Danger) }
         card.opensAt?.let {
-            Text(it, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary, fontWeight = FontWeight.SemiBold)
+            Text(
+                it,
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textSecondary,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -268,7 +322,12 @@ internal fun CartBar(itemCount: Int, restaurant: String, total: String?, onClick
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(UsIcons.ShoppingCart, contentDescription = null, tint = UsTheme.extended.textPrimary, modifier = Modifier.size(20.dp))
+        Icon(
+            UsIcons.ShoppingCart,
+            contentDescription = null,
+            tint = UsTheme.extended.textPrimary,
+            modifier = Modifier.size(20.dp)
+        )
         Spacer(Modifier.width(UsTheme.spacing.l))
         Column(Modifier.weight(1f)) {
             Text(
@@ -277,7 +336,12 @@ internal fun CartBar(itemCount: Int, restaurant: String, total: String?, onClick
                 color = UsTheme.extended.textPrimary,
             )
             if (restaurant.isNotBlank()) {
-                Text(restaurant, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textPrimary.copy(alpha = 0.8f), maxLines = 1)
+                Text(
+                    restaurant,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textPrimary.copy(alpha = 0.8f),
+                    maxLines = 1
+                )
             }
         }
         Text(

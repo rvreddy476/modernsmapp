@@ -7,13 +7,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -30,6 +33,8 @@ fun UsScaffold(
     topBar: @Composable () -> Unit = {},
     bottomBar: @Composable () -> Unit = {},
     applyPageGutter: Boolean = true,
+    /** Forms and service lists stay readable on tablets; edge-to-edge media opt out. */
+    contentMaxWidth: Dp? = if (applyPageGutter) 720.dp else null,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
@@ -52,8 +57,7 @@ fun UsScaffold(
         // counted twice while the keyboard is up.
         //
         // Screens that discard the PaddingValues this hands them are not
-        // covered and apply imePadding() themselves; the three auth screens
-        // are the only ones.
+        // covered and must apply imePadding() themselves.
         contentWindowInsets = ScaffoldDefaults.contentWindowInsets.union(WindowInsets.ime),
     ) { inner ->
         val gutter = if (applyPageGutter) UsTheme.spacing.pageHorizontal else 0.dp
@@ -69,10 +73,17 @@ fun UsScaffold(
         // them — padding the container instead clips the scroll to a letterbox.
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = gutter),
+                .fillMaxSize(),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            content(inner)
+            Box(
+                Modifier
+                    .then(if (contentMaxWidth != null) Modifier.widthIn(max = contentMaxWidth) else Modifier)
+                    .fillMaxSize()
+                    .padding(horizontal = gutter),
+            ) {
+                content(inner)
+            }
         }
     }
 }

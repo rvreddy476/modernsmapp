@@ -42,13 +42,29 @@ class KitchenRootViewModel @Inject constructor(
     private val food: FoodRepository,
     private val kitchen: KitchenRepository,
     private val auth: AuthRepository,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<KitchenRootState>(KitchenRootState.Loading)
     val state: StateFlow<KitchenRootState> = _state.asStateFlow()
 
+    private val _notificationTarget = MutableStateFlow<com.us.android.feature.kitchen.navigation.KitchenPushTarget?>(null)
+    val notificationTarget = _notificationTarget.asStateFlow()
+
+    fun openNotification(target: com.us.android.feature.kitchen.navigation.KitchenPushTarget) {
+        _state.value = KitchenRootState.Loading
+        viewModelScope.launch {
+            loadRestaurants(target.restaurantId)
+            val ready = _state.value as? KitchenRootState.Ready ?: return@launch
+            if (target.restaurantId == null || ready.selected.id == target.restaurantId) _notificationTarget.value = target
+        }
+    }
+
+    fun notificationConsumed() { _notificationTarget.value = null }
+
     init {
         load()
+        viewModelScope.launch { updates.events.collect { if (it.startsWith("food_kitchen_") || it == "food_order_new") refreshRestaurant() } }
     }
 
     fun load() {

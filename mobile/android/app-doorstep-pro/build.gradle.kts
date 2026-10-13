@@ -12,7 +12,9 @@ plugins {
 }
 
 /*
- * Doorstep Pro — the home-service professionals' app (2026-10-04, lane L-J).
+ * Cleestudio Partner — delivery, home-service and Moped workers (2026-10-10).
+ * Restaurant/kitchen and seller workspaces must never ship in this app.
+ * Keep the installed Doorstep package/Firebase identity for in-place upgrades.
  *
  * applicationId `com.us.doorstep.pro` is PROPOSED. It is immutable once
  * published to Play, so the founder confirms it before the first upload.
@@ -23,12 +25,12 @@ plugins {
  * into MAPS_API_KEY (empty when absent). No map library ships; navigation to
  * the customer is handed to Google Maps by a `geo:` intent, which needs no key.
  *
- * FIREBASE: there is no google-services.json for this app yet. The Google
- * Services plugin fails a build without one, so it is applied only when the
- * file exists. Without it FCM is disabled: offers arrive through the in-app
- * realtime stream and its 15-second polling fallback, and
+ * FIREBASE: supply this app's gitignored google-services.json, including the
+ * exact package for the chosen flavour. The Google Services plugin is applied
+ * only when the file exists. Without it FCM is disabled: offers arrive through
+ * the in-app realtime stream and its three-second polling fallback, and
  * DoorstepProApplication logs that once. With it, devices register as
- * `doorstep_pro` and pushes land on the four doorstep_pro_* channels.
+ * `partner` after notification-service migration 014, with per-business channels.
  *
  * DIGILOCKER RETURN LINK: doorstep-service's redirect URI is
  * DOORSTEP_PRO_APP_LINK_URL, else `<DOORSTEP_PUBLIC_BASE_URL>/doorstep-pro/digilocker`
@@ -59,8 +61,8 @@ android {
         applicationId = "com.us.doorstep.pro"
 
         // Doorstep Pro's own release line, independent of the other apps'.
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 10
+        versionName = "0.5.3"
 
         manifestPlaceholders["doorstepProAppLinkHost"] = "pro.doorstep.invalid"
     }
@@ -76,6 +78,10 @@ android {
 }
 
 dependencies {
+    implementation(projects.feature.rider)
+    implementation(projects.feature.mopeduCaptain)
+    implementation(projects.core.payments)
+    implementation(libs.retrofit)
     implementation(projects.core.common)
     implementation(projects.core.model)
     implementation(projects.core.designsystem)
@@ -91,8 +97,8 @@ dependencies {
     // MediaUploader for photos and certificates.
     implementation(projects.core.media)
 
-    // NO :core:payments — a professional pays nothing on the device. The root
-    // moduleGraphCheck (rule m) keeps it that way.
+    // Payments supports the existing Ride subscription flow.
+    // Customer shopping/booking checkout does not ship here.
 
     // Sign-in, registration and email verification: Momentum's own screens.
     implementation(projects.feature.auth)
@@ -110,4 +116,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(projects.core.testing)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.retrofit.kotlinx.serialization)
 }

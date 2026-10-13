@@ -1,6 +1,8 @@
 package com.us.android.core.food.repository
 
 import com.us.android.core.food.network.DeliveryAssignmentDto
+import com.us.android.core.food.network.DeliveryBatchDto
+import com.us.android.core.food.network.BatchRoutePreviewDto
 import com.us.android.core.food.network.DeliveryAvailabilityRequest
 import com.us.android.core.food.network.DeliveryCodeRequest
 import com.us.android.core.food.network.DeliveryDocumentDto
@@ -67,7 +69,10 @@ class RiderRepository @Inject constructor(
         foodCall(json) { api.addDocument(request) }
 
     suspend fun setAvailability(online: Boolean): FoodResult<DeliveryPartnerDto> =
-        foodCall(json) { api.setAvailability(DeliveryAvailabilityRequest(online)) }
+        when (val work = foodCall(json) { api.workSession() }) {
+            is FoodResult.Failure -> work
+            is FoodResult.Success -> foodCall(json) { api.setAvailability(DeliveryAvailabilityRequest(online), work.value.session.revision) }
+        }
 
     suspend fun postLocation(request: DeliveryLocationRequest): FoodResult<DeliveryLocationDto> =
         foodCall(json) { api.postLocation(request) }
@@ -83,6 +88,15 @@ class RiderRepository @Inject constructor(
     /** Success(null) when the rider holds no job (404 FOOD_DELIVERY_CURRENT_NOT_FOUND). */
     suspend fun currentAssignment(): FoodResult<DeliveryAssignmentDto?> =
         foodCall(json) { api.currentAssignment() }.orNullOn(CODE_CURRENT_NOT_FOUND)
+
+    suspend fun batch(orderId: String): FoodResult<DeliveryBatchDto?> =
+        foodCall(json) { api.batch(orderId) }.orNullOn("BATCH_NOT_FOUND")
+
+    suspend fun assignments(): FoodResult<List<DeliveryAssignmentDto>> =
+        foodCall(json) { api.assignments() }.map { it.items.orEmpty() }
+
+    suspend fun previewBatchRoute(orderId: String): FoodResult<BatchRoutePreviewDto> =
+        foodCall(json) { api.previewBatchRoute(orderId) }
 
     /** [idempotencyKey] must be reused when the SAME tap is retried. */
     suspend fun step(assignmentId: String, step: RiderAssignmentStep, idempotencyKey: String): FoodResult<DeliveryAssignmentDto> =

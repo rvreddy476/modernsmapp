@@ -155,6 +155,8 @@ class NotificationsJourneyTest {
                                     is NotificationTarget.Video,
                                     is NotificationTarget.Reel,
                                     is NotificationTarget.Live,
+                                    is NotificationTarget.Customer,
+                                    NotificationTarget.CustomerDues,
                                     NotificationTarget.None,
                                     -> Unit
                                 }

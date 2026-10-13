@@ -23,6 +23,9 @@ data object MopeduRideRoute
 @Serializable
 data object MopeduHistoryRoute
 
+@Serializable
+data class MopeduBookingRoute(val rideId: String)
+
 /**
  * Registers the customer's ride flow. [onOpenPayment] and [onAbandonPayment]
  * are supplied by `:app`, whose Activity the payment sheet opens onto; this
@@ -34,6 +37,14 @@ fun NavGraphBuilder.mopeduRiderScreens(
     onAbandonPayment: (MopeduPaymentRequest) -> Unit,
 ) {
     navigation<MopeduRiderGraph>(startDestination = MopeduRideRoute) {
+        composable<MopeduBookingRoute> {
+            MopeduRiderRoute(
+                onNavigateBack = { navController.popBackStack() },
+                onOpenHistory = { navController.navigate(MopeduHistoryRoute) },
+                onOpenPayment = onOpenPayment,
+                onAbandonPayment = onAbandonPayment,
+            )
+        }
         composable<MopeduRideRoute> {
             MopeduRiderRoute(
                 onNavigateBack = { navController.popBackStack<MopeduRiderGraph>(inclusive = true) },

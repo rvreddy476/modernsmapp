@@ -21,6 +21,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
+import com.us.android.feature.kitchen.navigation.KitchenPushTarget
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
@@ -54,23 +56,18 @@ import com.us.android.feature.kitchen.ui.RestaurantStatusText
  * exists; everything behind it is gated by [KitchenRootViewModel].
  */
 @Composable
-fun KitchenRoot(viewModel: KitchenRootViewModel = hiltViewModel()) {
+fun KitchenRoot(viewModel: KitchenRootViewModel = hiltViewModel(), pushTarget: KitchenPushTarget? = null, onPushReceived: () -> Unit = {}) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val notificationTarget by viewModel.notificationTarget.collectAsStateWithLifecycle()
+    LaunchedEffect(pushTarget?.receipt) {
+        pushTarget?.let { viewModel.openNotification(it); onPushReceived() }
+    }
     when (val current = state) {
         KitchenRootState.Loading -> KitchenSplash()
-        KitchenRootState.NotPartner -> UsScaffold { padding ->
-            MessagePane(
-                title = "This app is for restaurant partners",
-                body = "Feast Kitchen is where restaurants take orders and manage their menus. " +
-                    "This account doesn't have a restaurant yet. To order food, use the Momentum app.",
-                icon = UsIcons.Store,
-                primaryLabel = "Check again",
-                onPrimary = viewModel::load,
-                secondaryLabel = "Sign out",
-                onSecondary = viewModel::signOut,
-                modifier = Modifier.padding(padding),
-            )
-        }
+        KitchenRootState.NotPartner -> CreateKitchenScreen(
+            onCreated = viewModel::refreshRestaurant,
+            onRefresh = viewModel::load,
+        )
         KitchenRootState.SessionExpired -> {
             LaunchedEffect(Unit) { viewModel.signOut() }
             KitchenSplash()
@@ -91,6 +88,8 @@ fun KitchenRoot(viewModel: KitchenRootViewModel = hiltViewModel()) {
             onRestaurantChanged = viewModel::refreshRestaurant,
             onSelectRestaurant = viewModel::select,
             onSignOut = viewModel::signOut,
+            notificationTarget = notificationTarget,
+            onNotificationConsumed = viewModel::notificationConsumed,
         )
     }
 }
@@ -126,6 +125,8 @@ private fun KitchenNavHost(
     onRestaurantChanged: () -> Unit,
     onSelectRestaurant: (String) -> Unit,
     onSignOut: () -> Unit,
+    notificationTarget: KitchenPushTarget?,
+    onNotificationConsumed: () -> Unit,
 ) {
     // The graph is built once per restaurant; destinations read the latest
     // restaurant through this, not through a value captured at build time.
@@ -133,6 +134,17 @@ private fun KitchenNavHost(
     key(ready.selected.id) {
         val restaurantId = ready.selected.id
         val navController = rememberNavController()
+        LaunchedEffect(notificationTarget?.receipt) {
+            notificationTarget?.let { target ->
+                when (target.screen) {
+                    "order" -> target.orderId?.let { navController.navigate(OrderDetailRoute(restaurantId, it)) { launchSingleTop = true } }
+                    "application" -> navController.navigate(OnboardingRoute(restaurantId)) { launchSingleTop = true }
+                    "earnings" -> navController.navigate(KitchenHomeRoute(restaurantId, initialTab = 2)) { launchSingleTop = true }
+                    else -> navController.navigate(KitchenHomeRoute(restaurantId)) { launchSingleTop = true }
+                }
+                onNotificationConsumed()
+            }
+        }
         // A kitchen still being set up, or sent back for changes, opens on its checklist.
         val start: Any = remember {
             when (ready.selected.status) {
@@ -142,7 +154,7 @@ private fun KitchenNavHost(
         }
         val back: () -> Unit = { navController.popBackStack() }
         NavHost(navController = navController, startDestination = start) {
-            composable<KitchenHomeRoute> {
+            composable<KitchenHomeRoute> { entry ->
                 KitchenHomeScreen(
                     restaurant = latest.selected,
                     restaurants = latest.restaurants,
@@ -155,6 +167,7 @@ private fun KitchenNavHost(
                     onSelectRestaurant = onSelectRestaurant,
                     onRestaurantChanged = onRestaurantChanged,
                     onSignOut = onSignOut,
+                    initialTab = entry.toRoute<KitchenHomeRoute>().initialTab,
                 )
             }
             composable<OnboardingRoute> {

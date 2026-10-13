@@ -5,7 +5,7 @@ import com.us.android.core.notifications.NotificationChannelSpec
 import org.junit.Test
 
 /**
- * Doorstep pushes (2026-10-04): the 17 Momentum types of the registry
+ * Doorstep pushes: the customer booking types of the registry
  * (contracts/doorstep/asyncapi.yaml x-push-types.momentum) route to the
  * booking — or the dues screen — and land on the doorstep_updates channel.
  * The professionals' doorstep.pro.* types are not Momentum's.
@@ -15,7 +15,7 @@ class PushDestinationsDoorstepTest {
     private val booking = "9b3f0c55-0000-4000-8000-000000000000"
 
     @Test
-    fun `the doorstep push types are exactly the registry's seventeen Momentum types`() {
+    fun `the doorstep push types include dispatch changes as well as booking updates`() {
         assertThat(PushDestinations.DOORSTEP_TYPES).containsExactly(
             "doorstep.booking.confirmed",
             "doorstep.booking.assigned",
@@ -34,6 +34,8 @@ class PushDestinationsDoorstepTest {
             "doorstep.outstanding.due",
             "doorstep.message.new",
             "doorstep.rework.updated",
+            "doorstep.booking.pro_unavailable",
+            "doorstep.booking.pro_changed",
         )
         assertThat(PushDestinations.DOORSTEP_TYPES.none { it.startsWith("doorstep.pro.") }).isTrue()
         assertThat(PushDestinations.isDoorstepPush("doorstep.pro.offer.new")).isFalse()
@@ -91,6 +93,7 @@ class PushDestinationsDoorstepTest {
         }
         assertThat(NotificationChannelSpec.DOORSTEP_UPDATES.id).isEqualTo("doorstep_updates")
         assertThat(NotificationChannelSpec.MOMENTUM).contains(NotificationChannelSpec.DOORSTEP_UPDATES)
-        assertThat(NotificationChannelSpec.forType("doorstep.pro.offer.new")).isEqualTo(NotificationChannelSpec.SOCIAL)
+        // Professional offers have their own high-priority channel; they are sent only to the doorstep_pro device app.
+        assertThat(NotificationChannelSpec.forType("doorstep.pro.offer.new")).isEqualTo(NotificationChannelSpec.DOORSTEP_PRO_OFFERS)
     }
 }

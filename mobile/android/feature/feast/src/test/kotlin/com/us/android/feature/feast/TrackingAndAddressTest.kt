@@ -29,6 +29,13 @@ import java.time.Instant
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TrackingAndAddressTest {
+    @Test fun `stale or future delivery location is not a live pin`() {
+        val now = Instant.parse("2026-10-12T10:00:00Z")
+        val position = RiderPosition(17.4, 78.5, null, now)
+        assertThat(com.us.android.feature.feast.tracking.freshRider(position, now)).isEqualTo(position)
+        assertThat(com.us.android.feature.feast.tracking.freshRider(position, now.plusSeconds(121))).isNull()
+        assertThat(com.us.android.feature.feast.tracking.freshRider(position, now.minusSeconds(1))).isNull()
+    }
 
     private val dispatcher = StandardTestDispatcher()
 

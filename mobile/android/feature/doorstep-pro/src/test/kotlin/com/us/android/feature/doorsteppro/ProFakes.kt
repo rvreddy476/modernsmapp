@@ -1,4 +1,6 @@
 package com.us.android.feature.doorsteppro
+import com.us.android.feature.doorsteppro.data.AlternatePhoneChallengeDto
+import com.us.android.feature.doorsteppro.data.AlternatePhoneResultDto
 
 import com.us.android.feature.doorsteppro.data.AddressDto
 import com.us.android.feature.doorsteppro.data.DayOffDto
@@ -79,6 +81,13 @@ object Jobs {
  */
 @Suppress("TooManyFunctions")
 class FakeProRepository : DoorstepProRepository {
+    override suspend fun mySkills() = ProResult.Success(emptyList<com.us.android.feature.doorsteppro.data.ProSkillDto>())
+    override suspend fun documents() = ProResult.Success(emptyList<com.us.android.feature.doorsteppro.data.ProDocumentDto>())
+    override suspend fun requestAlternatePhone() = ProResult.Success(AlternatePhoneChallengeDto("development_log", 300, 60))
+    override suspend fun verifyAlternatePhone(code: String) = ProResult.Success(AlternatePhoneResultDto(code == "123456"))
+    override suspend fun applicationStates(): ProResult<List<com.us.android.feature.doorsteppro.data.ApplicationStateDto>> = notScripted
+    override suspend fun submitApplication(request: com.us.android.feature.doorsteppro.data.PartnerApplicationRequest): ProResult<ProfessionalDto> = notScripted
+    override suspend fun bank(): ProResult<PayoutAccountDto?> = ProResult.Success(null)
     override suspend fun prices(): ProResult<List<com.us.android.feature.doorsteppro.data.ProServicePricingDto>> = notScripted
     override suspend fun submitPrice(request: com.us.android.feature.doorsteppro.data.ProPriceRequest): ProResult<com.us.android.feature.doorsteppro.data.ProPriceDto> = notScripted
     override suspend fun withdrawPrice(id: String): ProResult<com.us.android.feature.doorsteppro.data.ProPriceDto> = notScripted
@@ -87,6 +96,9 @@ class FakeProRepository : DoorstepProRepository {
     private val notScripted: ProResult<Nothing> = ProResult.Failure(ProError.NotFound)
 
     var jobResult: ProResult<ProJobDto> = notScripted
+    var offersResult: ProResult<List<OfferDto>> = ProResult.Success(emptyList())
+    var acceptOfferResult: ProResult<ProJobDto> = notScripted
+    var declineOfferResult: ProResult<Unit> = ProResult.Success(Unit)
     var startResult: ProResult<ProJobDto> = notScripted
     var completeResult: ProResult<ProJobDto> = notScripted
     var arrivedResult: ProResult<ProJobDto> = notScripted
@@ -110,7 +122,7 @@ class FakeProRepository : DoorstepProRepository {
     override suspend fun daysOff(): ProResult<List<DayOffDto>> = notScripted
     override suspend fun addDayOff(date: String, reason: String?): ProResult<DayOffDto> = notScripted
     override suspend fun removeDayOff(date: String): ProResult<Unit> = notScripted
-    override suspend fun saveBank(holder: String, accountNumber: String, ifsc: String): ProResult<PayoutAccountDto> = notScripted
+    override suspend fun saveBank(request: com.us.android.feature.doorsteppro.data.BankRequest): ProResult<PayoutAccountDto> = notScripted
     override suspend fun uploadPoliceCertificate(mediaId: String, issuedOn: String, number: String?): ProResult<ProDocumentDto> = notScripted
     override suspend fun acceptAgreement(version: String): ProResult<ProReadinessDto> = notScripted
     override suspend fun savePan(pan: String): ProResult<ProReadinessDto> = notScripted
@@ -118,9 +130,9 @@ class FakeProRepository : DoorstepProRepository {
     override suspend fun dutyOn(location: LocationRequest): ProResult<DutyStateDto> = notScripted
     override suspend fun dutyOff(): ProResult<DutyStateDto> = notScripted
     override suspend fun postLocation(location: LocationRequest): ProResult<Unit> = notScripted
-    override suspend fun offers(): ProResult<List<OfferDto>> = notScripted
-    override suspend fun acceptOffer(offerId: String): ProResult<ProJobDto> = notScripted
-    override suspend fun declineOffer(offerId: String, reason: String?): ProResult<Unit> = notScripted
+    override suspend fun offers(): ProResult<List<OfferDto>> = offersResult
+    override suspend fun acceptOffer(offerId: String): ProResult<ProJobDto> = acceptOfferResult.also { calls += "accept:$offerId" }
+    override suspend fun declineOffer(offerId: String, reason: String?): ProResult<Unit> = declineOfferResult.also { calls += "decline:$offerId" }
     override suspend fun jobs(status: String?, cursor: String?): ProResult<ProJobPageDto> = notScripted
     override suspend fun job(bookingId: String): ProResult<ProJobDto> = jobResult.also { calls += "job" }
     override suspend fun realtimeToken(): ProResult<RealtimeTokenDto> = notScripted

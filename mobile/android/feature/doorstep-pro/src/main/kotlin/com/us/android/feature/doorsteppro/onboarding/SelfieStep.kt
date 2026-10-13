@@ -154,8 +154,8 @@ fun SelfieStepScreen(onBack: () -> Unit, viewModel: SelfieViewModel = hiltViewMo
             when (val step = state.step) {
                 SelfieStep.Camera -> when {
                     state.needsAadhaar -> MessagePane(
-                        title = "Verify Aadhaar first",
-                        body = "Your selfie is matched with your Aadhaar photo, so DigiLocker comes first.",
+                        title = "Complete the required earlier step",
+                        body = "Return to the checklist to see what the verification team needs.",
                         primaryLabel = "Back to checklist",
                         onPrimary = onBack,
                     )
@@ -168,7 +168,7 @@ fun SelfieStepScreen(onBack: () -> Unit, viewModel: SelfieViewModel = hiltViewMo
                     !cameraGranted -> ProCard {
                         CardHeading(
                             "Take a selfie with your front camera",
-                            "Doorstep matches it with your Aadhaar photo to confirm it's you. The camera is used only on this screen.",
+                            "An admin reviews it alongside your identity information. The camera is used only on this screen.",
                         )
                         UsButton(
                             text = if (askedOnce) "Allow camera in Settings" else "Allow camera",

@@ -10,6 +10,8 @@ import com.us.android.core.mobility.model.PartnerProfile
 import com.us.android.core.mobility.model.PartnerSubscription
 import com.us.android.core.mobility.model.PaymentMethod
 import com.us.android.core.mobility.model.RidePayment
+import com.us.android.core.mobility.model.RideBooking
+import com.us.android.core.mobility.model.RideStatus
 import com.us.android.core.mobility.model.RidePaymentStatus
 import com.us.android.core.mobility.model.SubscriptionPlan
 import com.us.android.core.mobility.model.Vehicle
@@ -128,6 +130,15 @@ fun confirmingOnlyCoordinator() = PaymentCoordinator(
 /** A scripted repository: every call is recorded, and answers can be changed between calls. */
 @Suppress("TooManyFunctions")
 class FakeCaptainRepository : MopeduCaptainRepository {
+    var activeRideAnswer: CaptainResult<RideBooking?> = CaptainResult.Success(null)
+    var rideAnswer: CaptainResult<RideBooking> = CaptainResult.Success(offer().toBooking("ride-123"))
+    override suspend fun activeRide() = activeRideAnswer
+    override suspend fun ride(rideId: String) = rideAnswer
+
+    private fun transition(status: RideStatus) {
+        val ride = (rideAnswer as? CaptainResult.Success)?.value ?: return
+        rideAnswer = CaptainResult.Success(ride.copy(status = status, revision = ride.revision + 1))
+    }
     var profileAnswer: CaptainResult<CaptainProfile> = CaptainResult.Failure(CaptainError.NotFound)
 
     /** Consumed in order; the last one repeats. Empty means [profileAnswer]. */
@@ -168,6 +179,8 @@ class FakeCaptainRepository : MopeduCaptainRepository {
     override suspend fun incomingOffers(): CaptainResult<List<CaptainOffer>> = offersAnswer
     override suspend fun acceptOffer(offerId: String): CaptainResult<String> {
         accepted += offerId
+        val offered = (offersAnswer as? CaptainResult.Success)?.value?.firstOrNull { it.id == offerId }
+        if (offered != null) rideAnswer = CaptainResult.Success(offered.toBooking("ride-123").copy(revision = 5))
         return CaptainResult.Success("ride-123")
     }
 
@@ -176,19 +189,25 @@ class FakeCaptainRepository : MopeduCaptainRepository {
         return CaptainResult.Success(Unit)
     }
 
-    override suspend fun markArriving(rideId: String): CaptainResult<Unit> = CaptainResult.Success(Unit)
+    override suspend fun markArriving(rideId: String): CaptainResult<Unit> {
+        transition(RideStatus.PARTNER_ARRIVING)
+        return CaptainResult.Success(Unit)
+    }
     override suspend fun markArrived(rideId: String): CaptainResult<Unit> {
         arrived += rideId
+        transition(RideStatus.ARRIVED)
         return CaptainResult.Success(Unit)
     }
 
     override suspend fun verifyOtpAndStart(rideId: String, otp: String): CaptainResult<Unit> {
         started += rideId to otp
+        if (otpAnswer is CaptainResult.Success) transition(RideStatus.IN_PROGRESS)
         return otpAnswer
     }
 
     override suspend fun completeRide(rideId: String, finalDistanceKm: Double, finalDurationMin: Int, idempotencyKey: String): CaptainResult<Unit> {
         completed += rideId
+        transition(RideStatus.COMPLETED)
         return CaptainResult.Success(Unit)
     }
 
@@ -217,6 +236,12 @@ class FakeCaptainRepository : MopeduCaptainRepository {
         CaptainResult.Success(PartnerProfile("p-1", "individual_driver", fullName, phone, email, "draft", "pending", cityId))
 
     override suspend fun documents(): CaptainResult<List<PartnerDocument>> = CaptainResult.Success(emptyList())
+    override suspend fun vehicleDocuments(vehicleId: String): CaptainResult<List<PartnerDocument>> = CaptainResult.Success(emptyList())
+    val submittedVehicleIds = mutableListOf<String>()
+    override suspend fun submitVehicleDocument(vehicleId: String, documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument> {
+        submittedVehicleIds += vehicleId
+        return submitDocument(documentType, documentNumber, mediaId)
+    }
     override suspend fun submitDocument(documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument> {
         submittedDocuments += documentType
         submittedMediaIds += mediaId
@@ -227,7 +252,8 @@ class FakeCaptainRepository : MopeduCaptainRepository {
         CaptainResult.Success(AadhaarStartResponseDto("https://digilocker.gov.in/auth", "req-1"))
 
     override suspend fun callbackAadhaar(requestId: String, assertionToken: String): CaptainResult<PartnerProfile> = CaptainResult.Success(approvedProfile().profile)
-    override suspend fun vehicles(): CaptainResult<List<Vehicle>> = CaptainResult.Success(emptyList())
+    var vehiclesAnswer: CaptainResult<List<Vehicle>> = CaptainResult.Success(emptyList())
+    override suspend fun vehicles(): CaptainResult<List<Vehicle>> = vehiclesAnswer
     override suspend fun addVehicle(vehicleType: VehicleType, registrationNumber: String, brand: String?, model: String?): CaptainResult<Vehicle> =
         CaptainResult.Success(Vehicle("v-1", "p-1", vehicleType, registrationNumber, brand, model, null, null, "approved"))
 

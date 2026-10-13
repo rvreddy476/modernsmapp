@@ -5,6 +5,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Geocoder
+import android.location.LocationManager
+import android.os.SystemClock
+import androidx.core.location.LocationManagerCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -33,10 +36,10 @@ sealed interface LocationStep {
 
     data class Located(val point: GeoPoint) : LocationStep
 
-    /** Refused. [canAskAgain] false means only Settings can grant it now. Typing an address stays open. */
+    /** Refused. [canAskAgain] false means only Settings can grant it now. */
     data class Denied(val canAskAgain: Boolean) : LocationStep
 
-    /** Permission granted but no fix came back. Typing an address stays open. */
+    /** Permission granted but no fix came back; booking remains blocked. */
     data object Unavailable : LocationStep
 }
 
@@ -123,13 +126,19 @@ class FusedCurrentLocationSource @Inject constructor(
     @SuppressLint("MissingPermission") // checked on the line below
     override suspend fun current(): GeoPoint? {
         if (!hasPermission()) return null
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        if (!LocationManagerCompat.isLocationEnabled(manager)) return null
         val client = LocationServices.getFusedLocationProviderClient(context)
         val cancellation = CancellationTokenSource()
         val fix = suspendCancellableCoroutine<GeoPoint?> { continuation ->
             continuation.invokeOnCancellation { cancellation.cancel() }
             client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
                 .addOnSuccessListener { location ->
-                    if (continuation.isActive) continuation.resume(location?.let { GeoPoint(it.latitude, it.longitude) })
+                    if (continuation.isActive) continuation.resume(location?.takeIf {
+                        it.hasAccuracy() && it.accuracy.isFinite() && it.accuracy in 0f..500f &&
+                            SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos in 0..60_000_000_000L &&
+                            it.latitude.isFinite() && it.longitude.isFinite() && it.latitude in -90.0..90.0 && it.longitude in -180.0..180.0
+                    }?.let { GeoPoint(it.latitude, it.longitude) })
                 }
                 .addOnFailureListener { if (continuation.isActive) continuation.resume(null) }
                 .addOnCanceledListener { if (continuation.isActive) continuation.resume(null) }

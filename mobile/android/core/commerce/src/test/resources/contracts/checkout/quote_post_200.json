@@ -9,7 +9,9 @@
     "currency": "INR",
     "courier_code": "stub",
     "expires_at": "2026-09-30T10:15:00Z",
-    "serviceable": true
+    "serviceable": true,
+    "deliver_by": "2026-10-05",
+    "max_days": 5
   }
 }
 

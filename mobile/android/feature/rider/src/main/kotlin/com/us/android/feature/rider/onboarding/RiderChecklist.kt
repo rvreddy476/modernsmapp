@@ -41,7 +41,7 @@ object Vehicle {
 /** The rider verification steps, in the order food-service presents them (riderkyc Step*). */
 enum class RiderStep(val wire: String, val title: String) {
     VEHICLE("vehicle", "Your vehicle"),
-    AADHAAR_DIGILOCKER("aadhaar_digilocker", "Aadhaar via DigiLocker"),
+    IDENTITY_DOCUMENT("identity_document", "Identity document"),
     DRIVING_LICENCE("driving_licence", "Driving licence"),
     VEHICLE_RC("vehicle_rc", "Vehicle registration (RC)"),
     SELFIE("selfie", "Selfie"),
@@ -76,7 +76,7 @@ data class RiderChecklist(
     val nextStep: RiderStep? get() = rows.firstOrNull { it.status == RowStatus.TO_DO }?.step
 
     companion object {
-        private val DRIVING_STEPS = setOf(RiderStep.DRIVING_LICENCE, RiderStep.VEHICLE_RC)
+        private val DRIVING_STEPS = setOf(RiderStep.VEHICLE_RC)
 
         fun from(missing: List<String>, drivingDocumentsRequired: Boolean): RiderChecklist {
             val owed = missing.mapNotNull(RiderStep::fromWire).toSet()

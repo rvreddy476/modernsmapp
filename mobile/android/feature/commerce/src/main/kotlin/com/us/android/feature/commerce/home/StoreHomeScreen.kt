@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -70,6 +69,7 @@ import com.us.android.feature.commerce.ui.MStoreSearchPill
 import com.us.android.feature.commerce.ui.MStoreTopBar
 import com.us.android.feature.commerce.ui.ProductCard
 import com.us.android.feature.commerce.ui.ShelfProductCard
+import com.us.android.feature.commerce.ui.commerceGridCells
 import com.us.android.feature.commerce.ui.pressScale
 
 /**
@@ -152,10 +152,12 @@ private fun StoreHomeContent(
             state.canLoadMore && last >= state.products.size - PREFETCH_DISTANCE
         }
     }
-    if (shouldLoadMore) onLoadMore()
+    LaunchedEffect(shouldLoadMore, state.products.size) {
+        if (shouldLoadMore) onLoadMore()
+    }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(GRID_COLUMNS),
+        columns = commerceGridCells(),
         state = gridState,
         modifier = Modifier.fillMaxSize().testTag("mstore_home"),
         contentPadding = PaddingValues(bottom = UsTheme.spacing.xxl),
@@ -506,7 +508,6 @@ private fun SectionHeading(text: String, modifier: Modifier = Modifier) {
     )
 }
 
-private const val GRID_COLUMNS = 2
 private const val CATEGORY_COLUMNS = 4
 private const val PREFETCH_DISTANCE = 4
 private const val TILE_CORNER_DIVISOR = 3

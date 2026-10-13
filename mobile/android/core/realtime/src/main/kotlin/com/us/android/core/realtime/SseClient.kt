@@ -62,9 +62,12 @@ class SseClient(
                 clock.delay(session.nextDelay())
                 continue
             }
+            var receivedFrame = false
             val outcome = open(buildRequest(topics, token, session.lastEventId), session) { frame ->
+                receivedFrame = true
                 send(decode(frame))
             }
+            if (receivedFrame) send(RealtimeEvent.Disconnected)
             when (outcome) {
                 is Outcome.Dropped -> clock.delay(session.nextDelay())
                 is Outcome.Refused -> handleRefusal(outcome, session)

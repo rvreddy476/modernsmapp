@@ -190,7 +190,11 @@ data class RideDto(
     @SerialName("requested_at") val requestedAt: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("completed_at") val completedAt: String? = null,
+    @SerialName("captain_location") val captainLocation: CaptainLocationDto? = null,
 )
+
+@Serializable
+data class CaptainLocationDto(val lat: Double, val lng: Double, @SerialName("recorded_at") val recordedAt: String)
 
 @Serializable
 data class ActiveRideResponseDto(

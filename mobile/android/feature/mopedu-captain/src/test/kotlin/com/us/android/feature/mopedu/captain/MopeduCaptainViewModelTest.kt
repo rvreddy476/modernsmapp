@@ -5,6 +5,8 @@ import com.us.android.core.mobility.model.MoneyPaise
 import com.us.android.core.mobility.model.PaymentMethod
 import com.us.android.core.mobility.model.RidePaymentStatus
 import com.us.android.core.mobility.model.RideStatus
+import com.us.android.core.mobility.model.Vehicle
+import com.us.android.core.mobility.model.VehicleType
 import androidx.lifecycle.SavedStateHandle
 import com.us.android.core.payments.PaymentHandoff
 import com.us.android.core.payments.PaymentHandoffEvent
@@ -41,6 +43,71 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MopeduCaptainViewModelTest {
+    @Test
+    fun `network failure is unavailable never pending verification`() = runTest(dispatcher) {
+        repo.profileAnswer = CaptainResult.Failure(CaptainError.Network(null))
+        val model = vm()
+        runCurrent()
+        assertThat(model.uiState.value).isInstanceOf(CaptainUiState.Unavailable::class.java)
+    }
+
+    @Test
+    fun `accepted ride resumes before subscription and review gates`() = runTest(dispatcher) {
+        repo.profileAnswer = CaptainResult.Success(underReviewProfile("licence"))
+        repo.activeRideAnswer = CaptainResult.Success(offer().toBooking("saved-ride").copy(status = RideStatus.IN_PROGRESS, revision = 9))
+        val model = vm()
+        runCurrent()
+        val state = model.uiState.value as CaptainUiState.TripInProgress
+        assertThat(state.booking.id).isEqualTo("saved-ride")
+        assertThat(state.booking.revision).isEqualTo(9)
+        assertThat(repo.onlineCalls).isEmpty()
+    }
+
+    @Test
+    fun `failed active job read blocks new work instead of assuming no job`() = runTest(dispatcher) {
+        ready()
+        repo.activeRideAnswer = CaptainResult.Failure(CaptainError.Network(null))
+        val model = vm()
+        runCurrent()
+        assertThat(model.uiState.value).isInstanceOf(CaptainUiState.Unavailable::class.java)
+    }
+
+    @Test
+    fun `notification rechecks cancellation while a ride is visible`() = runTest(dispatcher) {
+        ready()
+        val booking = offer().toBooking("ride-123")
+        repo.activeRideAnswer = CaptainResult.Success(booking)
+        val model = vm()
+        runCurrent()
+        repo.rideAnswer = CaptainResult.Success(booking.copy(status = RideStatus.CANCELLED_BY_CUSTOMER, revision = 8))
+        deepLinks.publish(CaptainDeepLink.Work)
+        runCurrent()
+        assertThat(model.uiState.value).isInstanceOf(CaptainUiState.Home::class.java)
+    }
+
+    @Test
+    fun `completed trip recovers server fare after process recreation`() = runTest(dispatcher) {
+        ready()
+        repo.rideAnswer = CaptainResult.Success(offer().toBooking("ride-123").copy(status = RideStatus.COMPLETED, finalFare = MoneyPaise(12345), revision = 10))
+        val model = vm(SavedStateHandle(mapOf("captain.ride.id" to "ride-123")))
+        runCurrent()
+        val state = model.uiState.value as CaptainUiState.CollectPayment
+        assertThat((state.phase as CollectPhase.Cash).amount.paise).isEqualTo(12345)
+        model.finishRide()
+        runCurrent()
+    }
+    @Test
+    fun `RC upload targets the selected vehicle rather than the identity documents endpoint`() = runTest(dispatcher) {
+        repo.profileAnswer = CaptainResult.Success(incompleteProfile("vehicle_rc"))
+        repo.vehiclesAnswer = CaptainResult.Success(listOf(Vehicle("selected-vehicle", "p-1", VehicleType.BIKE, "TS09AB1234", null, null, null, null, "pending")))
+        val model = vm()
+        runCurrent()
+        model.onDocumentPhotoPicked("vehicle_rc", "content://photos/rc.jpg")
+        runCurrent()
+        model.submitDocument("vehicle_rc", "TS09AB1234")
+        runCurrent()
+        assertThat(repo.submittedVehicleIds).containsExactly("selected-vehicle")
+    }
 
     private val dispatcher = StandardTestDispatcher()
 
@@ -136,12 +203,12 @@ class MopeduCaptainViewModelTest {
     }
 
     @Test
-    fun `a server that still thinks the captain is online is put right on start`() = runTest(dispatcher) {
+    fun `opening another phone does not switch the server offline`() = runTest(dispatcher) {
         ready()
         repo.profileAnswer = CaptainResult.Success(approvedProfile(isOnline = true))
         vm()
         runCurrent()
-        assertThat(repo.onlineCalls).containsExactly(false)
+        assertThat(repo.onlineCalls).isEmpty()
     }
 
     @Test
@@ -294,7 +361,7 @@ class MopeduCaptainViewModelTest {
         runCurrent()
         val state = model.uiState.value as CaptainUiState.VerifyOtp
         assertThat(state.isVerifying).isFalse()
-        assertThat(state.errorMessage).contains("didn't match")
+        assertThat(state.errorMessage).isEqualTo("wrong")
     }
 
     @Test

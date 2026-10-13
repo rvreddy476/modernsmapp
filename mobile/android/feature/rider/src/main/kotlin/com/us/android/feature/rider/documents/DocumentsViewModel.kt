@@ -27,6 +27,9 @@ import javax.inject.Inject
 enum class DrivingDocument(val wire: String, val title: String) {
     DRIVING_LICENCE("DRIVING_LICENCE", "Driving licence"),
     VEHICLE_RC("VEHICLE_RC", "Vehicle registration (RC)"),
+    PASSPORT("PASSPORT", "Passport"),
+    VOTER_ID("VOTER_ID", "Voter ID"),
+    PAN("PAN", "PAN card"),
 }
 
 data class DocumentDraft(
@@ -40,6 +43,7 @@ data class DocumentDraft(
 data class DocumentsUiState(
     val loading: Boolean = true,
     val required: Boolean = true,
+    val identityChoice: DrivingDocument = DrivingDocument.DRIVING_LICENCE,
     val drafts: Map<DrivingDocument, DocumentDraft> = DrivingDocument.entries.associateWith { DocumentDraft() },
     val message: UsMessage? = null,
 )
@@ -79,6 +83,10 @@ class DocumentsViewModel @Inject constructor(
     fun onNumber(document: DrivingDocument, value: String) =
         draft(document) { it.copy(number = value.uppercase().take(MAX_INPUT), numberError = null) }
 
+    fun chooseIdentity(document: DrivingDocument) {
+        if (document != DrivingDocument.VEHICLE_RC) _state.update { it.copy(identityChoice = document) }
+    }
+
     fun onPhotoPicked(document: DrivingDocument, uri: String) {
         draft(document) { it.copy(upload = DocumentUploadUi.Uploading(0f)) }
         viewModelScope.launch {
@@ -99,6 +107,7 @@ class DocumentsViewModel @Inject constructor(
         val normalized = when (document) {
             DrivingDocument.DRIVING_LICENCE -> DrivingLicence.parse(current.number)?.normalized
             DrivingDocument.VEHICLE_RC -> VehicleRegistration.parse(current.number)?.normalized
+            DrivingDocument.PASSPORT, DrivingDocument.VOTER_ID, DrivingDocument.PAN -> ""
         }
         if (normalized == null) {
             val message = if (document == DrivingDocument.DRIVING_LICENCE) DrivingLicence.INVALID_MESSAGE else VehicleRegistration.INVALID_MESSAGE

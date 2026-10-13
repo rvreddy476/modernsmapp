@@ -134,6 +134,7 @@ class LiveOrderQueue(
         try {
             subscribe(observed).collect { event ->
                 when (event) {
+                    is RealtimeEvent.Disconnected -> setTransport(QueueTransport.POLLING)
                     is RealtimeEvent.Connected -> {
                         setTransport(QueueTransport.LIVE)
                         refreshNow()

@@ -21,6 +21,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import com.us.android.feature.commerce.delivery.LocalOrderDeliveries
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -298,6 +299,7 @@ fun OrderDetailScreen(
     viewModel: OrderDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    com.us.android.core.ui.RefreshWhileVisible(viewModel.trackingUpdates, 5_000, viewModel::refreshTracking)
 
     UsScaffold(
         modifier = modifier,
@@ -406,6 +408,7 @@ private fun OrderDetailBody(
             }
         }
 
+        item { LocalOrderDeliveries(order.id) }
         items(order.lines, key = { it.variantId }) { line ->
             Row(
                 modifier = Modifier

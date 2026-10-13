@@ -111,10 +111,11 @@ class SseClientTest {
         server.enqueue(stream("event: connected\ndata: {\"subject\":\"u-1\",\"topics\":\"food.order.1\",\"since\":\"1717000000000-3\"}\n\n"))
 
         val events = runBlocking {
-            withTimeout(TIMEOUT) { client().connect(listOf("food.order.1"), tokens).take(2).toList() }
+            withTimeout(TIMEOUT) { client().connect(listOf("food.order.1"), tokens).take(3).toList() }
         }
 
-        assertThat((events[1] as RealtimeEvent.Connected).resumedFrom).isEqualTo("1717000000000-3")
+        assertThat(events[1]).isEqualTo(RealtimeEvent.Disconnected)
+        assertThat((events[2] as RealtimeEvent.Connected).resumedFrom).isEqualTo("1717000000000-3")
         assertThat(take().headers["Last-Event-ID"]).isNull()
         assertThat(take().headers["Last-Event-ID"]).isEqualTo("1717000000000-3")
         assertThat(delays).containsExactly(1_000L)

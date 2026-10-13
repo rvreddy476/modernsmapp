@@ -17,6 +17,7 @@ import com.us.android.feature.auth.verify.VerifyEmailRoute
 import com.us.android.feature.kitchen.root.KitchenRoot
 import com.us.android.feature.kitchen.root.KitchenRootViewModel
 import com.us.android.feature.kitchen.root.KitchenSplash
+import com.us.android.feature.kitchen.navigation.KitchenPushTarget
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -37,12 +38,12 @@ data class KitchenVerifyEmailRoute(val verificationToken: String, val email: Str
  * else never shows the previous partner's kitchen for a frame.
  */
 @Composable
-fun KitchenApp(sessionStateProvider: SessionStateProvider) {
+fun KitchenApp(sessionStateProvider: SessionStateProvider, pushTarget: KitchenPushTarget? = null, onPushReceived: () -> Unit = {}) {
     val session by sessionStateProvider.sessionState.collectAsStateWithLifecycle()
     when (val current = session) {
         SessionState.Unknown -> KitchenSplash()
         is SessionState.Authenticated -> key(current.userId) {
-            KitchenRoot(viewModel = hiltViewModel<KitchenRootViewModel>(key = "kitchen-${current.userId}"))
+            KitchenRoot(viewModel = hiltViewModel<KitchenRootViewModel>(key = "kitchen-${current.userId}"), pushTarget = pushTarget, onPushReceived = onPushReceived)
         }
         else -> KitchenSignIn()
     }

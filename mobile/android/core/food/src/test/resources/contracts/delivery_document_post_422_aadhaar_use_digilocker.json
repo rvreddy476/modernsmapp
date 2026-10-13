@@ -1,7 +1,7 @@
 {
   "error": {
     "code": "FOOD_AADHAAR_USE_DIGILOCKER",
-    "message": "Aadhaar is verified through DigiLocker, not uploaded",
+    "message": "Aadhaar uploads are not accepted; use a passport, voter ID, driving licence or PAN",
     "details": {
       "field": "document_type"
     }

@@ -39,6 +39,7 @@
       "image_blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
       "category_name": "Electronics",
       "is_favourite": true,
+      "viewer_reaction": null,
       "source_image_url": "https://img.example.test/earbuds.jpg",
       "retailer_name": "Momentum Electronics",
       "weight_grams": 350,
@@ -49,11 +50,19 @@
       "avg_rating": 4.5,
       "review_count": 1,
       "order_count": 3,
+      "like_count": 1,
+      "share_count": 0,
       "created_at": "2026-09-03T10:00:00Z",
       "updated_at": "2026-09-03T10:00:00Z",
       "published_at": "2026-09-03T10:00:00Z",
       "schema_version": 0,
-      "seller_name": "Momentum Electronics"
+      "seller_name": "Momentum Electronics",
+      "best_coupon": {
+        "code": "EARBUDS150",
+        "discount_minor": 15000,
+        "price_after_minor": 114900,
+        "title": "₹150 off"
+      }
     },
     "variants": [
       {

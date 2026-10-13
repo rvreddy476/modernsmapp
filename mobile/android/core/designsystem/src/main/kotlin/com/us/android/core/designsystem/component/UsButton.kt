@@ -36,9 +36,8 @@ import com.us.android.core.designsystem.theme.UsTheme
 /**
  * Primary action button.
  *
- * Uses the CTA gradient from the Flutter reference rather than a flat fill,
- * because the gradient is part of the brand identity rather than decoration.
- * Falls back to a flat disabled surface when not enabled.
+ * A single flat brand action, with a stable touch target and a quieter
+ * disabled state. Loading preserves the button's geometry.
  */
 @Composable
 fun UsButton(
@@ -48,7 +47,7 @@ fun UsButton(
     enabled: Boolean = true,
     loading: Boolean = false,
 ) {
-    val shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.full)
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.large)
     Button(
         onClick = onClick,
         modifier = modifier.defaultMinSize(minHeight = 48.dp),
@@ -109,7 +108,7 @@ fun UsSecondaryButton(
         onClick = onClick,
         modifier = modifier.defaultMinSize(minHeight = 48.dp),
         enabled = enabled,
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.full),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.large),
         border = androidx.compose.foundation.BorderStroke(1.dp, UsTheme.extended.borderMedium),
     ) {
         Text(
@@ -181,6 +180,7 @@ fun UsPillButton(
     Box(
         modifier = modifier
             .clip(shape)
+            .defaultMinSize(minHeight = 48.dp)
             .then(fill)
             .clickable(enabled = active, onClick = onClick)
             .semantics { role = Role.Button }

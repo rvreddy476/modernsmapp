@@ -69,6 +69,7 @@ fun OrderTrackingScreen(
     viewModel: OrderTrackingViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    com.us.android.core.ui.RefreshWhileVisible(viewModel.trackingUpdates, refresh = viewModel::refreshNow)
     var now by remember { mutableStateOf(Instant.now()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -119,6 +120,7 @@ fun OrderTrackingScreen(
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 val model = state.model
+                state.error?.let { Text(it, color = UsTheme.extended.textSecondary) }
                 // Status and ETA.
                 FeastCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -133,7 +135,7 @@ fun OrderTrackingScreen(
                     val eta = etaText(model.etaAt, now)
                         ?: order.estimatedDeliveryMinutes.takeIf { it > 0 && OrderTimeline.isLive(order.status) }?.let { "About $it min" }
                     eta?.let { Text(it, style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.accentSolid) }
-                    val rider = model.rider
+                    val rider = freshRider(model.rider, now)
                     val customerLat = model.customerLatitude
                     val customerLng = model.customerLongitude
                     if (rider != null && customerLat != null && customerLng != null && timeline.steps[timeline.currentIndex] == TimelineStep.ON_THE_WAY) {
@@ -150,7 +152,7 @@ fun OrderTrackingScreen(
 
                 if (OrderTimeline.isLive(order.status)) {
                     LocalMapSurface.current.Content(
-                        rider = model.rider?.let { MapPoint(it.latitude, it.longitude) },
+                        rider = freshRider(model.rider, now)?.let { MapPoint(it.latitude, it.longitude) },
                         destination = if (customerPoint(model) != null) customerPoint(model) else null,
                         modifier = Modifier,
                     )

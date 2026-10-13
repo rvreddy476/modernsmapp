@@ -34,6 +34,18 @@ class AuthRepository @Inject constructor(
 
     override val sessionState: StateFlow<SessionState> = sessionManager.state
 
+    suspend fun requestPartnerPhone(body: com.us.android.core.auth.dto.PartnerPhoneRequestDto) =
+        apiCall(errorMapper) { authApi.requestPartnerPhone(body) }
+
+    suspend fun verifyPartnerPhone(challenge: String, code: String, deviceId: String): AppResult<SessionState> {
+        return when (val result = apiCall(errorMapper) {
+            authApi.verifyPartnerPhone(com.us.android.core.auth.dto.PartnerPhoneVerifyDto(challenge, code, deviceId))
+        }) {
+            is AppResult.Success -> AppResult.Success(sessionManager.applyAuthResponse(result.data))
+            is AppResult.Failure -> AppResult.Failure(result.error)
+        }
+    }
+
     /**
      * Signs in, returning the resulting [SessionState] rather than a boolean.
      *

@@ -45,7 +45,8 @@ class MopeduRiderViewModelTest {
 
     private fun TestScope.quoted(model: MopeduRiderViewModel): RiderUiState.QuoteSelect {
         advanceUntilIdle()
-        model.onPickupQueryChanged(PICKUP.address)
+        model.useCurrentLocation()
+        advanceUntilIdle()
         model.onDropQueryChanged(DROP.address)
         model.requestQuote()
         advanceUntilIdle()
@@ -80,6 +81,63 @@ class MopeduRiderViewModelTest {
     }
 
     // ── The quote ───────────────────────────────────────────────────────
+
+    @Test fun `notification tracks its exact ride rather than the active ride`() = runTest(dispatcher) {
+        repo.activeRide = booking().copy(id = "different-active-ride")
+        repo.rideAnswer = MopeduResult.Success(booking(status = RideStatus.PARTNER_ASSIGNED))
+        val model = vm(SavedStateHandle(mapOf("rideId" to "ride-456")))
+        runCurrent()
+        assertThat(model.isTrackingEntry).isTrue()
+        assertThat(repo.rideReads).containsExactly("ride-456")
+        val assigned = model.uiState.value as RiderUiState.CaptainAssigned
+        assertThat(assigned.booking.id).isEqualTo("ride-456")
+        assertThat(assigned.captainLocation).isNull()
+        assertThat(assigned.etaMinutes).isNull()
+        model.resetToNewBooking()
+    }
+
+    @Test fun `missing notification ride does not silently show another booking`() = runTest(dispatcher) {
+        repo.rideAnswer = MopeduResult.Success(null)
+        val model = vm(SavedStateHandle(mapOf("rideId" to "ride-456")))
+        runCurrent()
+        assertThat((model.uiState.value as RiderUiState.LocationSelect).error).contains("unavailable")
+    }
+
+    @Test fun `captain coordinates expire and never fall back to pickup`() {
+        val ride = booking().copy(captainLocation = PICKUP, captainLocationAtEpochMs = clock.nowMillis())
+        assertThat(ride.freshCaptainLocation(clock.nowMillis())).isEqualTo(PICKUP)
+        assertThat(ride.freshCaptainLocation(clock.nowMillis() + 120_001)).isNull()
+        assertThat(ride.freshCaptainLocation(clock.nowMillis() - 1)).isNull()
+        assertThat(booking().freshCaptainLocation(clock.nowMillis())).isNull()
+    }
+
+    @Test
+    fun `typed pickup cannot bypass denied permission`() = runTest(dispatcher) {
+        location.permission = false
+        val model = vm()
+        advanceUntilIdle()
+        model.onPickupQueryChanged(PICKUP.address)
+        model.onDropQueryChanged(DROP.address)
+        model.requestQuote()
+        advanceUntilIdle()
+        assertThat(repo.estimateCalls).isEmpty()
+        assertThat((model.uiState.value as RiderUiState.LocationSelect).error).contains("Allow location")
+    }
+
+    @Test
+    fun `revoked permission or expired pickup blocks booking`() = runTest(dispatcher) {
+        val model = vm()
+        quoted(model)
+        location.permission = false
+        model.confirmBooking()
+        runCurrent()
+        assertThat((model.uiState.value as RiderUiState.QuoteSelect).error).contains("Location access is required")
+        location.permission = true
+        clock.now += 5 * 60_000
+        model.confirmBooking()
+        runCurrent()
+        assertThat((model.uiState.value as RiderUiState.QuoteSelect).error).contains("Location access is required")
+    }
 
     @Test
     fun `initial state asks where to, and a quote lists the server's options`() = runTest(dispatcher) {
@@ -220,7 +278,7 @@ class MopeduRiderViewModelTest {
         repo.quoteAnswer = { MopeduResult.Success(quote(expiresAtEpochMs = 10_000L)) }
         val model = vm()
         quoted(model)
-        clock.now = 20_000L
+        clock.now = 60_000L
 
         booked(model)
 
@@ -331,6 +389,9 @@ class MopeduRiderViewModelTest {
         assertThat(opening.request.session.applicationId).isEqualTo("mopedu")
         assertThat(opening.request.session.providerOrderId).isEqualTo("order_rzp_1")
         assertThat(model.activeAttempt()).isEqualTo(opening.request.attempt)
+        model.checkActiveRide()
+        runCurrent()
+        assertThat((model.uiState.value as RiderUiState.TripCompleted).payment).isEqualTo(opening)
     }
 
     @Test

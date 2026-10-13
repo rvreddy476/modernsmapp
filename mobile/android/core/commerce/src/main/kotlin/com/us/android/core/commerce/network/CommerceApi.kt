@@ -923,6 +923,9 @@ data class QuoteDto(
     @SerialName("expires_at") val expiresAt: String? = null,
     val serviceable: Boolean = true,
     val reason: String? = null,
+    /** Server's delivery estimate; never used to calculate customer shipping charges. */
+    @SerialName("deliver_by") val deliverBy: String? = null,
+    @SerialName("max_days") val maxDays: Int? = null,
 )
 
 @Serializable

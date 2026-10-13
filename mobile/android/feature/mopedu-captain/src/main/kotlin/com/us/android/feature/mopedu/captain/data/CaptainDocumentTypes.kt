@@ -15,4 +15,7 @@ object CaptainDocumentTypes {
     const val SELFIE = "profile_photo"
     const val DRIVING_LICENCE = "driving_license"
     const val VEHICLE_RC = "vehicle_rc"
+    const val PASSPORT = "passport"
+    const val VOTER_ID = "voter_id"
+    const val PAN = "pan"
 }

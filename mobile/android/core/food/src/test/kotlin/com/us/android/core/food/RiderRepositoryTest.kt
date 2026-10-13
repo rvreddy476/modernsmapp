@@ -98,6 +98,7 @@ class RiderRepositoryTest {
     @Test
     fun `a selfie document carries no number, availability always sends the flag`() {
         enqueue(fixture("delivery_document_post_201_selfie.json"), code = 201)
+        enqueue("""{"data":{"session":{"category":"food_delivery","revision":6},"reservations":[]}}""")
         enqueue("""{"data":{"id":"p-1","status":"OFFLINE","is_online":false}}""")
 
         runBlocking {
@@ -106,9 +107,11 @@ class RiderRepositoryTest {
         }
 
         assertThat(server.takeRequest().body?.utf8()).isEqualTo("""{"document_type":"SELFIE","media_id":"m-1"}""")
+        assertThat(server.takeRequest().target).isEqualTo("/v1/partner/work-session")
         val availability = server.takeRequest()
         assertThat(availability.target).isEqualTo("/v1/food/delivery/availability")
         assertThat(availability.body?.utf8()).isEqualTo("""{"is_online":false}""")
+        assertThat(availability.headers["X-Work-Revision"]).isEqualTo("6")
     }
 
     @Test
@@ -116,5 +119,43 @@ class RiderRepositoryTest {
         enqueue("""{"data":{"offers":null}}""")
 
         assertThat(runBlocking { repository.offers() }).isEqualTo(FoodResult.Success(emptyList<Any>()))
+    }
+
+    @Test
+    fun `a batch reads the saved sequence and a solo order reads as null`() {
+        enqueue("""{"data":{"id":"b-1","restaurant_id":"r-1","status":"assigned","created_at":"now","members":[{"order_id":"o-1","sequence":1},{"order_id":"o-2","sequence":2}]}}""")
+        enqueue("""{"error":{"code":"BATCH_NOT_FOUND","message":"batch not found"}}""", code = 404)
+        val batch = runBlocking { repository.batch("o-1") } as FoodResult.Success
+        assertThat(batch.value?.members?.map { it.orderId }).containsExactly("o-1", "o-2").inOrder()
+        assertThat(server.takeRequest().target).isEqualTo("/v1/food/delivery/orders/o-1/batch")
+        assertThat(runBlocking { repository.batch("solo") }).isEqualTo(FoodResult.Success(null))
+    }
+
+    @Test
+    fun `assignments uses own list endpoint and coalesces null items`() {
+        enqueue("""{"data":{"items":null}}""")
+        assertThat(runBlocking { repository.assignments() }).isEqualTo(FoodResult.Success(emptyList<Any>()))
+        assertThat(server.takeRequest().target).isEqualTo("/v1/food/delivery/assignments")
+    }
+
+    @Test
+    fun `route preview is a bodyless advisory request and not an assignment mutation`() {
+        enqueue("""{"data":{"order_ids":["o-2","o-1"],"source":"google_route_optimization","advisory":true,"note":"suggestion only"}}""")
+        val result = runBlocking { repository.previewBatchRoute("o-1") } as FoodResult.Success
+        assertThat(result.value.orderIds).containsExactly("o-2", "o-1").inOrder()
+        assertThat(result.value.advisory).isTrue()
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("POST")
+        assertThat(request.target).isEqualTo("/v1/food/delivery/orders/o-1/batch/route-preview")
+        assertThat(request.body?.utf8().orEmpty()).isEmpty()
+    }
+
+    @Test
+    fun `route failures remain failures instead of masquerading as empty suggestions`() {
+        for ((status, code) in listOf(404 to "BATCH_NOT_FOUND", 429 to "BATCH_ROUTE_BUSY", 503 to "BATCH_ROUTE_UNAVAILABLE")) {
+            enqueue("""{"error":{"code":"$code","message":"try again"}}""", status)
+            val result = runBlocking { repository.previewBatchRoute("o-1") } as FoodResult.Failure
+            assertThat(result.error.code).isEqualTo(code)
+        }
     }
 }

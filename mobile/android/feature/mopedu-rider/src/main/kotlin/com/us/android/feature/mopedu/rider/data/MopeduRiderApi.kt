@@ -38,6 +38,9 @@ interface MopeduRiderApi {
     @GET("v1/rider/rides/active")
     suspend fun activeRide(): Response<ApiEnvelope<ActiveRideResponseDto>>
 
+    @GET("v1/rider/rides/{id}")
+    suspend fun ride(@Path("id") rideId: String): Response<ApiEnvelope<RideDto>>
+
     /** The customer's past rides, newest first. */
     @GET("v1/rider/rides/me")
     suspend fun rides(@Query("limit") limit: Int): Response<ApiEnvelope<List<RideDto>>>

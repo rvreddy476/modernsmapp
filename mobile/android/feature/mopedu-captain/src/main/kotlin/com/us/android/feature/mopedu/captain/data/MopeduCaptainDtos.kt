@@ -46,13 +46,43 @@ data class AcceptOfferResponseDto(
 )
 
 @Serializable
-data class StartRideRequestDto(@SerialName("otp") val otp: String)
+data class StartRideRequestDto(@SerialName("otp") val otp: String, @SerialName("expected_revision") val expectedRevision: Int)
+
+@Serializable
+data class RideRevisionDto(@SerialName("expected_revision") val expectedRevision: Int)
+
+@Serializable
+data class CaptainActiveRideDto(val ride: CaptainRideDto? = null)
+
+/** Partner-only endpoint: no verification code is decoded or exposed. */
+@Serializable
+data class CaptainRideDto(
+    val id: String,
+    val revision: Int,
+    val status: String,
+    @SerialName("partner_id") val partnerId: String? = null,
+    @SerialName("vehicle_id") val vehicleId: String? = null,
+    @SerialName("vehicle_type") val vehicleType: String,
+    @SerialName("pickup_address") val pickupAddress: String,
+    @SerialName("pickup_lat") val pickupLat: Double,
+    @SerialName("pickup_lng") val pickupLng: Double,
+    @SerialName("drop_address") val dropAddress: String,
+    @SerialName("drop_lat") val dropLat: Double,
+    @SerialName("drop_lng") val dropLng: Double,
+    @SerialName("estimated_fare") val estimatedFare: Double? = null,
+    @SerialName("final_fare") val finalFare: Double? = null,
+    @SerialName("final_fare_paise") val finalFarePaise: Long? = null,
+    @SerialName("payment_method") val paymentMethod: String? = null,
+    @SerialName("requested_at") val requestedAt: String,
+    @SerialName("completed_at") val completedAt: String? = null,
+)
 
 @Serializable
 data class CompleteRideRequestDto(
     @SerialName("final_distance_km") val finalDistanceKm: Double,
     @SerialName("final_duration_min") val finalDurationMin: Int,
     @SerialName("idempotency_key") val idempotencyKey: String,
+    @SerialName("expected_revision") val expectedRevision: Int,
 )
 
 @Serializable
@@ -300,3 +330,9 @@ data class CaptainErrorBodyDto(
     val message: String = "",
     val details: JsonElement? = null,
 )
+
+@Serializable
+data class CaptainSupportRequestDto(val category: String, val description: String)
+
+@Serializable
+data class CaptainSupportDto(val id: String, @SerialName("ride_id") val rideId: String, val status: String, @SerialName("created_at") val createdAt: String)

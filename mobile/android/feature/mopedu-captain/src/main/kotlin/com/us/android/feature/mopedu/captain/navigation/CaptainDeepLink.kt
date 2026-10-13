@@ -14,6 +14,8 @@ sealed interface CaptainDeepLink {
 
     /** Onboarding was approved or sent to review: the onboarding status. */
     data object OnboardingStatus : CaptainDeepLink
+    data object Work : CaptainDeepLink
+    data class Ride(val id: String) : CaptainDeepLink
 }
 
 object CaptainDeepLinks {
@@ -29,10 +31,13 @@ object CaptainDeepLinks {
      * launch extras carry the same key). An offer, or a type this build does
      * not know, is not a link: the captain simply lands where they were.
      */
-    fun fromPush(type: String?): CaptainDeepLink? = when (type) {
-        TYPE_SUBSCRIPTION_EXPIRING, TYPE_SUBSCRIPTION_EXPIRED, TYPE_SUBSCRIPTION_RENEWED, TYPE_SUBSCRIPTION_PAYMENT_FAILED ->
+    fun fromPush(type: String?, entityId: String? = null): CaptainDeepLink? = when (type) {
+        TYPE_SUBSCRIPTION_EXPIRING, TYPE_SUBSCRIPTION_EXPIRED, TYPE_SUBSCRIPTION_RENEWED, TYPE_SUBSCRIPTION_PAYMENT_FAILED, "captain.subscription.review_rejected" ->
             CaptainDeepLink.Plans
-        TYPE_APPROVED, TYPE_UNDER_REVIEW -> CaptainDeepLink.OnboardingStatus
+        TYPE_APPROVED, TYPE_UNDER_REVIEW, "captain.review.updated", "captain.restricted", "captain.document.expiring" -> CaptainDeepLink.OnboardingStatus
+        "captain.offer" -> CaptainDeepLink.Work
+        "captain.payment.received", "captain.ride.assigned", "captain.ride.cancelled", "captain.ride.completed", "captain.support.updated" ->
+            entityId?.takeIf { runCatching { java.util.UUID.fromString(it) }.isSuccess }?.let(CaptainDeepLink::Ride) ?: CaptainDeepLink.Work
         else -> null
     }
 }

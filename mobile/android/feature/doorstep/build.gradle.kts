@@ -22,6 +22,9 @@ android {
 // :feature:*. The doorstep-service DTOs live in data/ (the Mopedu shape):
 // nothing outside this feature reads them.
 dependencies {
+    implementation(projects.core.ui)
+    implementation(projects.core.maps)
+    implementation(projects.core.notifications)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
     // ApiEnvelope, the shared Retrofit client, the platform Json.

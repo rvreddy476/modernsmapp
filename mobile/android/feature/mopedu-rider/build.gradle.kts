@@ -21,17 +21,20 @@ android {
 // partner app — including :app-captain — from reaching this module, and
 // forbids this module from reaching any other :feature:*.
 dependencies {
+    implementation(projects.core.ui)
+    implementation(projects.core.notifications)
     api(projects.core.mobilityModel)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
+    implementation(projects.core.maps)
+    implementation(projects.core.maps3d)
     // ApiEnvelope, the shared Retrofit client, the platform Json.
     implementation(projects.core.network)
     // The payment sheet, the confirm-by-polling coordinator, the in-flight
     // record and the handoff bus — shared with MStore, Feast and Dating.
     implementation(projects.core.payments)
 
-    // One-shot fused location for the pickup (the Dating pattern). No map
-    // library: maps-compose is not in the offline cache.
+    // One-shot fused location for pickup; map rendering uses core:maps.
     implementation(libs.play.services.location)
 
     implementation(libs.androidx.core.ktx)

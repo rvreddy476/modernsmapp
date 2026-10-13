@@ -141,6 +141,8 @@ class PushDestinations @Inject constructor() {
             "doorstep.booking.confirmed",
             "doorstep.booking.assigned",
             "doorstep.booking.reassigned",
+            "doorstep.booking.pro_unavailable",
+            "doorstep.booking.pro_changed",
             "doorstep.booking.pro_en_route",
             "doorstep.booking.pro_arrived",
             "doorstep.booking.started",

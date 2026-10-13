@@ -132,7 +132,14 @@ internal fun NotificationDto.toDomain(): Notification = Notification(
     target = if (entityType == ENTITY_CONVERSATION && entityId.isNotBlank()) {
         NotificationTarget.Conversation(entityId)
     } else {
-        NotificationTarget.parse(deepLink)
+        if (com.us.android.core.model.CustomerNotification.service(type) != null) {
+            com.us.android.core.model.CustomerNotification.resolve(type, entityId, deepLink)
+        } else {
+            // Do not reinterpret merchant/partner notices as customer bookings.
+            NotificationTarget.parse(deepLink).takeUnless {
+                it is NotificationTarget.Customer || it is NotificationTarget.CustomerDues
+            } ?: NotificationTarget.None
+        }
     },
     isRead = isRead,
     createdAt = createdAt,

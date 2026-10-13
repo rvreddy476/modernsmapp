@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
@@ -32,6 +33,8 @@ fun UsWordmark(
             fontSize = size,
         ),
         color = UsTheme.extended.textPrimary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier,
     )
 }
@@ -42,7 +45,7 @@ fun UsWordmark(
  */
 object UsWordmarkSize {
     /** The home top bar. */
-    val TopBar = 34.sp
+    val TopBar = 28.sp
 
     /** Login and the splash screen. */
     val Hero = 44.sp

@@ -116,9 +116,21 @@ fun MopeduCaptainRoute(
 
     // The selfie has its own screen and ViewModel; back here, the documents are read again.
     var takingSelfie by rememberSaveable { mutableStateOf(false) }
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    if (showHistory) {
+        MopedHistoryScreen(onBack = { showHistory = false })
+        return
+    }
 
     when (val state = uiState) {
         CaptainUiState.Loading -> CaptainScreen(title = "Mopedu Captain", onBack = null) { padding -> LoadingPane(Modifier.padding(padding)) }
+        is CaptainUiState.Unavailable -> CaptainScreen(title = "Moped", onBack = null) { padding ->
+            Column(Modifier.padding(padding).padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("We couldn't refresh your workspace", style = MaterialTheme.typography.titleLarge)
+                Text(state.message)
+                UsButton(text = "Try again", onClick = viewModel::checkInitialStatus)
+            }
+        }
         is CaptainUiState.Onboarding -> if (takingSelfie) {
             CaptainSelfieScreen(
                 onDone = {
@@ -165,6 +177,7 @@ fun MopeduCaptainRoute(
             onRenew = viewModel::renewPlan,
             onSignOut = onSignOut,
             onDismissError = viewModel::dismissError,
+            onOpenHistory = { showHistory = true },
             modifier = modifier,
         )
         is CaptainUiState.EnRouteToPickup -> RideScreen(state.booking, state.errorMessage, viewModel::dismissError, modifier) {
@@ -242,6 +255,7 @@ private fun HomeScreen(
     onRenew: () -> Unit,
     onSignOut: () -> Unit,
     onDismissError: () -> Unit,
+    onOpenHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -307,6 +321,7 @@ private fun HomeScreen(
                 }
             }
             item { SectionHeader("Account") }
+            item { UsSecondaryButton("Ride history & support", onOpenHistory, modifier = Modifier.fillMaxWidth()) }
             item {
                 CaptainCard(onClick = onOpenOnboarding) {
                     Row(verticalAlignment = Alignment.CenterVertically) {

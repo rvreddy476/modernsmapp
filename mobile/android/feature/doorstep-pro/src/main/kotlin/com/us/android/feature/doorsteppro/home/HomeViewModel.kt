@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.feature.doorsteppro.data.DoorstepProRepository
 import com.us.android.feature.doorsteppro.data.LocationRequest
-import com.us.android.feature.doorsteppro.data.OfferDto
 import com.us.android.feature.doorsteppro.data.ProJobDto
 import com.us.android.feature.doorsteppro.data.ProResult
 import com.us.android.feature.doorsteppro.data.ProfessionalDto
@@ -48,7 +47,6 @@ data class HomeUiState(
     val canGoOnDuty: Boolean = false,
     val duty: DutyState = DutyState.Offline(),
     val lastPingOk: Boolean? = null,
-    val offers: List<OfferDto> = emptyList(),
     val activeJobs: List<ProJobDto> = emptyList(),
     val transport: LiveTransport = LiveTransport.CONNECTING,
     val message: UsMessage? = null,
@@ -63,8 +61,8 @@ sealed interface HomeEvent {
 
 /**
  * Home: the duty toggle ([GoOnDutyFlow]: disclosure → permission → `duty/on`
- * with a fresh fix → the location service), the open offers and the active
- * jobs, kept fresh by [ProLiveFeed] — doorstep.pro.<user_id> over SSE when the
+ * with a fresh fix → the location service) and active jobs. The signed-in
+ * shell owns requests on every tab; jobs use [ProLiveFeed] over SSE when the
  * token is issued, polling every 15 s when not.
  */
 @HiltViewModel
@@ -193,11 +191,9 @@ class HomeViewModel @Inject constructor(
     }
 
     private suspend fun refreshOffersAndJobs() {
-        val offers = repository.offers()
         val jobs = repository.jobs(status = ACTIVE, cursor = null)
         _state.update { current ->
             current.copy(
-                offers = (offers as? ProResult.Success)?.value ?: current.offers,
                 activeJobs = (jobs as? ProResult.Success)?.value?.items?.filter { JobStatus.of(it.status).isActive } ?: current.activeJobs,
             )
         }

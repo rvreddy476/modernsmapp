@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,6 +18,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -70,8 +77,31 @@ import com.us.android.feature.doorsteppro.ui.MessagePane
  * session exists; everything behind it is gated by [ProRootViewModel].
  */
 @Composable
-fun ProRoot(viewModel: ProRootViewModel = hiltViewModel()) {
+fun ProRoot(
+    viewModel: ProRootViewModel = hiltViewModel(),
+    onProfessionalChanged: (com.us.android.feature.doorsteppro.data.ProfessionalDto) -> Unit = {},
+    incomingPopups: Boolean = true,
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+    val error by viewModel.refreshError.collectAsStateWithLifecycle()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LifecycleResumeEffect(Unit) { viewModel.refreshStatus(); onPauseOrDispose { } }
+    // Silent reconciliation only on the review receipt, never a timed navigation reset.
+    LaunchedEffect(state is ProRootState.Submitted, lifecycle) {
+        if (state is ProRootState.Submitted) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) { delay(30_000); viewModel.refreshStatus() }
+        }
+    }
+    val professional = when (val s = state) {
+        is ProRootState.Ready -> s.professional
+        is ProRootState.Submitted -> s.professional
+        else -> null
+    }
+    LaunchedEffect(professional) { professional?.let(onProfessionalChanged) }
+    Column(Modifier.fillMaxSize()) {
+      error?.let { Text(it, color = UsTheme.extended.statusDanger, modifier = Modifier.fillMaxWidth().padding(UsTheme.spacing.l)) }
+      Box(Modifier.weight(1f)) {
     when (val current = state) {
         ProRootState.Loading -> ProSplash()
         ProRootState.NotApplied -> UsScaffold { padding ->
@@ -89,6 +119,10 @@ fun ProRoot(viewModel: ProRootViewModel = hiltViewModel()) {
             )
         }
         ProRootState.Applying -> ApplyScreen(onBack = viewModel::cancelApplying, onApplied = viewModel::load)
+        is ProRootState.Submitted -> com.us.android.feature.doorsteppro.apply.ApplicationReceiptScreen(
+            professional = current.professional, refreshing = refreshing,
+            onRefresh = viewModel::refreshStatus,
+        )
         ProRootState.SessionExpired -> {
             LaunchedEffect(Unit) { viewModel.signOut() }
             ProSplash()
@@ -104,7 +138,9 @@ fun ProRoot(viewModel: ProRootViewModel = hiltViewModel()) {
                 modifier = Modifier.padding(padding),
             )
         }
-        is ProRootState.Ready -> ProNavHost(ready = current, viewModel = viewModel)
+        is ProRootState.Ready -> ProNavHost(ready = current, viewModel = viewModel, incomingPopups = incomingPopups)
+    }
+      }
     }
 }
 
@@ -125,8 +161,10 @@ fun ProSplash() {
 
 @Composable
 @Suppress("LongMethod")
-private fun ProNavHost(ready: ProRootState.Ready, viewModel: ProRootViewModel) {
+private fun ProNavHost(ready: ProRootState.Ready, viewModel: ProRootViewModel, incomingPopups: Boolean) {
     val navController = rememberNavController()
+    val requests: com.us.android.feature.doorsteppro.offers.IncomingRequestsViewModel = hiltViewModel(key = "incoming-requests-${ready.professional.userId}")
+    val requestState by requests.state.collectAsStateWithLifecycle()
     val start: Any = remember { if (ready.onboarded) HomeRoute else OnboardingRoute }
     val back: () -> Unit = { if (!navController.popBackStack()) navController.navigate(start) }
     val home: () -> Unit = {
@@ -144,9 +182,17 @@ private fun ProNavHost(ready: ProRootState.Ready, viewModel: ProRootViewModel) {
         }
     }
 
+    com.us.android.feature.doorsteppro.offers.IncomingRequestsHost(
+        userId = ready.professional.userId,
+        vm = requests,
+        onAccepted = { navController.navigate(JobRoute(it)) { launchSingleTop = true } },
+        showPopup = incomingPopups,
+    )
+
     NavHost(navController = navController, startDestination = start) {
         composable<HomeRoute> {
             HomeScreen(
+                requests = requestState.offers,
                 onOpenOffer = { navController.navigate(OfferRoute(it)) },
                 onOpenJob = { navController.navigate(JobRoute(it)) },
                 onOpenJobs = { navController.navigate(JobsRoute) },
@@ -164,7 +210,7 @@ private fun ProNavHost(ready: ProRootState.Ready, viewModel: ProRootViewModel) {
             )
         }
         composable<ProfileStepRoute> { ProfileStepScreen(onBack = back) }
-        composable<DigiLockerRoute> { DigiLockerStepScreen(onBack = back) }
+        composable<DigiLockerRoute> { com.us.android.feature.doorsteppro.onboarding.ManualIdentityStepScreen(onBack = back) }
         composable<SelfieRoute> { SelfieStepScreen(onBack = back) }
         composable<SkillsRoute> { SkillsStepScreen(onBack = back) }
         composable<AreaRoute> { AreaStepScreen(onBack = back) }

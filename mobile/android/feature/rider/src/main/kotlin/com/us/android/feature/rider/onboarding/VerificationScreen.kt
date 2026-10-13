@@ -143,8 +143,8 @@ fun VerificationScreen(
 
 private fun stepDetail(row: RiderChecklist.Row, vehicleType: String): String = when (row.step) {
     RiderStep.VEHICLE -> "Your name, phone and what you ride"
-    RiderStep.AADHAAR_DIGILOCKER -> "Verified in DigiLocker — Feast never sees your Aadhaar number"
-    RiderStep.DRIVING_LICENCE -> if (row.status == RowStatus.NOT_NEEDED) "Not needed for a bicycle" else "Number and a photo"
+    RiderStep.IDENTITY_DOCUMENT -> "Passport, voter ID, driving licence or PAN · admin review"
+    RiderStep.DRIVING_LICENCE -> "Required for every rider · number and a clear photo"
     RiderStep.VEHICLE_RC -> if (row.status == RowStatus.NOT_NEEDED) "Not needed for a bicycle" else "Registration number and a photo"
     RiderStep.SELFIE -> "A clear photo of your face"
     RiderStep.PAYOUT_ACCOUNT -> "Where Feast pays your earnings"

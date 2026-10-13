@@ -9,7 +9,11 @@ android {
     namespace = "com.us.android.feature.commerce"
 }
 
+kotlin.sourceSets.getByName("test").kotlin.srcDir("../../test-fixtures/commerce")
+
 dependencies {
+    implementation(projects.core.notifications)
+    implementation(projects.core.commerceUi)
     implementation(projects.core.model)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)

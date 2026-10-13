@@ -77,7 +77,7 @@ fun EarningsScreen(bottomBar: @Composable () -> Unit, viewModel: EarningsViewMod
 @Composable
 private fun SummaryCard(summary: RestaurantSummaryDto) {
     KitchenCard {
-        Text("Payout to date", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+        Text("All-time earned payout estimate", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
         Text(
             text = RupeeFormat.format(summary.payoutAmount),
             style = MaterialTheme.typography.headlineMedium,
@@ -85,7 +85,8 @@ private fun SummaryCard(summary: RestaurantSummaryDto) {
             color = UsTheme.extended.textPrimary,
         )
         HorizontalDivider(color = UsTheme.extended.borderSubtle)
-        LabeledValue("Order value", RupeeFormat.format(summary.grossAmount))
+        Text("Delivered food supply only. Includes applicable tax deductions; confirmed transfers appear in Settlements.", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+        LabeledValue("Delivered supply", RupeeFormat.format(summary.grossAmount))
         LabeledValue("Feast commission", deduction(summary.commission))
         LabeledValue("Refunds", deduction(summary.refunds))
         Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), verticalAlignment = Alignment.CenterVertically) {

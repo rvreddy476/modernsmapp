@@ -13,6 +13,9 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
+    testImplementation(libs.robolectric)
 }
 
 // NoRawColourGuardTest reads the main Kotlin of EVERY module, so those files

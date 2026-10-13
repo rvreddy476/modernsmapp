@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Offline UI fixture only. No session, API responses or navigation into the app. -->
+        <activity
+            android:name="com.us.android.designreview.MobileDesignReviewActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Us" />
+    </application>
+</manifest>

@@ -61,11 +61,12 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.util.Locale
 import javax.inject.Inject
 
 /** The home point and the zone doorstep-service placed it in. */
-data class HomePoint(val coordinates: Coordinates, val zoneId: String, val zoneName: String)
+data class HomePoint(val coordinates: Coordinates, val zoneId: String?, val zoneName: String) {
+    val zoneIds: List<String> get() = listOfNotNull(zoneId)
+}
 
 data class AreaUiState(
     val location: LocationStep = LocationStep.Idle,
@@ -120,7 +121,7 @@ class AreaViewModel @Inject constructor(
         if (query.isEmpty()) return
         _state.update { it.copy(resolving = true) }
         viewModelScope.launch {
-            val point = places.forward("$query, Hyderabad")
+            val point = places.forward(query)
             if (point == null) {
                 _state.update { it.copy(resolving = false, message = errorMessage("Couldn't find that place. Try a nearby landmark or area name.")) }
             } else {
@@ -140,11 +141,11 @@ class AreaViewModel @Inject constructor(
             _state.update { it.copy(message = errorMessage("Set your home point first.")) }
             return
         }
-        if (current.saving) return
+        if (current.saving || current.resolving || current.location == LocationStep.Locating) return
         _state.update { it.copy(saving = true) }
         viewModelScope.launch {
             val result = repository.saveArea(
-                zoneIds = listOf(home.zoneId),
+                zoneIds = home.zoneIds,
                 homeLat = home.coordinates.latitude,
                 homeLng = home.coordinates.longitude,
                 radiusM = AreaRules.radiusMeters(current.radiusKm),
@@ -181,7 +182,7 @@ class AreaViewModel @Inject constructor(
                 if (result.value.serviceable && zone != null) {
                     _state.update { it.copy(resolving = false, home = HomePoint(point, zone.id, zone.name)) }
                 } else {
-                    _state.update { it.copy(resolving = false, home = null, outside = true) }
+                    _state.update { it.copy(resolving = false, home = HomePoint(point, null, "Location saved for setup"), outside = true) }
                 }
             }
             is ProResult.Failure -> _state.update { it.copy(resolving = false, message = result.error.asMessage()) }
@@ -229,7 +230,7 @@ fun AreaStepScreen(onBack: () -> Unit, viewModel: AreaViewModel = hiltViewModel(
         onBack = onBack,
         message = state.message,
         onDismissMessage = viewModel::dismissMessage,
-        bottomBar = { BottomAction(label = "Save area", onClick = viewModel::save, loading = state.saving, enabled = state.home != null) },
+        bottomBar = { BottomAction(label = "Save area", onClick = viewModel::save, loading = state.saving, enabled = state.home != null && !state.resolving && state.location != LocationStep.Locating) },
     ) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(listPadding(padding)),
@@ -259,13 +260,9 @@ fun AreaStepScreen(onBack: () -> Unit, viewModel: AreaViewModel = hiltViewModel(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 state.home?.let { home ->
-                    LabeledValue("Zone", home.zoneName)
-                    LabeledValue(
-                        "Point",
-                        String.format(Locale.ENGLISH, "%.4f, %.4f", home.coordinates.latitude, home.coordinates.longitude),
-                    )
+                    LabeledValue("Working area", home.zoneName)
                 }
-                if (state.outside) InfoNote("Doorstep doesn't serve that point yet. Pick a place inside Hyderabad's service area.", tone = Tone.Danger)
+                if (state.outside) InfoNote("Bookings aren’t available in this area yet. You can save your location and travel radius now.", tone = Tone.Warning)
             }
             ProCard {
                 CardHeading("How far you'll travel", "${state.radiusKm} km from your home point")

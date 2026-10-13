@@ -96,6 +96,8 @@ class AuthInterceptor @Inject constructor(
 
     private companion object {
         val NO_AUTH_PATHS = listOf(
+            "/v1/auth/partner/phone/request",
+            "/v1/auth/partner/phone/verify",
             "/v1/auth/login",
             "/v1/auth/register",
             "/v1/auth/refresh",

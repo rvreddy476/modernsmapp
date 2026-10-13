@@ -45,6 +45,7 @@ data class OrderDetailUiState(
 class OrderDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val kitchen: KitchenRepository,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
 
     private val restaurantId = savedStateHandle.restaurantId()
@@ -56,6 +57,7 @@ class OrderDetailViewModel @Inject constructor(
 
     init {
         load()
+        viewModelScope.launch { updates.events.collect { if (it.startsWith("food_kitchen_") || it == "food_order_new") load() } }
     }
 
     fun load() {

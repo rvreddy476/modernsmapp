@@ -38,7 +38,7 @@ class MopeduChannelTest {
     /**
      * The captain's own account (2026-09-18): every plan and onboarding push
      * lands on captain_account — DEFAULT, never the alarm-toned offer channel —
-     * and nothing else does.
+     * including forward-compatible captain account events.
      */
     @Test
     fun `every subscription and onboarding push lands on the captain account channel`() {
@@ -56,7 +56,9 @@ class MopeduChannelTest {
         assertThat(NotificationChannelSpec.CAPTAIN_ACCOUNT.alertSound).isFalse()
         // An offer never lands on the account channel, and a subscription push never on the offer channel.
         assertThat(NotificationChannelSpec.forType("captain.offer")).isNotEqualTo(NotificationChannelSpec.CAPTAIN_ACCOUNT)
-        assertThat(NotificationChannelSpec.forType("captain.subscription.something_new")).isEqualTo(NotificationChannelSpec.SOCIAL)
+        // Both legacy Captain and unified Partner lack SOCIAL; future captain
+        // events need a registered, non-alarm fallback instead of being dropped.
+        assertThat(NotificationChannelSpec.forType("captain.subscription.something_new")).isEqualTo(NotificationChannelSpec.CAPTAIN_ACCOUNT)
         assertThat(NotificationChannelSpec.MOMENTUM).doesNotContain(NotificationChannelSpec.CAPTAIN_ACCOUNT)
         assertThat(NotificationChannelSpec.KITCHEN).doesNotContain(NotificationChannelSpec.CAPTAIN_ACCOUNT)
         assertThat(NotificationChannelSpec.RIDER).doesNotContain(NotificationChannelSpec.CAPTAIN_ACCOUNT)

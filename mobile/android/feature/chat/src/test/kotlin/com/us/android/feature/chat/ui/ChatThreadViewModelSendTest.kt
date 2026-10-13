@@ -25,6 +25,7 @@ import com.us.android.core.model.SessionState
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.TokenProvider
 import com.us.android.core.notifications.AppForegroundState
+import com.us.android.core.notifications.DoorstepOfferAlertCoordinator
 import com.us.android.core.notifications.NotificationPresenter
 import com.us.android.core.testing.MainDispatcherRule
 import kotlinx.coroutines.CompletableDeferred
@@ -137,7 +138,7 @@ class ChatThreadViewModelSendTest {
                 context,
                 MediaUploader(unusedMediaApi(), PresignedUploader(OkHttpClient()), errorMapper),
             ),
-            notificationPresenter = NotificationPresenter(context, AppForegroundState()),
+            notificationPresenter = NotificationPresenter(context, AppForegroundState(), DoorstepOfferAlertCoordinator()),
             sessionState = object : SessionStateProvider {
                 override val sessionState: StateFlow<SessionState> =
                     MutableStateFlow(SessionState.Authenticated(userId = "viewer", sessionId = "s"))

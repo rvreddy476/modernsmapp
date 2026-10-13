@@ -10,12 +10,10 @@ import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
 /**
- * Doorstep Pro's application and Hilt root.
+ * Unified Partner application and Hilt root; retains the installed package identity.
  *
- * Registers ONLY the professional's notification channels (doorstep_pro_offers,
- * _jobs, _account, _earnings and the on-duty one) — never Momentum's, the Feast
- * partners' or the captain's — starts push-token registration, and reports once
- * whether this build has Firebase at all.
+ * Registers delivery, home-service and Moped channels, starts push-token registration,
+ * and reports once whether this build has Firebase configured.
  */
 @HiltAndroidApp
 class DoorstepProApplication : Application() {
@@ -25,16 +23,16 @@ class DoorstepProApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        NotificationChannelSpec.createAll(this, NotificationChannelSpec.DOORSTEP_PRO)
+        NotificationChannelSpec.createAll(this, NotificationChannelSpec.DOORSTEP_PRO +
+            NotificationChannelSpec.RIDER + NotificationChannelSpec.CAPTAIN + NotificationChannelSpec.COMMERCE_DELIVERY)
         FirebaseState.logOnce(this)
         pushRegistration.start()
     }
 }
 
 /**
- * Whether this build carries a Firebase configuration. There is no
- * google-services.json for Doorstep Pro yet, so FCM is disabled and offers
- * arrive through the in-app realtime stream (and its polling fallback) only.
+ * Whether this build carries a matching Firebase configuration. Builds without
+ * the local google-services.json use the in-app realtime stream and polling only.
  */
 internal object FirebaseState {
 

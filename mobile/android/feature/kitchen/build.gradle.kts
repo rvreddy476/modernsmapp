@@ -20,19 +20,19 @@ dependencies {
     implementation(projects.core.model)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
+    implementation(projects.core.maps)
     // food-service DTOs, the onboarding + kitchen repositories, Paise.
     implementation(projects.core.food)
     // The SSE client and the RealtimeTokenSource port for the live queue.
     implementation(projects.core.realtime)
+    implementation(projects.core.notifications)
     // MediaUploader for the FSSAI licence photo. Not :core:creator-model —
     // moduleGraphCheck G-6 forbids a feature holding both.
     implementation(projects.core.media)
     // Sign-out from the Restaurant tab and the not-a-partner screen.
     implementation(projects.core.auth)
 
-    // Fused location for "Use my current location". The ONLY location
-    // dependency: maps-compose and Places are not in the offline cache, so the
-    // map is a MapPreview seam and the address is typed.
+    // One-shot location for "Use my current location"; maps use core:maps.
     implementation(libs.play.services.location)
 
     implementation(libs.androidx.activity.compose)

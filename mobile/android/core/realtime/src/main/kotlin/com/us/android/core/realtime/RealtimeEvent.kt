@@ -14,6 +14,8 @@ import kotlinx.serialization.json.JsonElement
  *  - `: keepalive` comments every 25 s with no events.
  */
 sealed interface RealtimeEvent {
+    /** Transport disconnected; cached content must not continue to claim it is live. */
+    data object Disconnected : RealtimeEvent
 
     /** The stream is open. [resumedFrom] is the Last-Event-ID the server resumed after. */
     data class Connected(

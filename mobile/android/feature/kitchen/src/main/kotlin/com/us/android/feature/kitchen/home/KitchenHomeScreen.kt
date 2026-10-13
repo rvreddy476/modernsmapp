@@ -33,8 +33,9 @@ fun KitchenHomeScreen(
     onSelectRestaurant: (String) -> Unit,
     onRestaurantChanged: () -> Unit,
     onSignOut: () -> Unit,
+    initialTab: Int = 0,
 ) {
-    var tab by rememberSaveable { mutableIntStateOf(TAB_ORDERS) }
+    var tab by rememberSaveable(restaurant.id, initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 3)) }
     val items = remember {
         listOf(
             UsNavItem("Orders", UsIcons.Package),

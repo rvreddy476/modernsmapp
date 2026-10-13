@@ -24,6 +24,8 @@ class UsMessagingService : FirebaseMessagingService() {
     @Inject
     lateinit var presenter: NotificationPresenter
 
+    @Inject lateinit var updates: NotificationUpdates
+
     @Inject
     lateinit var incomingCallHandler: IncomingCallPushHandler
 
@@ -52,6 +54,7 @@ class UsMessagingService : FirebaseMessagingService() {
      */
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
+        data[NotificationPresenter.KEY_TYPE]?.let(updates::received)
         // CALL-LB-4: ringing pushes are DATA-ONLY and HIGH priority
         // server-side precisely so they reach here in the background. They
         // wake the calling stack — which re-verifies the invite with the
@@ -64,6 +67,18 @@ class UsMessagingService : FirebaseMessagingService() {
             )
             return
         }
-        presenter.present(data)
+        // In the foreground, older server builds deliver title/body in FCM's
+        // notification envelope, not in data. Preserve both Doorstep formats.
+        presenter.present(doorstepNotificationData(data, message.notification?.title, message.notification?.body))
+    }
+}
+
+/** Only the partner surface needs this compatibility fallback; chat privacy is unchanged. */
+internal fun doorstepNotificationData(data: Map<String, String>, title: String?, body: String?): Map<String, String> {
+    if (data["type"]?.startsWith("doorstep.pro.") != true) return data
+    return buildMap {
+        putAll(data)
+        if (!containsKey("title") && title != null) put("title", title)
+        if (!containsKey("body") && body != null) put("body", body)
     }
 }

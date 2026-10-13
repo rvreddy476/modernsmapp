@@ -149,6 +149,8 @@ class FakeRiderRepository : MopeduRiderRepository {
     var couponAnswer: MopeduResult<CouponValidation> = MopeduResult.Success(CouponValidation("SAVE10", "10% off", "percent", percentBasisPoints = 1000))
     var bookingAnswer: (PaymentMethod) -> MopeduResult<RideBooking> = { method -> MopeduResult.Success(booking(paymentMethod = method)) }
     var activeRide: RideBooking? = null
+    var rideAnswer: MopeduResult<RideBooking?>? = null
+    val rideReads = mutableListOf<String>()
     var receiptAnswer: MopeduResult<RideReceipt> = MopeduResult.Success(receipt())
     val paymentAnswers = ArrayDeque<MopeduResult<RidePayment>>()
     var lastPaymentAnswer: MopeduResult<RidePayment> = MopeduResult.Success(payment(PaymentMethod.CASH, RidePaymentStatus.CASH_PENDING))
@@ -179,6 +181,10 @@ class FakeRiderRepository : MopeduRiderRepository {
     }
 
     override suspend fun activeRide(): MopeduResult<RideBooking?> = MopeduResult.Success(activeRide)
+    override suspend fun ride(id: String): MopeduResult<RideBooking?> {
+        rideReads += id
+        return rideAnswer ?: MopeduResult.Success(activeRide)
+    }
 
     override suspend fun rideHistory(limit: Int): MopeduResult<List<RideBooking>> = historyAnswer
 

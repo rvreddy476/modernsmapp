@@ -44,6 +44,7 @@ data class ProJobPageDto(
 /** `Professional` — pro_apply_201, pro_me_get_200, pro_me_patch_200. */
 @Serializable
 data class ProfessionalDto(
+	@SerialName("application") val application: PartnerApplicationDto? = null,
     @SerialName("id") val id: String,
     @SerialName("user_id") val userId: String,
     /** draft | pending_verification | approved | suspended | rejected | blocked */
@@ -159,6 +160,11 @@ data class DayOffDto(
 /** `PayoutAccount` — masked: the number typed is never echoed. */
 @Serializable
 data class PayoutAccountDto(
+	@SerialName("bank_name") val bankName: String? = null,
+	@SerialName("branch_name") val branchName: String? = null,
+	@SerialName("proof_kind") val proofKind: String? = null,
+	@SerialName("proof_document_id") val proofDocumentId: String? = null,
+	@SerialName("reason") val reason: String? = null,
     @SerialName("account_holder") val accountHolder: String,
     @SerialName("account_last4") val accountLast4: String,
     @SerialName("ifsc") val ifsc: String,
@@ -461,7 +467,11 @@ data class BankRequest(
     @SerialName("account_holder") val accountHolder: String,
     @SerialName("account_number") val accountNumber: String,
     @SerialName("ifsc") val ifsc: String,
-)
+    @SerialName("bank_name") val bankName: String,
+    @SerialName("branch_name") val branchName: String = "",
+    @SerialName("proof_kind") val proofKind: String,
+    @SerialName("proof_media_id") val proofMediaId: String,
+) { override fun toString() = "BankRequest(redacted)" }
 
 @Serializable
 data class AgreementRequest(

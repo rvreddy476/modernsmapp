@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -70,6 +73,8 @@ fun AccountScreen(
     viewModel: AccountViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var contactOpen by remember { mutableStateOf(false) }
+    if (contactOpen) { com.us.android.feature.doorsteppro.apply.AlternateContactScreen(onBack = { contactOpen = false }); return }
     ProScreen(title = "Account", onBack = onBack) { padding ->
         LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = listPadding(padding), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
             state.professional?.let { pro ->
@@ -78,7 +83,7 @@ fun AccountScreen(
                         val status = ProStatus.of(pro.status)
                         CardHeading(pro.displayName, "Doorstep professional · ${pro.cityCode}")
                         Pill(status.label(), status.tone())
-                        pro.gender?.let { LabeledValue("Gender (Aadhaar)", humanise(it)) }
+                        pro.gender?.let { LabeledValue("Gender (reviewed)", humanise(it)) }
                         LabeledValue("Jobs completed", pro.jobsCompleted.toString())
                         LabeledValue(
                             "Rating",
@@ -90,6 +95,7 @@ fun AccountScreen(
             }
             item { SectionLabel("Work settings") }
             item { PricesCard() }
+            item { UsSecondaryButton(text = "Alternate contact verification", onClick = { contactOpen = true }) }
             item { ActionRow(UsIcons.Clock, "Working hours and days off", null, onClick = { onOpenStep(OnboardingStep.WEEKLY_HOURS) }) }
             item {
                 ActionRow(
@@ -101,7 +107,6 @@ fun AccountScreen(
             }
             item { ActionRow(UsIcons.Wrench, "Skills and trade certificates", null, onClick = { onOpenStep(OnboardingStep.SKILLS) }) }
             item { ActionRow(UsIcons.CreditCard, "Bank account", state.bank, onClick = { onOpenStep(OnboardingStep.BANK) }) }
-            item { ActionRow(UsIcons.ShieldAlert, "Police clearance certificate", "Renew before it expires", onClick = { onOpenStep(OnboardingStep.POLICE_CERTIFICATE) }) }
             item { ActionRow(UsIcons.Check, "Verification checklist", null, onClick = onOpenChecklist) }
             item { UsSecondaryButton(text = "Sign out", onClick = onSignOut, modifier = Modifier.fillMaxWidth()) }
         }

@@ -49,7 +49,9 @@ class NotificationsViewModel @Inject constructor(
      */
     private val badge: UnreadBadge,
     private val actions: NotificationActions,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
+    val trackingUpdates = updates.events
 
     private val _state = MutableStateFlow(NotificationsUiState())
     val state: StateFlow<NotificationsUiState> = _state.asStateFlow()

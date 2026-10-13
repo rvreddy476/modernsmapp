@@ -89,7 +89,7 @@ data class SkillsUiState(
     /** Declared skills that need a certificate and are not verified yet. */
     val needingCertificate: List<SkillDto>
         get() = catalogue.filter { skill ->
-            skill.requiresCertificate && skill.code in selected &&
+            skill.code in selected &&
                 declared.none { it.skillCode == skill.code && it.status == VERIFIED }
         }
 
@@ -124,7 +124,18 @@ class SkillsViewModel @Inject constructor(
     fun load() {
         viewModelScope.launch {
             when (val result = repository.skillCatalogue()) {
-                is ProResult.Success -> _state.update { it.copy(loading = false, catalogue = result.value, error = null) }
+                is ProResult.Success -> {
+                    val mine = repository.mySkills()
+                    val documents = repository.documents()
+                    if (mine is ProResult.Success && documents is ProResult.Success) {
+                        _state.update { it.copy(loading = false, catalogue = result.value, declared = mine.value,
+                            selected = mine.value.map { skill -> skill.skillCode }.toSet(),
+                            certificatesSent = documents.value.filter { doc -> doc.kind == "trade_certificate" && doc.status == "pending" }.mapNotNull { doc -> doc.skillCode }.toSet(), error = null) }
+                    } else {
+                        val error = (mine as? ProResult.Failure)?.error ?: (documents as ProResult.Failure).error
+                        _state.update { it.copy(loading = false, error = error.userMessage()) }
+                    }
+                }
                 is ProResult.Failure -> _state.update { it.copy(loading = false, error = result.error.userMessage()) }
             }
         }
@@ -243,7 +254,7 @@ fun SkillsStepScreen(onBack: () -> Unit, viewModel: SkillsViewModel = hiltViewMo
             state.error != null -> MessagePane(title = "Couldn't load skills", body = state.error.orEmpty(), primaryLabel = "Try again", onPrimary = viewModel::load)
             else -> LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = listPadding(padding)) {
                 item {
-                    InfoNote("Choose the work you are trained for. Skills marked \"certificate\" are verified by Doorstep from a trade certificate.")
+                    InfoNote("Choose the services you provide. Certificates are optional supporting evidence; every skill is reviewed by an admin.")
                 }
                 item { SectionLabel("Skills") }
                 items(state.catalogue, key = { it.code }) { skill ->
@@ -265,15 +276,14 @@ fun SkillsStepScreen(onBack: () -> Unit, viewModel: SkillsViewModel = hiltViewMo
                         when {
                             status == SkillsUiState.VERIFIED -> Pill("Verified", Tone.Positive)
                             skill.code in state.certificatesSent -> Pill("In review", Tone.Warning)
-                            skill.requiresCertificate -> Pill("Certificate", Tone.Neutral)
                         }
                     }
                 }
                 if (state.needingCertificate.isNotEmpty()) {
-                    item { SectionLabel("Trade certificates") }
+                    item { SectionLabel("Certificates · optional") }
                     items(state.needingCertificate, key = { "cert-" + it.code }) { skill ->
                         ProCard(modifier = Modifier.padding(bottom = UsTheme.spacing.m)) {
-                            CardHeading(skill.name, "Upload your trade certificate. Doorstep verifies the skill from it.")
+                            CardHeading(skill.name, "Optional evidence of your experience. It can help us recommend suitable assignments.")
                             if (skill.code in state.certificatesSent) {
                                 Pill("Sent · in review", Tone.Warning)
                             } else {

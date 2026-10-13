@@ -3,6 +3,7 @@ package com.us.android.feature.rider.root
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -20,6 +21,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsSurfaceCard
+import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
@@ -56,20 +59,7 @@ fun RiderRoot(viewModel: RiderRootViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     when (val current = state) {
         RiderRootState.Loading -> RiderSplash()
-        RiderRootState.NotRider -> UsScaffold { padding ->
-            MessagePane(
-                title = "Deliver with Feast",
-                body = "Feast Rider is for delivery partners. This account isn't one yet. " +
-                    "Tell us about you and your vehicle to start — then verify your documents and Feast reviews them. " +
-                    "To order food, use the Momentum app.",
-                icon = UsIcons.MapPin,
-                primaryLabel = "Become a rider",
-                onPrimary = viewModel::becomeRider,
-                secondaryLabel = "Sign out",
-                onSecondary = viewModel::signOut,
-                modifier = Modifier.padding(padding),
-            )
-        }
+        RiderRootState.NotRider -> DeliveryWelcomeScreen(viewModel::becomeRider)
         RiderRootState.BecomingRider -> ProfileScreen(onBack = viewModel::cancelBecomingRider, onSaved = viewModel::load)
         RiderRootState.SessionExpired -> {
             LaunchedEffect(Unit) { viewModel.signOut() }
@@ -77,7 +67,7 @@ fun RiderRoot(viewModel: RiderRootViewModel = hiltViewModel()) {
         }
         is RiderRootState.Unavailable -> UsScaffold { padding ->
             MessagePane(
-                title = "Couldn't open Feast Rider",
+                title = "Couldn't open food delivery",
                 body = current.message,
                 primaryLabel = "Try again",
                 onPrimary = viewModel::load,
@@ -87,6 +77,20 @@ fun RiderRoot(viewModel: RiderRootViewModel = hiltViewModel()) {
             )
         }
         is RiderRootState.Ready -> RiderNavHost(ready = current, viewModel = viewModel)
+    }
+}
+
+@Composable
+fun DeliveryWelcomeScreen(onStart: () -> Unit) {
+    UsScaffold { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(vertical = UsTheme.spacing.xxl),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+            UsSurfaceCard(Modifier.fillMaxWidth()) {
+                Text("Set up food delivery", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Add your profile, vehicle and verification details to receive delivery requests.", color = UsTheme.extended.textSecondary)
+                UsButton("Get started", onStart)
+            }
+        }
     }
 }
 
@@ -127,6 +131,23 @@ private fun RiderNavHost(ready: RiderRootState.Ready, viewModel: RiderRootViewMo
     LaunchedEffect(navController) {
         viewModel.links.collect { link ->
             when (link) {
+                RiderDeepLink.Work -> { home(); viewModel.linkHandled() }
+                RiderDeepLink.CurrentJob -> {
+                    navController.navigate(ActiveJobRoute) { launchSingleTop = true }
+                    viewModel.linkHandled()
+                }
+                RiderDeepLink.Account -> {
+                    navController.navigate(VerificationRoute) { launchSingleTop = true }
+                    viewModel.linkHandled()
+                }
+                RiderDeepLink.Documents -> {
+                    navController.navigate(DocumentsRoute) { launchSingleTop = true }
+                    viewModel.linkHandled()
+                }
+                RiderDeepLink.Earnings -> {
+                    navController.navigate(EarningsRoute) { launchSingleTop = true }
+                    viewModel.linkHandled()
+                }
                 is RiderDeepLink.Offer -> {
                     navController.navigate(OfferRoute(link.offerId)) { launchSingleTop = true }
                     viewModel.linkHandled()

@@ -157,6 +157,8 @@ sealed interface NotificationKind {
  * a crash or a navigation to somewhere nobody intended.
  */
 sealed interface NotificationTarget {
+    data class Customer(val service: CustomerNotification.Service, val id: String) : NotificationTarget
+    data object CustomerDues : NotificationTarget
     data class Post(val postId: String) : NotificationTarget
     data class PostComment(val postId: String, val commentId: String) : NotificationTarget
     data class Profile(val userId: String) : NotificationTarget
@@ -208,6 +210,8 @@ sealed interface NotificationTarget {
          * approximate.
          */
         fun parse(deepLink: String): NotificationTarget {
+            val customer = CustomerNotification.target(deepLink)
+            if (customer != None) return customer
             val trimmed = deepLink.trim()
             // The contract is an ABSOLUTE PATH. Requiring the leading slash
             // rejects `post/abc`, and — the case that matters —

@@ -41,11 +41,14 @@ android {
 }
 
 dependencies {
+    implementation(projects.feature.seller)
     implementation(projects.core.common)
     implementation(projects.core.model)
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
     implementation(projects.core.media)
+    // AppModule provides the customer-only AR configuration directly.
+    implementation(projects.core.facear)
     // Offline copies (2026-10-02): UsApplication starts the copy state machine
     // (expiry, resume, recheck), which lives with the feed data it stores.
     implementation(projects.core.feed)

@@ -72,6 +72,7 @@ import java.time.Instant
 @Composable
 @Suppress("LongMethod", "LongParameterList")
 fun HomeScreen(
+    requests: List<OfferDto>,
     onOpenOffer: (String) -> Unit,
     onOpenJob: (String) -> Unit,
     onOpenJobs: () -> Unit,
@@ -159,24 +160,25 @@ fun HomeScreen(
                     ActionRow(
                         icon = UsIcons.Notifications,
                         title = "Turn on notifications",
-                        subtitle = "Offers expire in minutes — notifications make sure you hear them.",
+                        subtitle = "Allow notifications to hear time-sensitive service requests.",
                         onClick = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
                     )
                 }
             }
-            item {
-                SectionLabel("Offers") {
-                    if (state.transport == LiveTransport.POLLING) Pill("Refreshing every 15 s", Tone.Neutral)
-                }
+            if (context.resources.getIdentifier("google_app_id", "string", context.packageName) == 0) {
+                item { InfoNote("Background alerts aren't configured in this build. Keep the app open to receive requests.") }
             }
-            if (state.offers.isEmpty()) {
+            item {
+                SectionLabel("Service requests")
+            }
+            if (requests.isEmpty()) {
                 item {
                     InfoNote(
                         if (state.duty == DutyState.Online) "No offers right now. New ones appear here and as a notification." else "Go on duty to receive offers.",
                     )
                 }
             }
-            items(state.offers, key = { "offer-" + it.id }) { offer -> OfferRow(offer, now, onClick = { onOpenOffer(offer.id) }) }
+            items(requests, key = { "offer-" + it.id }) { offer -> OfferRow(offer, now, onClick = { onOpenOffer(offer.id) }) }
             item { SectionLabel("Active jobs") }
             if (state.activeJobs.isEmpty()) item { InfoNote("No job in progress.") }
             items(state.activeJobs, key = { "job-" + it.bookingId }) { job -> JobRow(job, onClick = { onOpenJob(job.bookingId) }) }

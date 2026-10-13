@@ -45,12 +45,15 @@ class PushTokenRegistrar @Inject constructor(
      */
     suspend fun registerIfNeeded(): AppResult<String?> {
         val token = store.token() ?: return AppResult.Success(null)
-        if (store.registeredToken() == token) return AppResult.Success(store.deviceId())
+        // The unified app upgrades an existing Doorstep install: the FCM token
+        // may be unchanged while its server routing target has changed.
+        val registrationKey = if (app == PushApp.PARTNER) "partner:$token" else token
+        if (store.registeredToken() == registrationKey) return AppResult.Success(store.deviceId())
 
         return apiCall(errorMapper) {
             api.registerDevice(RegisterDeviceRequest(platform = ANDROID, pushToken = token, app = app.wire))
         }.map { device ->
-            store.markRegistered(token = token, deviceId = device.id)
+            store.markRegistered(token = registrationKey, deviceId = device.id)
             device.id
         }
     }

@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -36,6 +35,7 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceProgressLine
 import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.ProductCard
+import com.us.android.feature.commerce.ui.commerceGridCells
 
 /**
  * MStore's results page — a search, a category, or both.
@@ -133,10 +133,12 @@ private fun BrowseGrid(
             state.canLoadMore && last >= state.items.size - PREFETCH_DISTANCE
         }
     }
-    if (shouldLoadMore) onLoadMore()
+    LaunchedEffect(shouldLoadMore, state.items.size) {
+        if (shouldLoadMore) onLoadMore()
+    }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(GRID_COLUMNS),
+        columns = commerceGridCells(),
         state = gridState,
         modifier = Modifier.fillMaxSize().testTag("mstore_browse_grid"),
         contentPadding = PaddingValues(
@@ -181,5 +183,4 @@ private fun BrowseGrid(
     }
 }
 
-private const val GRID_COLUMNS = 2
 private const val PREFETCH_DISTANCE = 4

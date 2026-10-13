@@ -26,7 +26,9 @@ import javax.inject.Inject
 @HiltViewModel
 class UnreadBadgeViewModel @Inject constructor(
     private val badge: UnreadBadge,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
+    init { viewModelScope.launch { updates.events.collect { badge.refresh() } } }
 
     val count: StateFlow<Int> = badge.count
 

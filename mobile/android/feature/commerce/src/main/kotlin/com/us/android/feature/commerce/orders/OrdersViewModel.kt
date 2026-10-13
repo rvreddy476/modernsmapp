@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
 // ─── List ────────────────────────────────────────────────────────────
@@ -239,7 +240,19 @@ class OrderDetailViewModel @Inject constructor(
     private val handoff: PaymentHandoff,
     private val payments: PaymentCoordinator,
     savedState: SavedStateHandle,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
+    val trackingUpdates = updates.events
+    private val readMutex = kotlinx.coroutines.sync.Mutex()
+    private var refreshing = false
+
+    fun refreshTracking() {
+        if (refreshing) return
+        refreshing = true
+        viewModelScope.launch {
+            try { load() } finally { refreshing = false }
+        }
+    }
 
     private val orderId: String = requireNotNull(savedState["orderId"]) {
         "OrderDetailViewModel requires an orderId argument"
@@ -265,13 +278,14 @@ class OrderDetailViewModel @Inject constructor(
         viewModelScope.launch { load() }
     }
 
-    private suspend fun load() {
+    private suspend fun load() = readMutex.withLock {
         when (val r = repo.order(orderId)) {
             is CommerceResult.Failure ->
-                _state.value =
-                    OrderDetailUiState.Failed(r.error.describe(), r.error.isRetryable())
+                _state.value = (_state.value as? OrderDetailUiState.Content)?.copy(message = "Updates unavailable. Showing your last loaded order.")
+                    ?: OrderDetailUiState.Failed(r.error.describe(), r.error.isRetryable())
 
-            is CommerceResult.Success -> _state.value = OrderDetailUiState.Content(r.value)
+            is CommerceResult.Success -> _state.value = (_state.value as? OrderDetailUiState.Content)?.copy(order = r.value, message = null)
+                ?: OrderDetailUiState.Content(r.value)
         }
     }
 

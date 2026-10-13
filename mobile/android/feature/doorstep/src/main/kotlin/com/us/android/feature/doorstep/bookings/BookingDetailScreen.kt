@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -91,6 +92,10 @@ fun BookingDetailScreen(
     viewModel: BookingDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val now by produceState(java.time.Instant.now()) {
+        while (true) { value = java.time.Instant.now(); kotlinx.coroutines.delay(5_000) }
+    }
+    com.us.android.core.ui.RefreshWhileVisible(viewModel.trackingUpdates, refresh = viewModel::refreshNow)
     val pay by viewModel.billPayment.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -162,6 +167,7 @@ fun BookingDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 item { StatusHeader(booking, state.status, state.live) }
+                state.error?.let { message -> item { Text(message, color = UsTheme.extended.textSecondary) } }
                 if (booking.professional != null) item {
                     UsSecondaryButton(text = "Visit conversation", onClick = { showChat = true }, modifier = Modifier.fillMaxWidth())
                 }
@@ -220,6 +226,17 @@ fun BookingDetailScreen(
                                 color = UsTheme.extended.textMuted,
                             )
                             if (booking.requireFemalePro) InfoNote("You asked for a woman professional.", tone = Tone.Accent)
+                            if (booking.status == "en_route") {
+                                val fix = state.professionalFix?.takeIf { state.error == null && it.isFresh(now) }
+                                if (fix == null) InfoNote("Waiting for a recent professional location.")
+                                else {
+                                    fix.etaMinutes?.let { InfoNote("Arriving in about $it minutes") }
+                                    com.us.android.core.maps.LocationMap(
+                                        pins = listOf(com.us.android.core.maps.MapPin(fix.lat, fix.lng, "Your professional")),
+                                        modifier = Modifier.fillMaxWidth().aspectRatio(1.7f),
+                                    )
+                                }
+                            }
                         }
                     }
                 }

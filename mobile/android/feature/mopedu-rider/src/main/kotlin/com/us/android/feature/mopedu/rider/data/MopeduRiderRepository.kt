@@ -30,6 +30,7 @@ import javax.inject.Singleton
 /** The customer's ride data seam. Every call answers a typed [MopeduResult]; nothing throws. */
 @Suppress("TooManyFunctions")
 interface MopeduRiderRepository {
+    suspend fun ride(rideId: String): MopeduResult<RideBooking?> = activeRide()
     suspend fun estimate(pickup: GeoPoint, drop: GeoPoint, couponCode: String? = null): MopeduResult<QuoteSnapshot>
     suspend fun validateCoupon(code: String, cityId: String? = null, vehicleType: VehicleType? = null): MopeduResult<CouponValidation>
     suspend fun bookRide(
@@ -70,6 +71,8 @@ class RealMopeduRiderRepository @Inject constructor(
     private val api: MopeduRiderApi,
     private val json: Json,
 ) : MopeduRiderRepository {
+    override suspend fun ride(rideId: String): MopeduResult<RideBooking?> =
+        mopeduCall(json) { api.ride(rideId) }.map { it.toBooking() }
 
     override suspend fun estimate(pickup: GeoPoint, drop: GeoPoint, couponCode: String?): MopeduResult<QuoteSnapshot> =
         mopeduCall(json) {
@@ -234,6 +237,8 @@ internal fun RideDto.toBooking() = RideBooking(
     completedAtEpochMs = completedAt.toEpochMs(),
     cancellationFee = cancellationFeePaise?.let(::MoneyPaise),
     cancelFreeUntilEpochMs = cancelFreeUntil.toEpochMs(),
+    captainLocation = captainLocation?.let { GeoPoint(it.lat, it.lng, "Captain") },
+    captainLocationAtEpochMs = captainLocation?.recordedAt.toEpochMs(),
 )
 
 internal fun RideReceiptDto.toReceipt() = RideReceipt(

@@ -19,12 +19,9 @@ dependencies {
     // The try-on VOCABULARY only — TryOnDescriptor, TryOnKind, TryOnVariant —
     // which a Product carries and which :feature:commerce reads, so `api`.
     //
-    // This does NOT put the Banuba SDK on this module's compile classpath:
-    // :core:facear declares the vendor artifacts as `implementation`, so what
-    // crosses this edge is four pure Kotlin types. The alternative was a
-    // second copy of the kind enum and the variant type in this module, and a
-    // wire parser whose vocabulary can drift from the renderer's.
-    api(projects.core.facear)
+    // Share vocabulary without putting the camera-effects SDK in the Partner
+    // APK. The customer-only :core:facear module depends on these same types.
+    api(projects.core.facearModel)
 
     api(libs.retrofit)
     api(libs.kotlinx.serialization.json)

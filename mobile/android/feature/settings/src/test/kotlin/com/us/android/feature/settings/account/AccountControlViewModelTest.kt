@@ -79,6 +79,12 @@ class AccountControlViewModelTest {
         override suspend fun resendVerification(body: ResendVerificationRequestDto) = ApiEnvelope(MessageDto())
         override suspend fun logout() = ApiEnvelope(Unit)
 
+        // Partner phone sign-in is not exercised by these account-control tests.
+        override suspend fun requestPartnerPhone(body: com.us.android.core.auth.dto.PartnerPhoneRequestDto): ApiEnvelope<com.us.android.core.auth.dto.PartnerPhoneChallengeDto> =
+            error("not used in account-control tests")
+        override suspend fun verifyPartnerPhone(body: com.us.android.core.auth.dto.PartnerPhoneVerifyDto): ApiEnvelope<AuthResponseDto> =
+            error("not used in account-control tests")
+
         override suspend fun deactivateAccount(body: PasswordRequestDto): ApiEnvelope<AccountDeactivatedDto> {
             deactivateError?.let { throw it }
             return ApiEnvelope(AccountDeactivatedDto())

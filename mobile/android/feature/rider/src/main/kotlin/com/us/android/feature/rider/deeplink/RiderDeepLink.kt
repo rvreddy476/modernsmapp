@@ -14,6 +14,11 @@ import javax.inject.Singleton
 sealed interface RiderDeepLink {
     /** `/rider/offers/{offer_id}` — notification-service's `food_delivery_offer` deep_link. */
     data class Offer(val offerId: String) : RiderDeepLink
+    data object Account : RiderDeepLink
+    data object Documents : RiderDeepLink
+    data object Earnings : RiderDeepLink
+    data object CurrentJob : RiderDeepLink
+    data object Work : RiderDeepLink
 
     data class DigiLocker(val link: DigiLockerReturn) : RiderDeepLink
 }
@@ -39,6 +44,9 @@ object RiderDeepLinks {
      * offer id wins over the deep link when both are present and disagree.
      */
     fun fromPush(data: Map<String, String?>): RiderDeepLink? {
+        if (data["type"] == "food_delivery_account_updated") return if (data["deep_link"] == "/rider/earnings") RiderDeepLink.Earnings else RiderDeepLink.Account
+        if (data["type"] == "food_delivery_document_reviewed") return RiderDeepLink.Documents
+        if (data["type"] in setOf("food_delivery_assigned", "food_delivery_cancelled", "food_delivery_completed", "food_delivery_assignment_changed", "food_delivery_order_updated")) return RiderDeepLink.CurrentJob
         if (data["type"] != TYPE_DELIVERY_OFFER) return null
         val offerId = data["offer_id"]?.takeIf { OFFER_ID.matches(it) }
         return offerId?.let { RiderDeepLink.Offer(it) } ?: parse(data["deep_link"])

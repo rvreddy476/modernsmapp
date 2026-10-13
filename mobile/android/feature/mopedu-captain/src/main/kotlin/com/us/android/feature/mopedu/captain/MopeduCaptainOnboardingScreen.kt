@@ -157,7 +157,7 @@ private fun ProfileStep(profile: PartnerProfile?, onSubmit: (String, String, Str
     var phone by remember { mutableStateOf(profile?.phone.orEmpty()) }
     var email by remember { mutableStateOf(profile?.email.orEmpty()) }
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-        item { CardHeading("Your details", "Enter your details as they appear on your Aadhaar.") }
+        item { CardHeading("Your details", "Enter your details as they appear on your identity document.") }
         item { UsTextField(value = fullName, onValueChange = { fullName = it }, label = "Full name", placeholder = "e.g. Rahul Sharma", modifier = Modifier.fillMaxWidth()) }
         item { UsTextField(value = phone, onValueChange = { phone = it }, label = "Mobile number", placeholder = "+91 98765 43210", modifier = Modifier.fillMaxWidth()) }
         item { UsTextField(value = email, onValueChange = { email = it }, label = "Email (optional)", placeholder = "you@example.com", modifier = Modifier.fillMaxWidth()) }
@@ -240,27 +240,30 @@ private fun DocumentsStep(
     val rc = documents.firstOrNull { it.documentType == DOC_VEHICLE_RC }
     val aadhaar = documents.firstOrNull { it.documentType == DOC_AADHAAR }
     val selfie = documents.firstOrNull { it.documentType == DOC_SELFIE }
-    val aadhaarDone = aadhaar != null && aadhaar.status !in setOf("rejected", "pending")
+    var identityType by remember { mutableStateOf(CaptainDocumentTypes.DRIVING_LICENCE) }
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-        item { CardHeading("Documents", "Verify your Aadhaar through DigiLocker, take a selfie, and add your licence and RC.") }
+        item { CardHeading("Documents", "Upload your driving licence (required for every rider), take a selfie, and add your RC. An admin reviews these documents; Aadhaar and DigiLocker are not required.") }
         item {
             CaptainCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    CardHeading("Aadhaar via DigiLocker", "No Aadhaar number is stored by Mopedu.", modifier = Modifier.weight(1f))
-                    StatusBadge(aadhaar?.status ?: "pending")
+                    CardHeading("Identity document", "Your licence also counts as identity. Choose another document if you want to provide additional evidence.", modifier = Modifier.weight(1f))
                 }
-                UsButton(
-                    text = if (aadhaar?.status == "verified") "Verified" else "Verify with DigiLocker",
-                    onClick = onStartDigiLocker,
-                    enabled = aadhaar?.status != "verified",
-                    modifier = Modifier.fillMaxWidth(),
+                listOf(CaptainDocumentTypes.DRIVING_LICENCE to "Driving licence", CaptainDocumentTypes.PASSPORT to "Passport", CaptainDocumentTypes.VOTER_ID to "Voter ID", CaptainDocumentTypes.PAN to "PAN card").forEach { (type,label) ->
+                    UsSecondaryButton(text = if (identityType == type) "$label · selected" else label, onClick = { identityType = type }, modifier = Modifier.fillMaxWidth())
+                }
+                if (identityType != CaptainDocumentTypes.DRIVING_LICENCE) DocumentCard(
+                    title = when (identityType) { CaptainDocumentTypes.PASSPORT -> "Passport"; CaptainDocumentTypes.VOTER_ID -> "Voter ID"; else -> "PAN card" },
+                    document = documents.firstOrNull { it.documentType == identityType }, upload = uploads[identityType],
+                    number = "", onNumberChanged = {}, placeholder = "", numberRequired = false,
+                    onPickPhoto = { picking = identityType; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onSubmit = { onSubmitDocument(identityType, "") },
                 )
             }
         }
         item {
             CaptainCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    CardHeading("Selfie", "Matched to your Aadhaar photo. Look straight at the camera in good light.", modifier = Modifier.weight(1f))
+                    CardHeading("Selfie", "A clear photo for an admin to compare with your identity document.", modifier = Modifier.weight(1f))
                     StatusBadge(selfie?.status ?: "pending")
                 }
                 UsButton(
@@ -302,15 +305,14 @@ private fun DocumentsStep(
         }
         item {
             InfoNote(
-                "Documents verified through DigiLocker are approved automatically, usually within seconds. " +
-                    "Only a document you upload yourself is checked by a person.",
+                "Uploads stay pending until an admin reviews them. Your account is approved separately after the required checks.",
             )
         }
         item {
             UsButton(
                 text = "Submit for verification",
                 onClick = onSubmitForVerification,
-                enabled = aadhaarDone && selfie != null,
+                enabled = dl != null && dl.status !in setOf("rejected", "expired") && selfie != null,
                 modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.m, bottom = UsTheme.spacing.xxxxl),
             )
         }
@@ -329,13 +331,14 @@ private fun DocumentCard(
     placeholder: String,
     onPickPhoto: () -> Unit,
     onSubmit: () -> Unit,
+    numberRequired: Boolean = true,
 ) {
     CaptainCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             CardHeading(title, document?.rejectionReason, modifier = Modifier.weight(1f))
             StatusBadge(document?.status ?: "pending")
         }
-        UsTextField(value = number, onValueChange = onNumberChanged, label = "Number", placeholder = placeholder, modifier = Modifier.fillMaxWidth())
+        if (numberRequired) UsTextField(value = number, onValueChange = onNumberChanged, label = "Number", placeholder = placeholder, modifier = Modifier.fillMaxWidth())
         when (upload) {
             null -> UsSecondaryButton(text = "Add a photo", onClick = onPickPhoto, modifier = Modifier.fillMaxWidth())
             is DocumentUpload.Uploading -> LinearProgressIndicator(
@@ -356,7 +359,7 @@ private fun DocumentCard(
         UsButton(
             text = "Submit",
             onClick = onSubmit,
-            enabled = number.isNotBlank() && upload is DocumentUpload.Uploaded,
+            enabled = (!numberRequired || number.isNotBlank()) && upload is DocumentUpload.Uploaded,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -385,7 +388,7 @@ private fun StatusStep(
         item {
             when {
                 isVerifying -> CaptainCard(highlighted = true) {
-                    CardHeading("Verifying…", "Checking your documents with DigiLocker. This usually takes a few seconds.", tone = PillTone.Accent)
+                    CardHeading("Checking review status…", "Reading the latest decision from your verification team.", tone = PillTone.Accent)
                     UsButton(text = "Verifying", onClick = {}, loading = true, modifier = Modifier.fillMaxWidth())
                 }
                 review.state == ReviewState.APPROVED -> CaptainCard(highlighted = true) {

@@ -2,6 +2,12 @@ package com.us.feast.kitchen
 
 import android.graphics.Color
 import android.os.Bundle
+import android.content.Intent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import com.us.android.feature.kitchen.navigation.KitchenPushTarget
+import com.us.android.feature.kitchen.navigation.kitchenPushTarget
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -17,6 +23,7 @@ class KitchenActivity : ComponentActivity() {
 
     @Inject
     lateinit var sessionStateProvider: SessionStateProvider
+    private var pushTarget by mutableStateOf<KitchenPushTarget?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // The theme follows the device's light / dark setting (2026-10-02), and so do the bars' glyphs.
@@ -25,10 +32,21 @@ class KitchenActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
+        readPush(intent)
         setContent {
             UsTheme {
-                KitchenApp(sessionStateProvider)
+                KitchenApp(sessionStateProvider, pushTarget) { pushTarget = null }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readPush(intent)
+    }
+
+    private fun readPush(intent: Intent?) {
+        pushTarget = kitchenPushTarget(intent?.getStringExtra("type"), intent?.getStringExtra("deep_link"))
     }
 }

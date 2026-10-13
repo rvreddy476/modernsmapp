@@ -90,12 +90,11 @@ tasks.register<Delete>("clean") {
  *   m. Doorstep Pro (2026-10-04): `:feature:doorstep-pro` — the professionals'
  *      screens — is reachable ONLY from `:app-doorstep-pro`, directly or
  *      transitively (not `:app`, not another partner app, not a core module),
- *      and reaches no other `:feature:*`. `:app-doorstep-pro` reaches no
- *      `:core:payments` (a professional pays nothing on the device, so the
- *      pro app is NOT exempt from (e)'s reasoning), no Face AR, creator
- *      engine, posting or commerce, and no other product's feature (Feast,
- *      Dating, Mopedu, the Feast partners', the customer's Doorstep). It must
- *      depend on `:feature:doorstep-pro` directly.
+ *      and reaches no other `:feature:*`. The unified `:app-doorstep-pro`
+ *      host also ships delivery and Moped worker features (including captain
+ *      subscription payments), but never kitchen, seller or customer screens,
+ *      Face AR, creator engine or posting. It must depend on
+ *      `:feature:doorstep-pro` directly.
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -224,8 +223,7 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
         }
         // (m) Doorstep Pro: the professionals' feature is :app-doorstep-pro's
         // alone — every other module that reaches it is a violation — and it
-        // reaches no other feature; the pro app carries no payments and no
-        // other product's code.
+        // reaches no other feature. The unified host is for workers, not merchants.
         direct.keys.filter { it != ":app-doorstep-pro" && it != ":feature:doorstep-pro" }.forEach { module ->
             if (":feature:doorstep-pro" in reach(module)) {
                 add("$module must not depend on :feature:doorstep-pro (directly or transitively) — the professionals' screens ship only in :app-doorstep-pro.")
@@ -238,14 +236,14 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
         }
         if (":app-doorstep-pro" in direct) {
             val bannedFromProApp = setOf(
-                ":core:payments", ":core:facear", ":core:creator-engine", ":feature:post", ":core:commerce",
+                ":core:facear", ":core:creator-engine", ":feature:post",
+                ":feature:kitchen", ":feature:seller",
                 ":feature:commerce", ":feature:feast", ":feature:dating", ":feature:doorstep", ":feature:mopedu-rider",
-                ":feature:mopedu-captain", ":feature:kitchen", ":feature:rider",
             )
             reach(":app-doorstep-pro").filter { it in bannedFromProApp }.forEach { dep ->
                 add(
                     ":app-doorstep-pro must not depend on $dep (directly or transitively) — the professionals' app carries no " +
-                        "payments, Banuba, creator, post or commerce code, and no other product's feature.",
+                        "Banuba, creator, restaurant, seller or customer features. Worker roles share one native host.",
                 )
             }
         }
@@ -659,11 +657,11 @@ fun applicationBoundarySelfCheck(): List<String> {
             ":feature:doorstep-pro must not depend on :feature:rider",
         ),
         Triple("pro feature -> pro app", mapOf(":feature:doorstep-pro" to setOf(":app-doorstep-pro")), ":feature:doorstep-pro must not depend on :app-doorstep-pro"),
-        Triple("pro app -> payments", mapOf(":app-doorstep-pro" to setOf(":core:payments")), ":app-doorstep-pro must not depend on :core:payments"),
+        Triple("unified partner -> captain payments", mapOf(":app-doorstep-pro" to setOf(":core:payments")), null),
         Triple(
             "pro app -> payments, transitively through the pro feature",
             mapOf(":app-doorstep-pro" to setOf(":feature:doorstep-pro"), ":feature:doorstep-pro" to setOf(":core:payments")),
-            ":app-doorstep-pro must not depend on :core:payments",
+            null,
         ),
         Triple(
             "pro app -> facear, transitively through commerce",
@@ -680,7 +678,13 @@ fun applicationBoundarySelfCheck(): List<String> {
             mapOf(":app-doorstep-pro" to setOf(":core:media"), ":core:media" to setOf(":feature:post")),
             ":app-doorstep-pro must not depend on :feature:post",
         ),
-        Triple("pro app -> commerce", mapOf(":app-doorstep-pro" to setOf(":core:commerce")), ":app-doorstep-pro must not depend on :core:commerce"),
+        Triple("unified partner -> shared commerce data", mapOf(":app-doorstep-pro" to setOf(":core:commerce")), null),
+        Triple("worker app -> kitchen", mapOf(":app-doorstep-pro" to setOf(":feature:kitchen")), ":app-doorstep-pro must not depend on :feature:kitchen"),
+        Triple(
+            "worker app -> seller, transitively",
+            mapOf(":app-doorstep-pro" to setOf(":core:x"), ":core:x" to setOf(":feature:seller")),
+            ":app-doorstep-pro must not depend on :feature:seller",
+        ),
         Triple("pro app -> feast", mapOf(":app-doorstep-pro" to setOf(":feature:feast")), ":app-doorstep-pro must not depend on :feature:feast"),
         Triple(
             "pro app -> dating, transitively",
@@ -977,7 +981,7 @@ tasks.register("moduleGraphCheck") {
     //      level — no new phantom parent. Rule (m) keeps the feature to the pro
     //      app and the pro app free of payments and every other product's code.
     // Still to add, one module at a time: :core:location, :core:kyc-ui.
-    val expectedModuleCount = 53
+    val expectedModuleCount = 58
 
     doLast {
         val allViolations = buildList {

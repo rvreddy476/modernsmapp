@@ -77,74 +77,85 @@ val FigtreeFontFamily = FontFamily(
 /**
  * Maps the type ramp onto Material 3 slots.
  *
- * Headings stay Outfit (ExtraBold/Bold); body and label steps moved to
- * Figtree with the Momentum redesign (2026-09-03) — bodyLarge 15/400,
- * bodyMedium 13/500, bodySmall 11/500, labelSmall 10/700, per the Figma type
- * ramp. Weight mapping: Regular 400, Medium 500, SemiBold 600, Bold 700.
+ * All Material slots are defined: a dialog or a price must not quietly fall
+ * back to Roboto. Outfit supplies calm, semibold headings; Figtree supplies
+ * readable body copy. Sizes remain in sp so Android's font scaling works.
  *
  * Colours are NOT baked into these styles. Flutter's text styles carry a
  * colour; in Compose that fights LocalContentColor and makes components
  * un-themeable. Colour comes from the M3 scheme or UsTheme.extended.
  */
 val UsTypography = Typography(
+    displayLarge = headingStyle(40, 48),
+    displayMedium = headingStyle(36, 44),
+    displaySmall = headingStyle(32, 40),
+    headlineLarge = headingStyle(30, 38),
     headlineMedium = TextStyle(
         fontFamily = OutfitFontFamily,
-        fontWeight = FontWeight.Black,
+        fontWeight = FontWeight.Bold,
         fontSize = 28.sp,
         lineHeight = 34.sp,
     ),
     headlineSmall = TextStyle(
         fontFamily = OutfitFontFamily,
-        fontWeight = FontWeight.Black,
-        fontSize = 26.sp,
+        fontWeight = FontWeight.Bold,
+        fontSize = 24.sp,
         lineHeight = 32.sp,
     ),
     titleLarge = TextStyle(
         fontFamily = OutfitFontFamily,
-        fontWeight = FontWeight.ExtraBold,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 22.sp,
         lineHeight = 28.sp,
     ),
     titleMedium = TextStyle(
         fontFamily = OutfitFontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = 15.sp,
-        lineHeight = 20.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 17.sp,
+        lineHeight = 24.sp,
     ),
+    titleSmall = headingStyle(15, 20),
     bodyLarge = TextStyle(
         fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 21.sp,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
     ),
     bodyMedium = TextStyle(
         fontFamily = FigtreeFontFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
     ),
     bodySmall = TextStyle(
         fontFamily = FigtreeFontFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.sp,
-        lineHeight = 15.sp,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 18.sp,
     ),
     labelLarge = TextStyle(
         fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 13.sp,
-        lineHeight = 17.sp,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
     ),
     labelMedium = TextStyle(
         fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 11.sp,
-        lineHeight = 15.sp,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
     ),
     labelSmall = TextStyle(
         fontFamily = FigtreeFontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = 10.sp,
-        lineHeight = 14.sp,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
     ),
+)
+
+private fun headingStyle(size: Int, line: Int) = TextStyle(
+    fontFamily = OutfitFontFamily,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = size.sp,
+    lineHeight = line.sp,
 )

@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.rider.kycui.DocumentUploadField
@@ -46,15 +47,9 @@ fun DocumentsScreen(onBack: () -> Unit, viewModel: DocumentsViewModel = hiltView
         picking = null
     }
 
-    RiderScreen(title = "Licence and RC", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
+    RiderScreen(title = "Identity and driving documents", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
         when {
             state.loading -> LoadingPane()
-            !state.required -> MessagePane(
-                title = "Not needed for a bicycle",
-                body = "Bicycle riders don't submit a driving licence or an RC.",
-                primaryLabel = "Back",
-                onPrimary = onBack,
-            )
             else -> Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -62,8 +57,19 @@ fun DocumentsScreen(onBack: () -> Unit, viewModel: DocumentsViewModel = hiltView
                     .padding(contentPadding(padding)),
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
-                InfoNote("If DigiLocker already verified your licence and RC, they show as approved and there's nothing to add here.")
-                DrivingDocument.entries.forEach { document ->
+                InfoNote("Every rider must upload a driving licence. An approved licence also counts as identity; you may add a passport, voter ID or PAN instead. All uploads are reviewed by an admin. Do not upload Aadhaar.")
+                RiderCard {
+                    CardHeading("Identity document", "Choose an additional identity document, or use your driving licence below.")
+                    DrivingDocument.entries.filter { it != DrivingDocument.VEHICLE_RC }.forEach { choice ->
+                        UsPillButton(text = choice.title, onClick = { viewModel.chooseIdentity(choice) }, filled = state.identityChoice == choice)
+                    }
+                }
+                val visible = buildList {
+                    add(DrivingDocument.DRIVING_LICENCE)
+                    if (state.required) add(DrivingDocument.VEHICLE_RC)
+                    if (state.identityChoice != DrivingDocument.DRIVING_LICENCE) add(state.identityChoice)
+                }
+                visible.forEach { document ->
                     val draft = state.drafts.getValue(document)
                     RiderCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -74,7 +80,7 @@ fun DocumentsScreen(onBack: () -> Unit, viewModel: DocumentsViewModel = hiltView
                             submitted.numberMasked?.let { LabeledValue("Number", it) }
                             submitted.rejectionReason?.let { InfoNote(it, tone = PillTone.Danger) }
                         }
-                        UsTextField(
+                        if (document in setOf(DrivingDocument.DRIVING_LICENCE, DrivingDocument.VEHICLE_RC)) UsTextField(
                             value = draft.number,
                             onValueChange = { viewModel.onNumber(document, it) },
                             label = if (document == DrivingDocument.DRIVING_LICENCE) "Licence number" else "Registration number",

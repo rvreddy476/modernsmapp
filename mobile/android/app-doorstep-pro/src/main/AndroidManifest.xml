@@ -48,6 +48,16 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.DoorstepPro">
+        <activity android:name=".partner.PartnerOfferActivity" android:exported="false"
+            android:theme="@style/Theme.DoorstepPro" />
+        <service
+            android:name=".partner.CommerceLocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+        <service
+            android:name="com.us.android.feature.rider.location.RiderLocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
 
         <!-- Google Maps SDK key for THIS app (placeholder until the founder adds one). No map library ships. -->
         <meta-data

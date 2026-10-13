@@ -10,6 +10,13 @@ import javax.inject.Inject
  */
 @Suppress("TooManyFunctions")
 interface DoorstepProRepository {
+    suspend fun mySkills(): ProResult<List<ProSkillDto>>
+    suspend fun documents(): ProResult<List<ProDocumentDto>>
+    suspend fun requestAlternatePhone(): ProResult<AlternatePhoneChallengeDto>
+    suspend fun verifyAlternatePhone(code: String): ProResult<AlternatePhoneResultDto>
+    suspend fun applicationStates(): ProResult<List<ApplicationStateDto>>
+    suspend fun submitApplication(request: PartnerApplicationRequest): ProResult<ProfessionalDto>
+    suspend fun bank(): ProResult<PayoutAccountDto?>
     suspend fun prices(): ProResult<List<ProServicePricingDto>>
     suspend fun submitPrice(request: ProPriceRequest): ProResult<ProPriceDto>
     suspend fun withdrawPrice(id: String): ProResult<ProPriceDto>
@@ -31,7 +38,7 @@ interface DoorstepProRepository {
     suspend fun daysOff(): ProResult<List<DayOffDto>>
     suspend fun addDayOff(date: String, reason: String?): ProResult<DayOffDto>
     suspend fun removeDayOff(date: String): ProResult<Unit>
-    suspend fun saveBank(holder: String, accountNumber: String, ifsc: String): ProResult<PayoutAccountDto>
+    suspend fun saveBank(request: BankRequest): ProResult<PayoutAccountDto>
     suspend fun uploadPoliceCertificate(mediaId: String, issuedOn: String, number: String?): ProResult<ProDocumentDto>
     suspend fun acceptAgreement(version: String): ProResult<ProReadinessDto>
     suspend fun savePan(pan: String): ProResult<ProReadinessDto>
@@ -75,6 +82,17 @@ class RealDoorstepProRepository @Inject constructor(
     private val api: DoorstepProApi,
     private val json: Json,
 ) : DoorstepProRepository {
+    override suspend fun mySkills() = proCall(json) { api.mySkills() }.map { it.items }
+    override suspend fun documents() = proCall(json) { api.documents() }.map { it.items }
+    override suspend fun requestAlternatePhone() = proCall(json) { api.requestAlternatePhone() }
+    override suspend fun verifyAlternatePhone(code: String) = proCall(json) { api.verifyAlternatePhone(AlternatePhoneCodeDto(code)) }
+    override suspend fun applicationStates() = proCall(json) { api.applicationStates() }.map { it.items }
+    override suspend fun submitApplication(request: PartnerApplicationRequest) = proCall(json) { api.submitApplication(request) }
+    override suspend fun bank(): ProResult<PayoutAccountDto?> = guarded {
+        val response = api.bank()
+        if (response.isSuccessful && response.body() != null) ProResult.Success(response.body()!!.data)
+        else ProResult.Failure(ProError.from(response.code(), response.errorBody()?.string(), json))
+    }
     override suspend fun prices() = proCall(json) { api.prices() }.map { it.items }
     override suspend fun submitPrice(request: ProPriceRequest) = proCall(json) { api.submitPrice(request) }
     override suspend fun withdrawPrice(id: String) = proCall(json) { api.withdrawPrice(id) }
@@ -121,8 +139,7 @@ class RealDoorstepProRepository @Inject constructor(
 
     override suspend fun removeDayOff(date: String) = proUnitCall(json) { api.deleteDayOff(date) }
 
-    override suspend fun saveBank(holder: String, accountNumber: String, ifsc: String) =
-        proCall(json) { api.putBank(BankRequest(accountHolder = holder, accountNumber = accountNumber, ifsc = ifsc)) }
+    override suspend fun saveBank(request: BankRequest) = proCall(json) { api.putBank(request) }
 
     override suspend fun uploadPoliceCertificate(mediaId: String, issuedOn: String, number: String?) =
         proCall(json) { api.policeCertificate(CertificateRequest(mediaId = mediaId, issuedOn = issuedOn, certificateNumber = number)) }
@@ -134,9 +151,15 @@ class RealDoorstepProRepository @Inject constructor(
     override suspend fun serviceability(lat: Double, lng: Double) =
         proCall(json) { api.serviceability(ServiceabilityRequest(lat = lat, lng = lng)) }
 
-    override suspend fun dutyOn(location: LocationRequest) = proCall(json) { api.dutyOn(location) }
+    override suspend fun dutyOn(location: LocationRequest): ProResult<DutyStateDto> = when (val work = proCall(json) { api.workSession() }) {
+        is ProResult.Failure -> work
+        is ProResult.Success -> proCall(json) { api.dutyOn(location, work.value.session.revision) }
+    }
 
-    override suspend fun dutyOff() = proCall(json) { api.dutyOff() }
+    override suspend fun dutyOff(): ProResult<DutyStateDto> = when (val work = proCall(json) { api.workSession() }) {
+        is ProResult.Failure -> work
+        is ProResult.Success -> proCall(json) { api.dutyOff(work.value.session.revision) }
+    }
 
     override suspend fun postLocation(location: LocationRequest) = proUnitCall(json) { api.location(location) }
 

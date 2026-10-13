@@ -42,7 +42,7 @@ data object EarningsRoute
 
 internal fun stepRoute(step: RiderStep): Any = when (step) {
     RiderStep.VEHICLE -> ProfileRoute
-    RiderStep.AADHAAR_DIGILOCKER -> DigiLockerRoute
+    RiderStep.IDENTITY_DOCUMENT -> DocumentsRoute
     RiderStep.DRIVING_LICENCE, RiderStep.VEHICLE_RC -> DocumentsRoute
     RiderStep.SELFIE -> SelfieRoute
     RiderStep.PAYOUT_ACCOUNT -> PayoutRoute

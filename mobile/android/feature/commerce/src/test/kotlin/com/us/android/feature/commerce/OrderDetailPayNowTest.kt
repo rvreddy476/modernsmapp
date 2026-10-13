@@ -81,6 +81,20 @@ class OrderDetailPayNowTest {
     private fun content(vm: OrderDetailViewModel) = vm.state.value as OrderDetailUiState.Content
 
     @Test
+    fun `tracking refresh reads delivered state without clearing payment interaction`() = runTest(dispatcher) {
+        val api = OrderApi("paid", "paid")
+        val vm = viewModel(api, PaymentHandoff())
+        dispatcher.scheduler.advanceUntilIdle()
+        vm.askToCancel()
+        api.status = "delivered"
+        vm.refreshTracking()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertThat(content(vm).order.status).isEqualTo(OrderStatus.DELIVERED)
+        assertThat(content(vm).confirmingCancel).isTrue()
+        assertThat(api.reads).isEqualTo(2)
+    }
+
+    @Test
     fun `pay now mints a new attempt for this order and holds the button`() = runTest(dispatcher) {
         val vm = viewModel(OrderApi("payment_failed", "failed"), PaymentHandoff())
         dispatcher.scheduler.advanceUntilIdle()

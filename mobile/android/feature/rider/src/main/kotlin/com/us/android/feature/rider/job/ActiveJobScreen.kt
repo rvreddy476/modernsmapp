@@ -100,6 +100,8 @@ fun ActiveJobScreen(onBack: () -> Unit, onFinished: () -> Unit, viewModel: Activ
                     }
                 }
 
+                BatchRouteCard(state, onSuggest = viewModel::suggestRoute, onConfirm = viewModel::confirmBatchOrder)
+
                 RiderCard {
                     CardHeading("Pickup", details.restaurantAddressLines.joinToString(", ").ifBlank { null })
                     val pickup = details.navigation.pickup

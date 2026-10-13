@@ -14,7 +14,7 @@ import org.robolectric.annotation.Config
  *
  * `createAll` used to register every enum entry. With Feast Kitchen and Feast
  * Rider as separate installs, each app now passes its own set, and Momentum's
- * set must stay EXACTLY what the app registered before the split: a missing id
+ * set must match the events its supported entry points receive: a missing id
  * means a push posted to it is dropped silently, and an extra one is a switch
  * in system settings for something the app never sends.
  *
@@ -27,13 +27,14 @@ import org.robolectric.annotation.Config
 class MomentumChannelSetTest {
 
     @Test
-    fun `Momentum's set is exactly today's nine channels`() {
+    fun `Momentum's set includes customer and legacy seller channels`() {
         // "dating" joined on 2026-09-16 (Wave 3): Dating ships only in Momentum.
         // "ride_updates" joined on 2026-09-18: the Mopedu customer flow ships only in Momentum.
         // "live" joined on 2026-10-02: "{creator} is live".
         // "doorstep_updates" joined on 2026-10-04: the Doorstep customer flow ships only in Momentum.
+        // "partner_business" preserves updates for its existing seller entry point.
         assertThat(NotificationChannelSpec.MOMENTUM.map { it.id })
-            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates")
+            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business")
     }
 
     @Test
@@ -46,6 +47,6 @@ class MomentumChannelSetTest {
 
         NotificationChannelSpec.createAll(context, NotificationChannelSpec.MOMENTUM)
         assertThat(manager.notificationChannels.map { it.id })
-            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates")
+            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business")
     }
 }

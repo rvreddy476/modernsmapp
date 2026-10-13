@@ -31,12 +31,15 @@ data class EarningsUiState(
 class EarningsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val kitchen: KitchenRepository,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
 
     private val restaurantId = savedStateHandle.restaurantId()
 
     private val _state = MutableStateFlow(EarningsUiState())
     val state: StateFlow<EarningsUiState> = _state.asStateFlow()
+
+    init { viewModelScope.launch { updates.events.collect { if (it == "food_kitchen_account_updated") load() } } }
 
     fun load() {
         viewModelScope.launch {

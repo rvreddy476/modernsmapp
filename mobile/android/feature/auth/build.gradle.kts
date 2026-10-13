@@ -21,4 +21,6 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(projects.core.testing)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
 }

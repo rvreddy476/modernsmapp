@@ -63,6 +63,7 @@ fun UsTopBar(
         title = {
             Text(
                 text = title,
+                style = MaterialTheme.typography.titleMedium,
                 color = UsTheme.extended.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

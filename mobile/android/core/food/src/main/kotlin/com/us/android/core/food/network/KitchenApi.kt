@@ -24,6 +24,8 @@ import retrofit2.http.Path
  */
 @Suppress("TooManyFunctions")
 interface KitchenApi {
+    @POST("v1/food/partner/restaurants")
+    suspend fun createRestaurant(@Body body: CreateKitchenRequest): Response<ApiEnvelope<PartnerRestaurantDto>>
 
     @GET("v1/food/partner/restaurants")
     suspend fun listRestaurants(): Response<ApiEnvelope<ItemsDto<PartnerRestaurantDto>>>

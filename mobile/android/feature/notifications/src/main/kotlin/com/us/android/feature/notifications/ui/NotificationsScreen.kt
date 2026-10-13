@@ -103,6 +103,7 @@ fun NotificationsScreen(
     permissionPrompt: @Composable () -> Unit = { NotificationPermissionPrompt() },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    com.us.android.core.ui.RefreshWhileVisible(viewModel.trackingUpdates, 15_000, viewModel::refresh)
     val listState = rememberLazyListState()
 
     // Paging by proximity to the end, not by "the last item appeared". A user
@@ -661,7 +662,7 @@ internal fun Notification.describe(): String {
         NotificationKind.CreatorWentLive -> "$who is live"
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
-        is NotificationKind.Unknown -> "You have a new notification"
+        is NotificationKind.Unknown -> com.us.android.core.model.CustomerNotification.description((kind as NotificationKind.Unknown).raw) ?: "You have a new notification"
     }
 }
 

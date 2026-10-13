@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import javax.inject.Inject
 
 sealed interface ProRootState {
@@ -32,6 +33,7 @@ sealed interface ProRootState {
 
     /** Filling in the application. */
     data object Applying : ProRootState
+    data class Submitted(val professional: ProfessionalDto) : ProRootState
 
     data object SessionExpired : ProRootState
 
@@ -62,20 +64,47 @@ class ProRootViewModel @Inject constructor(
     val state: StateFlow<ProRootState> = _state.asStateFlow()
 
     val links: SharedFlow<ProDeepLink> = deepLinks.incoming
+    private var loadJob: Job? = null
+    private val _refreshing = MutableStateFlow(false)
+    val refreshing = _refreshing.asStateFlow()
+    private val _refreshError = MutableStateFlow<String?>(null)
+    val refreshError = _refreshError.asStateFlow()
 
     init {
         load()
     }
 
     fun load() {
-        _state.value = ProRootState.Loading
-        viewModelScope.launch {
-            _state.value = when (val me = repository.me()) {
+        refresh(force = true)
+    }
+
+    /** Reconcile without unmounting the form, workspace or review receipt. */
+    fun refreshStatus() {
+        if (_state.value != ProRootState.Applying) refresh(force = false)
+    }
+
+    private fun refresh(force: Boolean) {
+        if (loadJob?.isActive == true) return
+        if (force && _state.value is ProRootState.Unavailable) _state.value = ProRootState.Loading
+        _refreshing.value = true
+        _refreshError.value = null
+        loadJob = viewModelScope.launch {
+            try {
+              when (val me = repository.me()) {
                 is ProResult.Success -> {
                     session.set(me.value)
-                    ProRootState.Ready(me.value, onboarded = ProStatus.of(me.value.status) in HOME_STATUSES)
+                    _state.value = rootStateFor(me.value)
                 }
-                is ProResult.Failure -> failureState(me.error)
+                is ProResult.Failure -> {
+                    if (me.error == ProError.Unauthorized || _state.value == ProRootState.Loading) {
+                        _state.value = failureState(me.error)
+                    } else {
+                        _refreshError.value = "Couldn't refresh your status. Please try again."
+                    }
+                }
+              }
+            } finally {
+                _refreshing.value = false
             }
         }
     }
@@ -117,7 +146,12 @@ class ProRootViewModel @Inject constructor(
         else -> ProRootState.Unavailable(title = "Couldn't open Doorstep Pro", message = error.userMessage())
     }
 
-    private companion object {
-        val HOME_STATUSES = setOf(ProStatus.APPROVED, ProStatus.SUSPENDED, ProStatus.BLOCKED)
-    }
+}
+
+/** The current server status wins over the presence of an old submitted application. */
+internal fun rootStateFor(pro: ProfessionalDto): ProRootState = when (ProStatus.of(pro.status)) {
+    ProStatus.APPROVED, ProStatus.SUSPENDED, ProStatus.BLOCKED -> ProRootState.Ready(pro, onboarded = true)
+    ProStatus.PENDING_VERIFICATION -> ProRootState.Submitted(pro)
+    ProStatus.DRAFT -> if (pro.application == null) ProRootState.Applying else ProRootState.Ready(pro, onboarded = false)
+    else -> ProRootState.Ready(pro, onboarded = false)
 }

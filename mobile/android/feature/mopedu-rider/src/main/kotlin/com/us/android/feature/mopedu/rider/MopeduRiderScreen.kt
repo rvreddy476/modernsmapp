@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -84,7 +85,11 @@ fun MopeduRiderRoute(
     viewModel: MopeduRiderViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    com.us.android.core.ui.RefreshWhileVisible(viewModel.trackingUpdates, refresh = viewModel::checkActiveRide)
     val context = LocalContext.current
+    LaunchedEffect(viewModel) {
+        if (!viewModel.isTrackingEntry && (uiState as? RiderUiState.LocationSelect)?.locationStep == LocationStep.Idle) viewModel.useCurrentLocation()
+    }
 
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         val granted = grants.values.any { it }
@@ -112,6 +117,18 @@ fun MopeduRiderRoute(
             val current = (viewModel.uiState.value as? RiderUiState.TripCompleted)?.payment as? PaymentPhase.OpeningSheet
             if (attempt != null && current != null && current.request.attempt == attempt) onAbandonPayment(current.request)
         }
+    }
+
+    if (viewModel.isTrackingEntry && uiState is RiderUiState.LocationSelect) {
+        val error = (uiState as RiderUiState.LocationSelect).error
+        UsScaffold(topBar = { UsTopBar(title = "Your Moped ride", onBack = onNavigateBack) }) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding).padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(error ?: "Loading your ride…")
+                if (error == null) CircularProgressIndicator()
+                else UsSecondaryButton(text = "Refresh", onClick = viewModel::checkActiveRide)
+            }
+        }
+        return
     }
 
     MopeduRiderScreen(
@@ -189,7 +206,14 @@ fun MopeduRiderScreen(
         is RiderUiState.QuoteSelect -> uiState.quote.drop
         else -> booking?.drop
     }
-    val captainLocation = (uiState as? RiderUiState.CaptainAssigned)?.captainLocation
+    // Expire the marker even if a network outage stops new booking responses.
+    val now by produceState(System.currentTimeMillis(), booking?.id) {
+        while (true) {
+            value = System.currentTimeMillis()
+            kotlinx.coroutines.delay(5_000)
+        }
+    }
+    val captainLocation = booking?.takeIf { it.status.isActive }?.freshCaptainLocation(now)
     val error = uiState.errorOrNull()
 
     if (uiState is RiderUiState.LocationSelect && uiState.locationStep == LocationStep.ExplainingPermission) {
@@ -299,13 +323,7 @@ private fun LocationSearchCard(
 ) {
     MopeduCard {
         CardHeading("Where are you going?")
-        UsTextField(
-            value = state.pickupQuery,
-            onValueChange = onPickupQueryChanged,
-            label = "Pickup",
-            placeholder = "Your pickup address",
-            modifier = Modifier.fillMaxWidth(),
-        )
+        InfoNote(if (state.pickup != null) "Pickup: ${state.pickupQuery}" else "Your current location will be used as pickup. Location access is required.")
         val locating = state.locationStep == LocationStep.Locating || state.locationStep == LocationStep.AwaitingPermission
         UsSecondaryButton(
             text = if (locating) "Finding you…" else "Use my location",
@@ -316,13 +334,13 @@ private fun LocationSearchCard(
         when (val step = state.locationStep) {
             is LocationStep.Denied -> InfoNote(
                 if (step.canAskAgain) {
-                    "Allow location to set your pickup automatically, or type it above."
+                    "Allow location to set your pickup automatically and see nearby rides."
                 } else {
-                    "Location is off for Momentum. Turn it on in Settings, or type your pickup above."
+                    "Location is off for Momentum. Turn it on in Settings to continue."
                 },
                 tone = PillTone.Warning,
             )
-            LocationStep.Unavailable -> InfoNote("We couldn't get a fix. Type your pickup above.", tone = PillTone.Warning)
+            LocationStep.Unavailable -> InfoNote("We couldn't get a precise fix. Turn on device location and try again.", tone = PillTone.Warning)
             else -> Unit
         }
         UsTextField(
@@ -336,7 +354,7 @@ private fun LocationSearchCard(
             text = "View fares",
             onClick = onRequestQuote,
             loading = state.isLoading,
-            enabled = state.pickupQuery.isNotBlank() && state.dropQuery.isNotBlank(),
+            enabled = state.pickup != null && state.locationStep is LocationStep.Located && state.dropQuery.isNotBlank(),
             modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.m),
         )
     }
@@ -551,13 +569,13 @@ private fun SearchingCaptainCard(onCancel: () -> Unit) {
 }
 
 @Composable
-private fun CaptainAssignedCard(booking: RideBooking, etaMinutes: Int, onCancel: () -> Unit) {
+private fun CaptainAssignedCard(booking: RideBooking, etaMinutes: Int?, onCancel: () -> Unit) {
     MopeduCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Eyebrow("Captain on the way", tone = PillTone.Positive)
                 Text(
-                    text = "Arriving in $etaMinutes min",
+                    text = etaMinutes?.let { "Arriving in $it min" } ?: "Partner assigned · ETA unavailable",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = UsTheme.extended.textPrimary,
@@ -836,6 +854,7 @@ private fun RiderUiState.errorOrNull(): String? = when (this) {
     is RiderUiState.SearchingCaptain -> error
     is RiderUiState.CaptainAssigned -> error
     is RiderUiState.ArrivedAtPickup -> error
+    is RiderUiState.TripInProgress -> error
     is RiderUiState.TripCompleted -> error
     else -> null
 }

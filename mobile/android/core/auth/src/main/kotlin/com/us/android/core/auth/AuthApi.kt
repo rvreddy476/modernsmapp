@@ -19,6 +19,12 @@ import retrofit2.http.POST
 
 interface AuthApi {
 
+    @POST("v1/auth/partner/phone/request")
+    suspend fun requestPartnerPhone(@Body body: com.us.android.core.auth.dto.PartnerPhoneRequestDto): ApiEnvelope<com.us.android.core.auth.dto.PartnerPhoneChallengeDto>
+
+    @POST("v1/auth/partner/phone/verify")
+    suspend fun verifyPartnerPhone(@Body body: com.us.android.core.auth.dto.PartnerPhoneVerifyDto): ApiEnvelope<AuthResponseDto>
+
     @POST("v1/auth/login")
     suspend fun login(@Body body: LoginRequestDto): ApiEnvelope<AuthResponseDto>
 

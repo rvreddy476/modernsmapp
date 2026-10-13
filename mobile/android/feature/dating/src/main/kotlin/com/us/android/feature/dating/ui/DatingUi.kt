@@ -2,7 +2,6 @@ package com.us.android.feature.dating.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +30,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -47,6 +45,7 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.component.UsSurfaceCard
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
@@ -114,17 +113,10 @@ fun DatingCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val shape = RoundedCornerShape(UsTheme.radii.large)
-    val clickable = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(UsTheme.extended.bgCardSolid)
-            .border(1.dp, UsTheme.extended.borderSubtle, shape)
-            .then(clickable)
-            .padding(UsTheme.spacing.xxl),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    UsSurfaceCard(
+        modifier = modifier.fillMaxWidth(),
+        onClick = onClick,
+        contentPadding = PaddingValues(UsTheme.spacing.xxl),
         content = content,
     )
 }
@@ -274,7 +266,13 @@ fun BottomAction(
                 modifier = Modifier.padding(bottom = UsTheme.spacing.m),
             )
         }
-        UsButton(text = label, onClick = onClick, enabled = enabled, loading = loading, modifier = Modifier.fillMaxWidth())
+        UsButton(
+            text = label,
+            onClick = onClick,
+            enabled = enabled,
+            loading = loading,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -365,7 +363,12 @@ fun DatingPhoto(
 ) {
     if (url == null) {
         Box(modifier = modifier.background(UsTheme.extended.bgRaised), contentAlignment = Alignment.Center) {
-            Icon(UsIcons.Profile, contentDescription = contentDescription, tint = UsTheme.extended.textDim, modifier = Modifier.size(40.dp))
+            Icon(
+                UsIcons.Profile,
+                contentDescription = contentDescription,
+                tint = UsTheme.extended.textDim,
+                modifier = Modifier.size(40.dp)
+            )
         }
         return
     }

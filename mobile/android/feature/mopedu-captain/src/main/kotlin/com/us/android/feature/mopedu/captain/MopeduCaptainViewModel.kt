@@ -25,7 +25,9 @@ import com.us.android.core.payments.PaymentHandoffEvent
 import com.us.android.core.payments.PaymentPollPolicy
 import com.us.android.core.payments.PaymentStateStore
 import com.us.android.feature.mopedu.captain.data.CaptainResult
+import com.us.android.feature.mopedu.captain.data.CaptainError
 import com.us.android.feature.mopedu.captain.data.MopeduCaptainRepository
+import com.us.android.feature.mopedu.captain.data.CaptainDocumentTypes
 import com.us.android.feature.mopedu.captain.upload.CaptainDocumentUploader
 import com.us.android.feature.mopedu.captain.upload.UploadOutcome
 import com.us.android.feature.mopedu.captain.data.PartnerReview
@@ -166,6 +168,7 @@ sealed interface DocumentUpload {
 
 sealed interface CaptainUiState {
     data object Loading : CaptainUiState
+    data class Unavailable(val message: String) : CaptainUiState
 
     data class Onboarding(
         val step: OnboardingStep = OnboardingStep.PROFILE,
@@ -311,11 +314,32 @@ class MopeduCaptainViewModel @Inject constructor(
      */
     private suspend fun route() {
         when (val result = repository.profile()) {
-            is CaptainResult.Failure -> loadOnboardingNow(OnboardingStep.PROFILE)
+            is CaptainResult.Failure -> if (result.error == CaptainError.NotFound ||
+                (result.error as? CaptainError.Refused)?.code in setOf("PARTNER_NOT_FOUND", "NOT_FOUND")) {
+                loadOnboardingNow(OnboardingStep.PROFILE)
+            } else {
+                _uiState.value = CaptainUiState.Unavailable(result.error.userMessage())
+            }
             is CaptainResult.Success -> {
                 val captain = result.value
                 profile = captain.profile
                 review = captain.review
+                // Recover accepted work even if documents or a subscription
+                // changed while this device was away. A failed read is not empty.
+                when (val active = repository.activeRide()) {
+                    is CaptainResult.Failure -> {
+                        _uiState.value = CaptainUiState.Unavailable(active.error.userMessage())
+                        return
+                    }
+                    is CaptainResult.Success -> if (active.value != null) {
+                        showRide(active.value)
+                        return
+                    }
+                }
+                saved.rideId?.let { id ->
+                    reloadRide(id)
+                    if (_uiState.value.isRide || _uiState.value is CaptainUiState.Unavailable) return
+                }
                 when (captain.review.state) {
                     ReviewState.INCOMPLETE -> loadOnboardingNow(nextStepFor(captain.profile, captain.review))
                     ReviewState.UNDER_REVIEW -> loadOnboardingNow(OnboardingStep.STATUS)
@@ -325,9 +349,7 @@ class MopeduCaptainViewModel @Inject constructor(
                             openPlansNow(PlansReason.FIRST_PLAN)
                             return
                         }
-                        // The server still thinks the captain is online, but nothing on
-                        // this device is sharing location (the app was killed): put it right.
-                        if (captain.isOnline && !duty.isOnline) repository.setOnline(false)
+                        // Opening another device must not change the first device's duty.
                         showHome()
                         refreshEarnings()
                     }
@@ -355,7 +377,7 @@ class MopeduCaptainViewModel @Inject constructor(
             review = it.review
         }
         val vehicles = repository.vehicles().valueOrNull().orEmpty()
-        val docs = repository.documents().valueOrNull().orEmpty()
+        val docs = repository.documents().valueOrNull().orEmpty() + (vehicles.firstOrNull()?.let { repository.vehicleDocuments(it.id).valueOrNull().orEmpty() } ?: emptyList())
         _uiState.value = CaptainUiState.Onboarding(
             step = step,
             profile = profile,
@@ -418,7 +440,12 @@ class MopeduCaptainViewModel @Inject constructor(
         }
         _uiState.value = current.copy(isLoading = true, errorMessage = null)
         viewModelScope.launch {
-            when (val result = repository.submitDocument(type, number.ifBlank { null }, mediaId)) {
+            val result = if (type == CaptainDocumentTypes.VEHICLE_RC) {
+                val vehicle = current.vehicle
+                if (vehicle == null) { _uiState.value = current.copy(isLoading = false, errorMessage = "Add your vehicle before uploading its RC."); return@launch }
+                repository.submitVehicleDocument(vehicle.id, type, number.ifBlank { null }, mediaId)
+            } else repository.submitDocument(type, number.ifBlank { null }, mediaId)
+            when (result) {
                 is CaptainResult.Success -> loadOnboardingNow(OnboardingStep.DOCUMENTS, uploads = current.uploads - type)
                 is CaptainResult.Failure -> _uiState.value = current.copy(isLoading = false, errorMessage = "Document not submitted: ${result.error.userMessage()}")
             }
@@ -664,8 +691,12 @@ class MopeduCaptainViewModel @Inject constructor(
         viewModelScope.launch {
             deepLinks.incoming.collect { link ->
                 deepLinks.consume()
-                if (_uiState.value.isRide) return@collect
+                if (_uiState.value.isRide) {
+                    saved.rideId?.let { reloadRide(it) }
+                    return@collect
+                }
                 route()
+                if (link is CaptainDeepLink.Ride && _uiState.value is CaptainUiState.Home) reloadRide(link.id)
                 if (link == CaptainDeepLink.Plans && _uiState.value is CaptainUiState.Home) openPlansNow(plansReasonNow())
             }
         }
@@ -820,8 +851,8 @@ class MopeduCaptainViewModel @Inject constructor(
                     countdownJob?.cancel()
                     offerJob?.cancel()
                     duty.setOnRide(true)
-                    _uiState.value = CaptainUiState.EnRouteToPickup(booking = offer.toBooking(result.value))
-                    viewModelScope.launch { repository.markArriving(result.value) }
+                    saved.rideId = result.value
+                    reloadRide(result.value)
                 }
                 is CaptainResult.Failure -> {
                     updateHome { it.copy(isAccepting = false, incomingOffer = null, offerSecondsLeft = 0, errorMessage = result.error.userMessage()) }
@@ -845,8 +876,15 @@ class MopeduCaptainViewModel @Inject constructor(
         if (state.isArriving) return
         _uiState.value = state.copy(isArriving = true, errorMessage = null)
         viewModelScope.launch {
+            if (state.booking.status == RideStatus.PARTNER_ASSIGNED) {
+                val arriving = repository.markArriving(state.booking.id)
+                if (arriving is CaptainResult.Failure) {
+                    _uiState.value = state.copy(errorMessage = arriving.error.userMessage())
+                    return@launch
+                }
+            }
             when (val result = repository.markArrived(state.booking.id)) {
-                is CaptainResult.Success -> _uiState.value = CaptainUiState.VerifyOtp(booking = state.booking.copy(status = RideStatus.ARRIVED))
+                is CaptainResult.Success -> reloadRide(state.booking.id)
                 is CaptainResult.Failure -> _uiState.value = state.copy(isArriving = false, errorMessage = result.error.userMessage())
             }
         }
@@ -867,8 +905,8 @@ class MopeduCaptainViewModel @Inject constructor(
         _uiState.value = state.copy(isVerifying = true, errorMessage = null)
         viewModelScope.launch {
             when (val result = repository.verifyOtpAndStart(state.booking.id, state.otpInput)) {
-                is CaptainResult.Success -> _uiState.value = CaptainUiState.TripInProgress(booking = state.booking.copy(status = RideStatus.IN_PROGRESS))
-                is CaptainResult.Failure -> _uiState.value = state.copy(isVerifying = false, errorMessage = "That code didn't match. Check it with the customer.")
+                is CaptainResult.Success -> reloadRide(state.booking.id)
+                is CaptainResult.Failure -> _uiState.value = state.copy(isVerifying = false, errorMessage = result.error.userMessage())
             }
         }
     }
@@ -880,16 +918,7 @@ class MopeduCaptainViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = repository.completeRide(state.booking.id, finalDistanceKm, finalDurationMin, repository.newIdempotencyKey())) {
                 is CaptainResult.Success -> {
-                    duty.setOnRide(false)
-                    val booking = state.booking.copy(status = RideStatus.COMPLETED)
-                    val amount = booking.finalFare ?: booking.estimatedFare
-                    val phase = if (booking.paymentMethod.isOnline) {
-                        CollectPhase.WaitingForCustomer(booking.paymentMethod, amount)
-                    } else {
-                        CollectPhase.Cash(amount)
-                    }
-                    _uiState.value = CaptainUiState.CollectPayment(booking = booking, phase = phase)
-                    watchPayment(booking.id)
+                    reloadRide(state.booking.id)
                 }
                 is CaptainResult.Failure -> _uiState.value = state.copy(isCompleting = false, errorMessage = result.error.userMessage())
             }
@@ -897,6 +926,39 @@ class MopeduCaptainViewModel @Inject constructor(
     }
 
     // ── Collecting the fare ─────────────────────────────────────────────
+
+    private suspend fun reloadRide(id: String) {
+        when (val result = repository.ride(id)) {
+            is CaptainResult.Success -> showRide(result.value)
+            is CaptainResult.Failure -> _uiState.value = CaptainUiState.Unavailable(result.error.userMessage())
+        }
+    }
+
+    private fun showRide(booking: RideBooking) {
+        stopOfferPolling()
+        saved.rideId = booking.id
+        duty.setOnRide(!booking.status.isTerminal)
+        _uiState.value = when (booking.status) {
+            RideStatus.PARTNER_ASSIGNED, RideStatus.PARTNER_ARRIVING -> CaptainUiState.EnRouteToPickup(booking)
+            RideStatus.ARRIVED -> CaptainUiState.VerifyOtp(booking)
+            RideStatus.OTP_VERIFIED, RideStatus.IN_PROGRESS -> CaptainUiState.TripInProgress(booking)
+            RideStatus.COMPLETED -> {
+                val amount = booking.finalFare ?: booking.estimatedFare
+                val phase = if (booking.paymentMethod.isOnline) CollectPhase.WaitingForCustomer(booking.paymentMethod, amount) else CollectPhase.Cash(amount)
+                watchPayment(booking.id)
+                CaptainUiState.CollectPayment(booking, phase)
+            }
+            else -> {
+                if (booking.status.isTerminal) {
+                    saved.rideId = null
+                    paymentJob?.cancel()
+                    showHome("This ride has ended. Check your latest requests.")
+                    return
+                }
+                CaptainUiState.Unavailable("This ride has changed. Refresh to check its current status.")
+            }
+        }
+    }
 
     fun confirmCashPayment() {
         val state = _uiState.value as? CaptainUiState.CollectPayment ?: return
@@ -957,6 +1019,8 @@ class MopeduCaptainViewModel @Inject constructor(
     /** The captain leaves a failed or refunded payment to the customer and goes back to Home. */
     fun finishRide() {
         paymentJob?.cancel()
+        saved.rideId = null
+        duty.setOnRide(false)
         viewModelScope.launch {
             showHome()
             refreshEarnings()
@@ -973,6 +1037,7 @@ class MopeduCaptainViewModel @Inject constructor(
             is CaptainUiState.Onboarding -> s.copy(errorMessage = null)
             is CaptainUiState.Plans -> s.copy(errorMessage = null)
             CaptainUiState.Loading -> s
+            is CaptainUiState.Unavailable -> s
         }
     }
 
@@ -1014,6 +1079,10 @@ class MopeduCaptainViewModel @Inject constructor(
  * by which method, it was for. Never a provider session.
  */
 internal class CaptainContinuation(private val handle: SavedStateHandle) {
+
+    var rideId: String?
+        get() = handle["captain.ride.id"]
+        set(value) { handle["captain.ride.id"] = value }
 
     var planCode: String?
         get() = handle[KEY_PLAN_CODE]

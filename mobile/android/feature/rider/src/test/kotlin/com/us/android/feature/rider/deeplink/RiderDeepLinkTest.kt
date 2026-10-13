@@ -7,6 +7,13 @@ import org.junit.Test
 class RiderDeepLinkTest {
 
     @Test
+    fun `payout notices open earnings and operational updates refresh current work`() {
+        assertThat(RiderDeepLinks.fromPush(mapOf("type" to "food_delivery_account_updated", "deep_link" to "/rider/earnings"))).isEqualTo(RiderDeepLink.Earnings)
+        assertThat(RiderDeepLinks.fromPush(mapOf("type" to "food_delivery_order_updated", "deep_link" to "/rider"))).isEqualTo(RiderDeepLink.CurrentJob)
+        assertThat(RiderDeepLinks.fromPush(mapOf("type" to "food_kitchen_account_updated", "deep_link" to "/kitchen"))).isNull()
+    }
+
+    @Test
     fun `the offer push path and its full-URL form open the offer`() {
         assertThat(RiderDeepLinks.parse("/rider/offers/0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0031"))
             .isEqualTo(RiderDeepLink.Offer("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0031"))

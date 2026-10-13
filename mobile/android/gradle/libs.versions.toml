@@ -157,6 +157,7 @@ banubaFaceAr              = "1.17.6"
 #   - lifecycle-service rides the existing `lifecycle` ref (2.11.0).
 playServicesLocation      = "21.2.0"
 mapsCompose               = "8.6.0"
+maps3d                    = "0.2.2"
 places                    = "5.3.0"
 androidxBrowser           = "1.10.0"
 camerax                   = "1.4.1"
@@ -318,6 +319,7 @@ banuba-face-ar-scripting          = { module = "com.banuba.sdk:scripting", versi
 # ── Feast / Kitchen / Rider (declared in A0, consumed from A1) ──────────
 play-services-location            = { module = "com.google.android.gms:play-services-location", version.ref = "playServicesLocation" }
 maps-compose                      = { module = "com.google.maps.android:maps-compose", version.ref = "mapsCompose" }
+maps3d                            = { module = "com.google.android.gms:play-services-maps3d", version.ref = "maps3d" }
 places                            = { module = "com.google.android.libraries.places:places", version.ref = "places" }
 androidx-browser                  = { module = "androidx.browser:browser", version.ref = "androidxBrowser" }
 androidx-camera-core              = { module = "androidx.camera:camera-core", version.ref = "camerax" }

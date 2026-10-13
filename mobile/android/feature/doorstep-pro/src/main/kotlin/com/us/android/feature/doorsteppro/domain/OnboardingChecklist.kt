@@ -3,10 +3,9 @@ package com.us.android.feature.doorsteppro.domain
 import com.us.android.feature.doorsteppro.data.ProReadinessDto
 
 /**
- * The onboarding steps, in the contract's order (OnboardingStep enum,
- * prokyc.RequiredSteps): profile → Aadhaar via DigiLocker (sets gender) →
- * selfie face match → skills → service area → weekly hours → bank → police
- * certificate → agreement; PAN is recommended, never required.
+ * Active setup requires profile, manual identity and selfie review, skills,
+ * working area, hours, bank details and PAN. Police clearance is not required;
+ * agreement acceptance is deferred until revised terms are published.
  *
  * The CHECKLIST ORDER IS THIS ENUM'S, never the order the server happened to
  * list steps in: a professional who comes back finds the same list in the
@@ -14,18 +13,21 @@ import com.us.android.feature.doorsteppro.data.ProReadinessDto
  */
 enum class OnboardingStep(val wire: String, val title: String, val blurb: String) {
     PROFILE("profile", "Your name and photo", "How customers will see you"),
-    AADHAAR("aadhaar_digilocker", "Aadhaar via DigiLocker", "Confirms who you are"),
-    SELFIE("selfie_face_match", "Selfie", "Matched with your Aadhaar photo"),
-    SKILLS("skills", "Your skills", "And a trade certificate where a skill needs one"),
+    AADHAAR("identity_review", "Identity review", "PAN and selfie reviewed by an admin"),
+    SELFIE("selfie_face_match", "Selfie", "A clear photo for manual identity review"),
+    SKILLS("skills", "Your skills", "Experience and course certificates are optional"),
     SERVICE_AREA("service_area", "Where you work", "Your home point and how far you travel"),
     WEEKLY_HOURS("weekly_hours", "Working hours", "When you take jobs each week"),
     BANK("bank", "Bank account", "Where your earnings go"),
     POLICE_CERTIFICATE("police_certificate", "Police clearance certificate", "Reviewed by Doorstep"),
     AGREEMENT("agreement", "Professional agreement", "Read and accept"),
-    PAN("pan", "PAN", "Recommended, not required"),
+    PAN("pan", "PAN number", "Required · no card upload"),
     ;
 
     companion object {
+        // Keep the legacy enum for reading historical documents and routes,
+        // but do not present removed or deferred requirements.
+        val activeSteps get() = entries.filter { it != POLICE_CERTIFICATE && it != AGREEMENT }
         fun of(wire: String): OnboardingStep? = entries.firstOrNull { it.wire == wire }
     }
 }
@@ -43,7 +45,7 @@ enum class StepState {
     /** Missing, but an earlier step must come first (the selfie is matched against the Aadhaar photo). */
     WAITING,
 
-    /** PAN, not yet given. Never blocks approval. */
+    /** Reserved for future optional setup steps. */
     OPTIONAL,
 }
 
@@ -78,9 +80,9 @@ data class Checklist(
     /** The first step the professional can act on now; null when nothing is left for them to do. */
     val next: OnboardingStep? get() = items.firstOrNull { it.state == StepState.TO_DO }?.step
 
-    val requiredLeft: Int get() = items.count { it.step != OnboardingStep.PAN && it.state != StepState.DONE } + unknownMissing.size
+    val requiredLeft: Int get() = items.count { it.state != StepState.DONE } + unknownMissing.size
 
-    val requiredTotal: Int get() = items.count { it.step != OnboardingStep.PAN } + unknownMissing.size
+    val requiredTotal: Int get() = items.size + unknownMissing.size
 
     /** Everything the professional can do is done; only Doorstep's reviews remain. */
     val waitingForReview: Boolean
@@ -97,9 +99,9 @@ data class Checklist(
  *  - a missing step is IN_REVIEW when the account is pending_verification (the
  *    server moves a draft there exactly when every missing step awaits an
  *    admin — prokyc.AwaitingReviewOnly) or when this device uploaded its
- *    document ([submittedForReview]); the selfie WAITS for Aadhaar; anything
+ *    document ([submittedForReview]); anything
  *    else is TO_DO;
- *  - PAN is DONE or OPTIONAL, never TO_DO.
+ *  - PAN remains required.
  */
 object OnboardingChecklist {
 
@@ -108,14 +110,12 @@ object OnboardingChecklist {
         val completed = readiness.completedSteps.mapNotNull(OnboardingStep::of).toSet()
         val missing = readiness.missingSteps.mapNotNull(OnboardingStep::of).toSet()
         val reviewOnly = status == ProStatus.PENDING_VERIFICATION
-        val aadhaarDone = OnboardingStep.AADHAAR in completed || OnboardingStep.AADHAAR !in missing
-        val items = OnboardingStep.entries.map { step ->
+        val items = OnboardingStep.activeSteps.map { step ->
             val state = when {
                 step in completed -> StepState.DONE
-                step == OnboardingStep.PAN -> StepState.OPTIONAL
                 step !in missing -> StepState.DONE
                 reviewOnly || step in submittedForReview -> StepState.IN_REVIEW
-                step == OnboardingStep.SELFIE && !aadhaarDone -> StepState.WAITING
+                step == OnboardingStep.AADHAAR -> StepState.IN_REVIEW
                 else -> StepState.TO_DO
             }
             ChecklistItem(step, state)

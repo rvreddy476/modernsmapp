@@ -44,6 +44,8 @@ class KitchenRepository @Inject constructor(
     private val api: KitchenApi,
     private val json: Json,
 ) {
+    suspend fun createRestaurant(request: com.us.android.core.food.network.CreateKitchenRequest): FoodResult<PartnerRestaurantDto> =
+        foodCall(json) { api.createRestaurant(request) }
 
     suspend fun restaurants(): FoodResult<List<PartnerRestaurantDto>> =
         foodCall(json) { api.listRestaurants() }.map { it.items }

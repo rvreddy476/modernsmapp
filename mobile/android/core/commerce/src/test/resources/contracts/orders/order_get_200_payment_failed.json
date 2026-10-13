@@ -8,6 +8,8 @@
     "tax_minor": 19815,
     "total_minor": 134800,
     "currency": "INR",
+    "payment_offer": null,
+    "amount_paid_minor": null,
     "payment_method": "upi",
     "payment_status": "failed",
     "status": "payment_failed",

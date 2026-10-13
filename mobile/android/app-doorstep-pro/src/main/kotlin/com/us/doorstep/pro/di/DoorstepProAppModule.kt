@@ -19,7 +19,6 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object DoorstepProAppModule {
-
     @Provides
     @Singleton
     fun provideApiConfig(): ApiConfig = ApiConfig(
@@ -46,7 +45,7 @@ object DoorstepProAppModule {
 
     /** Push devices register as `doorstep_pro`, so notification-service routes doorstep.pro.* here and nothing of Momentum's. */
     @Provides
-    fun providePushApp(): PushApp = PushApp.DOORSTEP_PRO
+    fun providePushApp(): PushApp = PushApp.PARTNER
 
     /** The dev flavour alone accepts the custom-scheme DigiLocker return (any app can claim a custom scheme). */
     @Provides

@@ -1,6 +1,8 @@
 package com.us.android.feature.doorsteppro.data
 
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.PartnerWorkReadbackDto
+import retrofit2.http.Header
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
@@ -25,6 +27,22 @@ import retrofit2.http.Query
  */
 @Suppress("TooManyFunctions")
 interface DoorstepProApi {
+    @GET("v1/doorstep/pro/me/skills")
+    suspend fun mySkills(): Response<ApiEnvelope<ProListDto<ProSkillDto>>>
+    @GET("v1/doorstep/pro/me/documents")
+    suspend fun documents(): Response<ApiEnvelope<ProListDto<ProDocumentDto>>>
+    @POST("v1/doorstep/pro/me/alternate-phone/request")
+    suspend fun requestAlternatePhone(): Response<ApiEnvelope<AlternatePhoneChallengeDto>>
+    @POST("v1/doorstep/pro/me/alternate-phone/verify")
+    suspend fun verifyAlternatePhone(@Body body: AlternatePhoneCodeDto): Response<ApiEnvelope<AlternatePhoneResultDto>>
+    @GET("v1/doorstep/pro/application/states")
+    suspend fun applicationStates(): Response<ApiEnvelope<ProListDto<ApplicationStateDto>>>
+
+    @POST("v1/doorstep/pro/application")
+    suspend fun submitApplication(@Body body: PartnerApplicationRequest): Response<ApiEnvelope<ProfessionalDto>>
+
+    @GET("v1/doorstep/pro/me/bank")
+    suspend fun bank(): Response<ApiEnvelope<PayoutAccountDto?>>
     @GET("v1/doorstep/pro/me/prices")
     suspend fun prices(): Response<ApiEnvelope<ProListDto<ProServicePricingDto>>>
 
@@ -107,10 +125,13 @@ interface DoorstepProApi {
 
     // ── Duty and offers (A4) ──
     @POST("v1/doorstep/pro/duty/on")
-    suspend fun dutyOn(@Body body: LocationRequest): Response<ApiEnvelope<DutyStateDto>>
+    suspend fun dutyOn(@Body body: LocationRequest, @Header("X-Work-Revision") revision: Long? = null): Response<ApiEnvelope<DutyStateDto>>
 
     @POST("v1/doorstep/pro/duty/off")
-    suspend fun dutyOff(): Response<ApiEnvelope<DutyStateDto>>
+    suspend fun dutyOff(@Header("X-Work-Revision") revision: Long? = null): Response<ApiEnvelope<DutyStateDto>>
+
+    @GET("v1/partner/work-session")
+    suspend fun workSession(): Response<ApiEnvelope<PartnerWorkReadbackDto>>
 
     @POST("v1/doorstep/pro/location")
     suspend fun location(@Body body: LocationRequest): Response<Unit>

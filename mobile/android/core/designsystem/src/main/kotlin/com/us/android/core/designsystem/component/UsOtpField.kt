@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -73,7 +75,7 @@ fun UsOtpField(
                 // Digits only, hard-capped at [length]. Filtering here rather
                 // than validating later means a pasted "Code: 123456" still
                 // works instead of being rejected.
-                val digits = raw.filter { it.isDigit() }.take(length)
+                val digits = raw.filter { it in '0'..'9' }.take(length)
                 if (digits != value) {
                     onValueChange(digits)
                     if (digits.length == length) {
@@ -95,7 +97,10 @@ fun UsOtpField(
             // The real field is invisible; the boxes below are the visual.
             textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.Transparent),
-            decorationBox = {
+            decorationBox = { innerTextField ->
+              Box {
+                // Keep the real input in the composition for focus, paste and IME.
+                Box(Modifier.size(1.dp).alpha(0f)) { innerTextField() }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
@@ -109,6 +114,7 @@ fun UsOtpField(
                         )
                     }
                 }
+              }
             },
         )
 

@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 import javax.inject.Inject
 
@@ -61,7 +62,10 @@ class OrderTrackingViewModel @Inject constructor(
     private val repository: FeastRepository,
     private val stream: OrderEventStream,
     private val clock: FeastClock,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
+    val trackingUpdates = updates.events
+    private val readMutex = kotlinx.coroutines.sync.Mutex()
 
     private val orderId: String = checkNotNull(savedStateHandle.get<String>("orderId")) {
         "navigation argument 'orderId' is missing"
@@ -107,12 +111,12 @@ class OrderTrackingViewModel @Inject constructor(
         _state.update { it.copy(message = null) }
     }
 
-    private suspend fun refresh() {
+    private suspend fun refresh() = readMutex.withLock {
         val order = viewModelScope.async { repository.order(orderId) }
         val tracking = viewModelScope.async { repository.tracking(orderId) }
         when (val o = order.await()) {
             is FoodResult.Failure -> _state.update {
-                it.copy(loading = false, error = if (it.order == null) describe(o.error) else null)
+                it.copy(loading = false, live = false, deliveryCode = null, error = if (it.order == null) describe(o.error) else "Updates unavailable. Showing your last loaded order.")
             }
             is FoodResult.Success -> applyOrder(o.value, (tracking.await() as? FoodResult.Success)?.value)
         }
@@ -169,8 +173,10 @@ class OrderTrackingViewModel @Inject constructor(
     }
 
     private fun onEvent(event: RealtimeEvent) {
+        if (event is RealtimeEvent.Disconnected) { _state.update { it.copy(live = false) }; return }
         if (event is RealtimeEvent.Connected) {
             _state.update { it.copy(live = true) }
+            refreshNow()
             return
         }
         val frame = TrackingFrames.parse(orderId, event)

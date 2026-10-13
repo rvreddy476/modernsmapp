@@ -3,6 +3,7 @@ package com.us.android.feature.doorsteppro
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.doorsteppro.data.DayOffDto
+import com.us.android.feature.doorsteppro.data.ApplicationStateDto
 import com.us.android.feature.doorsteppro.data.DigiLockerStartDto
 import com.us.android.feature.doorsteppro.data.DutyStateDto
 import com.us.android.feature.doorsteppro.data.EarningsDto
@@ -132,6 +133,15 @@ class ProContractFixtureTest {
         "pro_price_post_409_unchanged.json" to error(409) {},
         "pro_price_withdraw_409.json" to error(409) {},
         // ── Apply and profile ──
+        "pro_alternate_phone_request_200.json" to data(com.us.android.feature.doorsteppro.data.AlternatePhoneChallengeDto.serializer()) { assertThat(it.delivery).isEqualTo("development_log") },
+        "pro_alternate_phone_verify_200.json" to data(com.us.android.feature.doorsteppro.data.AlternatePhoneResultDto.serializer()) { assertThat(it.verified).isTrue() },
+        "pro_application_states_200.json" to data(ProListDto.serializer(ApplicationStateDto.serializer())) { assertThat(it.items.size).isEqualTo(36) },
+        "pro_application_post_201.json" to data(ProfessionalDto.serializer()) {
+            assertThat(it.status).isEqualTo("pending_verification")
+            assertThat(it.application?.declaredGender).isEqualTo("others")
+            assertThat(it.application?.primaryPhoneLast4).isEqualTo("3210")
+            assertThat(it.application?.alternatePhoneVerifiedAt).isNull()
+        },
         "pro_apply_201.json" to data(ProfessionalDto.serializer()) { dto ->
             assertThat(ProStatus.of(dto.status)).isEqualTo(ProStatus.DRAFT)
             assertThat(dto.gender).isNull()
@@ -154,14 +164,14 @@ class ProContractFixtureTest {
             assertThat(checklist.next).isEqualTo(OnboardingStep.PROFILE)
             assertThat(checklist.items.first { it.step == OnboardingStep.SKILLS }.state).isEqualTo(StepState.TO_DO)
             // The selfie waits for Aadhaar.
-            assertThat(checklist.items.first { it.step == OnboardingStep.SELFIE }.state).isEqualTo(StepState.WAITING)
-            assertThat(checklist.items.last().state).isEqualTo(StepState.OPTIONAL)
+            assertThat(checklist.items.first { it.step == OnboardingStep.SELFIE }.state).isEqualTo(StepState.TO_DO)
+            assertThat(checklist.items.last().state).isEqualTo(StepState.TO_DO)
             assertThat(checklist.canGoOnDuty).isFalse()
         },
         "pro_readiness_200_pending_review.json" to data(ProReadinessDto.serializer()) { dto ->
             val checklist = OnboardingChecklist.of(dto)
             assertThat(checklist.waitingForReview).isTrue()
-            assertThat(checklist.items.first { it.step == OnboardingStep.POLICE_CERTIFICATE }.state).isEqualTo(StepState.IN_REVIEW)
+            assertThat(checklist.items.any { it.step == OnboardingStep.POLICE_CERTIFICATE }).isFalse()
             assertThat(checklist.next).isNull()
             assertThat(dto.recommendedSteps).isEmpty()
         },
@@ -182,7 +192,7 @@ class ProContractFixtureTest {
         "pro_digilocker_start_503.json" to error(503) { assertThat(it.code).isEqualTo(ProCodes.DIGILOCKER_UNAVAILABLE) },
         "pro_digilocker_callback_200.json" to data(ProReadinessDto.serializer()) { dto ->
             val checklist = OnboardingChecklist.of(dto)
-            assertThat(checklist.items.first { it.step == OnboardingStep.AADHAAR }.state).isEqualTo(StepState.DONE)
+            assertThat(checklist.items.first { it.step == OnboardingStep.AADHAAR }.state).isEqualTo(StepState.IN_REVIEW)
             assertThat(checklist.items.first { it.step == OnboardingStep.SELFIE }.state).isEqualTo(StepState.TO_DO)
             assertThat(checklist.next).isEqualTo(OnboardingStep.SELFIE)
         },
@@ -190,9 +200,11 @@ class ProContractFixtureTest {
         // ── Selfie ──
         "pro_selfie_200.json" to data(KycCheckDto.serializer()) { dto ->
             assertThat(dto.status).isEqualTo("pending")
-            assertThat(dto.score).isEqualTo(96.0)
+            assertThat(dto.score).isNull()
         },
         "pro_selfie_200_pending.json" to data(KycCheckDto.serializer()) { assertThat(it.verifiedAt).isNull() },
+        "pro_selfie_200_offline.json" to data(KycCheckDto.serializer()) { assertThat(it.status).isEqualTo("pending") },
+        "pro_experience_certificate_201.json" to data(ProDocumentDto.serializer()) { assertThat(it.status).isEqualTo("pending") },
         "pro_selfie_422_failed.json" to error(422) { assertThat(it.code).isEqualTo(ProCodes.FACE_MATCH_FAILED) },
         "pro_selfie_422_no_aadhaar.json" to error(422) { assertThat(it.code).isEqualTo(ProCodes.ONBOARDING_INCOMPLETE) },
         // ── Skills ──
@@ -264,8 +276,8 @@ class ProContractFixtureTest {
         },
         "pro_police_certificate_400_old.json" to error(400) { assertThat(it.field).isEqualTo("issued_on") },
         "pro_police_certificate_409_pending.json" to error(409) { assertThat(it.code).isEqualTo(ProCodes.CONFLICT) },
-        "pro_agreement_200.json" to data(ProReadinessDto.serializer()) { dto ->
-            assertThat(OnboardingStep.AGREEMENT.wire).isIn(dto.completedSteps)
+        "pro_agreement_409_deferred.json" to error(409) { err ->
+            assertThat(err.code).isEqualTo("DOORSTEP_AGREEMENT_DEFERRED")
         },
         "pro_agreement_400_version.json" to error(400) { err ->
             assertThat(err.field).isEqualTo("version")

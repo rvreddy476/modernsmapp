@@ -102,20 +102,14 @@ import com.us.android.feature.dating.navigation.navigateToDatingReport
 import com.us.android.feature.dating.navigation.navigateToDatingSafety
 import com.us.android.feature.dating.navigation.navigateToDatingSparks
 import com.us.android.feature.dating.premium.DatingPaymentRequest
-import com.us.android.feature.feast.checkout.FeastPaymentRequest
-import com.us.android.feature.feast.navigation.feastScreens
-import com.us.android.feature.feast.navigation.navigateToFeast
-import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreens
-import com.us.android.feature.mopedu.rider.navigation.navigateToMopeduRider
-import com.us.android.feature.mopedu.rider.payment.MopeduPaymentRequest
 import com.us.android.feature.doorstep.navigation.doorstepScreens
 import com.us.android.feature.doorstep.navigation.navigateToDoorstep
 import com.us.android.feature.doorstep.navigation.navigateToDoorstepBooking
 import com.us.android.feature.doorstep.navigation.navigateToDoorstepOutstanding
 import com.us.android.feature.doorstep.payment.DoorstepPaymentRequest
-import com.us.android.push.DatingPushTarget
-import com.us.android.push.DoorstepPushTarget
-import com.us.android.push.PushDestinations
+import com.us.android.feature.feast.checkout.FeastPaymentRequest
+import com.us.android.feature.feast.navigation.feastScreens
+import com.us.android.feature.feast.navigation.navigateToFeast
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
@@ -131,6 +125,9 @@ import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
 import com.us.android.feature.live.navigation.navigateToLiveHub
 import com.us.android.feature.live.navigation.navigateToLiveWatch
+import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreens
+import com.us.android.feature.mopedu.rider.navigation.navigateToMopeduRider
+import com.us.android.feature.mopedu.rider.payment.MopeduPaymentRequest
 import com.us.android.feature.notifications.navigation.navigateToNotifications
 import com.us.android.feature.notifications.navigation.notificationsScreen
 import com.us.android.feature.post.createhub.CreateScope
@@ -193,7 +190,10 @@ import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
 import com.us.android.feature.tube.navigation.navigateToWatch
 import com.us.android.feature.tube.navigation.tubeScreens
+import com.us.android.push.DatingPushTarget
+import com.us.android.push.DoorstepPushTarget
 import com.us.android.push.LiveOpen
+import com.us.android.push.PushDestinations
 import com.us.android.push.TYPE_UPLOADED_FLICK
 import com.us.android.push.TYPE_UPLOADED_VIDEO
 import com.us.android.push.TYPE_WENT_LIVE
@@ -520,6 +520,12 @@ private fun NavHostController.openPushDestination(
     destination: com.us.android.push.PushDestination,
     onOpenReel: (postId: String) -> Unit,
 ) {
+    val customer = com.us.android.core.model.CustomerNotification.resolve(destination.type, destination.entityId, destination.deepLink)
+    if (customer != NotificationTarget.None) {
+        openNotificationTarget(customer, onOpenReel)
+        return
+    }
+    if (com.us.android.core.model.CustomerNotification.service(destination.type) != null) return
     when (destination.type) {
         "dm" -> if (destination.entityId.isNotBlank()) {
             navigateToChatThread(destination.entityId, title = "")
@@ -1095,6 +1101,7 @@ private fun NavGraphBuilder.exploreDestinations(
     composable<ExploreRoute> {
         ExploreScreen(
             tiles = launcher,
+            onBack = { navController.popBackStack() },
             onSearch = { query -> navController.navigateToSearch(SearchOrigin.EXPLORE, query) },
             onOpenApp = { app ->
                 when (app) {
@@ -1295,6 +1302,13 @@ private fun NavHostController.openNotificationTarget(
     onOpenReel: (postId: String) -> Unit,
 ) {
     when (target) {
+        is NotificationTarget.Customer -> when (target.service) {
+            com.us.android.core.model.CustomerNotification.Service.HOME -> navigateToDoorstepBooking(target.id)
+            com.us.android.core.model.CustomerNotification.Service.FOOD -> navigate(com.us.android.feature.feast.navigation.FeastTrackingRoute(target.id))
+            com.us.android.core.model.CustomerNotification.Service.COMMERCE -> navigate(com.us.android.feature.commerce.navigation.OrderDetailRoute(target.id))
+            com.us.android.core.model.CustomerNotification.Service.MOPED -> navigate(com.us.android.feature.mopedu.rider.navigation.MopeduBookingRoute(target.id))
+        }
+        NotificationTarget.CustomerDues -> navigateToDoorstepOutstanding()
         is NotificationTarget.Post -> navigateToPost(target.postId)
         is NotificationTarget.PostComment -> navigateToPost(target.postId)
         is NotificationTarget.Profile -> navigateToProfile(target.userId)

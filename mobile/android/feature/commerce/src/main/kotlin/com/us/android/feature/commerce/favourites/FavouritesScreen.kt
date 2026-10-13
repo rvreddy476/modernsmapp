@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.runtime.Composable
@@ -29,6 +28,7 @@ import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.ProductCard
+import com.us.android.feature.commerce.ui.commerceGridCells
 import com.us.android.feature.commerce.ui.describe
 import com.us.android.feature.commerce.ui.isRetryable
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -142,7 +142,7 @@ fun FavouritesScreen(
                 )
 
                 is FavouritesUiState.Content -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(GRID_COLUMNS),
+                    columns = commerceGridCells(),
                     modifier = Modifier.fillMaxSize().testTag("mstore_favourites"),
                     contentPadding = PaddingValues(
                         horizontal = UsTheme.spacing.pageHorizontal,
@@ -168,5 +168,3 @@ fun FavouritesScreen(
         }
     }
 }
-
-private const val GRID_COLUMNS = 2

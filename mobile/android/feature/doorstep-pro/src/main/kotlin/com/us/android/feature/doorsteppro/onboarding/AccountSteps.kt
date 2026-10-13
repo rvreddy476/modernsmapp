@@ -36,7 +36,6 @@ import com.us.android.feature.doorsteppro.data.field
 import com.us.android.feature.doorsteppro.data.userMessage
 import com.us.android.feature.doorsteppro.domain.KycFormats
 import com.us.android.feature.doorsteppro.domain.OnboardingStep
-import com.us.android.feature.doorsteppro.domain.ProAgreement
 import com.us.android.feature.doorsteppro.store.OnboardingMemory
 import com.us.android.feature.doorsteppro.ui.BottomAction
 import com.us.android.feature.doorsteppro.ui.CardHeading
@@ -63,144 +62,6 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import javax.inject.Inject
 
-// ── Bank ────────────────────────────────────────────────────────────────────
-
-enum class BankField { HOLDER, ACCOUNT, CONFIRM, IFSC }
-
-data class BankUiState(
-    val holder: String = "",
-    val account: String = "",
-    val confirm: String = "",
-    val ifsc: String = "",
-    val errors: Map<BankField, String> = emptyMap(),
-    /** What the server echoed (masked) — or what this device saved earlier: the number typed is never kept. */
-    val saved: String? = null,
-    val editing: Boolean = true,
-    val saving: Boolean = false,
-    val message: UsMessage? = null,
-)
-
-/**
- * The payout account → `PUT /pro/me/bank`. The server seals the number and
- * answers with the last four digits only; this screen then shows the masked
- * account and forgets what was typed. Payouts are OFF (settlements are
- * computed only) — the account is checked and kept for later.
- */
-@HiltViewModel
-class BankViewModel @Inject constructor(
-    private val repository: DoorstepProRepository,
-    private val memory: OnboardingMemory,
-) : ViewModel() {
-
-    private val _state = MutableStateFlow(BankUiState(saved = memory.bankSummary(), editing = memory.bankSummary() == null))
-    val state: StateFlow<BankUiState> = _state.asStateFlow()
-
-    fun onHolder(v: String) = _state.update { it.copy(holder = v.take(MAX_NAME), errors = it.errors - BankField.HOLDER) }
-
-    fun onAccount(v: String) = _state.update { it.copy(account = v.filter(Char::isDigit).take(MAX_DIGITS), errors = it.errors - BankField.ACCOUNT) }
-
-    fun onConfirm(v: String) = _state.update { it.copy(confirm = v.filter(Char::isDigit).take(MAX_DIGITS), errors = it.errors - BankField.CONFIRM) }
-
-    fun onIfsc(v: String) = _state.update { it.copy(ifsc = v.uppercase().take(IFSC_LENGTH), errors = it.errors - BankField.IFSC) }
-
-    fun replace() = _state.update { it.copy(editing = true) }
-
-    fun dismissMessage() = _state.update { it.copy(message = null) }
-
-    fun save() {
-        val s = _state.value
-        val account = KycFormats.accountNumber(s.account)
-        val ifsc = KycFormats.ifsc(s.ifsc)
-        val errors = buildMap {
-            if (s.holder.isBlank()) put(BankField.HOLDER, "Enter the name on the bank account")
-            if (account == null) put(BankField.ACCOUNT, KycFormats.ACCOUNT_MESSAGE)
-            if (account != null && s.confirm.trim() != account) put(BankField.CONFIRM, "The account numbers don't match")
-            if (ifsc == null) put(BankField.IFSC, KycFormats.IFSC_MESSAGE)
-        }
-        if (errors.isNotEmpty() || account == null || ifsc == null) {
-            _state.update { it.copy(errors = errors) }
-            return
-        }
-        if (s.saving) return
-        _state.update { it.copy(saving = true) }
-        viewModelScope.launch {
-            when (val result = repository.saveBank(holder = s.holder.trim(), accountNumber = account, ifsc = ifsc)) {
-                is ProResult.Success -> {
-                    val masked = "${result.value.accountHolder} · ••••${result.value.accountLast4} · ${result.value.ifsc}"
-                    memory.saveBankSummary(masked)
-                    _state.value = BankUiState(saved = masked, editing = false)
-                }
-                is ProResult.Failure -> _state.update { it.copy(saving = false, errors = fieldError(result.error), message = result.error.asMessage()) }
-            }
-        }
-    }
-
-    private fun fieldError(error: ProError): Map<BankField, String> = when (error.field) {
-        "ifsc" -> mapOf(BankField.IFSC to error.userMessage())
-        "account_number" -> mapOf(BankField.ACCOUNT to error.userMessage())
-        "account_holder" -> mapOf(BankField.HOLDER to error.userMessage())
-        else -> emptyMap()
-    }
-
-    private companion object {
-        const val MAX_NAME = 120
-        const val MAX_DIGITS = 18
-        const val IFSC_LENGTH = 11
-    }
-}
-
-@Composable
-fun BankStepScreen(onBack: () -> Unit, viewModel: BankViewModel = hiltViewModel()) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    ProScreen(
-        title = "Bank account",
-        onBack = onBack,
-        message = state.message,
-        onDismissMessage = viewModel::dismissMessage,
-        bottomBar = {
-            if (state.editing) {
-                BottomAction(label = "Save account", onClick = viewModel::save, loading = state.saving)
-            } else {
-                BottomAction(label = "Done", onClick = onBack)
-            }
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(listPadding(padding)),
-            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-        ) {
-            val saved = state.saved
-            if (saved != null && !state.editing) {
-                ProCard {
-                    CardHeading("Saved account", "Only the last four digits are ever shown.")
-                    Text(saved, style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textPrimary)
-                    UsPillButton(text = "Replace account", onClick = viewModel::replace, filled = false)
-                }
-            } else {
-                ProCard {
-                    CardHeading("Where your earnings go", "In your own name. Payouts start later; your earnings are recorded from your first job.")
-                    UsTextField(value = state.holder, onValueChange = viewModel::onHolder, label = "Account holder name", errorText = state.errors[BankField.HOLDER])
-                    UsTextField(
-                        value = state.account,
-                        onValueChange = viewModel::onAccount,
-                        label = "Account number",
-                        errorText = state.errors[BankField.ACCOUNT],
-                        isPassword = true,
-                        keyboardType = KeyboardType.NumberPassword,
-                    )
-                    UsTextField(
-                        value = state.confirm,
-                        onValueChange = viewModel::onConfirm,
-                        label = "Re-enter account number",
-                        errorText = state.errors[BankField.CONFIRM],
-                        keyboardType = KeyboardType.Number,
-                    )
-                    UsTextField(value = state.ifsc, onValueChange = viewModel::onIfsc, label = "IFSC", placeholder = "SBIN0001234", errorText = state.errors[BankField.IFSC])
-                }
-            }
-        }
-    }
-}
 
 // ── PAN ─────────────────────────────────────────────────────────────────────
 
@@ -226,7 +87,7 @@ class PanViewModel @Inject constructor(private val repository: DoorstepProReposi
         _state.update { it.copy(saving = true) }
         viewModelScope.launch {
             when (val result = repository.savePan(pan)) {
-                is ProResult.Success -> _state.update { it.copy(saving = false, saved = true) }
+                is ProResult.Success -> _state.update { it.copy(pan = "", saving = false, saved = true) }
                 is ProResult.Failure -> _state.update {
                     it.copy(saving = false, error = if (result.error.field == "pan") result.error.userMessage() else null, message = result.error.asMessage())
                 }
@@ -252,7 +113,7 @@ fun PanStepScreen(onBack: () -> Unit, viewModel: PanViewModel = hiltViewModel())
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(listPadding(padding))) {
             ProCard {
-                CardHeading("Your PAN (recommended)", "Used for tax on your earnings. You can take jobs without it.")
+                CardHeading("Your PAN number", "Required for your application. No PAN-card upload is needed. Saving the number is not government verification.")
                 UsTextField(value = state.pan, onValueChange = viewModel::onPan, label = "PAN", placeholder = "ABCPE1234F", errorText = state.error)
             }
         }
@@ -390,55 +251,18 @@ private const val MAX_AGE_MONTHS = 12L
 
 // ── Agreement ───────────────────────────────────────────────────────────────
 
-data class AgreementUiState(val accepting: Boolean = false, val accepted: Boolean = false, val outdated: Boolean = false, val message: UsMessage? = null)
-
-/** The professional agreement → `POST /pro/me/agreement {version}`. A version the server no longer takes means the app is outdated. */
-@HiltViewModel
-class AgreementViewModel @Inject constructor(private val repository: DoorstepProRepository) : ViewModel() {
-    private val _state = MutableStateFlow(AgreementUiState())
-    val state: StateFlow<AgreementUiState> = _state.asStateFlow()
-
-    fun dismissMessage() = _state.update { it.copy(message = null) }
-
-    fun accept() {
-        if (_state.value.accepting) return
-        _state.update { it.copy(accepting = true) }
-        viewModelScope.launch {
-            when (val result = repository.acceptAgreement(ProAgreement.VERSION)) {
-                is ProResult.Success -> _state.update { it.copy(accepting = false, accepted = true) }
-                is ProResult.Failure -> _state.update {
-                    val outdated = result.error.field == "version"
-                    it.copy(
-                        accepting = false,
-                        outdated = outdated,
-                        message = if (outdated) errorMessage("The agreement has changed. Update Doorstep Pro to read the new one.") else result.error.asMessage(),
-                    )
-                }
-            }
-        }
-    }
-}
-
+/** Kept for old navigation entries; deferred terms cannot be accepted. */
 @Composable
-fun AgreementStepScreen(onBack: () -> Unit, viewModel: AgreementViewModel = hiltViewModel()) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    LaunchedEffect(state.accepted) { if (state.accepted) onBack() }
+fun AgreementStepScreen(onBack: () -> Unit) {
     ProScreen(
-        title = "Professional agreement",
+        title = "Partner agreement",
         onBack = onBack,
-        message = state.message,
-        onDismissMessage = viewModel::dismissMessage,
-        bottomBar = { BottomAction(label = "I agree", onClick = viewModel::accept, loading = state.accepting, enabled = !state.outdated) },
+        bottomBar = { BottomAction(label = "Back to setup", onClick = onBack) },
     ) { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(listPadding(padding)),
-            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-        ) {
+        Column(modifier = Modifier.fillMaxSize().padding(listPadding(padding))) {
             ProCard {
-                CardHeading("Doorstep professional agreement", "Version ${ProAgreement.VERSION}")
-                ProAgreement.POINTS.forEachIndexed { i, point ->
-                    Text("${i + 1}. $point", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary)
-                }
+                CardHeading("No action needed", "Updated terms will be available later")
+                InfoNote("You can continue setting up your workspace. No agreement acceptance is recorded here.")
             }
         }
     }

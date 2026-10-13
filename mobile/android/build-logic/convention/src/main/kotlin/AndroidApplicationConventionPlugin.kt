@@ -7,6 +7,7 @@ import com.us.android.convention.devHost
 import com.us.android.convention.devWsUrl
 import com.us.android.convention.configureKotlinAndroid
 import com.us.android.convention.googleMapsAndroidKey
+import com.us.android.convention.googleMaps3DAndroidKey
 import com.us.android.convention.javaStringLiteral
 import org.gradle.api.GradleException
 import org.gradle.api.Plugin
@@ -38,6 +39,7 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
             // BuildConfig.
             val mapsKey = googleMapsAndroidKey()
             defaultConfig.manifestPlaceholders["MAPS_API_KEY"] = mapsKey
+            defaultConfig.manifestPlaceholders["MAPS3D_API_KEY"] = googleMaps3DAndroidKey()
             defaultConfig.buildConfigField("String", "MAPS_API_KEY", javaStringLiteral(mapsKey))
 
             defaultConfig.targetSdk = AndroidSdk.TARGET

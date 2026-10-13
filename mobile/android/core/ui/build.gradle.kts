@@ -33,6 +33,7 @@ dependencies {
     // behind it is bound by a feature through app DI — still no Hilt here.
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.androidx.lifecycle.runtime.compose)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

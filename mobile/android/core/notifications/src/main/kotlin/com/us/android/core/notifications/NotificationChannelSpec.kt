@@ -38,6 +38,28 @@ enum class NotificationChannelSpec(
      */
     val privateOnLockScreen: Boolean = false,
 ) {
+    COMMERCE_DELIVERY_DUTY(
+        id = "commerce_delivery_duty", title = "Commerce delivery location",
+        description = "Ongoing location sharing while you are on duty",
+        importance = NotificationManager.IMPORTANCE_LOW, privateOnLockScreen = true,
+    ),
+    COMMERCE_DELIVERY_OFFERS(
+        id = "commerce_delivery_offers", title = "Commerce delivery requests",
+        description = "Shopping deliveries offered to you, with 20 seconds to respond",
+        importance = NotificationManager.IMPORTANCE_HIGH, alertSound = true, privateOnLockScreen = true,
+    ),
+    COMMERCE_DELIVERY_UPDATES(
+        id = "commerce_delivery_updates", title = "Commerce delivery updates",
+        description = "Your delivery jobs, application, support and earnings",
+        importance = NotificationManager.IMPORTANCE_HIGH, privateOnLockScreen = true,
+    ),
+    PARTNER_BUSINESS(
+        id = "partner_business",
+        title = "Business updates",
+        description = "Shop orders and partner application updates",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        privateOnLockScreen = true,
+    ),
     /**
      * Ringing calls. HIGH so it can interrupt, and the only channel entitled
      * to a full-screen intent.
@@ -313,8 +335,8 @@ enum class NotificationChannelSpec(
 
     companion object {
         /**
-         * Momentum's channels — exactly the set the app registered before the
-         * Feast partner apps existed (2026-09-13).
+         * Momentum's customer channels, plus business updates for its existing
+         * seller entry point during migration to the unified Partner app.
          *
          * Named rather than derived from [entries]: Feast Kitchen and Feast
          * Rider are separate installs with their own channel lists, and an
@@ -338,6 +360,8 @@ enum class NotificationChannelSpec(
             RIDE_UPDATES,
             // The Doorstep customer flow ships only in Momentum (2026-10-04).
             DOORSTEP_UPDATES,
+            // Keep notifications working for the existing native seller entry.
+            PARTNER_BUSINESS,
         )
 
         /**
@@ -384,6 +408,7 @@ enum class NotificationChannelSpec(
             DOORSTEP_PRO_EARNINGS,
             DOORSTEP_PRO_ON_DUTY,
         )
+        val COMMERCE_DELIVERY: Set<NotificationChannelSpec> = setOf(COMMERCE_DELIVERY_OFFERS, COMMERCE_DELIVERY_UPDATES, COMMERCE_DELIVERY_DUTY)
 
         /**
          * Creates the given app's channels. Safe to call repeatedly — the
@@ -426,6 +451,9 @@ enum class NotificationChannelSpec(
 
         /** The channel for a push, defaulting to SOCIAL for an unknown type. */
         fun forType(type: String?): NotificationChannelSpec = when (type) {
+            "food_order_new" -> KITCHEN_NEW_ORDER
+            "food_delivery_offer" -> RIDER_JOB_OFFER
+            "commerce.delivery.offer" -> COMMERCE_DELIVERY_OFFERS
             // "incoming_call"/"incoming_video_call"/"missed_call" are what
             // notification-service's call consumer actually emits
             // (call_consumer.go); the bare "call"/"call_invite" aliases
@@ -452,7 +480,7 @@ enum class NotificationChannelSpec(
             "ride.assigned", "ride.arriving", "ride.arrived", "ride.started", "ride.completed", "ride.cancelled",
             "ride.payment.paid",
             -> RIDE_UPDATES
-            // Doorstep (2026-10-04): the 17 customer types of the registry
+            // Doorstep customer booking, dispatch and payment updates
             // (contracts/doorstep/asyncapi.yaml x-push-types.momentum). The
             // professionals' doorstep.pro.* types are NOT here: they post to
             // their own app's channels.
@@ -462,6 +490,7 @@ enum class NotificationChannelSpec(
             "doorstep.booking.cancelled", "doorstep.booking.expired", "doorstep.booking.refund_issued",
             "doorstep.booking.reminder", "doorstep.booking.pro_no_show", "doorstep.outstanding.due",
             "doorstep.message.new", "doorstep.rework.updated",
+            "doorstep.booking.pro_unavailable", "doorstep.booking.pro_changed",
             -> DOORSTEP_UPDATES
             // Doorstep Pro (2026-10-04): the 17 professional types of the
             // registry (contracts/doorstep/asyncapi.yaml x-push-types.doorstep_pro),
@@ -474,6 +503,7 @@ enum class NotificationChannelSpec(
             "doorstep.pro.application.approved", "doorstep.pro.application.rejected",
             "doorstep.pro.account.suspended", "doorstep.pro.account.reinstated",
             "doorstep.pro.document.reviewed", "doorstep.pro.background_check.expiring",
+            "doorstep.pro.change.reviewed", "doorstep.pro.price.reviewed",
             -> DOORSTEP_PRO_ACCOUNT
             "doorstep.pro.settlement.computed" -> DOORSTEP_PRO_EARNINGS
             "captain.offer" -> CAPTAIN_OFFER
@@ -482,11 +512,20 @@ enum class NotificationChannelSpec(
             // the onboarding verdict. Pinned by MopeduChannelTest.
             "captain.subscription.expiring", "captain.subscription.expired", "captain.subscription.renewed",
             "captain.subscription.payment_failed", "captain.approved", "captain.under_review",
+            "captain.review.updated", "captain.restricted", "captain.document.expiring",
+            "captain.subscription.review_rejected",
             -> CAPTAIN_ACCOUNT
             // A doorstep.pro.* type this build does not know yet still lands
             // on a channel the pro app registers: SOCIAL does not exist there,
             // and a post to a missing channel is dropped without a trace.
-            else -> if (type?.startsWith(DOORSTEP_PRO_PREFIX) == true) DOORSTEP_PRO_JOBS else SOCIAL
+            else -> when {
+                type?.startsWith("commerce.delivery.") == true -> COMMERCE_DELIVERY_UPDATES
+                type?.startsWith(DOORSTEP_PRO_PREFIX) == true -> DOORSTEP_PRO_JOBS
+                type?.startsWith("commerce.seller.") == true || type?.startsWith("seller.") == true -> PARTNER_BUSINESS
+                type?.startsWith("food.restaurant.") == true || type?.startsWith("food_delivery_") == true || type?.startsWith("food_kitchen_") == true -> FOOD_ORDERS
+                type?.startsWith("captain.") == true -> CAPTAIN_ACCOUNT
+                else -> SOCIAL
+            }
         }
 
         private const val DOORSTEP_PRO_PREFIX = "doorstep.pro."

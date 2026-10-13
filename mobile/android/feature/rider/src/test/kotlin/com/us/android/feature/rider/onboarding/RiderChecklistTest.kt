@@ -31,11 +31,11 @@ class RiderChecklistTest {
         assertThat(Vehicle.drivingDocumentsRequired("")).isTrue()
 
         // riderkyc "bicycle with nothing": aadhaar_digilocker, selfie, payout_account.
-        val bicycle = RiderChecklist.forVehicle(listOf("aadhaar_digilocker", "selfie", "payout_account"), "BICYCLE")
-        assertThat(statusOf(bicycle, RiderStep.DRIVING_LICENCE)).isEqualTo(RowStatus.NOT_NEEDED)
+        val bicycle = RiderChecklist.forVehicle(listOf("identity_document", "driving_licence", "selfie", "payout_account"), "BICYCLE")
+        assertThat(statusOf(bicycle, RiderStep.DRIVING_LICENCE)).isEqualTo(RowStatus.TO_DO)
         assertThat(statusOf(bicycle, RiderStep.VEHICLE_RC)).isEqualTo(RowStatus.NOT_NEEDED)
         assertThat(statusOf(bicycle, RiderStep.SELFIE)).isEqualTo(RowStatus.TO_DO)
-        assertThat(bicycle.nextStep).isEqualTo(RiderStep.AADHAAR_DIGILOCKER)
+        assertThat(bicycle.nextStep).isEqualTo(RiderStep.IDENTITY_DOCUMENT)
 
         // The same verified facts on a motorcycle owe DL and RC.
         val motorcycle = RiderChecklist.forVehicle(listOf("driving_licence", "vehicle_rc"), "MOTORCYCLE")
@@ -49,11 +49,11 @@ class RiderChecklistTest {
     @Test
     fun `the full vocabulary is presented in the server's order`() {
         val all = RiderChecklist.from(
-            listOf("vehicle", "aadhaar_digilocker", "driving_licence", "vehicle_rc", "selfie", "payout_account"),
+            listOf("vehicle", "identity_document", "driving_licence", "vehicle_rc", "selfie", "payout_account"),
             drivingDocumentsRequired = true,
         )
         assertThat(all.rows.map { it.step.wire })
-            .containsExactly("vehicle", "aadhaar_digilocker", "driving_licence", "vehicle_rc", "selfie", "payout_account").inOrder()
+            .containsExactly("vehicle", "identity_document", "driving_licence", "vehicle_rc", "selfie", "payout_account").inOrder()
         assertThat(all.rows.map { it.status }.toSet()).containsExactly(RowStatus.TO_DO)
         assertThat(all.nextStep).isEqualTo(RiderStep.VEHICLE)
     }

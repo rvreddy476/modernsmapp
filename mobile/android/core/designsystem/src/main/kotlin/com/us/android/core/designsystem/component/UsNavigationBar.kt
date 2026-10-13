@@ -10,13 +10,17 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -31,15 +35,16 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -57,9 +62,9 @@ data class UsNavItem(
 )
 
 /**
- * The app's bottom navigation — Momentum's FLAT bar: ground-coloured, a 1dp
- * top border, plain labelled items, and — when [centerAction] is supplied —
- * a raised gradient "+" between the middle two items.
+ * A quiet, adaptive navigation surface. Slots share available width instead
+ * of demanding 64dp each (six slots used to overflow small phones). Selection
+ * has a compact tinted plate; every slot has at least a 48dp touch height.
  *
  * Deliberately dumb: it receives the item list, the selected index and a
  * callback. It knows nothing about routes, the back stack or which feature
@@ -89,7 +94,7 @@ fun UsNavigationBar(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(UsTheme.extended.bgCanvas)
+            .background(UsTheme.extended.bgCardSolid)
             // Top edge only: the bar is flush with the screen's sides and
             // bottom, so a full border would draw a visible box.
             .drawBehind {
@@ -108,24 +113,32 @@ fun UsNavigationBar(
         // (two tabs, "+", two tabs). Overlaying it at the row's midpoint
         // instead looked right only for an even count and sat on top of a
         // label otherwise.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            val split = items.size / 2
-            items.forEachIndexed { index, item ->
-                if (centerAction != null && index == split) {
-                    CenterSlot(onClick = centerAction, active = centerActive)
+        BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            // At large accessibility sizes a six-slot phone bar cannot fit
+            // full words. Keep the spoken labels and full touch targets;
+            // never split a destination name through the middle of a word.
+            val showLabels = maxWidth >= LABEL_WIDE_BREAKPOINT ||
+                LocalDensity.current.fontScale <= LABEL_FONT_SCALE_LIMIT
+            Row(
+                modifier = Modifier.widthIn(max = BAR_MAX_WIDTH).fillMaxWidth().selectableGroup(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val split = items.size / 2
+                items.forEachIndexed { index, item ->
+                    if (centerAction != null && index == split) {
+                        CenterSlot(onClick = centerAction, active = centerActive, modifier = Modifier.weight(1f))
+                    }
+                    FlatTab(
+                        item = item,
+                        selected = index == selectedIndex,
+                        onClick = { onSelect(index) },
+                        modifier = Modifier.weight(1f),
+                        showLabel = showLabels,
+                    )
                 }
-                FlatTab(
-                    item = item,
-                    selected = index == selectedIndex,
-                    onClick = { onSelect(index) },
-                )
-            }
-            if (centerAction != null && items.size <= split) {
-                CenterSlot(onClick = centerAction, active = centerActive)
+                if (centerAction != null && items.size <= split) {
+                    CenterSlot(onClick = centerAction, active = centerActive, modifier = Modifier.weight(1f))
+                }
             }
         }
     }
@@ -133,28 +146,31 @@ fun UsNavigationBar(
 
 /** The create button in a tab-width slot so the row spaces it like a tab. */
 @Composable
-private fun CenterSlot(onClick: () -> Unit, active: Boolean) {
+private fun CenterSlot(onClick: () -> Unit, active: Boolean, modifier: Modifier) {
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier.width(TAB_WIDTH).padding(vertical = BAR_VERTICAL),
+        modifier = modifier.heightIn(min = TAB_MIN_HEIGHT).padding(vertical = BAR_VERTICAL),
     ) {
         CenterCreateButton(onClick = onClick, active = active)
     }
 }
 
-/** A regular destination: glyph over a tiny label, 64dp wide per the frame. */
+/** A regular destination: glyph over a readable, wrapping label. */
 @Composable
-private fun FlatTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
-    // Selected is WHITE, not the accent: the founder read the ember tab as
-    // "orange or saffron" noise on the navy bar (2026-09-04). The bar's only
-    // bright thing is the white create tile; the current tab joins it.
-    val tint = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.textMuted
+private fun FlatTab(
+    item: UsNavItem,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier,
+    showLabel: Boolean,
+) {
+    val tint = if (selected) UsTheme.extended.accentSolid else UsTheme.extended.textMuted
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-        modifier = Modifier
-            .width(TAB_WIDTH)
-            .clickable(onClick = onClick)
+        modifier = modifier
+            .heightIn(min = TAB_MIN_HEIGHT)
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick)
             .padding(vertical = BAR_VERTICAL)
             .semantics {
                 contentDescription = item.contentDescription
@@ -162,24 +178,37 @@ private fun FlatTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
                 this.selected = selected
             },
     ) {
-        Icon(
-            imageVector = item.icon,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier.size(TAB_GLYPH),
-        )
-        Text(
-            text = item.label,
-            style = MaterialTheme.typography.labelSmall,
-            fontSize = TAB_LABEL_SIZE,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = tint,
-        )
+        Box(
+            modifier = Modifier
+                .size(width = TAB_PLATE_WIDTH, height = TAB_PLATE_HEIGHT)
+                .background(
+                    if (selected) UsTheme.extended.unreadRow else androidx.compose.ui.graphics.Color.Transparent,
+                    RoundedCornerShape(UsTheme.radii.full),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = item.icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(TAB_GLYPH),
+            )
+        }
+        if (showLabel) {
+            Text(
+                text = item.label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = tint,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 2.dp),
+            )
+        }
     }
 }
 
 /**
- * The centre create button — a 40dp rounded square that, AT REST, is drawn
+ * The centre create button — a 48dp rounded square that, AT REST, is drawn
  * the way the other glyphs are: a muted 1.5dp outline with a muted plus.
  * Only while the Create sheet is open does it fill white with the navy plus
  * and turn into a "×". The always-white tile (and before it the red glow)
@@ -244,12 +273,16 @@ val UsDefaultNavItems: List<UsNavItem> = listOf(
     UsNavItem("Me", UsIcons.Profile, contentDescription = "My profile"),
 )
 
-private val TAB_WIDTH = 64.dp
-private val TAB_GLYPH = 24.dp
-private val TAB_LABEL_SIZE = 10.sp
-private val BAR_VERTICAL = 10.dp
+private val BAR_MAX_WIDTH = 720.dp
+private val LABEL_WIDE_BREAKPOINT = 480.dp
+private const val LABEL_FONT_SCALE_LIMIT = 1.2f
+private val TAB_MIN_HEIGHT = 64.dp
+private val TAB_GLYPH = 22.dp
+private val TAB_PLATE_WIDTH = 42.dp
+private val TAB_PLATE_HEIGHT = 28.dp
+private val BAR_VERTICAL = 6.dp
 private val BAR_BORDER = 1.dp
-private val CENTER_BUTTON = 40.dp
+private val CENTER_BUTTON = 48.dp
 private val CENTER_BUTTON_RADIUS = 14.dp
 private val CENTER_OUTLINE = 1.5.dp
 private val CENTER_GLYPH = 22.dp

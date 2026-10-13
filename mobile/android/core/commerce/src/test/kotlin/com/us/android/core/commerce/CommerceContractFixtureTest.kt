@@ -154,6 +154,8 @@ class CommerceContractFixtureTest {
             assertThat(it.totalMinor).isEqualTo(Paise(264_700))
             assertThat(it.taxMinor).isEqualTo(Paise(40_378))
             assertThat(it.serviceable).isTrue()
+            assertThat(it.deliverBy).isEqualTo("2026-10-05")
+            assertThat(it.maxDays).isEqualTo(5)
         },
         "checkout/quote_post_400_payment_method.json" to served({ quote("a-1", paymentMethod = "cod") }) {
             val error = it.error() as CommerceError.Unexpected
@@ -164,9 +166,9 @@ class CommerceContractFixtureTest {
             assertThat(it.error()).isEqualTo(CommerceError.NotServiceable("pincode not serviceable"))
         },
         "checkout/checkout_v2_post_201.json" to strict(CheckoutResultDto.serializer()) {
-            assertThat(it.orderId).isEqualTo("00000000-0000-4000-8000-0000000f000c")
+            assertThat(it.orderId).isEqualTo("00000000-0000-4000-8000-0000000f000d")
             assertThat(it.totalMinor).isEqualTo(Paise(134_800))
-            assertThat(it.paymentIntentId).isEqualTo("00000000-0000-4000-8000-0000000f000d")
+            assertThat(it.paymentIntentId).isEqualTo("00000000-0000-4000-8000-0000000f000e")
             assertThat(it.clientSession).isNull()
         },
         "checkout/checkout_v2_post_400_missing_idempotency_key.json" to served({ checkoutOnce() }) {
@@ -259,7 +261,7 @@ class CommerceContractFixtureTest {
             assertThat(error.isPermanentRefusal()).isTrue()
         },
         "payment/payment_intent_post_200_razorpay.json" to strict(PaymentHandleDto.serializer()) {
-            assertThat(it.paymentIntentId).isEqualTo("00000000-0000-4000-8000-0000000f000d")
+            assertThat(it.paymentIntentId).isEqualTo("00000000-0000-4000-8000-0000000f000e")
             assertThat(it.amountMinor).isEqualTo(Paise(134_800))
             assertThat(it.clientSession).containsEntry("provider", "razorpay")
             assertThat(it.clientSession).containsEntry("key_id", "rzp_test_ContractKey01")
@@ -310,7 +312,7 @@ class CommerceContractFixtureTest {
             assertThat(it.available).isEqualTo(24)
         },
         "seller/product_post_201.json" to lenient(SellerProductDto.serializer()) {
-            assertThat(it.id).isEqualTo("00000000-0000-4000-8000-0000000f000e")
+            assertThat(it.id).isEqualTo("00000000-0000-4000-8000-0000000f000f")
             assertThat(it.status).isEqualTo("draft")
             assertThat(it.approvalStatus).isEqualTo("draft")
         },

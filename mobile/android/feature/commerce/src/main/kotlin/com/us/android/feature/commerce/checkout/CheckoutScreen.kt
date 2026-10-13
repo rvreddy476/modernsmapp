@@ -16,6 +16,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.us.android.feature.commerce.delivery.ConfirmDeliveryPin
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,6 +77,7 @@ fun CheckoutScreen(
     viewModel: CheckoutViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var requestDeliveryPin by rememberSaveable(addressId) { mutableStateOf(false) }
 
     LaunchedEffect(addressId) {
         // C3-LB-2: no subtotal is passed in. The server prices the bag and
@@ -90,7 +95,7 @@ fun CheckoutScreen(
     val opening = state as? CheckoutUiState.OpeningPayment
     LaunchedEffect(opening?.attempt) {
         val o = opening ?: return@LaunchedEffect
-        onOpenPaymentSheet(o.attempt, o.orderNumber)
+        if (!requestDeliveryPin) onOpenPaymentSheet(o.attempt, o.orderNumber)
     }
 
     // C3-LB-4. If this screen goes away while a sheet is in flight, release
@@ -129,12 +134,13 @@ fun CheckoutScreen(
             when (val s = state) {
                 CheckoutUiState.Loading -> UsLoadingState(label = "Working out delivery")
 
-                is CheckoutUiState.Ready -> ReadyBody(
-                    state = s,
-                    onSelectMethod = viewModel::selectMethod,
-                    onPlaceOrder = viewModel::placeOrder,
-                    onChangeAddress = onChangeAddress,
-                )
+                is CheckoutUiState.Ready -> {
+                    UsSecondaryButton(
+                        if(requestDeliveryPin) "Delivery map pin will be confirmed before payment" else "Add a delivery map pin (optional)",
+                        { requestDeliveryPin = !requestDeliveryPin }, enabled = !s.placing,
+                    )
+                    ReadyBody(state=s,onSelectMethod=viewModel::selectMethod,onPlaceOrder=viewModel::placeOrder,onChangeAddress=onChangeAddress)
+                }
 
                 is CheckoutUiState.PriceChanged -> PriceChangedBody(
                     state = s,
@@ -161,7 +167,12 @@ fun CheckoutScreen(
                     onPrimary = onChangeAddress,
                 )
 
-                is CheckoutUiState.OpeningPayment -> CenteredProgress("Opening payment…")
+                is CheckoutUiState.OpeningPayment -> if(requestDeliveryPin) {
+                    ConfirmDeliveryPin(s.orderId,addressSummary) {
+                        requestDeliveryPin = false
+                        onOpenPaymentSheet(s.attempt,s.orderNumber)
+                    }
+                } else CenteredProgress("Opening payment…")
 
                 is CheckoutUiState.AwaitingConfirmation -> AwaitingBody(s, onViewOrder)
 

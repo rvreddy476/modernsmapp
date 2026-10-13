@@ -9,6 +9,8 @@ import com.us.android.core.mobility.model.PartnerProfile
 import com.us.android.core.mobility.model.PartnerSubscription
 import com.us.android.core.mobility.model.PaymentMethod
 import com.us.android.core.mobility.model.RidePayment
+import com.us.android.core.mobility.model.RideBooking
+import com.us.android.core.mobility.model.RideStatus
 import com.us.android.core.mobility.model.RidePaymentStatus
 import com.us.android.core.mobility.model.SubscriptionPlan
 import com.us.android.core.mobility.model.Vehicle
@@ -92,6 +94,8 @@ data class SubscriptionPayment(val status: SubscriptionPaymentStatus, val intent
 /** The captain's data seam. Every call answers a typed [CaptainResult]; nothing throws. */
 @Suppress("TooManyFunctions")
 interface MopeduCaptainRepository {
+    suspend fun activeRide(): CaptainResult<RideBooking?>
+    suspend fun ride(rideId: String): CaptainResult<RideBooking>
     suspend fun setOnline(online: Boolean): CaptainResult<Unit>
     suspend fun sendLocation(telemetry: LocationTelemetryDto): CaptainResult<Unit>
     suspend fun incomingOffers(): CaptainResult<List<CaptainOffer>>
@@ -110,6 +114,8 @@ interface MopeduCaptainRepository {
     suspend fun documents(): CaptainResult<List<PartnerDocument>>
     /** A document record for a photo ALREADY confirmed by media-service: [mediaId] is never a placeholder. */
     suspend fun submitDocument(documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument>
+    suspend fun submitVehicleDocument(vehicleId: String, documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument>
+    suspend fun vehicleDocuments(vehicleId: String): CaptainResult<List<PartnerDocument>>
     suspend fun startAadhaar(): CaptainResult<AadhaarStartResponseDto>
     suspend fun callbackAadhaar(requestId: String, assertionToken: String): CaptainResult<PartnerProfile>
     suspend fun vehicles(): CaptainResult<List<Vehicle>>
@@ -133,8 +139,27 @@ class RealMopeduCaptainRepository @Inject constructor(
     private val json: Json,
 ) : MopeduCaptainRepository {
 
+    override suspend fun activeRide(): CaptainResult<RideBooking?> =
+        captainCall(json) { api.activeRide() }.map { it.ride?.toBooking() }
+
+    override suspend fun ride(rideId: String): CaptainResult<RideBooking> =
+        captainCall(json) { api.ride(rideId) }.map { it.toBooking() }
+
+    // Each mutation uses authenticated readback and optimistic locking. A
+    // concurrent device update is rejected by the server, never blindly retried.
+    private suspend fun withRevision(rideId: String, action: suspend (Int) -> CaptainResult<Unit>): CaptainResult<Unit> =
+        when (val latest = ride(rideId)) {
+            is CaptainResult.Success -> action(latest.value.revision)
+            is CaptainResult.Failure -> latest
+        }
+
     override suspend fun setOnline(online: Boolean): CaptainResult<Unit> =
-        captainUnitCall(json) { if (online) api.goOnline() else api.goOffline() }
+        when (val work = captainCall(json) { api.workSession() }) {
+            is CaptainResult.Failure -> work
+            is CaptainResult.Success -> captainUnitCall(json) {
+                if (online) api.goOnline(work.value.session.revision) else api.goOffline(work.value.session.revision)
+            }
+        }
 
     override suspend fun sendLocation(telemetry: LocationTelemetryDto): CaptainResult<Unit> =
         captainUnitCall(json) { api.updateLocation(telemetry) }
@@ -147,17 +172,23 @@ class RealMopeduCaptainRepository @Inject constructor(
 
     override suspend fun rejectOffer(offerId: String): CaptainResult<Unit> = captainUnitCall(json) { api.rejectOffer(offerId) }
 
-    override suspend fun markArriving(rideId: String): CaptainResult<Unit> = captainUnitCall(json) { api.markArriving(rideId) }
+    override suspend fun markArriving(rideId: String): CaptainResult<Unit> = withRevision(rideId) { revision ->
+        captainUnitCall(json) { api.markArriving(rideId, RideRevisionDto(revision)) }
+    }
 
-    override suspend fun markArrived(rideId: String): CaptainResult<Unit> = captainUnitCall(json) { api.markArrived(rideId) }
+    override suspend fun markArrived(rideId: String): CaptainResult<Unit> = withRevision(rideId) { revision ->
+        captainUnitCall(json) { api.markArrived(rideId, RideRevisionDto(revision)) }
+    }
 
     override suspend fun verifyOtpAndStart(rideId: String, otp: String): CaptainResult<Unit> =
-        captainUnitCall(json) { api.startRide(rideId, StartRideRequestDto(otp)) }
+        withRevision(rideId) { revision -> captainUnitCall(json) { api.startRide(rideId, StartRideRequestDto(otp, revision)) } }
 
     override suspend fun completeRide(rideId: String, finalDistanceKm: Double, finalDurationMin: Int, idempotencyKey: String): CaptainResult<Unit> =
-        captainUnitCall(json) { api.completeRide(rideId, CompleteRideRequestDto(finalDistanceKm, finalDurationMin, idempotencyKey)) }
+        withRevision(rideId) { revision -> captainUnitCall(json) { api.completeRide(rideId, CompleteRideRequestDto(finalDistanceKm, finalDurationMin, idempotencyKey, revision)) } }
 
-    override suspend fun confirmCashPayment(rideId: String): CaptainResult<Unit> = captainUnitCall(json) { api.confirmCashPayment(rideId) }
+    override suspend fun confirmCashPayment(rideId: String): CaptainResult<Unit> = withRevision(rideId) { revision ->
+        captainUnitCall(json) { api.confirmCashPayment(rideId, RideRevisionDto(revision)) }
+    }
 
     override suspend fun ridePayment(rideId: String): CaptainResult<RidePayment> =
         captainCall(json) { api.ridePayment(rideId) }.map {
@@ -193,6 +224,12 @@ class RealMopeduCaptainRepository @Inject constructor(
 
     override suspend fun submitDocument(documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument> =
         captainCall(json) { api.submitDocument(SubmitDocumentRequestDto.forMedia(documentType, documentNumber, mediaId)) }.map { it.toDomain() }
+
+    override suspend fun submitVehicleDocument(vehicleId: String, documentType: String, documentNumber: String?, mediaId: String): CaptainResult<PartnerDocument> =
+        captainCall(json) { api.submitVehicleDocument(vehicleId, SubmitDocumentRequestDto.forMedia(documentType, documentNumber, mediaId)) }.map { it.toDomain() }
+
+    override suspend fun vehicleDocuments(vehicleId: String): CaptainResult<List<PartnerDocument>> =
+        captainCall(json, empty = emptyList()) { api.vehicleDocuments(vehicleId) }.map { rows -> rows.map { it.toDomain() } }
 
     override suspend fun startAadhaar(): CaptainResult<AadhaarStartResponseDto> = captainCall(json) { api.startAadhaar() }
 
@@ -236,7 +273,17 @@ class RealMopeduCaptainRepository @Inject constructor(
 
 // ── DTO → domain ────────────────────────────────────────────────────────
 
-internal fun CaptainOfferDto.toOffer(nowEpochMs: Long = System.currentTimeMillis()) = CaptainOffer(
+internal fun CaptainRideDto.toBooking() = RideBooking(
+    id = id, customerUserId = "", partnerId = partnerId, vehicleId = vehicleId, quoteId = null,
+    revision = revision, vehicleType = VehicleType.fromCode(vehicleType), status = RideStatus.fromCode(status),
+    pickup = GeoPoint(pickupLat, pickupLng, pickupAddress), drop = GeoPoint(dropLat, dropLng, dropAddress),
+    estimatedFare = MoneyPaise(((estimatedFare ?: 0.0) * 100).roundToLong()),
+    finalFare = (finalFarePaise ?: finalFare?.let { (it * 100).roundToLong() })?.let(::MoneyPaise),
+    paymentMethod = PaymentMethod.fromCode(paymentMethod), otp = null,
+    requestedAtEpochMs = requestedAt.toEpochMs() ?: 0, completedAtEpochMs = completedAt.toEpochMs(),
+)
+
+internal fun CaptainOfferDto.toOffer() = CaptainOffer(
     id = id,
     rideId = rideId,
     pickup = GeoPoint(pickupLat, pickupLng, pickupAddress),
@@ -244,7 +291,8 @@ internal fun CaptainOfferDto.toOffer(nowEpochMs: Long = System.currentTimeMillis
     distanceKM = distanceKm,
     estimatedEarnings = MoneyPaise(estimatedFarePaise),
     score = score,
-    expiresAtEpochMs = expiresAt.toEpochMs() ?: (nowEpochMs + DEFAULT_OFFER_WINDOW_MILLIS),
+    // Missing or malformed expiry cannot grant a fresh window to an old offer.
+    expiresAtEpochMs = expiresAt.toEpochMs() ?: 0L,
     vehicleType = VehicleType.fromCode(vehicleType),
     paymentMethod = PaymentMethod.fromCode(paymentMethod),
 )
@@ -339,6 +387,5 @@ internal fun String?.toEpochMs(): Long? {
     }
 }
 
-private const val DEFAULT_OFFER_WINDOW_MILLIS = 15_000L
 private const val PAISE_PER_RUPEE = 100.0
 private const val KYC_APPROVED = "approved"

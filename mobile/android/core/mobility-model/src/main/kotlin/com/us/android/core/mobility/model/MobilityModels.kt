@@ -227,7 +227,14 @@ data class RideBooking(
     val cancellationFee: MoneyPaise? = null,
     /** Cancelling at or before this instant is free; null means the server gave no window. */
     val cancelFreeUntilEpochMs: Long? = null,
+    val captainLocation: GeoPoint? = null,
+    val captainLocationAtEpochMs: Long? = null,
 ) {
+    fun freshCaptainLocation(now: Long): GeoPoint? {
+        val at = captainLocationAtEpochMs ?: return null
+        val point = captainLocation ?: return null
+        return point.takeIf { now - at in 0..120_000 && it.lat.isFinite() && it.lng.isFinite() && it.lat in -90.0..90.0 && it.lng in -180.0..180.0 }
+    }
     /** What cancelling now costs, from the ride's own rule. See [CancellationRule]. */
     fun cancellationFeeAt(nowEpochMs: Long): MoneyPaise = CancellationRule.feeAt(this, nowEpochMs)
 }

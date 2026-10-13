@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.exoplayer.ExoPlayer
@@ -110,6 +111,7 @@ fun FeedScreen(
             )
         },
         applyPageGutter = false,
+        contentMaxWidth = 720.dp,
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
             FeedTabsRow(selected = tab, onSelect = viewModel::selectTab)

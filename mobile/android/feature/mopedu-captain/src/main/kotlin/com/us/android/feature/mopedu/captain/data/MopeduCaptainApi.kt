@@ -7,16 +7,33 @@ import retrofit2.http.GET
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Header
+import retrofit2.http.Query
+import com.us.android.core.network.PartnerWorkReadbackDto
 
 /** rider-service's partner routes, on the platform's shared Retrofit client. */
 @Suppress("TooManyFunctions")
 interface MopeduCaptainApi {
+    @GET("v1/partner/work-session")
+    suspend fun workSession(): Response<ApiEnvelope<PartnerWorkReadbackDto>>
+
+    @GET("v1/rider/partners/me/rides")
+    suspend fun rideHistory(@Query("limit") limit: Int = 50): Response<ApiEnvelope<List<CaptainRideDto>>>
+
+    @POST("v1/rider/partners/me/rides/{id}/support")
+    suspend fun support(@Path("id") id: String, @Body request: CaptainSupportRequestDto): Response<ApiEnvelope<CaptainSupportDto>>
+
+    @GET("v1/rider/partners/me/rides/active")
+    suspend fun activeRide(): Response<ApiEnvelope<CaptainActiveRideDto>>
+
+    @GET("v1/rider/partners/me/rides/{id}")
+    suspend fun ride(@Path("id") rideId: String): Response<ApiEnvelope<CaptainRideDto>>
 
     @POST("v1/rider/partners/me/online")
-    suspend fun goOnline(): Response<ApiEnvelope<Unit>>
+    suspend fun goOnline(@Header("X-Work-Revision") revision: Long? = null): Response<ApiEnvelope<Unit>>
 
     @POST("v1/rider/partners/me/offline")
-    suspend fun goOffline(): Response<ApiEnvelope<Unit>>
+    suspend fun goOffline(@Header("X-Work-Revision") revision: Long? = null): Response<ApiEnvelope<Unit>>
 
     /** The on-duty ping from CaptainLocationService. */
     @POST("v1/rider/partners/me/location")
@@ -32,10 +49,10 @@ interface MopeduCaptainApi {
     suspend fun rejectOffer(@Path("id") offerId: String): Response<ApiEnvelope<Unit>>
 
     @POST("v1/rider/rides/{id}/arriving")
-    suspend fun markArriving(@Path("id") rideId: String): Response<ApiEnvelope<Unit>>
+    suspend fun markArriving(@Path("id") rideId: String, @Body request: RideRevisionDto): Response<ApiEnvelope<Unit>>
 
     @POST("v1/rider/rides/{id}/arrived")
-    suspend fun markArrived(@Path("id") rideId: String): Response<ApiEnvelope<Unit>>
+    suspend fun markArrived(@Path("id") rideId: String, @Body request: RideRevisionDto): Response<ApiEnvelope<Unit>>
 
     @POST("v1/rider/rides/{id}/start")
     suspend fun startRide(@Path("id") rideId: String, @Body request: StartRideRequestDto): Response<ApiEnvelope<Unit>>
@@ -45,7 +62,7 @@ interface MopeduCaptainApi {
 
     /** Cash: the captain's word settles the ride. */
     @POST("v1/rider/rides/{id}/payment/cash-confirm")
-    suspend fun confirmCashPayment(@Path("id") rideId: String): Response<ApiEnvelope<Unit>>
+    suspend fun confirmCashPayment(@Path("id") rideId: String, @Body request: RideRevisionDto): Response<ApiEnvelope<Unit>>
 
     /** UPI/card: polled until the SERVER says paid. The captain never marks an online payment. */
     @GET("v1/rider/rides/{id}/payment")
@@ -93,6 +110,9 @@ interface MopeduCaptainApi {
         @Path("id") vehicleId: String,
         @Body request: SubmitDocumentRequestDto,
     ): Response<ApiEnvelope<PartnerDocumentDto>>
+
+    @GET("v1/rider/vehicles/{id}/documents")
+    suspend fun vehicleDocuments(@Path("id") vehicleId: String): Response<ApiEnvelope<List<PartnerDocumentDto>>>
 
     // --- Subscriptions (2026-09-18: checkout through payments-service) ---
 

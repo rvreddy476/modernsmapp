@@ -1,131 +1,85 @@
 package com.us.android.feature.doorsteppro.apply
 
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewModelScope
-import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsTextField
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.feature.doorsteppro.data.DoorstepProRepository
-import com.us.android.feature.doorsteppro.data.ProCodes
-import com.us.android.feature.doorsteppro.data.ProResult
-import com.us.android.feature.doorsteppro.data.code
-import com.us.android.feature.doorsteppro.ui.BottomAction
-import com.us.android.feature.doorsteppro.ui.CardHeading
-import com.us.android.feature.doorsteppro.ui.CardStack
-import com.us.android.feature.doorsteppro.ui.InfoNote
-import com.us.android.feature.doorsteppro.ui.ProCard
-import com.us.android.feature.doorsteppro.ui.ProScreen
-import com.us.android.feature.doorsteppro.ui.asMessage
-import com.us.android.feature.doorsteppro.ui.listPadding
-import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import javax.inject.Inject
+import com.us.android.feature.doorsteppro.camera.rememberPhotoSource
+import com.us.android.feature.doorsteppro.onboarding.*
+import com.us.android.feature.doorsteppro.ui.*
 
-data class ApplyUiState(
-    val name: String = "",
-    val nameError: String? = null,
-    val submitting: Boolean = false,
-    val done: Boolean = false,
-    val message: UsMessage? = null,
-)
-
-/**
- * `POST /pro/apply {display_name, city_code}`. No gender field: gender comes
- * from DigiLocker Aadhaar only, and the server refuses the key outright.
- * Already applied (409 DOORSTEP_PRO_EXISTS) counts as done — the gate reloads.
- */
-@HiltViewModel
-class ApplyViewModel @Inject constructor(
-    private val repository: DoorstepProRepository,
-) : ViewModel() {
-
-    private val _state = MutableStateFlow(ApplyUiState())
-    val state: StateFlow<ApplyUiState> = _state.asStateFlow()
-
-    fun onName(value: String) = _state.update { it.copy(name = value.take(MAX_NAME), nameError = null) }
-
-    fun dismissMessage() = _state.update { it.copy(message = null) }
-
-    fun submit() {
-        val name = _state.value.name.trim()
-        if (name.length < MIN_NAME) {
-            _state.update { it.copy(nameError = "Enter your name as customers should see it") }
-            return
-        }
-        if (_state.value.submitting) return
-        _state.update { it.copy(submitting = true) }
-        viewModelScope.launch {
-            when (val result = repository.apply(displayName = name, cityCode = PILOT_CITY)) {
-                is ProResult.Success -> _state.update { it.copy(submitting = false, done = true) }
-                is ProResult.Failure -> if (result.error.code == ProCodes.PRO_EXISTS) {
-                    _state.update { it.copy(submitting = false, done = true) }
-                } else {
-                    _state.update { it.copy(submitting = false, message = result.error.asMessage()) }
-                }
-            }
-        }
-    }
-
-    companion object {
-        /** The pilot city (GST state 36). */
-        const val PILOT_CITY = "HYD"
-        private const val MIN_NAME = 2
-        private const val MAX_NAME = 80
-    }
-}
+private val titles = listOf("Personal details", "Services & location", "Identity & documents", "Bank details", "Review application")
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun ApplyScreen(onBack: () -> Unit, onApplied: () -> Unit, viewModel: ApplyViewModel = hiltViewModel()) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    LaunchedEffect(state.done) { if (state.done) onApplied() }
-    ProScreen(
-        title = "Work with Doorstep",
-        onBack = onBack,
-        message = state.message,
-        onDismissMessage = viewModel::dismissMessage,
-        bottomBar = { BottomAction(label = "Start my application", onClick = viewModel::submit, loading = state.submitting) },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(listPadding(padding)),
-        ) {
-            CardStack {
-                ProCard {
-                    CardHeading(
-                        "Home services in Hyderabad",
-                        "Cleaning, AC and appliance repair, electrical, plumbing, carpentry, painting, pest control and salon at home.",
-                    )
-                    UsTextField(
-                        value = state.name,
-                        onValueChange = viewModel::onName,
-                        label = "Your name",
-                        placeholder = "As on your Aadhaar",
-                        errorText = state.nameError,
-                    )
-                    InfoNote("City: Hyderabad. Doorstep Pro is in a pilot there.")
+    val s by viewModel.state.collectAsStateWithLifecycle()
+    LaunchedEffect(s.done) { if (s.done) onApplied() }
+    val identity = rememberPhotoSource(onPicked = { viewModel.photo("identity", it) })
+    val selfie = rememberPhotoSource(onPicked = { viewModel.photo("selfie", it) })
+    val experience = rememberPhotoSource(onPicked = { viewModel.photo("experience", it) })
+    val bank = rememberPhotoSource(onPicked = { viewModel.photo("bank", it) })
+    val scroll = rememberScrollState()
+    LaunchedEffect(s.step) { scroll.scrollTo(0) }
+    ProScreen(title = "Partner application", onBack = { if (!s.submitting) { if (s.step == 0) onBack() else viewModel.back() } }, message = s.message, onDismissMessage = viewModel::dismissMessage,
+        bottomBar = { BottomAction(if (s.step == 4) "Submit for verification" else "Continue", viewModel::submit, loading = s.submitting, enabled = !s.loading) }) { padding ->
+        Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(listPadding(padding)), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+            Text("Step ${s.step + 1} of 5", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.textMuted)
+            LinearProgressIndicator(progress = { (s.step + 1) / 5f }, modifier = Modifier.fillMaxWidth())
+            ProCard {
+                CardHeading(titles[s.step])
+                when (s.step) {
+                    0 -> {
+                        UsTextField(s.first, { v -> viewModel.edit { it.copy(first = v.take(50)) } }, label = "First name *", errorText = s.errors["first"])
+                        UsTextField(s.last, { v -> viewModel.edit { it.copy(last = v.take(50)) } }, label = "Last name *", errorText = s.errors["last"])
+                        Text("Gender *", style = MaterialTheme.typography.labelLarge)
+                        FlowRow { listOf("male" to "Male", "female" to "Female", "others" to "Other").forEach { (key, label) ->
+                            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) { RadioButton(s.gender == key, { viewModel.edit { it.copy(gender = key) } }); Text(label) }
+                        } }
+                        UsTextField(s.alternate, { v -> viewModel.edit { it.copy(alternate = v.filter(Char::isDigit).take(10)) } }, label = "Alternate number (optional)", keyboardType = KeyboardType.Phone, errorText = s.errors["alternate"])
+                        InfoNote("Alternate contact will need verification later.")
+                    }
+                    1 -> {
+                        UsTextField(s.search, { v -> viewModel.edit { it.copy(search = v) } }, label = "Search service types")
+                        if (s.catalogue.isEmpty()) UsPillButton("Reload services", viewModel::loadOptions, filled = false)
+                        s.catalogue.filter { it.name.contains(s.search, true) }.forEach { skill ->
+                            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) { Checkbox(skill.code in s.skills, { checked -> viewModel.edit { it.copy(skills = if (checked) (it.skills + skill.code).distinct().take(20) else it.skills - skill.code) } }); Text(skill.name) }
+                        }
+                        ChoiceField("State *", s.stateCode, s.states.map { it.code to it.name }) { v -> viewModel.edit { it.copy(stateCode = v, town = "") } }
+                        UsTextField(s.town, { v -> viewModel.edit { it.copy(town = v.take(100)) } }, label = "Town / city *", errorText = s.errors["town"])
+                    }
+                    2 -> {
+                        UsTextField(s.pan, { v -> viewModel.edit { it.copy(pan = v.uppercase().filter(Char::isLetterOrDigit).take(10)) } }, label = "PAN number *", isPassword = true, errorText = s.errors["pan"])
+                        InfoNote("PAN number only. No card upload.")
+                        ChoiceField("Identity proof *", s.identityKind, listOf("passport" to "Passport", "voter_id" to "Voter ID", "driving_license" to "Driving licence")) { v -> viewModel.edit { it.copy(identityKind = v, identity = UploadUi.Idle) } }
+                        UploadField("Identity document *", s.identity, identity.pickFromGallery)
+                        UploadField("Selfie *", s.selfie, selfie.takePhoto)
+                        InfoNote("A clear photo of your face. Private and used for verification only.")
+                        UploadField("Experience / course certificate (optional)", s.experience, experience.pickFromGallery)
+                        InfoNote("Optional. A certificate helps us understand your experience and recommend suitable assignments.")
+                        if (s.experience != UploadUi.Idle) UsPillButton("Remove certificate", viewModel::removeExperience, filled = false)
+                    }
+                    3 -> BankFields(s.bank, s.errors, { v -> viewModel.edit { it.copy(bank = v) } }, bank.pickFromGallery)
+                    4 -> {
+                        LabeledValue("Name", "${s.first} ${s.last}")
+                        LabeledValue("Location", "${s.town}, ${s.states.find { it.code == s.stateCode }?.name.orEmpty()}")
+                        LabeledValue("Services", s.catalogue.filter { it.code in s.skills }.joinToString { it.name })
+                        LabeledValue("PAN", "••••••${s.pan.takeLast(4)}")
+                        LabeledValue("Bank", "${s.bank.bankName} · ••••${s.bank.account.takeLast(4)}")
+                        Row { Checkbox(s.consent, { v -> viewModel.edit { it.copy(consent = v) } }); Text("These details and documents belong to me. I consent to verification.", style = MaterialTheme.typography.bodyMedium) }
+                    }
                 }
-                InfoNote(
-                    "Next you'll verify Aadhaar with DigiLocker, take a selfie, choose your skills, area and hours, " +
-                        "add your bank account and upload a police clearance certificate. Doorstep reviews it, then you can take jobs.",
-                    modifier = Modifier.padding(horizontal = UsTheme.spacing.xs),
-                )
+                s.errors.filterKeys { it in setOf("gender", "skills", "state", "identity", "selfie", "experience", "consent") }.values.distinct().forEach {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }

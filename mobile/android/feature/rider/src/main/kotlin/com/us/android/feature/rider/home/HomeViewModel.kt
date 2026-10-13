@@ -200,11 +200,10 @@ class HomeViewModel @Inject constructor(
                 _state.update {
                     it.copy(loading = false, riderName = profile?.fullName.orEmpty(), partnerStatus = profile?.status.orEmpty())
                 }
-                // The server still thinks the rider is online, but nothing on this
-                // device is sharing location (the app was killed): put the server right.
+                // Duty belongs to the server across devices. Opening another phone
+                // must never take an active partner offline or abandon accepted work.
                 if (profile?.isOnline == true && !duty.isOnline) {
-                    rider.setAvailability(online = false)
-                    _state.update { it.copy(message = info("You were set offline while the app was closed. Go online when you're ready.")) }
+                    _state.update { it.copy(message = info("Your account is on duty. Enable location on this phone to continue receiving nearby work here.")) }
                 }
             }
             is FoodResult.Failure -> _state.update { it.copy(loading = false, message = result.error.asMessage()) }

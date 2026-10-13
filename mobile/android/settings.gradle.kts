@@ -70,6 +70,8 @@ include(":feature:auth")
 // primitives. It arrives with the first feature that needs them rather than
 // as an empty framework built ahead of a consumer.
 include(":core:ui")
+include(":core:maps")
+include(":core:maps3d")
 include(":feature:profile")
 include(":feature:post")
 include(":feature:feed")
@@ -267,3 +269,6 @@ include(":feature:doorstep")
 // and every other product's feature, the customer's :feature:doorstep included.
 include(":feature:doorstep-pro")
 include(":app-doorstep-pro")
+include(":feature:seller")
+include(":core:commerce-ui")
+include(":core:facear-model")

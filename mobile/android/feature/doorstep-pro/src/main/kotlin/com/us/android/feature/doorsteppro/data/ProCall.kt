@@ -180,7 +180,7 @@ suspend fun proUnitCall(json: Json, block: suspend () -> Response<Unit>): ProRes
     }
 }
 
-private suspend fun <T> guarded(block: suspend () -> ProResult<T>): ProResult<T> = try {
+internal suspend fun <T> guarded(block: suspend () -> ProResult<T>): ProResult<T> = try {
     block()
 } catch (e: CancellationException) {
     throw e

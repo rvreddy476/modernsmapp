@@ -36,14 +36,24 @@ data class ProVerifyEmailRoute(val verificationToken: String, val email: String)
  * professional for a frame.
  */
 @Composable
-fun DoorstepProApp(sessionStateProvider: SessionStateProvider) {
+fun DoorstepProApp(
+    sessionStateProvider: SessionStateProvider,
+    requestedBusiness: com.us.doorstep.pro.partner.PartnerBusiness? = null,
+    onRequestConsumed: () -> Unit = {},
+    onOpenPayment: (com.us.android.feature.mopedu.captain.payment.CaptainPaymentRequest) -> Unit,
+    onAbandonPayment: (com.us.android.feature.mopedu.captain.payment.CaptainPaymentRequest) -> Unit,
+) {
     val session by sessionStateProvider.sessionState.collectAsStateWithLifecycle()
     when (val current = session) {
         SessionState.Unknown -> ProSplash()
         is SessionState.Authenticated -> key(current.userId) {
-            ProRoot(viewModel = hiltViewModel<ProRootViewModel>(key = "doorstep-pro-${current.userId}"))
+            com.us.doorstep.pro.partner.PartnerWorkspace(
+                userId = current.userId, requestedBusiness = requestedBusiness,
+                onRequestConsumed = onRequestConsumed,
+                onOpenPayment = onOpenPayment, onAbandonPayment = onAbandonPayment,
+            )
         }
-        else -> ProSignIn()
+        else -> com.us.android.feature.auth.partner.PartnerPhoneRoute()
     }
 }
 

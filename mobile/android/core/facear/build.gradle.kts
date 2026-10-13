@@ -46,6 +46,7 @@ android {
 // BanubaSdkManager, which is the same line :core:ui draws around the photo
 // editor port.
 dependencies {
+    api(projects.core.facearModel)
     implementation(projects.core.common)
     // Theme tokens, UsIcons and the button/scaffold primitives the try-on
     // surface is built from. api, because the surface IS a composable that a

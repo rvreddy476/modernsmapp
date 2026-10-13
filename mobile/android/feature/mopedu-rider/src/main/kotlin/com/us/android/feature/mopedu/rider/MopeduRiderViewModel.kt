@@ -50,6 +50,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /** A wall clock the cancel prompt and the quote expiry read. Injected so tests move it by hand. */
@@ -142,8 +143,8 @@ sealed interface RiderUiState {
 
     data class CaptainAssigned(
         val booking: RideBooking,
-        val captainLocation: GeoPoint,
-        val etaMinutes: Int,
+        val captainLocation: GeoPoint?,
+        val etaMinutes: Int?,
         val cancel: CancelPrompt? = null,
         val error: String? = null,
     ) : RiderUiState
@@ -159,6 +160,7 @@ sealed interface RiderUiState {
         val booking: RideBooking,
         val shareLink: String? = null,
         val sosTriggered: Boolean = false,
+        val error: String? = null,
     ) : RiderUiState
 
     /** The ride ended without a trip. [fee] is what the server charged, from the ride's rule. */
@@ -201,9 +203,13 @@ class MopeduRiderViewModel @Inject constructor(
     private val payments: PaymentCoordinator,
     private val clock: RideClock,
     savedState: SavedStateHandle,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
+    val trackingUpdates = updates.events
 
     private val saved = RiderContinuation(savedState)
+    private val requestedRideId: String? = savedState["rideId"]
+    val isTrackingEntry: Boolean get() = requestedRideId != null
     private val statusSource = MopeduPaymentStatusSource(repository)
     private val policy = PaymentPollPolicy()
     private val locationFlow = LocationPermissionFlow()
@@ -217,6 +223,11 @@ class MopeduRiderViewModel @Inject constructor(
     private var pollingJob: Job? = null
     private var confirmJob: Job? = null
     private var cashJob: Job? = null
+    private var pickupCapturedAt: Long? = null
+
+    private fun currentPickupAvailable(): Boolean = pickupCapturedAt?.let {
+        location.hasPermission() && clock.nowMillis() >= it && clock.nowMillis() - it < 5 * 60_000
+    } == true
 
     init {
         observeHandoff()
@@ -232,13 +243,23 @@ class MopeduRiderViewModel @Inject constructor(
 
     fun checkActiveRide() {
         viewModelScope.launch {
-            val booking = repository.activeRide().valueOrNull() ?: return@launch
+            val result = requestedRideId?.let { repository.ride(it) } ?: repository.activeRide()
+            if (result is MopeduResult.Failure) {
+                setRideError("Updates unavailable. Showing your last loaded ride. Please try again.")
+                return@launch
+            }
+            val booking = result.valueOrNull()
+            if (booking == null || (requestedRideId != null && booking.id != requestedRideId)) {
+                if (requestedRideId != null) setRideError("This ride is unavailable. Refresh or return to your ride history.")
+                return@launch
+            }
             syncBooking(booking)
             if (booking.status.isActive) startPolling(booking.id)
         }
     }
 
-    fun onPickupQueryChanged(text: String) = updateSelect { it.copy(pickupQuery = text, pickup = null, error = null) }
+    // Pickup is device-derived; typing cannot bypass the location requirement.
+    fun onPickupQueryChanged(text: String) = Unit
 
     fun onDropQueryChanged(text: String) = updateSelect { it.copy(dropQuery = text, drop = null, error = null) }
 
@@ -260,7 +281,10 @@ class MopeduRiderViewModel @Inject constructor(
             LocationEffect.None -> Unit
             LocationEffect.RequestPermission -> _events.tryEmit(RiderEvent.RequestLocationPermission)
             LocationEffect.FetchLocation -> viewModelScope.launch {
-                val point = location.current()
+                pickupCapturedAt = null
+                updateSelect { it.copy(pickup = null, pickupQuery = "") }
+                val point = withTimeoutOrNull(15_000) { location.current() }
+                pickupCapturedAt = point?.let { clock.nowMillis() }
                 locationFlow.onLocationResult(point)
                 updateSelect { it.copy(pickup = point, pickupQuery = point?.address ?: it.pickupQuery) }
                 publishLocationStep()
@@ -272,12 +296,16 @@ class MopeduRiderViewModel @Inject constructor(
 
     fun requestQuote() {
         val current = _uiState.value as? RiderUiState.LocationSelect ?: return
+        if (!currentPickupAvailable() || current.pickup == null || current.locationStep !is LocationStep.Located) {
+            _uiState.value = current.copy(error = "Allow location and refresh your current pickup to see nearby rides.")
+            return
+        }
         _uiState.value = current.copy(isLoading = true, error = null)
         viewModelScope.launch {
-            val pickup = current.pickup ?: location.geocode(current.pickupQuery)
+            val pickup = current.pickup
             val drop = current.drop ?: location.geocode(current.dropQuery)
             when {
-                pickup == null -> _uiState.value = current.copy(isLoading = false, error = "We couldn't find that pickup. Try a fuller address.")
+                !currentPickupAvailable() -> _uiState.value = current.copy(isLoading = false, error = "Location access is required. Refresh your pickup and try again.")
                 drop == null -> _uiState.value = current.copy(isLoading = false, error = "We couldn't find that destination. Try a fuller address.")
                 else -> when (val result = repository.estimate(pickup, drop)) {
                     is MopeduResult.Success -> showQuote(result.value, couponStatus = CouponStatus.None)
@@ -363,6 +391,10 @@ class MopeduRiderViewModel @Inject constructor(
     fun confirmBooking() {
         val current = _uiState.value as? RiderUiState.QuoteSelect ?: return
         if (current.isBooking || current.isRepricing) return
+        if (!currentPickupAvailable()) {
+            _uiState.value = current.copy(error = "Location access is required. Go back and refresh your current pickup before booking.")
+            return
+        }
         if (current.quote.isExpiredAt(clock.nowMillis())) {
             _uiState.value = current.copy(error = "This fare has expired. Fetch a fresh one.")
             return
@@ -392,8 +424,8 @@ class MopeduRiderViewModel @Inject constructor(
         pollingJob = viewModelScope.launch {
             while (isActive) {
                 delay(POLL_MILLIS)
-                when (val result = repository.activeRide()) {
-                    is MopeduResult.Failure -> Unit
+                when (val result = repository.ride(rideId)) {
+                    is MopeduResult.Failure -> setRideError("Updates unavailable. Showing your last loaded ride. Retrying…")
                     is MopeduResult.Success -> {
                         val booking = result.value
                         when {
@@ -426,8 +458,8 @@ class MopeduRiderViewModel @Inject constructor(
             }
             RideStatus.PARTNER_ASSIGNED, RideStatus.PARTNER_ARRIVING -> _uiState.value = RiderUiState.CaptainAssigned(
                 booking = booking,
-                captainLocation = booking.pickup,
-                etaMinutes = DEFAULT_ETA_MINUTES,
+                captainLocation = booking.freshCaptainLocation(clock.nowMillis()),
+                etaMinutes = null,
                 cancel = (current as? RiderUiState.CaptainAssigned)?.cancel,
             )
             RideStatus.ARRIVED, RideStatus.OTP_VERIFIED -> _uiState.value = RiderUiState.ArrivedAtPickup(
@@ -542,9 +574,11 @@ class MopeduRiderViewModel @Inject constructor(
 
     private fun setRideError(message: String?) = _uiState.update { s ->
         when (s) {
+            is RiderUiState.LocationSelect -> s.copy(error = message)
             is RiderUiState.SearchingCaptain -> s.copy(error = message)
             is RiderUiState.CaptainAssigned -> s.copy(error = message)
             is RiderUiState.ArrivedAtPickup -> s.copy(error = message)
+            is RiderUiState.TripInProgress -> s.copy(error = message)
             is RiderUiState.TripCompleted -> s.copy(error = message)
             else -> s
         }
@@ -570,12 +604,19 @@ class MopeduRiderViewModel @Inject constructor(
         val payment = repository.ridePayment(receipt.rideId).valueOrNull()
         val method = payment?.method ?: receipt.paymentMethod
         val amount = payment?.amount?.takeIf { !it.isZero } ?: receipt.totalFare
+        val currentPayment = (_uiState.value as? RiderUiState.TripCompleted)
+            ?.takeIf { it.receipt.rideId == receipt.rideId }?.payment
         val phase: PaymentPhase = when (payment?.toReading() ?: receipt.paymentStatus.toReading()) {
             PaymentStatusReading.Paid -> if (method.isOnline) PaymentPhase.Paid else PaymentPhase.CashConfirmed
             is PaymentStatusReading.Failed -> PaymentPhase.Failed(method, amount, reason = null, retryable = true)
             PaymentStatusReading.RefundPending, PaymentStatusReading.Refunded -> PaymentPhase.Refunding
             PaymentStatusReading.Confirming, is PaymentStatusReading.Unreachable ->
-                if (method.isOnline) PaymentPhase.ReadyToPay(method, amount) else PaymentPhase.CashPending(amount)
+                when {
+                    currentPayment is PaymentPhase.OpeningSheet || currentPayment is PaymentPhase.Confirming -> currentPayment
+                    currentPayment is PaymentPhase.ReadyToPay && currentPayment.creatingIntent -> currentPayment
+                    method.isOnline -> PaymentPhase.ReadyToPay(method, amount)
+                    else -> PaymentPhase.CashPending(amount)
+                }
         }
         _uiState.value = RiderUiState.TripCompleted(receipt = receipt, payment = phase, ratingSubmitted = rating)
         if (phase is PaymentPhase.CashPending) watchCash(receipt.rideId)

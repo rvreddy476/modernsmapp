@@ -56,7 +56,7 @@ class ChatNotificationPrivacyTest {
         )
         NotificationChannelSpec.createAll(context, NotificationChannelSpec.MOMENTUM)
         foreground = AppForegroundState()
-        presenter = NotificationPresenter(context, foreground)
+        presenter = NotificationPresenter(context, foreground, DoorstepOfferAlertCoordinator())
         manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     }
 

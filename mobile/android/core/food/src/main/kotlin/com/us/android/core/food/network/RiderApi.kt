@@ -1,6 +1,7 @@
 package com.us.android.core.food.network
 
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.PartnerWorkReadbackDto
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
@@ -22,6 +23,8 @@ import retrofit2.http.Path
  */
 @Suppress("TooManyFunctions")
 interface RiderApi {
+    @GET("v1/partner/work-session")
+    suspend fun workSession(): Response<ApiEnvelope<PartnerWorkReadbackDto>>
 
     // Profile and vehicle
 
@@ -55,7 +58,7 @@ interface RiderApi {
     // Duty
 
     @POST("v1/food/delivery/availability")
-    suspend fun setAvailability(@Body body: DeliveryAvailabilityRequest): Response<ApiEnvelope<DeliveryPartnerDto>>
+    suspend fun setAvailability(@Body body: DeliveryAvailabilityRequest, @Header("X-Work-Revision") revision: Long? = null): Response<ApiEnvelope<DeliveryPartnerDto>>
 
     @POST("v1/food/delivery/location")
     suspend fun postLocation(@Body body: DeliveryLocationRequest): Response<ApiEnvelope<DeliveryLocationDto>>
@@ -79,6 +82,17 @@ interface RiderApi {
     /** 404 FOOD_DELIVERY_CURRENT_NOT_FOUND when the rider holds no job. */
     @GET("v1/food/delivery/assignments/current")
     suspend fun currentAssignment(): Response<ApiEnvelope<DeliveryAssignmentDto>>
+
+    @GET("v1/food/delivery/assignments")
+    suspend fun assignments(): Response<ApiEnvelope<DeliveryAssignmentsDto>>
+
+    /** Assigned partner only; a single order returns 404 BATCH_NOT_FOUND. */
+    @GET("v1/food/delivery/orders/{orderId}/batch")
+    suspend fun batch(@Path("orderId") orderId: String): Response<ApiEnvelope<DeliveryBatchDto>>
+
+    /** Advisory only: this does not save the order or change assignments/ETAs. */
+    @POST("v1/food/delivery/orders/{orderId}/batch/route-preview")
+    suspend fun previewBatchRoute(@Path("orderId") orderId: String): Response<ApiEnvelope<BatchRoutePreviewDto>>
 
     /** ASSIGNED → ACCEPTED. The pickup code becomes visible after this. */
     @POST("v1/food/delivery/assignments/{assignmentId}/accept")

@@ -304,6 +304,10 @@ internal fun Project.googleMapsAndroidKey(): String = providers
     .orElse("")
     .get()
 
+internal fun Project.googleMaps3DAndroidKey(): String = providers
+    .fileContents(layout.projectDirectory.file("../../../.secrets/google-maps3d-android-${project.name}.key"))
+    .asText.map { it.trim() }.orElse("").get()
+
 /** [value] as a Java string literal for `buildConfigField`, quotes included. */
 internal fun javaStringLiteral(value: String): String {
     val escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")

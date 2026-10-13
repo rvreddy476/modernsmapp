@@ -39,9 +39,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
 data class BookingDetailUiState(
+    val professionalFix: com.us.android.feature.doorstep.realtime.ProfessionalFix? = null,
     val loading: Boolean = true,
     val booking: BookingDto? = null,
     val extras: List<ExtraDto> = emptyList(),
@@ -109,7 +111,10 @@ class BookingDetailViewModel @Inject constructor(
     payments: PaymentCoordinator,
     /** Where visit photos and extras evidence load from. */
     val mediaUrls: DoorstepMediaUrls,
+    updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
+    val trackingUpdates = updates.events
+    private val readMutex = kotlinx.coroutines.sync.Mutex()
 
     private val bookingId: String =
         checkNotNull(savedStateHandle.get<String>("bookingId")) { "navigation argument 'bookingId' is missing" }
@@ -218,7 +223,7 @@ class BookingDetailViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             refresh()
-            if (BookingRules.isLive(_state.value.status)) {
+            if (_state.value.booking == null || BookingRules.isLive(_state.value.status)) {
                 subscribe()
                 poll()
             }
@@ -356,15 +361,16 @@ class BookingDetailViewModel @Inject constructor(
         }
     }
 
-    private suspend fun refresh() {
+    private suspend fun refresh() = readMutex.withLock {
         when (val result = repository.booking(bookingId)) {
             is DoorstepResult.Failure -> _state.update {
-                it.copy(loading = false, error = if (it.booking == null) result.error.detailMessage() else null)
+                it.copy(loading = false, live = false, error = if (it.booking == null) result.error.detailMessage() else "Updates unavailable. Showing your last loaded booking.")
             }
             is DoorstepResult.Success -> {
                 val booking = result.value
                 val status = BookingStatus.of(booking.status)
-                _state.update { it.copy(loading = false, booking = booking, error = null) }
+                _state.update { it.copy(loading = false, booking = booking, error = null,
+                    professionalFix = it.professionalFix.takeIf { _ -> booking.status == "en_route" && it.booking?.professional == booking.professional }) }
                 if (BookingRules.extrasVisible(status)) loadVisit()
                 if (status == BookingStatus.COMPLETED) loadRework()
                 if (!BookingRules.isLive(status)) stopLive()
@@ -400,11 +406,21 @@ class BookingDetailViewModel @Inject constructor(
     }
 
     private fun onEvent(event: RealtimeEvent) {
+        if (event is RealtimeEvent.Disconnected) { _state.update { it.copy(live = false) }; return }
         if (event is RealtimeEvent.Connected) {
             _state.update { it.copy(live = true) }
+            refreshNow()
             return
         }
-        if (DoorstepTopics.isBookingChange(bookingId, event)) refreshNow()
+        val fix = com.us.android.feature.doorstep.realtime.professionalFix(bookingId, event)
+        if (fix != null) {
+            _state.update { current ->
+                if (current.booking?.status == "en_route" && (current.professionalFix == null || fix.at > current.professionalFix.at)) current.copy(professionalFix = fix) else current
+            }
+        } else if (DoorstepTopics.isBookingChange(bookingId, event)) {
+            _state.update { it.copy(professionalFix = null) }
+            refreshNow()
+        }
     }
 
     private fun poll() {
@@ -413,7 +429,7 @@ class BookingDetailViewModel @Inject constructor(
             while (true) {
                 delay(if (_state.value.live) RECONCILE_MILLIS else POLL_MILLIS)
                 refresh()
-                if (!BookingRules.isLive(_state.value.status)) break
+                if (_state.value.booking != null && !BookingRules.isLive(_state.value.status)) break
             }
         }
     }

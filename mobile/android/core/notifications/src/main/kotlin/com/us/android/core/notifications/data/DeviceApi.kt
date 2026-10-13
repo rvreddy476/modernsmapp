@@ -56,6 +56,7 @@ data class RegisterDeviceRequest(
 
 /** The `app` a device registers under. Each application binds its own; Momentum binds none. */
 enum class PushApp(val wire: String) {
+    PARTNER("partner"),
     MOMENTUM("momentum"),
     FEAST_KITCHEN("feast_kitchen"),
     FEAST_RIDER("feast_rider"),

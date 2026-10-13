@@ -51,16 +51,8 @@
             </intent-filter>
         </activity>
 
-        <!--
-          Momentum's FCM service arrives with :core:notifications. It presents
-          Momentum's push types (chat, calls, uploads), none of which the
-          kitchen receives, and FCM is disabled here (no google-services.json).
-          Removed rather than left dormant; when Kitchen gets FCM it gets its
-          own service for food order pushes.
-        -->
-        <service
-            android:name="com.us.android.core.notifications.UsMessagingService"
-            tools:node="remove" />
+        <!-- Reuse core FCM reception; PushApp.FEAST_KITCHEN filters merchant
+             notifications and routes this app's own launcher intent. -->
     </application>
 
 </manifest>

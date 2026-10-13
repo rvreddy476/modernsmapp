@@ -11,7 +11,7 @@ import kotlinx.serialization.Serializable
  */
 
 @Serializable
-data class KitchenHomeRoute(val restaurantId: String)
+data class KitchenHomeRoute(val restaurantId: String, val initialTab: Int = 0)
 
 @Serializable
 data class OnboardingRoute(val restaurantId: String)

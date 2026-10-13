@@ -6,6 +6,7 @@ import android.content.Context
 import android.util.Log
 import com.us.android.core.notifications.NotificationChannelSpec
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
 
 /**
  * Feast Kitchen's application and Hilt root.
@@ -16,11 +17,13 @@ import dagger.hilt.android.HiltAndroidApp
  */
 @HiltAndroidApp
 class KitchenApplication : Application() {
+    @Inject lateinit var pushRegistration: KitchenPushRegistration
 
     override fun onCreate() {
         super.onCreate()
         NotificationChannelSpec.createAll(this, NotificationChannelSpec.KITCHEN)
         FirebaseState.logOnce(this)
+        pushRegistration.start()
     }
 }
 

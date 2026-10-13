@@ -96,7 +96,7 @@ object ProDeepLinks {
             ProPushTypes.MESSAGE_NEW -> bookingId?.let(ProDeepLink::JobChat)
             in ProPushTypes.JOB_TYPES -> bookingId?.let(ProDeepLink::Job)
             ProPushTypes.APPLICATION_APPROVED, ProPushTypes.ACCOUNT_REINSTATED -> ProDeepLink.Home
-            ProPushTypes.APPLICATION_REJECTED, ProPushTypes.DOCUMENT_REVIEWED -> ProDeepLink.Onboarding
+            ProPushTypes.APPLICATION_REJECTED, ProPushTypes.DOCUMENT_REVIEWED, "doorstep.pro.change.reviewed", "doorstep.pro.price.reviewed" -> ProDeepLink.Onboarding
             ProPushTypes.ACCOUNT_SUSPENDED -> ProDeepLink.Account
             ProPushTypes.BACKGROUND_CHECK_EXPIRING -> ProDeepLink.PoliceCertificate
             ProPushTypes.SETTLEMENT_COMPUTED -> ProDeepLink.Earnings

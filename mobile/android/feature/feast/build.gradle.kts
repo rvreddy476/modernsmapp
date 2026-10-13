@@ -18,9 +18,12 @@ android {
 // and forbids this module from reaching :feature:commerce, :feature:kitchen or
 // :feature:rider — directly or through a core module.
 dependencies {
+    implementation(projects.core.ui)
+    implementation(projects.core.notifications)
     implementation(projects.core.model)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
+    implementation(projects.core.maps)
     // food-service customer DTOs, FeastRepository, Paise and ₹ text, the
     // scoped realtime token source.
     implementation(projects.core.food)
@@ -31,8 +34,7 @@ dependencies {
     implementation(projects.core.payments)
 
     // Fused location for "Use my current location" on a delivery address.
-    // maps-compose and Places are not in the offline cache: no map, no
-    // autocomplete — the platform Geocoder and typed fields instead.
+    // Address entry retains the platform Geocoder and typed-field fallback.
     implementation(libs.play.services.location)
 
     implementation(libs.androidx.activity.compose)
