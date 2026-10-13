@@ -165,16 +165,11 @@ func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) 
 // across the last bucketLookback months and write each into
 // home_timeline_by_user.
 //
-// NOT idempotent, contrary to what this comment claimed until
-// 2026-09-09. It said "AddToHomeTimeline upserts on (user_id, bucket,
-// ts, post_id) so an unfollow → refollow cycle is safe" — but the row's
-// key is (user_id, bucket) / ts, and ts is generated afresh from
-// gocql.UUIDFromTime on every write, so a second backfill of the same
-// post lands on a NEW ts and becomes a SECOND row. Each follow → unfollow
-// → refollow cycle therefore duplicates the followee's backlog in the
-// follower's timeline; the SSO test account was carrying seven copies of
-// each post on 2026-09-09. Not fixed here (this handler needs a real
-// dedupe key, which is a schema question), but no longer claimed.
+// Idempotent: AddToHomeTimeline keys each row by scylla.TimelineTS, a pure
+// function of (post, created_at), so a follow → unfollow → refollow cycle
+// or a redelivery rewrites the same rows. Until that key existed every
+// backfill added a fresh copy of the backlog (seven per post on the SSO
+// test account on 2026-09-09).
 func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil

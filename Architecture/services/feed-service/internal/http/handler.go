@@ -126,14 +126,10 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
 	platform := c.DefaultQuery("platform", "") // "postbook" | "posttube" | ""
 
-	var cursor *time.Time
-	if rawCursor := c.Query("cursor"); rawCursor != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, rawCursor)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil)
-			return
-		}
-		cursor = &parsed
+	cursor, err := parseHomeCursor(c.Query("cursor"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil)
+		return
 	}
 
 	result, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, followingOnly, cursor)
@@ -184,11 +180,28 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	if result.EmptyReason != "" {
 		c.Writer.Header().Set("X-Feed-Empty-Reason", result.EmptyReason)
 	}
-	var meta *api.Meta
-	if len(feedItems) >= limit {
-		meta = &api.Meta{NextCursor: feedItems[len(feedItems)-1].CreatedAt.UTC().Format(time.RFC3339Nano)}
+	// The same opaque keyset token as the reels and Tube pages: the exact
+	// timeline key the page ended on (service.homeWindow). It used to be the
+	// created_at of the last item AFTER ranking, which is not the page's
+	// boundary in ranked mode, so pages skipped and repeated posts.
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(result.NextCursor))
+}
+
+// parseHomeCursor reads the home feed's cursor: the opaque v1 keyset token
+// this handler now issues, or — for a client still holding a page served
+// before it did — the legacy RFC3339 timestamp.
+func parseHomeCursor(raw string) (service.HomeCursor, error) {
+	if raw == "" {
+		return service.HomeCursor{}, nil
 	}
-	api.JSON(c.Writer, http.StatusOK, hydrated, meta)
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return service.HomeCursor{Time: &t}, nil
+	}
+	token, err := decodeRankedCursor(raw)
+	if err != nil {
+		return service.HomeCursor{}, err
+	}
+	return service.HomeCursor{Token: token}, nil
 }
 
 func (h *Handler) GetReelFeed(c *gin.Context) {
@@ -458,19 +471,29 @@ func rankedPageParams(c *gin.Context) (limit int, before string, err error) {
 	if raw == "" {
 		return limit, "", nil
 	}
+	token, err := decodeRankedCursor(raw)
+	if err != nil {
+		return 0, "", err
+	}
+	return limit, token, nil
+}
+
+// decodeRankedCursor turns an opaque cursor back into the timeuuid it
+// carries; see rankedPageMeta.
+func decodeRankedCursor(raw string) (string, error) {
 	decoded, decodeErr := base64.RawURLEncoding.DecodeString(raw)
 	if decodeErr != nil {
-		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+		return "", fmt.Errorf("invalid ranked feed cursor")
 	}
 	version, token, ok := strings.Cut(string(decoded), ":")
 	if !ok || version != "v1" {
-		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+		return "", fmt.Errorf("invalid ranked feed cursor")
 	}
 	parsed, parseErr := uuid.Parse(token)
 	if parseErr != nil || parsed.Version() != 1 {
-		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+		return "", fmt.Errorf("invalid ranked feed cursor")
 	}
-	return limit, parsed.String(), nil
+	return parsed.String(), nil
 }
 
 func rankedPageMeta(next string) *api.Meta {

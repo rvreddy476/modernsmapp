@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/atpost/feed-service/internal/store/scylla"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -184,7 +185,9 @@ func main() {
 
 			for p := range postCh {
 				b := bucket(p.CreatedAt)
-				ts := gocql.UUIDFromTime(p.CreatedAt)
+				// Same key the live writers use, so a re-run, or a post the
+				// consumer already fanned out, upserts instead of duplicating.
+				ts := scylla.TimelineTS(p.ID, p.CreatedAt)
 
 				// 1. Insert into author_timeline_by_author for the author.
 				if err := scyllaSession.Query(`

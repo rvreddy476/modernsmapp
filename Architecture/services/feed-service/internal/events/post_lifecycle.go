@@ -116,8 +116,9 @@ func (c *Consumer) handlePostRestored(ctx context.Context, envelope events.Event
 		return nil
 	}
 	// Same fan-out as creation: author's own timelines, then followers /
-	// circle (or pull model for celebs). AddTo* upserts on the primary key,
-	// so a row that somehow survived the delete is not duplicated.
+	// circle (or pull model for celebs). AddTo* upserts on the primary key
+	// (scylla.TimelineTS), so a row that somehow survived the delete is not
+	// duplicated.
 	//
 	// No channel id: PostRestoredPayload does not carry one, so a restored
 	// long video reaches the author's followers and circle but not the

@@ -49,26 +49,49 @@ func toGocql(id uuid.UUID) gocql.UUID {
 	return gocql.UUID(id)
 }
 
+// TimelineTS is the clustering key of a post's row in any timeline: a
+// version-1 timeuuid whose timestamp is createdAt, truncated to the
+// millisecond, and whose clock-sequence and node bits come from the post id.
+//
+// It is a pure function of (post, createdAt), so writing the same post into
+// the same timeline twice lands on the same primary key and is an upsert.
+// It used to be gocql.UUIDFromTime(createdAt), which increments a
+// process-wide clock sequence on every call: every re-write of a post — a
+// follow backfill after a refollow, a restore, a Kafka redelivery — became a
+// SECOND row (7 copies per post were live for the SSO test account on
+// 2026-09-09).
+//
+// The millisecond truncation is what makes the key agree across writers:
+// Scylla stores created_at as a millisecond timestamp, so the follow
+// backfill, which re-reads it from author_timeline_by_author, would
+// otherwise derive a different key from fan-out, which has the event's
+// nanoseconds.
+//
+// Ordering is unchanged: timeuuids compare by timestamp first. Two
+// different posts collide only if they share the millisecond AND 62 bits
+// of their ids (bytes 8-15, random in both v4 and v7 UUIDs).
+func TimelineTS(postID uuid.UUID, createdAt time.Time) gocql.UUID {
+	ms := createdAt.UTC().Truncate(time.Millisecond)
+	clock := uint32(postID[8])<<8 | uint32(postID[9])
+	return gocql.TimeUUIDWith(uuidTimestamp(ms), clock, postID[10:16])
+}
+
+// uuidTimestamp is gocql's (unexported) getTimestamp: 100-ns intervals since
+// the start of the Gregorian calendar, the timestamp field of a v1 UUID.
+func uuidTimestamp(t time.Time) int64 {
+	gregorian := time.Date(1582, time.October, 15, 0, 0, 0, 0, time.UTC).Unix()
+	return (t.Unix()-gregorian)*10000000 + int64(t.Nanosecond()/100)
+}
+
 // AddToHomeTimeline (Push). Also writes the HF4 reverse-index row so
 // UpdatePostContentType can find this row by post_id without scanning.
 //
-// `ts` is the row's ONLY clustering key, and gocql.UUIDFromTime derives
-// it from createdAt plus a per-process clock sequence and node id — not
-// from post_id. Two consequences, both observable in production data:
-//
-//   - It is not an upsert. Re-running a backfill for the same post
-//     produces a DIFFERENT ts and therefore a SECOND row. The unfollow
-//     purge relies on this only to the extent that it deletes each
-//     duplicate by its own ts; the duplication itself is a separate
-//     defect (7 copies per post were live for the SSO test account on
-//     2026-09-09) and is not fixed here.
-//   - A ts collision inside one partition is a silent overwrite: the
-//     newer post replaces the older one outright. That is what makes
-//     DELETE ... WHERE user_id/bucket/ts unambiguous, and it is also a
-//     latent (astronomically unlikely) way to lose a timeline row.
+// `ts` is the row's ONLY clustering key and TimelineTS derives it from the
+// post, so re-adding a post a timeline already holds rewrites that row
+// rather than adding a second one.
 func (s *TimelineStore) AddToHomeTimeline(ctx context.Context, userID uuid.UUID, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error {
 	b := bucket(createdAt)
-	ts := gocql.UUIDFromTime(createdAt)
+	ts := TimelineTS(postID, createdAt)
 
 	if err := s.session.Query(`
 		INSERT INTO home_timeline_by_user (user_id, bucket, ts, post_id, author_id, created_at, content_type)
@@ -95,7 +118,7 @@ func (s *TimelineStore) AddToHomeTimeline(ctx context.Context, userID uuid.UUID,
 // row for the author copy.
 func (s *TimelineStore) AddToAuthorTimeline(ctx context.Context, authorID uuid.UUID, postID uuid.UUID, createdAt time.Time, contentType string) error {
 	b := bucket(createdAt)
-	ts := gocql.UUIDFromTime(createdAt)
+	ts := TimelineTS(postID, createdAt)
 
 	if err := s.session.Query(`
 		INSERT INTO author_timeline_by_author (author_id, bucket, ts, post_id, created_at, content_type)
@@ -255,6 +278,34 @@ func (s *TimelineStore) GetHomeTimeline(ctx context.Context, userID uuid.UUID, l
 func (s *TimelineStore) GetHomeTimelineBefore(ctx context.Context, userID uuid.UUID, before time.Time, limit int) ([]FeedItem, error) {
 	beforeUTC := before.UTC()
 	return s.collectHomeTimeline(ctx, userID, beforeUTC, &beforeUTC, limit)
+}
+
+// GetHomeTimelineBeforeToken returns the home timeline strictly older than
+// beforeToken, the exact key (ts) of a row an earlier page ended on — the
+// home feed's keyset cursor. GetHomeTimelineBefore takes a millisecond
+// timestamp instead, which cannot tell apart rows that share one, so a
+// page boundary could repeat or skip them.
+func (s *TimelineStore) GetHomeTimelineBeforeToken(ctx context.Context, userID uuid.UUID, beforeToken string, limit int) ([]FeedItem, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	before, err := gocql.ParseUUID(beforeToken)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]FeedItem, 0, limit)
+	current := monthStart(before.Time().UTC())
+	first := &before
+	for i := 0; i < maxTimelineBucketLookback && len(items) < limit; i++ {
+		batch, err := s.queryHomeTimelineBucketCursor(ctx, userID, bucket(current), first, limit-len(items))
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, batch...)
+		current = current.AddDate(0, -1, 0)
+		first = nil
+	}
+	return items, nil
 }
 
 // GetHomeTimelineByContentType returns timeline items filtered to a single

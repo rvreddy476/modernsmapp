@@ -220,7 +220,23 @@ type HomeFeedResult struct {
 	// is additive for every existing client and invisible to one that
 	// does not read it.
 	EmptyReason string
+	// NextCursor is the exact timeline key (a timeuuid) the next page
+	// starts below, or "" when the timeline is exhausted. See homeWindow.
+	NextCursor string
 }
+
+// HomeCursor is where a home-feed page starts. Token is the exact timeline
+// key a previous page ended on (HomeFeedResult.NextCursor); Time is the
+// legacy RFC3339 cursor, still accepted so a client that loaded a page
+// before the keyset cursor shipped can keep scrolling. Both empty is the
+// first page.
+type HomeCursor struct {
+	Token string
+	Time  *time.Time
+}
+
+// FirstPage reports whether this is the first page of the feed.
+func (c HomeCursor) FirstPage() bool { return c.Token == "" && c.Time == nil }
 
 // The values of HomeFeedResult.EmptyReason.
 const (
@@ -247,11 +263,60 @@ const (
 // follows would otherwise land on an empty front door, and the web client
 // asks for `ranked` for exactly that reason. It is only forbidden when the
 // caller narrowed the request, where an empty page is the honest answer.
-func coldStartAllowed(before *time.Time, feedMode string, candidateCount int, circleOnly, followingOnly bool) bool {
+func coldStartAllowed(firstPage bool, feedMode string, candidateCount int, circleOnly, followingOnly bool) bool {
 	if circleOnly || followingOnly {
 		return false // an explicit narrowing is never backfilled
 	}
-	return before == nil && candidateCount == 0 && feedMode == "ranked"
+	return firstPage && candidateCount == 0 && feedMode == "ranked"
+}
+
+// homeWindow cuts one home-feed page out of the filtered candidates and
+// says where the next page starts.
+//
+// candidates are in timeline order (newest first), with any cold-start
+// items — which did not come from the timeline and carry no CursorToken —
+// appended after them. raw is everything the timeline read returned before
+// filtering, also newest first, and fetchLimit is how many rows that read
+// asked for.
+//
+// The page is the first `limit` candidates; ranking may then only reorder
+// it. The cursor is the oldest timeline row the page reached, so every
+// candidate not on this page is older than it and is read again by the next
+// one. This is the keyset rule the reels and Tube pages already follow
+// (keysetWindow). Home used to rank a 2.5x window, keep the best `limit`
+// and continue below the created_at of the LAST RANKED item: the window
+// rows that ranked below the cut but were newer than that item were never
+// served, and older ones already served came back on the next page.
+//
+// When the page holds every timeline candidate there is, the next page
+// starts below the oldest row the read returned — filtered rows included,
+// so they are not read again — provided the read came back full (the
+// timeline may hold more). A short read means the timeline is exhausted.
+func homeWindow(candidates []FeedItem, raw []scylla.FeedItem, fetchLimit, limit int) ([]FeedItem, string) {
+	n := len(candidates)
+	if n > limit {
+		n = limit
+	}
+	window := candidates[:n]
+
+	moreFromTimeline := false
+	for _, c := range candidates[n:] {
+		if c.CursorToken != "" {
+			moreFromTimeline = true
+			break
+		}
+	}
+	if moreFromTimeline {
+		for i := len(window) - 1; i >= 0; i-- {
+			if window[i].CursorToken != "" {
+				return window, window[i].CursorToken
+			}
+		}
+	}
+	if fetchLimit > 0 && len(raw) >= fetchLimit {
+		return window, raw[len(raw)-1].CursorToken
+	}
+	return window, ""
 }
 
 // countFromOthers reports how many of these candidates somebody OTHER than the
@@ -277,7 +342,7 @@ func countFromOthers(items []FeedItem, viewer uuid.UUID) int {
 	return n
 }
 
-func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) (HomeFeedResult, error) {
+func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, cursor HomeCursor) (HomeFeedResult, error) {
 	// Why this page might come back empty, filled in by the narrowing
 	// filters below and reported only if it actually is.
 	emptyReason := ""
@@ -287,28 +352,28 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// already there. See mutuals.go.
 	s.warmViewerSignals(ctx, userID)
 
-	// Audit HF1: ranking over-fetch was 5x with a 500-row ceiling — each
-	// feed request hit Scylla for up to 500 timeline rows and then the
-	// ranker did per-post Redis reads on every one (audit HF2). 2.5x is
-	// plenty of headroom for blocks/mutes/dedup churn while halving the
-	// per-request cost. 200 is the hard ceiling because beyond that the
-	// ranker's signal noise dominates the ordering anyway.
-	fetchLimit := limit
-	if feedMode == "ranked" || feedMode == "shadow" {
-		fetchLimit = (limit * 5) / 2
-		if fetchLimit > 200 {
-			fetchLimit = 200
-		}
-	} else if excludeSelf {
-		fetchLimit = limit + 10 // extra headroom for own posts removed
+	// Headroom over the page size for what the filters below remove
+	// (blocks, mutes, own posts, reels, PostTube-only videos). Ranking no
+	// longer needs a wider window — it reorders the page, see homeWindow —
+	// so every mode reads the same amount. Rows read but not served are
+	// read again by the next page; 200 is the hard ceiling (audit HF1).
+	fetchLimit := limit + limit/2
+	if fetchLimit < limit+10 {
+		fetchLimit = limit + 10
+	}
+	if fetchLimit > 200 {
+		fetchLimit = 200
 	}
 
 	// 1. Get Home Timeline candidates
 	var items []scylla.FeedItem
 	var err error
-	if before != nil {
-		items, err = s.scyllaStore.GetHomeTimelineBefore(ctx, userID, *before, fetchLimit)
-	} else {
+	switch {
+	case cursor.Token != "":
+		items, err = s.scyllaStore.GetHomeTimelineBeforeToken(ctx, userID, cursor.Token, fetchLimit)
+	case cursor.Time != nil:
+		items, err = s.scyllaStore.GetHomeTimelineBefore(ctx, userID, *cursor.Time, fetchLimit)
+	default:
 		items, err = s.scyllaStore.GetHomeTimeline(ctx, userID, fetchLimit)
 	}
 	if err != nil {
@@ -405,7 +470,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// has no way to detect.
 	// len(candidates) would count the viewer's own posts as a populated feed;
 	// see countFromOthers for what that did to accounts that posted early.
-	if coldStartAllowed(before, feedMode, countFromOthers(candidates, userID), circleOnly, followingOnly) {
+	if coldStartAllowed(cursor.FirstPage(), feedMode, countFromOthers(candidates, userID), circleOnly, followingOnly) {
 		log.Printf("Cold-start fallback triggered for user %s (nothing from others in timeline), fetching from %s", userID, s.postServiceURL)
 		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
 		if err != nil {
@@ -445,15 +510,21 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		candidates = s.applyLongVideoFrequency(candidates, lvFreq, false)
 	}
 
-	// 2. Apply ranking if enabled
+	// 2. Cut the page and its cursor BEFORE ranking: ranking and the
+	// long-video composition below only reorder this window, so nothing
+	// the window holds is lost and nothing below it is skipped. See
+	// homeWindow.
+	candidates, next := homeWindow(candidates, items, fetchLimit, limit)
+
+	// 3. Apply ranking if enabled
 	if (feedMode == "ranked" || feedMode == "shadow") && s.ranker != nil && len(candidates) > 0 {
 		rc := feedItemsToCandidates(candidates)
-		rankedCandidates, err := s.ranker.Rank(ctx, userID, rc, limit)
+		rankedCandidates, err := s.ranker.Rank(ctx, userID, rc, len(candidates))
 		if err != nil {
 			// Circuit breaker or error: fallback to chronological
 			log.Printf("Ranking failed, falling back to chronological: %v", err)
 		} else if feedMode == "ranked" {
-			candidates = candidatesToFeedItems(rankedCandidates)
+			candidates = wholeWindow(candidates, candidatesToFeedItems(rankedCandidates))
 		}
 		// In shadow mode: log ranked order but return chronological
 		if feedMode == "shadow" {
@@ -463,21 +534,41 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 
 	// P0-4: apply the viewer's long-video tier (cold-start candidates
 	// included). The hidden tier re-applies harmlessly; reduced/balanced/
-	// preferred get the multiplier (ranked mode) + composition target.
+	// preferred get the multiplier (ranked mode) + composition target,
+	// which reorders and never drops.
 	candidates = s.applyLongVideoFrequency(candidates, lvFreq, feedMode == "ranked")
 
-	// 3. Trim to requested limit
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-
-	if len(candidates) == 0 {
+	// A page the filters emptied while the timeline goes on is not an empty
+	// feed: it carries a cursor and no reason, and the client reads on.
+	if len(candidates) == 0 && next == "" {
 		if emptyReason == "" {
 			emptyReason = EmptyNoRecentPosts
 		}
 		return HomeFeedResult{Items: candidates, EmptyReason: emptyReason}, nil
 	}
-	return HomeFeedResult{Items: candidates}, nil
+	return HomeFeedResult{Items: candidates, NextCursor: next}, nil
+}
+
+// wholeWindow returns the ranked order of a page, followed by any window
+// item the ranker did not return in their original order. The ranker is
+// asked for the whole window and places all of it today (its last pass
+// relaxes every rule), but the page's cursor was cut on the assumption that
+// every window item is served, so a dropped one must not silently vanish.
+func wholeWindow(window, ranked []FeedItem) []FeedItem {
+	if len(ranked) >= len(window) {
+		return ranked
+	}
+	placed := make(map[uuid.UUID]struct{}, len(ranked))
+	for _, r := range ranked {
+		placed[r.PostID] = struct{}{}
+	}
+	out := append(make([]FeedItem, 0, len(window)), ranked...)
+	for _, w := range window {
+		if _, ok := placed[w.PostID]; !ok {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // GetFlickFeed returns the first flick page for backward-compatible callers.

@@ -55,17 +55,17 @@ func TestColdStartRunsForAFeedOfOnlyYourOwnPosts(t *testing.T) {
 		{PostID: uuid.New(), AuthorID: viewer, CreatedAt: now},
 	}
 
-	if !coldStartAllowed(nil, "ranked", countFromOthers(ownOnly, viewer), false, false) {
+	if !coldStartAllowed(true, "ranked", countFromOthers(ownOnly, viewer), false, false) {
 		t.Fatal("a timeline of only the viewer's own posts must still be backfilled; " +
 			"passing len(candidates) here is what silently ended discovery for anyone who posted early")
 	}
 
 	// And the narrowing rules still win over it — asking explicitly for the
 	// people you follow must never be answered with recommended strangers.
-	if coldStartAllowed(nil, "ranked", countFromOthers(ownOnly, viewer), false, true) {
+	if coldStartAllowed(true, "ranked", countFromOthers(ownOnly, viewer), false, true) {
 		t.Fatal("following_only must still forbid the backfill")
 	}
-	if coldStartAllowed(nil, "ranked", countFromOthers(ownOnly, viewer), true, false) {
+	if coldStartAllowed(true, "ranked", countFromOthers(ownOnly, viewer), true, false) {
 		t.Fatal("circle_only must still forbid the backfill")
 	}
 }

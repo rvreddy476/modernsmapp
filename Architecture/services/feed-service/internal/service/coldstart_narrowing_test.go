@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -25,21 +24,21 @@ import (
 // "a new account gets a non-empty ranked feed" passed throughout.
 
 func TestColdStart_NotAllowedWhenNarrowedToFollowing(t *testing.T) {
-	if coldStartAllowed(nil, "ranked", 0, false, true) {
+	if coldStartAllowed(true, "ranked", 0, false, true) {
 		t.Fatal("following_only with no follows must return an empty feed, " +
 			"not a backfill of recommended strangers under the Following heading")
 	}
 }
 
 func TestColdStart_NotAllowedWhenNarrowedToCircle(t *testing.T) {
-	if coldStartAllowed(nil, "ranked", 0, true, false) {
+	if coldStartAllowed(true, "ranked", 0, true, false) {
 		t.Fatal("circle_only with no connections must return an empty feed, " +
 			"not a backfill of recommended strangers")
 	}
 }
 
 func TestColdStart_NotAllowedWhenBothNarrowingsAreSet(t *testing.T) {
-	if coldStartAllowed(nil, "ranked", 0, true, true) {
+	if coldStartAllowed(true, "ranked", 0, true, true) {
 		t.Fatal("a doubly-narrowed request must not be backfilled")
 	}
 }
@@ -49,30 +48,29 @@ func TestColdStart_NotAllowedWhenBothNarrowingsAreSet(t *testing.T) {
 // For You sends no feed_mode at all and the saved preference resolves it,
 // so this is reached with `ranked` and no narrowing.
 func TestColdStart_StillFillsTheEmptyFrontDoor(t *testing.T) {
-	if !coldStartAllowed(nil, "ranked", 0, false, false) {
+	if !coldStartAllowed(true, "ranked", 0, false, false) {
 		t.Fatal("an un-narrowed ranked first page with an empty timeline must " +
 			"still cold-start, or every new account lands on an empty front door")
 	}
 }
 
 func TestColdStart_UnchangedForTheOtherPreconditions(t *testing.T) {
-	cursor := time.Now().UTC()
 	cases := []struct {
 		name           string
-		before         *time.Time
+		firstPage      bool
 		feedMode       string
 		candidateCount int
 		want           bool
 	}{
-		{"a later page is never backfilled", &cursor, "ranked", 0, false},
-		{"chronological is never backfilled", nil, "chronological", 0, false},
-		{"shadow is never backfilled", nil, "shadow", 0, false},
-		{"a non-empty timeline needs no backfill", nil, "ranked", 3, false},
-		{"empty ranked first page", nil, "ranked", 0, true},
+		{"a later page is never backfilled", false, "ranked", 0, false},
+		{"chronological is never backfilled", true, "chronological", 0, false},
+		{"shadow is never backfilled", true, "shadow", 0, false},
+		{"a non-empty timeline needs no backfill", true, "ranked", 3, false},
+		{"empty ranked first page", true, "ranked", 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := coldStartAllowed(tc.before, tc.feedMode, tc.candidateCount, false, false)
+			got := coldStartAllowed(tc.firstPage, tc.feedMode, tc.candidateCount, false, false)
 			if got != tc.want {
 				t.Fatalf("coldStartAllowed = %v, want %v", got, tc.want)
 			}
@@ -90,7 +88,7 @@ func TestFollowingNarrowing_NoFollowsIsAnEmptyHomeFeed(t *testing.T) {
 	if len(filtered) != 0 {
 		t.Fatalf("a viewer who follows nobody must see nothing, got %d posts", len(filtered))
 	}
-	if coldStartAllowed(nil, "ranked", len(filtered), false, true) {
+	if coldStartAllowed(true, "ranked", len(filtered), false, true) {
 		t.Fatal("and the fallback must not then refill the page with strangers")
 	}
 }
