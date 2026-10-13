@@ -201,7 +201,7 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 
 	// The follower's cached followed-celeb set (celeb pull) is stale now.
 	if c.rdb != nil {
-		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID))
+		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID), service.FollowingKey(followerID))
 	}
 
 	// Audit HF6: celebs use the pull model (FanoutPost short-circuits
@@ -278,7 +278,7 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.Eve
 
 	// A celeb the follower no longer follows must stop being pulled now.
 	if c.rdb != nil {
-		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID))
+		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID), service.FollowingKey(followerID))
 	}
 
 	if c.service == nil {

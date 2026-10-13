@@ -66,6 +66,8 @@ type Service struct {
 	// celeb is the pull-model switch and the auto-flag threshold
 	// (FEED_CELEB_PULL / FEED_CELEB_FOLLOWER_THRESHOLD) — see celebpull.go.
 	celeb celebConfig
+	// discovery is For You's out-of-network share (discovery.go).
+	discovery discoveryConfig
 	// feedback is the per-viewer Interested / Not-interested store — the
 	// Postgres MetaStore in production, swapped by tests. See feedback.go.
 	feedback feedbackStore
@@ -150,6 +152,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		kwCache:             make(map[uuid.UUID]keywordCacheEntry),
 		lvTiers:             loadLVTiers(),
 		celeb:               loadCelebConfig(),
+		discovery:           loadDiscoveryConfig(),
 	}
 	// A typed-nil *MetaStore must not become a non-nil interface, or every
 	// hydration would fail closed on a nil pool instead of on a real error.
@@ -535,11 +538,25 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		candidates = s.applyLongVideoFrequency(candidates, lvFreq, false)
 	}
 
+	// Out-of-network discovery (discovery.go): a share of a ranked For You
+	// page goes to people the viewer does not follow. Not when the
+	// cold-start fill already ran — that page is all discovery.
+	var discovery []FeedItem
+	pageLimit := limit
+	if discoveryAllowed(feedMode, circleOnly, followingOnly) && !hasColdStart(candidates) {
+		if slots := discoverySlots(limit, s.discovery.share); slots > 0 {
+			discovery = s.discoveryFor(ctx, userID, candidates, slots, blockedSet, lvFreq == "hidden")
+			pageLimit = limit - len(discovery)
+		}
+	}
+
 	// 2. Cut the page and its cursor BEFORE ranking: ranking and the
 	// long-video composition below only reorder this window, so nothing
 	// the window holds is lost and nothing below it is skipped. See
-	// homeWindow.
-	candidates, next := homeWindow(candidates, items, fetchLimit, limit)
+	// homeWindow. Discovery items join after the cut, in the slots it
+	// left them, and carry no cursor.
+	candidates, next := homeWindow(candidates, items, fetchLimit, pageLimit)
+	candidates = append(candidates, discovery...)
 
 	// 3. Apply ranking if enabled
 	if (feedMode == "ranked" || feedMode == "shadow") && s.ranker != nil && len(candidates) > 0 {

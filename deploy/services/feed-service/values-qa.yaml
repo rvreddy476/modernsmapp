@@ -85,6 +85,9 @@ env:
   # run (deploy/jobs/timeline-maintenance/run.sh), then set "false".
   FEED_HF4_FALLBACK: "false"
   FEED_INDEX_LEGACY_READ: "true"
+  # Share of a ranked For You page given to posts from people the viewer
+  # does not follow (feed-service internal/service/discovery.go). 0 = off.
+  FEED_DISCOVERY_SHARE: "0.2"
 
 ingress:
   enabled: false
