@@ -8,6 +8,7 @@ import (
 
 	"github.com/atpost/doorstep-service/internal/dispatch"
 	"github.com/atpost/doorstep-service/internal/model"
+	"github.com/atpost/shared/partnerwork"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -47,6 +48,13 @@ func (s *Store) SetDuty(ctx context.Context, proID uuid.UUID, on bool, fix *Fix,
 		return nil, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var userID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT user_id FROM doorstep.professionals WHERE id=$1`, proID).Scan(&userID); err != nil {
+		return nil, false, mapErr(err)
+	}
+	if err := partnerwork.DomainDutyTx(ctx, tx, userID, partnerwork.HomeServices, on); err != nil {
+		return nil, false, err
+	}
 	var cur bool
 	if err := tx.QueryRow(ctx, `SELECT on_duty FROM doorstep.professionals WHERE id = $1 FOR UPDATE`, proID).Scan(&cur); err != nil {
 		return nil, false, mapErr(err)
@@ -191,7 +199,28 @@ func (s *Store) ProOffers(ctx context.Context, proID uuid.UUID, now time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	return collect(rows, func(r pgx.Rows) (model.Offer, error) { return scanOffer(r, now) })
+	items, err := collect(rows, func(r pgx.Rows) (model.Offer, error) { return scanOffer(r, now) })
+	if err != nil {
+		return nil, err
+	}
+	var user uuid.UUID
+	if err = s.db.QueryRow(ctx, `SELECT user_id FROM doorstep.professionals WHERE id=$1`, proID).Scan(&user); err != nil {
+		return nil, err
+	}
+	visible, enabled, err := partnerwork.VisibleOfferJobs(ctx, s.db, user, partnerwork.HomeServices)
+	if err != nil {
+		return nil, err
+	}
+	if enabled {
+		filtered := items[:0]
+		for _, o := range items {
+			if visible[o.BookingID] {
+				filtered = append(filtered, o)
+			}
+		}
+		items = filtered
+	}
+	return items, nil
 }
 
 // ProOffer reads one of the professional's offers in any state.
@@ -217,6 +246,20 @@ func (s *Store) OfferRef(ctx context.Context, proID, offerID uuid.UUID) (*Assign
 }
 
 // ---------------------------------------------------------------- jobs
+
+// ProContactCustomer resolves only a currently accepted lead's active job.
+// Phone numbers never enter job lists, offers, history or event payloads.
+func (s *Store) ProContactCustomer(ctx context.Context, proID, bookingID uuid.UUID) (uuid.UUID, error) {
+	var customer uuid.UUID
+	err := s.db.QueryRow(ctx, `SELECT b.customer_user_id
+		FROM doorstep.bookings b
+		JOIN doorstep.booking_assignments a ON a.booking_id = b.id
+		JOIN doorstep.professionals p ON p.id = a.pro_id
+		WHERE b.id = $1 AND a.pro_id = $2 AND a.role = 'lead' AND a.status = 'accepted'
+		AND p.status = 'approved'
+		AND b.status IN ('assigned', 'en_route', 'arrived', 'in_progress', 'awaiting_extras_payment')`, bookingID, proID).Scan(&customer)
+	return customer, mapErr(err)
+}
 
 // ProJobRecord is a booking as one professional sees it.
 type ProJobRecord struct {
@@ -286,13 +329,13 @@ func (s *Store) ProJobIDs(ctx context.Context, proID uuid.UUID, mode, date strin
 	order, cmp := `b.slot_start DESC, b.id DESC`, `<`
 	switch mode {
 	case JobsUpcoming:
-		where += ` AND b.status = 'assigned'`
+		where += ` AND b.status IN ('pending_payment','assigned')`
 		order, cmp = `b.slot_start, b.id`, `>`
 	case JobsActive:
 		where += ` AND b.status IN ('en_route', 'arrived', 'in_progress', 'awaiting_extras_payment')`
 		order, cmp = `b.slot_start, b.id`, `>`
 	case JobsPast:
-		where += ` AND b.status NOT IN ('assigned', 'en_route', 'arrived', 'in_progress', 'awaiting_extras_payment')`
+		where += ` AND b.status NOT IN ('pending_payment', 'assigned', 'en_route', 'arrived', 'in_progress', 'awaiting_extras_payment')`
 	}
 	args := []any{proID, limit + 1}
 	if date != "" {
@@ -325,8 +368,8 @@ func (s *Store) ProJobIDs(ctx context.Context, proID uuid.UUID, mode, date strin
 // radius.
 func (s *Store) ProArea(ctx context.Context, proID uuid.UUID) (*model.ProArea, error) {
 	a := &model.ProArea{}
-	err := s.db.QueryRow(ctx, `SELECT ST_Y(home_point::geometry), ST_X(home_point::geometry), service_radius_m
-		FROM doorstep.professionals WHERE id = $1`, proID).Scan(&a.HomeLat, &a.HomeLng, &a.RadiusM)
+	err := s.db.QueryRow(ctx, `SELECT ST_Y(home_point::geometry), ST_X(home_point::geometry), service_radius_m, area_label
+		FROM doorstep.professionals WHERE id = $1`, proID).Scan(&a.HomeLat, &a.HomeLng, &a.RadiusM, &a.AreaLabel)
 	if err != nil {
 		return nil, mapErr(err)
 	}

@@ -98,12 +98,10 @@ func (h *Handler) RiderVerifyDeliveryCode(c *gin.Context) {
 	}, nil)
 }
 
-// AttachProofRequest is the partner-side proof-of-handoff upload (MinIO
-// object key the client already PUT to). `which` distinguishes pickup
-// vs delivery proof.
+// AttachProofRequest binds an owned private upload to an active assignment.
 type AttachProofRequest struct {
-	Which string `json:"which"` // pickup | delivery
-	URL   string `json:"url"`
+	Which   string `json:"which"` // pickup | delivery
+	MediaID string `json:"media_id"`
 }
 
 // PartnerAttachProof — POST /v1/food/delivery/orders/:orderId/proof
@@ -118,12 +116,12 @@ func (h *Handler) PartnerAttachProof(c *gin.Context) {
 		return
 	}
 	var req AttachProofRequest
-	if err := c.BindJSON(&req); err != nil || req.URL == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "url is required", nil)
+	if err := c.BindJSON(&req); err != nil || req.MediaID == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "media_id is required", nil)
 		return
 	}
-	if err := h.svc.AttachProofURL(c.Request.Context(), uid, orderID, req.Which, req.URL); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PROOF_ATTACH_FAILED", err.Error(), nil)
+	if err := h.svc.AttachProofURL(c.Request.Context(), uid, orderID, req.Which, req.MediaID); err != nil {
+		writeRiderKYCError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"order_id": orderID.String(), "which": req.Which}, nil)

@@ -142,6 +142,7 @@ func (h *Handler) RegisterAdminTokenRoutes(r gin.IRouter) {
 	g.GET("/appeals", gate(PermAppealsRead, PermAppealsAct), h.AdminListAppeals)
 	g.PATCH("/appeals/:id", gate(PermAppealsAct), h.ReviewAppeal)
 	g.GET("/grievances", gate(PermGrievancesRead, PermGrievancesAct), h.ListGrievances)
+	g.POST("/grievances", gate(PermGrievancesAct), h.FileGrievance)
 	g.GET("/grievances/:id", gate(PermGrievancesRead, PermGrievancesAct), h.GetGrievance)
 	g.GET("/grievances/:id/history", gate(PermGrievancesRead, PermGrievancesAct, PermAuditRead), h.GetGrievanceHistory)
 	g.PATCH("/grievances/:id", gate(PermGrievancesAct), h.UpdateGrievance)

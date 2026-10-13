@@ -269,7 +269,7 @@ func TestSubmitRestaurantForReviewReadiness(t *testing.T) {
 	ownerID, restaurantID := seedDraftRestaurant(t, s)
 
 	_, err := s.SubmitRestaurantForReview(ctx, ownerID, restaurantID)
-	if got := strings.Join(missingOf(t, err), ","); got != "location,state,operating_hours,compliance,fssai_document,payout_account,menu_item" {
+	if got := strings.Join(missingOf(t, err), ","); got != "location,state,operating_hours,compliance,fssai_document,selfie,payout_account,menu_item" {
 		t.Fatalf("missing = %s", got)
 	}
 
@@ -304,6 +304,7 @@ func TestSubmitRestaurantForReviewReadiness(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"selfie", func() { seedRestaurantSelfie(t, s, restaurantID, "PENDING") }},
 	}
 	for i, step := range steps {
 		step.do()
@@ -403,6 +404,13 @@ func insertFSSAIDoc(t *testing.T, s *Store, restaurantID uuid.UUID, docType, sta
 	return id
 }
 
+func seedRestaurantSelfie(t *testing.T, s *Store, id uuid.UUID, status string) {
+	t.Helper()
+	if _, err := s.db.Exec(context.Background(), `INSERT INTO food.restaurant_documents (restaurant_id,document_type,media_id,status) VALUES($1,'SELFIE',$2,$3::food.document_status)`, id, uuid.New(), status); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdminDecideRestaurantDocument(t *testing.T) {
 	s, done := foodTestStore(t)
 	defer done()
@@ -473,6 +481,14 @@ func TestAdminApproveRestaurantRequiresApprovedUnexpiredFSSAI(t *testing.T) {
 
 	_, good := seedDraftRestaurant(t, s)
 	insertFSSAIDoc(t, s, good, "FSSAI", "APPROVED", time.Now().AddDate(1, 0, 0))
+	if err := s.AdminApproveRestaurant(ctx, admin, good, true, ""); err == nil {
+		t.Fatal("approved without a selfie")
+	}
+	seedRestaurantSelfie(t, s, good, "PENDING")
+	if err := s.AdminSetRestaurantStatus(ctx, admin, good, "ACTIVE", ""); err == nil {
+		t.Fatal("activated with unreviewed selfie")
+	}
+	seedRestaurantSelfie(t, s, good, "APPROVED")
 	if err := s.AdminApproveRestaurant(ctx, admin, good, true, ""); err != nil {
 		t.Fatalf("valid document: %v", err)
 	}

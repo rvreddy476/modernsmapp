@@ -59,7 +59,7 @@ func pickDocBucket(until time.Duration) string {
 // RunDocumentExpiryReminder walks expiring documents and emits a reminder
 // per (document_id, bucket) the first time it's seen. Returns the count
 // of reminders newly sent.
-func RunDocumentExpiryReminder(ctx context.Context, st *store.Store, pub DocExpiryPublisher) (int, error) {
+func RunDocumentExpiryReminder(ctx context.Context, st *store.Store, _ DocExpiryPublisher) (int, error) {
 	if st == nil {
 		return 0, fmt.Errorf("doc expiry: store required")
 	}
@@ -76,7 +76,7 @@ func RunDocumentExpiryReminder(ctx context.Context, st *store.Store, pub DocExpi
 		if bucket == "" {
 			continue
 		}
-		newlyInserted, err := st.MarkReminderSent(ctx, d.PartnerID, d.DocumentID, d.ExpiresAt, bucket)
+		newlyInserted, err := st.QueueDocumentReminder(ctx, *d, bucket)
 		if err != nil {
 			slog.Warn("rider job: doc reminder mark sent failed",
 				"document_id", d.DocumentID, "bucket", bucket, "error", err)
@@ -84,21 +84,6 @@ func RunDocumentExpiryReminder(ctx context.Context, st *store.Store, pub DocExpi
 		}
 		if !newlyInserted {
 			continue
-		}
-		payload := events.DocumentExpiringPayload{
-			PartnerID:    d.PartnerID.String(),
-			DocumentID:   d.DocumentID.String(),
-			DocumentKind: d.DocumentKind,
-			OwnerKind:    d.OwnerKind,
-			ExpiresAt:    d.ExpiresAt,
-			Bucket:       bucket,
-			OccurredAt:   time.Now().UTC(),
-		}
-		if pub != nil {
-			if perr := pub.PublishDocumentExpiring(ctx, payload); perr != nil {
-				slog.Warn("rider job: doc expiring publish failed",
-					"document_id", d.DocumentID, "bucket", bucket, "error", perr)
-			}
 		}
 		sent++
 	}

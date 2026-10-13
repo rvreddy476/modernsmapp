@@ -25,7 +25,7 @@ func scanFareWindow(row pgx.Row) (*FareWindow, error) {
 	return &w, nil
 }
 
-// ListFareWindowsAdmin lists every window (active or not), optionally for
+// ListFareWindowsAdmin lists every fare window (active or not), optionally for
 // one city, by city then priority.
 func (s *Store) ListFareWindowsAdmin(ctx context.Context, cityID *uuid.UUID) ([]FareWindow, error) {
 	rows, err := s.db.Query(ctx, `

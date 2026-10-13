@@ -85,11 +85,16 @@ var FoodRoutes = []productRoute{
 	{method: http.MethodPatch, path: "/delivery-partners/:partnerId/status", operation: opFoodDeliveryPartnerState, permission: permFoodRiderSuspend, targetType: "food_delivery_partner"},
 
 	{method: http.MethodPost, path: "/restaurants/:restaurantId/documents/:docId/decide", operation: "food.restaurant.document.decide", permission: permFoodDocumentsReview, stepUp: true, targetType: "food_document"},
+	{method: http.MethodGet, path: "/restaurants/:restaurantId/documents/:docId/view", operation: "food.restaurant.evidence.view", permission: permFoodDocumentsReview, stepUp: true, targetType: "food_document"},
+	{method: http.MethodGet, path: "/restaurants/:restaurantId/documents", operation: "food.restaurant.documents.list", permission: permFoodDocumentsReview, stepUp: true, targetType: "food_restaurant"},
+	{method: http.MethodGet, path: "/delivery-partners/:partnerId/documents/:docId/view", operation: "food.delivery.evidence.view", permission: permFoodDocumentsReview, stepUp: true, targetType: "food_document"},
 	{method: http.MethodGet, path: "/delivery-partners/:partnerId/kyc", operation: "food.delivery_partner.kyc.read", permission: permFoodDocumentsReview, stepUp: true, targetType: "food_delivery_partner"},
 	{method: http.MethodPost, path: "/delivery-partners/:partnerId/documents/:docId/decide", operation: "food.delivery_partner.document.decide", permission: permFoodDocumentsReview, stepUp: true, targetType: "food_document"},
 	{method: http.MethodGet, path: "/payout-accounts", operation: "food.payout_accounts.list", permission: permFoodPayoutAccountsRead, stepUp: true},
 
 	{method: http.MethodGet, path: "/orders", operation: "food.orders.list", permission: permFoodOrdersRead},
+	{method: http.MethodGet, path: "/delivery-recovery", operation: "food.delivery.recovery", permission: permFoodOrdersRead},
+	{method: http.MethodPost, path: "/orders/:orderId/reissue-verification", operation: "food.delivery.verification_reissue", permission: permFoodOrdersCancel,stepUp:true,targetType:"food_order"},
 	{method: http.MethodGet, path: "/orders/:orderId", operation: "food.order.read", permission: permFoodOrdersRead, targetType: "food_order"},
 	{method: http.MethodPost, path: "/orders/:orderId/cancel", operation: "food.order.cancel", permission: permFoodOrdersCancel, stepUp: true, targetType: "food_order"},
 	// Step-up and two-person, always: every refund needs a second person.
@@ -192,12 +197,14 @@ func (h *Handler) RegisterFoodRoutes(r *gin.Engine) {
 	h.approvals.Register("food", opFoodDeliveryMarkPaid, exec(permFoodSettlementMarkPaid, markPaidRequest("/settlements/delivery-partners/")))
 
 	special := map[string]gin.HandlerFunc{
-		opFoodRestaurantStatus:     h.foodStatus(p, "/restaurants/", "restaurantId"),
-		opFoodDeliveryPartnerState: h.foodStatus(p, "/delivery-partners/", "partnerId"),
-		opFoodRefundIssue:          h.foodRefundIssue(p),
-		opFoodRefundDecide:         h.foodRefundDecide(p),
-		opFoodRestaurantMarkPaid:   h.foodMarkPaid("food_restaurant_settlement"),
-		opFoodDeliveryMarkPaid:     h.foodMarkPaid("food_delivery_settlement"),
+		"food.restaurant.evidence.view": h.viewPartnerEvidence(p, "restaurants", "restaurantId", "docId"),
+		"food.delivery.evidence.view":   h.viewPartnerEvidence(p, "delivery-partners", "partnerId", "docId"),
+		opFoodRestaurantStatus:          h.foodStatus(p, "/restaurants/", "restaurantId"),
+		opFoodDeliveryPartnerState:      h.foodStatus(p, "/delivery-partners/", "partnerId"),
+		opFoodRefundIssue:               h.foodRefundIssue(p),
+		opFoodRefundDecide:              h.foodRefundDecide(p),
+		opFoodRestaurantMarkPaid:        h.foodMarkPaid("food_restaurant_settlement"),
+		opFoodDeliveryMarkPaid:          h.foodMarkPaid("food_delivery_settlement"),
 	}
 	h.registerProduct(r, p, routes, special)
 }

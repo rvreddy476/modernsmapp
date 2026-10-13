@@ -76,9 +76,12 @@ func (s *Service) ProPrices(ctx context.Context, uid uuid.UUID) ([]model.ProServ
 	}
 	for i := range list {
 		v := &list[i]
+		if s.automaticAssignment {
+			v.PricingMode = "admin_fixed"
+		}
 		hasOption := false
 		for _, it := range v.Items {
-			if it.ItemKind == "option" && it.Approved != nil {
+			if it.ItemKind == "option" && ((!s.automaticAssignment && it.Approved != nil) || (s.automaticAssignment && it.SuggestedPricePaise != nil)) {
 				hasOption = true
 			}
 		}
@@ -90,6 +93,9 @@ func (s *Service) ProPrices(ctx context.Context, uid uuid.UUID) ([]model.ProServ
 // ProSubmitPrice submits a price for one option or add-on: pending until an
 // admin approves it; the approved price (if any) stays live meanwhile.
 func (s *Service) ProSubmitPrice(ctx context.Context, uid uuid.UUID, in model.ProPriceInput) (*model.ProPrice, error) {
+	if s.automaticAssignment {
+		return nil, apperr.New(http.StatusConflict, "DOORSTEP_ADMIN_PRICING", "service prices are managed by Doorstep")
+	}
 	p, err := s.editable(ctx, uid)
 	if err != nil {
 		return nil, err

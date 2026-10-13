@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
@@ -86,25 +87,29 @@ func ForTransition(from, to string) string {
 // OrderHeader is what the store reads, inside the transaction, to address an
 // order event. Ids only: no amounts, no address, no names, no codes.
 type OrderHeader struct {
+	AcceptDeadlineAt      *time.Time
 	OrderID               uuid.UUID
 	OrderNumber           string
 	UserID                uuid.UUID
 	RestaurantID          uuid.UUID
 	RestaurantOwnerUserID uuid.UUID
+	DeliveryPartnerUserID uuid.UUID
 	Status                string
 }
 
 // OrderEvent is the Kafka payload of every order lifecycle event.
 type OrderEvent struct {
-	ID          string `json:"id"`
-	OrderID     string `json:"order_id"`
-	OrderNumber string `json:"order_number"`
+	AcceptDeadlineAt *time.Time `json:"accept_deadline_at,omitempty"`
+	ID               string     `json:"id"`
+	OrderID          string     `json:"order_id"`
+	OrderNumber      string     `json:"order_number"`
 	// UserID is the customer: food_order_status pushes go here.
 	UserID       string `json:"user_id"`
 	RestaurantID string `json:"restaurant_id"`
 	// RestaurantOwnerUserID is the kitchen: food_order_new pushes go here.
 	// There is no staff model, so restaurant_staff_user_ids is never sent.
 	RestaurantOwnerUserID string `json:"restaurant_owner_user_id"`
+	DeliveryPartnerUserID string `json:"delivery_partner_user_id,omitempty"`
 	Status                string `json:"status"`
 	// PreviousStatus is the status the transition left; empty on placed and
 	// on events that are not a transition (a partial refund).
@@ -115,12 +120,14 @@ type OrderEvent struct {
 // (a customer's or an admin's cancel note) are never carried.
 func NewOrderEvent(h OrderHeader, previous string) OrderEvent {
 	return OrderEvent{
+		AcceptDeadlineAt:      h.AcceptDeadlineAt,
 		ID:                    h.OrderID.String(),
 		OrderID:               h.OrderID.String(),
 		OrderNumber:           h.OrderNumber,
 		UserID:                idString(h.UserID),
 		RestaurantID:          idString(h.RestaurantID),
 		RestaurantOwnerUserID: idString(h.RestaurantOwnerUserID),
+		DeliveryPartnerUserID: idString(h.DeliveryPartnerUserID),
 		Status:                h.Status,
 		PreviousStatus:        previous,
 	}

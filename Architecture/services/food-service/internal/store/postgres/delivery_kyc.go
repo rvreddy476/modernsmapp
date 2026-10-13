@@ -244,10 +244,10 @@ func upsertDeliveryDocumentTx(ctx context.Context, tx pgx.Tx, partnerID uuid.UUI
 			media_id = COALESCE(EXCLUDED.media_id, d.media_id),
 			file_url = COALESCE(EXCLUDED.file_url, d.file_url),
 			expires_at = COALESCE(EXCLUDED.expires_at, d.expires_at),
-			status = CASE WHEN EXCLUDED.status = 'APPROVED' OR d.status = 'APPROVED'
-				THEN 'APPROVED'::food.document_status ELSE 'PENDING'::food.document_status END,
+			status = EXCLUDED.status,
+			verified_by = NULL,
 			rejection_reason = NULL,
-			verified_at = CASE WHEN EXCLUDED.status = 'APPROVED' THEN NOW() ELSE d.verified_at END
+			verified_at = CASE WHEN EXCLUDED.status = 'APPROVED' THEN NOW() ELSE NULL END
 		WHERE d.delivery_partner_id = EXCLUDED.delivery_partner_id
 		RETURNING `+deliveryDocumentColumns, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -373,36 +373,31 @@ func dateOnly(t *time.Time) *string {
 
 // ─── Readiness, the KYC view and the approval gate ─────────────────────────
 
-// deliveryPartnerFacts reads what riderkyc.MissingSteps needs. A DL or RC
-// counts only with a DigiLocker check still in validity (IST calendar) AND an
-// APPROVED, unexpired document of that type, so an admin's rejection of the
-// document takes it back out.
+// deliveryPartnerFacts reads manually reviewed uploads. A provider assertion
+// alone never satisfies offline identity or the mandatory licence step.
 func deliveryPartnerFacts(ctx context.Context, q rowQuerier, partnerID uuid.UUID) (string, riderkyc.Facts, error) {
 	var status string
 	var f riderkyc.Facts
 	err := q.QueryRow(ctx, `
 		SELECT p.status::text, COALESCE(p.vehicle_type, ''),
-			EXISTS (SELECT 1 FROM food.delivery_partner_kyc_checks k
-				WHERE k.partner_id = p.id AND k.provider = 'DIGILOCKER' AND k.kind = 'AADHAAR'),
-			EXISTS (SELECT 1 FROM food.delivery_partner_kyc_checks k
-				WHERE k.partner_id = p.id AND k.provider = 'DIGILOCKER' AND k.kind = 'DRIVING_LICENCE'
-				  AND k.valid_until >= (NOW() AT TIME ZONE 'Asia/Kolkata')::date)
-			AND EXISTS (SELECT 1 FROM food.delivery_partner_documents d
+			EXISTS (SELECT 1 FROM food.delivery_partner_documents d
+				WHERE d.delivery_partner_id = p.id AND d.document_type IN ('PASSPORT','VOTER_ID','DRIVING_LICENCE','PAN')
+				  AND d.media_id IS NOT NULL AND d.status = 'APPROVED' AND d.verified_by IS NOT NULL
+				  AND (d.expires_at IS NULL OR d.expires_at > NOW())),
+			EXISTS (SELECT 1 FROM food.delivery_partner_documents d
 				WHERE d.delivery_partner_id = p.id AND d.document_type = 'DRIVING_LICENCE'
-				  AND d.status = 'APPROVED' AND d.expires_at > NOW()),
-			EXISTS (SELECT 1 FROM food.delivery_partner_kyc_checks k
-				WHERE k.partner_id = p.id AND k.provider = 'DIGILOCKER' AND k.kind = 'VEHICLE_RC'
-				  AND k.valid_until >= (NOW() AT TIME ZONE 'Asia/Kolkata')::date)
-			AND EXISTS (SELECT 1 FROM food.delivery_partner_documents d
+				  AND d.media_id IS NOT NULL AND d.status = 'APPROVED' AND d.verified_by IS NOT NULL
+				  AND (d.expires_at IS NULL OR d.expires_at > NOW())),
+			EXISTS (SELECT 1 FROM food.delivery_partner_documents d
 				WHERE d.delivery_partner_id = p.id AND d.document_type = 'VEHICLE_RC'
-				  AND d.status = 'APPROVED' AND d.expires_at > NOW()),
+				  AND d.status = 'APPROVED' AND d.verified_by IS NOT NULL AND (d.expires_at IS NULL OR d.expires_at > NOW())),
 			EXISTS (SELECT 1 FROM food.delivery_partner_documents d
 				WHERE d.delivery_partner_id = p.id AND d.document_type = 'SELFIE' AND d.status = 'APPROVED'),
 			EXISTS (SELECT 1 FROM food.payout_accounts a
 				WHERE a.owner_type = 'DELIVERY_PARTNER' AND a.owner_id = p.id)
 		FROM food.delivery_partners p
 		WHERE p.id = $1
-	`, partnerID).Scan(&status, &f.VehicleType, &f.HasAadhaarCheck, &f.HasValidDrivingLicence, &f.HasValidVehicleRC,
+	`, partnerID).Scan(&status, &f.VehicleType, &f.HasApprovedIdentity, &f.HasValidDrivingLicence, &f.HasValidVehicleRC,
 		&f.HasApprovedSelfie, &f.HasPayoutAccount)
 	return status, f, err
 }
@@ -556,6 +551,9 @@ func (s *Store) AdminDecideDeliveryPartnerDocument(ctx context.Context, adminID,
 		VALUES ($1, 'delivery_partner.document_decided', 'delivery_partner_document', $2,
 			jsonb_build_object('delivery_partner_id', $3::text, 'document_type', $4::text, 'status', $5::text, 'reason', $6::text))
 	`, adminID, documentID, partnerID.String(), doc.DocumentType, d, strings.TrimSpace(reason)); err != nil {
+		return nil, err
+	}
+	if err := enqueueDeliveryReviewTx(ctx, tx, partnerID, documentID, d); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -148,7 +148,7 @@ func (s *Store) WithTOTPEncryption(box *crypto.SecretBox) *Store {
 }
 
 // allUserCols is the list of columns returned when scanning a User row.
-const allUserCols = `user_id, COALESCE(phone, ''), email, password_hash,
+const allUserCols = `user_id, COALESCE(phone, ''), email, COALESCE(password_hash, ''),
 	email_verified, phone_verified, two_factor_enabled, two_factor_secret,
 	account_type, account_status, login_provider, recovery_email, recovery_phone,
 	age_verification, consent_terms, consent_privacy, consent_age,

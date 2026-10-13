@@ -49,7 +49,7 @@ func b3IntegrationRouter(t *testing.T) (*gin.Engine, *pgxpool.Pool) {
 	pricingCfg.PlatformGSTIN = "29ZZZCZ9999Z1Z" + string(d)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(service.New(postgres.New(pool).WithPricingConfig(pricingCfg))).RegisterRoutes(router)
+	New(service.New(postgres.New(pool).WithPricingConfig(pricingCfg))).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router, pool
 }
 

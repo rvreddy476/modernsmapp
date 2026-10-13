@@ -214,7 +214,7 @@ func TestB8ReadinessAgreesWithSubmit(t *testing.T) {
 
 	fresh := agree("fresh")
 	all := []string{onboarding.StepLocation, onboarding.StepState, onboarding.StepOperatingHours, onboarding.StepCompliance,
-		onboarding.StepFSSAI, onboarding.StepPayoutAccount, onboarding.StepMenuItem}
+		onboarding.StepFSSAI, onboarding.StepSelfie, onboarding.StepPayoutAccount, onboarding.StepMenuItem}
 	if !reflect.DeepEqual(fresh.Missing, all) || fresh.Status != "DRAFT" {
 		t.Fatalf("fresh readiness = %+v, want every step", fresh)
 	}
@@ -227,12 +227,19 @@ func TestB8ReadinessAgreesWithSubmit(t *testing.T) {
 			_, err := s.ReplaceOperatingHours(ctx, ownerID, rid, []OperatingHoursInput{{DayOfWeek: dayPtr(1), OpensAt: "10:00", ClosesAt: "22:00"}})
 			return err
 		}},
-		{"compliance", func() error { _, err := s.SetRestaurantCompliance(ctx, ownerID, rid, testSealedCompliance()); return err }},
+		{"compliance", func() error {
+			_, err := s.SetRestaurantCompliance(ctx, ownerID, rid, testSealedCompliance())
+			return err
+		}},
 		{"fssai", func() error {
 			_, err := s.SubmitRestaurantFSSAI(ctx, ownerID, rid, testFSSAI(time.Now().AddDate(1, 0, 0)))
 			return err
 		}},
-		{"payout", func() error { _, err := s.UpsertRestaurantPayoutAccount(ctx, ownerID, rid, testSealedPayout()); return err }},
+		{"payout", func() error {
+			_, err := s.UpsertRestaurantPayoutAccount(ctx, ownerID, rid, testSealedPayout())
+			return err
+		}},
+		{"selfie", func() error { seedRestaurantSelfie(t, s, rid, "PENDING"); return nil }},
 		{"menu item", func() error { b8Item(t, s, ownerID, rid, "Dosa"); return nil }},
 	}
 	for _, st := range steps {
@@ -345,16 +352,37 @@ func TestB8MenuExtrasAreOwnerOnly(t *testing.T) {
 	}
 
 	refused := map[string]func() error{
-		"update variant":              func() error { _, err := s.UpdateMenuVariant(ctx, stranger, itemID, v.ID, MenuPriceInput{PricePaise: i64(1)}); return err },
-		"update variant via own item": func() error { _, err := s.UpdateMenuVariant(ctx, stranger, strangerItem, v.ID, MenuPriceInput{PricePaise: i64(1)}); return err },
-		"delete variant":              func() error { return s.DeleteMenuVariant(ctx, stranger, itemID, v.ID) },
-		"update group":                func() error { _, err := s.UpdateAddonGroup(ctx, stranger, itemID, g.ID, MenuAddonGroupInput{MaxSelect: intPtr(9)}); return err },
-		"delete group":                func() error { return s.DeleteAddonGroup(ctx, stranger, itemID, g.ID) },
-		"create add-on":               func() error { _, err := s.CreateAddon(ctx, stranger, itemID, g.ID, MenuPriceInput{Name: strPtr("X"), PricePaise: i64(1)}); return err },
-		"create add-on via own item":  func() error { _, err := s.CreateAddon(ctx, stranger, strangerItem, g.ID, MenuPriceInput{Name: strPtr("X"), PricePaise: i64(1)}); return err },
-		"update add-on":               func() error { _, err := s.UpdateAddon(ctx, stranger, itemID, g.ID, a.ID, MenuPriceInput{PricePaise: i64(1)}); return err },
-		"update add-on via own item":  func() error { _, err := s.UpdateAddon(ctx, stranger, strangerItem, g.ID, a.ID, MenuPriceInput{PricePaise: i64(1)}); return err },
-		"delete add-on":               func() error { return s.DeleteAddon(ctx, stranger, itemID, g.ID, a.ID) },
+		"update variant": func() error {
+			_, err := s.UpdateMenuVariant(ctx, stranger, itemID, v.ID, MenuPriceInput{PricePaise: i64(1)})
+			return err
+		},
+		"update variant via own item": func() error {
+			_, err := s.UpdateMenuVariant(ctx, stranger, strangerItem, v.ID, MenuPriceInput{PricePaise: i64(1)})
+			return err
+		},
+		"delete variant": func() error { return s.DeleteMenuVariant(ctx, stranger, itemID, v.ID) },
+		"update group": func() error {
+			_, err := s.UpdateAddonGroup(ctx, stranger, itemID, g.ID, MenuAddonGroupInput{MaxSelect: intPtr(9)})
+			return err
+		},
+		"delete group": func() error { return s.DeleteAddonGroup(ctx, stranger, itemID, g.ID) },
+		"create add-on": func() error {
+			_, err := s.CreateAddon(ctx, stranger, itemID, g.ID, MenuPriceInput{Name: strPtr("X"), PricePaise: i64(1)})
+			return err
+		},
+		"create add-on via own item": func() error {
+			_, err := s.CreateAddon(ctx, stranger, strangerItem, g.ID, MenuPriceInput{Name: strPtr("X"), PricePaise: i64(1)})
+			return err
+		},
+		"update add-on": func() error {
+			_, err := s.UpdateAddon(ctx, stranger, itemID, g.ID, a.ID, MenuPriceInput{PricePaise: i64(1)})
+			return err
+		},
+		"update add-on via own item": func() error {
+			_, err := s.UpdateAddon(ctx, stranger, strangerItem, g.ID, a.ID, MenuPriceInput{PricePaise: i64(1)})
+			return err
+		},
+		"delete add-on": func() error { return s.DeleteAddon(ctx, stranger, itemID, g.ID, a.ID) },
 	}
 	for name, call := range refused {
 		if err := call(); !errors.Is(err, pgx.ErrNoRows) {

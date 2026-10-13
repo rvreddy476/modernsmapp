@@ -173,7 +173,7 @@ func (s *Service) ProcessNotificationEvent(ctx context.Context, event Notificati
 // sendTemplatePush sends a push notification, respecting user preferences and quiet hours
 // unless the template overrides them.
 func (s *Service) sendTemplatePush(ctx context.Context, recipientID uuid.UUID, tmpl NotificationTemplate, title, body string, event NotificationEvent) {
-	tokens, err := s.pgStore.GetUserDevices(ctx, recipientID)
+	tokens, err := s.eventDevices(ctx, recipientID, event.EventType)
 	if err != nil || len(tokens) == 0 {
 		return
 	}

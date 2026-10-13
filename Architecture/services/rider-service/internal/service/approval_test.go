@@ -39,9 +39,9 @@ func TestEvaluateApproval(t *testing.T) {
 		{"selfie pending (below threshold)", "pending_verification", func(d map[string]store.DocumentState, _ *[]store.VehicleState) {
 			d[DocSelfie] = store.DocumentState{Type: DocSelfie, Status: "pending", Source: store.DocSourceUpload}
 		}, false, []string{DocSelfie}, nil},
-		{"no aadhaar at all: incomplete", "pending_verification", func(d map[string]store.DocumentState, _ *[]store.VehicleState) {
+		{"no Aadhaar is required with reviewed licence", "pending_verification", func(d map[string]store.DocumentState, _ *[]store.VehicleState) {
 			delete(d, DocAadhaar)
-		}, false, nil, []string{DocAadhaar}},
+		}, true, nil, nil},
 		{"rejected selfie: incomplete", "pending_verification", func(d map[string]store.DocumentState, _ *[]store.VehicleState) {
 			d[DocSelfie] = store.DocumentState{Type: DocSelfie, Status: "rejected", Source: store.DocSourceUpload}
 		}, false, nil, []string{DocSelfie}},

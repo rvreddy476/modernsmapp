@@ -48,6 +48,7 @@ type MeResponse struct {
 	MFA                 MeMFA            `json:"mfa"`
 	StepUpValidUntil    *time.Time       `json:"step_up_valid_until"`
 	StepUpWindowSeconds int              `json:"step_up_window_seconds"`
+	StepUpRequired      bool             `json:"step_up_required"`
 	Navigation          []NavigationItem `json:"navigation"`
 }
 
@@ -93,6 +94,7 @@ func (h *Handler) me(c *gin.Context) {
 			Verified: adminauth.MFAVerified(c.GetHeader(adminauth.HeaderAdminMFA)),
 		},
 		StepUpWindowSeconds: int(adminauth.StepUpWindow / time.Second),
+		StepUpRequired:      !h.gate.devStepUpDisabled,
 		Navigation:          navigation(perms),
 	}
 	for app, list := range perms.Apps {

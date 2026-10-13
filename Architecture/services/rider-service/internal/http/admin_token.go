@@ -226,6 +226,7 @@ func (h *Handler) adminRoutes() []adminRoute {
 		{post, "/partners/:id/block", PermPartnersSuspend, h.AdminBlockPartner},
 
 		{get, "/documents", PermDocumentsReview, h.AdminListDocuments},
+		{get, "/documents/:id/evidence", PermDocumentsReview, h.AdminEvidence},
 		{post, "/documents/:id/verify", PermDocumentsReview, h.AdminVerifyDocument},
 		{post, "/documents/:id/reject", PermDocumentsReview, h.AdminRejectDocument},
 

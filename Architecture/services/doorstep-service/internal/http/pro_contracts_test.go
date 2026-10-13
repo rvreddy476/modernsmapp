@@ -23,6 +23,7 @@ import (
 	"github.com/atpost/doorstep-service/internal/propii"
 	"github.com/atpost/doorstep-service/internal/service"
 	"github.com/atpost/doorstep-service/internal/tax"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/google/uuid"
 )
 
@@ -77,6 +78,7 @@ func newProRigExt(t *testing.T, ext func(*service.Service) *service.Service, opt
 	n := 0
 	tokens := 0
 	deps := service.ProDeps{
+		Documents:           ownedmedia.Func(func(ctx context.Context, uid, media uuid.UUID) error { return pr.media.VerifyOwned(ctx, media, uid) }),
 		Store:               pr.pro,
 		DigiLocker:          digilocker.Settings{Mode: digilocker.ModeMock, Client: dl, RedirectURI: "http://localhost:8080/doorstep-pro/digilocker"},
 		Faces:               &facecompare.Mock{Similarity: 96},
@@ -163,7 +165,7 @@ func TestContract_ProJourney(t *testing.T) {
 	assertFixture(t, "pro_me_get_200.json", pr.call(u, "GET", "/me", ""), 200)
 
 	// Selfie before DigiLocker: the reference face does not exist yet.
-	assertFixture(t, "pro_selfie_422_no_aadhaar.json", pr.call(u, "POST", "/selfie", `{"media_id":"`+mediaOf(u, "selfie").String()+`"}`), 422)
+	assertFixture(t, "pro_selfie_200_offline.json", pr.call(u, "POST", "/selfie", `{"media_id":"`+mediaOf(u, "selfie").String()+`"}`), 200)
 
 	// DigiLocker (PKCE; the mock's authorize URL is the redirect with a code).
 	w = pr.call(u, "POST", "/digilocker/start", "")
@@ -198,8 +200,8 @@ func TestContract_ProJourney(t *testing.T) {
 	assertFixture(t, "pro_skills_list_200.json", pr.call(u, "GET", "/skills", ""), 200)
 	assertFixture(t, "pro_skills_put_200.json", pr.call(u, "PUT", "/me/skills", `{"skill_codes":["deep_cleaning","electrician"]}`), 200)
 	assertFixture(t, "pro_skills_put_400_unknown.json", pr.call(u, "PUT", "/me/skills", `{"skill_codes":["astrology"]}`), 400)
-	assertFixture(t, "pro_trade_certificate_400_not_required.json",
-		pr.call(u, "POST", "/me/skills/deep_cleaning/certificate", `{"media_id":"`+mediaOf(u, "trade").String()+`","issued_on":"2019-06-01"}`), 400)
+	assertFixture(t, "pro_experience_certificate_201.json",
+		pr.call(u, "POST", "/me/skills/deep_cleaning/certificate", `{"media_id":"`+mediaOf(u, "trade").String()+`","issued_on":"2019-06-01"}`), 201)
 	assertFixture(t, "pro_trade_certificate_201.json",
 		pr.call(u, "POST", "/me/skills/electrician/certificate", `{"media_id":"`+mediaOf(u, "trade").String()+`","issued_on":"2019-06-01","certificate_number":"ITI/EL/2019/4471"}`), 201)
 
@@ -226,7 +228,7 @@ func TestContract_ProJourney(t *testing.T) {
 	assertFixture(t, "pro_days_off_delete_404.json", pr.call(u, "DELETE", "/me/days-off/2026-10-12", ""), 404)
 
 	// Bank: sealed, masked view only.
-	w = pr.call(u, "PUT", "/me/bank", `{"account_holder":"Lakshmi  Devi","account_number":"000123456789","ifsc":"sbin0001234"}`)
+	w = pr.call(u, "PUT", "/me/bank", `{"account_holder":"Lakshmi  Devi","account_number":"000123456789","bank_name":"State Bank","proof_kind":"passbook","proof_media_id":"`+mediaOf(u, "photo").String()+`","ifsc":"sbin0001234"}`)
 	assertFixture(t, "pro_bank_put_200.json", w, 200)
 	if strings.Contains(w.Body.String(), "23456789") {
 		t.Fatalf("account number leaked: %s", w.Body.String())
@@ -247,7 +249,10 @@ func TestContract_ProJourney(t *testing.T) {
 
 	// Agreement, PAN.
 	assertFixture(t, "pro_agreement_400_version.json", pr.call(u, "POST", "/me/agreement", `{"version":"2025-01-01"}`), 400)
-	assertFixture(t, "pro_agreement_200.json", pr.call(u, "POST", "/me/agreement", `{"version":"`+prokyc.AgreementVersion+`"}`), 200)
+	assertFixture(t, "pro_agreement_409_deferred.json", pr.call(u, "POST", "/me/agreement", `{"version":"`+prokyc.AgreementVersion+`"}`), 409)
+	if pr.pro.pros[pr.pro.byUser[u]].agreement != "" {
+		t.Fatal("deferred acceptance must not create an agreement record")
+	}
 	assertFixture(t, "pro_pan_put_400.json", pr.call(u, "PUT", "/me/pan", `{"pan":"ABCCE1234F"}`), 400)
 	w = pr.call(u, "PUT", "/me/pan", `{"pan":"abcpe1234f"}`)
 	assertFixture(t, "pro_pan_put_200.json", w, 200)
@@ -264,8 +269,8 @@ func TestContract_ProJourney(t *testing.T) {
 	assertFixture(t, "admin_documents_list_200.json", pr.admin(PermDocumentsReview, "GET", "/documents", ""), 200)
 	proID := devseed.ID("professional", u.String()).String()
 	assertFixture(t, "admin_professional_approve_422_incomplete.json", pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/approve", ""), 422)
-	assertFixture(t, "admin_skill_verify_422_certificate.json",
-		pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/skills/electrician/verify", `{"verified":true}`), 422)
+	assertFixture(t, "admin_skill_verify_200_optional_certificate.json",
+		pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/skills/electrician/verify", `{"verified":true}`), 200)
 
 	// View the police certificate: bytes, no-store, one audit row per view.
 	w = pr.admin(PermDocumentsReview, "GET", "/documents/"+police.ID+"/view", "")
@@ -298,6 +303,8 @@ func TestContract_ProJourney(t *testing.T) {
 		pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/skills/deep_cleaning/verify", `{"verified":false,"reason":"re-check"}`), 200)
 	mustStatus(t, "verify deep cleaning", pr.admin(PermProsApprove, "POST", "/professionals/"+proID+"/skills/deep_cleaning/verify", `{"verified":true}`), 200)
 	// The selfie the face match left pending: an admin approves it.
+	bankProofID := devseed.ID("bank-proof", uuid.MustParse(proID).String()).String()
+	assertFixture(t, "admin_document_decide_200_bank.json", pr.admin(PermDocumentsReview, "POST", "/documents/"+bankProofID+"/decide", `{"decision":"approve"}`), 200)
 	adminReviewsRest(t, pr, u)
 
 	// Approve: nothing missing now.
@@ -397,8 +404,8 @@ func completeSteps(t *testing.T, pr *proRig, u uuid.UUID, code string) {
 		{"POST", "/selfie", `{"media_id":"` + mediaOf(u, "selfie").String() + `"}`},
 		{"PUT", "/me/area", `{"zone_ids":["` + idOf("zone", "west-hitec-gachibowli") + `"],"home_lat":17.44,"home_lng":78.37,"radius_m":5000}`},
 		{"PUT", "/me/hours", `{"items":[{"weekday":1,"start":"09:00","end":"18:00"}]}`},
-		{"PUT", "/me/bank", `{"account_holder":"Test Pro","account_number":"123456789012","ifsc":"HDFC0000001"}`},
-		{"POST", "/me/agreement", `{"version":"` + prokyc.AgreementVersion + `"}`},
+		{"PUT", "/me/bank", `{"account_holder":"Test Pro","account_number":"123456789012","bank_name":"State Bank","proof_kind":"passbook","proof_media_id":"` + mediaOf(u, "photo").String() + `","ifsc":"HDFC0000001"}`},
+		{"PUT", "/me/pan", `{"pan":"ABCPE1234F"}`},
 	} {
 		mustStatus(t, s.path, pr.call(u, s.method, s.path, s.body), 200)
 	}
@@ -420,10 +427,16 @@ func adminReviewsRest(t *testing.T, pr *proRig, u uuid.UUID) {
 	t.Helper()
 	proID := devseed.ID("professional", u.String())
 	for _, id := range pr.pro.docOrder {
-		if d := pr.pro.docs[id]; d.ProID == proID && d.Kind == "selfie" && d.Status == "pending" {
+		if d := pr.pro.docs[id]; d.ProID == proID && (d.Kind == "selfie" || d.Kind == "bank_proof") && d.Status == "pending" {
 			mustStatus(t, "approve selfie", pr.admin(PermDocumentsReview, "POST", "/documents/"+id.String()+"/decide", `{"decision":"approve"}`), 200)
 		}
 	}
+	mustStatus(t, "save PAN", pr.call(u, "PUT", "/me/pan", `{"pan":"ABCPE1234F"}`), 200)
+	gender := "unknown"
+	if value := pr.pro.pros[proID].p.Gender; value != nil {
+		gender = *value
+	}
+	mustStatus(t, "manual identity review", pr.admin(PermProsApprove, "POST", "/professionals/"+proID.String()+"/identity-review", `{"gender":"`+gender+`","reason":"Identity and eligibility evidence reviewed"}`), 200)
 	var pending []string
 	for code, s := range pr.pro.pros[proID].skills {
 		if s.Status == "pending" {
@@ -445,7 +458,7 @@ func TestProApprovalBlockedWhileStepsMissing(t *testing.T) {
 	w := pr.admin(PermProsApprove, "POST", "/professionals/"+id+"/approve", "")
 	mustCode(t, "fresh", w, 422, "DOORSTEP_ONBOARDING_INCOMPLETE")
 	_, details := errorCode(t, w)
-	if got := fmt.Sprint(details["missing_steps"]); got != "[profile aadhaar_digilocker selfie_face_match skills service_area weekly_hours bank police_certificate agreement]" {
+	if got := fmt.Sprint(details["missing_steps"]); got != "[profile identity_review selfie_face_match skills service_area weekly_hours bank pan]" {
 		t.Fatalf("missing %s", got)
 	}
 	completeSteps(t, pr, u, "mock-male")
@@ -488,6 +501,8 @@ func TestProSelfieOutcomes(t *testing.T) {
 	decodeData(t, w, &start)
 	mustStatus(t, "callback", pr.call(u, "POST", "/digilocker/callback", `{"code":"mock-male","state":"`+start.State+`"}`), 200)
 	selfie := `{"media_id":"` + mediaOf(u, "selfie").String() + `"}`
+	reference := mediaOf(u, "photo")
+	pr.pro.pros[devseed.ID("professional", u.String())].photoRef = &reference
 	assertFixture(t, "pro_selfie_200_pending.json", pr.call(u, "POST", "/selfie", selfie), 200)
 	low.Err = facecompare.ErrImageUnsupported
 	assertFixture(t, "pro_selfie_422_failed.json", pr.call(u, "POST", "/selfie", selfie), 422)
@@ -517,7 +532,7 @@ func TestProDigiLockerAndPIIUnavailable(t *testing.T) {
 	mustStatus(t, "apply", pr.call(proUser, "POST", "/apply", `{"display_name":"Lakshmi Devi","city_code":"HYD"}`), 201)
 	assertFixture(t, "pro_digilocker_start_503.json", pr.call(proUser, "POST", "/digilocker/start", ""), 503)
 	assertFixture(t, "pro_bank_put_503_pii.json",
-		pr.call(proUser, "PUT", "/me/bank", `{"account_holder":"Lakshmi Devi","account_number":"000123456789","ifsc":"SBIN0001234"}`), 503)
+		pr.call(proUser, "PUT", "/me/bank", `{"account_holder":"Lakshmi Devi","account_number":"000123456789","bank_name":"State Bank","proof_kind":"passbook","proof_media_id":"`+mediaOf(proUser, "photo").String()+`","ifsc":"SBIN0001234"}`), 503)
 }
 
 func TestBackgroundCheckWebhookUnknownProvider(t *testing.T) {

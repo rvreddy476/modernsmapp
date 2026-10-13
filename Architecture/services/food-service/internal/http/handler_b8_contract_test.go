@@ -186,7 +186,7 @@ func b8Router(st *b8ContractStore) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	svc := service.New(st).WithOnboardingClock(func() time.Time { return time.Date(2026, 9, 13, 12, 0, 0, 0, onboarding.IST) })
 	router := gin.New()
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

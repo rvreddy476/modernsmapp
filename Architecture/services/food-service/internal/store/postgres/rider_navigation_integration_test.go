@@ -320,7 +320,11 @@ func TestDeliveryOfferContextNamesTheJobButNotTheCustomer(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	orderID, rider, partnerID, _ := rnSeedRiderJob(t, s, "DELIVERY_ASSIGNED", "ASSIGNED")
+	orderID, rider, partnerID, assignmentID := rnSeedRiderJob(t, s, "DELIVERY_ASSIGNING", "CREATED")
+	// Offers precede assignment: an already assigned rider must have no inbox.
+	if _, err := s.db.Exec(ctx, `UPDATE food.delivery_assignments SET delivery_partner_id=NULL WHERE id=$1`, assignmentID); err != nil {
+		t.Fatal(err)
+	}
 	var locationID uuid.UUID
 	if err := s.db.QueryRow(ctx, `
 		INSERT INTO food.delivery_partner_locations (delivery_partner_id, latitude, longitude, recorded_at)

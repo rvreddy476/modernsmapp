@@ -98,6 +98,10 @@ func TestAdmin_ApprovePartner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePartner: %v", err)
 	}
+	if err := s.SetPartnerApprovedAt(ctx, p.ID); err == nil {
+		t.Fatal("approved an application without reviewed evidence")
+	}
+	seedReviewedPartnerEvidence(t, s, p.ID)
 	if err := s.SetPartnerApprovedAt(ctx, p.ID); err != nil {
 		t.Fatalf("SetPartnerApprovedAt: %v", err)
 	}

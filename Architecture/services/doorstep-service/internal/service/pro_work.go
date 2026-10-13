@@ -75,10 +75,8 @@ func (s *Service) ProDutyOn(ctx context.Context, user uuid.UUID, in *model.Locat
 		return nil, apperr.New(http.StatusForbidden, apperr.CodeProSuspended, "your account is suspended")
 	case st.Status != "approved":
 		return nil, apperr.New(http.StatusForbidden, apperr.CodeProNotApproved, "your account is not approved for jobs yet")
-	case !st.BackgroundClear:
-		return nil, apperr.New(http.StatusForbidden, apperr.CodeBackgroundCheckRequired, "your background check is not valid today")
 	}
-	if missing := prokyc.MissingSteps(st.Facts); len(missing) > 0 {
+	if missing := prokyc.WorkMissingSteps(st.Facts); len(missing) > 0 {
 		return nil, incomplete(missing...)
 	}
 	now := s.nowUTC()
@@ -244,6 +242,40 @@ func (s *Service) ProJob(ctx context.Context, user, bookingID uuid.UUID) (*model
 		return nil, err
 	}
 	return s.proJob(ctx, p.ID, bookingID)
+}
+
+// ProCustomerContact discloses a verified customer mobile only to the
+// accepted lead while this booking is active. Resolve on demand, never cache.
+func (s *Service) ProCustomerContact(ctx context.Context, user, bookingID uuid.UUID) (*model.ProCustomerContact, error) {
+	p, err := s.mine(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	customer, err := s.ds.Store.ProContactCustomer(ctx, p.ID, bookingID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, bookingNotFound()
+	}
+	if err != nil {
+		return nil, internal(ctx, "job contact access", err)
+	}
+	unavailable := apperr.New(503, "CUSTOMER_CONTACT_UNAVAILABLE", "Customer contact is unavailable. Please use booking chat or contact support.")
+	if s.pro.VerifiedPhone == nil {
+		return nil, unavailable
+	}
+	phone, err := s.pro.VerifiedPhone(ctx, customer)
+	if err != nil || !applicationPhone.MatchString(phone) {
+		return nil, unavailable
+	}
+	// Recheck after the identity call: cancellation/reassignment may have
+	// happened while waiting for it. Do not return a stale disclosure.
+	current, err := s.ds.Store.ProContactCustomer(ctx, p.ID, bookingID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && current != customer) {
+		return nil, bookingNotFound()
+	}
+	if err != nil {
+		return nil, internal(ctx, "job contact access", err)
+	}
+	return &model.ProCustomerContact{Phone: phone}, nil
 }
 
 var proJobModes = map[string]string{"": store.JobsAll, "upcoming": store.JobsUpcoming, "active": store.JobsActive,

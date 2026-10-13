@@ -166,11 +166,11 @@ func TestRestaurantTaxCategories(t *testing.T) {
 
 func TestMissingSteps(t *testing.T) {
 	all := MissingSteps(ReadinessFacts{})
-	want := []string{StepLocation, StepState, StepOperatingHours, StepCompliance, StepFSSAI, StepPayoutAccount, StepMenuItem}
+	want := []string{StepLocation, StepState, StepOperatingHours, StepCompliance, StepFSSAI, StepSelfie, StepPayoutAccount, StepMenuItem}
 	if strings.Join(all, ",") != strings.Join(want, ",") {
 		t.Fatalf("missing = %v, want %v", all, want)
 	}
-	full := ReadinessFacts{HasLocation: true, HasState: true, HasOperatingHours: true, HasCompliance: true, HasFSSAIDocument: true, HasPayoutAccount: true, HasAvailableMenuItem: true}
+	full := ReadinessFacts{HasLocation: true, HasState: true, HasOperatingHours: true, HasCompliance: true, HasFSSAIDocument: true, HasSelfie: true, HasPayoutAccount: true, HasAvailableMenuItem: true}
 	if got := MissingSteps(full); got == nil || len(got) != 0 {
 		t.Fatalf("complete facts: missing = %#v, want empty non-nil", got)
 	}
@@ -183,6 +183,7 @@ func TestMissingSteps(t *testing.T) {
 		{StepOperatingHours, func(f *ReadinessFacts) { f.HasOperatingHours = false }},
 		{StepCompliance, func(f *ReadinessFacts) { f.HasCompliance = false }},
 		{StepFSSAI, func(f *ReadinessFacts) { f.HasFSSAIDocument = false }},
+		{StepSelfie, func(f *ReadinessFacts) { f.HasSelfie = false }},
 		{StepPayoutAccount, func(f *ReadinessFacts) { f.HasPayoutAccount = false }},
 		{StepMenuItem, func(f *ReadinessFacts) { f.HasAvailableMenuItem = false }},
 	}

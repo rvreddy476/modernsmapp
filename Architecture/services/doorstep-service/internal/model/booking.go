@@ -103,6 +103,8 @@ type StatusStep struct {
 // close the A3 contract gaps: end_otp stays null until the visit lane sets
 // it, photos stays empty until it uploads them.
 type Booking struct {
+	AssignmentMode       string               `json:"assignment_mode,omitempty"`
+	MatchingDeadline     *time.Time           `json:"matching_deadline,omitempty"`
 	ID                   uuid.UUID            `json:"id"`
 	Status               string               `json:"status"`
 	ServiceID            uuid.UUID            `json:"service_id"`

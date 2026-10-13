@@ -91,7 +91,7 @@ func newDispatchRig(t *testing.T) *dsRig {
 	dr.exec(t, `UPDATE doorstep.booking_assignments SET status = 'cancelled' WHERE status IN ('offered', 'accepted')`)
 	dr.exec(t, `UPDATE doorstep.pro_calendar_blocks SET active = FALSE WHERE active AND booking_id IS NOT NULL`)
 	dr.exec(t, `UPDATE doorstep.bookings SET status = 'cancelled', cancelled_by_kind = 'system', rescue_until = NULL, rescue_cause = NULL
-		WHERE status IN ('pending_payment', 'confirmed', 'assigned', 'en_route', 'arrived', 'in_progress', 'awaiting_extras_payment')`)
+		WHERE status IN ('matching', 'pending_payment', 'confirmed', 'assigned', 'en_route', 'arrived', 'in_progress', 'awaiting_extras_payment')`)
 	dr.exec(t, `UPDATE doorstep.professionals SET on_duty = FALSE, on_duty_since = NULL WHERE on_duty`)
 	return dr
 }
@@ -844,13 +844,22 @@ func TestRealtimeTokenScope(t *testing.T) {
 func (dr *dsRig) completePro(t *testing.T, pro uuid.UUID) {
 	t.Helper()
 	dr.exec(t, `UPDATE doorstep.professionals SET photo_media_id = $2, agreement_version = '2026-10-04' WHERE id = $1`, pro, uuid.NewString())
+	dr.exec(t, `UPDATE doorstep.professionals SET pan_sealed='\x00',pan_last4='234F' WHERE id=$1`, pro)
 	// A passed selfie is an admin's decision (audited in its transaction).
 	adminTx(t, dr.p, func(exec func(string, ...any)) {
+		exec(`INSERT INTO doorstep.admin_audit_log(actor_user_id,permission,action,entity,entity_id) VALUES($1,'doorstep:pros.approve','professional.identity_review','professional',$2)`, itAdmin, pro.String())
+		exec(`INSERT INTO doorstep.pro_kyc_checks(pro_id,kind,status,verified_at) VALUES($1,'manual_identity','passed',NOW())`, pro)
 		exec(`INSERT INTO doorstep.pro_kyc_checks (pro_id, kind, status, verified_at) VALUES ($1, 'digilocker_aadhaar', 'passed', NOW()),
 			($1, 'selfie_face_match', 'passed', NOW())`, pro)
 	})
-	dr.exec(t, `INSERT INTO doorstep.pro_payout_accounts (pro_id, account_holder, account_number_sealed, account_last4, ifsc, key_version)
-		VALUES ($1, 'Asha Rao', '\x00', '1234', 'HDFC0001234', '1')`, pro)
+	docID := uuid.New()
+	dr.exec(t, `INSERT INTO doorstep.pro_documents(id,pro_id,kind,media_id,status) VALUES($1,$2,'bank_proof',$3,'pending')`, docID, pro, uuid.NewString())
+	adminTx(t, dr.p, func(exec func(string, ...any)) {
+		exec(`INSERT INTO doorstep.admin_audit_log(actor_user_id,permission,action,entity,entity_id) VALUES($1,'doorstep:documents.review','document.decide','document',$2)`, itAdmin, docID.String())
+		exec(`UPDATE doorstep.pro_documents SET status='approved',reviewed_by=$2,reviewed_at=NOW() WHERE id=$1`, docID, itAdmin)
+	})
+	dr.exec(t, `INSERT INTO doorstep.pro_payout_accounts (pro_id, account_holder, account_number_sealed, account_last4, ifsc, key_version,status,proof_document_id)
+		VALUES ($1, 'Asha Rao', '\x00', '1234', 'HDFC0001234', '1','verified',$2)`, pro, docID)
 }
 
 func TestDutyLocationAndStaleFix(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/store"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -138,8 +140,11 @@ type SubmitKYCDocumentRequest struct {
 
 // allowedDocumentTypes covers the rider_document_type enum values.
 var allowedDocumentTypes = map[string]bool{
+	"introduction_video":    true,
 	"aadhaar":               true,
 	"pan":                   true,
+	"passport":              true,
+	"voter_id":              true,
 	"driving_license":       true,
 	"profile_photo":         true,
 	"police_verification":   true,
@@ -164,6 +169,12 @@ func (s *Service) SubmitKYCDocument(ctx context.Context, userID, partnerID uuid.
 	if !allowedDocumentTypes[req.DocumentType] {
 		return nil, fmt.Errorf("invalid: document_type must be a known rider_document_type")
 	}
+	if req.DocumentType == "aadhaar" {
+		return nil, fmt.Errorf("invalid: Aadhaar uploads are not accepted; use a passport, voter ID, driving licence or PAN")
+	}
+	if (req.DocumentType == "passport" || req.DocumentType == "voter_id" || req.DocumentType == "pan" || req.DocumentType == DocDrivingLicence) && (req.MediaID == nil || *req.MediaID == uuid.Nil) {
+		return nil, fmt.Errorf("invalid: upload the identity document image and provide media_id")
+	}
 	if strings.TrimSpace(req.FileURL) == "" {
 		return nil, fmt.Errorf("invalid: file_url required")
 	}
@@ -171,6 +182,9 @@ func (s *Service) SubmitKYCDocument(ctx context.Context, userID, partnerID uuid.
 	// photo; without its media-service id there is nothing to compare.
 	if req.DocumentType == DocSelfie && (req.MediaID == nil || *req.MediaID == uuid.Nil) {
 		return nil, ErrSelfieMediaRequired
+	}
+	if req.DocumentType == "introduction_video" && (req.MediaID == nil || *req.MediaID == uuid.Nil) {
+		return nil, fmt.Errorf("invalid: upload your introduction video first")
 	}
 	p, err := s.store.GetPartner(ctx, partnerID)
 	if err != nil {
@@ -182,7 +196,33 @@ func (s *Service) SubmitKYCDocument(ctx context.Context, userID, partnerID uuid.
 	if p.UserID != userID {
 		return nil, fmt.Errorf("forbidden: partner does not belong to user")
 	}
+	if req.MediaID != nil {
+		if s.documentMedia == nil {
+			return nil, payErr(http.StatusServiceUnavailable, "DOCUMENT_STORAGE_UNAVAILABLE", "document storage is unavailable")
+		}
+		verify := s.documentMedia.VerifyOwnedImage
+		if req.DocumentType == "introduction_video" {
+			verify = func(ctx context.Context, owner, id uuid.UUID) error {
+				return ownedmedia.VerifyIntroduction(ctx, s.documentMedia, owner, id)
+			}
+		}
+		if err := verify(ctx, userID, *req.MediaID); err != nil {
+			if errors.Is(err, ownedmedia.ErrUnavailable) {
+				return nil, payErr(http.StatusServiceUnavailable, "DOCUMENT_STORAGE_UNAVAILABLE", "document storage is unavailable")
+			}
+			if req.DocumentType == "introduction_video" {
+				return nil, payErr(http.StatusUnprocessableEntity, "INTRODUCTION_INVALID", "upload your own processed video, up to 60 seconds and 64 MB, or remove it to continue")
+			}
+			return nil, payErr(http.StatusUnprocessableEntity, "DOCUMENT_IMAGE_INVALID", "upload your own processed document image; if it just uploaded, retry shortly")
+		}
+		req.FileURL = "media://" + req.MediaID.String()
+	}
 	docNumber := req.DocumentNumber
+	// Identity attachments need no additional number capture. Existing DL
+	// numbers remain handled by the established driver-document workflow.
+	if req.DocumentType == "passport" || req.DocumentType == "voter_id" || req.DocumentType == "pan" {
+		docNumber = nil
+	}
 	if req.DocumentType == "aadhaar" {
 		// DPDP: never persist a raw Aadhaar number. The DigiLocker flow is
 		// the canonical capture path; the document row only references the
@@ -211,7 +251,7 @@ func (s *Service) SubmitKYCDocument(ctx context.Context, userID, partnerID uuid.
 	// DigiLocker licence photo server-side.
 	defer s.evaluateApprovalQuietly(ctx, partnerID)
 	// Move partner from `draft` to `pending_verification` on first doc.
-	if p.Status == "draft" {
+	if p.Status == "draft" || (p.Status == "approved" && (req.DocumentType == DocDrivingLicence || req.DocumentType == DocSelfie)) {
 		if uerr := s.store.UpdatePartnerStatus(ctx, partnerID, "pending_verification"); uerr != nil {
 			return nil, fmt.Errorf("update partner status: %w", uerr)
 		}
@@ -224,6 +264,8 @@ func (s *Service) SubmitKYCDocument(ctx context.Context, userID, partnerID uuid.
 	}
 	return doc, nil
 }
+
+func (s *Service) WithDocumentMedia(v ownedmedia.Verifier) *Service { s.documentMedia = v; return s }
 
 // --- Aadhaar / DigiLocker -------------------------------------------------
 

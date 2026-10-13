@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -34,17 +36,35 @@ type TicketMessage struct {
 
 // RefundRequest mirrors food.refund_requests.
 type RefundRequest struct {
-	ID          uuid.UUID  `json:"id"`
-	TicketID    *uuid.UUID `json:"ticket_id,omitempty"`
-	OrderID     uuid.UUID  `json:"order_id"`
-	CustomerID  uuid.UUID  `json:"customer_id"`
-	Amount      float64    `json:"amount"`
-	Reason      *string    `json:"reason,omitempty"`
-	Status      string     `json:"status"`
-	DecidedBy   *uuid.UUID `json:"decided_by,omitempty"`
-	DecidedAt   *string    `json:"decided_at,omitempty"`
-	RefundTxnID *string    `json:"refund_txn_id,omitempty"`
-	CreatedAt   string     `json:"created_at"`
+	ID                uuid.UUID  `json:"id"`
+	TicketID          *uuid.UUID `json:"ticket_id,omitempty"`
+	OrderID           uuid.UUID  `json:"order_id"`
+	CustomerID        uuid.UUID  `json:"customer_id"`
+	Amount            float64    `json:"amount"`
+	Reason            *string    `json:"reason,omitempty"`
+	Status            string     `json:"status"`
+	DecidedBy         *uuid.UUID `json:"decided_by,omitempty"`
+	DecidedAt         *string    `json:"decided_at,omitempty"`
+	RefundTxnID       *string    `json:"refund_txn_id,omitempty"`
+	CreatedAt         string     `json:"created_at"`
+	ExecutionRefundID *uuid.UUID `json:"execution_refund_id,omitempty"`
+	ExecutionStatus   *string    `json:"execution_status,omitempty"`
+	ExecutionError    *string    `json:"execution_error,omitempty"`
+}
+
+var ErrInvalidRefundAmount = errors.New("refund amount must be whole paise and within the remaining refundable balance")
+var ErrSupportOrderForbidden = errors.New("order or ticket is not available to this account")
+var ErrRefundDecisionConflict = errors.New("refund request was already decided differently")
+
+func refundAmountMinor(amount float64) (int64, error) {
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount <= 0 || amount > 99999999.99 {
+		return 0, ErrInvalidRefundAmount
+	}
+	minor := int64(math.Round(amount * 100))
+	if minor <= 0 || math.Abs(amount*100-float64(minor)) > 0.000001 {
+		return 0, ErrInvalidRefundAmount
+	}
+	return minor, nil
 }
 
 // CreateTicket inserts a new support ticket.
@@ -57,6 +77,17 @@ type CreateTicketInput struct {
 }
 
 func (s *Store) CreateTicket(ctx context.Context, in CreateTicketInput) (*Ticket, error) {
+	if in.OrderID != nil {
+		var allowed bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM food.orders o
+			WHERE o.id=$1 AND (o.user_id=$2 OR EXISTS(SELECT 1 FROM food.restaurants r WHERE r.id=o.restaurant_id AND r.owner_user_id=$2)
+			OR EXISTS(SELECT 1 FROM food.delivery_assignments a JOIN food.delivery_partners p ON p.id=a.delivery_partner_id WHERE a.order_id=o.id AND p.user_id=$2)))`, *in.OrderID, in.CustomerID).Scan(&allowed); err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, ErrSupportOrderForbidden
+		}
+	}
 	var t Ticket
 	if err := s.db.QueryRow(ctx, `
 		INSERT INTO food.support_tickets (customer_id, order_id, category, subject, detail)
@@ -184,11 +215,12 @@ func (s *Store) ListRefundsForAdmin(ctx context.Context, status string, limit in
 		limit = 50
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, ticket_id, order_id, customer_id, amount::float8, reason,
-			status::text, decided_by, decided_at::text, refund_txn_id, created_at::text
-		FROM food.refund_requests
-		WHERE $1 = '' OR status::text = $1
-		ORDER BY created_at DESC
+		SELECT q.id, q.ticket_id, q.order_id, q.customer_id, q.amount::float8, q.reason,
+			q.status::text, q.decided_by, q.decided_at::text, q.refund_txn_id, q.created_at::text,
+			q.execution_refund_id, r.status, r.raw_response->>'last_submission_error'
+		FROM food.refund_requests q LEFT JOIN food.refunds r ON r.id=q.execution_refund_id
+		WHERE $1 = '' OR q.status::text = $1
+		ORDER BY q.created_at DESC
 		LIMIT $2
 	`, status, limit)
 	if err != nil {
@@ -199,7 +231,7 @@ func (s *Store) ListRefundsForAdmin(ctx context.Context, status string, limit in
 	for rows.Next() {
 		var r RefundRequest
 		if err := rows.Scan(&r.ID, &r.TicketID, &r.OrderID, &r.CustomerID, &r.Amount,
-			&r.Reason, &r.Status, &r.DecidedBy, &r.DecidedAt, &r.RefundTxnID, &r.CreatedAt); err != nil {
+			&r.Reason, &r.Status, &r.DecidedBy, &r.DecidedAt, &r.RefundTxnID, &r.CreatedAt, &r.ExecutionRefundID, &r.ExecutionStatus, &r.ExecutionError); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -245,8 +277,50 @@ func (s *Store) SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UUID
 // CreateRefundRequest inserts a customer-requested refund. The admin
 // later approves/rejects it via DecideRefund.
 func (s *Store) CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*RefundRequest, error) {
+	minor, err := refundAmountMinor(amount)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM food.orders WHERE id=$1 FOR UPDATE`, orderID); err != nil {
+		return nil, err
+	}
+	var owner uuid.UUID
+	var remaining int64
+	var paymentStatus string
+	if err := tx.QueryRow(ctx, `SELECT user_id, payment_status::text, COALESCE(final_amount_paise,ROUND(final_amount*100)::bigint)
+		- COALESCE((SELECT SUM(ROUND(amount*100)::bigint) FROM food.refunds WHERE order_id=o.id AND status IN ('PENDING','SUBMITTED','PROCESSED')),0)::bigint
+		- COALESCE((SELECT SUM(ROUND(amount*100)::bigint) FROM food.refund_requests WHERE order_id=o.id AND status='requested'),0)::bigint
+		FROM food.orders o WHERE id=$1 FOR UPDATE`, orderID).Scan(&owner, &paymentStatus, &remaining); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrSupportOrderForbidden
+		}
+		return nil, err
+	}
+	if owner != customerID {
+		return nil, ErrSupportOrderForbidden
+	}
+	if paymentStatus != "CAPTURED" && paymentStatus != "PARTIALLY_REFUNDED" {
+		return nil, ErrRefundNotEligible
+	}
+	if minor > remaining {
+		return nil, ErrInvalidRefundAmount
+	}
+	if ticketID != nil {
+		var allowed bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM food.support_tickets WHERE id=$1 AND customer_id=$2 AND order_id=$3)`, *ticketID, customerID, orderID).Scan(&allowed); err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, ErrSupportOrderForbidden
+		}
+	}
 	var r RefundRequest
-	if err := s.db.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.refund_requests (ticket_id, order_id, customer_id, amount, reason)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''))
 		RETURNING id, ticket_id, order_id, customer_id, amount::float8, reason, status::text,
@@ -257,13 +331,14 @@ func (s *Store) CreateRefundRequest(ctx context.Context, customerID, orderID uui
 	); err != nil {
 		return nil, err
 	}
-	return &r, nil
+	if err := enqueueSupportRefundDecisionTx(ctx, tx, r.ID, orderID, customerID, "requested"); err != nil {
+		return nil, err
+	}
+	return &r, tx.Commit(ctx)
 }
 
-// DecideRefund is the admin path: status must be 'approved' or
-// 'rejected'. Once approved, the payments-service async worker
-// processes the actual refund and sets status='processed' via
-// MarkRefundProcessed.
+// DecideRefund atomically records an executable refund for each approval.
+// Only an authoritative payment event sets a linked request to processed.
 func (s *Store) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error {
 	if status != "approved" && status != "rejected" {
 		return fmt.Errorf("invalid refund decision: %s", status)
@@ -273,14 +348,56 @@ func (s *Store) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, s
 		return err
 	}
 	defer tx.Rollback(ctx)
+	var orderID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT order_id FROM food.refund_requests WHERE id=$1`, refundID).Scan(&orderID); err != nil {
+		return err
+	}
+	// Consistent lock order with payment-event reconciliation and new requests.
+	if _, err := tx.Exec(ctx, `SELECT id FROM food.orders WHERE id=$1 FOR UPDATE`, orderID); err != nil {
+		return err
+	}
+	var current string
+	var amount float64
+	var customerID uuid.UUID
+	var executionID *uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT status::text,amount::float8,customer_id,execution_refund_id FROM food.refund_requests WHERE id=$1 FOR UPDATE`, refundID).Scan(&current, &amount, &customerID, &executionID); err != nil {
+		return err
+	}
+	if current != "requested" && !(current == "approved" && status == "approved" && executionID == nil) {
+		if current == status || (current == "processed" && status == "approved") {
+			return tx.Commit(ctx)
+		}
+		return ErrRefundDecisionConflict
+	}
+	if status == "approved" {
+		// Historical support requests must pass the same ownership and remaining
+		// balance checks; do not link another refund already in flight.
+		var valid bool
+		if err := tx.QueryRow(ctx, `SELECT o.user_id=$2 AND NOT EXISTS(SELECT 1 FROM food.refunds WHERE order_id=o.id AND status IN ('PENDING','SUBMITTED'))
+			AND (q.ticket_id IS NULL OR EXISTS(SELECT 1 FROM food.support_tickets t WHERE t.id=q.ticket_id AND t.customer_id=$2 AND t.order_id=o.id))
+			FROM food.orders o JOIN food.refund_requests q ON q.order_id=o.id WHERE o.id=$1 AND q.id=$3`, orderID, customerID, refundID).Scan(&valid); err != nil {
+			return err
+		}
+		if !valid {
+			return ErrRefundNotEligible
+		}
+		if _, err := refundAmountMinor(amount); err != nil {
+			return err
+		}
+		plan, err := s.adminRequestRefundTx(ctx, tx, adminID, orderID, reason, amount, "support-refund:"+refundID.String())
+		if err != nil {
+			return err
+		}
+		executionID = &plan.RefundID
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE food.refund_requests
 		SET status = $2::food.refund_status,
 			decided_by = $3,
 			decided_at = NOW(),
-			reason = COALESCE(NULLIF($4, ''), reason)
-		WHERE id = $1 AND status = 'requested'
-	`, refundID, status, adminID, reason)
+			reason = COALESCE(NULLIF($4, ''), reason), execution_refund_id=$5
+		WHERE id = $1 AND (status = 'requested' OR (status='approved' AND execution_refund_id IS NULL))
+	`, refundID, status, adminID, reason, executionID)
 	if err != nil {
 		return err
 	}
@@ -292,6 +409,9 @@ func (s *Store) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, s
 	}); err != nil {
 		return err
 	}
+	if err := enqueueSupportRefundDecisionTx(ctx, tx, refundID, orderID, customerID, status); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -299,9 +419,10 @@ func (s *Store) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, s
 // refund settles.
 func (s *Store) MarkRefundProcessed(ctx context.Context, refundID uuid.UUID, refundTxnID string) error {
 	tag, err := s.db.Exec(ctx, `
-		UPDATE food.refund_requests
+		UPDATE food.refund_requests q
 		SET status = 'processed', refund_txn_id = $2
-		WHERE id = $1 AND status = 'approved'
+		WHERE id = $1 AND status = 'approved' AND EXISTS(
+		 SELECT 1 FROM food.refunds r WHERE r.id=q.execution_refund_id AND r.status='PROCESSED')
 	`, refundID, refundTxnID)
 	if err != nil {
 		return err

@@ -6,9 +6,9 @@ import (
 )
 
 func complete() Facts {
-	return Facts{DisplayName: "Ravi", HasPhoto: true, AadhaarVerified: true, SelfieMatched: true, VerifiedSkills: 1,
+	return Facts{DisplayName: "Ravi", HasPhoto: true, IdentityReviewed: true, SelfieMatched: true, VerifiedSkills: 1,
 		HasServiceArea: true, HasWeeklyHours: true, HasPayoutAccount: true, BackgroundClear: true,
-		AgreementVersion: AgreementVersion}
+		AgreementVersion: AgreementVersion, HasPAN: true}
 }
 
 func TestMissingStepsOrderAndEmpty(t *testing.T) {
@@ -19,13 +19,7 @@ func TestMissingStepsOrderAndEmpty(t *testing.T) {
 	if !reflect.DeepEqual(got, RequiredSteps) {
 		t.Fatalf("empty facts: %v, want every required step in order %v", got, RequiredSteps)
 	}
-	// PAN is recommended, never required.
-	for _, s := range got {
-		if s == StepPAN {
-			t.Fatal("pan listed as required")
-		}
-	}
-	if r := RecommendedSteps(complete()); len(r) != 1 || r[0] != StepPAN {
+	if r := RecommendedSteps(complete()); len(r) != 0 {
 		t.Fatalf("recommended %v", r)
 	}
 	f := complete()
@@ -33,7 +27,7 @@ func TestMissingStepsOrderAndEmpty(t *testing.T) {
 	if r := RecommendedSteps(f); len(r) != 0 {
 		t.Fatalf("recommended with PAN %v", r)
 	}
-	if c := CompletedSteps(f); len(c) != len(RequiredSteps)+1 {
+	if c := CompletedSteps(f); len(c) != len(RequiredSteps) {
 		t.Fatalf("completed %v", c)
 	}
 }
@@ -41,15 +35,14 @@ func TestMissingStepsOrderAndEmpty(t *testing.T) {
 // Each fact gates exactly its step.
 func TestEachStepGate(t *testing.T) {
 	cases := map[Step]func(*Facts){
-		StepProfile:           func(f *Facts) { f.HasPhoto = false },
-		StepAadhaar:           func(f *Facts) { f.AadhaarVerified = false },
-		StepSelfie:            func(f *Facts) { f.SelfieMatched = false },
-		StepSkills:            func(f *Facts) { f.VerifiedSkills = 0; f.SkillsAwaitingReview = 3 },
-		StepServiceArea:       func(f *Facts) { f.HasServiceArea = false },
-		StepWeeklyHours:       func(f *Facts) { f.HasWeeklyHours = false },
-		StepBank:              func(f *Facts) { f.HasPayoutAccount = false },
-		StepPoliceCertificate: func(f *Facts) { f.BackgroundClear = false; f.PoliceCertificatePending = true },
-		StepAgreement:         func(f *Facts) { f.AgreementVersion = "2025-01-01" },
+		StepProfile:     func(f *Facts) { f.HasPhoto = false },
+		StepAadhaar:     func(f *Facts) { f.IdentityReviewed = false },
+		StepSelfie:      func(f *Facts) { f.SelfieMatched = false },
+		StepSkills:      func(f *Facts) { f.VerifiedSkills = 0; f.SkillsAwaitingReview = 3 },
+		StepServiceArea: func(f *Facts) { f.HasServiceArea = false },
+		StepWeeklyHours: func(f *Facts) { f.HasWeeklyHours = false },
+		StepBank:        func(f *Facts) { f.HasPayoutAccount = false },
+		StepPAN:         func(f *Facts) { f.HasPAN = false },
 	}
 	for step, mutate := range cases {
 		f := complete()
@@ -73,8 +66,8 @@ func TestAwaitingReviewOnly(t *testing.T) {
 		t.Fatal("only reviews left: want true")
 	}
 	f.PoliceCertificatePending = false
-	if AwaitingReviewOnly(f) {
-		t.Fatal("no police certificate uploaded: want false")
+	if !AwaitingReviewOnly(f) {
+		t.Fatal("police clearance must not block review")
 	}
 	f = complete()
 	f.SelfieMatched = false
@@ -112,7 +105,7 @@ func TestGenderAndSalonRules(t *testing.T) {
 	if b := ApprovalBlocks([]SkillCategory{men}, "female", true); len(b) != 1 || b[0].Reason != BlockGender {
 		t.Fatalf("woman with men's salon: %v", b)
 	}
-	if b := ApprovalBlocks([]SkillCategory{women}, "female", false); len(b) != 1 || b[0] != (Block{"salon_women", BlockBackgroundCheck}) {
+	if b := ApprovalBlocks([]SkillCategory{women}, "female", false); len(b) != 0 {
 		t.Fatalf("salon without background check: %v", b)
 	}
 	if b := ApprovalBlocks([]SkillCategory{clean}, "", false); len(b) != 0 {

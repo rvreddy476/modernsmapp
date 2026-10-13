@@ -58,6 +58,7 @@ func (h *Handler) WithStubSettlement(allow bool) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+    h.registerDeliveryRoutes(r)
 	h.RegisterOnboardingRoutes(r)
 	// The submit gate's reads: the seller's pre-submit checklist and
 	// "action needed" list, and the reviewer's submission history and the

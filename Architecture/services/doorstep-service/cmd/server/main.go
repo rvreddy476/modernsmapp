@@ -47,6 +47,8 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/ownedmedia"
+	"github.com/atpost/shared/partnerwork"
 	"github.com/atpost/shared/realtime"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/servicetoken"
@@ -130,6 +132,10 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("doorstep schema ready")
+	if err := partnerwork.Bootstrap(ctx, dbPool, partnerwork.HomeServices, os.Getenv); err != nil {
+		slog.Error("partner work coordination unavailable", "error", err)
+		os.Exit(1)
+	}
 
 	if cfg.DevSeed {
 		if err := devseed.Run(ctx, dbPool, os.Getenv); err != nil {
@@ -233,6 +239,7 @@ func main() {
 		bookingDeps.Cache = slotcache.New(rdb)
 	}
 	svc = svc.WithBookings(bookingDeps)
+	svc = svc.WithAutomaticAssignment(cfg.AutomaticAssignment)
 	svc = svc.WithVisit(pgStore)
 	svc = svc.WithAftercare(pgStore)
 	svc = svc.WithAdminAftercare(pgStore)
@@ -273,7 +280,7 @@ func main() {
 	go svc.RunWorkers(bgCtx, 30*time.Second)
 	// Dispatch: expired offers, T-2 h alerts, T-45 cancels, not-on-duty and
 	// no-show reassignment, rescues, retries, stale GPS.
-	go svc.RunDispatchWorkers(bgCtx, 15*time.Second)
+	go svc.RunDispatchWorkers(bgCtx, 5*time.Second)
 	if serviceVerifier == nil {
 		slog.Warn("doorstep-service: SERVICE_CALLERS not set — admin-service tokens are refused; /v1/doorstep/internal/admin answers 401")
 	} else {
@@ -283,6 +290,7 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.Use(partnerwork.RevisionMiddleware())
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
@@ -337,11 +345,15 @@ func professionalDeps(ctx context.Context, cfg config.Config, st *store.Store) (
 	if media == nil {
 		return service.ProDeps{}, fmt.Errorf("MEDIA_SERVICE_URL is required: uploads are verified with media-service")
 	}
-	// Document images for the admin console: doorstep's own Ed25519 identity
-	// (the payments token key) signs media-service's image-bytes token.
-	// Without a key (local stack) media-service accepts the internal key.
-	if cfg.ServiceTokenKey != "" {
-		signer, err := servicetoken.NewSignerFromBase64(config.ServiceTokenIssuer, cfg.ServiceTokenKID, cfg.ServiceTokenKey)
+	// Document reads use a media-only signing identity when configured; legacy
+	// deployments can keep their existing shared service identity. Configuring
+	// media access alone does not enable the payments client.
+	mediaKey, mediaKID := cfg.MediaTokenKey, cfg.MediaTokenKID
+	if mediaKey == "" {
+		mediaKey, mediaKID = cfg.ServiceTokenKey, cfg.ServiceTokenKID
+	}
+	if mediaKey != "" {
+		signer, err := servicetoken.NewSignerFromBase64(config.ServiceTokenIssuer, mediaKID, mediaKey)
 		if err != nil {
 			return service.ProDeps{}, err
 		}
@@ -353,7 +365,10 @@ func professionalDeps(ctx context.Context, cfg config.Config, st *store.Store) (
 		})
 	}
 	return service.ProDeps{
-		Store: st,
+		DevPhoneOTP:   !cfg.Production && os.Getenv("PARTNER_DEV_PHONE_OTP_ENABLED") == "true",
+		VerifiedPhone: service.VerifiedPhoneClient(cfg.IdentityAuthURL, cfg.InternalKey),
+		Documents:     ownedmedia.New(cfg.MediaServiceURL, cfg.InternalKey),
+		Store:         st,
 		DigiLocker: digilocker.Settings{Mode: cfg.DigiLockerMode, Client: dlClient, AuthorizeURL: cfg.DigiLockerAuthorizeURL,
 			ClientID: cfg.DigiLockerClientID, RedirectURI: redirect},
 		Faces:               faces,

@@ -209,7 +209,7 @@ func contractRouter(t *testing.T, st *contractStore, withPII bool) *gin.Engine {
 		svc.WithPII(contractCrypto(t))
 	}
 	router := gin.New()
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

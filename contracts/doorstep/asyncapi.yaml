@@ -56,6 +56,7 @@ channels:
           - $ref: '#/components/messages/ProApplied'
           - $ref: '#/components/messages/ProStatusChanged'
           - $ref: '#/components/messages/ProDocumentReviewed'
+          - $ref: '#/components/messages/ProChangeReviewed'
           - $ref: '#/components/messages/ProBackgroundCheckExpiring'
           - $ref: '#/components/messages/ProOfferCreated'
           - $ref: '#/components/messages/ProOfferClosed'
@@ -162,6 +163,7 @@ x-push-types:
     doorstep.pro.account.reinstated: {from_event: doorstep.pro.status_changed, data: [pro_id], deeplink: "doorstep-pro://home", when: "data.to_status == 'approved' && data.from_status == 'suspended'"}
     doorstep.pro.price.reviewed: {from_event: doorstep.pro.price_reviewed, data: [price_id, service_id, decision], deeplink: "doorstep-pro://prices", when: "B1: an admin approved or rejected a submitted price"}
     doorstep.pro.document.reviewed: {from_event: doorstep.pro.document_reviewed, data: [document_id, decision], deeplink: "doorstep-pro://onboarding"}
+    doorstep.pro.change.reviewed: {from_event: doorstep.pro.change_reviewed, data: [pro_id, decision], deeplink: "doorstep-pro://onboarding", when: "an admin approved or rejected changes to work settings"}
     doorstep.pro.background_check.expiring: {from_event: doorstep.pro.background_check_expiring, data: [valid_until], deeplink: "doorstep-pro://onboarding/police-certificate"}
     doorstep.pro.rating.received: {from_event: doorstep.booking.rated, data: [booking_id, stars], deeplink: "doorstep-pro://jobs/{booking_id}", when: "data.rater_kind == 'customer'"}
     doorstep.pro.settlement.computed: {from_event: doorstep.pro.settlement_computed, data: [settlement_id, net_paise], deeplink: "doorstep-pro://earnings"}
@@ -516,6 +518,17 @@ components:
           document_id: {type: string, format: uuid}
           kind: {type: string}
           decision: {type: string, enum: [approved, rejected]}
+    ProChangeReviewed:
+      name: doorstep.pro.change_reviewed
+      payload:
+        type: object
+        required: [pro_id, pro_user_id, change_id, kind, decision]
+        properties:
+          pro_id: {type: string, format: uuid}
+          pro_user_id: {type: string, format: uuid}
+          change_id: {type: string, format: uuid}
+          kind: {type: string, enum: [profile, skills, area, hours, pan]}
+          decision: {type: string, enum: [approved, rejected]}
     ProBackgroundCheckExpiring:
       name: doorstep.pro.background_check_expiring
       payload:
@@ -618,6 +631,7 @@ components:
           - type: object
             required: [previous_pro_user_id, cause, choice_deadline]
             properties:
+              assignment_mode: {type: string, enum: [automatic], description: "Automatic replacements return to matching at the same price; link to booking, not professional selection."}
               previous_pro_user_id: {type: string, format: uuid, nullable: true}
               cause: {type: string, enum: [declined, offer_expired, pro_cancel, not_on_duty, pro_no_show, ops_redispatch, no_professional]}
               choice_deadline: {type: string, format: date-time}

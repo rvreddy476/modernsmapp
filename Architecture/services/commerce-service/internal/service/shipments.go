@@ -176,6 +176,16 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 			out = append(out, existing)
 			continue
 		}
+		if s.localDeliveryEnabled && s.deliveryWork != nil && !isCOD {
+			local, localErr := s.store.PrepareLocalDelivery(ctx, orderID, sellerID)
+			if localErr != nil {
+				return out, localErr
+			}
+			if local != nil {
+				out = append(out, local)
+				continue
+			}
+		}
 
 		sellerItems := bySeller[sellerID]
 		seller, err := s.store.GetSellerByID(ctx, sellerID)
@@ -325,6 +335,15 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 	// packed -> shipped for a seller and, since migration 033, for the
 	// worker), and a refusal is an error the caller sees, because a
 	// shipment whose order does not say shipped is the defect this fixes.
+	allMoving := true
+	for _, shipment := range out {
+		if shipment.Courier == "cleestudio_local" && shipment.ShippedAt == nil {
+			allMoving = false
+		}
+	}
+	if !allMoving {
+		return out, nil
+	}
 	if _, err := s.store.MarkOrderShipped(ctx, orderID, booking.ActorID, booking.ActorType, "shipment booked"); err != nil {
 		return out, fmt.Errorf("mark order shipped: %w", err)
 	}
@@ -358,8 +377,9 @@ func (s *Service) GetShipmentForOrder(ctx context.Context, orderID uuid.UUID) (*
 // events. Used to render multi-seller fulfillment progress on the order
 // detail page.
 type ShipmentWithEvents struct {
-	Shipment *postgres.Shipment        `json:"shipment"`
-	Events   []*postgres.ShipmentEvent `json:"events"`
+	Shipment    *postgres.Shipment        `json:"shipment"`
+	Events      []*postgres.ShipmentEvent `json:"events"`
+	DeliveryJob *postgres.DeliveryJob     `json:"delivery_job,omitempty"`
 }
 
 func (s *Service) ListShipmentsForOrder(ctx context.Context, orderID uuid.UUID) ([]ShipmentWithEvents, error) {
@@ -370,7 +390,14 @@ func (s *Service) ListShipmentsForOrder(ctx context.Context, orderID uuid.UUID) 
 	out := make([]ShipmentWithEvents, 0, len(shipments))
 	for _, sh := range shipments {
 		evts, _ := s.store.ListShipmentEvents(ctx, sh.ID)
-		out = append(out, ShipmentWithEvents{Shipment: sh, Events: evts})
+		var local *postgres.DeliveryJob
+		if sh.Courier == "cleestudio_local" {
+			local, err = s.store.ShipmentDeliveryJob(ctx, sh.ID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, ShipmentWithEvents{Shipment: sh, Events: evts, DeliveryJob: local})
 	}
 	return out, nil
 }

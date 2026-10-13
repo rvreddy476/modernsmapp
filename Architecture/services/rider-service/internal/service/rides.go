@@ -230,6 +230,7 @@ func (s *Service) GetActiveRideForCustomer(ctx context.Context, customerID uuid.
 		return nil, err
 	}
 	s.revealOTPForCustomer(ctx, r)
+	s.attachCustomerLocation(ctx, r)
 	return r, nil
 }
 
@@ -270,7 +271,35 @@ func (s *Service) GetRide(ctx context.Context, customerID, rideID uuid.UUID) (*s
 		return nil, fmt.Errorf("forbidden: ride does not belong to user")
 	}
 	s.revealOTPForCustomer(ctx, r)
+	s.attachCustomerLocation(ctx, r)
 	return r, nil
+}
+
+// Only customer-owned active rides may expose a recent assigned partner fix.
+// No straight-line/default ETA is substituted for a routing estimate.
+func (s *Service) attachCustomerLocation(ctx context.Context, r *store.Ride) {
+	r.CustomerLocation = nil
+	if r.PartnerID == nil {
+		return
+	}
+	switch r.Status {
+	case "partner_assigned", "partner_arriving", "arrived", "otp_verified", "in_progress":
+	default:
+		return
+	}
+	loc, err := s.store.GetPartnerLocation(ctx, *r.PartnerID)
+	if err != nil || !customerLocationFresh(loc, time.Now()) {
+		return
+	}
+	r.CustomerLocation = &store.CustomerRideLocation{Lat: loc.LastLat, Lng: loc.LastLng, RecordedAt: loc.UpdatedAt}
+}
+
+func customerLocationFresh(loc *store.PartnerLocation, now time.Time) bool {
+	if loc == nil || loc.LastGeohash == "" {
+		return false
+	}
+	age := now.Sub(loc.UpdatedAt)
+	return age >= 0 && age <= 2*time.Minute && loc.LastLat >= -90 && loc.LastLat <= 90 && loc.LastLng >= -180 && loc.LastLng <= 180
 }
 
 // ListMyRides returns recent rides for the customer.

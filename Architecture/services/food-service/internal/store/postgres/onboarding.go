@@ -29,6 +29,17 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+func requireApprovedPartnerSelfie(ctx context.Context, q rowQuerier, restaurantID uuid.UUID) error {
+	var ok bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM food.restaurant_documents WHERE restaurant_id=$1 AND document_type='SELFIE' AND media_id IS NOT NULL AND status='APPROVED')`, restaurantID).Scan(&ok); err != nil {
+		return err
+	}
+	if !ok {
+		return &onboarding.NotReadyError{Missing: []string{onboarding.StepSelfie}}
+	}
+	return nil
+}
+
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func optionalRFC3339(t *time.Time) *string {
@@ -369,10 +380,11 @@ func readinessFacts(ctx context.Context, q rowQuerier, restaurantID uuid.UUID) (
 				  AND d.status IN ('PENDING', 'APPROVED') AND d.expires_at > NOW()),
 			EXISTS (SELECT 1 FROM food.payout_accounts p WHERE p.owner_type = 'RESTAURANT' AND p.owner_id = r.id),
 			EXISTS (SELECT 1 FROM food.menu_items i WHERE i.restaurant_id = r.id AND i.is_available AND i.is_active),
-			COALESCE(r.state, '')
+			COALESCE(r.state, ''),
+			EXISTS (SELECT 1 FROM food.restaurant_documents d WHERE d.restaurant_id=r.id AND d.document_type='SELFIE' AND d.media_id IS NOT NULL AND d.status IN ('PENDING','APPROVED'))
 		FROM food.restaurants r
 		WHERE r.id = $1
-	`, restaurantID).Scan(&f.HasLocation, &f.HasOperatingHours, &f.HasCompliance, &f.HasFSSAIDocument, &f.HasPayoutAccount, &f.HasAvailableMenuItem, &state)
+	`, restaurantID).Scan(&f.HasLocation, &f.HasOperatingHours, &f.HasCompliance, &f.HasFSSAIDocument, &f.HasPayoutAccount, &f.HasAvailableMenuItem, &state, &f.HasSelfie)
 	// B4 follow-up: the same resolution the location route applies, so a
 	// restaurant approved here can always be priced at checkout.
 	_, f.HasState = onboarding.ResolveStateName(state)
@@ -477,6 +489,9 @@ func (s *Store) AdminDecideRestaurantDocument(ctx context.Context, adminID, rest
 	if err != nil {
 		return nil, err
 	}
+	if err := enqueueRestaurantReviewTx(ctx, tx, restaurantID, documentID, string(d)); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -493,7 +508,12 @@ func (s *Store) PauseRestaurantsWithExpiredFSSAI(ctx context.Context, limit int)
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
 		WITH due AS (
 			SELECT r.id
 			FROM food.restaurants r
@@ -528,5 +548,17 @@ func (s *Store) PauseRestaurantsWithExpiredFSSAI(ctx context.Context, limit int)
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, id := range ids {
+		if err := enqueueRestaurantReviewTx(ctx, tx, id, uuid.Nil, "FSSAI_EXPIRED"); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

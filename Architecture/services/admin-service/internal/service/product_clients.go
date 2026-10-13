@@ -2,6 +2,14 @@ package service
 
 import "github.com/atpost/shared/servicetoken"
 
+func NewNotificationOpsClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, "/v1/notifications/internal/admin", "notifications", signer)
+}
+
+func NewEvidenceClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, "/v1/media/admin/evidence", "media", signer)
+}
+
 // Product admin families reached with admin-service tokens. Each product
 // verifies audience, issuer admin-service, the one scope, and act.
 const (

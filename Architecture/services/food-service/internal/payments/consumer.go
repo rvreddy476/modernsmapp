@@ -12,8 +12,8 @@ package payments
 //   - RetryForever: a captured payment must not be parked in the DLQ because
 //     PostgreSQL blinked. Only genuinely unprocessable input is Permanent.
 //
-// Decoding and type dispatch are shared/paymentevents. payment.refund_failed
-// is not consumed here: food learns a refund failed from its own refund row.
+// Decoding and type dispatch are shared/paymentevents. Refund failures are
+// retained for finance review; they never masquerade as completed refunds.
 
 import (
 	"context"
@@ -71,9 +71,8 @@ func NewConsumer(store Applier, brokers []string, m *metrics.KafkaConsumerMetric
 func (c *Consumer) Start(ctx context.Context) { c.consumer.Start(ctx) }
 func (c *Consumer) Close() error              { return c.consumer.Close() }
 
-// consumedTypes: every other type on the shared topic, payment.refund_failed
-// included, is ignored without being decoded.
-var consumedTypes = paymentevents.Only(events.EventPaymentSucceeded, events.EventPaymentFailed, events.EventPaymentRefunded)
+// All remaining event types on the shared topic are ignored without decoding.
+var consumedTypes = paymentevents.Only(events.EventPaymentSucceeded, events.EventPaymentFailed, events.EventPaymentRefunded, events.EventPaymentRefundFailed)
 
 var errNoEventID = errors.New("payment event has no event_id")
 
@@ -90,13 +89,15 @@ func (c *Consumer) Handle(ctx context.Context, env *events.EventEnvelope) error 
 
 // fields is the part of a payment payload a food decision reads.
 type fields struct {
-	intentID      string
-	payerID       string
-	referenceType string
-	referenceID   string
-	amountMinor   int64
-	currency      string
-	status        string
+	intentID         string
+	payerID          string
+	referenceType    string
+	referenceID      string
+	amountMinor      int64
+	currency         string
+	status           string
+	commandID        string
+	providerRefundID string
 }
 
 func paymentFields(p paymentevents.Payment) fields {
@@ -118,7 +119,15 @@ func (c *Consumer) OnFailed(ctx context.Context, env *events.EventEnvelope, ev p
 // is absent, and amount_minor is the refund's.
 func (c *Consumer) OnRefunded(ctx context.Context, env *events.EventEnvelope, ev paymentevents.Refunded) error {
 	return c.apply(ctx, env, fields{intentID: ev.Intent(), referenceType: ev.ReferenceType,
-		referenceID: ev.ReferenceID, amountMinor: ev.AmountMinor, status: ev.Status})
+		referenceID: ev.ReferenceID, amountMinor: ev.AmountMinor, status: ev.Status, commandID: ev.CommandID, providerRefundID: ev.ProviderRefundID})
+}
+
+func (c *Consumer) OnRefundFailed(ctx context.Context, env *events.EventEnvelope, ev paymentevents.RefundFailed) error {
+	intent := ev.IntentID
+	if intent == "" {
+		intent = ev.ID
+	}
+	return c.apply(ctx, env, fields{intentID: intent, referenceType: ev.ReferenceType, referenceID: ev.ReferenceID, amountMinor: ev.AmountMinor, status: ev.Status, commandID: ev.CommandID})
 }
 
 func (c *Consumer) apply(ctx context.Context, env *events.EventEnvelope, p fields) error {
@@ -144,14 +153,16 @@ func (c *Consumer) apply(ctx context.Context, env *events.EventEnvelope, p field
 	payer, _ := uuid.Parse(p.payerID) // uuid.Nil when absent; Decide refuses a nil payer on capture
 
 	ev := Event{
-		EventID:     env.EventID,
-		EventType:   env.EventType,
-		IntentID:    p.intentID,
-		OrderID:     orderID,
-		PayerID:     payer,
-		AmountMinor: p.amountMinor,
-		Currency:    p.currency,
-		Status:      p.status,
+		EventID:          env.EventID,
+		EventType:        env.EventType,
+		IntentID:         p.intentID,
+		OrderID:          orderID,
+		PayerID:          payer,
+		AmountMinor:      p.amountMinor,
+		Currency:         p.currency,
+		Status:           p.status,
+		CommandID:        p.commandID,
+		ProviderRefundID: p.providerRefundID,
 	}
 	applied, err := c.store.ApplyPaymentEvent(ctx, ev)
 	if err != nil {

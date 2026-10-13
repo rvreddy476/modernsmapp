@@ -61,11 +61,18 @@ const (
 
 	CaptainTypeOffer           = "captain.offer"
 	CaptainTypePaymentReceived = "captain.payment.received"
+	CaptainTypeRideAssigned    = "captain.ride.assigned"
+	CaptainTypeRideCancelled   = "captain.ride.cancelled"
+	CaptainTypeRideCompleted   = "captain.ride.completed"
 
 	// Captain account pushes (2026-09-19): the partner's approval and plan
 	// state. These carry no ride: entity_id is the partner or subscription.
 	CaptainTypeApproved                  = "captain.approved"
 	CaptainTypeUnderReview               = "captain.under_review"
+	CaptainTypeReviewUpdated             = "captain.review.updated"
+	CaptainTypeRestricted                = "captain.restricted"
+	CaptainTypeDocumentExpiring          = "captain.document.expiring"
+	CaptainTypePaymentReviewRejected     = "captain.subscription.review_rejected"
 	CaptainTypeSubscriptionExpiring      = "captain.subscription.expiring"
 	CaptainTypeSubscriptionExpired       = "captain.subscription.expired"
 	CaptainTypeSubscriptionRenewed       = "captain.subscription.renewed"
@@ -95,6 +102,10 @@ const (
 // type. A captain type absent here (offer, payment notice) writes no inbox
 // row and is bound to a ride.
 var captainAccountInbox = map[string]string{
+	CaptainTypePaymentReviewRejected:     CaptainPartnerInboxEntityType,
+	CaptainTypeReviewUpdated:             CaptainPartnerInboxEntityType,
+	CaptainTypeRestricted:                CaptainPartnerInboxEntityType,
+	CaptainTypeDocumentExpiring:          CaptainPartnerInboxEntityType,
 	CaptainTypeApproved:                  CaptainPartnerInboxEntityType,
 	CaptainTypeUnderReview:               CaptainPartnerInboxEntityType,
 	CaptainTypeSubscriptionExpiring:      CaptainSubscriptionInboxEntityType,
@@ -106,6 +117,13 @@ var captainAccountInbox = map[string]string{
 // ridePushApps is the routing table: which installed app each type reaches.
 // A type absent here is not a Mopedu push.
 var ridePushApps = map[string]string{
+	CaptainTypeRideAssigned:              AppMopeduCaptain,
+	CaptainTypeRideCancelled:             AppMopeduCaptain,
+	CaptainTypeRideCompleted:             AppMopeduCaptain,
+	CaptainTypePaymentReviewRejected:     AppMopeduCaptain,
+	CaptainTypeReviewUpdated:             AppMopeduCaptain,
+	CaptainTypeRestricted:                AppMopeduCaptain,
+	CaptainTypeDocumentExpiring:          AppMopeduCaptain,
 	RideTypeAssigned:                     AppMomentum,
 	RideTypeArriving:                     AppMomentum,
 	RideTypeArrived:                      AppMomentum,
@@ -140,6 +158,7 @@ func RidePushAppFor(pushType string) (string, bool) {
 var RidePushDataKeys = map[string]bool{
 	"type":                     true,
 	"entity_id":                true, // ride id; the offer id for captain.offer
+	"expires_at":               true, // absolute offer deadline; never renewed by retry
 	"deep_link":                true,
 	"title":                    true,
 	"body":                     true,
@@ -174,6 +193,8 @@ type RidePush struct {
 	// TTL, when set, is how long FCM may hold the push before dropping it
 	// (offers: until the offer expires). Zero means the provider default.
 	TTL time.Duration
+	// Absolute domain deadline, persisted unchanged through queue retries.
+	OfferExpiresAt time.Time
 
 	CreatedAt time.Time
 }
@@ -210,6 +231,9 @@ func (p RidePush) captainAccount() bool {
 // push, the partner or subscription for a captain account push. ok=false for
 // the captain's ride pushes (offer, payment notice), which keep no row.
 func (p RidePush) inboxEntity() (entityType string, entityID uuid.UUID, ok bool) {
+	if p.captainWork() {
+		return RideInboxEntityType, p.RideID, true
+	}
 	if p.customerFacing() {
 		return RideInboxEntityType, p.RideID, true
 	}
@@ -217,6 +241,10 @@ func (p RidePush) inboxEntity() (entityType string, entityID uuid.UUID, ok bool)
 		return entity, p.EntityID, true
 	}
 	return "", uuid.Nil, false
+}
+
+func (p RidePush) captainWork() bool {
+	return p.Type == CaptainTypeRideAssigned || p.Type == CaptainTypeRideCancelled || p.Type == CaptainTypeRideCompleted
 }
 
 // collapseKey is the device-side replace key: one notification per ride for
@@ -278,6 +306,9 @@ func RidePushData(p RidePush) map[string]string {
 	// replaces "assigned". Each offer stands alone. One per partner or
 	// subscription for the account pushes.
 	data["collapse_key"] = p.collapseKey()
+	if p.Type == CaptainTypeOffer && !p.OfferExpiresAt.IsZero() {
+		data["expires_at"] = p.OfferExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
 	if p.AndroidChannel != "" {
 		data[push.AndroidChannelDataKey] = p.AndroidChannel
 	}
@@ -302,6 +333,35 @@ type ridePushTransports interface {
 
 // DeliverRidePush delivers one Mopedu push. See the notes at the top of file.
 func (s *Service) DeliverRidePush(ctx context.Context, p RidePush) (RidePushOutcome, error) {
+	if s.pgStore != nil && p.App == postgres.AppMomentum {
+		if err := p.validate(); err != nil {
+			return "", err
+		}
+		entityType, entity, inbox := p.inboxEntity()
+		err := s.queueCustomerNotice(ctx, PartnerNotice{ID: rideDedupID(p), UserID: p.RecipientID, App: p.App, Type: p.Type, EntityID: entity, EntityType: entityType, Title: p.Title, Body: p.Body, DeepLink: p.DeepLink, Data: RidePushData(p), CreatedAt: p.CreatedAt, Inbox: inbox})
+		return RidePushOutcome("queued"), err
+	}
+	if s.pgStore != nil && p.App == postgres.AppMopeduCaptain {
+		if err := p.validate(); err != nil {
+			return "", err
+		}
+		entityType, entity, inbox := p.inboxEntity()
+		if entity == uuid.Nil {
+			entity = p.EntityID
+		}
+		if p.Type == CaptainTypeOffer && p.TTL <= 0 {
+			return RidePushOutcome("expired"), nil
+		}
+		expiry := expiryAfter(p.TTL)
+		if p.Type == CaptainTypeOffer {
+			if p.OfferExpiresAt.IsZero() {
+				return RidePushOutcome("expired"), nil
+			}
+			expiry = &p.OfferExpiresAt
+		}
+		err := s.queuePartnerNotice(ctx, PartnerNotice{ID: rideDedupID(p), UserID: p.RecipientID, App: p.App, Type: p.Type, EntityID: entity, EntityType: entityType, Title: p.Title, Body: p.Body, DeepLink: p.DeepLink, Data: RidePushData(p), CreatedAt: p.CreatedAt, ExpiresAt: expiry, Inbox: inbox})
+		return RidePushOutcome("queued"), err
+	}
 	return runRidePush(ctx, s, p)
 }
 
@@ -327,7 +387,7 @@ func runRidePush(ctx context.Context, t ridePushTransports, p RidePush) (RidePus
 	// captain's ride pushes keep no row.
 	wantInbox := false
 	if _, _, hasInbox := p.inboxEntity(); hasInbox {
-		wantInbox = p.captainAccount() || t.rideInboxWanted(ctx, p.RecipientID, p.Type)
+		wantInbox = p.captainAccount() || p.captainWork() || t.rideInboxWanted(ctx, p.RecipientID, p.Type)
 	}
 	if wantInbox {
 		if err := t.writeRideInbox(ctx, p); err != nil {
@@ -344,7 +404,7 @@ func runRidePush(ctx context.Context, t ridePushTransports, p RidePush) (RidePus
 	for _, d := range devices {
 		// THE app guard: a token registered for another app never receives
 		// this push, whatever the device lookup returned.
-		if d.App != p.App {
+		if !postgres.DeviceAppReceives(d.App, p.App) {
 			continue
 		}
 		err := t.sendAppPush(ctx, d, p.Title, p.Body, data)

@@ -184,6 +184,10 @@ func assertFixture(t *testing.T, name string, w *httptest.ResponseRecorder, want
 	}
 	path := filepath.Join("testdata", "contracts", name)
 	if os.Getenv("UPDATE_CONTRACT_FIXTURES") == "1" {
+		// Avoid rewriting identical fixtures held open by a parallel client reader on Windows.
+		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, got) {
+			return
+		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}

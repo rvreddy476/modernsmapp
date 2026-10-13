@@ -125,16 +125,16 @@ func TestFreeAtHoursBackgroundAndCap(t *testing.T) {
 
 	p = pro()
 	p.BackgroundClear = []DateRange{{From: ist(2026, 1, 1, 0, 0), Until: ist(2026, 10, 6, 0, 0)}}
-	if r, ok := FreeAt(p, start, req); ok || r != ReasonBackground {
-		t.Fatal("a check expiring on the slot date was accepted (valid_until is exclusive)")
+	if _, ok := FreeAt(p, start, req); !ok {
+		t.Fatal("expired historical police clearance must not block work")
 	}
 	p.BackgroundClear = []DateRange{{From: ist(2026, 10, 7, 0, 0), Until: ist(2027, 10, 7, 0, 0)}}
-	if _, ok := FreeAt(p, start, req); ok {
-		t.Fatal("a check valid only from tomorrow was accepted")
+	if _, ok := FreeAt(p, start, req); !ok {
+		t.Fatal("historical police clearance must not block work")
 	}
 	p.BackgroundClear = nil
-	if _, ok := FreeAt(p, start, req); ok {
-		t.Fatal("no background check accepted")
+	if _, ok := FreeAt(p, start, req); !ok {
+		t.Fatal("police clearance is not a work requirement")
 	}
 
 	p = pro()

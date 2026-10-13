@@ -1,6 +1,6 @@
 package service
 
-// Fare windows (peak / night multipliers) admin CRUD and the live demand
+// Fare-window (peak / night multipliers) admin CRUD and the live demand
 // state per vehicle type. The pricing lane seeded the rows
 // (rider_fare_windows, migration 003); these are the console's routes over
 // them. Validation mirrors the table CHECKs.

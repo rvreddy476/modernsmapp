@@ -22,7 +22,6 @@ import (
 
 	"github.com/atpost/rider-service/internal/events"
 	"github.com/atpost/rider-service/internal/store"
-	sharedevents "github.com/atpost/shared/events"
 	"github.com/google/uuid"
 )
 
@@ -56,7 +55,18 @@ func (s *Service) GetPartnerForAdmin(ctx context.Context, partnerID uuid.UUID) (
 // ApprovePartner moves the partner to status=approved + kyc_status=verified.
 // Emits EventRiderPartnerApproved + EventRiderAdminAction.
 func (s *Service) ApprovePartner(ctx context.Context, partnerID, adminID uuid.UUID) (*store.Partner, error) {
-	if err := s.store.SetPartnerApprovedAt(ctx, partnerID); err != nil {
+	partner, err := s.store.GetPartner(ctx, partnerID)
+	if err != nil {
+		return nil, err
+	}
+	_, verdict, err := s.onboardingVerdict(ctx, partner)
+	if err != nil {
+		return nil, err
+	}
+	if !verdict.Approve {
+		return nil, fmt.Errorf("invalid: driving licence, selfie and vehicle documents must be reviewed before approval")
+	}
+	if err := s.store.SetPartnerApprovedBy(ctx, partnerID, store.PartnerReview{ActorID: adminID}); err != nil {
 		if errors.Is(err, store.ErrPartnerNotFound) {
 			return nil, fmt.Errorf("not_found: partner")
 		}
@@ -65,9 +75,6 @@ func (s *Service) ApprovePartner(ctx context.Context, partnerID, adminID uuid.UU
 	p, err := s.store.GetPartner(ctx, partnerID)
 	if err != nil {
 		return nil, err
-	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerApproved, partnerID, p.UserID, "approved", "", adminID); perr != nil {
-		slog.Warn("rider: publish partner.approved failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.approve", "partner", partnerID, "")
 	return p, nil
@@ -89,14 +96,11 @@ func (s *Service) RejectPartner(ctx context.Context, partnerID, adminID uuid.UUI
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("invalid: reason required")
 	}
-	if err := s.store.UpdatePartnerStatus(ctx, partnerID, "rejected"); err != nil {
+	if err := s.store.UpdatePartnerStatusBy(ctx, partnerID, "rejected", store.PartnerReview{ActorID: adminID, Reason: reason}); err != nil {
 		if errors.Is(err, store.ErrPartnerNotFound) {
 			return fmt.Errorf("not_found: partner")
 		}
 		return err
-	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerKYCRejected, partnerID, s.partnerUserIDOf(ctx, partnerID), "rejected", reason, adminID); perr != nil {
-		slog.Warn("rider: publish partner.rejected failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.reject", "partner", partnerID, reason)
 	return nil
@@ -107,14 +111,11 @@ func (s *Service) SuspendPartner(ctx context.Context, partnerID, adminID uuid.UU
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("invalid: reason required")
 	}
-	if err := s.store.UpdatePartnerStatus(ctx, partnerID, "suspended"); err != nil {
+	if err := s.store.UpdatePartnerStatusBy(ctx, partnerID, "suspended", store.PartnerReview{ActorID: adminID, Reason: reason}); err != nil {
 		if errors.Is(err, store.ErrPartnerNotFound) {
 			return fmt.Errorf("not_found: partner")
 		}
 		return err
-	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerSuspended, partnerID, s.partnerUserIDOf(ctx, partnerID), "suspended", reason, adminID); perr != nil {
-		slog.Warn("rider: publish partner.suspended failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.suspend", "partner", partnerID, reason)
 	return nil
@@ -125,14 +126,11 @@ func (s *Service) BlockPartner(ctx context.Context, partnerID, adminID uuid.UUID
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("invalid: reason required")
 	}
-	if err := s.store.UpdatePartnerStatus(ctx, partnerID, "blocked"); err != nil {
+	if err := s.store.UpdatePartnerStatusBy(ctx, partnerID, "blocked", store.PartnerReview{ActorID: adminID, Reason: reason}); err != nil {
 		if errors.Is(err, store.ErrPartnerNotFound) {
 			return fmt.Errorf("not_found: partner")
 		}
 		return err
-	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerBlocked, partnerID, s.partnerUserIDOf(ctx, partnerID), "blocked", reason, adminID); perr != nil {
-		slog.Warn("rider: publish partner.blocked failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.block", "partner", partnerID, reason)
 	return nil
@@ -276,15 +274,8 @@ func (s *Service) RejectSubscriptionPayment(ctx context.Context, paymentID, admi
 	if err := s.refuseCheckoutSubscription(ctx, paymentID); err != nil {
 		return err
 	}
-	pay, err := s.store.GetSubscriptionPayment(ctx, paymentID)
-	if err != nil {
-		return fmt.Errorf("not_found: payment")
-	}
-	if err := s.store.MarkPaymentFailed(ctx, paymentID, r); err != nil {
+	if err := s.store.RejectSubscriptionPaymentBy(ctx, paymentID, store.PartnerReview{ActorID: adminID, Reason: r}); err != nil {
 		return err
-	}
-	if perr := s.producer.PublishSubscriptionPaymentSubmitted(ctx, paymentID, pay.PartnerID, pay.PlanID, pay.Amount, pay.CurrencyCode, pay.PaymentMethod); perr != nil {
-		slog.Warn("rider: publish payment rejection failed", "payment_id", paymentID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "payment.reject", "payment", paymentID, r)
 	return nil

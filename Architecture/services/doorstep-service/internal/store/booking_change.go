@@ -42,6 +42,7 @@ type LockedBooking struct {
 	ChoiceDeadline     *time.Time
 	ExcludedProIDs     []uuid.UUID
 	PendingChangeUntil *time.Time
+	MatchingDeadline   *time.Time
 }
 
 func lockBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, customer *uuid.UUID) (*LockedBooking, error) {
@@ -53,12 +54,12 @@ func lockBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, customer *uuid.
 		       b.total_paise, b.choice_deadline, b.excluded_pro_ids,
 		       (SELECT pc.hold_expires_at FROM doorstep.booking_pro_changes pc WHERE pc.booking_id = b.id AND pc.status = 'pending_payment'),
 		       (SELECT p.id FROM doorstep.payments p WHERE p.booking_id = b.id AND p.reference_type = 'doorstep_booking'),
-		       (SELECT p.status FROM doorstep.payments p WHERE p.booking_id = b.id AND p.reference_type = 'doorstep_booking')
+		       (SELECT p.status FROM doorstep.payments p WHERE p.booking_id = b.id AND p.reference_type = 'doorstep_booking'),b.matching_deadline
 		FROM doorstep.bookings b
 		WHERE b.id = $1 AND ($2::uuid IS NULL OR b.customer_user_id = $2)
 		FOR UPDATE OF b`, id, customer).Scan(&b.ID, &b.Customer, &b.CategoryID, &b.CityCode, &b.Status, &b.SlotStart, &b.SlotEnd,
 		&b.Duration, &b.PaidPaise, &b.RefundedPaise, &b.RescheduleCount, &b.ReservedProID, &b.ProLateAt,
-		&b.TotalPaise, &b.ChoiceDeadline, &b.ExcludedProIDs, &b.PendingChangeUntil, &b.PaymentID, &payStatus)
+		&b.TotalPaise, &b.ChoiceDeadline, &b.ExcludedProIDs, &b.PendingChangeUntil, &b.PaymentID, &payStatus, &b.MatchingDeadline)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -113,7 +114,7 @@ func (s *Store) CancelBooking(ctx context.Context, id uuid.UUID, customer *uuid.
 	reason := d.Reason
 	if _, err := tx.Exec(ctx, `
 		UPDATE doorstep.bookings SET status = 'cancelled', cancelled_at = $2, cancelled_by_kind = $3, cancel_reason = $4,
-		       cancellation_fee_paise = $5, hold_expires_at = NULL, version = version + 1, updated_at = $2
+	       cancellation_fee_paise = $5, hold_expires_at = NULL, matching_deadline = NULL, version = version + 1, updated_at = $2
 		 WHERE id = $1`, id, at, d.ActorKind, reason, d.FeePaise); err != nil {
 		return nil, mapErr(err)
 	}
@@ -311,6 +312,10 @@ func (s *Store) ExpireHolds(ctx context.Context, limit int) (int, error) {
 			return 0, err
 		}
 		if err := releaseBlocksTx(ctx, tx, id, at, "hold_expired"); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE doorstep.booking_assignments SET status='cancelled',release_cause='hold_expired',updated_at=$2
+   WHERE booking_id=$1 AND status IN ('offered','accepted')`, id, at); err != nil {
 			return 0, err
 		}
 		from, reason := "pending_payment", "the hold lapsed before payment"

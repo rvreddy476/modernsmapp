@@ -283,7 +283,7 @@ type RegisterDeviceRequest struct {
 	// app (migration 009); the Mopedu customer flow registers as momentum.
 	// doorstep_pro is the Doorstep professional app (migration 013); the
 	// Doorstep customer flow registers as momentum.
-	App string `json:"app" binding:"omitempty,oneof=momentum feast_kitchen feast_rider mopedu_captain doorstep_pro"`
+	App string `json:"app" binding:"omitempty,oneof=momentum feast_kitchen feast_rider mopedu_captain doorstep_pro partner"`
 }
 
 func (h *Handler) RegisterDevice(c *gin.Context) {

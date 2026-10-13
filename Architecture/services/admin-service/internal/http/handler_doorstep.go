@@ -127,8 +127,12 @@ var DoorstepRoutes = []productRoute{
 	// reinstate / block another. The detail carries the document media ids
 	// (Aadhaar, police certificate) and the payout account: a reveal.
 	{method: http.MethodGet, path: "/professionals", operation: "doorstep.professionals.list", permission: permDoorstepProsRead},
+	{method: http.MethodGet, path: "/partner-changes", operation: "doorstep.partner_changes.list", permission: permDoorstepProsRead, stepUp: true},
+	{method: http.MethodGet, path: "/partner-changes/:id/photo", operation: "doorstep.partner_change.photo", permission: permDoorstepProsRead, stepUp: true, targetType: "doorstep_partner_change"},
+	{method: http.MethodPost, path: "/partner-changes/:id/decide", operation: "doorstep.partner_change.decide", permission: permDoorstepProsApprove, targetType: "doorstep_partner_change"},
 	{method: http.MethodGet, path: "/professionals/:id", operation: "doorstep.professional.read", permission: permDoorstepProsRead, stepUp: true, targetType: "doorstep_professional"},
 	{method: http.MethodPost, path: "/professionals/:id/approve", operation: "doorstep.professional.approve", permission: permDoorstepProsApprove, targetType: "doorstep_professional"},
+	{method: http.MethodPost, path: "/professionals/:id/identity-review", operation: "doorstep.professional.identity_review", permission: permDoorstepProsApprove, stepUp: true, targetType: "doorstep_professional"},
 	{method: http.MethodPost, path: "/professionals/:id/reject", operation: "doorstep.professional.reject", permission: permDoorstepProsApprove, targetType: "doorstep_professional"},
 	{method: http.MethodPost, path: "/professionals/:id/suspend", operation: "doorstep.professional.suspend", permission: permDoorstepProsSuspend, stepUp: true, targetType: "doorstep_professional"},
 	{method: http.MethodPost, path: "/professionals/:id/reinstate", operation: "doorstep.professional.reinstate", permission: permDoorstepProsSuspend, stepUp: true, targetType: "doorstep_professional"},
@@ -137,6 +141,7 @@ var DoorstepRoutes = []productRoute{
 	// Documents: the queue and each decision open the document itself.
 	{method: http.MethodGet, path: "/documents", operation: "doorstep.documents.list", permission: permDoorstepDocumentsReview, stepUp: true},
 	{method: http.MethodGet, path: "/documents/:id/view", operation: opDoorstepDocumentView, permission: permDoorstepDocumentsReview, stepUp: true, targetType: "doorstep_document"},
+	{method: http.MethodGet, path: "/documents/:id/evidence/view", operation: "doorstep.evidence.view", permission: permDoorstepDocumentsReview, stepUp: true, targetType: "doorstep_document"},
 	{method: http.MethodPost, path: "/documents/:id/decide", operation: "doorstep.document.decide", permission: permDoorstepDocumentsReview, stepUp: true, targetType: "doorstep_document"},
 
 	// Bookings and money (lane A6). Cancel refunds the customer (in full
@@ -180,12 +185,16 @@ func (h *Handler) RegisterDoorstepRoutes(r *gin.Engine) {
 	special := map[string]gin.HandlerFunc{}
 	for i := range routes {
 		switch routes[i].operation {
+		case "doorstep.partner_change.photo":
+			special[routes[i].operation] = h.viewDoorstepChangePhoto(p)
 		case opDoorstepRefundIssue:
 			routes[i].decide = doorstepRefundDecision
 		case opDoorstepIncidentResolve:
 			routes[i].decide = doorstepIncidentResolveDecision
 		case opDoorstepDocumentView:
 			special[opDoorstepDocumentView] = h.viewDoorstepDocument(p)
+		case "doorstep.evidence.view":
+			special["doorstep.evidence.view"] = h.viewPartnerEvidence(p, "", "", "id")
 		case opDoorstepSkillVerify:
 			special[opDoorstepSkillVerify] = doorstepSkillVerify(h.forwardProduct(p, routes[i]))
 		}
@@ -391,5 +400,20 @@ func (h *Handler) viewDoorstepDocument(p product) gin.HandlerFunc {
 			Method: http.MethodGet, Path: "/documents/" + document + "/view",
 			Permission: perm, Actor: actorFrom(c),
 		}, doorstepDocumentImageTypes, notFound, "doorstep document stream ended early", "document_id", document)
+	}
+}
+
+func (h *Handler) viewDoorstepChangePhoto(p product) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := uuid.Parse(c.Param("id"))
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, 400, CodeInvalidPathParam, "Invalid change request", nil)
+			return
+		}
+		info := auditFrom(c)
+		info.targetType, info.targetID = "doorstep_partner_change", id.String()
+		h.relayDocumentImage(c, p, info, service.ProductRequest{Method: http.MethodGet, Path: "/partner-changes/" + id.String() + "/photo", Permission: permDoorstepProsRead, Actor: actorFrom(c)}, doorstepDocumentImageTypes, func() {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, 404, CodeDocumentNotFound, "Photo not found", nil)
+		}, "photo stream ended early", "change_id", id.String())
 	}
 }

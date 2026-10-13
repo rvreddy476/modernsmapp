@@ -73,7 +73,25 @@ const (
 // catalogue authoring routes are in CatalogueRoutes). The console paths are
 // the ones apps/admin already calls.
 var CommerceRoutes = []productRoute{
+	{method: http.MethodGet, path: "/delivery/profiles/:profileId/documents/:documentId/evidence", operation: "delivery.evidence.view", permission: permKYCVerify, stepUp: true, targetType: "commerce_delivery_partner"},
+	{method: http.MethodGet, path: "/delivery/jobs", operation: "delivery.jobs", permission: permCatalogueEdit},
+	{method: http.MethodGet, path: "/delivery/jobs/:jobId", operation: "delivery.job", permission: permCatalogueEdit},
+	{method: http.MethodPost, path: "/delivery/jobs/:jobId/cancel", operation: "delivery.job.cancel", permission: permCatalogueEdit, stepUp: true},
+	{method: http.MethodPost, path: "/delivery/jobs/:jobId/retry", operation: "delivery.job.retry", permission: permCatalogueEdit, stepUp: true},
+	{method: http.MethodGet, path: "/delivery/support", operation: "delivery.support", permission: permCatalogueEdit},
+	{method: http.MethodPost, path: "/delivery/support/:ticketId/resolve", operation: "delivery.support.resolve", permission: permCatalogueEdit, stepUp: true},
+	{method: http.MethodGet, path: "/delivery/areas", operation: "delivery.areas", permission: permCatalogueEdit},
+	{method: http.MethodPost, path: "/delivery/areas", operation: "delivery.area.create", permission: permCatalogueEdit, stepUp: true},
+	{method: http.MethodPut, path: "/delivery/areas/:areaId", operation: "delivery.area.update", permission: permCatalogueEdit, stepUp: true, targetType: "commerce_delivery_area"},
+	{method: http.MethodGet, path: "/delivery/areas/:areaId/sellers", operation: "delivery.area.sellers", permission: permCatalogueEdit},
+	{method: http.MethodPut, path: "/delivery/areas/:areaId/sellers/:sellerId", operation: "delivery.area.seller.update", permission: permCatalogueEdit, stepUp: true, targetType: "seller"},
 	{method: http.MethodGet, path: "/stats", operation: "stats", permission: permCommerceStatsRead},
+	// Delivery workers are separate from merchant approvals. The owning
+	// service enforces revision and document checks for every review.
+	{method: http.MethodGet, path: "/delivery/profiles", operation: "delivery.profiles", permission: permKYCVerify},
+	{method: http.MethodGet, path: "/delivery/profiles/:profileId", operation: "delivery.profile", permission: permKYCVerify, targetType: "commerce_delivery_partner"},
+	{method: http.MethodPost, path: "/delivery/profiles/:profileId/review", operation: "delivery.review", permission: permKYCVerify, stepUp: true, targetType: "commerce_delivery_partner"},
+	{method: http.MethodGet, path: "/delivery/profiles/:profileId/documents/:documentId/view", operation: "delivery.document_view", permission: permKYCVerify, stepUp: true, targetType: "commerce_delivery_partner"},
 
 	{method: http.MethodGet, path: "/sellers/queue", operation: opSellersQueue, permission: permSellersRead},
 	{method: http.MethodGet, path: "/sellers/:sellerId", operation: opSellerRead, permission: permSellersRead, targetType: "seller"},
@@ -182,19 +200,21 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine) {
 	changesNotes := func(r adminCommerceActionReq) any { return adminActionPayload{Changes: r.Changes, Notes: r.Notes} }
 
 	special := map[string]gin.HandlerFunc{
-		opSellersQueue:          queue("/sellers/queue"),
-		opProductsQueue:         queue("/products/queue"),
-		opSellerApprove:         action("sellerId", "/sellers/", "/approve", true, notes),
-		opSellerReject:          action("sellerId", "/sellers/", "/reject", true, reasonNotes),
-		opSellerRequestChanges:  action("sellerId", "/sellers/", "/request-changes", true, changesNotes),
-		opSellerSuspend:         action("sellerId", "/sellers/", "/suspend", true, reasonNotes),
-		opSellerUnsuspend:       action("sellerId", "/sellers/", "/unsuspend", false, reasonNotes),
-		opSellerKYCVerify:       action("sellerId", "/sellers/", "/kyc/verify", false, func(adminCommerceActionReq) any { return struct{}{} }),
-		opProductApprove:        action("productId", "/products/", "/approve", true, notes),
-		opProductReject:         action("productId", "/products/", "/reject", true, func(r adminCommerceActionReq) any { return adminActionPayload{Reason: r.Reason} }),
-		opProductRequestChanges: action("productId", "/products/", "/request-changes", false, changesNotes),
-		opSellerKYCDocuments:    h.listSellerKYCDocuments(p),
-		opSellerKYCDocumentView: h.viewSellerKYCDocument(p),
+		"delivery.evidence.view": h.viewPartnerEvidence(p, "delivery/profiles", "profileId", "documentId"),
+		"delivery.document_view": h.viewCommerceDeliveryDocument(p),
+		opSellersQueue:           queue("/sellers/queue"),
+		opProductsQueue:          queue("/products/queue"),
+		opSellerApprove:          action("sellerId", "/sellers/", "/approve", true, notes),
+		opSellerReject:           action("sellerId", "/sellers/", "/reject", true, reasonNotes),
+		opSellerRequestChanges:   action("sellerId", "/sellers/", "/request-changes", true, changesNotes),
+		opSellerSuspend:          action("sellerId", "/sellers/", "/suspend", true, reasonNotes),
+		opSellerUnsuspend:        action("sellerId", "/sellers/", "/unsuspend", false, reasonNotes),
+		opSellerKYCVerify:        action("sellerId", "/sellers/", "/kyc/verify", false, func(adminCommerceActionReq) any { return struct{}{} }),
+		opProductApprove:         action("productId", "/products/", "/approve", true, notes),
+		opProductReject:          action("productId", "/products/", "/reject", true, func(r adminCommerceActionReq) any { return adminActionPayload{Reason: r.Reason} }),
+		opProductRequestChanges:  action("productId", "/products/", "/request-changes", false, changesNotes),
+		opSellerKYCDocuments:     h.listSellerKYCDocuments(p),
+		opSellerKYCDocumentView:  h.viewSellerKYCDocument(p),
 		opPayoutsPending: func(c *gin.Context) {
 			q := url.Values{"limit": {strconv.Itoa(queryInt(c, "limit", 100))}}
 			h.productCall(c, p, service.ProductRequest{Method: http.MethodGet, Path: "/payouts/pending", Query: q}, false)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"strconv"
 	"time"
 
 	"github.com/atpost/doorstep-service/internal/events"
@@ -44,7 +43,7 @@ type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-const proCols = `id, user_id, status, display_name, city_code, gender, photo_media_id, rating_sum, rating_count,
+const proCols = `id, user_id, status, display_name, COALESCE(city_code,''), gender, photo_media_id, rating_sum, rating_count,
 	jobs_completed, max_jobs_per_day, created_at, updated_at`
 
 func scanPro(r pgx.Row) (model.Professional, error) {
@@ -144,7 +143,8 @@ func (s *Store) ProfessionalByUser(ctx context.Context, userID uuid.UUID) (*mode
 	if err != nil {
 		return nil, err
 	}
-	return &p, nil
+	p.Application, err = s.PartnerApplication(ctx, p.ID)
+	return &p, err
 }
 
 // ProfessionalByID is one professional, or ErrNotFound.
@@ -153,19 +153,16 @@ func (s *Store) ProfessionalByID(ctx context.Context, id uuid.UUID) (*model.Prof
 	if err != nil {
 		return nil, err
 	}
-	return &p, nil
+	p.Application, err = s.PartnerApplication(ctx, p.ID)
+	return &p, err
 }
 
 // UpdateProfile patches the display name and photo.
 func (s *Store) UpdateProfile(ctx context.Context, proID uuid.UUID, name, photo *string) (*model.Professional, error) {
-	p, err := scanPro(s.db.QueryRow(ctx, `
-		UPDATE doorstep.professionals SET display_name = COALESCE($2::text, display_name),
-		    photo_media_id = COALESCE($3::text, photo_media_id), updated_at = NOW()
-		WHERE id = $1 RETURNING `+proCols, proID, name, photo))
-	if err != nil {
+	if err := s.submitPartnerChange(ctx, proID, "profile", ChangePayload{Profile: &model.ProPatchInput{DisplayName: name, PhotoMediaID: photo}}); err != nil {
 		return nil, err
 	}
-	return &p, nil
+	return s.ProfessionalByID(ctx, proID)
 }
 
 // ProState is a professional's status and onboarding facts.
@@ -192,31 +189,43 @@ func proFacts(ctx context.Context, q querier, proID uuid.UUID, today time.Time, 
 	var verified, awaiting int64
 	err := q.QueryRow(ctx, `
 		SELECT p.id, p.user_id, p.status, COALESCE(p.gender, ''), p.incident_suspended, p.display_name, p.photo_media_id IS NOT NULL,
-		    (p.gender IS NOT NULL AND p.gender_source = 'digilocker' AND EXISTS (
-		        SELECT 1 FROM doorstep.pro_kyc_checks k WHERE k.pro_id = p.id AND k.kind = 'digilocker_aadhaar'
+		    (p.pan_sealed IS NOT NULL AND EXISTS (
+		        SELECT 1 FROM doorstep.pro_kyc_checks k WHERE k.pro_id = p.id AND k.kind = 'manual_identity'
 		           AND k.status = 'passed' AND (k.expires_at IS NULL OR k.expires_at > NOW()))),
 		    EXISTS (SELECT 1 FROM doorstep.pro_kyc_checks k WHERE k.pro_id = p.id AND k.kind = 'selfie_face_match' AND k.status = 'passed'),
 		    (SELECT count(*) FROM doorstep.pro_skills ps WHERE ps.pro_id = p.id AND ps.status = 'verified'),
-		    (SELECT count(*) FROM doorstep.pro_skills ps JOIN doorstep.skills k ON k.code = ps.skill_code
-		      WHERE ps.pro_id = p.id AND ps.status = 'pending' AND (NOT k.requires_certificate OR EXISTS (
-		        SELECT 1 FROM doorstep.pro_documents d WHERE d.pro_id = p.id AND d.kind = 'trade_certificate'
-		           AND d.skill_code = ps.skill_code AND d.status IN ('pending', 'approved')))),
+		    (SELECT count(*) FROM doorstep.pro_skills ps
+		      WHERE ps.pro_id = p.id AND ps.status = 'pending'),
 		    EXISTS (SELECT 1 FROM doorstep.pro_documents d WHERE d.pro_id = p.id AND d.kind = 'selfie' AND d.status = 'pending'),
-		    (p.home_point IS NOT NULL AND EXISTS (SELECT 1 FROM doorstep.pro_zones z WHERE z.pro_id = p.id)),
+		    (p.home_point IS NOT NULL AND EXISTS (SELECT 1 FROM doorstep.effective_pro_zones pz WHERE pz.pro_id=p.id)),
 		    EXISTS (SELECT 1 FROM doorstep.pro_weekly_hours h WHERE h.pro_id = p.id),
-		    EXISTS (SELECT 1 FROM doorstep.pro_payout_accounts a WHERE a.pro_id = p.id AND a.active AND a.status <> 'failed'),
+		    EXISTS (SELECT 1 FROM doorstep.pro_payout_accounts a JOIN doorstep.pro_documents d ON d.id=a.proof_document_id
+		      WHERE a.pro_id=p.id AND a.active AND a.status='verified' AND d.status='approved' AND d.reviewed_by IS NOT NULL),
 		    EXISTS (SELECT 1 FROM doorstep.background_checks b WHERE b.pro_id = p.id AND b.status = 'clear'
 		               AND b.valid_from <= $2::date AND b.valid_until > $2::date),
 		    EXISTS (SELECT 1 FROM doorstep.pro_documents d WHERE d.pro_id = p.id AND d.kind = 'police_certificate' AND d.status = 'pending'),
-		    COALESCE(p.agreement_version, ''), p.pan_sealed IS NOT NULL
+		    COALESCE(p.agreement_version, ''), p.pan_sealed IS NOT NULL,
+		    EXISTS (SELECT 1 FROM doorstep.pro_payout_accounts a JOIN doorstep.pro_documents d ON d.id=a.proof_document_id
+		      WHERE a.pro_id=p.id AND NOT a.superseded AND a.status='pending' AND d.status='pending')
 		FROM doorstep.professionals p WHERE p.id = $1`+forUpdate, proID, today.Format("2006-01-02")).Scan(
 		&st.ProID, &st.UserID, &st.Status, &st.Gender, &st.IncidentSuspended, &st.DisplayName, &st.HasPhoto,
-		&st.AadhaarVerified, &st.SelfieMatched, &verified, &awaiting, &st.SelfieAwaitingReview, &st.HasServiceArea, &st.HasWeeklyHours,
-		&st.HasPayoutAccount, &st.BackgroundClear, &st.PoliceCertificatePending, &st.AgreementVersion, &st.HasPAN)
+		&st.IdentityReviewed, &st.SelfieMatched, &verified, &awaiting, &st.SelfieAwaitingReview, &st.HasServiceArea, &st.HasWeeklyHours,
+		&st.HasPayoutAccount, &st.BackgroundClear, &st.PoliceCertificatePending, &st.AgreementVersion, &st.HasPAN, &st.BankAwaitingReview)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	st.VerifiedSkills, st.SkillsAwaitingReview = int(verified), int(awaiting)
+	var applicationIdentity bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM doorstep.pro_applications WHERE pro_id=$1),
+	 EXISTS(SELECT 1 FROM doorstep.pro_applications a JOIN doorstep.pro_documents d ON d.id=a.identity_document_id
+	 WHERE a.pro_id=$1 AND d.status='approved'),
+	 EXISTS(SELECT 1 FROM doorstep.pro_kyc_checks WHERE pro_id=$1 AND kind='manual_identity' AND status='passed'
+	 AND (expires_at IS NULL OR expires_at>NOW()))`, proID).Scan(&st.SimpleApplication, &st.IdentityDocumentApproved, &applicationIdentity); err != nil {
+		return nil, err
+	}
+	if st.SimpleApplication {
+		st.IdentityReviewed = st.IdentityDocumentApproved && applicationIdentity
+	}
 	return &st, nil
 }
 
@@ -391,7 +400,13 @@ func (s *Store) RecordSelfie(ctx context.Context, proID, mediaID uuid.UUID, stat
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `UPDATE doorstep.pro_documents SET status = 'rejected', reason = 'superseded by a newer selfie', reviewed_at = NOW()
-		WHERE pro_id = $1 AND kind = 'selfie' AND status = 'pending'`, proID); err != nil {
+		WHERE pro_id = $1 AND kind = 'selfie' AND status IN ('pending','approved')`, proID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE doorstep.pro_kyc_checks SET status='expired' WHERE pro_id=$1 AND kind IN ('selfie_face_match','manual_identity') AND status='passed'`, proID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE doorstep.professionals SET gender=NULL,gender_source=NULL WHERE id=$1 AND gender_source='admin_review'`, proID); err != nil {
 		return nil, err
 	}
 	var reason *string
@@ -502,26 +517,10 @@ func verifiedSkillCategories(ctx context.Context, q querier, proID uuid.UUID) ([
 // ReplaceSkills sets the declared skills: codes not listed are removed,
 // listed ones are declared (insertSkills), existing rows keep their status.
 func (s *Store) ReplaceSkills(ctx context.Context, proID uuid.UUID, decls []SkillDecl) ([]model.ProSkill, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
+	if err := s.submitPartnerChange(ctx, proID, "skills", ChangePayload{Skills: decls}); err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	codes := make([]string, 0, len(decls))
-	for _, d := range decls {
-		codes = append(codes, d.Code)
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM doorstep.pro_skills WHERE pro_id = $1 AND NOT (skill_code = ANY($2))`, proID, codes); err != nil {
-		return nil, err
-	}
-	if err := insertSkills(ctx, tx, proID, decls); err != nil {
-		return nil, mapErr(err)
-	}
-	out, err := proSkills(ctx, tx, proID)
-	if err != nil {
-		return nil, err
-	}
-	return out, mapErr(tx.Commit(ctx))
+	return s.ProSkills(ctx, proID)
 }
 
 // ProSkills lists the professional's skills.
@@ -626,45 +625,22 @@ func datePtr(t *time.Time) *string {
 
 // SetArea replaces the service area. Every zone must be an active zone of
 // the professional's city (else ErrBadReference).
-func (s *Store) SetArea(ctx context.Context, proID uuid.UUID, zoneIDs []uuid.UUID, lat, lng float64, radiusM int) (*model.ProArea, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
+func (s *Store) SetArea(ctx context.Context, proID uuid.UUID, zoneIDs []uuid.UUID, lat, lng float64, radiusM int, labels ...string) (*model.ProArea, error) {
+	label := ""
+	if len(labels) > 0 {
+		label = labels[0]
+	}
+	a := &model.ProArea{ZoneIDs: zoneIDs, HomeLat: &lat, HomeLng: &lng, RadiusM: radiusM, AreaLabel: label}
+	if err := s.submitPartnerChange(ctx, proID, "area", ChangePayload{Area: a}); err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var n int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM doorstep.zones z JOIN doorstep.professionals p ON p.city_code = z.city_code
-		WHERE p.id = $1 AND z.id = ANY($2::uuid[]) AND z.active`, proID, uuidStrings(zoneIDs)).Scan(&n); err != nil {
-		return nil, err
-	}
-	if n != len(zoneIDs) {
-		return nil, ErrBadReference
-	}
-	tag, err := tx.Exec(ctx, `UPDATE doorstep.professionals SET home_point = ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
-		service_radius_m = $4, updated_at = NOW() WHERE id = $1`, proID, lng, lat, radiusM)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, ErrNotFound
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM doorstep.pro_zones WHERE pro_id = $1`, proID); err != nil {
-		return nil, err
-	}
-	for _, z := range zoneIDs {
-		if _, err := tx.Exec(ctx, `INSERT INTO doorstep.pro_zones (pro_id, zone_id) VALUES ($1, $2)`, proID, z); err != nil {
-			return nil, mapErr(err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, mapErr(err)
-	}
-	return &model.ProArea{ZoneIDs: zoneIDs, HomeLat: &lat, HomeLng: &lng, RadiusM: radiusM}, nil
+	return s.ProArea(ctx, proID)
 }
 
-// ProZoneIDs lists the professional's zones.
+// ProZoneIDs lists enabled selected zones, or radius-matched zones when the
+// professional has no explicit selections. This never changes saved settings.
 func (s *Store) ProZoneIDs(ctx context.Context, proID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.db.Query(ctx, `SELECT zone_id FROM doorstep.pro_zones WHERE pro_id = $1 ORDER BY zone_id`, proID)
+	rows, err := s.db.Query(ctx, `SELECT zone_id FROM doorstep.effective_pro_zones WHERE pro_id = $1 ORDER BY zone_id`, proID)
 	if err != nil {
 		return nil, err
 	}
@@ -676,21 +652,7 @@ func (s *Store) ProZoneIDs(ctx context.Context, proID uuid.UUID) ([]uuid.UUID, e
 
 // ReplaceHours replaces the weekly hours (validated by prokyc).
 func (s *Store) ReplaceHours(ctx context.Context, proID uuid.UUID, ws []prokyc.Window) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `DELETE FROM doorstep.pro_weekly_hours WHERE pro_id = $1`, proID); err != nil {
-		return err
-	}
-	for _, w := range ws {
-		if _, err := tx.Exec(ctx, `INSERT INTO doorstep.pro_weekly_hours (pro_id, weekday, start_time, end_time)
-			VALUES ($1, $2, $3::time, $4::time)`, proID, w.Weekday, w.Start, w.End); err != nil {
-			return mapErr(err)
-		}
-	}
-	return mapErr(tx.Commit(ctx))
+	return s.submitPartnerChange(ctx, proID, "hours", ChangePayload{Hours: ws})
 }
 
 // Hours lists the weekly hours by weekday and start.
@@ -768,35 +730,19 @@ func (s *Store) DeleteDayOff(ctx context.Context, proID uuid.UUID, day string) e
 
 // ---------------------------------------------------------------- bank, PAN, agreement
 
-// SetPayoutAccount replaces the active payout account. Only the sealed
-// number and its last four digits are stored.
-func (s *Store) SetPayoutAccount(ctx context.Context, proID uuid.UUID, holder string, sealed []byte, keyVersion uint32, last4, ifsc string) (*model.PayoutAccount, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `UPDATE doorstep.pro_payout_accounts SET active = FALSE WHERE pro_id = $1 AND active`, proID); err != nil {
-		return nil, err
-	}
-	var out model.PayoutAccount
-	if err := tx.QueryRow(ctx, `INSERT INTO doorstep.pro_payout_accounts (pro_id, account_holder, account_number_sealed, account_last4, ifsc, key_version)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING account_holder, account_last4, ifsc, status`,
-		proID, holder, sealed, last4, ifsc, "v"+strconv.FormatUint(uint64(keyVersion), 10)).
-		Scan(&out.AccountHolder, &out.AccountLast4, &out.IFSC, &out.Status); err != nil {
-		return nil, mapErr(err)
-	}
-	return &out, mapErr(tx.Commit(ctx))
-}
-
 // PayoutAccount is the masked active account, or nil.
 func (s *Store) PayoutAccount(ctx context.Context, proID uuid.UUID) (*model.PayoutAccount, error) {
 	var out model.PayoutAccount
-	err := s.db.QueryRow(ctx, `SELECT account_holder, account_last4, ifsc, status FROM doorstep.pro_payout_accounts
-		WHERE pro_id = $1 AND active`, proID).Scan(&out.AccountHolder, &out.AccountLast4, &out.IFSC, &out.Status)
+	err := s.db.QueryRow(ctx, `SELECT a.account_holder,a.account_last4,a.ifsc,a.status,a.bank_name,a.branch_name,a.proof_kind,a.proof_document_id,d.reason
+	 FROM doorstep.pro_payout_accounts a LEFT JOIN doorstep.pro_documents d ON d.id=a.proof_document_id
+	 WHERE a.pro_id=$1 AND a.active`, proID).Scan(&out.AccountHolder, &out.AccountLast4, &out.IFSC, &out.Status, &out.BankName, &out.BranchName, &out.ProofKind, &out.ProofDocumentID, &out.Reason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	out.History, err = s.payoutAccountHistory(ctx, proID)
 	if err != nil {
 		return nil, err
 	}
@@ -805,8 +751,7 @@ func (s *Store) PayoutAccount(ctx context.Context, proID uuid.UUID) (*model.Payo
 
 // SetPAN stores the sealed PAN and its last four characters.
 func (s *Store) SetPAN(ctx context.Context, proID uuid.UUID, sealed []byte, last4 string) error {
-	_, err := s.db.Exec(ctx, `UPDATE doorstep.professionals SET pan_sealed = $2, pan_last4 = $3, updated_at = NOW() WHERE id = $1`, proID, sealed, last4)
-	return mapErr(err)
+	return s.submitPartnerChange(ctx, proID, "pan", ChangePayload{PANSealed: sealed, PANLast4: last4})
 }
 
 // AcceptAgreement records the accepted version and time.

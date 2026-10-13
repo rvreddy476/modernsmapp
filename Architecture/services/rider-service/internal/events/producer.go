@@ -627,13 +627,14 @@ func (p *Producer) PublishSubscriptionRenewalFailed(ctx context.Context, payload
 
 // DocumentExpiringPayload mirrors EventRiderDocumentExpiring.
 type DocumentExpiringPayload struct {
-	PartnerID    string    `json:"partner_id"`
-	DocumentID   string    `json:"document_id"`
-	DocumentKind string    `json:"document_kind"`
-	OwnerKind    string    `json:"owner_kind"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Bucket       string    `json:"bucket"`
-	OccurredAt   time.Time `json:"occurred_at"`
+	PartnerID     string    `json:"partner_id"`
+	PartnerUserID string    `json:"partner_user_id"`
+	DocumentID    string    `json:"document_id"`
+	DocumentKind  string    `json:"document_kind"`
+	OwnerKind     string    `json:"owner_kind"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	Bucket        string    `json:"bucket"`
+	OccurredAt    time.Time `json:"occurred_at"`
 }
 
 func (p *Producer) PublishDocumentExpiring(ctx context.Context, payload DocumentExpiringPayload) error {
@@ -643,11 +644,11 @@ func (p *Producer) PublishDocumentExpiring(ctx context.Context, payload Document
 
 // PartnerFraudFlaggedPayload mirrors EventRiderPartnerFraudFlagged.
 type PartnerFraudFlaggedPayload struct {
-	PartnerID    string    `json:"partner_id"`
-	FraudScore   float64   `json:"fraud_score"`
-	AutoSuspend  bool      `json:"auto_suspend"`
-	Reasons      []string  `json:"reasons,omitempty"`
-	OccurredAt   time.Time `json:"occurred_at"`
+	PartnerID   string    `json:"partner_id"`
+	FraudScore  float64   `json:"fraud_score"`
+	AutoSuspend bool      `json:"auto_suspend"`
+	Reasons     []string  `json:"reasons,omitempty"`
+	OccurredAt  time.Time `json:"occurred_at"`
 }
 
 func (p *Producer) PublishPartnerFraudFlagged(ctx context.Context, payload PartnerFraudFlaggedPayload) error {
@@ -657,15 +658,15 @@ func (p *Producer) PublishPartnerFraudFlagged(ctx context.Context, payload Partn
 
 // DailyRevenueReportPayload mirrors EventRiderDailyRevenueReport.
 type DailyRevenueReportPayload struct {
-	Date                       string    `json:"date"`
-	SubscriptionsCount         int       `json:"subscriptions_count"`
-	SubscriptionsRevenuePaise  int64     `json:"subscriptions_revenue_paise"`
-	RidesCount                 int       `json:"rides_count"`
-	RidesCompleted             int       `json:"rides_completed"`
-	RidesCancelled             int       `json:"rides_cancelled"`
-	FareTotalPaise             int64     `json:"fare_total_paise"`
-	CancellationFeesPaise      int64     `json:"cancellation_fees_paise"`
-	OccurredAt                 time.Time `json:"occurred_at"`
+	Date                      string    `json:"date"`
+	SubscriptionsCount        int       `json:"subscriptions_count"`
+	SubscriptionsRevenuePaise int64     `json:"subscriptions_revenue_paise"`
+	RidesCount                int       `json:"rides_count"`
+	RidesCompleted            int       `json:"rides_completed"`
+	RidesCancelled            int       `json:"rides_cancelled"`
+	FareTotalPaise            int64     `json:"fare_total_paise"`
+	CancellationFeesPaise     int64     `json:"cancellation_fees_paise"`
+	OccurredAt                time.Time `json:"occurred_at"`
 }
 
 func (p *Producer) PublishDailyRevenueReport(ctx context.Context, payload DailyRevenueReportPayload) error {
@@ -674,12 +675,12 @@ func (p *Producer) PublishDailyRevenueReport(ctx context.Context, payload DailyR
 
 // AdminQueueSummaryPayload mirrors EventRiderAdminQueueSummary.
 type AdminQueueSummaryPayload struct {
-	PendingKYCCount         int       `json:"pending_kyc_count"`
-	PendingVehicleCount     int       `json:"pending_vehicle_count"`
-	PendingPaymentCount     int       `json:"pending_payment_count"`
-	OpenComplaintsCount     int       `json:"open_complaints_count"`
-	OpenSafetyIncidentsCount int      `json:"open_safety_incidents_count"`
-	OccurredAt              time.Time `json:"occurred_at"`
+	PendingKYCCount          int       `json:"pending_kyc_count"`
+	PendingVehicleCount      int       `json:"pending_vehicle_count"`
+	PendingPaymentCount      int       `json:"pending_payment_count"`
+	OpenComplaintsCount      int       `json:"open_complaints_count"`
+	OpenSafetyIncidentsCount int       `json:"open_safety_incidents_count"`
+	OccurredAt               time.Time `json:"occurred_at"`
 }
 
 func (p *Producer) PublishAdminQueueSummary(ctx context.Context, payload AdminQueueSummaryPayload) error {

@@ -73,6 +73,14 @@ func TestLifecycleErrorMapping(t *testing.T) {
 		{"foreign add-on", http.MethodPost, "/v1/food/cart/items",
 			`{"menu_item_id":"` + uuid.NewString() + `","addons":[{"addon_id":"` + uuid.NewString() + `","quantity":1}]}`,
 			fmt.Errorf("%w: not this item", postgres.ErrAddonInvalid), http.StatusUnprocessableEntity, "FOOD_CART_ADDON_INVALID"},
+		{"foreign variant", http.MethodPost, "/v1/food/cart/items", `{"menu_item_id":"` + uuid.NewString() + `"}`,
+			postgres.ErrCartVariantInvalid, http.StatusUnprocessableEntity, "FOOD_CART_VARIANT_INVALID"},
+		{"checkout stockout", http.MethodPost, "/v1/food/orders", `{"address_id":"` + uuid.NewString() + `","payment_method":"upi"}`,
+			postgres.ErrCartItemUnavailable, http.StatusUnprocessableEntity, "FOOD_CART_ITEM_UNAVAILABLE"},
+		{"checkout minimum", http.MethodPost, "/v1/food/orders", `{"address_id":"` + uuid.NewString() + `","payment_method":"upi"}`,
+			postgres.ErrRestaurantMinimum, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_MINIMUM_NOT_MET"},
+		{"checkout changed payload", http.MethodPost, "/v1/food/orders", `{"address_id":"` + uuid.NewString() + `","payment_method":"upi"}`,
+			postgres.ErrIdempotencyPayloadMismatch, http.StatusConflict, "FOOD_IDEMPOTENCY_PAYLOAD_MISMATCH"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

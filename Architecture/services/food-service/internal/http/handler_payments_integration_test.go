@@ -48,7 +48,7 @@ func b7IntegrationRouter(t *testing.T, pc *payContractClient) (*gin.Engine, *pgx
 	}
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(service.New(postgres.New(pool)).WithPayments(pc).WithPaymentFlags(payments.Flags{})).RegisterRoutes(router)
+	New(service.New(postgres.New(pool)).WithPayments(pc).WithPaymentFlags(payments.Flags{})).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router, pool
 }
 

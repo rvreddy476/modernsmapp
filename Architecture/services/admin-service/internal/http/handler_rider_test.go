@@ -46,6 +46,7 @@ func riderCase(rt productRoute) string {
 // numbers), every pricing write (fare rules, fare windows, coupons) and the
 // two money-out routes (which are two-person as well).
 var riderStepUp = map[string]bool{
+	"rider.evidence.view":   true,
 	"rider.partner.suspend": true, "rider.partner.block": true,
 	"rider.documents.list": true, "rider.document.verify": true, "rider.document.reject": true,
 	"rider.payment.verify": true, "rider.payment.reject": true,
@@ -63,8 +64,8 @@ var riderTwoPerson = map[string]bool{opRiderRefundIssue: true, opRiderOutstandin
 
 func TestRiderRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(RiderRoutes) != 58 {
-		t.Fatalf("RiderRoutes has %d entries, want 58 (rider's 57 admin routes plus /stats)", len(RiderRoutes))
+	if len(RiderRoutes) != 59 {
+		t.Fatalf("RiderRoutes has %d entries, want 59", len(RiderRoutes))
 	}
 	seen := map[string]bool{}
 	for _, rt := range RiderRoutes {

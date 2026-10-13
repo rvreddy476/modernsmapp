@@ -277,7 +277,18 @@ func (s *Service) AdminRefundOrder(ctx context.Context, adminID, orderID uuid.UU
 // submitRefundPlan submits a durable refund request (admin or system) to
 // payments with its deterministic key, or reverses a wallet charge. It never
 // marks a card/UPI refund done: the payment.refunded event does.
-func (s *Service) submitRefundPlan(ctx context.Context, orderID uuid.UUID, plan *postgres.RefundPlan, reason string) (map[string]any, error) {
+func (s *Service) submitRefundPlan(ctx context.Context, orderID uuid.UUID, plan *postgres.RefundPlan, reason string) (result map[string]any, submissionErr error) {
+	defer func() {
+		if submissionErr != nil {
+			if recorder, ok := s.store.(interface {
+				RecordRefundSubmissionFailure(context.Context, uuid.UUID) error
+			}); ok {
+				recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				_ = recorder.RecordRefundSubmissionFailure(recordCtx, plan.RefundID)
+			}
+		}
+	}()
 	body := plan.Body()
 	if plan.Status == "PROCESSED" {
 		return body, nil

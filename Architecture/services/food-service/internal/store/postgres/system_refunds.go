@@ -18,8 +18,8 @@ import (
 // it to payments; only the payment.refunded event finalises REFUNDED.
 //
 // A system request is a food.refunds row with requested_by NULL (admin
-// requests carry the admin's id). ListUnsubmittedSystemRefunds lets the SLA
-// worker resubmit one whose first submission failed.
+// requests carry the admin's id). The existing retry worker now retries all
+// unsubmitted requests, including admin and approved support refunds.
 
 // requestSystemRefundTx runs right after the caller moved orderID to
 // RESTAURANT_REJECTED in tx. It returns nil when nothing was paid (cash on
@@ -105,8 +105,8 @@ func (s *Store) OpenRefundPlan(ctx context.Context, orderID uuid.UUID) (*RefundP
 	return loadRefundPlanTx(ctx, s.db, `r.order_id = $1 AND r.status IN ('PENDING', 'SUBMITTED')`, orderID)
 }
 
-// ListUnsubmittedSystemRefunds returns system refund requests still PENDING
-// (never accepted by payments) that are at least olderThan old.
+// ListUnsubmittedSystemRefunds retains its existing worker interface, returning
+// every refund still PENDING (never accepted by payments) at least olderThan old.
 func (s *Store) ListUnsubmittedSystemRefunds(ctx context.Context, olderThan time.Duration, limit int) ([]RefundPlan, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -117,8 +117,9 @@ func (s *Store) ListUnsubmittedSystemRefunds(ctx context.Context, olderThan time
 		FROM food.refunds r
 		JOIN food.orders o ON o.id = r.order_id
 		LEFT JOIN food.payments p ON p.id = r.payment_id
-		WHERE r.status = 'PENDING' AND r.requested_by IS NULL
+		WHERE r.status = 'PENDING'
 			AND r.created_at <= NOW() - ($1::float8 * INTERVAL '1 second')
+			AND (r.raw_response->>'next_submission_at' IS NULL OR (r.raw_response->>'next_submission_at')::timestamptz<=NOW())
 		ORDER BY r.created_at
 		LIMIT $2
 	`, olderThan.Seconds(), limit)

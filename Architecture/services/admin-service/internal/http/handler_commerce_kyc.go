@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
@@ -278,8 +279,12 @@ func (h *Handler) relayDocumentImage(c *gin.Context, p product, info *auditInfo,
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, CodeDocumentTooLarge, "The document is too large to view", nil)
 	}
 	length := up.ContentLength
+	limit := int64(maxKYCDocumentBytes)
+	if strings.HasPrefix(mt, "video/") {
+		limit = 64 << 20
+	}
 	var body io.Reader = up.Body
-	if length > maxKYCDocumentBytes {
+	if length > limit {
 		tooLarge()
 		return
 	}
@@ -287,13 +292,13 @@ func (h *Handler) relayDocumentImage(c *gin.Context, p product, info *auditInfo,
 		// Unknown length (chunked): read at most the cap before answering,
 		// so an oversize document is refused whole instead of cut short
 		// behind a 200 the browser would take for a complete image.
-		buf, err := io.ReadAll(io.LimitReader(up.Body, maxKYCDocumentBytes+1))
+		buf, err := io.ReadAll(io.LimitReader(up.Body, limit+1))
 		if err != nil {
 			info.set("error", "document read failed")
 			upstreamError(c, info, 0, "The owning service did not return the document")
 			return
 		}
-		if len(buf) > maxKYCDocumentBytes {
+		if int64(len(buf)) > limit {
 			tooLarge()
 			return
 		}

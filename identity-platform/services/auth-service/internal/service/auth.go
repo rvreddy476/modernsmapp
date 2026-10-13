@@ -237,11 +237,12 @@ type TokenPair struct {
 }
 
 type AuthResponse struct {
-	Tokens       TokenPair   `json:"tokens"`
-	User         *store.User `json:"user"`
-	SessionID    uuid.UUID   `json:"session_id"`
-	Requires2FA  bool        `json:"requires_2fa,omitempty"`
-	PendingToken string      `json:"pending_token,omitempty"`
+	LocalAdminPasswordLogin bool        `json:"-"`
+	Tokens                  TokenPair   `json:"tokens"`
+	User                    *store.User `json:"user"`
+	SessionID               uuid.UUID   `json:"session_id"`
+	Requires2FA             bool        `json:"requires_2fa,omitempty"`
+	PendingToken            string      `json:"pending_token,omitempty"`
 	// A13 — anomaly step-up envelope. When RequiresStepUp is true the
 	// password / OTP check has passed but the risk band demanded a
 	// second channel; the UI must POST to /v1/auth/anomaly/verify-* to
@@ -869,8 +870,9 @@ func (s *Service) refreshSessionOfKind(ctx context.Context, refreshToken, ip, us
 			RefreshToken: newRefreshToken,
 			ExpiresAt:    accessExpiresAt,
 		},
-		User:      user,
-		SessionID: sess.ID,
+		User:                    user,
+		SessionID:               sess.ID,
+		LocalAdminPasswordLogin: s.localAdminSession(sess) && !(user.TwoFactorEnabled && hasAMR(sess.AMR, AMROTP)),
 	}, nil
 }
 

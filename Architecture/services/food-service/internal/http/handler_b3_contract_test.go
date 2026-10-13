@@ -182,7 +182,7 @@ func (f *moneyContractStore) AdminListPayoutAccounts(context.Context, bool, post
 func moneyRouter(st *moneyContractStore) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(service.New(st)).RegisterRoutes(router)
+	New(service.New(st)).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

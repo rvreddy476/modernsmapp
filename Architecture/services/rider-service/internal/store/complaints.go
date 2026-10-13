@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/atpost/shared/outbox"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,7 +107,7 @@ func (s *Store) ListComplaintsByCustomer(ctx context.Context, customerID uuid.UU
         SELECT id, ride_id, customer_id, partner_id, category, description, status,
                resolution_note, resolved_by, resolved_at, created_at
         FROM rider_complaints
-        WHERE customer_id = $1
+        WHERE customer_id = $1 AND NOT EXISTS(SELECT 1 FROM rider_complaint_partner_reporters pr WHERE pr.complaint_id=rider_complaints.id)
         ORDER BY created_at DESC
         LIMIT $2`
 	rows, err := s.db.Query(ctx, q, customerID, limit)
@@ -175,6 +177,11 @@ func (s *Store) UpdateComplaintStatus(ctx context.Context, in UpdateComplaintSta
 	if !allowedComplaintStatuses[in.Status] {
 		return nil, fmt.Errorf("invalid: status %q not allowed", in.Status)
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	const q = `
         UPDATE rider_complaints
         SET status          = $2,
@@ -184,12 +191,29 @@ func (s *Store) UpdateComplaintStatus(ctx context.Context, in UpdateComplaintSta
         WHERE id = $1
         RETURNING id, ride_id, customer_id, partner_id, category, description, status,
                   resolution_note, resolved_by, resolved_at, created_at`
-	row := s.db.QueryRow(ctx, q, in.ComplaintID, in.Status, in.Note, in.ResolvedBy)
+	row := tx.QueryRow(ctx, q, in.ComplaintID, in.Status, in.Note, in.ResolvedBy)
 	c, err := scanComplaint(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrComplaintNotFound
 		}
+		return nil, err
+	}
+	var reporter uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT partner_user_id FROM rider_complaint_partner_reporters WHERE complaint_id=$1`, c.ID).Scan(&reporter)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if err == nil {
+		payload, err := json.Marshal(map[string]any{"complaint_id": c.ID, "ride_id": c.RideID, "partner_user_id": reporter, "status": c.Status, "occurred_at": time.Now().UTC()})
+		if err != nil {
+			return nil, err
+		}
+		if err = outbox.NewQueuer("rider").Enqueue(ctx, tx, "rider.partner.support.updated", "rider.partner."+reporter.String()+".support", payload); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return c, nil

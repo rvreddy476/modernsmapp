@@ -320,6 +320,7 @@ func adminRoutePermissions() map[string]string {
 		"POST /partners/:id/block":               PermPartnersSuspend,
 		"GET /documents":                         PermDocumentsReview,
 		"POST /documents/:id/verify":             PermDocumentsReview,
+		"GET /documents/:id/evidence": PermDocumentsReview,
 		"POST /documents/:id/reject":             PermDocumentsReview,
 		"GET /vehicles":                          PermVehiclesReview,
 		"POST /vehicles/:id/verify":              PermVehiclesReview,

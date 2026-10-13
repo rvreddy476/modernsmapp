@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/atpost/rider-service/internal/store"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/google/uuid"
 )
 
@@ -99,6 +101,7 @@ type SubmitVehicleDocumentRequest struct {
 	DocumentNumber *string
 	FileURL        string
 	ExpiresAt      *time.Time
+	MediaID        *uuid.UUID
 }
 
 // SubmitVehicleDocument adds a doc row for the vehicle in `pending` status.
@@ -123,6 +126,19 @@ func (s *Service) SubmitVehicleDocument(ctx context.Context, userID, vehicleID u
 	if p.UserID != userID {
 		return nil, fmt.Errorf("forbidden: vehicle does not belong to user")
 	}
+	if req.MediaID == nil || *req.MediaID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: upload the vehicle document image and provide media_id")
+	}
+	if s.documentMedia == nil {
+		return nil, payErr(http.StatusServiceUnavailable, "DOCUMENT_STORAGE_UNAVAILABLE", "document storage is unavailable")
+	}
+	if err := s.documentMedia.VerifyOwnedImage(ctx, userID, *req.MediaID); err != nil {
+		if errors.Is(err, ownedmedia.ErrUnavailable) {
+			return nil, payErr(http.StatusServiceUnavailable, "DOCUMENT_STORAGE_UNAVAILABLE", "document storage is unavailable")
+		}
+		return nil, payErr(http.StatusUnprocessableEntity, "DOCUMENT_IMAGE_INVALID", "upload your own processed vehicle document image")
+	}
+	req.FileURL = "media://" + req.MediaID.String()
 	doc, err := s.store.CreateVehicleDocument(ctx, store.CreateVehicleDocumentInput{
 		VehicleID:      vehicleID,
 		DocumentType:   req.DocumentType,

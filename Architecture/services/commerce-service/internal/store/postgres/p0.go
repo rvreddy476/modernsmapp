@@ -508,6 +508,9 @@ func (s *Store) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, act
 	if !allowed {
 		return ErrCancelNotPermitted
 	}
+	if err := s.cancelDeliveryOrderTx(ctx, tx, orderID); err != nil {
+		return err
+	}
 
 	if err := releaseReservationsTx(ctx, tx, orderID, "checkout_release_cancel"); err != nil {
 		return err

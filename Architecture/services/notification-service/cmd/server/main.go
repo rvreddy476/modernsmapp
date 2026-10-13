@@ -27,6 +27,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
@@ -206,6 +207,7 @@ func main() {
 	}
 
 	notifSvc.SetPusher(push.NewDispatcher(fcmPusher, apnsPusher))
+	go notifSvc.RunPartnerNotificationWorker(ctx)
 
 	// CALL-LB-4 fail-closed startup guard: enabling calling makes the FCM
 	// wake-up load-bearing. CALLS_ENABLED=true on call-service REQUIRES
@@ -520,6 +522,14 @@ func main() {
 		slog.Info("realtime SSE gateway registered", "path", "/v1/realtime/sse")
 	}
 
+	adminVerifier := servicetoken.NewVerifier("notifications")
+	if pub := os.Getenv("ADMIN_SERVICE_TOKEN_PUBKEY"); pub != "" {
+		if err := adminVerifier.RegisterBase64("admin-service", env("ADMIN_SERVICE_TOKEN_KID", "admin-1"), pub, []string{"platform:audit.read", "platform:roles.manage"}, nil); err != nil {
+			slog.Error("invalid notification admin verification key", "error", err)
+			os.Exit(1)
+		}
+	}
+	notifHandler.RegisterPartnerNotificationAdmin(r, adminVerifier)
 	notifHandler.RegisterRoutes(r)
 
 	// 11. Graceful shutdown

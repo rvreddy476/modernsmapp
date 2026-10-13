@@ -48,15 +48,16 @@ var ridePushesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 // Offer TTL bounds: an offer expires in ~20 s; a clock skew or a malformed
 // expires_at must not turn that into zero or into FCM's four-week default.
 const (
-	rideOfferDefaultTTL = 20 * time.Second
-	rideOfferMinTTL     = 5 * time.Second
-	rideOfferMaxTTL     = 60 * time.Second
+	rideOfferMaxTTL = 60 * time.Second
 )
 
 // handleRiderEvent is the dispatch entry point invoked from the main
 // consumer's processMessage when no other handler claimed the event.
 // Returns true when the event was claimed (handled or knowingly ignored).
 func (c *Consumer) handleRiderEvent(ctx context.Context, envelope events.EventEnvelope) (bool, error) {
+	if _, ok := captainAccountTypes[envelope.EventType]; ok {
+		return true, c.handleRiderCaptainAccount(ctx, envelope.EventType, envelope.EventID, envelope.Payload)
+	}
 	switch envelope.EventType {
 	case events.EventRiderSafetySOS:
 		return true, c.handleRiderSOS(ctx, envelope.Payload)
@@ -64,18 +65,6 @@ func (c *Consumer) handleRiderEvent(ctx context.Context, envelope events.EventEn
 		return true, c.handleRiderSafetyContactAlert(ctx, envelope.Payload)
 	case events.EventRiderComplaintRaised:
 		return true, c.handleRiderComplaintRaised(ctx, envelope.Payload)
-	case events.EventRiderPartnerApproved,
-		eventRiderPartnerUnderReview,
-		events.EventRiderSubscriptionExpiring,
-		events.EventRiderSubscriptionGracePeriod,
-		events.EventRiderSubscriptionExpired,
-		events.EventRiderSubscriptionRenewed,
-		events.EventRiderSubscriptionRenewalFailed:
-		// captain.approved / under_review / subscription.* → the partner's
-		// Mopedu Captain devices on the captain_account channel.
-		return true, c.handleRiderCaptainAccount(ctx, envelope.EventType, envelope.EventID, envelope.Payload)
-	case events.EventRiderDocumentExpiring:
-		return true, c.handleRiderDocumentExpiring(ctx, envelope.Payload)
 	case events.EventRiderPartnerFraudFlagged:
 		return true, c.handleRiderPartnerFraudFlagged(ctx, envelope.Payload)
 	case events.EventRiderDailyRevenueReport:
@@ -106,18 +95,11 @@ func (c *Consumer) handleRiderEvent(ctx context.Context, envelope events.EventEn
 		events.EventRiderRideOfferExpired,
 		events.EventRiderPartnerCreated,
 		events.EventRiderPartnerKYCSubmitted,
-		events.EventRiderPartnerKYCApproved,
-		events.EventRiderPartnerKYCRejected,
 		events.EventRiderPartnerVehicleAdded,
-		events.EventRiderPartnerVehicleApproved,
-		events.EventRiderPartnerVehicleRejected,
-		events.EventRiderPartnerSuspended,
-		events.EventRiderPartnerBlocked,
 		events.EventRiderPartnerOnline,
 		events.EventRiderPartnerOffline,
 		events.EventRiderSubscriptionPaymentSubmitted,
 		events.EventRiderSubscriptionPaymentVerified,
-		events.EventRiderSubscriptionPaymentRejected,
 		events.EventRiderSubscriptionActivated,
 		events.EventRiderSafetyIncidentAcknowledged,
 		events.EventRiderSafetyIncidentResolved,
@@ -144,6 +126,7 @@ type riderRideLifecyclePayload struct {
 	RideID         string `json:"ride_id"`
 	CustomerUserID string `json:"customer_user_id"`
 	PartnerID      string `json:"partner_id"`
+	PartnerUserID  string `json:"partner_user_id"`
 	// Cancelled only: customer | partner | admin | system.
 	CancelledByKind string `json:"cancelled_by_kind"`
 
@@ -252,6 +235,21 @@ func planRideLifecyclePush(eventType, eventID string, raw json.RawMessage, now t
 
 // handleRiderRideLifecycle pushes the customer's ride-status notification.
 func (c *Consumer) handleRiderRideLifecycle(ctx context.Context, eventType, eventID string, raw json.RawMessage) error {
+	// Persist the partner notice first. A customer cancelling their own ride
+	// still needs to alert the assigned partner; account IDs never fall back
+	// to partner row IDs. Retries deduplicate the queue by event and recipient.
+	partnerPush, partnerMissing, partnerOK, partnerErr := planCaptainLifecyclePush(eventType, eventID, raw, time.Now().UTC())
+	if partnerErr != nil {
+		return partnerErr
+	}
+	if partnerMissing != "" {
+		ridePushesTotal.WithLabelValues(eventType, service.AppMopeduCaptain, "missing_recipient").Inc()
+	}
+	if partnerOK {
+		if err := c.deliverRidePush(ctx, eventType, partnerPush); err != nil {
+			return err
+		}
+	}
 	p, missing, ok, err := planRideLifecyclePush(eventType, eventID, raw, time.Now().UTC())
 	if err != nil {
 		return err
@@ -265,8 +263,41 @@ func (c *Consumer) handleRiderRideLifecycle(ctx context.Context, eventType, even
 	if !ok {
 		return nil
 	}
-	c.deliverRidePush(ctx, eventType, p)
-	return nil
+	return c.deliverRidePush(ctx, eventType, p)
+}
+
+func planCaptainLifecyclePush(eventType, eventID string, raw json.RawMessage, now time.Time) (service.RidePush, string, bool, error) {
+	var typ, title, body string
+	switch eventType {
+	case events.EventRiderRideAssigned:
+		typ, title, body = service.CaptainTypeRideAssigned, "Ride accepted", "Open your current ride for pickup details."
+	case events.EventRiderRideCancelled:
+		typ, title, body = service.CaptainTypeRideCancelled, "Ride cancelled", "This ride has ended. Open the app to check your work."
+	case events.EventRiderRideCompleted:
+		typ, title, body = service.CaptainTypeRideCompleted, "Ride completed", "Open the app to check payment and trip details."
+	default:
+		return service.RidePush{}, "", false, nil
+	}
+	var e riderRideLifecyclePayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return service.RidePush{}, "", false, err
+	}
+	ride, err := uuid.Parse(e.RideID)
+	if err != nil || ride == uuid.Nil {
+		return service.RidePush{}, "", false, fmt.Errorf("captain lifecycle: invalid ride id")
+	}
+	// Cancellation before assignment legitimately has no recipient.
+	if e.PartnerID == "" && e.PartnerUserID == "" {
+		return service.RidePush{}, "", false, nil
+	}
+	user, ok := parseRecipient(e.PartnerUserID)
+	if !ok {
+		return service.RidePush{}, "partner_user_id", false, nil
+	}
+	return service.RidePush{DedupKey: rideDedupKey(eventID, eventType, ride), RecipientID: user,
+		App: service.AppMopeduCaptain, Type: typ, AndroidChannel: service.CaptainChannelAccount,
+		Title: title, Body: body, DeepLink: "/mopedu/captain/rides/" + ride.String(), EntityID: ride, RideID: ride,
+		CreatedAt: e.occurred(now)}, "", true, nil
 }
 
 // riderRideOfferedPayload mirrors rider-service RideOfferedPayload. The
@@ -282,31 +313,25 @@ type riderRideOfferedPayload struct {
 	OfferedAt     time.Time `json:"offered_at"`
 }
 
-// captainRecipient picks the captain push's user id; the bool says whether
-// it came from partner_user_id (false: the partner_id fallback was used).
-func captainRecipient(partnerUserID, partnerID string) (uuid.UUID, bool, bool) {
+// Partner row IDs are never identity account IDs. Missing routing is counted
+// by the caller, not sent to a guessed account (including legacy events).
+func captainRecipient(partnerUserID, _ string) (uuid.UUID, bool, bool) {
 	if id, ok := parseRecipient(partnerUserID); ok {
 		return id, true, true
-	}
-	if id, ok := parseRecipient(partnerID); ok {
-		return id, false, true
 	}
 	return uuid.Nil, false, false
 }
 
-// rideOfferTTL is how long FCM may hold the offer: until it expires, within
-// [rideOfferMinTTL, rideOfferMaxTTL]; the default when expires_at is unset.
+// rideOfferTTL is how long FCM may hold the offer: never beyond its absolute
+// expiry. A missing expiry fails closed rather than granting a new deadline.
 // expired=true when the offer had already lapsed by the time it was read.
 func rideOfferTTL(expiresAt, now time.Time) (ttl time.Duration, expired bool) {
 	if expiresAt.IsZero() {
-		return rideOfferDefaultTTL, false
+		return 0, true
 	}
 	remaining := expiresAt.Sub(now)
 	if remaining <= 0 {
 		return 0, true
-	}
-	if remaining < rideOfferMinTTL {
-		return rideOfferMinTTL, false
 	}
 	if remaining > rideOfferMaxTTL {
 		return rideOfferMaxTTL, false
@@ -328,7 +353,8 @@ func planCaptainOfferPush(raw json.RawMessage, now time.Time) (p service.RidePus
 	if oerr != nil || offerID == uuid.Nil {
 		return service.RidePush{}, false, "", false, fmt.Errorf("rider offer: invalid offer_id: %w", oerr)
 	}
-	captain, fromUserID, ok := captainRecipient(e.PartnerUserID, e.PartnerID)
+	captain, ok := parseRecipient(e.PartnerUserID)
+	fromUserID := true
 	if !ok {
 		return service.RidePush{}, false, "partner_user_id", false, nil
 	}
@@ -352,6 +378,7 @@ func planCaptainOfferPush(raw json.RawMessage, now time.Time) (p service.RidePus
 		EntityID:       offerID,
 		RideID:         rideID,
 		TTL:            ttl,
+		OfferExpiresAt: e.ExpiresAt,
 		CreatedAt:      created.UTC(),
 	}, !fromUserID, "", false, nil
 }
@@ -375,8 +402,7 @@ func (c *Consumer) handleRiderRideOffered(ctx context.Context, _ string, raw jso
 		slog.Warn("rider offer: no partner_user_id on the event; pushing to partner_id, which reaches a device only if it is the captain's user id",
 			"event", events.EventRiderRideOffered)
 	}
-	c.deliverRidePush(ctx, events.EventRiderRideOffered, p)
-	return nil
+	return c.deliverRidePush(ctx, events.EventRiderRideOffered, p)
 }
 
 // rupees renders paise as "₹1,234.50" / "₹120" for push copy.
@@ -506,28 +532,36 @@ func (c *Consumer) handleRiderRidePaymentPaid(ctx context.Context, eventID strin
 			"event", events.EventRiderRidePaymentPaid)
 	}
 	for _, p := range pushes {
-		c.deliverRidePush(ctx, events.EventRiderRidePaymentPaid, p)
+		if err := c.deliverRidePush(ctx, events.EventRiderRidePaymentPaid, p); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// deliverRidePush hands one push to the service and counts the outcome. A
-// delivery failure is logged, never returned: the event is claimed either
-// way, because retrying "your captain has arrived" minutes later helps
-// nobody and would stall the partition.
-func (c *Consumer) deliverRidePush(ctx context.Context, eventType string, p service.RidePush) {
+// Partner delivery failures are returned so the consumer cannot acknowledge
+// an event before its durable delivery job exists. Customer events retain
+// their existing delivery policy; they are not part of the Partner queue.
+func (c *Consumer) deliverRidePush(ctx context.Context, eventType string, p service.RidePush) error {
 	if c.ridePush == nil {
 		ridePushesTotal.WithLabelValues(p.Type, p.App, "not_wired").Inc()
 		slog.Error("ride push not wired: NOTHING IS SENT", "event", eventType, "type", p.Type, "app", p.App)
-		return
+		if p.App == service.AppMopeduCaptain {
+			return fmt.Errorf("ride push not wired")
+		}
+		return nil
 	}
 	outcome, err := c.ridePush.DeliverRidePush(ctx, p)
 	if err != nil {
 		ridePushesTotal.WithLabelValues(p.Type, p.App, "delivery_error").Inc()
 		slog.Warn("ride push: delivery failed", "event", eventType, "type", p.Type, "app", p.App, "error", err)
-		return
+		if p.App == service.AppMopeduCaptain {
+			return err
+		}
+		return nil
 	}
 	ridePushesTotal.WithLabelValues(p.Type, p.App, string(outcome)).Inc()
+	return nil
 }
 
 // rider.safety.sos → priority push to admin queue + trusted contact (the
@@ -647,13 +681,22 @@ type riderCaptainAccountPayload struct {
 // type. grace_period and expired are both "expired" to the captain — the
 // plan has lapsed either way; the grace copy names the renew-by date.
 var captainAccountTypes = map[string]string{
-	events.EventRiderPartnerApproved:           service.CaptainTypeApproved,
-	eventRiderPartnerUnderReview:               service.CaptainTypeUnderReview,
-	events.EventRiderSubscriptionExpiring:      service.CaptainTypeSubscriptionExpiring,
-	events.EventRiderSubscriptionGracePeriod:   service.CaptainTypeSubscriptionExpired,
-	events.EventRiderSubscriptionExpired:       service.CaptainTypeSubscriptionExpired,
-	events.EventRiderSubscriptionRenewed:       service.CaptainTypeSubscriptionRenewed,
-	events.EventRiderSubscriptionRenewalFailed: service.CaptainTypeSubscriptionPaymentFailed,
+	"rider.partner.document_reviewed":            service.CaptainTypeReviewUpdated,
+	events.EventRiderPartnerKYCApproved:          service.CaptainTypeReviewUpdated,
+	events.EventRiderPartnerKYCRejected:          service.CaptainTypeReviewUpdated,
+	events.EventRiderPartnerVehicleApproved:      service.CaptainTypeReviewUpdated,
+	events.EventRiderPartnerVehicleRejected:      service.CaptainTypeReviewUpdated,
+	events.EventRiderPartnerSuspended:            service.CaptainTypeRestricted,
+	events.EventRiderPartnerBlocked:              service.CaptainTypeRestricted,
+	events.EventRiderDocumentExpiring:            service.CaptainTypeDocumentExpiring,
+	events.EventRiderSubscriptionPaymentRejected: service.CaptainTypePaymentReviewRejected,
+	events.EventRiderPartnerApproved:             service.CaptainTypeApproved,
+	eventRiderPartnerUnderReview:                 service.CaptainTypeUnderReview,
+	events.EventRiderSubscriptionExpiring:        service.CaptainTypeSubscriptionExpiring,
+	events.EventRiderSubscriptionGracePeriod:     service.CaptainTypeSubscriptionExpired,
+	events.EventRiderSubscriptionExpired:         service.CaptainTypeSubscriptionExpired,
+	events.EventRiderSubscriptionRenewed:         service.CaptainTypeSubscriptionRenewed,
+	events.EventRiderSubscriptionRenewalFailed:   service.CaptainTypeSubscriptionPaymentFailed,
 }
 
 // istZone renders plan dates the way the captain reads them.
@@ -676,6 +719,18 @@ func cleanPending(items []string) []string {
 // amount beyond "₹x due", never a link to pay anywhere else.
 func captainAccountCopy(eventType string, e riderCaptainAccountPayload) rideCopy {
 	switch eventType {
+	case events.EventRiderPartnerKYCRejected:
+		return rideCopy{"Application needs attention", "Open your Moped application to review the decision and required corrections."}
+	case "rider.partner.document_reviewed", events.EventRiderPartnerKYCApproved:
+		return rideCopy{"Document review updated", "Open your Moped documents to see the decision and any required corrections."}
+	case events.EventRiderPartnerVehicleApproved, events.EventRiderPartnerVehicleRejected:
+		return rideCopy{"Vehicle review updated", "Open your Moped account to see the vehicle decision and next steps."}
+	case events.EventRiderPartnerSuspended, events.EventRiderPartnerBlocked:
+		return rideCopy{"Moped account restricted", "Open your account for details. New ride assignments are paused."}
+	case events.EventRiderDocumentExpiring:
+		return rideCopy{"Document needs renewal", "A Moped document is expiring or has expired. Open your documents to renew it."}
+	case events.EventRiderSubscriptionPaymentRejected:
+		return rideCopy{"Payment review needs attention", "Open your Moped plan to review the payment decision."}
 	case events.EventRiderPartnerApproved:
 		return rideCopy{"You're approved", "Your captain account is approved. Go online in the app to start receiving ride offers."}
 	case eventRiderPartnerUnderReview:
@@ -742,6 +797,9 @@ func planCaptainAccountPush(eventType, eventID string, raw json.RawMessage, now 
 			return service.RidePush{}, false, "", fmt.Errorf("captain account: invalid partner_id in %s: %w", eventType, perr)
 		}
 		entityID, deepLink = id, "/captain/account"
+		if pushType == service.CaptainTypePaymentReviewRejected {
+			deepLink = "/captain/subscription"
+		}
 	default:
 		id, serr := uuid.Parse(strings.TrimSpace(e.SubscriptionID))
 		if serr != nil || id == uuid.Nil {
@@ -750,6 +808,11 @@ func planCaptainAccountPush(eventType, eventID string, raw json.RawMessage, now 
 		entityID, deepLink = id, "/captain/subscription"
 	}
 	captain, fromUserID, ok := captainRecipient(e.PartnerUserID, e.PartnerID)
+	// New review/expiry events must identify the identity account. A local
+	// partner record ID is not a safe fallback recipient.
+	if !fromUserID && (pushType == service.CaptainTypeReviewUpdated || pushType == service.CaptainTypeRestricted || pushType == service.CaptainTypeDocumentExpiring || pushType == service.CaptainTypePaymentReviewRejected) {
+		return service.RidePush{}, false, "partner_user_id", nil
+	}
 	if !ok {
 		return service.RidePush{}, false, "partner_user_id", nil
 	}
@@ -791,44 +854,10 @@ func (c *Consumer) handleRiderCaptainAccount(ctx context.Context, eventType, eve
 		slog.Warn("captain account: no partner_user_id on the event; pushing to partner_id, which reaches a device only if it is the captain's user id",
 			"event", eventType)
 	}
-	c.deliverRidePush(ctx, eventType, p)
-	return nil
+	return c.deliverRidePush(ctx, eventType, p)
 }
 
 // --- Sprint 4: doc expiry, fraud, summary ---------------------------------
-
-// rider.document.expiring → push to the partner so they re-upload before
-// the document fully expires.
-type riderDocumentExpiringPayload struct {
-	PartnerID    string    `json:"partner_id"`
-	DocumentID   string    `json:"document_id"`
-	DocumentKind string    `json:"document_kind"`
-	OwnerKind    string    `json:"owner_kind"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Bucket       string    `json:"bucket"`
-	OccurredAt   time.Time `json:"occurred_at"`
-}
-
-func (c *Consumer) handleRiderDocumentExpiring(ctx context.Context, raw json.RawMessage) error {
-	var e riderDocumentExpiringPayload
-	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
-	}
-	partnerID, err := uuid.Parse(e.PartnerID)
-	if err != nil {
-		return fmt.Errorf("invalid partner_id in rider.document.expiring: %w", err)
-	}
-	docID, _ := uuid.Parse(e.DocumentID)
-	deepLink := "/rider/partner/documents"
-	occurred := e.OccurredAt
-	if occurred.IsZero() {
-		occurred = time.Now().UTC()
-	}
-	if err := c.service.CreateNotification(ctx, partnerID, partnerID, "rider.document.expiring", "rider_document", docID, deepLink, occurred); err != nil {
-		slog.Warn("rider document expiring: notify failed", "partner_id", partnerID, "error", err)
-	}
-	return nil
-}
 
 // rider.partner.fraud_flagged → admin queue + email. The MVP path uses
 // the standard CreateNotification call routed by the admin app; ops

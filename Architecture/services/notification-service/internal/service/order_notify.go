@@ -78,6 +78,11 @@ func RenderOrderNotification(n OrderNotification) RenderOverride {
 
 // CreateOrderNotification delivers one order notice.
 func (s *Service) CreateOrderNotification(ctx context.Context, n OrderNotification) error {
+	if s.pgStore != nil && n.Type != OrderTypeSellerNewOrder {
+		copy := RenderOrderNotification(n)
+		data := map[string]string{"type": n.Type, "entity_type": OrderEntityType, "entity_id": n.OrderID.String(), "deep_link": n.DeepLink, "title": copy.Title, "body": copy.Body, "collapse_key": copy.CollapseKey, "android_channel_id": "orders"}
+		return s.queueCustomerNotice(ctx, PartnerNotice{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(n.Identity())), UserID: n.RecipientID, App: AppMomentum, Type: n.Type, EntityID: n.OrderID, EntityType: OrderEntityType, Title: copy.Title, Body: copy.Body, DeepLink: n.DeepLink, Data: data, CreatedAt: n.CreatedAt, Inbox: true})
+	}
 	if s.recipientSuppressed(ctx, n.RecipientID, n.Type) {
 		return nil
 	}

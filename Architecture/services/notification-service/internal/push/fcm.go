@@ -101,9 +101,9 @@ var highPriorityTypes = map[string]bool{
 	"food_delivery_offer": true,
 	"captain.offer":       true, // Mopedu Captain, channel captain_offer
 	"ride.arrived":        true, // Mopedu customer, channel ride_updates
-	// Doorstep professional job offer, channel doorstep_pro_offers: the offer
-	// window is minutes (contract x-push-types priority: high).
-	"doorstep.pro.offer.new": true,
+	// Partner offers use an absolute 20-second acceptance window.
+	"doorstep.pro.offer.new":  true,
+	"commerce.delivery.offer": true,
 	// Doorstep customer whose picked professional is gone (B1): a 30-minute
 	// choice window before an automatic full refund (contract priority: high).
 	"doorstep.booking.pro_unavailable": true,
@@ -140,15 +140,18 @@ func BuildFCMMessage(token, title, body string, data map[string]string) map[stri
 		android["collapse_key"] = ck
 	}
 
-	if callPushTypes[data["type"]] {
-		// Data-only + high priority: the app renders the ring itself.
+	if callPushTypes[data["type"]] || partnerOfferDataMessage(data["type"]) {
+		// The Android offer presenter must reject expired deliveries and clear
+		// its countdown notification. No call/full-screen privileges for jobs.
 		enriched := make(map[string]string, len(data)+2)
 		for k, v := range data {
 			enriched[k] = v
 		}
 		enriched["title"] = title
 		enriched["body"] = body
-		android["priority"] = "high"
+		if data["type"] != "doorstep.pro.offer.expired" {
+			android["priority"] = "high"
+		}
 		// An android.notification block would make this a system-rendered
 		// notification message again — exactly what CALL-LB-4 forbids.
 		delete(android, "notification")
@@ -173,6 +176,15 @@ func BuildFCMMessage(token, title, body string, data map[string]string) map[stri
 	return msg
 }
 
+func partnerOfferDataMessage(typ string) bool {
+	switch typ {
+	case "doorstep.pro.offer.new", "doorstep.pro.offer.expired", "captain.offer", "food_delivery_offer", "commerce.delivery.offer":
+		return true
+	default:
+		return false
+	}
+}
+
 // Send delivers a push notification via FCM to an Android or Web device.
 func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body string, data map[string]string) error {
 	if f.projectID == "" || f.serviceAccountJSON == "" {
@@ -187,6 +199,10 @@ func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body strin
 	}
 
 	msg := BuildFCMMessage(token, title, body, data)
+	if platform == "web" && (data["type"] == "doorstep.pro.offer.new" || data["type"] == "doorstep.pro.offer.expired") {
+		// Web remains a normal notification; the incoming request UI is app-only.
+		msg["notification"] = map[string]string{"title": title, "body": body}
+	}
 
 	payload := map[string]interface{}{
 		"message": msg,
@@ -220,7 +236,11 @@ func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body strin
 			return fmt.Errorf("fcm: status %d: %s: %w",
 				resp.StatusCode, string(body), ErrDeviceRejected)
 		}
-		return fmt.Errorf("fcm: send failed with status %d: %s", resp.StatusCode, string(body))
+		failure := withRetryAfter(fmt.Errorf("fcm: send failed with status %d", resp.StatusCode), resp.Header.Get("Retry-After"), time.Now())
+		if resp.StatusCode == http.StatusTooManyRequests && RetryDelay(failure) < time.Minute {
+			failure = &retryError{err: failure, delay: time.Minute}
+		}
+		return failure
 	}
 	return nil
 }

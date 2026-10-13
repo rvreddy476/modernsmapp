@@ -130,7 +130,7 @@ func (s *Service) AdminProfessional(ctx context.Context, id uuid.UUID) (*model.A
 	if err != nil {
 		return nil, proAdminErr(ctx, "pro facts", err)
 	}
-	out := &model.AdminProfessionalDetail{Professional: *p, Readiness: *readinessOf(facts)}
+	out := &model.AdminProfessionalDetail{Professional: *p, Readiness: *readinessOf(facts), IdentityDocumentApproved: facts.IdentityDocumentApproved}
 	if out.Skills, err = st.ProSkills(ctx, id); err != nil {
 		return nil, internal(ctx, "pro skills", err)
 	}
@@ -175,7 +175,7 @@ func approvalCheck(st *store.ProState, cats []prokyc.SkillCategory) error {
 	for _, b := range prokyc.ApprovalBlocks(cats, st.Gender, st.BackgroundClear) {
 		if b.Reason == prokyc.BlockGender {
 			return apperr.New(http.StatusForbidden, apperr.CodeGenderRule,
-				"the professional's DigiLocker gender does not satisfy this skill's category rule").WithDetails(map[string]any{"skill_code": b.Skill})
+				"the professional's reviewed eligibility does not satisfy this skill's category rule").WithDetails(map[string]any{"skill_code": b.Skill})
 		}
 		return apperr.New(http.StatusForbidden, apperr.CodeBackgroundCheckRequired,
 			"a salon skill needs a clear background check").WithDetails(map[string]any{"skill_code": b.Skill})
@@ -251,10 +251,9 @@ func (s *Service) AdminBlockProfessional(ctx context.Context, a store.Actor, id 
 		From: []string{"draft", "pending_verification", "approved", "suspended", "rejected"}, To: "blocked", Reason: reason})
 }
 
-// AdminVerifySkill verifies or revokes a declared skill. A skill that needs
-// a certificate is verified only with an approved trade certificate for it
-// (422 DOORSTEP_CERTIFICATE_REQUIRED); a gender the skill's categories
-// refuse is 403 DOORSTEP_GENDER_RULE.
+// AdminVerifySkill verifies or revokes a declared skill. Experience/course
+// certificates are optional supporting evidence. Manual review and category
+// eligibility still apply, including to legacy certificate-required skills.
 func (s *Service) AdminVerifySkill(ctx context.Context, a store.Actor, proID uuid.UUID, code string, in model.SkillVerifyInput) (*model.ProSkill, error) {
 	st, err := s.proStore(ctx)
 	if err != nil {
@@ -278,13 +277,9 @@ func (s *Service) AdminVerifySkill(ctx context.Context, a store.Actor, proID uui
 		if rule == nil {
 			return apperr.New(http.StatusNotFound, apperr.CodeNotFound, "unknown skill")
 		}
-		if rule.RequiresCertificate && !hasCert {
-			return apperr.New(http.StatusUnprocessableEntity, apperr.CodeCertificateRequired,
-				"this skill is verified only through an approved trade certificate").WithDetails(map[string]any{"skill_code": code})
-		}
 		if prokyc.GenderBlocked(rule.Categories, gender) {
 			return apperr.New(http.StatusForbidden, apperr.CodeGenderRule,
-				"the professional's DigiLocker gender does not satisfy this skill's category rule").WithDetails(map[string]any{"skill_code": code})
+				"the professional's reviewed eligibility does not satisfy this skill's category rule").WithDetails(map[string]any{"skill_code": code})
 		}
 		return nil
 	})
@@ -349,6 +344,9 @@ func (s *Service) AdminDecideDocument(ctx context.Context, a store.Actor, id uui
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, apperr.New(http.StatusNotFound, apperr.CodeNotFound, "document not found")
+	}
+	if errors.Is(err, store.ErrInvalid) {
+		return nil, apperr.New(http.StatusUnprocessableEntity, "DOCUMENT_SUPERSEDED", "This proof has been replaced. Refresh the review queue.")
 	}
 	return doc, proAdminErr(ctx, "decide document", err)
 }

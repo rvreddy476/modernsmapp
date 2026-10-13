@@ -57,7 +57,9 @@ type PricingFacts struct {
 // Bookable is left for the service (it knows the tax families).
 func (s *Store) ProPricing(ctx context.Context, proID uuid.UUID, at time.Time) (*PricingFacts, []model.ProServicePricing, error) {
 	var f PricingFacts
-	var city string
+	// New applications may be in a town that has no operational city yet.
+	// NULL means no city-specific suggested prices, not a failed price editor.
+	var city *string
 	if err := s.db.QueryRow(ctx, `SELECT status, incident_suspended, city_code, gstin FROM doorstep.professionals WHERE id = $1`, proID).
 		Scan(&f.Status, &f.IncidentSuspended, &city, &f.GSTIN); err != nil {
 		return nil, nil, mapErr(err)

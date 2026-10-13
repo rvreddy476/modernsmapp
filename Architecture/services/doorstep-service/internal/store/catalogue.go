@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/atpost/doorstep-service/internal/catalogue"
@@ -48,6 +49,15 @@ const curOptionPrices = `
 		GROUP BY s.id, s.category_id
 	)`
 
+// SetAutomaticPricing is configured at boot, before requests are served.
+func (s *Store) SetAutomaticPricing(enabled bool) { s.automaticPricing = enabled }
+func (s *Store) optionPriceCTE() string {
+	if s.automaticPricing {
+		return strings.Replace(curOptionPrices, "min(f.price_paise) AS from_paise", "min(sg.price_paise) AS from_paise", 1)
+	}
+	return curOptionPrices
+}
+
 // City returns an active city and its GST state code.
 func (s *Store) City(ctx context.Context, code string) (model.CityRef, string, error) {
 	var c model.CityRef
@@ -73,7 +83,7 @@ const categorySummarySelect = `
 // (an active option) at `at`; starting price is the lowest bookable
 // professional price (NULL when nobody offers one yet).
 func (s *Store) CategorySummaries(ctx context.Context, city string, at time.Time) ([]model.CategorySummary, error) {
-	rows, err := s.db.Query(ctx, `WITH `+curOptionPrices+categorySummarySelect+`
+	rows, err := s.db.Query(ctx, `WITH `+s.optionPriceCTE()+categorySummarySelect+`
 		JOIN svc ON svc.category_id = c.id
 		WHERE c.active
 		GROUP BY c.id
@@ -86,7 +96,7 @@ func (s *Store) CategorySummaries(ctx context.Context, city string, at time.Time
 
 // CategoryBySlug returns one active category (service_count may be 0).
 func (s *Store) CategoryBySlug(ctx context.Context, city, slug string, at time.Time) (*model.CategorySummary, error) {
-	rows, err := s.db.Query(ctx, `WITH `+curOptionPrices+categorySummarySelect+`
+	rows, err := s.db.Query(ctx, `WITH `+s.optionPriceCTE()+categorySummarySelect+`
 		LEFT JOIN svc ON svc.category_id = c.id
 		WHERE c.active AND c.slug = $3
 		GROUP BY c.id`, city, at, slug)
@@ -105,7 +115,7 @@ func (s *Store) CategoryBySlug(ctx context.Context, city, slug string, at time.T
 
 // ServiceSummaries lists a category's offered services in the city.
 func (s *Store) ServiceSummaries(ctx context.Context, city string, categoryID uuid.UUID, at time.Time) ([]model.ServiceSummary, error) {
-	rows, err := s.db.Query(ctx, `WITH `+curOptionPrices+`
+	rows, err := s.db.Query(ctx, `WITH `+s.optionPriceCTE()+`
 		SELECT s.id, s.category_id, s.slug, s.name, s.description, s.duration_minutes, s.image_url,
 		       svc.from_paise, svc.suggested_paise
 		FROM doorstep.services s
@@ -275,20 +285,20 @@ func (s *Store) InsertQuote(ctx context.Context, q *model.Quote, customer uuid.U
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO doorstep.quotes (id, customer_user_id, service_id, option_id, quantity, city_code, zone_id, location,
 		                             total_paise, taxable_paise, tax_paise, tax_provisional, tax_note, duration_minutes,
-		                             status, expires_at, created_at, pro_id)
+	                             status, expires_at, created_at, pro_id, assignment_mode)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, ST_SetSRID(ST_MakePoint($9, $8), 4326)::geography,
-		        $10, $11, $12, $13, $14, $15, 'open', $16, $17, $18)`,
+		        $10, $11, $12, $13, $14, $15, 'open', $16, $17, NULLIF($18::uuid, '00000000-0000-0000-0000-000000000000'::uuid), $19)`,
 		q.ID, customer, q.ServiceID, q.OptionID, q.Quantity, q.CityCode, q.ZoneID, lat, lng,
-		q.TotalPaise, q.TaxablePaise, q.TaxPaise, q.TaxProvisional, q.TaxNote, q.DurationMinutes, q.ExpiresAt, q.CreatedAt, q.ProID); err != nil {
+		q.TotalPaise, q.TaxablePaise, q.TaxPaise, q.TaxProvisional, q.TaxNote, q.DurationMinutes, q.ExpiresAt, q.CreatedAt, q.ProID, assignmentMode(q.AssignmentMode)); err != nil {
 		return mapErr(err)
 	}
 	for i, l := range q.Lines {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO doorstep.quote_items (quote_id, line_no, kind, ref_id, price_id, pro_price_id, name, unit, quantity, unit_price_paise,
 			                                  line_total_paise, taxable_paise, tax_paise, tax_rate_bps, gst_category, sac)
-			VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			VALUES ($1, $2, $3, $4, $5::uuid, CASE WHEN $16 = 'automatic' THEN NULL::uuid ELSE $5::uuid END, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 			q.ID, i+1, l.Kind, l.RefID, l.PriceID, l.Name, l.Unit, l.Quantity, l.UnitPricePaise, l.LineTotalPaise,
-			l.TaxablePaise, l.TaxPaise, l.TaxRateBPS, l.GSTCategory, l.SAC); err != nil {
+			l.TaxablePaise, l.TaxPaise, l.TaxRateBPS, l.GSTCategory, l.SAC, assignmentMode(q.AssignmentMode)); err != nil {
 			return mapErr(err)
 		}
 	}
@@ -301,14 +311,17 @@ func (s *Store) Quote(ctx context.Context, id, customer uuid.UUID) (*model.Quote
 	q := &model.Quote{PricesIncludeTax: true}
 	err := s.db.QueryRow(ctx, `
 		SELECT id, status, service_id, option_id, quantity, COALESCE(pro_id, '00000000-0000-0000-0000-000000000000'::uuid), city_code, zone_id,
-		       total_paise, taxable_paise, tax_paise, tax_provisional, tax_note, duration_minutes, expires_at, created_at
+		       total_paise, taxable_paise, tax_paise, tax_provisional, tax_note, duration_minutes, expires_at, created_at, assignment_mode
 		FROM doorstep.quotes WHERE id = $1 AND customer_user_id = $2`, id, customer).Scan(
 		&q.ID, &q.Status, &q.ServiceID, &q.OptionID, &q.Quantity, &q.ProID, &q.CityCode, &q.ZoneID, &q.TotalPaise, &q.TaxablePaise,
-		&q.TaxPaise, &q.TaxProvisional, &q.TaxNote, &q.DurationMinutes, &q.ExpiresAt, &q.CreatedAt)
+		&q.TaxPaise, &q.TaxProvisional, &q.TaxNote, &q.DurationMinutes, &q.ExpiresAt, &q.CreatedAt, &q.AssignmentMode)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	q.ExpiresAt, q.CreatedAt = q.ExpiresAt.UTC(), q.CreatedAt.UTC()
+	if q.AssignmentMode == "customer_selected" {
+		q.AssignmentMode = ""
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT kind, ref_id, price_id, name, unit, quantity, unit_price_paise, line_total_paise, taxable_paise, tax_paise,
 		       tax_rate_bps, gst_category, sac

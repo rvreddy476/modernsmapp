@@ -14,6 +14,7 @@ COPY tools /tools
 RUN go build -mod=vendor -o /server ./services/food-service/cmd/server/main.go
 
 FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
 WORKDIR /
 COPY --from=builder /server /server
 CMD ["/server"]

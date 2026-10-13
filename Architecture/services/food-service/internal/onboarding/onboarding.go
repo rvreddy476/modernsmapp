@@ -460,6 +460,7 @@ const (
 	StepOperatingHours = "operating_hours"
 	StepCompliance     = "compliance"
 	StepFSSAI          = "fssai_document"
+	StepSelfie         = "selfie"
 	StepPayoutAccount  = "payout_account"
 	StepMenuItem       = "menu_item"
 )
@@ -470,6 +471,7 @@ type ReadinessFacts struct {
 	HasOperatingHours    bool
 	HasCompliance        bool
 	HasFSSAIDocument     bool
+	HasSelfie            bool
 	HasPayoutAccount     bool
 	HasAvailableMenuItem bool
 }
@@ -487,6 +489,7 @@ func MissingSteps(f ReadinessFacts) []string {
 		{f.HasOperatingHours, StepOperatingHours},
 		{f.HasCompliance, StepCompliance},
 		{f.HasFSSAIDocument, StepFSSAI},
+		{f.HasSelfie, StepSelfie},
 		{f.HasPayoutAccount, StepPayoutAccount},
 		{f.HasAvailableMenuItem, StepMenuItem},
 	} {

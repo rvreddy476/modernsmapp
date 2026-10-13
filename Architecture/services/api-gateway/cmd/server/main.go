@@ -581,6 +581,7 @@ func routeDefinitions() []routeDef {
 		{"/v1/billpay", env("BILL_PAY_SERVICE_URL", "http://bill-pay-service:8115")},
 		// Rider service (Mopedu mini-app) — see services/rider-service.
 		{"/v1/rider", env("RIDER_SERVICE_URL", "http://rider-service:8116")},
+		{"/v1/partner", env("RIDER_SERVICE_URL", "http://rider-service:8116")},
 		// Doorstep (home services) — see services/doorstep-service. Closed at
 		// the edge by the dormant-product gate (DOORSTEP_PUBLIC_ENABLED) except
 		// to the DOORSTEP_PILOT_USER_IDS allowlist. Its admin family is
@@ -1047,7 +1048,7 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 		if origin != "" && isAllowedOrigin(origin, allowedOrigins) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-Id, X-Requested-With, Authorization, X-Admin-Api-Key, X-CSRF-Token, X-Request-Id, X-Client-Platform, Idempotency-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-Id, X-Requested-With, Authorization, X-Admin-Api-Key, X-CSRF-Token, X-Request-Id, X-Client-Platform, X-Work-Revision, Idempotency-Key")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
@@ -1089,8 +1090,9 @@ func env(key, fallback string) string {
 // deployed but has no working client anywhere, and whether its flag has
 // opened it. See docs/adr/adr-dormant-products.md.
 type dormantProduct struct {
-	prefixes []string
-	enabled  bool
+	partnerEnabled bool
+	prefixes       []string
+	enabled        bool
 	// pilotUsers lets these verified user ids through while the product is
 	// closed. Nil or empty lets nobody through.
 	pilotUsers map[string]struct{}
@@ -1137,7 +1139,7 @@ func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dorm
 		// Doorstep (home services): new, and no client ships yet. Closed
 		// except to an internal pilot while the first version is built; an
 		// empty allowlist lets nobody through.
-		{prefixes: []string{"/v1/doorstep"}, enabled: flag("DOORSTEP_PUBLIC_ENABLED"), pilotUsers: doorstepPilot},
+		{prefixes: []string{"/v1/doorstep"}, enabled: flag("DOORSTEP_PUBLIC_ENABLED"), partnerEnabled: flag("DOORSTEP_PARTNER_ENABLED"), pilotUsers: doorstepPilot},
 	}, nil
 }
 
@@ -1214,6 +1216,11 @@ func serveDormantProductGate(w http.ResponseWriter, r *http.Request, products []
 				continue
 			}
 			if p.pilotAllows(verifiedUserID(r)) {
+				return false
+			}
+			// Recruiting professionals is independent of customer booking launch.
+			// Client identity headers cannot satisfy verifiedUserID.
+			if p.partnerEnabled && verifiedUserID(r) != "" && prefix == "/v1/doorstep" && (r.URL.Path == prefix+"/pro" || strings.HasPrefix(r.URL.Path, prefix+"/pro/")) {
 				return false
 			}
 			w.Header().Set("Content-Type", "application/json")

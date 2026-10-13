@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -62,7 +65,7 @@ func paymentsRouter(st *paymentsHTTPStore) *gin.Engine {
 	svc := service.New(st).
 		WithPayments(&paymentsHTTPClient{orderID: st.orderID, userID: st.userID}).
 		WithPaymentFlags(payments.Flags{})
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 
@@ -73,11 +76,42 @@ func doJSON(router *gin.Engine, method, path, body string, userID uuid.UUID, adm
 	req.Header.Set("Idempotency-Key", uuid.NewString())
 	if admin {
 		req.Header.Set("X-Scopes", "admin")
+		token, err := testAdminSigner().Mint(AudienceFood, "admin-console", AdminPermissions, nil, time.Minute, servicetoken.WithActor(userID.String()))
+		if err != nil {
+			panic(err)
+		}
+		req.Header.Set(ServiceAuthHeader, "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return rec
 }
+
+var testAdminOnce sync.Once
+var testAdminVerifierValue *servicetoken.Verifier
+var testAdminSignerValue *servicetoken.Signer
+
+// Test-only signed credentials. The same production verifier is used; there is
+// no test bypass or fallback in the handler under test.
+func testAdminVerifier() *servicetoken.Verifier {
+	testAdminOnce.Do(func() {
+		pub, priv, err := servicetoken.GenerateKeypair()
+		if err != nil {
+			panic(err)
+		}
+		testAdminSignerValue, err = servicetoken.NewSignerFromBase64(IssuerAdminService, "test-admin", priv)
+		if err != nil {
+			panic(err)
+		}
+		env := map[string]string{"SERVICE_CALLERS": IssuerAdminService, "SERVICE_CALLER_ADMIN_SERVICE_KID": "test-admin", "SERVICE_CALLER_ADMIN_SERVICE_PUBKEY": pub, "SERVICE_CALLER_ADMIN_SERVICE_OPS": strings.Join(AdminPermissions, ",")}
+		testAdminVerifierValue, err = ServiceCallersFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			panic(err)
+		}
+	})
+	return testAdminVerifierValue
+}
+func testAdminSigner() *servicetoken.Signer { testAdminVerifier(); return testAdminSignerValue }
 
 func TestConfirmPaymentHandler_Returns202Confirming(t *testing.T) {
 	st := &paymentsHTTPStore{orderID: uuid.New(), userID: uuid.New()}

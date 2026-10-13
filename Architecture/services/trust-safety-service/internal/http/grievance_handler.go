@@ -34,8 +34,8 @@ type fileGrievanceRequest struct {
 
 // FileGrievance lets any authenticated user lodge a grievance.
 func (h *Handler) FileGrievance(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
+	userID, validActor := adminUserID(c)
+	if !validActor {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
@@ -43,6 +43,17 @@ func (h *Handler) FileGrievance(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
+	}
+	req.Description = strings.TrimSpace(req.Description)
+	if len(req.Description) < 10 || len(req.Description) > 10000 || len(req.AboutEntityType) > 64 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Description must be between 10 and 10000 characters", nil)
+		return
+	}
+	if req.AboutEntityID != "" {
+		if _, err := uuid.Parse(req.AboutEntityID); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid related item ID", nil)
+			return
+		}
 	}
 	g, err := h.svc.FileGrievance(c.Request.Context(), userID, req.Subject, req.AboutEntityType, req.AboutEntityID, req.Description)
 	if err != nil {

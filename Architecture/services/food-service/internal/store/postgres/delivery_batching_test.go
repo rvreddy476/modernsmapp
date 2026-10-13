@@ -111,6 +111,33 @@ func TestDeliveryBatching_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDeliveryBatching_ExpiredOfferCannotAssignAnyOrder(t *testing.T) {
+	s, cleanup := foodTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	restaurant, first := seedOrderInState(t, s, "DELIVERY_ASSIGNING")
+	second := seedOrderInRestaurant(t, s, restaurant, "DELIVERY_ASSIGNING")
+	user, partner := seedDeliveryPartner(t, s)
+	batch, err := s.CreateBatch(ctx, restaurant, []uuid.UUID{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer, err := s.CreateDeliveryOfferForBatch(ctx, batch.ID, first, partner, time.Now().Add(-time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = s.AcceptBatchOfferTx(ctx, user, offer.ID); err == nil {
+		t.Fatal("expired batch was accepted")
+	}
+	var assigned int
+	if err = s.db.QueryRow(ctx, `SELECT count(*) FROM food.delivery_assignments WHERE batch_id=$1 AND delivery_partner_id IS NOT NULL`, batch.ID).Scan(&assigned); err != nil {
+		t.Fatal(err)
+	}
+	if assigned != 0 {
+		t.Fatal("expired acceptance left an assignment")
+	}
+}
+
 // TestDeliveryBatching_RejectsAlreadyAssignedOrder confirms CreateBatch
 // can't steal an order that already has an ASSIGNED assignment (i.e.
 // the WHERE clause on the ON CONFLICT DO UPDATE works as expected).
@@ -126,12 +153,11 @@ func TestDeliveryBatching_RejectsAlreadyAssignedOrder(t *testing.T) {
 	// Manually assign o1 to the partner first.
 	seedDeliveryAssignment(t, store, o1, partnerID)
 
-	// Now attempt to batch both. CreateBatch will insert the batch row
-	// and try to link both orders. o1's link should be skipped (WHERE
-	// status='CREATED' false), o2's link should succeed.
+	// Reject the entire group. A partial batch would misrepresent its size
+	// and leave the second order attached to an invalid pickup group.
 	batch, err := store.CreateBatch(ctx, restaurantID, []uuid.UUID{o1, o2})
-	if err != nil {
-		t.Fatalf("create batch: %v", err)
+	if err == nil || batch != nil {
+		t.Fatal("batch with an assigned member must be rejected")
 	}
 	// Verify o1's assignment was not stomped.
 	var o1BatchID *uuid.UUID
@@ -144,18 +170,18 @@ func TestDeliveryBatching_RejectsAlreadyAssignedOrder(t *testing.T) {
 	if o1Status != "ASSIGNED" {
 		t.Errorf("want o1 still ASSIGNED, got %s", o1Status)
 	}
-	if o1BatchID != nil && *o1BatchID == batch.ID {
+	if o1BatchID != nil {
 		t.Errorf("o1 should not be linked to new batch")
 	}
-	// And o2 should be in the batch.
-	var o2BatchID uuid.UUID
+	// The second order remains available for a legitimate dispatch.
+	var linked int
 	if err := store.db.QueryRow(ctx, `
-		SELECT batch_id FROM food.delivery_assignments WHERE order_id = $1
-	`, o2).Scan(&o2BatchID); err != nil {
+		SELECT count(*) FROM food.delivery_assignments WHERE order_id = $1 AND batch_id IS NOT NULL
+	`, o2).Scan(&linked); err != nil {
 		t.Fatalf("o2 assignment: %v", err)
 	}
-	if o2BatchID != batch.ID {
-		t.Errorf("want o2 linked to %s, got %s", batch.ID, o2BatchID)
+	if linked != 0 {
+		t.Error("second order left in a partial batch")
 	}
 }
 

@@ -91,7 +91,9 @@ type ConfirmPaymentInput struct {
 
 // Service is the main commerce service.
 type Service struct {
-	store *postgres.Store
+	store                *postgres.Store
+	deliveryWork         deliveryWorkCoordinator
+	localDeliveryEnabled bool
 	// orders is the money-path view of store (see payment_ports.go). Same
 	// object in production; a fake in the payment unit tests.
 	orders   orderPaymentStore
@@ -3164,7 +3166,7 @@ func (s *Service) AddAddress(ctx context.Context, addr *postgres.CustomerAddress
 // fields OPENED.
 //
 // It used to return the plaintext columns as stored. After the PII cutover
-// those are '', so every saved address came back with no name, phone or
+// those are ”, so every saved address came back with no name, phone or
 // street. A row that cannot be opened fails the whole read rather than being
 // served blank: a nameless address the customer then checks out with is a
 // parcel nobody can deliver.

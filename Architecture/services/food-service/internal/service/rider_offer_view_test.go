@@ -68,8 +68,9 @@ func (p *rnFramePublisher) Publish(_ context.Context, _, _ string, data any) err
 	return nil
 }
 
-// The dispatch worker's realtime frame and its food.delivery.offered event
-// carry the job detail, and neither carries the drop-off address.
+// Realtime carries job detail without the customer's address. Push intent is
+// now committed in the store transaction; the service must not enqueue it a
+// second time. Store integration tests verify its minimal routing payload.
 func TestDispatchedOfferNamesTheJobButNotTheCustomer(t *testing.T) {
 	now := time.Date(2026, 9, 13, 6, 30, 0, 0, time.UTC)
 	recorded := now.Add(-15 * time.Second)
@@ -101,14 +102,14 @@ func TestDispatchedOfferNamesTheJobButNotTheCustomer(t *testing.T) {
 	if err := svc.dispatchPendingOrders(context.Background()); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if len(pub.frames) != 1 || len(events) != 1 {
-		t.Fatalf("frames = %d, events = %d, want one each", len(pub.frames), len(events))
+	if len(pub.frames) != 1 || len(events) != 0 {
+		t.Fatalf("frames = %d, duplicate service events = %d", len(pub.frames), len(events))
 	}
 	frame, err := json.Marshal(pub.frames[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, raw := range map[string][]byte{"realtime frame": frame, "food.delivery.offered": events[0]} {
+	for name, raw := range map[string][]byte{"realtime frame": frame} {
 		offer := rnAssertOfferPrivate(t, raw)
 		if d, _ := offer["distance_to_restaurant_meters"].(float64); d <= 0 {
 			t.Fatalf("%s: distance_to_restaurant_meters = %v", name, offer["distance_to_restaurant_meters"])

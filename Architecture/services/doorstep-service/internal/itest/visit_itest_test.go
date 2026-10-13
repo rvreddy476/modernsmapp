@@ -13,9 +13,13 @@ import (
 	"time"
 )
 
-func newVisitRig(t *testing.T) (*bkRig, uuid.UUID, uuid.UUID, uuid.UUID) {
+func newVisitRig(t *testing.T, configure ...func(*service.ProDeps)) (*bkRig, uuid.UUID, uuid.UUID, uuid.UUID) {
 	br := newBookingRig(t, func(s *service.Service, st *store.Store, pii *propii.Crypto) *service.Service {
-		return s.WithPro(service.ProDeps{Store: st, PII: pii, Media: ownAll{}, Images: ownAll{}}).WithDispatch(service.DispatchDeps{Store: st}).WithVisit(st).WithAftercare(st).WithAdminAftercare(st)
+		deps := service.ProDeps{Store: st, PII: pii, Media: ownAll{}, Images: ownAll{}}
+		for _, apply := range configure {
+			apply(&deps)
+		}
+		return s.WithPro(deps).WithDispatch(service.DispatchDeps{Store: st}).WithVisit(st).WithAftercare(st).WithAdminAftercare(st)
 	})
 	pro, user := br.addPro(t, "female")
 	customer := uuid.New()

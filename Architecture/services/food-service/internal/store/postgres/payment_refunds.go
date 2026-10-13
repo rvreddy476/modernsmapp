@@ -54,15 +54,28 @@ func (p *RefundPlan) Body() map[string]any {
 // REFUND_PENDING, returns the SAME open refund so the service resubmits it
 // under the same deterministic payments key instead of opening a second one.
 func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UUID, reason string, amount float64, idempotencyKey string) (*RefundPlan, error) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "admin refund"
-	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	plan, err := s.adminRequestRefundTx(ctx, tx, adminID, orderID, reason, amount, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	return plan, tx.Commit(ctx)
+}
+
+// adminRequestRefundTx also serves support approvals, so approval and its payment
+// command are committed together instead of stranding an approved request.
+func (s *Store) adminRequestRefundTx(ctx context.Context, tx pgx.Tx, adminID, orderID uuid.UUID, reason string, amount float64, idempotencyKey string) (*RefundPlan, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "admin refund"
+	}
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 {
+		return nil, ErrInvalidRefundAmount
+	}
 
 	body, handled, err := s.lockGenericIdempotency(ctx, tx, adminID, idempotencyKey)
 	if err != nil {
@@ -77,7 +90,16 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 		if err != nil {
 			return nil, err
 		}
-		return plan, tx.Commit(ctx)
+		if plan.OrderID != orderID || (amount > 0 && int64(math.Round(amount*100)) != plan.AmountMinor) {
+			return nil, ErrRefundDecisionConflict
+		}
+		return plan, nil
+	}
+	// Lock first, then read reserved money in a fresh READ COMMITTED snapshot.
+	// Computing aggregates in the SELECT that waits for the lock can use an
+	// older snapshot when two partial refund requests arrive concurrently.
+	if _, err := tx.Exec(ctx, `SELECT id FROM food.orders WHERE id=$1 FOR UPDATE`, orderID); err != nil {
+		return nil, err
 	}
 
 	var status, paymentStatus, method, intentID string
@@ -126,7 +148,7 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 		if err := s.completeGenericIdempotency(ctx, tx, adminID, idempotencyKey, 202, plan.Body()); err != nil {
 			return nil, err
 		}
-		return plan, tx.Commit(ctx)
+		return plan, nil
 	}
 
 	// Eligibility is the transition table: cancelled, rejected or delivered.
@@ -139,7 +161,10 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 		return nil, fmt.Errorf("%w: nothing left to refund", ErrRefundNotEligible)
 	}
 	amountMinor := int64(math.Round(amount * 100))
-	if amountMinor <= 0 || amountMinor > remaining {
+	if amount > 0 && (amountMinor <= 0 || amountMinor > remaining || math.Abs(amount*100-float64(amountMinor)) > 0.000001) {
+		return nil, ErrInvalidRefundAmount
+	}
+	if amountMinor == 0 {
 		amountMinor = remaining
 	}
 
@@ -186,7 +211,7 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 	if err := s.completeGenericIdempotency(ctx, tx, adminID, idempotencyKey, 202, plan.Body()); err != nil {
 		return nil, err
 	}
-	return plan, tx.Commit(ctx)
+	return plan, nil
 }
 
 func loadRefundPlanTx(ctx context.Context, q rowQuerier, where string, arg any) (*RefundPlan, error) {
@@ -213,7 +238,8 @@ func (s *Store) MarkRefundSubmitted(ctx context.Context, refundID uuid.UUID, raw
 	tag, err := s.db.Exec(ctx, `
 		UPDATE food.refunds
 		SET status = CASE WHEN status = 'PENDING' THEN 'SUBMITTED' ELSE status END,
-			raw_response = raw_response || $2::jsonb
+			raw_response = (CASE WHEN raw_response->>'last_submission_error'='submission_failed_retry_pending'
+			 THEN raw_response - 'last_submission_error' ELSE raw_response END) || $2::jsonb
 		WHERE id = $1
 	`, refundID, rawJSON)
 	if err != nil {

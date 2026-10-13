@@ -140,6 +140,7 @@ func TestApprovePartnerReGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePartner: %v", err)
 	}
+	seedReviewedPartnerEvidence(t, st, p.ID)
 	if err := st.SetPartnerApprovedAt(ctx, p.ID); err != nil {
 		t.Fatalf("SetPartnerApprovedAt: %v", err)
 	}

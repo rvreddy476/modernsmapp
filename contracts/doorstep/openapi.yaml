@@ -245,7 +245,6 @@ x-doorstep-error-codes:
   DOORSTEP_PRICE_OVERLAP: {status: 409, meaning: price periods for one item and city overlap}
   DOORSTEP_PII_UNAVAILABLE: {status: 503, meaning: sealing keys are not configured (development only; production refuses to boot without them)}
   DOORSTEP_MEDIA_UNAVAILABLE: {status: 503, meaning: media-service could not verify an upload or serve a document image}
-  DOORSTEP_CERTIFICATE_REQUIRED: {status: 422, meaning: a skill with requires_certificate is verified only through an approved trade certificate; details.skill_code}
   DOORSTEP_WEBHOOK_SIGNATURE_INVALID: {status: 401, meaning: background-check vendor webhook signature does not verify}
   DOORSTEP_PRICE_UNAVAILABLE: {status: 422, meaning: "B1: the picked professional has no approved, live price for an item of the selection (details.item_ids), or a price was withdrawn or replaced after the quote"}
   DOORSTEP_SKILL_REQUIRED: {status: 403, meaning: "B1: pricing (or same-day for) a service whose skill the professional has not declared or an admin revoked"}
@@ -287,6 +286,59 @@ x-doorstep-payments:
     - Refund idempotency key per cause, e.g. doorstep:refund:{booking_id}:{cause}.
 
 paths:
+  /v1/doorstep/pro/me/alternate-phone/request:
+    post:
+      summary: Request separate verification of the saved alternate contact
+      description: Development log delivery only until SMS is configured. Never changes the login phone or issues a session. Requires the caller's submitted application. Five-minute expiry, five sends per 15 minutes and a 60-second resend interval.
+      x-lane: professional
+      x-permission: self
+      responses:
+        '200':
+          description: Code created (private, no-store)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    required: [delivery, expires_in, resend_after]
+                    properties:
+                      delivery: {type: string, enum: [development_log]}
+                      expires_in: {type: integer, example: 300}
+                      resend_after: {type: integer, example: 60}
+        '429': {description: Request limit reached}
+        '503': {description: Verification transport disabled}
+  /v1/doorstep/pro/me/alternate-phone/verify:
+    post:
+      summary: Verify the saved alternate contact without changing the login identity
+      x-lane: professional
+      x-permission: self
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: {type: string, pattern: '^[0-9]{6}$'}
+      responses:
+        '200':
+          description: Contact verified (private, no-store)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    required: [verified]
+                    properties:
+                      verified: {type: boolean, enum: [true]}
+        '422': {description: Incorrect, expired or already used code; five attempts per code}
+        '503': {description: Verification transport disabled}
   # ===================================================================
   # Catalogue (A1) - internal key only, no user identity
   # ===================================================================
@@ -1412,6 +1464,93 @@ paths:
   # ===================================================================
   # Professional (/pro) - gateway identity; role service_professional
   # ===================================================================
+  /v1/doorstep/pro/application/states:
+    get:
+      summary: Indian states and union territories for partner applications
+      operationId: proApplicationStates
+      tags: [Professional]
+      x-lane: A2
+      responses:
+        '200':
+          description: State catalogue in the data envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required: [code, name]
+                          properties:
+                            code: {type: string}
+                            name: {type: string}
+  /v1/doorstep/pro/application:
+    post:
+      summary: Submit a complete application for manual review
+      description: Requires an OTP-verified mobile on the authenticated account. PAN and bank numbers are encrypted; returned profiles never contain their full values. Retrying an existing application returns it without creating another. Submission does not approve identity, bank details, skills, work availability or payouts.
+      operationId: proSubmitApplication
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PartnerApplicationInput'}
+      responses:
+        '201':
+          description: Submitted application in the data envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/Professional'}
+        '400':
+          description: Invalid or missing application details
+        '403':
+          description: Mobile verification required or application access refused
+        '422':
+          description: Private document is not owned, processed or available
+        '503':
+          description: Secure storage or document verification unavailable; retain the draft for retry
+  /v1/doorstep/pro/application/identity:
+    post:
+      summary: Replace a rejected identity proof on my pending application
+      description: Accepts only the caller's private processed image. Retains the rejected proof for review history and returns the replacement as pending. Does not approve the identity or change profile details. Repeating the same pending upload is idempotent; another upload cannot overwrite it.
+      operationId: proCorrectIdentity
+      tags: [Professional]
+      x-lane: A2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind, media_id]
+              properties:
+                kind: {type: string, enum: [passport, voter_id, driving_license]}
+                media_id: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Pending replacement document in the data envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/ProDocument'}
+        '400': {description: Invalid document type or media ID}
+        '401': {description: Sign-in required}
+        '404': {description: Application not found}
+        '409': {description: Application or current document is not eligible for correction}
+        '422': {description: Private image is not owned or processed}
+        '503': {description: Document verification temporarily unavailable}
   /v1/doorstep/pro/apply:
     post:
       summary: Start a professional application
@@ -1632,16 +1771,16 @@ paths:
 
   /v1/doorstep/pro/me/skills/{code}/certificate:
     post:
-      summary: Upload a trade certificate for a declared skill that requires one (reviewed by an admin)
+      summary: Upload an optional supporting certificate for a declared skill (reviewed by an admin)
       operationId: proPostTradeCertificate
       tags: [Professional]
       x-lane: A2
       description: >-
-        A skill whose requires_certificate is true is verified only when an
-        admin approves its trade certificate (POST
-        /internal/admin/documents/{id}/decide); a skill with
-        requires_certificate false is verified on declaration. The image must
-        be the caller's own processed, moderation-passed upload.
+        Experience, course and trade certificates are optional supporting
+        evidence. Every skill needs admin review, with or without a certificate;
+        declaration alone never verifies it. The image must be the caller's own
+        processed, moderation-passed upload. New applicants include optional
+        experience_media_id alongside identity and bank details in one application.
       parameters:
         - name: code
           in: path
@@ -1810,10 +1949,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [account_holder, account_number, ifsc]
+              required: [account_holder, account_number, ifsc, bank_name, proof_kind, proof_media_id]
               properties:
                 account_holder: {type: string}
                 account_number: {type: string}
+                bank_name: {type: string, minLength: 2, maxLength: 100}
+                branch_name: {type: string, maxLength: 100}
+                proof_kind: {type: string, enum: [cancelled_cheque, bank_statement, passbook]}
+                proof_media_id: {type: string, format: uuid, description: Private processed image owned by the caller. Every replacement requires admin review.}
                 ifsc: {type: string}
       responses:
         '200':
@@ -1848,7 +1991,11 @@ paths:
 
   /v1/doorstep/pro/me/agreement:
     post:
-      summary: Accept the professional agreement
+      summary: Professional agreement (acceptance deferred)
+      description: >-
+        Acceptance is deferred until revised terms are published. Agreement is
+        not a required setup step. Existing acceptance records are preserved;
+        this endpoint does not record new acceptance during deferral.
       operationId: proAcceptAgreement
       tags: [Professional]
       x-lane: A2
@@ -1862,15 +2009,12 @@ paths:
               properties:
                 version: {type: string}
       responses:
-        '200':
-          description: Readiness
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ProReadiness'}
+        '409':
+          description: DOORSTEP_AGREEMENT_DEFERRED
 
   /v1/doorstep/pro/me/pan:
     put:
-      summary: PAN (recommended, not required)
+      summary: PAN number (required, no card upload)
       operationId: proPutPAN
       tags: [Professional]
       x-lane: A2
@@ -2198,6 +2342,40 @@ paths:
               schema: {$ref: '#/components/schemas/ProJob'}
         '404':
           description: DOORSTEP_BOOKING_NOT_FOUND (not offered to or accepted by me)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  /v1/doorstep/pro/jobs/{id}/customer-contact:
+    get:
+      summary: Customer mobile for my accepted active booking
+      operationId: proGetCustomerContact
+      tags: [ProfessionalJob]
+      description: >-
+        Returns the identity service's verified mobile to the currently accepted
+        lead professional only, while assigned, en_route, arrived, in_progress or
+        awaiting_extras_payment. Not available for offers, unpaid, closed or
+        reassigned bookings, or suspended professionals. For directions and service
+        coordination only. Never included in job lists, offers or events.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Verified contact; private, no-store
+          headers:
+            Cache-Control:
+              schema: {type: string, example: 'private, no-store'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [phone]
+                properties:
+                  phone: {type: string, description: Verified mobile in E.164 format}
+        '404':
+          $ref: '#/components/responses/Error'
+        '503':
+          description: CUSTOMER_CONTACT_UNAVAILABLE (no verified mobile or identity service unavailable)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorEnvelope'}
@@ -3446,6 +3624,80 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AdminCommissionRule'}
 
+  /v1/doorstep/pro/me/changes:
+    get:
+      operationId: proChangeRequests
+      summary: My pending and recently decided account changes
+      responses:
+        '200':
+          description: Owner-only changes; no sealed or plaintext PAN is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items: {type: array, items: {$ref: '#/components/schemas/PartnerChange'}}
+  /v1/doorstep/internal/admin/partner-changes:
+    get:
+      operationId: adminPartnerChanges
+      summary: Pending partner changes; approved details remain active until a decision
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.read
+      responses:
+        '200':
+          description: Private review queue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items: {type: array, items: {$ref: '#/components/schemas/PartnerChange'}}
+  /v1/doorstep/internal/admin/partner-changes/{id}/photo:
+    get:
+      operationId: adminPartnerChangePhoto
+      summary: Audited preview of the proposed profile photo
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Private raster image; never a redirect
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+  /v1/doorstep/internal/admin/partner-changes/{id}/decide:
+    post:
+      operationId: adminDecidePartnerChange
+      summary: Approve or reject one immutable submitted change, with an audit record
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.approve
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: {type: string, enum: [approve, reject]}
+                reason: {type: string, description: Required when rejecting.}
+      responses:
+        '200': {description: Decision saved. Approved skills are verified after eligibility checks. A replacement PAN requires a fresh identity review.}
+        '409': {description: Request already decided or account no longer eligible.}
   /v1/doorstep/internal/admin/professionals:
     get:
       summary: Professionals by status
@@ -3544,6 +3796,35 @@ paths:
                   data: {$ref: '#/components/schemas/TaxRegistration'}
         '409':
           description: Active bookings prevent tax treatment changes
+  /v1/doorstep/internal/admin/professionals/{id}/identity-review:
+    post:
+      summary: Record manual identity and salon eligibility review (not UIDAI authentication)
+      operationId: adminReviewManualIdentity
+      tags: [Admin]
+      security: [{adminServiceToken: []}]
+      x-permission: doorstep:pros.approve
+      x-lane: A2
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [gender, reason]
+              properties:
+                gender: {type: string, enum: [female, male, transgender, unknown]}
+                reason: {type: string, minLength: 1, maxLength: 1000}
+      responses:
+        '200':
+          description: Review recorded; professional, skills and prices are not approved by this action
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Professional'}
+        '422':
+          description: PAN must be saved and the current selfie must be approved first
   /v1/doorstep/internal/admin/professionals/{id}/approve:
     post:
       summary: Approve (refused while MissingSteps is not empty)
@@ -4365,7 +4646,7 @@ components:
       enum: [rate_card, catalogue_addons_only]
     BookingStatus:
       type: string
-      enum: [pending_payment, confirmed, assigned, en_route, arrived, in_progress, awaiting_extras_payment, completed, cancelled, expired, customer_no_show, pro_no_show, pro_unavailable]
+      enum: [matching, pending_payment, confirmed, assigned, en_route, arrived, in_progress, awaiting_extras_payment, completed, cancelled, expired, customer_no_show, pro_no_show, pro_unavailable]
     ProStatus:
       type: string
       enum: [draft, pending_verification, approved, suspended, rejected, blocked]
@@ -4431,6 +4712,7 @@ components:
       type: object
       required: [id, category, slug, name, description, duration_minutes, inclusions, exclusions, image_url, crew_size, rework_days, min_before_photos, min_after_photos, options, addon_groups]
       properties:
+        assignment_mode: {type: string, enum: [automatic], description: "When present, the customer selects service and time; Doorstep assigns a professional at the admin-set city price."}
         id: {type: string, format: uuid}
         category:
           type: object
@@ -4525,10 +4807,10 @@ components:
 
     QuoteRequest:
       type: object
-      required: [service_id, pro_id, option_id, lat, lng]
+      required: [service_id, option_id, lat, lng]
       properties:
         service_id: {type: string, format: uuid}
-        pro_id: {type: string, format: uuid, description: "B1: the professional the customer picked (GET /services/{id}/professionals)"}
+        pro_id: {type: string, format: uuid, description: "Required in legacy customer-selected mode. Must be omitted when automatic assignment is enabled."}
         option_id: {type: string, format: uuid}
         quantity: {type: integer, minimum: 1, default: 1}
         addons:
@@ -4544,12 +4826,13 @@ components:
       type: object
       required: [id, status, service_id, option_id, quantity, pro_id, city_code, zone_id, lines, total_paise, taxable_paise, tax_paise, prices_include_tax, tax_provisional, tax_note, duration_minutes, expires_at, created_at]
       properties:
+        assignment_mode: {type: string, enum: [automatic], description: "Admin-priced quote, no customer-selected professional. Omitted for legacy quotes."}
         id: {type: string, format: uuid}
         status: {type: string, enum: [open, expired, consumed]}
         service_id: {type: string, format: uuid}
         option_id: {type: string, format: uuid}
         quantity: {type: integer}
-        pro_id: {type: string, format: uuid, description: "B1: the picked professional; the quote is priced with their approved prices"}
+        pro_id: {type: string, format: uuid, description: "Picked professional for legacy quotes; zero UUID in automatic mode."}
         city_code: {type: string}
         zone_id: {type: string, format: uuid}
         lines:
@@ -4572,7 +4855,7 @@ components:
       properties:
         kind: {type: string, enum: [option, addon]}
         ref_id: {type: string, format: uuid}
-        price_id: {type: string, format: uuid, description: "B1: the professional's doorstep.pro_service_prices row used (always an approved one)"}
+        price_id: {type: string, format: uuid, description: "Approved pro price for legacy quotes, or effective city_prices row in automatic mode."}
         name: {type: string}
         unit: {type: string, enum: [per_job, per_hour, per_month]}
         quantity: {type: integer, description: Units (hours, months) for per_hour and per_month}
@@ -4683,6 +4966,8 @@ components:
         only those two phases), status_history is the timeline oldest first.
       required: [id, status, service_id, service_name, category_slug, city_code, zone_id, slot_start, slot_end, duration_minutes, require_female_pro, items, total_paise, taxable_paise, tax_paise, paid_paise, refunded_paise, cancellation_fee_paise, extras_total_paise, outstanding_paise, hold_expires_at, address, professional, parent_booking_id, start_otp, end_otp, photos, status_history, can_cancel, can_reschedule, asap, choice_deadline, unavailable_cause, pending_change, created_at, updated_at]
       properties:
+        assignment_mode: {type: string, enum: [automatic], description: "Matching precedes acceptance and payment. Existing legacy bookings keep their original behavior."}
+        matching_deadline: {type: string, format: date-time, description: "Deadline to find an accepting professional; only present while matching."}
         id: {type: string, format: uuid}
         status: {$ref: '#/components/schemas/BookingStatus'}
         service_id: {type: string, format: uuid}
@@ -4972,6 +5257,37 @@ components:
         expires_at: {type: string, format: date-time}
 
     # ---------- professional (A2/A4/A5) ----------
+    PartnerApplicationInput:
+      type: object
+      additionalProperties: false
+      required: [review_consent, first_name, last_name, gender, state_code, town, skill_codes, identity_kind, identity_media_id, selfie_media_id, pan, bank]
+      properties:
+        review_consent: {type: boolean, enum: [true]}
+        first_name: {type: string, minLength: 1, maxLength: 50}
+        last_name: {type: string, minLength: 1, maxLength: 50}
+        gender: {type: string, enum: [male, female, others], description: Self-declared; not verified eligibility}
+        state_code: {type: string}
+        town: {type: string, minLength: 2, maxLength: 100}
+        alternate_phone: {type: string, description: Optional Indian mobile number; remains unverified}
+        skill_codes: {type: array, minItems: 1, maxItems: 20, uniqueItems: true, items: {type: string}}
+        identity_kind: {type: string, enum: [passport, voter_id, driving_license]}
+        identity_media_id: {type: string, format: uuid}
+        selfie_media_id: {type: string, format: uuid, description: Required private processed selfie owned by the applicant; subject to manual review}
+        introduction_media_id: {type: string, description: Optional private processed video owned by the applicant; at most 60000 milliseconds and 64 MiB; empty string allowed}
+        experience_media_id: {type: string, description: Optional private image media ID, or empty string}
+        pan: {type: string, pattern: '^[A-Z]{3}P[A-Z][0-9]{4}[A-Z]$', writeOnly: true}
+        bank:
+          type: object
+          additionalProperties: false
+          required: [account_holder, account_number, ifsc, bank_name, proof_kind, proof_media_id]
+          properties:
+            account_holder: {type: string, minLength: 2, maxLength: 100}
+            account_number: {type: string, pattern: '^[0-9]{9,18}$', writeOnly: true}
+            ifsc: {type: string, pattern: '^[A-Z]{4}0[A-Z0-9]{6}$'}
+            bank_name: {type: string, minLength: 2, maxLength: 100}
+            branch_name: {type: string, maxLength: 100}
+            proof_kind: {type: string, enum: [cancelled_cheque, bank_statement, passbook]}
+            proof_media_id: {type: string, format: uuid, description: Private owned processed image; admin review required}
     ProApplyInput:
       type: object
       required: [display_name, city_code]
@@ -5021,7 +5337,7 @@ components:
     OnboardingStep:
       type: string
       description: In order; pan is recommended, never required
-      enum: [profile, aadhaar_digilocker, selfie_face_match, skills, service_area, weekly_hours, bank, police_certificate, agreement, pan]
+      enum: [profile, identity_review, selfie_face_match, skills, service_area, weekly_hours, bank, police_certificate, agreement, pan]
     KycCheck:
       type: object
       description: >-
@@ -5042,7 +5358,16 @@ components:
         code: {type: string, example: ac_service}
         name: {type: string}
         description: {type: string}
-        requires_certificate: {type: boolean, description: "true: verified only through an admin-approved trade certificate (POST /pro/me/skills/{code}/certificate); false: declaring the skill verifies it (A2)"}
+        requires_certificate: {type: boolean, deprecated: true, description: "Legacy catalogue metadata; not an application or skill-approval requirement. Certificates are optional. Every skill still requires manual admin review."}
+        categories:
+          type: array
+          description: Active catalogue categories containing an active service using this skill; presentation only.
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: {type: string, format: uuid}
+              name: {type: string}
     SkillInput:
       type: object
       required: [code, name]
@@ -5050,7 +5375,7 @@ components:
         code: {type: string, pattern: '^[a-z][a-z0-9_]{1,47}$'}
         name: {type: string}
         description: {type: string}
-        requires_certificate: {type: boolean, default: true, description: Omitted means true (fail closed)}
+        requires_certificate: {type: boolean, deprecated: true, description: Legacy catalogue metadata; does not make supporting certificates mandatory}
     ProSkill:
       type: object
       required: [skill_code, status, verified_at]
@@ -5058,13 +5383,26 @@ components:
         skill_code: {type: string}
         status: {type: string, enum: [pending, verified, revoked]}
         verified_at: {type: string, format: date-time, nullable: true}
+    PartnerChange:
+      type: object
+      required: [id, pro_id, kind, payload, status, reason, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        pro_id: {type: string, format: uuid}
+        kind: {type: string, enum: [profile, skills, area, hours, pan]}
+        payload: {type: object, description: Proposed values. PAN is masked to last four characters; ciphertext is never returned.}
+        status: {type: string, enum: [pending, approved, rejected]}
+        reason: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
     ProAreaInput:
       type: object
+      description: Save a starting point and radius even before coverage opens. An empty zone_ids list keeps service_area incomplete and does not enable bookings.
       required: [zone_ids, home_lat, home_lng, radius_m]
       properties:
         zone_ids: {type: array, items: {type: string, format: uuid}}
         home_lat: {type: number}
         home_lng: {type: number}
+        area_label: {type: string, maxLength: 500, description: Human-readable name of the selected location.}
         radius_m: {type: integer, minimum: 1000, maximum: 15000}
     ProArea:
       type: object
@@ -5074,6 +5412,7 @@ components:
         zone_ids: {type: array, items: {type: string, format: uuid}}
         home_lat: {type: number, nullable: true}
         home_lng: {type: number, nullable: true}
+        area_label: {type: string, description: Saved location name; omitted for older records.}
         radius_m: {type: integer, minimum: 1000, maximum: 15000}
     WeeklyHours:
       type: object
@@ -5098,17 +5437,44 @@ components:
       type: object
       required: [account_holder, account_last4, ifsc, status]
       properties:
+        history:
+          type: array
+          maxItems: 50
+          description: Most recent masked submissions, newest first. Historical approval does not make a record active. Returned on reads; never contains the full account number.
+          items: {$ref: '#/components/schemas/PayoutAccountRecord'}
+        account_holder: {type: string}
+        account_last4: {type: string}
+        bank_name: {type: string}
+        branch_name: {type: string}
+        proof_kind: {type: string, enum: [cancelled_cheque, bank_statement, passbook]}
+        proof_document_id: {type: string, format: uuid}
+        reason: {type: string, nullable: true}
+        ifsc: {type: string}
+        status: {type: string, enum: [pending, verified, failed]}
+    PayoutAccountRecord:
+      type: object
+      required: [id, account_holder, account_last4, ifsc, bank_name, status, active, submitted_at, reviewed_at, reason]
+      properties:
+        superseded: {type: boolean, description: A pending submission replaced by a later request; it cannot be approved.}
+        proof_document_id: {type: string, format: uuid, nullable: true}
+        proof_kind: {type: string}
+        id: {type: string, format: uuid}
         account_holder: {type: string}
         account_last4: {type: string}
         ifsc: {type: string}
+        bank_name: {type: string}
         status: {type: string, enum: [pending, verified, failed]}
+        active: {type: boolean}
+        submitted_at: {type: string, format: date-time}
+        reviewed_at: {type: string, format: date-time, nullable: true}
+        reason: {type: string, nullable: true}
     ProDocument:
       type: object
       required: [id, pro_id, kind, skill_code, media_id, status, issued_on, expires_on, reason, created_at]
       properties:
         id: {type: string, format: uuid}
         pro_id: {type: string, format: uuid}
-        kind: {type: string, enum: [police_certificate, trade_certificate, selfie, aadhaar, pan, other], description: "A2: selfie documents are written by POST /pro/selfie (approved when the face match passed, pending for review below the threshold, rejected when it failed or was superseded); aadhaar is never stored"}
+        kind: {type: string, enum: [police_certificate, trade_certificate, selfie, aadhaar, pan, other, passport, voter_id, driving_license, experience_certificate, bank_proof], description: "Uploads are pending until human review. Bank approval activates only the linked non-superseded submission; rejection preserves the existing approved account. Aadhaar is never stored."}
         skill_code: {type: string, nullable: true, description: The skill a trade_certificate is for; null for every other kind}
         media_id: {type: string, format: uuid}
         status: {type: string, enum: [pending, approved, rejected]}
@@ -5120,6 +5486,9 @@ components:
       type: object
       required: [professional, readiness, skills, zone_ids, documents, background_checks, kyc_checks, payout_account]
       properties:
+        identity_document_approved:
+          type: boolean
+          description: Whether the identity document linked to this application is approved. Allows identity confirmation within the final admin approval flow; does not grant approval.
         professional: {$ref: '#/components/schemas/Professional'}
         readiness: {$ref: '#/components/schemas/ProReadiness'}
         skills: {type: array, items: {$ref: '#/components/schemas/ProSkill'}}
@@ -5930,6 +6299,7 @@ components:
       type: object
       required: [service_id, service_name, category_slug, category_name, family, skill_code, skill_status, same_day, bookable, items]
       properties:
+        pricing_mode: {type: string, enum: [admin_fixed], description: "When present, suggested_price_paise is the admin-set customer price. Partner price submissions are disabled."}
         service_id: {type: string, format: uuid}
         service_name: {type: string}
         category_slug: {type: string}

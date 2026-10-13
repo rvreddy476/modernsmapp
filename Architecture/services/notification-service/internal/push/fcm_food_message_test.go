@@ -21,8 +21,8 @@ func TestFoodPushesNameTheirAndroidChannel(t *testing.T) {
 			"order_id":            "o1",
 			AndroidChannelDataKey: tc.channel,
 		})
-		if _, has := msg["notification"]; !has {
-			t.Fatalf("%s: lost its notification block", tc.typ)
+		if _, has := msg["notification"]; has == (tc.typ == "food_delivery_offer") {
+			t.Fatalf("%s: wrong system/app rendering contract", tc.typ)
 		}
 		data := msg["data"].(map[string]string)
 		if _, leaked := data[AndroidChannelDataKey]; leaked {
@@ -36,7 +36,7 @@ func TestFoodPushesNameTheirAndroidChannel(t *testing.T) {
 			t.Fatalf("%s: no android config", tc.typ)
 		}
 		notification, _ := android["notification"].(map[string]string)
-		if notification["channel_id"] != tc.channel {
+		if tc.typ != "food_delivery_offer" && notification["channel_id"] != tc.channel {
 			t.Fatalf("%s: channel = %v", tc.typ, android)
 		}
 		if (android["priority"] == "high") != tc.high {

@@ -259,13 +259,21 @@ func (s *Store) UpdateCategory(ctx context.Context, a Actor, id uuid.UUID, p mod
 
 // ListSkills lists skills.
 func (s *Store) ListSkills(ctx context.Context) ([]model.Skill, error) {
-	rows, err := s.db.Query(ctx, `SELECT code, name, description, requires_certificate FROM doorstep.skills ORDER BY code`)
+	rows, err := s.db.Query(ctx, `SELECT k.code, k.name, k.description, k.requires_certificate,
+		COALESCE((SELECT jsonb_agg(jsonb_build_object('id',c.id,'name',c.name) ORDER BY c.sort_order,c.name)
+		 FROM doorstep.categories c WHERE c.active AND EXISTS (
+		 SELECT 1 FROM doorstep.services sv WHERE sv.category_id=c.id AND sv.active AND sv.required_skill=k.code)), '[]'::jsonb)
+		FROM doorstep.skills k ORDER BY k.code`)
 	if err != nil {
 		return nil, err
 	}
 	return collect(rows, func(r pgx.Rows) (model.Skill, error) {
 		var k model.Skill
-		err := r.Scan(&k.Code, &k.Name, &k.Description, &k.RequiresCertificate)
+		var categories []byte
+		err := r.Scan(&k.Code, &k.Name, &k.Description, &k.RequiresCertificate, &categories)
+		if err == nil {
+			err = json.Unmarshal(categories, &k.Categories)
+		}
 		return k, err
 	})
 }

@@ -85,6 +85,8 @@ type Config struct {
 	// (application doorstep). Empty outside production: payment routes 503.
 	ServiceTokenKey string
 	ServiceTokenKID string
+	MediaTokenKey   string
+	MediaTokenKID   string
 
 	PIIKeys       []PIIKey
 	PIILookupSalt []byte
@@ -108,7 +110,8 @@ type Config struct {
 
 	QuoteTTL time.Duration
 	// DevSeed seeds the Hyderabad catalogue at boot. Development only.
-	DevSeed bool
+	DevSeed             bool
+	AutomaticAssignment bool
 }
 
 // FromEnv reads and validates the configuration. Error messages name the
@@ -125,6 +128,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		RealtimeTokenSecret:    get("REALTIME_TOKEN_SECRET"),
 		ServiceTokenKey:        get("DOORSTEP_SERVICE_TOKEN_KEY"),
 		ServiceTokenKID:        get("DOORSTEP_SERVICE_TOKEN_KID"),
+		MediaTokenKey:          get("DOORSTEP_MEDIA_TOKEN_KEY"),
+		MediaTokenKID:          get("DOORSTEP_MEDIA_TOKEN_KID"),
 		PlatformGSTIN:          get("DOORSTEP_PLATFORM_GSTIN"),
 		DigiLockerClientID:     get("DIGILOCKER_CLIENT_ID"),
 		DigiLockerClientSecret: get("DIGILOCKER_CLIENT_SECRET"),
@@ -137,6 +142,14 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	}
 	var errs []error
 	fail := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+	if raw := get("DOORSTEP_AUTOMATIC_ASSIGNMENT_ENABLED"); raw != "" {
+		on, err := strconv.ParseBool(raw)
+		if err != nil {
+			fail("DOORSTEP_AUTOMATIC_ASSIGNMENT_ENABLED must be a boolean")
+		} else {
+			cfg.AutomaticAssignment = on
+		}
+	}
 	// need returns v, the dev default outside production, or records a
 	// production refusal.
 	need := func(name, v, devDefault, why string) string {
@@ -195,12 +208,21 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	// A separate media identity can enable document reads without enabling payments.
+	if cfg.MediaTokenKey != "" || cfg.MediaTokenKID != "" {
+		if cfg.MediaTokenKID == "" {
+			fail("DOORSTEP_MEDIA_TOKEN_KID is required with its key")
+		}
+		if _, err := servicetoken.NewSignerFromBase64(ServiceTokenIssuer, cfg.MediaTokenKID, cfg.MediaTokenKey); err != nil {
+			fail("DOORSTEP_MEDIA_TOKEN_KEY is not a valid base64 ed25519 private key")
+		}
+	}
 	// PII sealing: keys and lookup salt together; production needs both.
 	rawKeys, rawSalt := get("DOORSTEP_PII_KEYS"), getenv("DOORSTEP_PII_LOOKUP_SALT")
 	switch {
 	case rawKeys == "" && rawSalt == "":
-		if prod {
-			fail("DOORSTEP_PII_KEYS and DOORSTEP_PII_LOOKUP_SALT are required in production: addresses, Aadhaar-derived fields, PAN and payout accounts are sealed")
+		if prod || get("PARTNER_DEV_PHONE_OTP_ENABLED") == "true" {
+			fail("DOORSTEP_PII_KEYS and DOORSTEP_PII_LOOKUP_SALT are required for production or partner intake: PAN and payout accounts must be encrypted")
 		}
 	case rawKeys == "" || rawSalt == "":
 		fail("DOORSTEP_PII_KEYS and DOORSTEP_PII_LOOKUP_SALT must be set together")

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,6 +43,9 @@ func (h *Handler) CreateTicket(c *gin.Context) {
 		Detail:     req.Detail,
 	})
 	if err != nil {
+		if writeSupportError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_TICKET_FAILED", err.Error(), nil)
 		return
 	}
@@ -195,6 +199,9 @@ func (h *Handler) CreateRefundRequest(c *gin.Context) {
 	}
 	r, err := h.svc.CreateRefundRequest(c.Request.Context(), uid, req.OrderID, req.TicketID, req.Amount, req.Reason)
 	if err != nil {
+		if writeSupportError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "REFUND_CREATE_FAILED", err.Error(), nil)
 		return
 	}
@@ -224,6 +231,9 @@ func (h *Handler) AdminDecideRefund(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DecideRefund(c.Request.Context(), uid, rid, req.Status, req.Reason); err != nil {
+		if writeSupportError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REFUND_DECIDE_FAILED", err.Error(), nil)
 		return
 	}
@@ -232,4 +242,22 @@ func (h *Handler) AdminDecideRefund(c *gin.Context) {
 
 func isAdminScope(scopes string) bool {
 	return hasAnyScope(scopes, "admin", "superadmin", "moderator")
+}
+
+func writeSupportError(c *gin.Context, err error) bool {
+	for _, m := range []struct {
+		target error
+		status int
+		code   string
+	}{
+		{postgres.ErrSupportOrderForbidden, http.StatusForbidden, "FOOD_SUPPORT_ORDER_FORBIDDEN"},
+		{postgres.ErrInvalidRefundAmount, http.StatusUnprocessableEntity, "FOOD_REFUND_AMOUNT_INVALID"},
+		{postgres.ErrRefundDecisionConflict, http.StatusConflict, "FOOD_REFUND_DECISION_CONFLICT"},
+	} {
+		if errors.Is(err, m.target) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, m.status, m.code, err.Error(), nil)
+			return true
+		}
+	}
+	return writeKnownError(c, err)
 }

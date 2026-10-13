@@ -199,9 +199,10 @@ func (h *Handler) GetMyRides(c *gin.Context) {
 // views and only while a captain is assigned (revealOTPForCustomer).
 type customerRideView struct {
 	*store.Ride
-	OTP *string `json:"otp,omitempty"`
+	OTP             *string                     `json:"otp,omitempty"`
+	CaptainLocation *store.CustomerRideLocation `json:"captain_location,omitempty"`
 }
 
 func customerRide(r *store.Ride) customerRideView {
-	return customerRideView{Ride: r, OTP: r.OTPCode}
+	return customerRideView{Ride: r, OTP: r.OTPCode, CaptainLocation: r.CustomerLocation}
 }

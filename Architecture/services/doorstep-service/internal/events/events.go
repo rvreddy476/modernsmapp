@@ -17,6 +17,7 @@ const (
 	ProApplied          = "doorstep.pro.applied"
 	ProStatusChanged    = "doorstep.pro.status_changed"
 	ProDocumentReviewed = "doorstep.pro.document_reviewed"
+	ProChangeReviewed   = "doorstep.pro.change_reviewed"
 )
 
 // Envelope is the Kafka value.
@@ -64,6 +65,15 @@ type ProDocumentReviewedData struct {
 	DocumentID uuid.UUID `json:"document_id"`
 	Kind       string    `json:"kind"`
 	Decision   string    `json:"decision"`
+}
+
+// Review outcomes contain no proposed profile values, documents or review notes.
+type ProChangeReviewedData struct {
+	ProID     uuid.UUID `json:"pro_id"`
+	ProUserID uuid.UUID `json:"pro_user_id"`
+	ChangeID  uuid.UUID `json:"change_id"`
+	Kind      string    `json:"kind"`
+	Decision  string    `json:"decision"`
 }
 
 // Booking event types (A3).
@@ -306,6 +316,7 @@ type ProPriceReviewedData struct {
 // names the professional who let it go (null when there was none).
 type BookingProUnavailableData struct {
 	BookingCore
+	AssignmentMode    string     `json:"assignment_mode,omitempty"`
 	PreviousProUserID *uuid.UUID `json:"previous_pro_user_id"`
 	Cause             string     `json:"cause"`
 	ChoiceDeadline    time.Time  `json:"choice_deadline"`

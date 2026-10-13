@@ -144,6 +144,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		{
 			deliveryProof.POST("/:orderId/proof", h.PartnerAttachProof)
 			deliveryProof.GET("/:orderId/batch", h.GetBatchForOrder)
+			deliveryProof.POST("/:orderId/batch/route-preview", h.PreviewBatchRoute)
 		}
 
 		delivery := v1.Group("/delivery", h.requireAuthenticated())
@@ -361,7 +362,7 @@ func (h *Handler) AddCartItem(c *gin.Context) {
 			return
 		}
 		// Serviceability refusals answer exactly as POST /orders does.
-		if errors.Is(err, postgres.ErrAddonInvalid) || errors.Is(err, postgres.ErrCartAddressNotFound) || postgres.IsServiceabilityRefusal(err) {
+		if errors.Is(err, postgres.ErrCartItemUnavailable) || errors.Is(err, postgres.ErrCartVariantInvalid) || errors.Is(err, postgres.ErrAddonInvalid) || errors.Is(err, postgres.ErrCartAddressNotFound) || postgres.IsServiceabilityRefusal(err) {
 			writeKnownError(c, err)
 			return
 		}
@@ -1475,6 +1476,9 @@ func (h *Handler) SetDeliveryAvailability(c *gin.Context) {
 	}
 	partner, err := h.svc.SetDeliveryAvailability(c.Request.Context(), userID, body.IsOnline)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_DELIVERY_AVAILABILITY_FAILED", err.Error(), nil)
 		return
 	}

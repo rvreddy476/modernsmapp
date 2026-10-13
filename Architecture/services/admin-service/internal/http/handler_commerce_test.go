@@ -23,12 +23,12 @@ func commerceCase(rt productRoute) string {
 
 func TestCommerceRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(CommerceRoutes) != 28 {
-		t.Fatalf("CommerceRoutes has %d entries, want 28", len(CommerceRoutes))
+	if len(CommerceRoutes) != 44 {
+		t.Fatalf("CommerceRoutes has %d entries, want 44", len(CommerceRoutes))
 	}
 	kycStubAnyDocument(rg)
 	for _, rt := range CommerceRoutes {
-		if rt.operation == opSellerKYCDocumentView {
+		if rt.operation == opSellerKYCDocumentView || rt.operation == "delivery.document_view" {
 			// Two commerce calls per view (list, then image); its permission,
 			// token and audit row are checked in handler_commerce_kyc_test.go.
 			continue
@@ -56,8 +56,12 @@ func TestCommerceRoutes_StepUpAndTwoPerson(t *testing.T) {
 		stepUpCase(t, rg, commercePrefix, commerceAll, rt, commerceCase(rt), rt.stepUp)
 	}
 	want := map[string]bool{
+		"delivery.evidence.view": true,
+		"delivery.job.cancel":    true, "delivery.job.retry": true, "delivery.support.resolve": true,
+		"delivery.area.create": true, "delivery.area.update": true, "delivery.area.seller.update": true,
 		opSellerSuspend: true, opSellerUnsuspend: true, opSellerKYCVerify: true, opPayoutsPending: true, opCODSettle: true,
 		opSellerKYCDocumentView: true, opCouponCreate: true, opCouponUpdate: true,
+		"delivery.document_view": true, "delivery.review": true,
 	}
 	for _, rt := range CommerceRoutes {
 		if rt.stepUp != want[rt.operation] {

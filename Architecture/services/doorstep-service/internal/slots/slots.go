@@ -215,17 +215,6 @@ func BlockFor(start time.Time, r Request) Interval {
 // no overlapping active block, under the daily cap. (Reschedule: the store
 // leaves the booking's own block out of Blocks and JobsByDay.)
 func FreeAt(p Pro, start time.Time, r Request) (string, bool) {
-	day := midnight(start)
-	clear := false
-	for _, bg := range p.BackgroundClear {
-		if !bg.From.After(day) && bg.Until.After(day) {
-			clear = true
-			break
-		}
-	}
-	if !clear {
-		return ReasonBackground, false
-	}
 	local := start.In(IST)
 	startMin := local.Hour()*60 + local.Minute()
 	endMin := startMin + r.DurationMinutes
@@ -507,16 +496,6 @@ func ASAPFor(p Pro, now time.Time, r Request) ASAPWindow {
 // hours do not apply: being on duty is the professional's availability.
 func FreeASAP(p Pro, w ASAPWindow, cfg Config) (string, bool) {
 	day := midnight(w.Start)
-	clear := false
-	for _, bg := range p.BackgroundClear {
-		if !bg.From.After(day) && bg.Until.After(day) {
-			clear = true
-			break
-		}
-	}
-	if !clear {
-		return ReasonBackground, false
-	}
 	open := day.Add(time.Duration(cfg.OpenMinute) * time.Minute)
 	close := day.Add(time.Duration(cfg.CloseMinute) * time.Minute)
 	if w.Start.Before(open) || w.End.After(close) || DayKey(w.Start) != DayKey(w.End) {

@@ -38,6 +38,13 @@ func (f *dispatchFakeStore) ListUnbatchedReadyOrders(context.Context, int) ([]po
 	return f.ready, nil
 }
 
+func (f *dispatchFakeStore) ListPendingDeliveryBatches(context.Context, int) ([]postgres.PendingDeliveryBatch, error) {
+	return nil, nil
+}
+func (f *dispatchFakeStore) CreateSequentialDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, batchID *uuid.UUID, distance float64) (*postgres.DeliveryOffer, error) {
+	return f.CreateDeliveryOffer(ctx, orderID, partnerID, time.Now().Add(20*time.Second), &distance)
+}
+
 func (f *dispatchFakeStore) ListDispatchCandidates(_ context.Context, q postgres.DispatchQuery) ([]postgres.DispatchCandidate, error) {
 	f.queries = append(f.queries, q)
 	return f.cands, nil

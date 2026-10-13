@@ -5,7 +5,8 @@ package service
 // THE RULES
 //
 //  1. An admin session is a separate session KIND (auth.sessions.kind =
-//     'admin'). It is created ONLY by AdminVerify2FA and its tokens are only
+//     'admin'). It is created by AdminVerify2FA (or the explicit, keyed local
+//     password-login mode) and its tokens are only
 //     ever written to the host-only admin_* cookies by the
 //     /v1/auth/admin-session/* routes. Its access tokens carry sk=admin.
 //  2. Sign-in is two steps and the second is always TOTP: AdminLogin checks
@@ -13,7 +14,8 @@ package service
 //     permission and has TOTP enrolled, and returns a pending token (never a
 //     session). AdminVerify2FA accepts ONLY a TOTP code (a recovery code is
 //     not an admin factor) and creates the session with amr [pwd, otp], so its
-//     tokens carry admin_mfa=true. There is no password-only admin session.
+//     tokens carry admin_mfa=true. The keyed local-only exception carries
+//     admin_mfa=false and cannot satisfy MFA or sensitive step-up checks.
 //  3. Pending admin sign-ins live under their own Redis prefix, so the
 //     consumer POST /v1/auth/2fa/verify cannot complete one and the admin
 //     route cannot complete a consumer one.
@@ -88,6 +90,24 @@ type AdminLoginChallenge struct {
 	Requires2FA  bool      `json:"requires_2fa"`
 	PendingToken string    `json:"pending_token"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// LocalSession is consumed by the HTTP handler to set cookies. NEVER
+	// serialize AuthResponse here: that would expose tokens in the body.
+	LocalSession *AuthResponse `json:"-"`
+}
+
+type localAdminPasswordKey struct{}
+
+// WithLocalAdminPasswordLogin is called only after the HTTP handler verifies
+// the server-only key. Ordinary admin login and consumer login remain MFA-gated.
+func WithLocalAdminPasswordLogin(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localAdminPasswordKey{}, true)
+}
+
+const AMRLocalAdminPassword = "local_admin_password"
+
+func (s *Service) localAdminSession(sess *store.Session) bool {
+	return s.cfg.AdminLocalPasswordLoginEnabled() && sess != nil && sess.IsAdmin() &&
+		hasAMR(sess.AMR, AMRPassword) && hasAMR(sess.AMR, AMRLocalAdminPassword)
 }
 
 type adminPendingSignIn struct {
@@ -100,6 +120,16 @@ type adminPendingSignIn struct {
 // adminEligible re-checks, from live state, that user may hold an admin
 // session: active, at least one admin permission, TOTP enrolled.
 func (s *Service) adminEligible(ctx context.Context, user *store.User) error {
+	if err := s.adminAccountEligible(ctx, user); err != nil {
+		return err
+	}
+	if !user.TwoFactorEnabled {
+		return ErrTOTPNotEnrolled
+	}
+	return nil
+}
+
+func (s *Service) adminAccountEligible(ctx context.Context, user *store.User) error {
 	if user == nil || user.AccountStatus != store.AccountStatusActive {
 		return ErrAdminAccountInactive
 	}
@@ -110,9 +140,6 @@ func (s *Service) adminEligible(ctx context.Context, user *store.User) error {
 	}
 	if adminEmpty(perms) {
 		return ErrNotAdmin
-	}
-	if !user.TwoFactorEnabled {
-		return ErrTOTPNotEnrolled
 	}
 	return nil
 }
@@ -140,6 +167,33 @@ func (s *Service) AdminLogin(ctx context.Context, identifier, password, ip, user
 	}
 	// Only the account's owner reaches the checks below, so their distinct
 	// answers reveal nothing to a guesser.
+	if local, _ := ctx.Value(localAdminPasswordKey{}).(bool); local && s.cfg.AdminLocalPasswordLoginEnabled() {
+		if err := s.adminAccountEligible(ctx, user); err != nil {
+			return nil, err
+		}
+		if s.rdb == nil {
+			return nil, errors.New("admin sign-in unavailable: no session store")
+		}
+		resp, sess, err := s.startSessionOfKind(ctx, user, "", AdminSessionPlatform, ip, userAgent,
+			[]string{AMRPassword, AMRLocalAdminPassword}, store.SessionKindAdmin, time.Hour)
+		if err != nil {
+			return nil, err
+		}
+		// Recheck role/active state after mint as well; a transient read or
+		// concurrent revoke must never finish an unchecked local login.
+		if err := s.adminAccountEligible(ctx, user); err != nil {
+			_ = s.RevokeSession(ctx, sess.ID)
+			return nil, err
+		}
+		s.log.Warn("LOCAL admin password sign-in; MFA not verified", "user_id", user.ID, "session_id", sess.ID)
+		if err := s.store.UpdateLastLogin(ctx, user.ID); err != nil {
+			s.log.Warn("failed to update local admin last login", "user_id", user.ID, "err", err)
+		}
+		if err := s.producer.PublishUserLoggedIn(ctx, user.ID, sess.ID, "", AdminSessionPlatform, ip); err != nil {
+			s.log.Warn("failed to publish local admin login", "user_id", user.ID, "err", err)
+		}
+		return &AdminLoginChallenge{LocalSession: resp}, nil
+	}
 	if err := s.adminEligible(ctx, user); err != nil {
 		return nil, err
 	}
@@ -268,6 +322,22 @@ func (s *Service) adminSessionTTL() time.Duration {
 // requireAdminFooting ends an admin session whose holder no longer qualifies
 // (called by the admin refresh before rotating).
 func (s *Service) requireAdminFooting(ctx context.Context, user *store.User, sess *store.Session) error {
+	if s.localAdminSession(sess) {
+		if err := s.adminAccountEligible(ctx, user); err != nil {
+			if errors.Is(err, ErrAdminPermissionsUnavailable) {
+				return err
+			}
+			_ = s.RevokeSession(ctx, sess.ID)
+			return ErrAdminAccessLost
+		}
+		return nil
+	}
+	// A local session cannot survive disabling the local password mode, even
+	// if the user has enrolled TOTP since signing in.
+	if hasAMR(sess.AMR, AMRLocalAdminPassword) {
+		_ = s.RevokeSession(ctx, sess.ID)
+		return ErrAdminAccessLost
+	}
 	if err := s.adminEligible(ctx, user); err != nil {
 		if errors.Is(err, ErrAdminPermissionsUnavailable) {
 			return err // transient: do not end the session over a DB blip
@@ -331,6 +401,9 @@ func (s *Service) AdminSessionStatusFor(ctx context.Context, userID, sessionID u
 	}
 	if user == nil {
 		return nil, ErrSessionNotLive
+	}
+	if err := s.requireAdminFooting(ctx, user, sess); err != nil {
+		return nil, err
 	}
 	_, claims := s.sessionClaims(ctx, user, sess, time.Time{})
 	out := &AdminSessionStatus{

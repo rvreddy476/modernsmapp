@@ -50,6 +50,7 @@ type ProPriceItem struct {
 // for it now (approved professional, skill verified, an approved option
 // price, a family the tax computer prices).
 type ProServicePricing struct {
+	PricingMode  string         `json:"pricing_mode,omitempty"`
 	ServiceID    uuid.UUID      `json:"service_id"`
 	ServiceName  string         `json:"service_name"`
 	CategorySlug string         `json:"category_slug"`

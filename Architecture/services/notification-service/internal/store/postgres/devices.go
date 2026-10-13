@@ -28,12 +28,15 @@ const (
 	// customer's booking updates go to Momentum, which hosts the Doorstep
 	// customer flow.
 	AppDoorstepPro = "doorstep_pro"
+	// AppPartner is the unified native partner install. Recipient authorization
+	// still comes from each business event, never from a device's app label.
+	AppPartner = "partner"
 )
 
 // ValidDeviceApp reports whether app is a known install target.
 func ValidDeviceApp(app string) bool {
 	switch app {
-	case AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain, AppDoorstepPro:
+	case AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain, AppDoorstepPro, AppPartner:
 		return true
 	}
 	return false
@@ -80,12 +83,13 @@ func (s *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, platform, 
 
 	// A token is minted by exactly one install, so the latest registration
 	// is authoritative about which app it belongs to.
-	_, err := s.db.Exec(ctx, `
+	err := s.db.QueryRow(ctx, `
 		INSERT INTO user_devices (id, user_id, platform, push_token, app, is_active, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (user_id, platform, push_token) DO UPDATE SET
 			is_active = TRUE, app = EXCLUDED.app, updated_at = $8
-	`, device.ID, device.UserID, device.Platform, device.PushToken, device.App, device.IsActive, device.CreatedAt, device.UpdatedAt)
+		RETURNING id
+	`, device.ID, device.UserID, device.Platform, device.PushToken, device.App, device.IsActive, device.CreatedAt, device.UpdatedAt).Scan(&device.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -138,11 +142,12 @@ func (s *Store) GetUserDevices(ctx context.Context, userID uuid.UUID) ([]UserDev
 
 // GetUserDevicesForApp returns the user's active devices registered for app.
 func (s *Store) GetUserDevicesForApp(ctx context.Context, userID uuid.UUID, app string) ([]UserDevice, error) {
+	includePartner := includesUnifiedPartner(app)
 	rows, err := s.db.Query(ctx, `
 		SELECT id, user_id, platform, push_token, app, is_active, created_at, updated_at
-		FROM user_devices WHERE user_id = $1 AND app = $2 AND is_active = TRUE
+		FROM user_devices WHERE user_id = $1 AND (app = $2 OR ($3 AND app = 'partner')) AND is_active = TRUE
 		ORDER BY updated_at DESC
-	`, userID, app)
+	`, userID, app, includePartner)
 	if err != nil {
 		return nil, err
 	}
@@ -157,4 +162,15 @@ func (s *Store) GetUserDevicesForApp(ctx context.Context, userID uuid.UUID, app 
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()
+}
+
+// Unified Partner is for delivery, rides and home services; merchants keep their own apps.
+func includesUnifiedPartner(app string) bool {
+	return app == AppFeastRider || app == AppMopeduCaptain || app == AppDoorstepPro
+}
+
+// DeviceAppReceives applies the same audience rule after lookup as in SQL.
+// A unified worker install may receive worker events, never merchant/customer events.
+func DeviceAppReceives(deviceApp, audienceApp string) bool {
+	return deviceApp == audienceApp || (deviceApp == AppPartner && includesUnifiedPartner(audienceApp))
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/atpost/food-service/internal/settlement"
 	"strings"
 	"time"
 
@@ -317,21 +318,29 @@ func (s *Store) PartnerRestaurantSummary(ctx context.Context, ownerID, restauran
 	if err := s.requireRestaurantOwner(ctx, ownerID, restaurantID); err != nil {
 		return nil, err
 	}
-	var orders, delivered, refunded int
-	var gross, commission, refunds float64
-	if err := s.db.QueryRow(ctx, `
-		SELECT COUNT(*)::int,
-			COUNT(*) FILTER (WHERE status = 'DELIVERED')::int,
-			COUNT(*) FILTER (WHERE status = 'REFUNDED')::int,
-			COALESCE(SUM(final_amount), 0)::float8,
-			COALESCE(SUM(commission_amount), 0)::float8,
-			COALESCE((SELECT SUM(amount) FROM food.refunds rf JOIN food.orders ro ON ro.id = rf.order_id WHERE ro.restaurant_id = $1), 0)::float8
-		FROM food.orders
-		WHERE restaurant_id = $1
-	`, restaurantID).Scan(&orders, &delivered, &refunded, &gross, &commission, &refunds); err != nil {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
 		return nil, err
 	}
-	return PartnerSummaryMap(restaurantID, orders, delivered, refunded, gross, commission, refunds), nil
+	defer tx.Rollback(ctx)
+	var orders, delivered, refunded int
+	if err = tx.QueryRow(ctx, `SELECT COUNT(*)::int, COUNT(*) FILTER(WHERE delivered_at IS NOT NULL)::int, COUNT(*) FILTER(WHERE status='REFUNDED')::int FROM food.orders WHERE restaurant_id=$1`, restaurantID).Scan(&orders, &delivered, &refunded); err != nil {
+		return nil, err
+	}
+	groups, err := loadSettlementOrdersTx(ctx, tx, time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC), &restaurantID)
+	if err != nil {
+		return nil, err
+	}
+	var supplied []settlement.Order
+	for _, g := range groups {
+		supplied = append(supplied, g.orders...)
+	}
+	line := settlement.ComputeRestaurant(supplied, s.settlementRules)
+	var paid, pending int64
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(COALESCE(payout_paise,ROUND(payout_amount*100)::bigint)) FILTER(WHERE status='PAID'),0)::bigint,COALESCE(SUM(COALESCE(payout_paise,ROUND(payout_amount*100)::bigint)) FILTER(WHERE status<>'PAID'),0)::bigint FROM food.restaurant_settlements WHERE restaurant_id=$1`, restaurantID).Scan(&paid, &pending); err != nil {
+		return nil, err
+	}
+	return restaurantFinanceSummary(restaurantID, orders, delivered, refunded, line, paid, pending), nil
 }
 
 func (s *Store) AdminListDeliverySettlements(ctx context.Context, page Pagination) ([]map[string]any, error) {
@@ -371,32 +380,7 @@ func (s *Store) AdminListDeliverySettlements(ctx context.Context, page Paginatio
 }
 
 func (s *Store) AdminMarkDeliverySettlementPaid(ctx context.Context, adminID, settlementID uuid.UUID, reference string) (map[string]any, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `
-		UPDATE food.delivery_partner_settlements
-		SET status = 'PAID', paid_reference = $3::text, paid_at = NOW(), created_by = COALESCE(created_by, $2)
-		WHERE id = $1
-	`, settlementID, adminID, reference)
-	if err != nil {
-		return nil, err
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, pgx.ErrNoRows
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO food.admin_audit_logs (actor_user_id, action, entity_type, entity_id, new_value)
-		VALUES ($1, 'delivery_settlement.mark_paid', 'delivery_partner_settlement', $2, jsonb_build_object('status', 'PAID', 'reference', $3::text))
-	`, adminID, settlementID, reference); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return map[string]any{"id": settlementID, "status": "PAID", "paid_reference": reference}, nil
+	return s.markSettlementPaid(ctx, adminID, settlementID, reference, "delivery")
 }
 
 func (s *Store) AdminAuditLogs(ctx context.Context, page Pagination) ([]map[string]any, error) {

@@ -114,6 +114,10 @@ type restaurantSettlementGroup struct {
 // after delivery; an order cancelled or rejected before delivery was never
 // supplied and is not settled.
 func loadSettlementOrdersTx(ctx context.Context, tx pgx.Tx, start, end time.Time, restaurantID *uuid.UUID) ([]restaurantSettlementGroup, error) {
+	return loadSettlementOrdersWindowTx(ctx, tx, start, end, restaurantID, "Asia/Kolkata", false)
+}
+
+func loadSettlementOrdersWindowTx(ctx context.Context, tx pgx.Tx, start, end time.Time, restaurantID *uuid.UUID, timezone string, excludePaid bool) ([]restaurantSettlementGroup, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT o.restaurant_id, o.id,
 			COALESCE(o.item_subtotal_paise, ROUND(o.item_subtotal * 100)::bigint),
@@ -131,11 +135,18 @@ func loadSettlementOrdersTx(ctx context.Context, tx pgx.Tx, start, end time.Time
 			o.tax_breakdown
 		FROM food.orders o
 		WHERE o.delivered_at IS NOT NULL
+			AND o.payment_status IN ('CAPTURED', 'REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED')
 			AND o.status IN ('DELIVERED', 'REFUND_PENDING', 'REFUNDED')
-			AND o.placed_at::date BETWEEN $1::date AND $2::date
+			AND (o.placed_at AT TIME ZONE $4)::date BETWEEN $1::date AND $2::date
 			AND ($3::uuid IS NULL OR o.restaurant_id = $3)
+			AND (NOT $5::boolean OR NOT EXISTS (
+			 SELECT 1 FROM food.restaurant_settlements paid
+			 WHERE paid.restaurant_id=o.restaurant_id AND paid.status='PAID'
+			 AND (o.placed_at AT TIME ZONE COALESCE(NULLIF(paid.breakdown->>'period_timezone',''),'UTC'))::date BETWEEN paid.period_start AND paid.period_end
+			 AND NOT (paid.period_start=$1::date AND paid.period_end=$2::date)
+			))
 		ORDER BY o.restaurant_id, o.placed_at, o.id
-	`, start.Format("2006-01-02"), end.Format("2006-01-02"), restaurantID)
+	`, start.Format("2006-01-02"), end.Format("2006-01-02"), restaurantID, timezone, excludePaid)
 	if err != nil {
 		return nil, err
 	}
@@ -169,13 +180,23 @@ func loadSettlementOrdersTx(ctx context.Context, tx pgx.Tx, start, end time.Time
 }
 
 func (s *Store) generateRestaurantSettlementsTx(ctx context.Context, tx pgx.Tx, adminID uuid.UUID, start, end time.Time, restaurantID *uuid.UUID) ([]map[string]any, error) {
-	groups, err := loadSettlementOrdersTx(ctx, tx, start, end, restaurantID)
+	groups, err := loadSettlementOrdersWindowTx(ctx, tx, start, end, restaurantID, "Asia/Kolkata", true)
 	if err != nil {
 		return nil, err
 	}
 	items := []map[string]any{}
 	for _, g := range groups {
+		if err := guardSettlementPeriodTx(ctx, tx, "restaurant", g.restaurantID, start, end); err != nil {
+			return nil, err
+		}
 		line := settlement.ComputeRestaurant(g.orders, s.settlementRules)
+		line.PeriodTimezone = "Asia/Kolkata"
+		adjustment, err := s.restaurantCarryForwardTx(ctx, tx, g.restaurantID)
+		if err != nil {
+			return nil, err
+		}
+		line.PriorPeriodAdjustmentPaise = adjustment
+		line.PayoutPaise -= adjustment
 		item, err := upsertRestaurantSettlementTx(ctx, tx, adminID, g.restaurantID, start, end, g.grossPaise, line)
 		if err != nil {
 			return nil, err
@@ -188,6 +209,11 @@ func (s *Store) generateRestaurantSettlementsTx(ctx context.Context, tx pgx.Tx, 
 func upsertRestaurantSettlementTx(ctx context.Context, tx pgx.Tx, adminID, restaurantID uuid.UUID, start, end time.Time, grossPaise int64, line settlement.Line) (map[string]any, error) {
 	startDate := start.Format("2006-01-02")
 	endDate := end.Format("2006-01-02")
+	var oldPayout int64
+	previousErr := tx.QueryRow(ctx, `SELECT COALESCE(payout_paise,ROUND(payout_amount*100)::bigint) FROM food.restaurant_settlements WHERE restaurant_id=$1 AND period_start=$2::date AND period_end=$3::date`, restaurantID, startDate, endDate).Scan(&oldPayout)
+	if previousErr != nil && !errors.Is(previousErr, pgx.ErrNoRows) {
+		return nil, previousErr
+	}
 	breakdown, err := json.Marshal(line)
 	if err != nil {
 		return nil, err
@@ -237,16 +263,26 @@ func upsertRestaurantSettlementTx(ctx context.Context, tx pgx.Tx, adminID, resta
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Already PAID: left as it is.
+		var stored []byte
 		err = tx.QueryRow(ctx, `
-			SELECT id::text, status::text
+			SELECT id::text, status::text, breakdown,
+			 COALESCE(gross_order_paise, ROUND(gross_order_amount * 100)::bigint)
 			FROM food.restaurant_settlements
 			WHERE restaurant_id = $1 AND period_start = $2::date AND period_end = $3::date
 			ORDER BY created_at DESC
 			LIMIT 1
-		`, restaurantID, startDate, endDate).Scan(&id, &status)
+		`, restaurantID, startDate, endDate).Scan(&id, &status, &stored, &grossPaise)
+		if err == nil && len(stored) > 0 {
+			err = json.Unmarshal(stored, &line)
+		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	if status != "PAID" && (errors.Is(previousErr, pgx.ErrNoRows) || oldPayout != line.PayoutPaise) {
+		if err := enqueueSettlementGeneratedTx(ctx, tx, "restaurant", restaurantID, id, line.PayoutPaise, startDate, endDate); err != nil {
+			return nil, err
+		}
 	}
 	return map[string]any{
 		"id": id, "restaurant_id": restaurantID.String(), "period_start": startDate, "period_end": endDate,
@@ -267,8 +303,14 @@ func (s *Store) generateDeliverySettlementsTx(ctx context.Context, tx pgx.Tx, ad
 		FROM food.delivery_assignments da
 		WHERE da.status = 'DELIVERED'
 			AND da.delivery_partner_id IS NOT NULL
-			AND da.delivered_at::date BETWEEN $1::date AND $2::date
+			AND (da.delivered_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1::date AND $2::date
 			AND ($3::uuid IS NULL OR da.delivery_partner_id = $3)
+			AND NOT EXISTS (
+			 SELECT 1 FROM food.delivery_partner_settlements paid
+			 WHERE paid.delivery_partner_id=da.delivery_partner_id AND paid.status='PAID'
+			 AND (da.delivered_at AT TIME ZONE paid.period_timezone)::date BETWEEN paid.period_start AND paid.period_end
+			 AND NOT (paid.period_start=$1::date AND paid.period_end=$2::date)
+			)
 		ORDER BY da.delivery_partner_id, da.delivered_at, da.id
 	`, start.Format("2006-01-02"), end.Format("2006-01-02"), partnerID)
 	if err != nil {
@@ -297,6 +339,9 @@ func (s *Store) generateDeliverySettlementsTx(ctx context.Context, tx pgx.Tx, ad
 	}
 	items := []map[string]any{}
 	for _, g := range groups {
+		if err := guardSettlementPeriodTx(ctx, tx, "delivery", g.partnerID, start, end); err != nil {
+			return nil, err
+		}
 		item, err := upsertDeliverySettlementTx(ctx, tx, adminID, g.partnerID, start, end, settlement.ComputeDeliveryPartner(g.payouts))
 		if err != nil {
 			return nil, err
@@ -309,10 +354,16 @@ func (s *Store) generateDeliverySettlementsTx(ctx context.Context, tx pgx.Tx, ad
 func upsertDeliverySettlementTx(ctx context.Context, tx pgx.Tx, adminID, partnerID uuid.UUID, start, end time.Time, d settlement.DeliveryPartner) (map[string]any, error) {
 	startDate := start.Format("2006-01-02")
 	endDate := end.Format("2006-01-02")
+	var oldPayout int64
+	previousErr := tx.QueryRow(ctx, `SELECT COALESCE(payout_paise,ROUND(payout_amount*100)::bigint) FROM food.delivery_partner_settlements WHERE delivery_partner_id=$1 AND period_start=$2::date AND period_end=$3::date`, partnerID, startDate, endDate).Scan(&oldPayout)
+	if previousErr != nil && !errors.Is(previousErr, pgx.ErrNoRows) {
+		return nil, previousErr
+	}
 	var id, status string
 	err := tx.QueryRow(ctx, `
 		UPDATE food.delivery_partner_settlements
 		SET delivery_count = $4::integer,
+			period_timezone = 'Asia/Kolkata',
 			gross_earning_amount = ($5::bigint)::numeric / 100,
 			payout_amount = ($6::bigint)::numeric / 100,
 			gross_earning_paise = $5::bigint,
@@ -328,10 +379,10 @@ func upsertDeliverySettlementTx(ctx context.Context, tx pgx.Tx, adminID, partner
 		err = tx.QueryRow(ctx, `
 			INSERT INTO food.delivery_partner_settlements (
 				delivery_partner_id, period_start, period_end, delivery_count,
-				gross_earning_amount, payout_amount, gross_earning_paise, payout_paise, created_by
+				gross_earning_amount, payout_amount, gross_earning_paise, payout_paise, created_by, period_timezone
 			)
 			SELECT $1, $2::date, $3::date, $4::integer, ($5::bigint)::numeric / 100, ($6::bigint)::numeric / 100,
-				$5::bigint, $6::bigint, $7
+				$5::bigint, $6::bigint, $7, 'Asia/Kolkata'
 			WHERE NOT EXISTS (
 				SELECT 1 FROM food.delivery_partner_settlements
 				WHERE delivery_partner_id = $1 AND period_start = $2::date AND period_end = $3::date
@@ -341,15 +392,22 @@ func upsertDeliverySettlementTx(ctx context.Context, tx pgx.Tx, adminID, partner
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `
-			SELECT id::text, status::text
+			SELECT id::text, status::text, delivery_count,
+			 COALESCE(gross_earning_paise, ROUND(gross_earning_amount * 100)::bigint),
+			 COALESCE(payout_paise, ROUND(payout_amount * 100)::bigint)
 			FROM food.delivery_partner_settlements
 			WHERE delivery_partner_id = $1 AND period_start = $2::date AND period_end = $3::date
 			ORDER BY created_at DESC
 			LIMIT 1
-		`, partnerID, startDate, endDate).Scan(&id, &status)
+		`, partnerID, startDate, endDate).Scan(&id, &status, &d.DeliveryCount, &d.GrossEarningPaise, &d.PayoutPaise)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if status != "PAID" && (errors.Is(previousErr, pgx.ErrNoRows) || oldPayout != d.PayoutPaise) {
+		if err := enqueueSettlementGeneratedTx(ctx, tx, "delivery", partnerID, id, d.PayoutPaise, startDate, endDate); err != nil {
+			return nil, err
+		}
 	}
 	return map[string]any{
 		"id": id, "delivery_partner_id": partnerID.String(), "period_start": startDate,

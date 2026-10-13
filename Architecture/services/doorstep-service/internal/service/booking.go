@@ -97,12 +97,15 @@ func (s *Service) quotePlace(ctx context.Context, user, quoteID uuid.UUID, addre
 	if !f.Bookable {
 		return nil, notAvailable()
 	}
-	if f.Quote.ProID == uuid.Nil {
+	if f.Quote.ProID == uuid.Nil && f.Quote.AssignmentMode != "automatic" {
 		return nil, quoteExpired() // a quote from before professionals priced their own work
 	}
 	p := &slotPlace{City: f.Quote.CityCode, ZoneID: f.Quote.ZoneID, CategoryID: f.CategoryID, Lat: f.Lat, Lng: f.Lng,
 		Skill: f.RequiredSkill, QuoteFacts: f, ProIDs: []uuid.UUID{f.Quote.ProID}, ServiceID: f.Quote.ServiceID,
 		Req: slots.Request{DurationMinutes: f.Quote.DurationMinutes, GenderRule: f.GenderRule, RequireFemale: requireFemale}}
+	if f.Quote.AssignmentMode == "automatic" {
+		p.ProIDs = nil
+	}
 	if addressID != nil {
 		a, err := s.bk.Store.Address(ctx, user, *addressID)
 		if errors.Is(err, store.ErrNotFound) {
@@ -336,6 +339,10 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 	}
 	now := s.nowUTC()
 	f, a := p.QuoteFacts, p.Address
+	automatic := f.Quote.AssignmentMode == "automatic"
+	if automatic && asap {
+		return nil, apperr.Invalid("asap", "choose an available appointment time")
+	}
 	pro := f.Quote.ProID
 	var start, end, blockStart, blockEnd time.Time
 	holdMinutes := cfg.HoldMinutes
@@ -365,7 +372,7 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 		if aerr != nil {
 			return nil, aerr
 		}
-		if len(pros) != 1 || len(slots.Available(pros, start, p.Req)) != 1 {
+		if (!automatic && len(pros) != 1) || len(slots.Available(pros, start, p.Req)) == 0 {
 			return nil, slotUnavailable("professional_unavailable")
 		}
 		block := slots.BlockFor(start, p.Req)
@@ -373,7 +380,8 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 	}
 	id := s.bk.NewID()
 	nb := store.NewBooking{
-		ID: id, Customer: user, IdempotencyKey: idemKey, QuoteID: f.Quote.ID, CityCode: p.City, ZoneID: p.ZoneID,
+		AssignmentMode: f.Quote.AssignmentMode,
+		ID:             id, Customer: user, IdempotencyKey: idemKey, QuoteID: f.Quote.ID, CityCode: p.City, ZoneID: p.ZoneID,
 		CategoryID: f.CategoryID, CategorySlug: f.CategorySlug, ServiceID: f.Quote.ServiceID,
 		Address: store.AddressSnapshot{AddressID: a.ID, Label: a.Label, Locality: a.Locality, CityCode: a.CityCode, Pincode: a.Pincode,
 			Lat: a.Lat, Lng: a.Lng, ZoneID: a.ZoneID, CreatedAt: a.CreatedAt},
@@ -399,6 +407,11 @@ func (s *Service) CreateBooking(ctx context.Context, user uuid.UUID, idemKey str
 		return nil, apperr.New(http.StatusConflict, apperr.CodeSlotTaken, "this professional was just booked for this time; pick again")
 	case err != nil:
 		return nil, internal(ctx, "create booking", err)
+	}
+	if automatic {
+		if err := s.dispatchAutomatic(ctx, id); err != nil {
+			slog.ErrorContext(ctx, "automatic matching deferred to worker", "booking_id", id, "error", err)
+		}
 	}
 	return s.created(ctx, user, id)
 }
@@ -490,7 +503,7 @@ func paymentView(p store.PaymentRow) model.PaymentIntent {
 
 // customerCancellable are the statuses a customer may cancel from (in
 // progress is refused by the rules: no cancel after the start OTP).
-var customerCancellable = map[string]bool{"pending_payment": true, "confirmed": true, "assigned": true, "en_route": true, "arrived": true,
+var customerCancellable = map[string]bool{"matching": true, "pending_payment": true, "confirmed": true, "assigned": true, "en_route": true, "arrived": true,
 	"pro_unavailable": true}
 
 // reschedulable are the statuses a booking can move from.

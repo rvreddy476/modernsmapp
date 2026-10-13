@@ -12,6 +12,7 @@
           "tcs_paise": 290,
           "refund_share_paise": 9446,
           "payout_paise": 48438,
+          "prior_period_adjustment_paise": 0,
           "excluded_platform_fee_paise": 500,
           "excluded_delivery_fee_paise": 2900,
           "excluded_section_9_5_gst_paise": 0,

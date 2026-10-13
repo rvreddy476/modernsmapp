@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/doorstep-service/internal/dispatch"
 	doorstephttp "github.com/atpost/doorstep-service/internal/http"
 	"github.com/atpost/doorstep-service/internal/slots"
 	"github.com/google/uuid"
@@ -361,7 +362,7 @@ func TestASAPListAndBooking(t *testing.T) {
 	if p != ready {
 		t.Fatal("asap offer not to the picked professional")
 	}
-	if exp := dr.one(t, `SELECT offer_expires_at FROM doorstep.booking_assignments WHERE id = $1`, offer).(time.Time); !exp.Equal(dr.now.Add(3 * time.Minute)) {
+	if exp := dr.one(t, `SELECT offer_expires_at FROM doorstep.booking_assignments WHERE id = $1`, offer).(time.Time); !exp.Equal(dr.now.Add(dispatch.ASAPOfferWindow)) {
 		t.Fatalf("asap offer expires %v (now %v)", exp, dr.now)
 	}
 	// The T-45 and T-2 h rules leave an ASAP job alone.

@@ -29,11 +29,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/store"
-	sharedevents "github.com/atpost/shared/events"
 	"github.com/google/uuid"
 )
 
@@ -48,7 +46,7 @@ const (
 // requiredPartnerDocuments must each be verified before approval, plus the
 // RC of at least one vehicle. Whatever the current rule requires beyond
 // these is the admin's manual approval, which stays available.
-var requiredPartnerDocuments = []string{DocAadhaar, DocDrivingLicence, DocSelfie}
+var requiredPartnerDocuments = []string{DocDrivingLicence, DocSelfie}
 
 // CodeSelfieMediaRequired: a selfie (profile_photo) submitted without the
 // media-service id the face check needs.
@@ -134,39 +132,19 @@ func evaluateApproval(in ApprovalInput) ApprovalVerdict {
 	return v
 }
 
-// evaluatePartnerApproval runs the automatic checks (selfie compare, RC
-// pull for new vehicles) and then the approval rule, approving the partner
-// or publishing under_review. It never returns an error for a failed
-// automatic check (that leaves the document pending); only reads/writes
-// that failed.
+// evaluatePartnerApproval publishes review readiness only. Offline uploads,
+// selfies, vehicles and the final account all require human decisions.
 func (s *Service) evaluatePartnerApproval(ctx context.Context, partnerID uuid.UUID) (*OnboardingStatus, error) {
 	partner, err := s.store.GetPartner(ctx, partnerID)
 	if err != nil {
 		return nil, err
 	}
-	s.autoVerifySelfie(ctx, partner)
-	s.pullVehicleRCs(ctx, partner)
-
-	status, verdict, err := s.onboardingVerdict(ctx, partner)
+	status, _, err := s.onboardingVerdict(ctx, partner)
 	if err != nil {
 		return nil, err
 	}
-	if verdict.Approve {
-		approved, err := s.store.AutoApprovePartner(ctx, partner.ID, map[string]any{"reason": "all required documents verified"})
-		if err != nil {
-			return nil, fmt.Errorf("auto approve partner: %w", err)
-		}
-		if approved {
-			if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerApproved, partner.ID, partner.UserID, "approved", "auto: all required documents verified", store.SystemActorID); perr != nil {
-				slog.Warn("rider: publish partner.approved failed", "partner_id", partner.ID, "error", perr)
-			}
-			slog.Info("rider: partner approved automatically", "partner_id", partner.ID)
-		}
-		status.Status, status.PartnerStatus = OnboardingApproved, "approved"
-		return status, nil
-	}
 	if status.Status == OnboardingUnderReview {
-		s.publishUnderReviewOnce(ctx, partner, verdict.Pending)
+		s.publishUnderReviewOnce(ctx, partner, status.Pending)
 	}
 	return status, nil
 }
@@ -198,7 +176,8 @@ func (s *Service) onboardingVerdict(ctx context.Context, partner *store.Partner)
 	case partner.Status == "rejected" || partner.Status == "suspended" || partner.Status == "blocked":
 		st.Status = OnboardingBlocked
 	case verdict.Approve:
-		st.Status = OnboardingApproved
+		st.Status = OnboardingUnderReview
+		st.Pending = []string{"partner_approval"}
 	case len(verdict.Missing) > 0:
 		st.Status = OnboardingIncomplete
 	default:
@@ -210,22 +189,8 @@ func (s *Service) onboardingVerdict(ctx context.Context, partner *store.Partner)
 // publishUnderReviewOnce publishes rider.partner.under_review when the
 // pending set differs from the one last published for the partner.
 func (s *Service) publishUnderReviewOnce(ctx context.Context, partner *store.Partner, pending []string) {
-	last, recorded, err := s.store.UnderReviewPending(ctx, partner.ID)
-	if err != nil {
-		slog.Warn("rider: read last under_review failed", "partner_id", partner.ID, "error", err)
-		return
-	}
-	if recorded && strings.Join(last, ",") == strings.Join(pending, ",") {
-		return
-	}
 	if err := s.store.RecordUnderReview(ctx, partner.ID, pending); err != nil {
 		slog.Warn("rider: record under_review failed", "partner_id", partner.ID, "error", err)
-		return
-	}
-	if perr := s.producer.PublishPartnerUnderReview(ctx, sharedevents.RiderPartnerUnderReviewPayload{
-		PartnerID: partner.ID.String(), PartnerUserID: partner.UserID.String(), Pending: pending, OccurredAt: time.Now().UTC(),
-	}); perr != nil {
-		slog.Warn("rider: publish partner.under_review failed", "partner_id", partner.ID, "error", perr)
 	}
 }
 

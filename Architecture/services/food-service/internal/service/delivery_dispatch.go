@@ -8,23 +8,24 @@ import (
 
 	"github.com/atpost/food-service/internal/foodevents"
 	"github.com/atpost/food-service/internal/store/postgres"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/google/uuid"
 )
 
-// StartDeliveryDispatchWorker runs every 10 seconds. Three passes per
+// StartDeliveryDispatchWorker runs every two seconds. Three passes per
 // tick:
 //
 //  1. ExpireDeliveryOffers — flips any pending offer past its
 //     expires_at to `expired`. Keeps the partner's offer inbox clean.
 //  2. Group unbatched DELIVERY_ASSIGNING orders by restaurant within a
 //     5-minute window into batches of up to 3 (P2 — delivery batching).
-//  3. For each batch (singletons included), mint up to 5 offers to
-//     nearby online partners with a 25-second TTL.
+//  3. Offer each group to one eligible nearby partner for 20 seconds.
+//     Previously tried partners are skipped; existing batches are retained.
 //
 // Partners get the push via the food.delivery_partner.{user_id}.assignments
 // realtime topic plus an outbox food.delivery.offered event for FCM.
 func (s *Service) StartDeliveryDispatchWorker(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	slog.Info("food-service: delivery dispatch worker started")
 	for {
@@ -46,17 +47,27 @@ func (s *Service) StartDeliveryDispatchWorker(ctx context.Context) {
 }
 
 const (
-	offerTTL        = 25 * time.Second
-	offersPerOrder  = 5
-	batchWindow     = 5 * time.Minute
-	maxBatchSize    = 3
+	offerTTL       = 20 * time.Second
+	offersPerOrder = 100 // candidates scanned; only one receives an offer
+	batchWindow    = 5 * time.Minute
+	maxBatchSize   = 3
 )
 
 // dispatchPendingOrders pulls ready (DELIVERY_ASSIGNING) orders that
 // don't yet have an offer + groups them into batches by restaurant +
 // 5-min placed_at window. Each batch (or singleton order) gets one
-// round of offers fanned out to nearby partners.
+// sequential offer. Its event is committed in the store transaction.
 func (s *Service) dispatchPendingOrders(ctx context.Context) error {
+	batches, err := s.store.ListPendingDeliveryBatches(ctx, 25)
+	if err != nil {
+		return err
+	}
+	for _, b := range batches {
+		g := newOrderGroup(b.Anchor)
+		if g.restaurantLat != nil && g.restaurantLng != nil {
+			s.dispatchSequential(ctx, g, b.Anchor.OrderID, &b.BatchID)
+		}
+	}
 	ready, err := s.store.ListUnbatchedReadyOrders(ctx, 25)
 	if err != nil {
 		return err
@@ -144,27 +155,31 @@ func (s *Service) dispatchCandidates(ctx context.Context, g orderGroup) ([]postg
 }
 
 func (s *Service) dispatchOneOrder(ctx context.Context, g orderGroup, orderID uuid.UUID) {
+	s.dispatchSequential(ctx, g, orderID, nil)
+}
+
+func (s *Service) dispatchSequential(ctx context.Context, g orderGroup, orderID uuid.UUID, batchID *uuid.UUID) {
 	candidates, err := s.dispatchCandidates(ctx, g)
 	if err != nil {
 		slog.Warn("food-service: dispatch candidates failed", "order_id", orderID, "error", err)
 		return
 	}
-	expiresAt := time.Now().Add(offerTTL)
-	var offers []postgres.DeliveryOffer
-	var riders []uuid.UUID
 	for _, c := range candidates {
-		distance := c.DistanceKM
-		offer, err := s.store.CreateDeliveryOffer(ctx, orderID, c.PartnerID, expiresAt, &distance)
+		offer, err := s.store.CreateSequentialDeliveryOffer(ctx, orderID, c.PartnerID, batchID, c.DistanceKM)
 		if err != nil {
 			slog.Warn("food-service: create offer failed",
 				"order_id", orderID, "partner_id", c.PartnerID, "error", err)
+			return
+		}
+		if offer == nil {
 			continue
 		}
-		offers = append(offers, *offer)
-		riders = append(riders, c.UserID)
-	}
-	for i, view := range s.dispatchOfferViews(ctx, offers) {
-		s.emit(ctx, deliveryPartnerTopic(riders[i]), foodevents.DeliveryOffered, newDeliveryOfferedEvent(view, riders[i]))
+		for _, view := range s.dispatchOfferViews(ctx, []postgres.DeliveryOffer{*offer}) {
+			// The durable push intent was committed with the offer. Realtime is
+			// a best-effort hint only; the inbox is the authoritative readback.
+			s.publishRealtime(ctx, deliveryPartnerTopic(c.UserID), foodevents.DeliveryOffered, newDeliveryOfferedEvent(view, c.UserID))
+		}
+		return
 	}
 }
 
@@ -250,32 +265,7 @@ func (s *Service) dispatchOneBatch(ctx context.Context, g orderGroup) {
 		}
 		return
 	}
-	candidates, err := s.dispatchCandidates(ctx, g)
-	if err != nil {
-		slog.Warn("food-service: dispatch candidates failed", "batch_id", batch.ID, "error", err)
-		return
-	}
-	expiresAt := time.Now().Add(offerTTL)
-	anchor := g.orderIDs[0]
-	var offers []postgres.DeliveryOffer
-	var riders []uuid.UUID
-	for _, c := range candidates {
-		distance := c.DistanceKM
-		offer, err := s.store.CreateDeliveryOfferForBatch(ctx, batch.ID, anchor, c.PartnerID, expiresAt, &distance)
-		if err != nil {
-			slog.Warn("food-service: create batch offer failed",
-				"batch_id", batch.ID, "partner_id", c.PartnerID, "error", err)
-			continue
-		}
-		offers = append(offers, *offer)
-		riders = append(riders, c.UserID)
-	}
-	for i, view := range s.dispatchOfferViews(ctx, offers) {
-		s.emit(ctx, deliveryPartnerTopic(riders[i]), foodevents.DeliveryOffered,
-			newBatchDeliveryOfferedEvent(view, batch, riders[i]))
-	}
-	slog.Info("food-service: batch dispatched",
-		"batch_id", batch.ID, "size", len(g.orderIDs), "offered_to", len(candidates))
+	s.dispatchSequential(ctx, g, g.orderIDs[0], &batch.ID)
 }
 
 // ListMyPendingDeliveryOffers exposes the inbox view for the partner
@@ -404,9 +394,19 @@ func (s *Service) RiderVerifyDeliveryCode(ctx context.Context, riderUserID, assi
 	return v, nil
 }
 
-// AttachProofURL stores a MinIO object key as proof at pickup or drop.
-// `which` must be "pickup" or "delivery".
+// AttachProofURL retains the existing store seam but now accepts only the ID of
+// a private, processed image owned by the authenticated delivery partner.
 func (s *Service) AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, which, url string) error {
+	mediaID, err := uuid.Parse(url)
+	if err != nil || mediaID == uuid.Nil || (which != "pickup" && which != "delivery") {
+		return ownedmedia.ErrInvalid
+	}
+	if s.documentMedia == nil {
+		return ownedmedia.ErrUnavailable
+	}
+	if err := s.documentMedia.VerifyOwnedImage(ctx, userID, mediaID); err != nil {
+		return err
+	}
 	return s.store.AttachProofURL(ctx, userID, orderID, which, url)
 }
 

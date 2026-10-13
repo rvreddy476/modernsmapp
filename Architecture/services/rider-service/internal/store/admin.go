@@ -155,15 +155,27 @@ func (s *Store) ListPartners(ctx context.Context, f PartnerListFilter) ([]Partne
 // outage. Approval is the moment it matters most that the role is really
 // there.
 func (s *Store) SetPartnerApprovedAt(ctx context.Context, partnerID uuid.UUID) error {
+	return s.SetPartnerApprovedBy(ctx, partnerID, PartnerReview{})
+}
+
+func (s *Store) SetPartnerApprovedBy(ctx context.Context, partnerID uuid.UUID, review PartnerReview) error {
 	const q = `
         UPDATE rider_partners
         SET status      = 'approved',
             kyc_status  = 'approved',
             approved_at = NOW(),
             updated_at  = NOW()
-        WHERE id = $1 AND deleted_at IS NULL
+        WHERE id = $1 AND deleted_at IS NULL AND status IN ('draft','pending_verification')
+          AND EXISTS (SELECT 1 FROM (SELECT * FROM rider_partner_documents WHERE partner_id=rider_partners.id AND document_type='driving_license' ORDER BY created_at DESC,id DESC LIMIT 1) d
+            WHERE d.document_type='driving_license' AND d.status='approved' AND d.media_id IS NOT NULL
+            AND (d.expires_at IS NULL OR d.expires_at>NOW()))
+          AND EXISTS (SELECT 1 FROM (SELECT * FROM rider_partner_documents WHERE partner_id=rider_partners.id AND document_type='profile_photo' ORDER BY created_at DESC,id DESC LIMIT 1) d
+            WHERE d.document_type='profile_photo' AND d.status='approved' AND d.media_id IS NOT NULL)
+          AND EXISTS (SELECT 1 FROM rider_vehicles v JOIN rider_vehicle_documents d ON d.vehicle_id=v.id
+            WHERE v.partner_id=rider_partners.id AND v.status='approved' AND d.document_type='vehicle_rc'
+              AND d.status='approved' AND (d.expires_at IS NULL OR d.expires_at>NOW()))
         RETURNING user_id`
-	err := s.updatePartnerStatusTx(ctx, q, "approved", "rider partner approved", partnerID)
+	err := s.updatePartnerStatusWithReviewTx(ctx, q, "approved", "rider partner approved", review, partnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrPartnerNotFound
 	}

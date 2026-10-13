@@ -180,6 +180,8 @@ func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Cl
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) {
 	v1 := r.Group("/v1/auth")
+	v1.POST("/partner/phone/request", middleware.LoginRateLimit(h.rdb), h.partnerPhoneRequest)
+	v1.POST("/partner/phone/verify", middleware.LoginRateLimit(h.rdb), h.partnerPhoneVerify)
 	{
 		// Public routes
 		// SR-6: RETIRED. These generated a code, stored it, and sent nothing —
@@ -372,6 +374,7 @@ func (h *Handler) InternalGetUserContact(c *gin.Context) {
 		"user_id":        u.ID,
 		"email":          email,
 		"phone":          u.Phone,
+		"phone_verified": u.PhoneVerified,
 		"email_verified": u.EmailVerified,
 	}, nil)
 }

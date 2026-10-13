@@ -89,7 +89,7 @@ func TestVerifyPickupCode_RightCodeBelowTheCapPicksUp(t *testing.T) {
 	if err := s.VerifyPickupCode(ctx, owner, orderID, pickup); err != nil {
 		t.Fatalf("right code on attempt %d: %v", MaxPickupCodeAttempts, err)
 	}
-	assertOrderStatus(t, s, orderID, "PICKED_UP")
+	assertOrderStatus(t, s, orderID, "OUT_FOR_DELIVERY")
 }
 
 // ─── Placement ETA ─────────────────────────────────────────────────────────

@@ -96,7 +96,15 @@ func (s *Service) GetComplaint(ctx context.Context, complaintID, viewerID uuid.U
 		}
 		return nil, err
 	}
-	if !isAdmin && c.CustomerID != viewerID {
+	reporter, err := s.store.PartnerComplaintReporter(ctx, complaintID)
+	if err != nil {
+		return nil, err
+	}
+	owner := c.CustomerID
+	if reporter != nil {
+		owner = *reporter
+	}
+	if !isAdmin && owner != viewerID {
 		return nil, fmt.Errorf("forbidden: complaint does not belong to user")
 	}
 	return c, nil
@@ -134,6 +142,13 @@ func (s *Service) UpdateComplaintStatus(ctx context.Context, complaintID, adminI
 		}
 		return nil, err
 	}
+	reporter, err := s.store.PartnerComplaintReporter(ctx, c.ID)
+	if err != nil {
+		return nil, err
+	}
+	if reporter != nil {
+		return c, nil
+	} // partner event committed in the store transaction
 	payload := events.ComplaintPayload{
 		ComplaintID: c.ID.String(),
 		RideID:      c.RideID.String(),

@@ -109,6 +109,9 @@ func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID
 	if partnerID == nil {
 		return fmt.Errorf("%w: no delivery partner holds this order", ErrAssignmentNotReady)
 	}
+	if (assignmentStatus == "PICKED_UP" || assignmentStatus == "ARRIVED_AT_CUSTOMER" || assignmentStatus == "DELIVERED") && codeMatches(storedCode, code) {
+		return nil // A lost HTTP response must not turn a verified handoff into an error.
+	}
 	switch assignmentStatus {
 	case "ACCEPTED", "ARRIVED_AT_RESTAURANT":
 	default:
@@ -140,6 +143,14 @@ func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID
 	if err := transitionOrderTx(ctx, tx, OrderTransition{
 		OrderID: orderID, From: orderStatus, To: orderstate.PickedUp,
 		Actor: orderstate.ActorRestaurant, ChangedBy: &ownerID, Reason: "pickup code verified",
+	}); err != nil {
+		return err
+	}
+	// Restaurant handoff is when the food starts travelling, not arrival at
+	// the customer's door. Preserve both milestones in the same transaction.
+	if err := transitionOrderTx(ctx, tx, OrderTransition{
+		OrderID: orderID, From: orderstate.PickedUp, To: orderstate.OutForDelivery,
+		Actor: orderstate.ActorSystem, Reason: "verified pickup; delivery partner is on the way",
 	}); err != nil {
 		return err
 	}
@@ -207,6 +218,9 @@ func (s *Store) RiderVerifyDeliveryCode(ctx context.Context, riderUserID, assign
 		return nil, err
 	}
 	// Only after pickup: a leaked code cannot mark an order delivered early.
+	if assignmentStatus == "DELIVERED" && orderStatus == orderstate.Delivered && codeMatches(storedCode, code) {
+		return &v, nil // No second completion event or earnings credit.
+	}
 	if assignmentStatus != "PICKED_UP" && assignmentStatus != "ARRIVED_AT_CUSTOMER" {
 		return nil, fmt.Errorf("%w: assignment is %s", ErrAssignmentNotReady, assignmentStatus)
 	}
@@ -255,15 +269,18 @@ func (s *Store) RiderVerifyDeliveryCode(ctx context.Context, riderUserID, assign
 	return &v, nil
 }
 
-// AttachProofURL is the partner-side photo upload (MinIO key returned
-// from a presign endpoint). `which` is `pickup` or `delivery`.
+// AttachProofURL persists a verified private media ID, never an external URL.
 func (s *Store) AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, which, url string) error {
+	mediaID, err := uuid.Parse(url)
+	if err != nil || mediaID == uuid.Nil {
+		return fmt.Errorf("invalid proof media id")
+	}
 	col := ""
 	switch which {
 	case "pickup":
-		col = "proof_of_pickup_url"
+		col = "proof_of_pickup_media_id"
 	case "delivery":
-		col = "proof_of_delivery_url"
+		col = "proof_of_delivery_media_id"
 	default:
 		return fmt.Errorf("invalid proof type: %s", which)
 	}
@@ -272,7 +289,9 @@ func (s *Store) AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, w
 		SET `+col+` = $3
 		FROM food.delivery_partners dp
 		WHERE da.order_id = $1 AND dp.id = da.delivery_partner_id AND dp.user_id = $2
-	`, orderID, userID, url)
+		AND da.status IN ('ACCEPTED','ARRIVED_AT_RESTAURANT','PICKED_UP','ARRIVED_AT_CUSTOMER')
+		AND (`+col+` IS NULL OR `+col+` = $3)
+	`, orderID, userID, mediaID)
 	if err != nil {
 		return err
 	}

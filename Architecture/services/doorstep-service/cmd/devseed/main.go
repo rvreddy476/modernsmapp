@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 
@@ -20,6 +21,9 @@ import (
 )
 
 func main() {
+	catalogueOnly := flag.Bool("catalogue-only", false, "Add menu items only, without prices, coverage or policy configuration")
+	testPartners := flag.Bool("test-partners", false, "Seed two fictional AC partners in the dedicated loopback sandbox database only")
+	flag.Parse()
 	if !runtimeenv.IsDevelopment(os.Getenv) {
 		slog.Error("refusing to seed", "error", devseed.ErrNotDevelopment)
 		os.Exit(1)
@@ -30,6 +34,16 @@ func main() {
 		os.Exit(1)
 	}
 	ctx := context.Background()
+	if *testPartners {
+		if *catalogueOnly {
+			slog.Error("test-partners cannot be combined with catalogue-only")
+			os.Exit(1)
+		}
+		if err := devseed.RequirePartnerSandbox(dsn, os.Getenv); err != nil {
+			slog.Error("refusing sandbox seed", "error", err)
+			os.Exit(1)
+		}
+	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		slog.Error("parse dsn", "error", err)
@@ -46,10 +60,25 @@ func main() {
 		slog.Error("migrate", "error", err)
 		os.Exit(1)
 	}
-	if err := devseed.Run(ctx, pool, os.Getenv); err != nil {
+	seed := devseed.Run
+	if *catalogueOnly {
+		seed = devseed.RunCatalogue
+	}
+	if err := seed(ctx, pool, os.Getenv); err != nil {
 		slog.Error("seed", "error", err)
 		os.Exit(1)
 	}
+	if *testPartners {
+		if err := devseed.SeedTestPartners(ctx, pool, os.Getenv); err != nil {
+			slog.Error("sandbox seed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("Two fictional AC partners prepared in the isolated sandbox; not public accounts")
+	}
 	cats, svcs, opts, addons, rates := devseed.Counts()
-	slog.Info("Hyderabad seed applied", "categories", cats, "services", svcs, "options", opts, "addons", addons, "rate_cards", rates)
+	if *catalogueOnly {
+		slog.Info("Development catalogue applied; prices and coverage unchanged", "categories", cats, "services", svcs, "options", opts, "addons", addons)
+		return
+	}
+	slog.Info("Development seed applied", "catalogue_only", *catalogueOnly, "categories", cats, "services", svcs, "options", opts, "addons", addons, "rate_cards", rates)
 }

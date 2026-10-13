@@ -9,6 +9,7 @@ import (
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 )
@@ -52,6 +53,7 @@ func writeRiderKYCError(c *gin.Context, err error) {
 		message string
 	}
 	for _, m := range []mapped{
+		{ownedmedia.ErrUnavailable, http.StatusServiceUnavailable, "FOOD_DOCUMENT_STORAGE_UNAVAILABLE", "Document storage is unavailable; your draft is kept, try again shortly"},
 		{service.ErrDigiLockerNotConfigured, http.StatusServiceUnavailable, "FOOD_DIGILOCKER_NOT_CONFIGURED", "DigiLocker verification is not available yet"},
 		{service.ErrDigiLockerProvider, http.StatusBadGateway, "FOOD_DIGILOCKER_PROVIDER_FAILED", "DigiLocker could not complete the verification; start again"},
 		{postgres.ErrDigiLockerStateNotFound, http.StatusUnprocessableEntity, "FOOD_DIGILOCKER_STATE_INVALID", "this verification link is not recognised; start again"},

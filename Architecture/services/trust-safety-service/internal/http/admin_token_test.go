@@ -226,6 +226,7 @@ func TestAdminToken_InternalFamilyRefusesKeyAndForgedActor(t *testing.T) {
 
 // adminRouteTable is every token route and the permissions that admit it.
 var adminRouteTable = map[string][]string{
+	"POST " + InternalAdminPrefix + "/grievances": {PermGrievancesAct},
 	"GET " + InternalAdminPrefix + "/stats":                        {PermStatsRead},
 	"GET " + InternalAdminPrefix + "/reports":                      {PermReportsRead},
 	"GET " + InternalAdminPrefix + "/reports/:id":                  {PermReportsRead},

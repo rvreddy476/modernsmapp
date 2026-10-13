@@ -105,7 +105,16 @@ func (h *Handler) CreateShipment(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SHIPMENT_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, gin.H{"shipments": shipments}, nil)
+	readyCodes, err := h.svc.ReadySellerLocalShipments(c.Request.Context(), userID, orderID)
+	if err != nil {
+		deliveryError(c, err)
+		return
+	}
+	response := gin.H{"shipments": shipments}
+	if len(readyCodes) > 0 {
+		response["local_pickup_codes"] = readyCodes
+	}
+	api.JSON(c.Writer, http.StatusCreated, response, nil)
 }
 
 type createShipmentReq struct {
@@ -151,7 +160,22 @@ func (h *Handler) ListShipments(c *gin.Context) {
 	if out == nil {
 		out = []service.ShipmentWithEvents{}
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"shipments": out}, nil)
+	response := gin.H{"shipments": out}
+	userID, _ := getUserID(c)
+	for _, item := range out {
+		if item.DeliveryJob != nil {
+			codes, codeErr := h.svc.SellerLocalPickupCodes(c.Request.Context(), userID, orderID)
+			if codeErr != nil {
+				deliveryError(c, codeErr)
+				return
+			}
+			if len(codes) > 0 {
+				response["local_pickup_codes"] = codes
+			}
+			break
+		}
+	}
+	api.JSON(c.Writer, http.StatusOK, response, nil)
 }
 
 // IssueInvoice — Phase 0.4: gated to sellers on the order (same rationale

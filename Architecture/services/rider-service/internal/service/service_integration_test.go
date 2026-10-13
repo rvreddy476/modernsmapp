@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/rider-service/database"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -34,6 +35,9 @@ func newIntegrationService(t *testing.T) (*Service, *wallet.MockClient, func()) 
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), database.SetupSQL); err != nil {
+		t.Fatalf("base test schema: %v", err)
 	}
 	if err := database.BootstrapSchema(context.Background(), pool); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -63,6 +67,7 @@ func newIntegrationService(t *testing.T) (*Service, *wallet.MockClient, func()) 
 	st := store.New(pool)
 	mock := wallet.NewMockClient()
 	svc := New(st, mock, Config{})
+	svc.WithDocumentMedia(ownedmedia.Func(func(context.Context, uuid.UUID, uuid.UUID) error { return nil }))
 	svc.SetOTPCrypto(testOTPCrypto(t))
 	return svc, mock, func() { pool.Close() }
 }
@@ -191,6 +196,7 @@ func TestSubmitKYCDocument_TransitionsStatus(t *testing.T) {
 	doc, err := svc.SubmitKYCDocument(context.Background(), uid, p.ID, SubmitKYCDocumentRequest{
 		DocumentType: "driving_license",
 		FileURL:      "https://media.example/dl.jpg",
+		MediaID:      func() *uuid.UUID { value := uuid.New(); return &value }(),
 	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -220,12 +226,8 @@ func TestSubmitKYCDocument_AadhaarDropsRawNumber(t *testing.T) {
 		DocumentNumber: &rawNumber, // service MUST drop this
 		FileURL:        "https://media.example/aadhaar.jpg",
 	})
-	if err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	// DPDP audit: DocumentNumber must be nil after persistence for aadhaar.
-	if doc.DocumentNumber != nil {
-		t.Fatalf("DPDP violation: aadhaar document_number persisted: %v", *doc.DocumentNumber)
+	if err == nil || doc != nil {
+		t.Fatal("Aadhaar upload should be refused before storage")
 	}
 }
 

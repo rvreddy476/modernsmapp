@@ -67,6 +67,7 @@ func (paymentInbox) Claim(ctx context.Context, tx pgx.Tx, c paymentevents.Claim)
 }
 
 type paymentLock struct {
+	mode        string
 	snap        payments.Snapshot
 	paymentID   uuid.UUID
 	reservedPro *uuid.UUID
@@ -83,13 +84,13 @@ func (s *Store) applyPaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments
 		SELECT b.status, b.customer_user_id, b.reserved_pro_id, b.slot_start,
 		       b.slot_end + make_interval(mins => z.travel_buffer_minutes), b.paid_paise,
 		       p.id, p.amount_paise, p.status, p.payments_intent_id,
-		       EXISTS (SELECT 1 FROM doorstep.pro_calendar_blocks k WHERE k.booking_id = b.id AND k.kind = 'hold' AND k.active)
+		       EXISTS (SELECT 1 FROM doorstep.pro_calendar_blocks k WHERE k.booking_id = b.id AND k.kind = 'hold' AND k.active AND k.expires_at > $2),b.assignment_mode
 		FROM doorstep.bookings b
 		JOIN doorstep.zones z ON z.id = b.zone_id
 		JOIN doorstep.payments p ON p.booking_id = b.id AND p.reference_type = 'doorstep_booking'
 		WHERE b.id = $1
-		FOR UPDATE OF b, p`, ev.BookingID).Scan(&l.snap.BookingStatus, &l.snap.CustomerID, &l.reservedPro, &l.slotStart,
-		&l.blockEnd, &l.paidPaise, &l.paymentID, &l.snap.AmountPaise, &l.snap.PaymentStatus, &intent, &l.snap.HoldActive)
+		FOR UPDATE OF b, p`, ev.BookingID, at).Scan(&l.snap.BookingStatus, &l.snap.CustomerID, &l.reservedPro, &l.slotStart,
+		&l.blockEnd, &l.paidPaise, &l.paymentID, &l.snap.AmountPaise, &l.snap.PaymentStatus, &intent, &l.snap.HoldActive, &l.mode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		applied.Decision = payments.Decision{Outcome: payments.OutcomeBookingNotFound, Detail: "no such booking"}
 		return recordInboxTx(ctx, tx, ev.EventID, applied.Decision)
@@ -157,8 +158,12 @@ func (s *Store) confirmPaidTx(ctx context.Context, tx pgx.Tx, ev payments.Event,
 			return errors.New("store: confirming a booking whose hold is gone")
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE doorstep.bookings SET status = 'confirmed', confirmed_at = $2, hold_expires_at = NULL,
-		version = version + 1, updated_at = $2 WHERE id = $1`, ev.BookingID, at); err != nil {
+	next := "confirmed"
+	if l.mode == "automatic" {
+		next = "assigned"
+	}
+	if _, err := tx.Exec(ctx, `UPDATE doorstep.bookings SET status = $3, confirmed_at = $2, hold_expires_at = NULL,
+		version = version + 1, updated_at = $2 WHERE id = $1`, ev.BookingID, at, next); err != nil {
 		return err
 	}
 	from := l.snap.BookingStatus
@@ -167,7 +172,7 @@ func (s *Store) confirmPaidTx(ctx context.Context, tx pgx.Tx, ev payments.Event,
 		r := "payment captured after the hold lapsed; the professional was still free"
 		reason = &r
 	}
-	if err := historyTx(ctx, tx, ev.BookingID, &from, "confirmed", "payment_event", nil, reason, at); err != nil {
+	if err := historyTx(ctx, tx, ev.BookingID, &from, next, "payment_event", nil, reason, at); err != nil {
 		return err
 	}
 	core, err := bookingCoreTx(ctx, tx, ev.BookingID)
@@ -184,7 +189,7 @@ func (s *Store) confirmPaidTx(ctx context.Context, tx pgx.Tx, ev payments.Event,
 // in a savepoint); otherwise the capture is recorded and refunded in full.
 func (s *Store) lateCaptureTx(ctx context.Context, tx pgx.Tx, ev payments.Event, l paymentLock, at time.Time,
 	applied *payments.Applied) (payments.Decision, error) {
-	if (l.snap.BookingStatus == "expired" || l.snap.BookingStatus == "pending_payment") && l.reservedPro != nil && l.slotStart.After(at) {
+	if l.mode != "automatic" && (l.snap.BookingStatus == "expired" || l.snap.BookingStatus == "pending_payment") && l.reservedPro != nil && l.slotStart.After(at) {
 		if _, err := holdFirstTx(ctx, tx, ev.BookingID, []uuid.UUID{*l.reservedPro}, "booking", l.slotStart, l.blockEnd, nil); err == nil {
 			return payments.Decision{Outcome: payments.OutcomeLateCaptureConfirmed, Effect: payments.EffectConfirm},
 				s.confirmPaidTx(ctx, tx, ev, l, at, true)
@@ -203,6 +208,12 @@ func (s *Store) lateCaptureTx(ctx context.Context, tx pgx.Tx, ev payments.Event,
 	applied.RefundIDs = append(applied.RefundIDs, rid)
 	if l.snap.BookingStatus == "pending_payment" {
 		// The hold is gone without the sweeper: close the booking too.
+		if err := releaseBlocksTx(ctx, tx, ev.BookingID, at, "payment_expired"); err != nil {
+			return payments.Decision{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE doorstep.booking_assignments SET status='cancelled',updated_at=$2 WHERE booking_id=$1 AND status IN ('offered','accepted')`, ev.BookingID, at); err != nil {
+			return payments.Decision{}, err
+		}
 		if _, err := tx.Exec(ctx, `UPDATE doorstep.bookings SET status = 'expired', hold_expires_at = NULL, version = version + 1,
 			updated_at = $2 WHERE id = $1`, ev.BookingID, at); err != nil {
 			return payments.Decision{}, err

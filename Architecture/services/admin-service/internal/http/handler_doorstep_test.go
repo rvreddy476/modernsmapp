@@ -25,6 +25,8 @@ func doorstepCase(rt productRoute) (string, []reqOpt) {
 		return `{"resolution":"spoke to both sides"}`, nil
 	case "doorstep.document.decide":
 		return `{"decision":"approve","reason":"certificate is genuine"}`, nil
+	case "doorstep.professional.identity_review":
+		return `{"gender":"unknown","reason":"Manual identity review"}`, nil
 	case "doorstep.professional.skill.verify":
 		return `{"verified":true,"reason":"trade certificate seen"}`, nil
 	case "doorstep.pro_price.approve":
@@ -48,6 +50,10 @@ func doorstepCase(rt productRoute) (string, []reqOpt) {
 // approving a professional's price, which makes it live), and the
 // refund (which is two-person as well).
 var doorstepStepUp = map[string]bool{
+	"doorstep.partner_changes.list":                true,
+	"doorstep.partner_change.photo":                true,
+	"doorstep.evidence.view":                       true,
+	"doorstep.professional.identity_review":        true,
 	"doorstep.professional.tax_registration.read":  true,
 	"doorstep.professional.tax_registration.write": true,
 	"doorstep.professional.read":                   true,
@@ -67,6 +73,10 @@ var doorstepStepUp = map[string]bool{
 // with the contract's x-permission for each. Kept literal so a route that is
 // dropped or renamed fails here even where the contract file is absent.
 var doorstepContract = []string{
+	"GET /partner-changes doorstep:pros.read",
+	"GET /partner-changes/:id/photo doorstep:pros.read",
+	"POST /partner-changes/:id/decide doorstep:pros.approve",
+	"GET /documents/:id/evidence/view doorstep:documents.review",
 	"GET /stats doorstep:stats.read",
 	"GET /cities doorstep:catalogue.read", "POST /cities doorstep:config.write", "PATCH /cities/:code doorstep:config.write",
 	"GET /zones doorstep:catalogue.read", "POST /zones doorstep:config.write", "PATCH /zones/:id doorstep:config.write",
@@ -85,6 +95,7 @@ var doorstepContract = []string{
 	"GET /professionals doorstep:pros.read", "GET /professionals/:id doorstep:pros.read",
 	"GET /professionals/:id/tax-registration doorstep:pros.approve", "POST /professionals/:id/tax-registration doorstep:pros.approve",
 	"POST /professionals/:id/approve doorstep:pros.approve", "POST /professionals/:id/reject doorstep:pros.approve",
+	"POST /professionals/:id/identity-review doorstep:pros.approve",
 	"POST /professionals/:id/suspend doorstep:pros.suspend", "POST /professionals/:id/reinstate doorstep:pros.suspend",
 	"POST /professionals/:id/block doorstep:pros.suspend", "POST /professionals/:id/skills/:code/verify doorstep:pros.approve",
 	"GET /documents doorstep:documents.review", "GET /documents/:id/view doorstep:documents.review", "POST /documents/:id/decide doorstep:documents.review",
@@ -177,6 +188,9 @@ func TestDoorstepRoutes_CoverEveryContractRoute(t *testing.T) {
 	if len(fromContract) == 0 {
 		t.Fatal("no admin routes read from the contract")
 	}
+	// This composite BFF route resolves a module document then streams private
+	// media; unlike the routes above it is not a pass-through module route.
+	fromContract = append(fromContract, "GET /documents/:id/evidence/view doorstep:documents.review")
 	sameSet(t, "openapi.yaml", doorstepTable(), fromContract)
 }
 
@@ -184,6 +198,7 @@ func TestDoorstepRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
 	// The document view relays image bytes: doorstep-service answers one.
 	rg.onTemplate(http.MethodGet, service.DoorstepAdminPrefix+"/documents/:id/view", serveImage("image/jpeg", kycImage(2048), true))
+	rg.onTemplate(http.MethodGet, service.DoorstepAdminPrefix+"/partner-changes/:id/photo", serveImage("image/jpeg", kycImage(2048), true))
 	seen := map[string]bool{}
 	for _, rt := range DoorstepRoutes {
 		if seen[rt.operation] {

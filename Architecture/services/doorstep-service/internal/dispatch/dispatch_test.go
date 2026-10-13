@@ -14,18 +14,18 @@ func TestOfferExpiry(t *testing.T) {
 		rescue *time.Time
 		want   time.Duration
 	}{
-		{"far slot: 2 h", 13 * time.Hour, nil, 2 * time.Hour},
-		{"exactly 12 h: near", 12 * time.Hour, nil, 10 * time.Minute},
-		{"near slot: 10 min", 3 * time.Hour, nil, 10 * time.Minute},
-		{"capped at the rescue deadline", time.Hour, ptr(t0.Add(4 * time.Minute)), 4 * time.Minute},
-		{"a past rescue deadline does not cap", time.Hour, ptr(t0.Add(-time.Minute)), 10 * time.Minute},
+		{"far slot", 13 * time.Hour, nil, 20 * time.Second},
+		{"exactly 12 h", 12 * time.Hour, nil, 20 * time.Second},
+		{"near slot", 3 * time.Hour, nil, 20 * time.Second},
+		{"capped at the rescue deadline", time.Hour, ptr(t0.Add(4 * time.Second)), 4 * time.Second},
+		{"a past rescue deadline cannot restart an offer", time.Hour, ptr(t0.Add(-time.Minute)), -time.Minute},
 	} {
 		if got := OfferExpiry(t0, t0.Add(c.slotIn), DefaultWindows, c.rescue); !got.Equal(t0.Add(c.want)) {
 			t.Errorf("%s: %v, want +%v", c.name, got.Sub(t0), c.want)
 		}
 	}
-	// Zero windows fall back to the defaults.
-	if got := OfferExpiry(t0, t0.Add(time.Hour), Windows{}, nil); !got.Equal(t0.Add(10 * time.Minute)) {
+	// Missing/legacy city configuration cannot extend the response deadline.
+	if got := OfferExpiry(t0, t0.Add(time.Hour), Windows{}, nil); !got.Equal(t0.Add(20 * time.Second)) {
 		t.Errorf("zero windows: %v", got.Sub(t0))
 	}
 }

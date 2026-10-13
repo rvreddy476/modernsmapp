@@ -186,19 +186,19 @@ type SubscriptionPlan struct {
 
 // PartnerSubscription is one row in rider_partner_subscriptions.
 type PartnerSubscription struct {
-	ID            uuid.UUID  `json:"id"`
-	PartnerID     uuid.UUID  `json:"partner_id"`
-	PlanID        uuid.UUID  `json:"plan_id"`
-	Status        string     `json:"status"`
-	StartsAt      time.Time  `json:"starts_at"`
-	ExpiresAt     time.Time  `json:"expires_at"`
-	GraceEndsAt   *time.Time `json:"grace_ends_at,omitempty"`
-	LeadsUsed     int        `json:"leads_used"`
-	FairUseUsed   int        `json:"fair_use_used"`
-	AutoRenew     bool       `json:"auto_renew"`
-	CancelledAt   *time.Time `json:"cancelled_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID          uuid.UUID  `json:"id"`
+	PartnerID   uuid.UUID  `json:"partner_id"`
+	PlanID      uuid.UUID  `json:"plan_id"`
+	Status      string     `json:"status"`
+	StartsAt    time.Time  `json:"starts_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	GraceEndsAt *time.Time `json:"grace_ends_at,omitempty"`
+	LeadsUsed   int        `json:"leads_used"`
+	FairUseUsed int        `json:"fair_use_used"`
+	AutoRenew   bool       `json:"auto_renew"`
+	CancelledAt *time.Time `json:"cancelled_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 	// Checkout through payments-service (migration 005): the bound intent,
 	// the plan price in paise, and payment_status pending | confirming | paid
 	// | failed (NULL for legacy proof / wallet rows). Only the consumer's
@@ -345,50 +345,52 @@ type CouponRedemption struct {
 
 // Ride is one row in rider_rides.
 type Ride struct {
-	ID                   uuid.UUID       `json:"id"`
-	CustomerUserID       uuid.UUID       `json:"customer_user_id"`
-	PartnerID            *uuid.UUID      `json:"partner_id,omitempty"`
-	VehicleID            *uuid.UUID      `json:"vehicle_id,omitempty"`
-	CityID               *uuid.UUID      `json:"city_id,omitempty"`
-	QuoteID              *uuid.UUID      `json:"quote_id,omitempty"`
-	Revision             int             `json:"revision"`
-	VehicleType          string          `json:"vehicle_type"`
-	Status               string          `json:"status"`
-	PickupAddress        string          `json:"pickup_address"`
-	PickupLat            float64         `json:"pickup_lat"`
-	PickupLng            float64         `json:"pickup_lng"`
-	DropAddress          string          `json:"drop_address"`
-	DropLat              float64         `json:"drop_lat"`
-	DropLng              float64         `json:"drop_lng"`
-	EstimatedDistanceKM  *float64        `json:"estimated_distance_km,omitempty"`
-	EstimatedDurationMin *float64        `json:"estimated_duration_min,omitempty"`
-	EstimatedFare        *float64        `json:"estimated_fare,omitempty"`
-	FinalDistanceKM      *float64        `json:"final_distance_km,omitempty"`
-	FinalDurationMin     *float64        `json:"final_duration_min,omitempty"`
-	FinalFare            *float64        `json:"final_fare,omitempty"`
-	FinalFarePaise       *int64          `json:"final_fare_paise,omitempty"`
-	PaymentMethod        *string         `json:"payment_method,omitempty"`
-	OTPCode              *string         `json:"-"`
-	OTPEncrypted         []byte          `json:"-"`
-	OTPExpiresAt         *time.Time      `json:"-"`
-	OTPAttempts          int             `json:"-"`
-	OTPLockedUntil       *time.Time      `json:"-"`
-	CashConfirmedAt      *time.Time      `json:"cash_confirmed_at,omitempty"`
-	CashConfirmedBy      *uuid.UUID      `json:"cash_confirmed_by,omitempty"`
-	FareBreakdown        json.RawMessage `json:"fare_breakdown,omitempty"`
-	ScheduledFor         *time.Time      `json:"scheduled_for,omitempty"`
-	RequestedAt          time.Time       `json:"requested_at"`
-	AssignedAt           *time.Time      `json:"assigned_at,omitempty"`
-	ArrivedAt            *time.Time      `json:"arrived_at,omitempty"`
-	StartedAt            *time.Time      `json:"started_at,omitempty"`
-	CompletedAt          *time.Time      `json:"completed_at,omitempty"`
-	CancelledAt          *time.Time      `json:"cancelled_at,omitempty"`
-	CancelledBy          *uuid.UUID      `json:"cancelled_by,omitempty"`
-	CancellationReason   *string         `json:"cancellation_reason,omitempty"`
-	CustomerRating       *int            `json:"customer_rating,omitempty"`
-	PartnerRating        *int            `json:"partner_rating,omitempty"`
-	CreatedAt            time.Time       `json:"created_at"`
-	UpdatedAt            time.Time       `json:"updated_at"`
+	// Filled only after customer ownership is checked; never emitted in partner/admin/event rows.
+	CustomerLocation     *CustomerRideLocation `json:"-"`
+	ID                   uuid.UUID             `json:"id"`
+	CustomerUserID       uuid.UUID             `json:"customer_user_id"`
+	PartnerID            *uuid.UUID            `json:"partner_id,omitempty"`
+	VehicleID            *uuid.UUID            `json:"vehicle_id,omitempty"`
+	CityID               *uuid.UUID            `json:"city_id,omitempty"`
+	QuoteID              *uuid.UUID            `json:"quote_id,omitempty"`
+	Revision             int                   `json:"revision"`
+	VehicleType          string                `json:"vehicle_type"`
+	Status               string                `json:"status"`
+	PickupAddress        string                `json:"pickup_address"`
+	PickupLat            float64               `json:"pickup_lat"`
+	PickupLng            float64               `json:"pickup_lng"`
+	DropAddress          string                `json:"drop_address"`
+	DropLat              float64               `json:"drop_lat"`
+	DropLng              float64               `json:"drop_lng"`
+	EstimatedDistanceKM  *float64              `json:"estimated_distance_km,omitempty"`
+	EstimatedDurationMin *float64              `json:"estimated_duration_min,omitempty"`
+	EstimatedFare        *float64              `json:"estimated_fare,omitempty"`
+	FinalDistanceKM      *float64              `json:"final_distance_km,omitempty"`
+	FinalDurationMin     *float64              `json:"final_duration_min,omitempty"`
+	FinalFare            *float64              `json:"final_fare,omitempty"`
+	FinalFarePaise       *int64                `json:"final_fare_paise,omitempty"`
+	PaymentMethod        *string               `json:"payment_method,omitempty"`
+	OTPCode              *string               `json:"-"`
+	OTPEncrypted         []byte                `json:"-"`
+	OTPExpiresAt         *time.Time            `json:"-"`
+	OTPAttempts          int                   `json:"-"`
+	OTPLockedUntil       *time.Time            `json:"-"`
+	CashConfirmedAt      *time.Time            `json:"cash_confirmed_at,omitempty"`
+	CashConfirmedBy      *uuid.UUID            `json:"cash_confirmed_by,omitempty"`
+	FareBreakdown        json.RawMessage       `json:"fare_breakdown,omitempty"`
+	ScheduledFor         *time.Time            `json:"scheduled_for,omitempty"`
+	RequestedAt          time.Time             `json:"requested_at"`
+	AssignedAt           *time.Time            `json:"assigned_at,omitempty"`
+	ArrivedAt            *time.Time            `json:"arrived_at,omitempty"`
+	StartedAt            *time.Time            `json:"started_at,omitempty"`
+	CompletedAt          *time.Time            `json:"completed_at,omitempty"`
+	CancelledAt          *time.Time            `json:"cancelled_at,omitempty"`
+	CancelledBy          *uuid.UUID            `json:"cancelled_by,omitempty"`
+	CancellationReason   *string               `json:"cancellation_reason,omitempty"`
+	CustomerRating       *int                  `json:"customer_rating,omitempty"`
+	PartnerRating        *int                  `json:"partner_rating,omitempty"`
+	CreatedAt            time.Time             `json:"created_at"`
+	UpdatedAt            time.Time             `json:"updated_at"`
 }
 
 // RideStatusHistory is one row in rider_ride_status_history.
@@ -405,15 +407,18 @@ type RideStatusHistory struct {
 
 // RideOffer is one row in rider_ride_offers.
 type RideOffer struct {
-	ID         uuid.UUID  `json:"id"`
-	RideID     uuid.UUID  `json:"ride_id"`
-	PartnerID  uuid.UUID  `json:"partner_id"`
-	Score      float64    `json:"score"`
-	DistanceKM *float64   `json:"distance_km,omitempty"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	Status     string     `json:"status"`
-	DecidedAt  *time.Time `json:"decided_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
+	PickupAddress      string     `json:"pickup_address,omitempty"`
+	DropAddress        string     `json:"drop_address,omitempty"`
+	EstimatedFarePaise *int64     `json:"estimated_fare_paise,omitempty"`
+	ID                 uuid.UUID  `json:"id"`
+	RideID             uuid.UUID  `json:"ride_id"`
+	PartnerID          uuid.UUID  `json:"partner_id"`
+	Score              float64    `json:"score"`
+	DistanceKM         *float64   `json:"distance_km,omitempty"`
+	ExpiresAt          time.Time  `json:"expires_at"`
+	Status             string     `json:"status"`
+	DecidedAt          *time.Time `json:"decided_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // PartnerLocation is one row in rider_partner_locations.
@@ -466,12 +471,12 @@ type RideRefund struct {
 	Status        string     `json:"status"`
 	// RequestedBy is the signed admin, or payments.SystemActorID for a rule
 	// refund; RuleCode says which rule (discretionary for an admin's).
-	RequestedBy       uuid.UUID  `json:"requested_by"`
-	RuleCode          string     `json:"rule_code"`
-	ProviderReference *string    `json:"provider_reference,omitempty"`
-	FailureReason     *string    `json:"failure_reason,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	RequestedBy       uuid.UUID `json:"requested_by"`
+	RuleCode          string    `json:"rule_code"`
+	ProviderReference *string   `json:"provider_reference,omitempty"`
+	FailureReason     *string   `json:"failure_reason,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // IdempotencyRecord deduplicates a payment-touching API call. Mirrors

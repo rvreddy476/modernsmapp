@@ -36,22 +36,23 @@ type fakeProStore struct {
 }
 
 type fakePro struct {
-	p          model.Professional
-	aadhaar    bool
-	aadhaarRef string
-	photoRef   *uuid.UUID
-	selfie     bool
-	kyc        []model.KycCheck
-	skills     map[string]*model.ProSkill
-	zones      []uuid.UUID
-	home       bool
-	hours      []model.HoursWindow
-	daysOff    map[string]*string
-	payout     *model.PayoutAccount
-	pan        bool
-	agreement  string
-	bg         []fakeBG
-	incident   bool
+	p              model.Professional
+	aadhaar        bool
+	manualIdentity bool
+	aadhaarRef     string
+	photoRef       *uuid.UUID
+	selfie         bool
+	kyc            []model.KycCheck
+	skills         map[string]*model.ProSkill
+	zones          []uuid.UUID
+	home           bool
+	hours          []model.HoursWindow
+	daysOff        map[string]*string
+	payout         *model.PayoutAccount
+	pan            bool
+	agreement      string
+	bg             []fakeBG
+	incident       bool
 }
 
 type fakeBG struct {
@@ -183,26 +184,17 @@ func (f *fakeProStore) state(p *fakePro, today time.Time) *store.ProState {
 		st.Gender = *p.p.Gender
 	}
 	st.DisplayName, st.HasPhoto = p.p.DisplayName, p.p.PhotoMediaID != nil
-	st.AadhaarVerified, st.SelfieMatched = p.aadhaar && p.p.Gender != nil, p.selfie
-	for code, s := range p.skills {
+	st.IdentityReviewed, st.SelfieMatched = p.manualIdentity && p.pan, p.selfie
+	for _, s := range p.skills {
 		if s.Status == "verified" {
 			st.VerifiedSkills++
 		} else if s.Status == "pending" {
-			if r := fakeSkillRules[code]; r != nil && !r.RequiresCertificate {
-				st.SkillsAwaitingReview++
-				continue
-			}
-			for _, id := range f.docOrder {
-				d := f.docs[id]
-				if d.ProID == p.p.ID && d.Kind == "trade_certificate" && (d.Status == "pending" || d.Status == "approved") && d.SkillCode != nil && *d.SkillCode == code {
-					st.SkillsAwaitingReview++
-					break
-				}
-			}
+			st.SkillsAwaitingReview++
 		}
 	}
 	st.HasServiceArea, st.HasWeeklyHours = p.home && len(p.zones) > 0, len(p.hours) > 0
-	st.HasPayoutAccount = p.payout != nil
+	st.HasPayoutAccount = p.payout != nil && p.payout.Status == "verified"
+	st.BankAwaitingReview = p.payout != nil && p.payout.Status == "pending"
 	for _, b := range p.bg {
 		if b.status == "clear" && !b.validFrom.After(today) && b.validUntil.After(today) {
 			st.BackgroundClear = true
@@ -327,6 +319,29 @@ func (f *fakeProStore) addDoc(d *model.ProDocument) {
 	f.docOrder = append(f.docOrder, d.ID)
 }
 
+func (f *fakeProStore) ReviewManualIdentity(_ context.Context, a store.Actor, id uuid.UUID, gender, reason string) (*model.Professional, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, err := f.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if a.Permission != "doorstep:pros.approve" || !p.pan || !p.selfie {
+		return nil, store.ErrInvalid
+	}
+	p.manualIdentity = true
+	if gender == "unknown" {
+		p.p.Gender = nil
+	} else {
+		p.p.Gender = &gender
+	}
+	p.kyc = append(p.kyc, model.KycCheck{Kind: "manual_identity", Status: "passed", VerifiedAt: &fixtureTS})
+	f.audits = append(f.audits, "professional.identity_review "+id.String())
+	f.auditActs = append(f.auditActs, a)
+	out := p.p
+	return &out, nil
+}
+
 func (f *fakeProStore) ListSkills(context.Context) ([]model.Skill, error) {
 	return []model.Skill{
 		{Code: "deep_cleaning", Name: "Deep cleaning", Description: "", RequiresCertificate: false},
@@ -441,7 +456,7 @@ func datePtr(t *time.Time) *string {
 	return &s
 }
 
-func (f *fakeProStore) SetArea(_ context.Context, id uuid.UUID, zones []uuid.UUID, lat, lng float64, r int) (*model.ProArea, error) {
+func (f *fakeProStore) SetArea(_ context.Context, id uuid.UUID, zones []uuid.UUID, lat, lng float64, r int, labels ...string) (*model.ProArea, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, err := f.get(id)
@@ -544,17 +559,21 @@ func (f *fakeProStore) DeleteDayOff(_ context.Context, id uuid.UUID, day string)
 	return nil
 }
 
-func (f *fakeProStore) SetPayoutAccount(_ context.Context, id uuid.UUID, holder string, sealed []byte, _ uint32, last4, ifsc string) (*model.PayoutAccount, error) {
+func (f *fakeProStore) SetPayoutAccount(_ context.Context, id uuid.UUID, bank store.BankSubmission) (*model.PayoutAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, err := f.get(id)
 	if err != nil {
 		return nil, err
 	}
-	if len(sealed) == 0 {
+	if len(bank.Sealed) == 0 {
 		panic("payout account stored unsealed")
 	}
-	p.payout = &model.PayoutAccount{AccountHolder: holder, AccountLast4: last4, IFSC: ifsc, Status: "pending"}
+	p.payout = &model.PayoutAccount{AccountHolder: bank.Holder, AccountLast4: bank.Last4, IFSC: bank.IFSC, Status: "pending", BankName: bank.BankName, BranchName: bank.BranchName, ProofKind: bank.ProofKind}
+	docID := devseed.ID("bank-proof", id.String())
+	p.payout.ProofDocumentID = &docID
+	f.docs[docID] = &model.ProDocument{ID: docID, ProID: id, Kind: "bank_proof", MediaID: bank.ProofMediaID.String(), Status: "pending", CreatedAt: fixtureTS}
+	f.docOrder = append(f.docOrder, docID)
 	cp := *p.payout
 	return &cp, nil
 }
@@ -760,6 +779,15 @@ func (f *fakeProStore) DecideDocument(_ context.Context, a store.Actor, id uuid.
 		d.Status = "approved"
 	}
 	switch d.Kind {
+	case "bank_proof":
+		if p.payout == nil || p.payout.ProofDocumentID == nil || *p.payout.ProofDocumentID != id {
+			return nil, store.ErrInvalid
+		}
+		p.payout.Status = "failed"
+		if approve {
+			p.payout.Status = "verified"
+		}
+		p.payout.Reason = reason
 	case "police_certificate":
 		for i := range p.bg {
 			if p.bg[i].docID == id && p.bg[i].status == "pending" {

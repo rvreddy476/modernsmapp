@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"github.com/atpost/shared/partnerwork"
 	"strings"
 	"time"
 
@@ -535,6 +536,9 @@ func (s *Store) SetDeliveryAvailability(ctx context.Context, userID uuid.UUID, o
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	if err := partnerwork.DomainDutyTx(ctx, tx, userID, partnerwork.FoodDelivery, online); err != nil {
+		return nil, err
+	}
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		UPDATE food.delivery_partners
@@ -602,11 +606,14 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 	}
 	defer tx.Rollback(ctx)
 	if idempotencyKey != "" {
-		_, handled, err := s.lockGenericIdempotency(ctx, tx, userID, idempotencyKey)
+		body, handled, err := s.lockGenericIdempotency(ctx, tx, userID, idempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 		if handled {
+			if released, err := releasedAssignmentReplay(body); err != nil || released != nil {
+				return released, err
+			}
 			return s.getOwnAssignmentTx(ctx, tx, assignmentID, partner.ID)
 		}
 	}
@@ -623,14 +630,23 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 	if !deliveryTransitionAllowed(fromStatus, toStatus) {
 		return nil, fmt.Errorf("invalid delivery transition: %s -> %s", fromStatus, toStatus)
 	}
+	var released *DeliveryAssignment
+	snapshot := []byte(`{}`)
+	if toStatus == "REJECTED" {
+		released, snapshot, err = s.releasedAssignmentSnapshotTx(ctx, tx, assignmentID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO food.delivery_tracking_events (
-			assignment_id, delivery_partner_id, status, latitude, longitude, note
+			assignment_id, delivery_partner_id, status, latitude, longitude, note, snapshot
 		)
-		SELECT $1, $2, $3::text::food.assignment_status, current_latitude, current_longitude, 'status update'
+		SELECT $1, $2, $3::text::food.assignment_status, current_latitude, current_longitude, 'status update',
+		 CASE WHEN $3='REJECTED' THEN $4::jsonb || (SELECT jsonb_build_object('assigned_at',assigned_at,'accepted_at',accepted_at) FROM food.delivery_assignments WHERE id=$1) ELSE $4::jsonb END
 		FROM food.delivery_partners
 		WHERE id = $2
-	`, assignmentID, partner.ID, toStatus); err != nil {
+	`, assignmentID, partner.ID, toStatus, snapshot); err != nil {
 		return nil, err
 	}
 	switch toStatus {
@@ -665,11 +681,20 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 		}
 		// ACCEPTED and ARRIVED_AT_RESTAURANT leave the order where it is.
 		if toStatus == "ARRIVED_AT_CUSTOMER" {
-			if err := transitionOrderTx(ctx, tx, OrderTransition{
-				OrderID: orderID, From: orderstate.PickedUp, To: orderstate.OutForDelivery,
-				Actor: orderstate.ActorDeliveryPartner, ChangedBy: &userID, Reason: "delivery partner arrived at customer",
-			}); err != nil {
+			var orderStatus string
+			if err := tx.QueryRow(ctx, `SELECT status::text FROM food.orders WHERE id=$1`, orderID).Scan(&orderStatus); err != nil {
 				return nil, err
+			}
+			// Compatibility for jobs picked up before immediate en-route updates.
+			if orderStatus == orderstate.PickedUp {
+				if err := transitionOrderTx(ctx, tx, OrderTransition{
+					OrderID: orderID, From: orderstate.PickedUp, To: orderstate.OutForDelivery,
+					Actor: orderstate.ActorDeliveryPartner, ChangedBy: &userID, Reason: "delivery partner arrived at customer",
+				}); err != nil {
+					return nil, err
+				}
+			} else if orderStatus != orderstate.OutForDelivery {
+				return nil, ErrOrderStatusConflict
 			}
 		}
 	}
@@ -677,9 +702,13 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 	if err != nil {
 		return nil, err
 	}
+	if released != nil {
+		assignment = released
+	}
 	if err := s.completeGenericIdempotency(ctx, tx, userID, idempotencyKey, 200, map[string]any{
-		"assignment_id": assignmentID.String(),
-		"status":        assignment.Status,
+		"assignment_id":       assignmentID.String(),
+		"status":              assignment.Status,
+		"released_assignment": released,
 	}); err != nil {
 		return nil, err
 	}
@@ -725,9 +754,9 @@ func (s *Store) DeliveryEarnings(ctx context.Context, userID uuid.UUID) (map[str
 	// The paise sums are exact NUMERIC arithmetic, per row as settlement rounds.
 	if err := s.db.QueryRow(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE delivered_at::date = CURRENT_DATE),
-			COALESCE(SUM(delivery_partner_payout) FILTER (WHERE delivered_at::date = CURRENT_DATE), 0)::float8,
-			COALESCE(SUM(ROUND(delivery_partner_payout * 100)) FILTER (WHERE delivered_at::date = CURRENT_DATE), 0)::bigint,
+			COUNT(*) FILTER (WHERE status='DELIVERED' AND (delivered_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date),
+			COALESCE(SUM(delivery_partner_payout) FILTER (WHERE status='DELIVERED' AND (delivered_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date), 0)::float8,
+			COALESCE(SUM(ROUND(delivery_partner_payout * 100)) FILTER (WHERE status='DELIVERED' AND (delivered_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date), 0)::bigint,
 			COUNT(*) FILTER (WHERE status = 'DELIVERED'),
 			COALESCE(SUM(delivery_partner_payout) FILTER (WHERE status = 'DELIVERED'), 0)::float8,
 			COALESCE(SUM(ROUND(delivery_partner_payout * 100)) FILTER (WHERE status = 'DELIVERED'), 0)::bigint
@@ -736,7 +765,17 @@ func (s *Store) DeliveryEarnings(ctx context.Context, userID uuid.UUID) (map[str
 	`, partner.ID).Scan(&todayCount, &todayAmount, &todayPaise, &totalCount, &totalAmount, &totalPaise); err != nil {
 		return nil, err
 	}
-	return DeliveryEarningsMap(todayCount, todayAmount, todayPaise, totalCount, totalAmount, totalPaise), nil
+	result := DeliveryEarningsMap(todayCount, todayAmount, todayPaise, totalCount, totalAmount, totalPaise)
+	var paid, pending int64
+	if err := s.db.QueryRow(ctx, `SELECT
+	 COALESCE(SUM(COALESCE(payout_paise, ROUND(payout_amount*100)::bigint)) FILTER(WHERE status='PAID'),0)::bigint,
+	 COALESCE(SUM(COALESCE(payout_paise, ROUND(payout_amount*100)::bigint)) FILTER(WHERE status<>'PAID'),0)::bigint
+	 FROM food.delivery_partner_settlements WHERE delivery_partner_id=$1`, partner.ID).Scan(&paid, &pending); err != nil {
+		return nil, err
+	}
+	result["paid_paise"], result["pending_settlement_paise"], result["unpaid_paise"] = paid, pending, totalPaise-paid
+	result["timezone"], result["payment_method"] = "Asia/Kolkata", "MANUAL_RECONCILED"
+	return result, nil
 }
 
 func (s *Store) DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]DeliveryAssignment, error) {
@@ -762,7 +801,11 @@ func (s *Store) DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]Delive
 		}
 		assignments = append(assignments, assignment)
 	}
-	return assignments, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return s.appendReleasedDeliveryHistory(ctx, partner.ID, assignments)
 }
 
 func (s *Store) AdminDashboard(ctx context.Context) (*AdminDashboard, error) {
@@ -811,6 +854,9 @@ func (s *Store) AdminApproveRestaurant(ctx context.Context, adminID, restaurantI
 		if !ok {
 			return ErrFSSAIRequired
 		}
+		if err := requireApprovedPartnerSelfie(ctx, tx, restaurantID); err != nil {
+			return err
+		}
 	}
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `
@@ -857,6 +903,9 @@ func (s *Store) AdminApproveRestaurant(ctx context.Context, adminID, restaurantI
 	`, adminID, "restaurant.review", restaurantID, status, reason); err != nil {
 		return err
 	}
+	if err := enqueueRestaurantReviewTx(ctx, tx, restaurantID, uuid.Nil, status); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -894,6 +943,9 @@ func (s *Store) AdminSetRestaurantStatus(ctx context.Context, adminID, restauran
 		if !ok {
 			return ErrFSSAIRequired
 		}
+		if err := requireApprovedPartnerSelfie(ctx, tx, restaurantID); err != nil {
+			return err
+		}
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE food.restaurants
@@ -913,6 +965,9 @@ func (s *Store) AdminSetRestaurantStatus(ctx context.Context, adminID, restauran
 		INSERT INTO food.admin_audit_logs (actor_user_id, action, entity_type, entity_id, new_value)
 		VALUES ($1, 'restaurant.status_changed', 'restaurant', $2, jsonb_build_object('status', $3::text, 'reason', $4::text))
 	`, adminID, restaurantID, status, reason); err != nil {
+		return err
+	}
+	if err := enqueueRestaurantReviewTx(ctx, tx, restaurantID, uuid.Nil, status); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -984,6 +1039,9 @@ func (s *Store) AdminApproveDeliveryPartner(ctx context.Context, adminID, partne
 	`, adminID, partnerID, status, reason); err != nil {
 		return err
 	}
+	if err := enqueueDeliveryReviewTx(ctx, tx, partnerID, uuid.Nil, status); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -1042,6 +1100,9 @@ func (s *Store) AdminSetDeliveryPartnerStatus(ctx context.Context, adminID, part
 		INSERT INTO food.admin_audit_logs (actor_user_id, action, entity_type, entity_id, new_value)
 		VALUES ($1, 'delivery_partner.status_changed', 'delivery_partner', $2, jsonb_build_object('status', $3::text, 'reason', $4::text))
 	`, adminID, partnerID, status, reason); err != nil {
+		return err
+	}
+	if err := enqueueDeliveryReviewTx(ctx, tx, partnerID, uuid.Nil, status); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -1325,32 +1386,7 @@ func serviceAreaAuditValue(input map[string]any) map[string]any {
 }
 
 func (s *Store) AdminMarkRestaurantSettlementPaid(ctx context.Context, adminID, settlementID uuid.UUID, reference string) (map[string]any, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `
-		UPDATE food.restaurant_settlements
-		SET status = 'PAID', paid_reference = $3::text, paid_at = NOW(), created_by = COALESCE(created_by, $2)
-		WHERE id = $1
-	`, settlementID, adminID, reference)
-	if err != nil {
-		return nil, err
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, pgx.ErrNoRows
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO food.admin_audit_logs (actor_user_id, action, entity_type, entity_id, new_value)
-		VALUES ($1, 'restaurant_settlement.mark_paid', 'restaurant_settlement', $2, jsonb_build_object('status', 'PAID', 'reference', $3::text))
-	`, adminID, settlementID, reference); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return map[string]any{"id": settlementID, "status": "PAID", "paid_reference": reference}, nil
+	return s.markSettlementPaid(ctx, adminID, settlementID, reference, "restaurant")
 }
 
 func (s *Store) AdminGenerateSettlements(ctx context.Context, adminID uuid.UUID, in SettlementGenerateInput) (map[string]any, error) {
@@ -1381,6 +1417,9 @@ func (s *Store) AdminGenerateSettlements(ctx context.Context, adminID uuid.UUID,
 		}
 	}
 
+	if err := lockSettlementsTx(ctx, tx); err != nil {
+		return nil, err
+	}
 	// Wave 1 B3: paise, through internal/settlement (settlements_b3.go). The
 	// platform fee, the delivery fee and s.9(5) GST never reach a restaurant.
 	restaurantItems, err := s.generateRestaurantSettlementsTx(ctx, tx, adminID, start, end, in.RestaurantID)

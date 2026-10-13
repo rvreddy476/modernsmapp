@@ -91,7 +91,7 @@ func TestCheckoutSubscription_Lifecycle(t *testing.T) {
 // The evaluator reads the latest document per type with an approved row
 // winning: a later manual re-upload never hides the DigiLocker document,
 // and an uploaded document is recorded with source upload.
-func TestLatestPartnerDocuments_ApprovedWins(t *testing.T) {
+func TestLatestPartnerDocuments_NewUploadNeedsReview(t *testing.T) {
 	st, cleanup := riderTestStore(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -112,7 +112,7 @@ func TestLatestPartnerDocuments_ApprovedWins(t *testing.T) {
 		t.Fatalf("uploaded dl = %+v %v", up, err)
 	}
 	latest, err := st.LatestPartnerDocuments(ctx, p.ID)
-	if err != nil || latest["driving_license"].ID != dl.ID || latest["driving_license"].Status != "approved" {
+	if err != nil || latest["driving_license"].ID != up.ID || latest["driving_license"].Status != "pending" {
 		t.Fatalf("latest = %+v %v", latest, err)
 	}
 	// AutoVerify only moves a pending row; the audit row names the system.

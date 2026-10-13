@@ -72,6 +72,12 @@ func (s *Store) AddCartItem(ctx context.Context, userID uuid.UUID, in AddCartIte
 	}
 	defer tx.Rollback(ctx)
 
+	// All cart mutations take the parent lock before menu locks. Checkout uses
+	// the same order, so an edit cannot race its validated price snapshot.
+	cartID, currentRestaurantID, err := s.ensureCartForUpdate(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
 	var restaurantID uuid.UUID
 	var available bool
 	if err := tx.QueryRow(ctx, `
@@ -82,7 +88,13 @@ func (s *Store) AddCartItem(ctx context.Context, userID uuid.UUID, in AddCartIte
 		return nil, err
 	}
 	if !available {
-		return nil, fmt.Errorf("menu item is unavailable")
+		return nil, ErrCartItemUnavailable
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM food.restaurants WHERE id=$1 FOR SHARE`, restaurantID); err != nil {
+		return nil, err
+	}
+	if err := validateCartItemTx(ctx, tx, restaurantID, in.MenuItemID, in.VariantID); err != nil {
+		return nil, err
 	}
 	if err := validateCartAddonsTx(ctx, tx, in.MenuItemID, in.Addons); err != nil {
 		return nil, err
@@ -103,10 +115,6 @@ func (s *Store) AddCartItem(ctx context.Context, userID uuid.UUID, in AddCartIte
 		return nil, err
 	}
 
-	cartID, currentRestaurantID, err := s.ensureCartForUpdate(ctx, tx, userID)
-	if err != nil {
-		return nil, err
-	}
 	if currentRestaurantID != nil && *currentRestaurantID != restaurantID {
 		if !in.ClearExisting {
 			return nil, ErrCartRestaurantConflict
@@ -125,9 +133,9 @@ func (s *Store) AddCartItem(ctx context.Context, userID uuid.UUID, in AddCartIte
 	var cartItemID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.cart_items (
-			cart_id, restaurant_id, menu_item_id, variant_id, quantity, item_instruction
+			cart_id, restaurant_id, menu_item_id, variant_id, quantity, item_instruction, selected_variant_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES ($1, $2, $3, $4, $5, $6, $4)
 		RETURNING id
 	`, cartID, restaurantID, in.MenuItemID, in.VariantID, in.Quantity, in.ItemInstruction).Scan(&cartItemID); err != nil {
 		return nil, err
@@ -154,7 +162,15 @@ func (s *Store) UpdateCartItem(ctx context.Context, userID, itemID uuid.UUID, in
 		}
 		return s.GetCart(ctx, userID)
 	}
-	if _, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, _, err := s.ensureCartForUpdate(ctx, tx, userID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
 		UPDATE food.cart_items ci
 		SET quantity = $3, item_instruction = $4
 		FROM food.carts c
@@ -162,20 +178,42 @@ func (s *Store) UpdateCartItem(ctx context.Context, userID, itemID uuid.UUID, in
 	`, userID, itemID, in.Quantity, in.ItemInstruction); err != nil {
 		return nil, err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return s.GetCart(ctx, userID)
 }
 
 func (s *Store) RemoveCartItem(ctx context.Context, userID, itemID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, _, err := s.ensureCartForUpdate(ctx, tx, userID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 		DELETE FROM food.cart_items ci
 		USING food.carts c
 		WHERE ci.cart_id = c.id AND c.user_id = $1 AND ci.id = $2
 	`, userID, itemID)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) ClearCart(ctx context.Context, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, _, err := s.ensureCartForUpdate(ctx, tx, userID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 		UPDATE food.carts
 		SET restaurant_id = NULL, coupon_code = NULL
 		WHERE user_id = $1
@@ -183,11 +221,14 @@ func (s *Store) ClearCart(ctx context.Context, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		DELETE FROM food.cart_items
 		WHERE cart_id IN (SELECT id FROM food.carts WHERE user_id = $1)
 	`, userID)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) ApplyCoupon(ctx context.Context, userID uuid.UUID, code string) (*Cart, error) {
@@ -383,7 +424,7 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	defer tx.Rollback(ctx)
 
 	if idempotencyKey != "" {
-		existingOrderID, handled, err := s.lockIdempotency(ctx, tx, userID, idempotencyKey)
+		existingOrderID, handled, err := s.lockIdempotency(ctx, tx, userID, idempotencyKey, checkoutRequestHash(in))
 		if err != nil {
 			return nil, err
 		}
@@ -395,12 +436,22 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 		}
 	}
 
+	if err := s.validateCheckoutCartTx(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 	cart, err := s.loadCart(ctx, tx, userID)
 	if err != nil {
 		return nil, err
 	}
 	if len(cart.Items) == 0 || cart.RestaurantID == nil {
 		return nil, ErrCartEmpty
+	}
+	var minimumPaise int64
+	if err := tx.QueryRow(ctx, `SELECT ROUND(min_order_amount*100)::bigint FROM food.restaurants WHERE id=$1`, *cart.RestaurantID).Scan(&minimumPaise); err != nil {
+		return nil, err
+	}
+	if cartItemsPaise(cart) < minimumPaise {
+		return nil, fmt.Errorf("%w: add items worth at least %.2f before fees", ErrRestaurantMinimum, rupees(minimumPaise))
 	}
 	address, err := s.getAddressTx(ctx, tx, userID, in.AddressID)
 	if err != nil {
@@ -615,12 +666,12 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	}
 	if couponCode != "" {
 		if _, err := tx.Exec(ctx, `
-			UPDATE food.coupons SET used_count = used_count + 1 WHERE code = $1
+			UPDATE food.coupons SET used_count = used_count + 1 WHERE UPPER(code) = UPPER($1)
 		`, couponCode); err != nil {
 			return nil, err
 		}
 		var couponID uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT id FROM food.coupons WHERE code = $1`, couponCode).Scan(&couponID); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT id FROM food.coupons WHERE UPPER(code) = UPPER($1)`, couponCode).Scan(&couponID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `
@@ -819,6 +870,9 @@ func (s *Store) RateDelivery(ctx context.Context, userID, orderID uuid.UUID, rat
 func (s *Store) ensureCartForUpdate(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (uuid.UUID, *uuid.UUID, error) {
 	var cartID uuid.UUID
 	var restaurantID *uuid.UUID
+	if _, err := tx.Exec(ctx, `INSERT INTO food.carts (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return uuid.Nil, nil, err
+	}
 	err := tx.QueryRow(ctx, `
 		SELECT id, restaurant_id
 		FROM food.carts
@@ -914,6 +968,17 @@ func (s *Store) validateCoupon(ctx context.Context, code string, restaurantID *u
 }
 
 func (s *Store) validateCouponTx(ctx context.Context, tx pgx.Tx, code string, restaurantID *uuid.UUID, subtotal float64) (float64, error) {
+	// Reserve usage under the coupon row lock until order+redemption commit.
+	// Lock every case-equivalent legacy row in deterministic order and refuse
+	// ambiguous codes rather than applying or incrementing a different coupon.
+	rows, err := tx.Query(ctx, `SELECT id FROM food.coupons WHERE UPPER(code)=UPPER($1) ORDER BY id FOR UPDATE`, code)
+	if err != nil { return 0, err }
+	count := 0
+	for rows.Next() { count++ }
+	err = rows.Err()
+	rows.Close()
+	if err != nil { return 0, err }
+	if count != 1 { return 0, ErrCouponInvalid }
 	return s.validateCouponQuery(ctx, tx, code, restaurantID, subtotal)
 }
 
@@ -981,24 +1046,33 @@ func (s *Store) getAddressTx(ctx context.Context, tx pgx.Tx, userID, addressID u
 	return &a, rows.Err()
 }
 
-func (s *Store) lockIdempotency(ctx context.Context, tx pgx.Tx, userID uuid.UUID, key string) (uuid.UUID, bool, error) {
+func (s *Store) lockIdempotency(ctx context.Context, tx pgx.Tx, userID uuid.UUID, key string, requestHash ...string) (uuid.UUID, bool, error) {
+	hash := ""
+	if len(requestHash) > 0 {
+		hash = requestHash[0]
+	}
+	claimed, err := tx.Exec(ctx, `INSERT INTO food.idempotency_keys (user_id,key,request_hash,locked_until)
+		VALUES ($1,$2,NULLIF($3,''),NOW()+INTERVAL '2 minutes') ON CONFLICT (user_id,key) DO NOTHING`, userID, key, hash)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	if claimed.RowsAffected() == 1 {
+		return uuid.Nil, false, nil
+	}
 	var responseBody []byte
 	var completedAt *time.Time
-	err := tx.QueryRow(ctx, `
-		SELECT response_body, completed_at
+	var savedHash string
+	err = tx.QueryRow(ctx, `
+		SELECT response_body, completed_at, COALESCE(request_hash,'')
 		FROM food.idempotency_keys
 		WHERE user_id = $1 AND key = $2
 		FOR UPDATE
-	`, userID, key).Scan(&responseBody, &completedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO food.idempotency_keys (user_id, key, locked_until)
-			VALUES ($1, $2, NOW() + INTERVAL '2 minutes')
-		`, userID, key)
-		return uuid.Nil, false, err
-	}
+	`, userID, key).Scan(&responseBody, &completedAt, &savedHash)
 	if err != nil {
 		return uuid.Nil, false, err
+	}
+	if savedHash != "" && savedHash != hash {
+		return uuid.Nil, false, ErrIdempotencyPayloadMismatch
 	}
 	if completedAt == nil {
 		return uuid.Nil, true, nil
@@ -1017,9 +1091,17 @@ func (s *Store) lockGenericIdempotency(ctx context.Context, tx pgx.Tx, userID uu
 	if key == "" {
 		return nil, false, nil
 	}
+	claimed, err := tx.Exec(ctx, `INSERT INTO food.idempotency_keys (user_id,key,locked_until)
+		VALUES ($1,$2,NOW()+INTERVAL '2 minutes') ON CONFLICT (user_id,key) DO NOTHING`, userID, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if claimed.RowsAffected() == 1 {
+		return nil, false, nil
+	}
 	var responseBody []byte
 	var completedAt *time.Time
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT response_body, completed_at
 		FROM food.idempotency_keys
 		WHERE user_id = $1 AND key = $2

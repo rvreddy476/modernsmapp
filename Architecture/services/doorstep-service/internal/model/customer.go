@@ -112,6 +112,7 @@ type AddonGroup struct {
 
 // ServiceDetail is the service inside GET /v1/doorstep/services/{id}.
 type ServiceDetail struct {
+	AssignmentMode  string          `json:"assignment_mode,omitempty"`
 	ID              uuid.UUID       `json:"id"`
 	Category        CategoryBrief   `json:"category"`
 	Slug            string          `json:"slug"`
@@ -175,6 +176,7 @@ const (
 
 // Quote is POST/GET /v1/doorstep/quotes.
 type Quote struct {
+	AssignmentMode   string      `json:"assignment_mode,omitempty"`
 	ID               uuid.UUID   `json:"id"`
 	Status           string      `json:"status"`
 	ServiceID        uuid.UUID   `json:"service_id"`

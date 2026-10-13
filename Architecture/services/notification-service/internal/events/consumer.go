@@ -139,7 +139,7 @@ func (c *Consumer) Start(ctx context.Context) {
 	}
 
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				slog.Info("notification consumer shutting down")
@@ -148,8 +148,19 @@ func (c *Consumer) Start(ctx context.Context) {
 			}
 			break
 		}
+		typ, _, _ := decodeFoodMessage(m)
+		_, account := captainAccountTypes[typ]
+		if account || typ == events.EventRiderRideAssigned || typ == events.EventRiderRideCancelled || typ == events.EventRiderRideCompleted || typ == events.EventRiderRideOffered || typ == events.EventRiderRidePaymentPaid || commerceDeliveryNotificationType(typ) || partnerSupportNotificationType(typ) {
+			if !processAndCommit(ctx, c.reader, m, c.processMessage) {
+				break
+			}
+			continue
+		}
 		select {
 		case jobs <- m:
+			if err := c.reader.CommitMessages(ctx, m); err != nil {
+				slog.Error("notification offset commit failed", "error", err)
+			}
 		case <-ctx.Done():
 			break
 		}
@@ -159,6 +170,16 @@ func (c *Consumer) Start(ctx context.Context) {
 }
 
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
+	typ, id, payload := decodeFoodMessage(m)
+	if partnerSupportNotificationType(typ) {
+		return c.handlePartnerSupport(ctx, typ, foodDedupBase(typ, id, m), payload)
+	}
+	if typ == "commerce.delivery.application.reviewed" || typ == "commerce.delivery.document.reviewed" {
+		return c.handleCommerceDeliveryReview(ctx, typ, foodDedupBase(typ, id, m), payload)
+	}
+	if commerceDeliveryNotificationType(typ) {
+		return c.handleCommerceDeliveryWork(ctx, typ, foodDedupBase(typ, id, m), payload)
+	}
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
 		return err

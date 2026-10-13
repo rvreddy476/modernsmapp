@@ -38,8 +38,8 @@ func trustCase(rt productRoute) string {
 
 func TestTrustRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(TrustRoutes) != 20 {
-		t.Fatalf("TrustRoutes has %d entries, want 20", len(TrustRoutes))
+	if len(TrustRoutes) != 21 {
+		t.Fatalf("TrustRoutes has %d entries, want 21", len(TrustRoutes))
 	}
 	for _, rt := range TrustRoutes {
 		t.Run(rt.operation+" "+rt.method+" "+rt.path, func(t *testing.T) {

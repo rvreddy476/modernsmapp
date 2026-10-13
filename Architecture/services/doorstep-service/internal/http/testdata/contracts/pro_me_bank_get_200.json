@@ -1,1 +1,1 @@
-{"data":{"account_holder":"Test Pro","account_last4":"9012","ifsc":"HDFC0000001","status":"pending"},"meta":{"request_id":"fixture"}}
+{"data":{"account_holder":"Test Pro","account_last4":"9012","ifsc":"HDFC0000001","status":"verified","bank_name":"State Bank","proof_kind":"passbook","proof_document_id":"f9601345-b6c9-5f91-9182-f5dfe540cae5"},"meta":{"request_id":"fixture"}}

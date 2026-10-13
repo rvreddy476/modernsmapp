@@ -129,7 +129,7 @@ func payState(orderStatus, paymentStatus, method string, applied bool) postgres.
 func payContractRouter(st *payContractStore, pc *payContractClient) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(service.New(st).WithPayments(pc).WithPaymentFlags(payments.Flags{})).RegisterRoutes(router)
+	New(service.New(st).WithPayments(pc).WithPaymentFlags(payments.Flags{})).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

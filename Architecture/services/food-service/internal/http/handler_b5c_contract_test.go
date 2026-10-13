@@ -80,7 +80,7 @@ func (f *b5cContractStore) MarkReferralRewarded(context.Context, uuid.UUID, int)
 func b5cRouter(st *b5cContractStore) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(service.New(st).WithRealtime(discardPublisher{}, nil)).RegisterRoutes(router)
+	New(service.New(st).WithRealtime(discardPublisher{}, nil)).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

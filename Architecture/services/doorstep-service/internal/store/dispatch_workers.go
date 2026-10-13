@@ -30,7 +30,9 @@ const assignmentRefCols = `a.id, a.booking_id, a.pro_id, p.user_id, a.status, a.
 func (s *Store) DueOfferExpiries(ctx context.Context, now time.Time, limit int) ([]AssignmentRef, error) {
 	rows, err := s.db.Query(ctx, `SELECT `+assignmentRefCols+`
 		FROM doorstep.booking_assignments a JOIN doorstep.professionals p ON p.id = a.pro_id
-		WHERE a.status = 'offered' AND a.offer_expires_at <= $1 ORDER BY a.offer_expires_at LIMIT $2`, now, limit)
+		WHERE a.status = 'offered' AND a.offer_expires_at <= $1
+   AND EXISTS(SELECT 1 FROM doorstep.bookings b WHERE b.id=a.booking_id AND b.assignment_mode='customer_selected')
+   ORDER BY a.offer_expires_at LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, err
 	}

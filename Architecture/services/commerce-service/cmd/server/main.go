@@ -32,6 +32,7 @@ import (
 	"github.com/atpost/shared/o11y/metrics"
 	tracepkg "github.com/atpost/shared/o11y/trace"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/partnerwork"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -135,6 +136,13 @@ func main() {
 
 	// Courier provider (stub in dev, shiprocket in prod). Env COURIER_PROVIDER selects.
 	svc.WithCourier(courier.New())
+	// Separate opt-in: existing courier routing remains the default.
+	localDeliveryEnabled := os.Getenv("COMMERCE_LOCAL_DELIVERY_ENABLED") == "true"
+	if localDeliveryEnabled && (os.Getenv("PARTNER_WORK_URL") == "" || os.Getenv("INTERNAL_SERVICE_KEY") == "") {
+		slog.Error("local delivery activation requires configured work coordinator")
+		os.Exit(1)
+	}
+	svc.WithLocalDelivery(localDeliveryEnabled, partnerwork.NewClient(os.Getenv("PARTNER_WORK_URL"), os.Getenv("INTERNAL_SERVICE_KEY")))
 
 	// Cross-service plumbing for the affiliate-redirect resolver. The
 	// /v1/commerce/affiliate/:linkId endpoint calls monetization-service
@@ -371,6 +379,7 @@ func main() {
 	// payments inline and swallows the error; it writes a command, and this
 	// worker owns getting it delivered.
 	go svc.RunRefundWorker(consumerCtx, 20*time.Second)
+	go svc.RunDeliveryDispatcher(consumerCtx)
 
 	// LB-22 / M-5 — terminal reservation expiry. The old sweeper released
 	// the hold and left the order payment_pending, so a late capture could

@@ -172,9 +172,13 @@ func (s *Store) UpdatePartnerProfile(ctx context.Context, partnerID uuid.UUID, i
 // role table in identity_roles.go is applied. 'rejected' and 'blocked' revoke;
 // 'suspended' deliberately does not.
 func (s *Store) UpdatePartnerStatus(ctx context.Context, partnerID uuid.UUID, status string) error {
+	return s.UpdatePartnerStatusBy(ctx, partnerID, status, PartnerReview{})
+}
+
+func (s *Store) UpdatePartnerStatusBy(ctx context.Context, partnerID uuid.UUID, status string, review PartnerReview) error {
 	const q = `UPDATE rider_partners SET status = $2::rider_partner_status, updated_at = NOW()
 	           WHERE id = $1 RETURNING user_id`
-	err := s.updatePartnerStatusTx(ctx, q, status, "rider partner status set to "+status, partnerID, status)
+	err := s.updatePartnerStatusWithReviewTx(ctx, q, status, "rider partner status set to "+status, review, partnerID, status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrPartnerNotFound
 	}

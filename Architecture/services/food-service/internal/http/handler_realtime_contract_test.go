@@ -110,7 +110,7 @@ func realtimeRouter(wired bool) *gin.Engine {
 		svc.WithRealtime(discardPublisher{}, fixedRealtimeSigner{}).WithRealtimeClock(func() time.Time { return ctRtNow })
 	}
 	router := gin.New()
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

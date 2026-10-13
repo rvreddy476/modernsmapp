@@ -97,7 +97,7 @@ func TestFoodConsumer_PaidOrderRingsTheKitchenAndTellsTheCustomer(t *testing.T) 
 		if p.Type != service.FoodTypeOrderNew || p.AndroidChannel != service.FoodChannelKitchenNewOrder {
 			t.Errorf("kitchen push shape: %+v", p)
 		}
-		if p.DeepLink != "/kitchen/orders/"+fxOrder || p.OrderID.String() != fxOrder {
+		if p.DeepLink != "/kitchen/orders/"+fxOrder+"?restaurant_id="+fxRestaurant || p.OrderID.String() != fxOrder {
 			t.Errorf("kitchen push link: %+v", p)
 		}
 	}

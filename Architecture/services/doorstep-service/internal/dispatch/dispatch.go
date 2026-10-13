@@ -42,8 +42,8 @@ const (
 	// in pro_unavailable for the customer to pick another one (or cancel);
 	// then it is cancelled with a full refund.
 	ChoiceWindow = 30 * time.Minute
-	// ASAPOfferWindow (B1): an ASAP job's offer lapses after 3 minutes.
-	ASAPOfferWindow = 3 * time.Minute
+	// Every newly issued offer has the same short response window.
+	ASAPOfferWindow = 20 * time.Second
 	// RetryEvery: a confirmed booking with no live offer (dispatch found
 	// nobody, or a crash between the confirm and the offer) is dispatched
 	// again at most this often.
@@ -60,19 +60,12 @@ type Windows struct {
 // DefaultWindows are the schema defaults.
 var DefaultWindows = Windows{FarMinutes: 120, NearMinutes: 10, FarThresholdMinutes: 720}
 
-// OfferExpiry is when an offer made at now lapses: the far window (2 h)
-// when the slot starts more than the threshold (12 h) after now, else the
-// near window (10 min); never after a rescue deadline.
+// OfferExpiry applies the Partner app's 20-second policy to NEW offers.
+// Legacy city window fields remain readable for compatibility but cannot
+// extend a new offer. Existing saved deadlines are not rewritten.
 func OfferExpiry(now, slotStart time.Time, w Windows, rescueUntil *time.Time) time.Time {
-	if w.FarMinutes <= 0 || w.NearMinutes <= 0 || w.FarThresholdMinutes <= 0 {
-		w = DefaultWindows
-	}
-	ttl := time.Duration(w.NearMinutes) * time.Minute
-	if slotStart.Sub(now) > time.Duration(w.FarThresholdMinutes)*time.Minute {
-		ttl = time.Duration(w.FarMinutes) * time.Minute
-	}
-	exp := now.Add(ttl)
-	if rescueUntil != nil && exp.After(*rescueUntil) && rescueUntil.After(now) {
+	exp := now.Add(20 * time.Second)
+	if rescueUntil != nil && exp.After(*rescueUntil) {
 		exp = *rescueUntil
 	}
 	return exp

@@ -89,6 +89,7 @@ const (
 	doorstepEventProApplied              = "doorstep.pro.applied"
 	doorstepEventProStatusChanged        = "doorstep.pro.status_changed"
 	doorstepEventProDocumentReviewed     = "doorstep.pro.document_reviewed"
+	doorstepEventProChangeReviewed       = "doorstep.pro.change_reviewed"
 	doorstepEventProBgCheckExpiring      = "doorstep.pro.background_check_expiring"
 	doorstepEventProOfferCreated         = "doorstep.pro.offer_created"
 	doorstepEventProOfferClosed          = "doorstep.pro.offer_closed"
@@ -226,7 +227,7 @@ func (c *DoorstepConsumer) WithSafety(d doorstepSafetyDeps) *DoorstepConsumer {
 // Start consumes sequentially so one booking's pushes keep their order.
 func (c *DoorstepConsumer) Start(ctx context.Context) {
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("doorstep consumer shutting down\n")
@@ -235,7 +236,9 @@ func (c *DoorstepConsumer) Start(ctx context.Context) {
 			}
 			break
 		}
-		c.processMessage(ctx, m)
+		if !processAndCommit(ctx, c.reader, m, c.processMessage) {
+			return
+		}
 	}
 }
 
@@ -262,6 +265,7 @@ func (c *DoorstepConsumer) countOf(o doorstepOutcome) int64 {
 // doorstepFields is every payload field a push, page or alert may use. Only
 // these are decoded; nothing else on an event can reach a push.
 type doorstepFields struct {
+	AssignmentMode string `json:"assignment_mode"`
 	BookingID      string `json:"booking_id"`
 	CustomerUserID string `json:"customer_user_id"`
 	ProUserID      string `json:"pro_user_id"`
@@ -402,12 +406,13 @@ func doorstepDedupBase(ev doorstepEvent, m kafka.Message) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
-// processMessage never returns an error and never panics: every outcome is
+// processMessage returns enqueue failures for durable consumer retry. Every outcome is
 // counted and logged, and the offset moves on.
-func (c *DoorstepConsumer) processMessage(ctx context.Context, m kafka.Message) {
+func (c *DoorstepConsumer) processMessage(ctx context.Context, m kafka.Message) (deliveryErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			c.count(doorstepOutcomePanic)
+			deliveryErr = fmt.Errorf("doorstep event processing panic")
 			slog.Error("doorstep consumer: recovered panic", "panic", fmt.Sprint(r))
 		}
 	}()
@@ -472,16 +477,19 @@ func (c *DoorstepConsumer) processMessage(ctx context.Context, m kafka.Message) 
 		}
 		if c.deliverer == nil {
 			c.count(doorstepOutcomeDeliveryError)
+			deliveryErr = fmt.Errorf("doorstep deliverer unavailable")
 			continue
 		}
 		outcome, err := c.deliverer.DeliverDoorstepPush(ctx, p)
 		if err != nil {
 			c.count(doorstepOutcomeDeliveryError)
+			deliveryErr = err
 			slog.Warn("doorstep consumer: delivery failed", "event", ev.Type, "type", p.Type, "app", p.App, "error", err)
 			continue
 		}
 		doorstepPushesTotal.WithLabelValues(p.Type, p.App, string(outcome)).Inc()
 	}
+	return
 }
 
 // ---------------------------------------------------------------------------
@@ -521,15 +529,15 @@ var doorstepRules = []doorstepRule{
 	{pushType: service.DoorstepTypeBookingConfirmed, fromEvent: doorstepEventBookingConfirmed,
 		deeplink: "momentum://doorstep/bookings/{booking_id}", entityKey: "booking_id", collapse: "doorstep_booking",
 		copy: func(*doorstepFields) (string, string) {
-			return "Booking confirmed", "Payment received. We're assigning a professional for your visit."
+			return "Booking confirmed", "Payment received. Open your booking for your confirmed visit details."
 		}},
 	{pushType: service.DoorstepTypeBookingAssigned, fromEvent: doorstepEventBookingAssigned,
 		deeplink: "momentum://doorstep/bookings/{booking_id}", entityKey: "booking_id", collapse: "doorstep_booking",
 		copy: func(f *doorstepFields) (string, string) {
 			if name := doorstepFirstName(f.ProFirstName); name != "" {
-				return "Professional assigned", name + " will take care of your booking."
+				return "Professional assigned", name + " has accepted. Open your booking to complete any payment due."
 			}
-			return "Professional assigned", "A professional has accepted your booking."
+			return "Professional assigned", "A professional has accepted. Open your booking to complete any payment due."
 		}},
 	// B1: reassigned is emitted only when the customer moved the slot to a
 	// time the accepted professional cannot take (cause rescheduled). A
@@ -548,6 +556,9 @@ var doorstepRules = []doorstepRule{
 		deeplink: "momentum://doorstep/bookings/{booking_id}/professionals", entityKey: "booking_id", collapse: "doorstep_booking",
 		when: func(f *doorstepFields) bool { return doorstepValidTime(f.ChoiceDeadline) },
 		copy: func(f *doorstepFields) (string, string) {
+			if f.AssignmentMode == "automatic" {
+				return "Finding a replacement professional", "Your professional is unavailable. We’re checking for a replacement at the same price. Open your booking for updates."
+			}
 			what := "Your professional can't take this booking."
 			switch f.Cause {
 			case "declined", "offer_expired":
@@ -750,6 +761,15 @@ var doorstepRules = []doorstepRule{
 		when: func(f *doorstepFields) bool { return f.ToStatus == "approved" && f.FromStatus == "suspended" },
 		copy: func(*doorstepFields) (string, string) {
 			return "Account active again", "You can go on duty and get jobs again."
+		}},
+	{pushType: service.DoorstepTypeProChangeReviewed, fromEvent: doorstepEventProChangeReviewed, audience: doorstepToPro,
+		deeplink: "doorstep-pro://onboarding", entityKey: "pro_id", collapse: "doorstep_pro_change",
+		when: func(f *doorstepFields) bool { return f.Decision == "approved" || f.Decision == "rejected" },
+		copy: func(f *doorstepFields) (string, string) {
+			if f.Decision == "rejected" {
+				return "Changes need attention", "Open work settings to review the decision and requested corrections."
+			}
+			return "Changes approved", "Your reviewed work settings have been updated."
 		}},
 	{pushType: service.DoorstepTypeProDocumentReviewed, fromEvent: doorstepEventProDocumentReviewed, audience: doorstepToPro,
 		deeplink: "doorstep-pro://onboarding", entityKey: "document_id", collapse: "doorstep_pro_document",
@@ -991,6 +1011,9 @@ func planDoorstepPushes(ev doorstepEvent, base string, now time.Time) doorstepPu
 		link, err := renderDoorstepDeepLink(r.deeplink, &f)
 		if err != nil {
 			return doorstepPushPlan{outcome: doorstepOutcomeMalformed, detail: r.pushType + ": " + err.Error()}
+		}
+		if r.pushType == service.DoorstepTypeBookingProUnavailable && f.AssignmentMode == "automatic" {
+			link = "momentum://doorstep/bookings/" + f.BookingID
 		}
 		data := map[string]string{}
 		for _, k := range spec.DataKeys {

@@ -14,11 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/payments"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/shared/events"
-	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 )
 
@@ -291,92 +289,8 @@ func TestSubscriptionCheckout_RenewalExtendsFromCurrentExpiry(t *testing.T) {
 
 // --- 2. Government-verified approval ------------------------------------------
 
-func TestPartnerApproval_DigiLockerAndSelfieAutomatic(t *testing.T) {
-	svc, _, cleanup := newIntegrationService(t)
-	defer cleanup()
-	ctx := context.Background()
-	svc.Store().WithRoleIntents(identityroles.NewOutbox("rider", "rider-service"))
-	svc.SetDigiLockerClient(digilocker.NewMockClient())
-	svc.SetFaceComparer(&MockFaceComparer{Similarity: 96}, 80)
-	uid, p := newCaptainUser(t, svc, "Auto Captain")
-
-	res, err := svc.CompleteAadhaarFlow(ctx, uid, p.ID, "code-auto", "state")
-	if err != nil || !res.Verified {
-		t.Fatalf("aadhaar: %+v %v", res, err)
-	}
-	docs, _ := svc.ListPartnerDocuments(ctx, uid)
-	byType := map[string]store.PartnerDocument{}
-	for _, d := range docs {
-		byType[d.DocumentType] = d
-	}
-	for _, typ := range []string{DocAadhaar, DocDrivingLicence} {
-		d, ok := byType[typ]
-		if !ok || d.Status != "approved" || d.Source != store.DocSourceDigiLocker || d.VerifiedByActor == nil || *d.VerifiedByActor != store.VerifiedByAuto || d.VerifiedAt == nil {
-			t.Fatalf("%s after digilocker = %+v", typ, d)
-		}
-	}
-	if byType[DocAadhaar].DocumentNumber != nil {
-		t.Fatal("an Aadhaar number was stored")
-	}
-	if byType[DocDrivingLicence].PhotoMediaID == nil {
-		t.Fatal("DL photo media id missing")
-	}
-	ob, _ := svc.OnboardingStatusFor(ctx, uid)
-	if ob.Status != OnboardingIncomplete || !containsAll(ob.Missing, DocSelfie, DocVehicleRC) || len(ob.Pending) != 0 {
-		t.Fatalf("onboarding after aadhaar = %+v", ob)
-	}
-	if pp, _ := svc.GetMyPartner(ctx, uid); pp.Status != "pending_verification" {
-		t.Fatalf("partner status = %s", pp.Status)
-	}
-
-	// The vehicle's RC comes from DigiLocker: verified, vehicle approved.
-	v, err := svc.AddVehicle(ctx, uid, p.ID, AddVehicleRequest{VehicleType: "auto", RegistrationNumber: "ka01zz" + uid.String()[:4]})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v.Status != "approved" || v.VerifiedByActor == nil || *v.VerifiedByActor != store.VerifiedByAuto {
-		t.Fatalf("vehicle after digilocker rc = %+v", v)
-	}
-	vdocs, _ := svc.ListVehicleDocuments(ctx, uid, v.ID)
-	if len(vdocs) != 1 || vdocs[0].DocumentType != DocVehicleRC || vdocs[0].Status != "approved" || vdocs[0].Source != store.DocSourceDigiLocker {
-		t.Fatalf("vehicle docs = %+v", vdocs)
-	}
-	// Mutation guard: still not approved — the selfie is missing.
-	if pp, _ := svc.GetMyPartner(ctx, uid); pp.Status == "approved" {
-		t.Fatal("partner approved without a selfie")
-	}
-
-	// The selfie upload is compared with the DL photo and verified; that
-	// completes the set and approves the partner with no human.
-	media := uuid.New()
-	selfie, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocSelfie, FileURL: "https://media/selfie.jpg", MediaID: &media})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, _ := svc.Store().GetPartnerDocument(ctx, selfie.ID)
-	if got.Status != "approved" || got.Source != store.DocSourceUpload || got.VerifiedByActor == nil || *got.VerifiedByActor != store.VerifiedByAuto || got.AutoCheckDetail == nil || !contains(*got.AutoCheckDetail, "face_compare") {
-		t.Fatalf("selfie = %+v", got)
-	}
-	pp, _ := svc.GetMyPartner(ctx, uid)
-	if pp.Status != "approved" || pp.KYCStatus != "approved" || pp.ApprovedAt == nil {
-		t.Fatalf("partner = %+v", pp)
-	}
-	ob, _ = svc.OnboardingStatusFor(ctx, uid)
-	if ob.Status != OnboardingApproved {
-		t.Fatalf("onboarding = %+v", ob)
-	}
-	// Audit rows under the system actor, and the identity role intent.
-	for _, action := range []string{"document.auto_verify", "vehicle.auto_verify", "partner.auto_approve"} {
-		if n := countRows(t, svc, `SELECT COUNT(*) FROM rider_admin_audit_logs WHERE admin_user_id = $1 AND action = $2 AND new_value->>'actor' = 'system'`, store.SystemActorID, action); n == 0 {
-			t.Fatalf("no %s audit row", action)
-		}
-	}
-	if n := countRows(t, svc, `SELECT COUNT(*) FROM rider_admin_audit_logs WHERE action = 'document.auto_verify' AND new_value->>'reason' = 'digilocker'`); n < 3 {
-		t.Fatalf("digilocker audit rows = %d, want aadhaar + DL + RC", n)
-	}
-	if n := countRows(t, svc, `SELECT COUNT(*) FROM rider.identity_role_intents WHERE user_id = $1 AND op = 'grant' AND reason LIKE '%approved automatically%'`, uid.String()); n != 1 {
-		t.Fatalf("role intents from the automatic approval = %d", n)
-	}
+func TestPartnerApproval_OfflineRequiresHuman(t *testing.T) {
+	TestManualRiderOnboardingOnDatabase(t)
 }
 
 // Mutation guards: an uploaded (non-DigiLocker) document is never
@@ -387,90 +301,36 @@ func TestPartnerApproval_UploadedDocumentWaitsForHuman(t *testing.T) {
 	svc, _, cleanup := newIntegrationService(t)
 	defer cleanup()
 	ctx := context.Background()
-	svc.SetDigiLockerClient(digilocker.NewMockClient())
-	svc.SetFaceComparer(&MockFaceComparer{Similarity: 50}, 80)
+	svc.SetFaceComparer(&MockFaceComparer{Similarity: 96}, 80)
 	uid, p := newCaptainUser(t, svc, "Manual Captain")
-
-	// Uploaded DL before any DigiLocker assertion: pending, source upload.
-	dl, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocDrivingLicence, FileURL: "https://x/dl.jpg"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d, _ := svc.Store().GetPartnerDocument(ctx, dl.ID); d.Status != "pending" || d.Source != store.DocSourceUpload || d.VerifiedByActor != nil {
-		t.Fatalf("uploaded DL = %+v", d)
-	}
-	ob, _ := svc.OnboardingStatusFor(ctx, uid)
-	if ob.Status != OnboardingIncomplete || !containsAll(ob.Pending, DocDrivingLicence) || !containsAll(ob.Missing, DocAadhaar, DocSelfie, DocVehicleRC) {
-		t.Fatalf("onboarding = %+v", ob)
-	}
-
-	// Aadhaar through DigiLocker, a vehicle (RC pulled), a selfie BELOW the
-	// threshold: everything but the selfie is verified; the partner waits.
-	if _, err := svc.CompleteAadhaarFlow(ctx, uid, p.ID, "code-manual", "state"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.AddVehicle(ctx, uid, p.ID, AddVehicleRequest{VehicleType: "bike", RegistrationNumber: "ka02zz" + uid.String()[:4]}); err != nil {
-		t.Fatal(err)
-	}
 	media := uuid.New()
-	selfie, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocSelfie, FileURL: "https://x/selfie.jpg", MediaID: &media})
+	dl, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocDrivingLicence, FileURL: "media://" + media.String(), MediaID: &media})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := svc.Store().GetPartnerDocument(ctx, selfie.ID)
-	if got.Status != "pending" || got.VerifiedByActor != nil || got.AutoCheckDetail == nil || !contains(*got.AutoCheckDetail, "below threshold") {
-		t.Fatalf("selfie below threshold = %+v", got)
-	}
-	pp, _ := svc.GetMyPartner(ctx, uid)
-	if pp.Status == "approved" {
-		t.Fatal("partner approved with a pending selfie")
-	}
-	ob, _ = svc.OnboardingStatusFor(ctx, uid)
-	if ob.Status != OnboardingUnderReview || !containsAll(ob.Pending, DocSelfie) || len(ob.Missing) != 0 {
-		t.Fatalf("onboarding under review = %+v", ob)
-	}
-	// under_review is published once per pending set: a re-evaluation with
-	// the same set adds no row.
-	if _, err := svc.evaluatePartnerApproval(ctx, p.ID); err != nil {
+	selfie, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocSelfie, FileURL: "media://" + media.String(), MediaID: &media})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if n := countRows(t, svc, `SELECT COUNT(*) FROM rider_admin_audit_logs WHERE action = 'partner.under_review' AND entity_id = $1`, p.ID); n != 1 {
-		t.Fatalf("under_review records = %d, want 1", n)
+	for _, id := range []uuid.UUID{dl.ID, selfie.ID} {
+		doc, err := svc.Store().GetPartnerDocument(ctx, id)
+		if err != nil || doc.Status != "pending" || doc.VerifiedByActor != nil {
+			t.Fatal("upload auto verified")
+		}
 	}
-	// media-service unavailable: still pending, never verified.
-	svc.SetFaceComparer(&MockFaceComparer{Err: ErrFaceCompareUnavailable}, 80)
-	if _, err := svc.evaluatePartnerApproval(ctx, p.ID); err != nil {
+	onboarding, err := svc.OnboardingStatusFor(ctx, uid)
+	if err != nil || containsAll(onboarding.Missing, DocAadhaar) {
+		t.Fatal("offline onboarding required Aadhaar")
+	}
+	if _, err := svc.ApprovePartner(ctx, p.ID, uuid.New()); err == nil {
+		t.Fatal("unreviewed account approved")
+	}
+	if _, err := svc.VerifyDocument(ctx, selfie.ID, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ = svc.Store().GetPartnerDocument(ctx, selfie.ID); got.Status != "pending" || !contains(*got.AutoCheckDetail, "unavailable") {
-		t.Fatalf("selfie with media-service down = %+v", got)
-	}
-	// No comparer at all: pending.
-	svc.SetFaceComparer(nil, 80)
-	if _, err := svc.evaluatePartnerApproval(ctx, p.ID); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ = svc.Store().GetPartnerDocument(ctx, selfie.ID); got.Status != "pending" {
-		t.Fatalf("selfie without comparer = %s", got.Status)
-	}
-
-	// The one human fallback: the admin verifies the selfie, and the
-	// evaluator approves the partner right away (no admin approve call).
-	admin := uuid.New()
-	if _, err := svc.VerifyDocument(ctx, selfie.ID, admin); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ = svc.Store().GetPartnerDocument(ctx, selfie.ID); got.Status != "approved" || got.VerifiedByActor == nil || *got.VerifiedByActor != admin.String() {
-		t.Fatalf("selfie after admin verify = %+v", got)
-	}
-	pp, _ = svc.GetMyPartner(ctx, uid)
-	if pp.Status != "approved" || pp.KYCStatus != "approved" {
-		t.Fatalf("partner after human fallback = %+v", pp)
-	}
-	// The manually uploaded DL was superseded by the DigiLocker one and
-	// itself never auto-verified.
-	if d, _ := svc.Store().GetPartnerDocument(ctx, dl.ID); d.Status != "pending" {
-		t.Fatalf("uploaded DL was changed: %+v", d)
+	current, _ := svc.GetMyPartner(ctx, uid)
+	if current.Status == "approved" {
+		t.Fatal("selfie review auto approved account")
 	}
 }
 

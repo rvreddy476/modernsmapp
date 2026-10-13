@@ -59,6 +59,7 @@ type DispatchStore interface {
 	ProOffer(ctx context.Context, proID, offerID uuid.UUID, now time.Time) (*model.Offer, error)
 	OfferRef(ctx context.Context, proID, offerID uuid.UUID) (*store.AssignmentRef, error)
 	ProJobRecord(ctx context.Context, proID, bookingID uuid.UUID, now time.Time) (*store.ProJobRecord, error)
+	ProContactCustomer(ctx context.Context, proID, bookingID uuid.UUID) (uuid.UUID, error)
 	ProJobIDs(ctx context.Context, proID uuid.UUID, mode, date string, after *store.BookingCursor, limit int) ([]store.BookingCursor, error)
 	ProArea(ctx context.Context, proID uuid.UUID) (*model.ProArea, error)
 	CityZones(ctx context.Context, city string) ([]model.ProZone, error)
@@ -249,7 +250,11 @@ func (s *Service) AcceptOffer(ctx context.Context, user, offerID uuid.UUID) (*mo
 		at := s.nowUTC()
 		s.publish(ctx, ProTopic(user), FrameOfferClosed, OfferClosedFrame{OfferID: offerID, BookingID: res.BookingID,
 			Outcome: dispatch.OfferAccepted, At: at})
-		s.publish(ctx, ProTopic(user), FrameJobAssigned, JobFrame{BookingID: res.BookingID, Status: "assigned", At: at})
+		status := res.Status
+		if status == "" {
+			status = "assigned"
+		}
+		s.publish(ctx, ProTopic(user), FrameJobAssigned, JobFrame{BookingID: res.BookingID, Status: status, At: at})
 		s.publishBookingNow(ctx, res.BookingID)
 	}
 	return s.proJob(ctx, p.ID, res.BookingID)
@@ -303,6 +308,20 @@ func (s *Service) DeclineOffer(ctx context.Context, user, offerID uuid.UUID, in 
 	ref, err := check()
 	if ref == nil || err != nil {
 		return err
+	}
+	facts, err := s.ds.Store.DispatchFacts(ctx, ref.BookingID)
+	if err != nil {
+		return internal(ctx, "offer booking", err)
+	}
+	if facts.AssignmentMode == "automatic" {
+		st, ok := s.ds.Store.(automaticBookingStore)
+		if !ok {
+			return offerTaken()
+		}
+		if err := st.DeclineAutomatic(ctx, store.AcceptInput{OfferID: offerID, ProID: p.ID, At: s.nowUTC()}); err != nil {
+			return offerTaken()
+		}
+		return s.dispatchAutomatic(ctx, ref.BookingID)
 	}
 	// B1: the booking waits for the customer to pick again (pro_unavailable);
 	// nobody else is offered the job silently.
@@ -441,6 +460,15 @@ func (s *Service) DispatchTick(ctx context.Context) (DispatchReport, error) {
 		}
 	}
 	now := s.nowUTC()
+
+	// Offers past their expiry: pro_unavailable, the customer picks again
+	if st, ok := s.ds.Store.(automaticBookingStore); ok {
+		ids, err := st.AutomaticQueue(ctx, workerBatch)
+		note("automatic matching queue", err)
+		for _, id := range ids {
+			note("automatic matching", st.MatchAutomatic(ctx, id, now))
+		}
+	}
 
 	// Offers past their expiry: pro_unavailable, the customer picks again
 	// (B1; never the next professional silently).

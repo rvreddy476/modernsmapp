@@ -53,6 +53,8 @@ func (s *Store) ProDocuments(ctx context.Context, proID uuid.UUID) ([]model.ProD
 // oldest first.
 func (s *Store) ListDocuments(ctx context.Context, status string) ([]model.ProDocument, error) {
 	rows, err := s.db.Query(ctx, `SELECT `+docCols+` FROM doorstep.pro_documents WHERE status = $1
+		AND (kind <> 'bank_proof' OR status <> 'pending' OR EXISTS (
+		 SELECT 1 FROM doorstep.pro_payout_accounts a WHERE a.proof_document_id=doorstep.pro_documents.id AND a.status='pending' AND NOT a.superseded))
 		ORDER BY (kind = 'police_certificate') DESC, created_at, id LIMIT 500`, status)
 	if err != nil {
 		return nil, err
@@ -214,6 +216,25 @@ func (s *Store) DecideDocument(ctx context.Context, a Actor, id uuid.UUID, appro
 	var out model.ProDocument
 	details := map[string]any{"decision": decision, "reason": reason}
 	err := s.adminWrite(ctx, a, "document.decide", "pro_document", details, func(tx pgx.Tx) (string, error) {
+		// Bank submissions and decisions use the same lock order: professional,
+		// then document/account. A concurrent resubmission cannot approve a stale proof.
+		var owner uuid.UUID
+		var kind string
+		if err := tx.QueryRow(ctx, `SELECT pro_id,kind FROM doorstep.pro_documents WHERE id=$1`, id).Scan(&owner, &kind); err != nil {
+			return "", err
+		}
+		if kind == "bank_proof" {
+			if _, err := tx.Exec(ctx, `SELECT id FROM doorstep.professionals WHERE id=$1 FOR UPDATE`, owner); err != nil {
+				return "", err
+			}
+			var current bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM doorstep.pro_payout_accounts WHERE proof_document_id=$1 AND pro_id=$2 AND status='pending' AND NOT superseded)`, id, owner).Scan(&current); err != nil {
+				return "", err
+			}
+			if !current {
+				return "", ErrInvalid
+			}
+		}
 		doc, err := scanDoc(tx.QueryRow(ctx, `SELECT `+docCols+` FROM doorstep.pro_documents WHERE id = $1 FOR UPDATE`, id))
 		if err != nil {
 			return "", err
@@ -232,6 +253,21 @@ func (s *Store) DecideDocument(ctx context.Context, a Actor, id uuid.UUID, appro
 			return "", err
 		}
 		switch doc.Kind {
+		case "bank_proof":
+			if approve {
+				if _, err := tx.Exec(ctx, `UPDATE doorstep.pro_payout_accounts SET active=FALSE WHERE pro_id=$1 AND active`, doc.ProID); err != nil {
+					return "", err
+				}
+			}
+			tag, err := tx.Exec(ctx, `UPDATE doorstep.pro_payout_accounts SET status=CASE WHEN $2 THEN 'verified' ELSE 'failed' END,
+			 active=CASE WHEN $2 THEN TRUE ELSE active END,
+			 verified_at=CASE WHEN $2 THEN NOW() ELSE NULL END WHERE proof_document_id=$1 AND pro_id=$3 AND NOT superseded AND status='pending'`, id, approve, doc.ProID)
+			if err != nil {
+				return "", err
+			}
+			if tag.RowsAffected() != 1 {
+				return "", ErrInvalid
+			}
 		case "police_certificate":
 			// The order matters: the database refuses a clear check whose
 			// certificate is not approved, and it was approved just above.

@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/food-service/internal/foodpii"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -60,9 +61,10 @@ func riderKYCIntegration(t *testing.T) kycIT {
 	svc := service.New(postgres.New(pool)).WithPII(crypto).WithDigiLocker(digilocker.Settings{
 		Mode: digilocker.ModeMock, Client: digilocker.NewMockClient(), PublicBaseURL: ctPublicBase, AppLinkURL: ctAppLink,
 	})
+	svc.WithDocumentMedia(ownedmedia.Func(func(context.Context, uuid.UUID, uuid.UUID) error { return nil }))
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(svc).WithDigiLockerDevRoutes("dev", true).RegisterRoutes(router)
+	New(svc).WithDigiLockerDevRoutes("dev", true).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return kycIT{r: router, pool: pool, crypto: crypto, svc: svc}
 }
 
@@ -270,7 +272,7 @@ func TestDigiLockerMockFlowStoresSealedDocumentsAndAnAadhaarReferenceOnly(t *tes
 
 	rec := it.callback(user, code, state)
 	expectStatus(t, rec, http.StatusOK, "callback")
-	if got := missingList(t, rec); got != "selfie,payout_account" {
+	if got := missingList(t, rec); got != "identity_document,driving_licence,vehicle_rc,selfie,payout_account" {
 		t.Fatalf("missing after DigiLocker = %s", got)
 	}
 	for _, plain := range []string{dl, rc, state, code} {
@@ -415,7 +417,7 @@ func TestDeliveryDocumentsAndBackfillLeaveNoPlaintext(t *testing.T) {
 		t.Fatalf("manual DL response = %s", rec.Body.String())
 	}
 	expectStatus(t, doJSON(it.r, http.MethodPost, "/v1/food/delivery/documents", `{"document_type":"INSURANCE","document_number":"`+policy+`"}`, user, false), http.StatusCreated, "other document")
-	rec = doJSON(it.r, http.MethodPost, "/v1/food/delivery/documents", `{"document_type":"DRIVING_LICENCE","document_number":"`+dl+`"}`, other, false)
+	rec = doJSON(it.r, http.MethodPost, "/v1/food/delivery/documents", `{"document_type":"DRIVING_LICENCE","document_number":"`+dl+`","media_id":"`+uuid.NewString()+`"}`, other, false)
 	expectStatus(t, rec, http.StatusConflict, "another partner's DL")
 	before := it.count(t, `SELECT COUNT(*) FROM food.delivery_partner_documents WHERE delivery_partner_id = $1`, partnerID)
 	aadhaar := kycSynthAadhaar(t)
@@ -493,7 +495,7 @@ func TestAdminKYCViewIsMasked(t *testing.T) {
 	if !strings.Contains(body, `"number_masked":"****`+dl[len(dl)-4:]+`"`) || !strings.Contains(body, `"kind":"AADHAAR"`) {
 		t.Fatalf("admin view = %s", body)
 	}
-	expectStatus(t, doJSON(it.r, http.MethodGet, "/v1/food/admin/delivery-partners/"+partnerID.String()+"/kyc", ``, uuid.New(), false), http.StatusForbidden, "non-admin")
+	expectStatus(t, doJSON(it.r, http.MethodGet, "/v1/food/admin/delivery-partners/"+partnerID.String()+"/kyc", ``, uuid.New(), false), http.StatusUnauthorized, "non-admin")
 }
 
 func (it kycIT) approve(t *testing.T, partnerID uuid.UUID) *httptest.ResponseRecorder {
@@ -509,6 +511,15 @@ func (it kycIT) approvedSelfie(t *testing.T, user, partnerID uuid.UUID) {
 	expectStatus(t, doJSON(it.r, http.MethodPost, "/v1/food/admin/delivery-partners/"+partnerID.String()+"/documents/"+docID+"/decide", `{"decision":"APPROVED"}`, uuid.New(), true), http.StatusOK, "approve selfie")
 }
 
+func (it kycIT) reviewedDocument(t *testing.T, user, partnerID uuid.UUID, kind, number string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"document_type": kind, "document_number": number, "media_id": uuid.NewString()})
+	rec := doJSON(it.r, http.MethodPost, "/v1/food/delivery/documents", string(body), user, false)
+	expectStatus(t, rec, http.StatusCreated, "upload "+kind)
+	id := dataField(t, rec, "id").(string)
+	expectStatus(t, doJSON(it.r, http.MethodPost, "/v1/food/admin/delivery-partners/"+partnerID.String()+"/documents/"+id+"/decide", `{"decision":"APPROVED"}`, uuid.New(), true), http.StatusOK, "review "+kind)
+}
+
 func TestDeliveryPartnerApprovalGate(t *testing.T) {
 	it := riderKYCIntegration(t)
 	ctx := context.Background()
@@ -518,12 +529,16 @@ func TestDeliveryPartnerApprovalGate(t *testing.T) {
 
 	rec := it.approve(t, partnerID)
 	expectStatus(t, rec, http.StatusUnprocessableEntity, "approve without selfie or payout")
-	if errorCode(t, rec) != "FOOD_DELIVERY_PARTNER_NOT_READY" || missingList(t, rec) != "selfie,payout_account" {
+	if errorCode(t, rec) != "FOOD_DELIVERY_PARTNER_NOT_READY" || missingList(t, rec) != "identity_document,driving_licence,vehicle_rc,selfie,payout_account" {
 		t.Fatalf("refusal = %s", rec.Body.String())
 	}
-	if got := missingList(t, doJSON(it.r, http.MethodGet, "/v1/food/delivery/kyc/status", ``, user, false)); got != "selfie,payout_account" {
+	if got := missingList(t, doJSON(it.r, http.MethodGet, "/v1/food/delivery/kyc/status", ``, user, false)); got != "identity_document,driving_licence,vehicle_rc,selfie,payout_account" {
 		t.Fatalf("readiness route missing = %s", got)
 	}
+	// Provider assertions alone do not replace uploaded, manually reviewed KYC.
+	dl, rc := mockNumbers(t, code)
+	it.reviewedDocument(t, user, partnerID, "DRIVING_LICENCE", dl)
+	it.reviewedDocument(t, user, partnerID, "VEHICLE_RC", rc)
 
 	// A pending selfie does not count; a second selfie retires the first.
 	expectStatus(t, doJSON(it.r, http.MethodPost, "/v1/food/delivery/documents", `{"document_type":"SELFIE","media_id":"`+uuid.NewString()+`"}`, user, false), http.StatusCreated, "pending selfie")
@@ -543,7 +558,7 @@ func TestDeliveryPartnerApprovalGate(t *testing.T) {
 	}
 	decide := "/v1/food/admin/delivery-partners/" + partnerID.String() + "/documents/" + dlDoc + "/decide"
 	expectStatus(t, doJSON(it.r, http.MethodPost, decide, `{"decision":"REJECTED","reason":"photo does not match"}`, uuid.New(), true), http.StatusOK, "reject DL")
-	if got := missingList(t, it.approve(t, partnerID)); got != "driving_licence" {
+	if got := missingList(t, it.approve(t, partnerID)); got != "identity_document,driving_licence" {
 		t.Fatalf("after rejecting the DL missing = %s", got)
 	}
 	expectStatus(t, doJSON(it.r, http.MethodPost, decide, `{"decision":"APPROVED"}`, uuid.New(), true), http.StatusOK, "re-approve DL")
@@ -560,7 +575,7 @@ func TestDeliveryPartnerApprovalGate(t *testing.T) {
 	expectStatus(t, rec, http.StatusUnprocessableEntity, "status setter to ACTIVE without verification")
 }
 
-func TestBicycleSkipsDrivingDocuments(t *testing.T) {
+func TestBicycleRequiresReviewedLicenceButSkipsVehicleRC(t *testing.T) {
 	it := riderKYCIntegration(t)
 	ctx := context.Background()
 	user, partnerID := it.rider(t, "BICYCLE")
@@ -572,11 +587,16 @@ func TestBicycleSkipsDrivingDocuments(t *testing.T) {
 	}
 	it.approvedSelfie(t, user, partnerID)
 	expectStatus(t, doJSON(it.r, http.MethodPut, "/v1/food/delivery/payout-account", itPayout, user, false), http.StatusOK, "payout")
+	if got := missingList(t, it.approve(t, partnerID)); got != "identity_document,driving_licence" {
+		t.Fatalf("provider identity bypassed manual review: %s", got)
+	}
+	dl, _ := itUniqueNumbers()
+	it.reviewedDocument(t, user, partnerID, "DRIVING_LICENCE", dl)
 
 	if _, err := it.pool.Exec(ctx, `UPDATE food.delivery_partners SET vehicle_type = 'MOTORCYCLE' WHERE id = $1`, partnerID); err != nil {
 		t.Fatal(err)
 	}
-	if got := missingList(t, it.approve(t, partnerID)); got != "driving_licence,vehicle_rc" {
+	if got := missingList(t, it.approve(t, partnerID)); got != "vehicle_rc" {
 		t.Fatalf("motorcycle without DL/RC missing = %s", got)
 	}
 	if _, err := it.pool.Exec(ctx, `UPDATE food.delivery_partners SET vehicle_type = 'BICYCLE' WHERE id = $1`, partnerID); err != nil {
@@ -585,7 +605,7 @@ func TestBicycleSkipsDrivingDocuments(t *testing.T) {
 	if got := missingList(t, doJSON(it.r, http.MethodGet, "/v1/food/delivery/kyc/status", ``, user, false)); got != "" {
 		t.Fatalf("bicycle readiness missing = %s", got)
 	}
-	expectStatus(t, it.approve(t, partnerID), http.StatusOK, "approve a bicycle rider without DL or RC")
+	expectStatus(t, it.approve(t, partnerID), http.StatusOK, "approve a bicycle rider with reviewed licence but no RC")
 }
 
 func TestRestaurantLocationRequiresAState(t *testing.T) {

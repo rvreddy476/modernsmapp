@@ -88,6 +88,7 @@ var (
 // Deliberately narrow. Decoding the whole DTO would couple this client to
 // every field media-service adds, and none of the rest decides anything here.
 type Asset struct {
+	DurationSeconds  *float64  `json:"duration_seconds"`
 	ID               uuid.UUID `json:"id"`
 	UploaderID       uuid.UUID `json:"uploader_id"`
 	FileType         string    `json:"file_type"`

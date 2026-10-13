@@ -217,7 +217,7 @@ func TestAdminTokenIT_NewlyAuditedActionsRecordAct(t *testing.T) {
 	}
 }
 
-// The LEGACY path still works and now audits too, with the gateway's user.
+// The compatibility path requires a signed token and audits its actor.
 func TestAdminTokenIT_LegacyTicketStatusAudited(t *testing.T) {
 	rg, pool := setupAdminTokenIT(t)
 	var ticketID uuid.UUID
@@ -226,6 +226,7 @@ func TestAdminTokenIT_LegacyTicketStatusAudited(t *testing.T) {
 	}
 	admin := uuid.New()
 	hdr := legacyAdmin(admin, "admin")
+	hdr[ServiceAuthHeader] = "Bearer " + rg.mint(t, rg.admin, AudienceFood, []string{PermTicketsAct}, admin.String())
 	delete(hdr, "X-Internal-Service-Key")
 	w := adminServe(rg.r, http.MethodPost, "/v1/food/admin/support/tickets/"+ticketID.String()+"/status", `{"status":"resolved"}`, hdr)
 	if w.Code != http.StatusOK {

@@ -75,6 +75,14 @@ func (s *Service) proUnavailable(ctx context.Context, id uuid.UUID, sp unavailab
 	if res.RemovedAccepted && res.ClosedProUserID != nil {
 		s.publish(ctx, ProTopic(*res.ClosedProUserID), FrameJobRemoved, JobFrame{BookingID: id, Cause: sp.cause, At: now})
 	}
+	if res.AssignmentMode == "automatic" {
+		s.publishBooking(ctx, id, "matching", res.SlotStart, res.SlotEnd)
+		// Persisted matching state is retried by DispatchTick after a failure.
+		if err := s.dispatchAutomatic(ctx, id); err != nil {
+			slog.WarnContext(ctx, "automatic replacement queued", "booking_id", id, "error", err)
+		}
+		return res, nil
+	}
 	s.publishBooking(ctx, id, "pro_unavailable", res.SlotStart, res.SlotEnd)
 	s.publish(ctx, BookingTopic(id), FrameProUnavailable, ProUnavailableFrame{BookingID: id, Cause: sp.cause,
 		ChoiceDeadline: deadline, At: now})
@@ -214,6 +222,9 @@ func (s *Service) ChangeProfessional(ctx context.Context, user, id uuid.UUID, id
 	}
 	now := s.nowUTC()
 	// A replay of a change already made answers it, whatever the status now.
+	if rec.Booking.AssignmentMode == "automatic" {
+		return nil, apperr.New(http.StatusConflict, apperr.CodeInvalidTransition, "Doorstep assigns the professional for this booking")
+	}
 	if prev, err := s.changeByKey(ctx, rec, idemKey); err != nil || prev != nil {
 		if err != nil {
 			return nil, err

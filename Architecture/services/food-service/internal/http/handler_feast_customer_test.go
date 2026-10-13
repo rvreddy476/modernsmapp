@@ -61,7 +61,7 @@ func (f *feastRecordingStore) PlaceOrder(context.Context, uuid.UUID, postgres.Pl
 func feastRouter(st service.Store) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(service.New(st)).RegisterRoutes(router)
+	New(service.New(st)).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

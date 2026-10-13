@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/atpost/shared/partnerwork"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,10 +87,11 @@ func (s *Store) GetOfferByRidePartner(ctx context.Context, rideID, partnerID uui
 // AND expires_at > now()), most-recent first.
 func (s *Store) ListPendingOffersForPartner(ctx context.Context, partnerID uuid.UUID) ([]RideOffer, error) {
 	const q = `
-        SELECT id, ride_id, partner_id, score, distance_km, expires_at, status, decided_at, created_at
-        FROM rider_ride_offers
-        WHERE partner_id = $1 AND status = 'sent' AND expires_at > NOW()
-        ORDER BY created_at DESC
+        SELECT o.id, o.ride_id, o.partner_id, o.score, o.distance_km, o.expires_at, o.status, o.decided_at, o.created_at,
+               r.pickup_address, r.drop_address, (r.estimated_fare * 100)::bigint
+        FROM rider_ride_offers o JOIN rider_rides r ON r.id=o.ride_id
+        WHERE o.partner_id = $1 AND o.status = 'sent' AND o.expires_at > NOW()
+        ORDER BY o.created_at DESC
         LIMIT 50`
 	rows, err := s.db.Query(ctx, q, partnerID)
 	if err != nil {
@@ -98,13 +100,35 @@ func (s *Store) ListPendingOffersForPartner(ctx context.Context, partnerID uuid.
 	defer rows.Close()
 	var out []RideOffer
 	for rows.Next() {
-		o, err := scanOffer(rows)
-		if err != nil {
+		var o RideOffer
+		if err := rows.Scan(&o.ID, &o.RideID, &o.PartnerID, &o.Score, &o.DistanceKM, &o.ExpiresAt, &o.Status, &o.DecidedAt, &o.CreatedAt,
+			&o.PickupAddress, &o.DropAddress, &o.EstimatedFarePaise); err != nil {
 			return nil, err
 		}
-		out = append(out, *o)
+		out = append(out, o)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	var user uuid.UUID
+	if err := s.db.QueryRow(ctx, `SELECT user_id FROM rider_partners WHERE id=$1`, partnerID).Scan(&user); err != nil {
+		return nil, err
+	}
+	visible, enabled, err := partnerwork.VisibleOfferJobs(ctx, s.db, user, partnerwork.Moped)
+	if err != nil {
+		return nil, err
+	}
+	if enabled {
+		filtered := out[:0]
+		for _, o := range out {
+			if visible[o.RideID] {
+				filtered = append(filtered, o)
+			}
+		}
+		out = filtered
+	}
+	return out, nil
 }
 
 // ListOffersForRide returns every offer ever sent for the ride.
@@ -197,7 +221,21 @@ func (s *Store) AcceptOfferAndAssignRideTx(ctx context.Context, in AcceptOfferAn
 		}
 		return nil, nil, fmt.Errorf("lock offer: %w", err)
 	}
-	if offer.Status != "sent" || !offer.ExpiresAt.After(time.Now()) {
+	var partnerEligible bool
+	if err := tx.QueryRow(ctx, `SELECT is_online AND status='approved' AND kyc_status='approved' FROM rider_partners WHERE id=$1 AND user_id=$2 FOR UPDATE`, in.PartnerID, in.PartnerUserID).Scan(&partnerEligible); err != nil {
+		return nil, nil, err
+	}
+	if !partnerEligible {
+		return nil, nil, ErrOfferAlreadyDecided
+	}
+	var busy, expired bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM rider_rides WHERE partner_id=$1 AND id<>$2 AND status IN ('partner_assigned','partner_arriving','arrived','otp_verified','in_progress'))`, in.PartnerID, rideID).Scan(&busy); err != nil {
+		return nil, nil, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT expires_at<=clock_timestamp() FROM rider_ride_offers WHERE id=$1`, in.OfferID).Scan(&expired); err != nil {
+		return nil, nil, err
+	}
+	if busy || expired || offer.Status != "sent" {
 		return nil, nil, ErrOfferAlreadyDecided
 	}
 

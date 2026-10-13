@@ -107,6 +107,7 @@ func (h *Handler) PostVehicleDocument(c *gin.Context) {
 		DocumentNumber: body.DocumentNumber,
 		FileURL:        body.FileURL,
 		ExpiresAt:      expiresAt,
+		MediaID:        body.MediaID,
 	})
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "VEHICLE_DOCUMENT_FAILED")

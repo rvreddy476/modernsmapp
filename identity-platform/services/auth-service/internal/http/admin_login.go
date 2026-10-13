@@ -154,7 +154,7 @@ type adminSessionBody struct {
 func newAdminSessionBody(resp *service.AuthResponse) adminSessionBody {
 	var body adminSessionBody
 	body.SessionID = resp.SessionID.String()
-	body.AdminMFA = true // only an admin MFA session is ever issued on these routes
+	body.AdminMFA = !resp.LocalAdminPasswordLogin
 	body.AccessExpiresAt = resp.Tokens.ExpiresAt.UTC()
 	if resp.User != nil {
 		body.User.ID = resp.User.ID.String()
@@ -195,10 +195,36 @@ func (h *Handler) AdminSessionLogin(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "identifier and password are required", nil, nil)
 		return
 	}
-	challenge, err := h.svc.AdminLogin(c.Request.Context(), identifier, req.Password, c.ClientIP(), c.Request.UserAgent())
+	ctx := c.Request.Context()
+	key := c.GetHeader("X-Admin-Local-Password-Key")
+	localPasswordLogin := h.cfg.AdminLocalPasswordLoginEnabled() &&
+		subtle.ConstantTimeCompare([]byte(key), []byte(h.cfg.AdminLocalPasswordLoginKey)) == 1
+	if localPasswordLogin {
+		ctx = service.WithLocalAdminPasswordLogin(ctx)
+	}
+	challenge, err := h.svc.AdminLogin(ctx, identifier, req.Password, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
 		h.log.Warn("admin sign-in refused", "err", err, "identifier", maskIdentifier(identifier), "request_id", RequestIDFromContext(c))
 		h.writeAdminSessionErr(c, err)
+		return
+	}
+	if challenge.LocalSession != nil {
+		resp := challenge.LocalSession
+		if !localPasswordLogin {
+			_ = h.svc.AdminLogout(ctx, resp.Tokens.RefreshToken)
+			h.writeAdminSessionErr(c, service.ErrTOTPNotEnrolled)
+			return
+		}
+		if !h.setAdminCookies(c, resp.Tokens) {
+			_ = h.svc.AdminLogout(ctx, resp.Tokens.RefreshToken)
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, struct {
+			adminSessionBody
+			Requires2FA        bool `json:"requires_2fa"`
+			LocalPasswordLogin bool `json:"local_password_login"`
+		}{newAdminSessionBody(resp), false, true}, nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, challenge, nil)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/atpost/doorstep-service/internal/apperr"
 	"github.com/atpost/doorstep-service/internal/model"
+	"github.com/atpost/doorstep-service/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -17,6 +18,46 @@ import (
 // route does not take (gender above all) is refused with 400.
 
 func (h *Handler) registerProRoutes(user *gin.RouterGroup) {
+	user.GET("/pro/me/changes", func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store")
+		uid, ok := userID(c)
+		if !ok {
+			return
+		}
+		v, err := list(h.svc.ProChanges(c.Request.Context(), uid))
+		respond(c, http.StatusOK, v, err)
+	})
+	user.POST("/pro/me/alternate-phone/request", func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store")
+		uid, ok := userID(c)
+		if !ok {
+			return
+		}
+		out, err := h.svc.RequestAlternatePhone(c.Request.Context(), uid)
+		respond(c, http.StatusOK, out, err)
+	})
+	user.POST("/pro/me/alternate-phone/verify", func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store")
+		proBody(c, http.StatusOK, func(uid uuid.UUID, in service.AlternatePhoneCode) (*service.AlternatePhoneResult, error) {
+			return h.svc.VerifyAlternatePhone(c.Request.Context(), uid, in)
+		})
+	})
+	user.GET("/pro/application/states", func(c *gin.Context) {
+		if _, ok := userID(c); ok {
+			respond(c, http.StatusOK, model.List[service.ApplicationState]{Items: service.ApplicationStates}, nil)
+		}
+	})
+	user.POST("/pro/application", func(c *gin.Context) {
+		proBody(c, http.StatusCreated, func(uid uuid.UUID, in model.PartnerApplicationInput) (*model.Professional, error) {
+			return h.svc.SubmitPartnerApplication(c.Request.Context(), uid, in)
+		})
+	})
+	user.POST("/pro/application/identity", func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store")
+		proBody(c, http.StatusOK, func(uid uuid.UUID, in service.IdentityCorrectionInput) (*model.ProDocument, error) {
+			return h.svc.ProCorrectIdentity(c.Request.Context(), uid, in)
+		})
+	})
 	user.POST("/pro/apply", h.proApply)
 	user.GET("/pro/me", h.proGetMe)
 	user.PATCH("/pro/me", h.proPatchMe)
@@ -218,9 +259,41 @@ func (h *Handler) backgroundCheckWebhook(c *gin.Context) {
 
 func (h *Handler) proAdminRoutes() []adminRoute {
 	return []adminRoute{
+		{http.MethodGet, "/partner-changes/:id/photo", PermProsRead, func(c *gin.Context) {
+			c.Header("Cache-Control", "no-store, private")
+			c.Header("X-Content-Type-Options", "nosniff")
+			id, ok := uuidParam(c, "id")
+			if !ok {
+				return
+			}
+			img, err := h.svc.AdminChangePhoto(c.Request.Context(), adminActor(c), id)
+			if err != nil {
+				writeErr(c, err)
+				return
+			}
+			c.Data(http.StatusOK, img.ContentType, img.Bytes)
+		}},
+		{http.MethodGet, "/partner-changes", PermProsRead, func(c *gin.Context) {
+			c.Header("Cache-Control", "private, no-store")
+			v, err := list(h.svc.AdminPartnerChanges(c.Request.Context()))
+			respond(c, http.StatusOK, v, err)
+		}},
+		{http.MethodPost, "/partner-changes/:id/decide", PermProsApprove, func(c *gin.Context) {
+			id, ok := uuidParam(c, "id")
+			if !ok {
+				return
+			}
+			var in service.ChangeDecision
+			if !bindJSON(c, &in) {
+				return
+			}
+			err := h.svc.AdminDecidePartnerChange(c.Request.Context(), adminActor(c), id, in)
+			respond(c, http.StatusOK, map[string]bool{"reviewed": err == nil}, err)
+		}},
 		{http.MethodGet, "/professionals", PermProsRead, h.adminListProfessionals},
 		{http.MethodGet, "/professionals/:id", PermProsRead, h.adminGetProfessional},
 		{http.MethodPost, "/professionals/:id/approve", PermProsApprove, h.adminProStatus("approve")},
+		{http.MethodPost, "/professionals/:id/identity-review", PermProsApprove, h.adminReviewIdentity},
 		{http.MethodPost, "/professionals/:id/reject", PermProsApprove, h.adminProStatus("reject")},
 		{http.MethodPost, "/professionals/:id/suspend", PermProsSuspend, h.adminProStatus("suspend")},
 		{http.MethodPost, "/professionals/:id/reinstate", PermProsSuspend, h.adminProStatus("reinstate")},
@@ -229,6 +302,7 @@ func (h *Handler) proAdminRoutes() []adminRoute {
 		{http.MethodGet, "/documents", PermDocumentsReview, h.adminListDocuments},
 		{http.MethodPost, "/documents/:id/decide", PermDocumentsReview, h.adminDecideDocument},
 		{http.MethodGet, "/documents/:id/view", PermDocumentsReview, h.adminViewDocument},
+		{http.MethodGet, "/documents/:id/evidence", PermDocumentsReview, h.adminEvidence},
 	}
 }
 
@@ -305,6 +379,12 @@ func (h *Handler) adminListDocuments(c *gin.Context) {
 func (h *Handler) adminDecideDocument(c *gin.Context) {
 	adminPatch(c, func(id uuid.UUID, in model.DocumentDecisionInput) (*model.ProDocument, error) {
 		return h.svc.AdminDecideDocument(c.Request.Context(), adminActor(c), id, in)
+	})
+}
+
+func (h *Handler) adminReviewIdentity(c *gin.Context) {
+	adminPatch(c, func(id uuid.UUID, in model.ManualIdentityReviewInput) (*model.Professional, error) {
+		return h.svc.AdminReviewManualIdentity(c.Request.Context(), adminActor(c), id, in)
 	})
 }
 

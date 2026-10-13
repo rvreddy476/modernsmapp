@@ -30,8 +30,10 @@ import (
 const edgeTestInternalKey = "edge-test-internal-key"
 
 type upstreamHit struct {
-	path string
-	key  string
+	path     string
+	key      string
+	user     string
+	revision string
 }
 
 type recordingUpstream struct {
@@ -45,7 +47,7 @@ func newRecordingUpstream(t *testing.T) *recordingUpstream {
 	u := &recordingUpstream{}
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u.mu.Lock()
-		u.hits = append(u.hits, upstreamHit{path: r.URL.Path, key: r.Header.Get("X-Internal-Service-Key")})
+		u.hits = append(u.hits, upstreamHit{path: r.URL.Path, key: r.Header.Get("X-Internal-Service-Key"), user: r.Header.Get("X-User-Id"), revision: r.Header.Get("X-Work-Revision")})
 		u.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -232,6 +234,7 @@ func TestInternalKeyIsStampedOnlyForUpstreamsThatNeedIt(t *testing.T) {
 		{"/v1/commerce/products", true},
 		{"/v1/posts/feed", true},
 		{"/v1/doorstep/catalogue", true},
+		{"/v1/partner/work-session", true},
 		{"/v1/admin/commerce/sellers/queue", true},
 	}
 	for _, anonymous := range []bool{true, false} {
@@ -262,6 +265,25 @@ func TestInternalKeyIsStampedOnlyForUpstreamsThatNeedIt(t *testing.T) {
 				t.Errorf("%s (anonymous=%t): upstream saw key %q, want %q", c.path, anonymous, hits[0].key, want)
 			}
 		}
+	}
+}
+
+func TestPartnerWorkReadbackGatewayIdentityAndRevision(t *testing.T) {
+	up := newRecordingUpstream(t)
+	gw := edgeGateway(t, up, nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/partner/work-session", nil)
+	req.Header.Set("Authorization", "Bearer "+edgeToken(t, "user", ""))
+	req.Header.Set("X-User-Id", "client-forged")
+	req.Header.Set("X-Internal-Service-Key", "client-forged")
+	req.Header.Set("X-Work-Revision", "42")
+	res := httptest.NewRecorder()
+	gw.ServeHTTP(res, req)
+	hits := up.take()
+	if res.Code != http.StatusOK || len(hits) != 1 {
+		t.Fatalf("readback did not reach authority: status=%d hits=%d", res.Code, len(hits))
+	}
+	if h := hits[0]; h.key != edgeTestInternalKey || h.user != "33333333-3333-4333-8333-333333333333" || h.revision != "42" {
+		t.Fatalf("gateway authentication or revision lost: %+v", h)
 	}
 }
 

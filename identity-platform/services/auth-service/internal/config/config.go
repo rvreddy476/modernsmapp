@@ -66,10 +66,14 @@ type Config struct {
 	// rotates the token but never extends it. AdminCookieSecure defaults to
 	// true and is forced true in production; the admin cookies never take
 	// COOKIE_DOMAIN (they are host-only by construction).
-	AdminSessionTTL    time.Duration
-	AdminCookieSecure  bool
-	TrustedProxies     []string
-	InternalServiceKey string
+	AdminSessionTTL   time.Duration
+	AdminCookieSecure bool
+	// Local-only, server-to-server key. Never expose through NEXT_PUBLIC_*.
+	// An empty key (the default) keeps mandatory authenticator sign-in.
+	AdminLocalPasswordLoginKey string
+	RuntimeEnvironment         string
+	TrustedProxies             []string
+	InternalServiceKey         string
 	// admin-service's token-signing key, PUBLIC half, for the token-only
 	// /v1/auth/internal/admin/* family (admin console Access page). Empty
 	// means the family accepts nothing; a set key with no kid, or an
@@ -188,44 +192,46 @@ func Load() *Config {
 		// the expand phase, and it is also the safe state to restart into if a
 		// rollback is in progress. Redis (`flag:register_require_gender`)
 		// overrides this at runtime without a redeploy.
-		RegisterRequireGender:    getEnvBool("REGISTER_REQUIRE_GENDER", false),
-		BcryptCost:               getEnvInt("BCRYPT_COST", 10),
-		AccessTokenTTL:           getEnvDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
-		RefreshTokenTTL:          getEnvDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),
-		JWTSecret:                getEnv("JWT_SECRET", ""),
-		JWTKID:                   getEnv("JWT_KID", "v1"),
-		JWTSecretPrevious:        getEnv("JWT_SECRET_PREVIOUS", ""),
-		JWTKIDPrevious:           getEnv("JWT_KID_PREVIOUS", ""),
-		CookieDomain:             getEnv("COOKIE_DOMAIN", ""),
-		CookieSecure:             getEnvBool("COOKIE_SECURE", false),
-		AdminSessionTTL:          getEnvDuration("ADMIN_SESSION_TTL", 12*time.Hour),
-		AdminCookieSecure:        IsProductionEnv() || getEnvBool("ADMIN_COOKIE_SECURE", true),
-		TrustedProxies:           splitAndClean(getEnv("TRUSTED_PROXIES", "")),
-		InternalServiceKey:       getEnv("INTERNAL_SERVICE_KEY", ""),
-		AdminServiceTokenPubKey:  getEnv("ADMIN_SERVICE_TOKEN_PUBKEY", ""),
-		AdminServiceTokenKID:     getEnv("ADMIN_SERVICE_TOKEN_KID", ""),
-		TwoFAIssuer:              getEnv("TWOFA_ISSUER", "AtPost"),
-		FrontendURL:              getEnv("FRONTEND_URL", "http://localhost:3000"),
-		OAuth:                    LoadOAuth(),
-		OAuthNewAccountEnabled:   getEnvBool("OAUTH_NEW_ACCOUNT_ENABLED", false),
-		RateLimitEnabled:         getEnvBool("RATE_LIMIT_ENABLED", true),
-		LoginAnomalyEnforce:      strings.ToLower(getEnv("LOGIN_ANOMALY_ENFORCE", "shadow")),
-		MiniAppSessionTTL:        getEnvDuration("MINI_APP_SESSION_TTL", 5*time.Minute),
-		MiniAppSessionIssuer:     getEnv("MINI_APP_SESSION_ISSUER", "atpost-mini-app-runtime"),
-		MiniAppSessionKeyID:      getEnv("MINI_APP_SESSION_KEY_ID", "mini-app-session-1"),
-		MiniAppSessionPrivateKey: getEnv("MINI_APP_SESSION_PRIVATE_KEY_PEM", ""),
-		ScopeAdminUserIDs:        splitToSet(getEnv("ADMIN_USER_IDS", "")),
-		ScopeModeratorUserIDs:    splitToSet(getEnv("MODERATOR_USER_IDS", "")),
-		ScopeSuperadminUserIDs:   splitToSet(getEnv("SUPERADMIN_USER_IDS", "")),
-		AccessTokenPrivateKeyPEM: getEnv("JWT_PRIVATE_KEY_PEM", ""),
-		AccessTokenRS256KID:      getEnv("JWT_RS256_KID", "rsa-1"),
-		JWTIssuer:                getEnv("JWT_ISSUER", "auth-service"),
-		JWTAudience:              getEnv("JWT_AUDIENCE", "atpost-api"),
-		Production:               IsProductionEnv(),
-		RequireMFAForPrivileged:  getEnvBool("REQUIRE_MFA_FOR_PRIVILEGED", false),
-		WebAuthnRPID:             getEnv("WEBAUTHN_RP_ID", "localhost"),
-		WebAuthnRPDisplayName:    getEnv("WEBAUTHN_RP_NAME", "Momentum"),
-		WebAuthnRPOrigins:        splitAndClean(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:3000")),
+		RegisterRequireGender:      getEnvBool("REGISTER_REQUIRE_GENDER", false),
+		BcryptCost:                 getEnvInt("BCRYPT_COST", 10),
+		AccessTokenTTL:             getEnvDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
+		RefreshTokenTTL:            getEnvDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),
+		JWTSecret:                  getEnv("JWT_SECRET", ""),
+		JWTKID:                     getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious:          getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:             getEnv("JWT_KID_PREVIOUS", ""),
+		CookieDomain:               getEnv("COOKIE_DOMAIN", ""),
+		CookieSecure:               getEnvBool("COOKIE_SECURE", false),
+		AdminSessionTTL:            getEnvDuration("ADMIN_SESSION_TTL", 12*time.Hour),
+		AdminCookieSecure:          IsProductionEnv() || getEnvBool("ADMIN_COOKIE_SECURE", true),
+		AdminLocalPasswordLoginKey: strings.TrimSpace(os.Getenv("ADMIN_LOCAL_PASSWORD_LOGIN_KEY")),
+		RuntimeEnvironment:         strings.ToLower(strings.TrimSpace(getEnv("APP_ENV", getEnv("ENVIRONMENT", getEnv("ENV", ""))))),
+		TrustedProxies:             splitAndClean(getEnv("TRUSTED_PROXIES", "")),
+		InternalServiceKey:         getEnv("INTERNAL_SERVICE_KEY", ""),
+		AdminServiceTokenPubKey:    getEnv("ADMIN_SERVICE_TOKEN_PUBKEY", ""),
+		AdminServiceTokenKID:       getEnv("ADMIN_SERVICE_TOKEN_KID", ""),
+		TwoFAIssuer:                getEnv("TWOFA_ISSUER", "AtPost"),
+		FrontendURL:                getEnv("FRONTEND_URL", "http://localhost:3000"),
+		OAuth:                      LoadOAuth(),
+		OAuthNewAccountEnabled:     getEnvBool("OAUTH_NEW_ACCOUNT_ENABLED", false),
+		RateLimitEnabled:           getEnvBool("RATE_LIMIT_ENABLED", true),
+		LoginAnomalyEnforce:        strings.ToLower(getEnv("LOGIN_ANOMALY_ENFORCE", "shadow")),
+		MiniAppSessionTTL:          getEnvDuration("MINI_APP_SESSION_TTL", 5*time.Minute),
+		MiniAppSessionIssuer:       getEnv("MINI_APP_SESSION_ISSUER", "atpost-mini-app-runtime"),
+		MiniAppSessionKeyID:        getEnv("MINI_APP_SESSION_KEY_ID", "mini-app-session-1"),
+		MiniAppSessionPrivateKey:   getEnv("MINI_APP_SESSION_PRIVATE_KEY_PEM", ""),
+		ScopeAdminUserIDs:          splitToSet(getEnv("ADMIN_USER_IDS", "")),
+		ScopeModeratorUserIDs:      splitToSet(getEnv("MODERATOR_USER_IDS", "")),
+		ScopeSuperadminUserIDs:     splitToSet(getEnv("SUPERADMIN_USER_IDS", "")),
+		AccessTokenPrivateKeyPEM:   getEnv("JWT_PRIVATE_KEY_PEM", ""),
+		AccessTokenRS256KID:        getEnv("JWT_RS256_KID", "rsa-1"),
+		JWTIssuer:                  getEnv("JWT_ISSUER", "auth-service"),
+		JWTAudience:                getEnv("JWT_AUDIENCE", "atpost-api"),
+		Production:                 IsProductionEnv(),
+		RequireMFAForPrivileged:    getEnvBool("REQUIRE_MFA_FOR_PRIVILEGED", false),
+		WebAuthnRPID:               getEnv("WEBAUTHN_RP_ID", "localhost"),
+		WebAuthnRPDisplayName:      getEnv("WEBAUTHN_RP_NAME", "Momentum"),
+		WebAuthnRPOrigins:          splitAndClean(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:3000")),
 	}
 	return cfg
 }
@@ -245,6 +251,9 @@ func IsProductionEnv() bool { return appenv.IsProduction() }
 // identities, and starting without an audience would mean tokens minted for
 // staging authenticate against production.
 func (c *Config) ValidateForProduction() error {
+	if err := c.ValidateAdminLocalPasswordLogin(); err != nil {
+		return err
+	}
 	if !c.Production {
 		return nil
 	}
@@ -262,6 +271,20 @@ func (c *Config) ValidateForProduction() error {
 			"mint identities rather than merely verify them")
 	}
 	return c.ValidateOTPBypass()
+}
+
+// Explicit local environment AND a strong server-only key are required. A
+// forgotten key in any other environment prevents startup, rather than
+// weakening authentication silently.
+func (c *Config) AdminLocalPasswordLoginEnabled() bool {
+	return !c.Production && c.RuntimeEnvironment == "local" && len(c.AdminLocalPasswordLoginKey) >= 32
+}
+
+func (c *Config) ValidateAdminLocalPasswordLogin() error {
+	if c.AdminLocalPasswordLoginKey != "" && !c.AdminLocalPasswordLoginEnabled() {
+		return errors.New("ADMIN_LOCAL_PASSWORD_LOGIN_KEY requires APP_ENV=local, a key of at least 32 characters, and a non-production environment")
+	}
+	return nil
 }
 
 // ErrOTPBypassInProduction is returned by ValidateOTPBypass when

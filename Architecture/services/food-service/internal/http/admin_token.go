@@ -140,25 +140,10 @@ func (h *Handler) requireAdminToken(perms ...string) gin.HandlerFunc {
 // requireAdmin gates one LEGACY /v1/food/admin route. perms[0] is the route's
 // permission; further perms are ones the handler narrows to per action.
 //
-// A request carrying a service token is judged ONLY by the token. Without
-// one, today's rule is unchanged: X-User-Id plus an admin or superadmin
-// scope (requireAdminScope). admin-service calls the token-only mirror.
+// Both route families require the same signed per-action permission and actor.
+// Coarse user scopes or gateway headers never grant console privileges.
 func (h *Handler) requireAdmin(perms ...string) gin.HandlerFunc {
-	if len(perms) == 0 {
-		panic("food: requireAdmin needs the route's permission")
-	}
-	legacy := h.requireAdminScope()
-	return func(c *gin.Context) {
-		if rawServiceToken(c) != "" {
-			if !h.authorizeAdminToken(c, perms) {
-				c.Abort()
-				return
-			}
-			c.Next()
-			return
-		}
-		legacy(c)
-	}
+	return h.requireAdminToken(perms...)
 }
 
 // authorizeAdminToken verifies the request's token for one of perms and, on
@@ -220,14 +205,10 @@ func (h *Handler) authorizeAdminToken(c *gin.Context, perms []string) bool {
 
 // adminMay reports whether the admitted caller may take an action that needs
 // perm, answering 403 when not. A token caller may only do what its signed
-// scope names; the LEGACY scopes path has no per-permission detail and keeps
-// today's all-or-nothing admin reach.
+// scope names. Missing authorization context fails closed.
 func adminMay(c *gin.Context, perm string) bool {
 	v, ok := c.Get(ctxAdminTokenPerms)
-	if !ok {
-		return true
-	}
-	if granted, _ := v.(map[string]bool); granted[perm] {
+	if granted, _ := v.(map[string]bool); ok && granted[perm] {
 		return true
 	}
 	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeAdminPermissionScope,
@@ -258,7 +239,7 @@ func DeliveryPartnerStatusPermission(status string) string {
 
 // registerAdminRoutes declares the admin console routes once, with the
 // permission each needs, under whichever gate the caller passes: requireAdmin
-// (token, or LEGACY X-User-Id + admin scope) or requireAdminToken (token only).
+// or requireAdminToken (both token only).
 func (h *Handler) registerAdminRoutes(g *gin.RouterGroup, gate func(perms ...string) gin.HandlerFunc) {
 	g.GET("/dashboard", gate(PermStatsRead), h.AdminDashboard)
 
@@ -274,12 +255,17 @@ func (h *Handler) registerAdminRoutes(g *gin.RouterGroup, gate func(perms ...str
 
 	// Documents, KYC (masked view) and payout accounts (masked).
 	g.POST("/restaurants/:restaurantId/documents/:docId/decide", gate(PermDocumentsReview), h.AdminDecideRestaurantDocument)
+	g.GET("/restaurants/:restaurantId/documents/:docId/evidence", gate(PermDocumentsReview), h.adminEvidence(false))
+	g.GET("/restaurants/:restaurantId/documents", gate(PermDocumentsReview), h.adminRestaurantEvidenceList)
+	g.GET("/delivery-partners/:partnerId/documents/:docId/evidence", gate(PermDocumentsReview), h.adminEvidence(true))
 	g.GET("/delivery-partners/:partnerId/kyc", gate(PermDocumentsReview), h.AdminGetDeliveryPartnerKYC)
 	g.POST("/delivery-partners/:partnerId/documents/:docId/decide", gate(PermDocumentsReview), h.AdminDecideDeliveryPartnerDocument)
 	g.GET("/payout-accounts", gate(PermPayoutAccountsRead), h.AdminListPayoutAccounts)
 
 	// Orders and refunds.
 	g.GET("/orders", gate(PermOrdersRead), h.AdminListOrders)
+	g.GET("/delivery-recovery", gate(PermOrdersRead), h.AdminDeliveryRecovery)
+	g.POST("/orders/:orderId/reissue-verification", gate(PermOrdersCancel), h.AdminReissueDeliveryCode)
 	g.GET("/orders/:orderId", gate(PermOrdersRead), h.AdminGetOrder)
 	g.POST("/orders/:orderId/cancel", gate(PermOrdersCancel), h.AdminCancelOrder)
 	g.POST("/orders/:orderId/refund", gate(PermRefundIssue), h.AdminRefundOrder)

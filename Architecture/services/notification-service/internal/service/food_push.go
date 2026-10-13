@@ -28,18 +28,20 @@ import (
 // preference gates them; Android channel settings in those apps are the
 // user's control. Account suppression applies to every audience.
 //
-// Delivery is AT MOST ONCE per (dedup key, recipient, app, type): the claim
-// in notify_meta.event_dedup happens before any send, matching the general
-// notification path. If the claim itself cannot be recorded (database blip)
-// the push is sent anyway — a lost new-order push costs a restaurant an
-// order, and the per-order collapse key bounds a duplicate to a device-side
-// replace.
+// Production delivery uses the durable notification queue, with persistent
+// retries, per-device receipts and stable collapse keys. Kitchen events retain
+// their original acceptance deadline; expired requests are never replayed.
 
 // Push types, Android channels and apps for Feast.
 const (
-	FoodTypeOrderNew      = "food_order_new"
-	FoodTypeDeliveryOffer = "food_delivery_offer"
-	FoodTypeOrderStatus   = "food_order_status"
+	FoodTypeOrderNew         = "food_order_new"
+	FoodTypeDeliveryOffer    = "food_delivery_offer"
+	FoodTypeOrderStatus      = "food_order_status"
+	FoodTypeDeliveryAccount  = "food_delivery_account_updated"
+	FoodTypeDeliveryDocument = "food_delivery_document_reviewed"
+	FoodTypeKitchenAccount   = "food_kitchen_account_updated"
+	FoodTypeKitchenStatus    = "food_kitchen_order_updated"
+	FoodTypeDeliveryStatus   = "food_delivery_order_updated"
 
 	FoodChannelKitchenNewOrder = "kitchen_new_order"
 	FoodChannelRiderJobOffer   = "rider_job_offer"
@@ -57,6 +59,7 @@ const (
 var FoodPushDataKeys = map[string]bool{
 	"type":                     true,
 	"order_id":                 true,
+	"entity_id":                true,
 	"deep_link":                true,
 	"title":                    true,
 	"body":                     true,
@@ -81,11 +84,15 @@ type FoodPush struct {
 	DeepLink       string
 
 	OrderID uuid.UUID
+	// Account/document updates use the reviewed entity, never an invented order.
+	EntityID uuid.UUID
 	// Offers only.
 	OfferID        uuid.UUID
 	OfferExpiresAt string // RFC3339, UTC
 
 	CreatedAt time.Time
+	// Original server deadline, never extended by notification retries.
+	AcceptDeadlineAt *time.Time
 }
 
 // FoodPushOutcome says what happened to one push.
@@ -110,6 +117,14 @@ func foodDedupID(p FoodPush) uuid.UUID {
 
 func (p FoodPush) customerFacing() bool { return p.App == AppMomentum }
 
+func (p FoodPush) deliveryAccount() bool {
+	return p.Type == FoodTypeDeliveryAccount || p.Type == FoodTypeDeliveryDocument
+}
+
+func (p FoodPush) accountNotice() bool {
+	return p.deliveryAccount() || p.Type == FoodTypeKitchenAccount
+}
+
 func (p FoodPush) validate() error {
 	if p.RecipientID == uuid.Nil {
 		return errors.New("food push: no recipient")
@@ -117,13 +132,21 @@ func (p FoodPush) validate() error {
 	if p.DedupKey == "" {
 		return errors.New("food push: no dedup key")
 	}
-	if p.OrderID == uuid.Nil {
+	if p.OrderID == uuid.Nil && !p.accountNotice() {
 		return errors.New("food push: no order id")
 	}
+	if p.accountNotice() && p.EntityID == uuid.Nil {
+		return errors.New("food push: no review entity")
+	}
 	want := map[string]string{
-		FoodTypeOrderNew:      AppFeastKitchen,
-		FoodTypeDeliveryOffer: AppFeastRider,
-		FoodTypeOrderStatus:   AppMomentum,
+		FoodTypeOrderNew:         AppFeastKitchen,
+		FoodTypeDeliveryOffer:    AppFeastRider,
+		FoodTypeOrderStatus:      AppMomentum,
+		FoodTypeDeliveryAccount:  AppFeastRider,
+		FoodTypeDeliveryDocument: AppFeastRider,
+		FoodTypeKitchenAccount:   AppFeastKitchen,
+		FoodTypeKitchenStatus:    AppFeastKitchen,
+		FoodTypeDeliveryStatus:   AppFeastRider,
 	}
 	app, known := want[p.Type]
 	if !known {
@@ -142,10 +165,15 @@ func (p FoodPush) validate() error {
 func FoodPushData(p FoodPush) map[string]string {
 	data := map[string]string{
 		"type":      p.Type,
-		"order_id":  p.OrderID.String(),
 		"deep_link": p.DeepLink,
 		"title":     p.Title,
 		"body":      p.Body,
+	}
+	if p.OrderID != uuid.Nil {
+		data["order_id"] = p.OrderID.String()
+	}
+	if p.EntityID != uuid.Nil {
+		data["entity_id"] = p.EntityID.String()
 	}
 	collapse := "food_order:" + p.OrderID.String()
 	switch p.Type {
@@ -157,6 +185,8 @@ func FoodPushData(p FoodPush) map[string]string {
 		collapse = "food_offer:" + p.OfferID.String()
 	case FoodTypeOrderNew:
 		collapse = "food_order_new:" + p.OrderID.String()
+	case FoodTypeDeliveryAccount, FoodTypeDeliveryDocument, FoodTypeKitchenAccount:
+		collapse = p.Type + ":" + p.EntityID.String()
 	}
 	data["collapse_key"] = collapse
 	if p.AndroidChannel != "" {
@@ -180,6 +210,38 @@ type foodPushTransports interface {
 
 // DeliverFoodPush delivers one Feast push. See the notes at the top of file.
 func (s *Service) DeliverFoodPush(ctx context.Context, p FoodPush) (FoodPushOutcome, error) {
+	if p.App == AppFeastKitchen {
+		if err := p.validate(); err != nil {
+			return "", err
+		}
+		return FoodPushOutcome("queued"), s.queueKitchenNotice(ctx, p)
+	}
+	if s.pgStore != nil && p.App == AppMomentum {
+		if err := p.validate(); err != nil {
+			return "", err
+		}
+		err := s.queueCustomerNotice(ctx, PartnerNotice{ID: foodDedupID(p), UserID: p.RecipientID, App: p.App, Type: p.Type, EntityID: p.OrderID, EntityType: "food_order", Title: p.Title, Body: p.Body, DeepLink: p.DeepLink, Data: FoodPushData(p), CreatedAt: p.CreatedAt, Inbox: true})
+		return FoodPushOutcome("queued"), err
+	}
+	if s.pgStore != nil && p.App == AppFeastRider {
+		if err := p.validate(); err != nil {
+			return "", err
+		}
+		var expiry *time.Time
+		if p.Type == FoodTypeDeliveryOffer {
+			t, err := time.Parse(time.RFC3339Nano, p.OfferExpiresAt)
+			if err != nil {
+				return "", err
+			}
+			expiry = &t
+		}
+		entity := p.EntityID
+		if entity == uuid.Nil {
+			entity = p.OrderID
+		}
+		err := s.queuePartnerNotice(ctx, PartnerNotice{ID: foodDedupID(p), UserID: p.RecipientID, App: p.App, Type: p.Type, EntityID: entity, EntityType: "food_delivery_partner", Title: p.Title, Body: p.Body, DeepLink: p.DeepLink, Data: FoodPushData(p), CreatedAt: p.CreatedAt, ExpiresAt: expiry, Inbox: p.deliveryAccount() || p.Type == FoodTypeDeliveryStatus})
+		return FoodPushOutcome("queued"), err
+	}
 	return runFoodPush(ctx, s, p)
 }
 
@@ -200,7 +262,11 @@ func runFoodPush(ctx context.Context, t foodPushTransports, p FoodPush) (FoodPus
 		return FoodPushDuplicate, nil
 	}
 
-	if p.customerFacing() {
+	if p.deliveryAccount() {
+		if err := t.writeFoodInbox(ctx, p); err != nil {
+			return "", fmt.Errorf("food review inbox: %w", err)
+		}
+	} else if p.customerFacing() {
 		decision := t.customerDecision(ctx, p.RecipientID)
 		if decision.CreateInbox {
 			if err := t.writeFoodInbox(ctx, p); err != nil {
@@ -221,7 +287,7 @@ func runFoodPush(ctx context.Context, t foodPushTransports, p FoodPush) (FoodPus
 	for _, d := range devices {
 		// THE app guard: a token registered for another app never receives
 		// this push, whatever the device lookup returned.
-		if d.App != p.App {
+		if !postgres.DeviceAppReceives(d.App, p.App) {
 			continue
 		}
 		err := t.sendFoodPush(ctx, d, p.Title, p.Body, data)
@@ -260,8 +326,15 @@ func (s *Service) writeFoodInbox(ctx context.Context, p FoodPush) error {
 		return nil
 	}
 	decision := DeliveryDecision{CreateInbox: true, SendWebSocket: true}
+	entityType, entityID := "food_order", p.OrderID
+	if p.deliveryAccount() {
+		entityType, entityID = "food_delivery_partner", p.EntityID
+		if p.Type == FoodTypeDeliveryDocument {
+			entityType = "food_delivery_document"
+		}
+	}
 	return s.deliverWithDecision(ctx, decision, p.RecipientID, p.RecipientID, p.Type,
-		"food_order", p.OrderID, p.DeepLink, p.CreatedAt, foodDedupID(p).String(), RenderOverride{})
+		entityType, entityID, p.DeepLink, p.CreatedAt, foodDedupID(p).String(), RenderOverride{Title: p.Title, Body: p.Body})
 }
 
 func (s *Service) foodDevices(ctx context.Context, userID uuid.UUID, app string) ([]postgres.UserDevice, error) {

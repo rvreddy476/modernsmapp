@@ -11,19 +11,20 @@ import (
 // Professional is the contract's Professional. Gender comes from DigiLocker
 // only; no request body carries it.
 type Professional struct {
-	ID            uuid.UUID `json:"id"`
-	UserID        uuid.UUID `json:"user_id"`
-	Status        string    `json:"status"`
-	DisplayName   string    `json:"display_name"`
-	CityCode      string    `json:"city_code"`
-	Gender        *string   `json:"gender"`
-	PhotoMediaID  *string   `json:"photo_media_id"`
-	RatingAvg     *float64  `json:"rating_avg"`
-	RatingCount   int       `json:"rating_count"`
-	JobsCompleted int       `json:"jobs_completed"`
-	MaxJobsPerDay int       `json:"max_jobs_per_day"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Application   *PartnerApplication `json:"application,omitempty"`
+	ID            uuid.UUID           `json:"id"`
+	UserID        uuid.UUID           `json:"user_id"`
+	Status        string              `json:"status"`
+	DisplayName   string              `json:"display_name"`
+	CityCode      string              `json:"city_code"`
+	Gender        *string             `json:"gender"`
+	PhotoMediaID  *string             `json:"photo_media_id"`
+	RatingAvg     *float64            `json:"rating_avg"`
+	RatingCount   int                 `json:"rating_count"`
+	JobsCompleted int                 `json:"jobs_completed"`
+	MaxJobsPerDay int                 `json:"max_jobs_per_day"`
+	CreatedAt     time.Time           `json:"created_at"`
+	UpdatedAt     time.Time           `json:"updated_at"`
 }
 
 // ProApplyInput is POST /pro/apply. Strictly decoded: a gender field is
@@ -95,18 +96,20 @@ type CertificateInput struct {
 
 // ProAreaInput is PUT /pro/me/area.
 type ProAreaInput struct {
-	ZoneIDs []uuid.UUID `json:"zone_ids"`
-	HomeLat *float64    `json:"home_lat"`
-	HomeLng *float64    `json:"home_lng"`
-	RadiusM *int        `json:"radius_m"`
+	AreaLabel string      `json:"area_label"`
+	ZoneIDs   []uuid.UUID `json:"zone_ids"`
+	HomeLat   *float64    `json:"home_lat"`
+	HomeLng   *float64    `json:"home_lng"`
+	RadiusM   *int        `json:"radius_m"`
 }
 
 // ProArea is the saved service area (home null until one is saved).
 type ProArea struct {
-	ZoneIDs []uuid.UUID `json:"zone_ids"`
-	HomeLat *float64    `json:"home_lat"`
-	HomeLng *float64    `json:"home_lng"`
-	RadiusM int         `json:"radius_m"`
+	AreaLabel string      `json:"area_label,omitempty"`
+	ZoneIDs   []uuid.UUID `json:"zone_ids"`
+	HomeLat   *float64    `json:"home_lat"`
+	HomeLng   *float64    `json:"home_lng"`
+	RadiusM   int         `json:"radius_m"`
 }
 
 // HoursWindow is one weekly-hours window (Asia/Kolkata).
@@ -132,14 +135,42 @@ type BankInput struct {
 	AccountHolder *string `json:"account_holder"`
 	AccountNumber *string `json:"account_number"`
 	IFSC          *string `json:"ifsc"`
+	BankName      *string `json:"bank_name"`
+	BranchName    *string `json:"branch_name"`
+	ProofKind     *string `json:"proof_kind"`
+	ProofMediaID  *string `json:"proof_media_id"`
 }
 
 // PayoutAccount is the masked payout account: never the number.
 type PayoutAccount struct {
-	AccountHolder string `json:"account_holder"`
-	AccountLast4  string `json:"account_last4"`
-	IFSC          string `json:"ifsc"`
-	Status        string `json:"status"`
+	History         []PayoutAccountRecord `json:"history,omitempty"`
+	AccountHolder   string                `json:"account_holder"`
+	AccountLast4    string                `json:"account_last4"`
+	IFSC            string                `json:"ifsc"`
+	Status          string                `json:"status"`
+	BankName        string                `json:"bank_name,omitempty"`
+	BranchName      string                `json:"branch_name,omitempty"`
+	ProofKind       string                `json:"proof_kind,omitempty"`
+	ProofDocumentID *uuid.UUID            `json:"proof_document_id,omitempty"`
+	Reason          *string               `json:"reason,omitempty"`
+}
+
+// PayoutAccountRecord is a read-only, masked bank submission. Historical
+// approval does not mean this record is the currently active payout account.
+type PayoutAccountRecord struct {
+	Superseded      bool       `json:"superseded"`
+	ProofDocumentID *uuid.UUID `json:"proof_document_id"`
+	ProofKind       string     `json:"proof_kind"`
+	ID              uuid.UUID  `json:"id"`
+	AccountHolder   string     `json:"account_holder"`
+	AccountLast4    string     `json:"account_last4"`
+	IFSC            string     `json:"ifsc"`
+	BankName        string     `json:"bank_name"`
+	Status          string     `json:"status"`
+	Active          bool       `json:"active"`
+	SubmittedAt     time.Time  `json:"submitted_at"`
+	ReviewedAt      *time.Time `json:"reviewed_at"`
+	Reason          *string    `json:"reason"`
 }
 
 // AgreementInput is POST /pro/me/agreement.
@@ -181,14 +212,16 @@ type BackgroundCheckView struct {
 // masked: check statuses and scores, document media ids, the payout
 // account's last four digits; never a number.
 type AdminProfessionalDetail struct {
-	Professional     Professional          `json:"professional"`
-	Readiness        ProReadiness          `json:"readiness"`
-	Skills           []ProSkill            `json:"skills"`
-	ZoneIDs          []uuid.UUID           `json:"zone_ids"`
-	Documents        []ProDocument         `json:"documents"`
-	BackgroundChecks []BackgroundCheckView `json:"background_checks"`
-	KycChecks        []KycCheck            `json:"kyc_checks"`
-	PayoutAccount    *PayoutAccount        `json:"payout_account"`
+	// Exposes only the linked application's review state, never its document number.
+	IdentityDocumentApproved bool                  `json:"identity_document_approved,omitempty"`
+	Professional             Professional          `json:"professional"`
+	Readiness                ProReadiness          `json:"readiness"`
+	Skills                   []ProSkill            `json:"skills"`
+	ZoneIDs                  []uuid.UUID           `json:"zone_ids"`
+	Documents                []ProDocument         `json:"documents"`
+	BackgroundChecks         []BackgroundCheckView `json:"background_checks"`
+	KycChecks                []KycCheck            `json:"kyc_checks"`
+	PayoutAccount            *PayoutAccount        `json:"payout_account"`
 }
 
 // ProfessionalPage is the admin list.
@@ -212,4 +245,9 @@ type SkillVerifyInput struct {
 type DocumentDecisionInput struct {
 	Decision *string `json:"decision"`
 	Reason   *string `json:"reason"`
+}
+
+type ManualIdentityReviewInput struct {
+	Gender *string `json:"gender"`
+	Reason *string `json:"reason"`
 }

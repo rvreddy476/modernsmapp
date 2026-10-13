@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atpost/rider-service/internal/events"
 	"github.com/atpost/rider-service/internal/geo"
 	"github.com/atpost/rider-service/internal/matcher"
 	"github.com/atpost/rider-service/internal/otp"
@@ -130,7 +129,7 @@ func (s *Service) transitionRide(ctx context.Context, ride *store.Ride, to, acto
 // MatchRideOptions tunes MatchRide. Sane defaults applied by the service.
 type MatchRideOptions struct {
 	BatchSize         int           // default 5
-	OfferTimer        time.Duration // default 15s
+	OfferTimer        time.Duration // default 20s
 	InitialRadiusKM   float64       // default 5
 	MaxRadiusKM       float64       // default 20
 	GeohashPrecision  int           // default 6
@@ -138,12 +137,10 @@ type MatchRideOptions struct {
 }
 
 func (o *MatchRideOptions) defaults() {
-	if o.BatchSize <= 0 {
-		o.BatchSize = 5
-	}
-	if o.OfferTimer <= 0 {
-		o.OfferTimer = 15 * time.Second
-	}
+	// Retain the options for wire compatibility; fan-out and custom TTLs are
+	// no longer supported by the unified Partner dispatch policy.
+	o.BatchSize = 1
+	o.OfferTimer = store.SequentialOfferWindow
 	if o.InitialRadiusKM <= 0 {
 		o.InitialRadiusKM = 5
 	}
@@ -158,7 +155,7 @@ func (o *MatchRideOptions) defaults() {
 	}
 }
 
-// MatchRideResult is the matcher fan-out outcome.
+// MatchRideResult is the sequential matcher outcome.
 type MatchRideResult struct {
 	OffersCreated int       `json:"offers_created"`
 	BatchExpires  time.Time `json:"batch_expires"`
@@ -167,8 +164,8 @@ type MatchRideResult struct {
 
 // MatchRide drives one matching pass for a ride: transitions the ride to
 // `searching_partner`, looks up nearby online partners (Redis fast-path,
-// Postgres geohash fallback), filters + scores them, and inserts the top-N
-// `rider_ride_offers` rows with a 15s expiry. One Kafka offer event per row.
+// Postgres geohash fallback), filters and fairly rotates them, then creates
+// one offer with a 20-second expiry and a transactional notification event.
 func (s *Service) MatchRide(ctx context.Context, rideID uuid.UUID, opts MatchRideOptions) (*MatchRideResult, error) {
 	opts.defaults()
 	ride, err := s.store.GetRide(ctx, rideID)
@@ -203,35 +200,40 @@ func (s *Service) MatchRide(ctx context.Context, rideID uuid.UUID, opts MatchRid
 		return &MatchRideResult{NoCandidates: true}, nil
 	}
 	ranked := matcher.Rank(kept)
-	now := time.Now().UTC()
-	batch := matcher.BatchOffer(ranked, opts.BatchSize, opts.OfferTimer, now)
-	created := 0
-	for _, sc := range batch.Selected {
+	ids := make([]uuid.UUID, 0, len(ranked))
+	inputs := make(map[uuid.UUID]store.CreateOfferInput, len(ranked))
+	for _, sc := range ranked {
 		pid, err := uuid.Parse(sc.Candidate.PartnerID)
 		if err != nil {
 			slog.Warn("rider: skip candidate with invalid partner_id", "partner_id", sc.Candidate.PartnerID)
 			continue
 		}
 		dist := sc.Candidate.DistanceKM
-		offer, err := s.store.CreateRideOffer(ctx, store.CreateOfferInput{
+		ids = append(ids, pid)
+		inputs[pid] = store.CreateOfferInput{
 			RideID:     rideID,
 			PartnerID:  pid,
 			Score:      sc.Score,
 			DistanceKM: &dist,
-			ExpiresAt:  batch.ExpiresAt,
-		})
+		}
+	}
+	ids, err = s.store.FairRideCandidates(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, pid := range ids {
+		offer, err := s.store.CreateSequentialRideOffer(ctx, inputs[pid])
 		if err != nil {
 			slog.Warn("rider: create offer failed", "ride_id", rideID, "partner_id", pid, "error", err)
+			return nil, err
+		}
+		if offer == nil {
 			continue
 		}
-		created++
-		partnerUserID, _ := uuid.Parse(sc.Candidate.UserID) // uuid.Nil when the candidate carries none
-		if perr := s.producer.PublishRideOffered(ctx, rideID, offer.ID, pid, partnerUserID, sc.Score, batch.ExpiresAt); perr != nil {
-			slog.Warn("rider: publish ride.offered failed", "ride_id", rideID, "offer_id", offer.ID, "error", perr)
-		}
 		s.emit(ctx, "rider.partner."+pid.String()+".offers", "rider.ride.offered", offer)
+		return &MatchRideResult{OffersCreated: 1, BatchExpires: offer.ExpiresAt}, nil
 	}
-	return &MatchRideResult{OffersCreated: created, BatchExpires: batch.ExpiresAt}, nil
+	return &MatchRideResult{NoCandidates: true}, nil
 }
 
 // findNearbyCandidates resolves the partner-discovery hot path.
@@ -420,9 +422,7 @@ func (s *Service) AcceptOffer(ctx context.Context, partnerUserID, offerID uuid.U
 	if _, err := s.store.IncrementSubscriptionLeadsUsed(ctx, partner.ID); err != nil {
 		slog.Warn("rider: increment leads_used failed", "partner_id", partner.ID, "error", err)
 	}
-	if perr := s.producer.PublishRideAssigned(ctx, ride.ID, ride.CustomerUserID, partner.ID, *vehicleID, offerID); perr != nil {
-		slog.Warn("rider: publish ride.assigned failed", "ride_id", ride.ID, "error", perr)
-	}
+	// The assignment transaction queued the durable notification event.
 	s.emit(ctx, "rider.ride."+ride.ID.String(), "rider.ride.assigned", ride)
 	s.publishRealtime(ctx, "rider.admin.live_rides", "rider.ride.assigned", ride)
 
@@ -446,7 +446,7 @@ func (s *Service) MarkArriving(ctx context.Context, partnerUserID, rideID uuid.U
 	if expectedRevision <= 0 {
 		return fmt.Errorf("invalid: expected_revision required")
 	}
-	ride, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
+	_, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
 	if err != nil {
 		return err
 	}
@@ -478,9 +478,6 @@ func (s *Service) MarkArriving(ctx context.Context, partnerUserID, rideID uuid.U
 		}
 		return err
 	}
-	if perr := s.producer.PublishRideArriving(ctx, rideID, ride.CustomerUserID, partner.ID); perr != nil {
-		slog.Warn("rider: publish ride.arriving failed", "ride_id", rideID, "error", perr)
-	}
 	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.arriving", updatedRide)
 	return nil
 }
@@ -490,7 +487,7 @@ func (s *Service) MarkArrived(ctx context.Context, partnerUserID, rideID uuid.UU
 	if expectedRevision <= 0 {
 		return fmt.Errorf("invalid: expected_revision required")
 	}
-	ride, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
+	_, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
 	if err != nil {
 		return err
 	}
@@ -521,9 +518,6 @@ func (s *Service) MarkArrived(ctx context.Context, partnerUserID, rideID uuid.UU
 			return fmt.Errorf("conflict: invalid state transition")
 		}
 		return err
-	}
-	if perr := s.producer.PublishRideArrived(ctx, rideID, ride.CustomerUserID, partner.ID); perr != nil {
-		slog.Warn("rider: publish ride.arrived failed", "ride_id", rideID, "error", perr)
 	}
 	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.arrived", updatedRide)
 	return nil
@@ -629,9 +623,6 @@ func (s *Service) StartRide(ctx context.Context, partnerUserID, rideID uuid.UUID
 		return fmt.Errorf("commit ride start: %w", err)
 	}
 
-	if perr := s.producer.PublishRideStarted(ctx, rideID, custID, partner.ID); perr != nil {
-		slog.Warn("rider: publish ride.started failed", "ride_id", rideID, "error", perr)
-	}
 	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.started", map[string]interface{}{"id": rideID, "status": "in_progress"})
 	return nil
 }
@@ -874,21 +865,6 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 		slog.Warn("rider: increment partner completed failed", "partner_id", partner.ID, "error", err)
 	}
 
-	if perr := s.producer.PublishRideCompleted(ctx, events.RideCompletedPayload{
-		RideID:           rideID.String(),
-		PartnerID:        partner.ID.String(),
-		CustomerUserID:   ride.CustomerUserID.String(),
-		FinalDistanceKM:  req.FinalDistanceKM,
-		FinalDurationMin: req.FinalDurationMin,
-		FinalFarePaise:   finalPaise,
-		PaymentMethod:    method,
-		PaymentStatus:    pay.Status,
-		FlaggedForReview: flag,
-		CompletedAt:      time.Now().UTC(),
-	}); perr != nil {
-		slog.Warn("rider: publish ride.completed failed", "ride_id", rideID, "error", perr)
-	}
-
 	return pay, nil
 }
 
@@ -957,7 +933,7 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 	if actorUserID != uuid.Nil {
 		actorRef = &actorUserID
 	}
-	updatedRide, feePaise, err := s.cancelRide(ctx, ride, cancelParams{
+	updatedRide, _, err := s.cancelRide(ctx, ride, cancelParams{
 		by: by, feeBy: by, to: to, actorUserID: actorRef, expectedRevision: expRev, reason: req.Reason,
 	})
 	if err != nil {
@@ -969,21 +945,6 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 		if _, rerr := s.autoRefundOnCancel(ctx, rideID, by); rerr != nil {
 			slog.Error("rider: captain-cancel refund failed", "ride_id", rideID, "by", by, "error", rerr)
 		}
-	}
-	cancelledBy := ""
-	if actorRef != nil {
-		cancelledBy = actorRef.String()
-	}
-	if perr := s.producer.PublishRideCancelled(ctx, events.RideCancelledPayload{
-		RideID:               rideID.String(),
-		CustomerUserID:       ride.CustomerUserID.String(),
-		CancelledByKind:      by,
-		CancelledByUserID:    cancelledBy,
-		Reason:               req.Reason,
-		CancellationFeePaise: feePaise,
-		CancelledAt:          time.Now().UTC(),
-	}); perr != nil {
-		slog.Warn("rider: publish ride.cancelled failed", "ride_id", rideID, "error", perr)
 	}
 	return updatedRide, nil
 }

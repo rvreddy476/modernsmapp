@@ -264,7 +264,12 @@ func uuidParams(path string) string {
 // the permission the route's gate names first.
 func adminRoutePermissions() map[string]string {
 	return map[string]string{
-		"GET /stats":                                                  PermStatsRead,
+		"GET /stats": PermStatsRead,
+		"GET /restaurants/:restaurantId/documents":                    PermDocumentsReview,
+		"GET /restaurants/:restaurantId/documents/:docId/evidence":    PermDocumentsReview,
+		"GET /delivery-partners/:partnerId/documents/:docId/evidence": PermDocumentsReview,
+		"GET /delivery-recovery":                                      PermOrdersRead,
+		"POST /orders/:orderId/reissue-verification":                  PermOrdersCancel,
 		"GET /dashboard":                                              PermStatsRead,
 		"GET /restaurants/pending":                                    PermRestaurantApprove,
 		"POST /restaurants/:restaurantId/approve":                     PermRestaurantApprove,
@@ -400,24 +405,17 @@ func TestAdminToken_StatusNarrowsPerAction(t *testing.T) {
 	}
 }
 
-// The LEGACY path is unchanged for a request with no token.
-func TestAdminToken_LegacyScopesStillWork(t *testing.T) {
+// Gateway identities never bypass the signed admin permission check.
+func TestAdminToken_LegacyScopesCannotBypassPermissions(t *testing.T) {
 	rg := newAdminTokenRig(t)
-	user := uuid.New()
-	w := adminServe(rg.r, http.MethodPost, ticketStatusPath("/v1/food/admin"), `{"status":"resolved"}`, legacyAdmin(user, "admin"))
-	if w.Code != http.StatusOK {
-		t.Fatalf("legacy admin: status=%d body=%s, want 200", w.Code, w.Body.String())
+	for _, scope := range []string{"admin", "superadmin", "moderator", "food:orders.read"} {
+		w := adminServe(rg.r, http.MethodPost, ticketStatusPath("/v1/food/admin"), `{"status":"resolved"}`, legacyAdmin(uuid.New(), scope))
+		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), CodeAdminTokenRequired) {
+			t.Fatalf("scope %s status=%d body=%s", scope, w.Code, w.Body.String())
+		}
 	}
-	if len(rg.st.actors) != 1 || rg.st.actors[0] != user {
-		t.Fatalf("legacy actors=%v, want [%s]", rg.st.actors, user)
-	}
-	if w := adminServe(rg.r, http.MethodGet, "/v1/food/admin/orders/"+uuid.NewString(), "", legacyAdmin(user, "moderator")); w.Code != http.StatusForbidden {
-		t.Fatalf("legacy moderator: status=%d, want 403 (admin scope required)", w.Code)
-	}
-	noKey := legacyAdmin(user, "admin")
-	delete(noKey, "X-Internal-Service-Key")
-	if w := adminServe(rg.r, http.MethodGet, "/v1/food/admin/orders/"+uuid.NewString(), "", noKey); w.Code == http.StatusOK {
-		t.Fatalf("legacy without the internal key: status=%d, want refused", w.Code)
+	if len(rg.st.actors) != 0 {
+		t.Fatal("unsigned request reached store")
 	}
 }
 

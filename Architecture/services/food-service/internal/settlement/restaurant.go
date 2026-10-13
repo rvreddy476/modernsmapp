@@ -109,6 +109,10 @@ type Line struct {
 	TCSPaise            int64 `json:"tcs_paise"`
 	RefundSharePaise    int64 `json:"refund_share_paise"`
 	PayoutPaise         int64 `json:"payout_paise"`
+	// Positive amounts recover a prior paid period's late refund. Negative
+	// amounts credit previously unpaid supply. The original paid row is immutable.
+	PriorPeriodAdjustmentPaise int64  `json:"prior_period_adjustment_paise"`
+	PeriodTimezone             string `json:"period_timezone,omitempty"`
 
 	ExcludedPlatformFeePaise    int64 `json:"excluded_platform_fee_paise"`
 	ExcludedDeliveryFeePaise    int64 `json:"excluded_delivery_fee_paise"`

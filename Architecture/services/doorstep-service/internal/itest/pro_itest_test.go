@@ -36,6 +36,8 @@ import (
 // image bytes.
 type ownAll struct{}
 
+func (ownAll) VerifyOwnedImage(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+
 func (ownAll) PrepareVisitPhoto(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
 func (ownAll) VerifyOwned(context.Context, uuid.UUID, uuid.UUID, ...mediaclient.Kind) error {
@@ -76,9 +78,11 @@ func newProITRig(t *testing.T) *itRig {
 	st := store.New(p).WithRoleIntents(identityroles.NewOutbox("doorstep", "doorstep-service"))
 	tc, _ := tax.NewGST(nil, gstin(t))
 	svc := service.New(st, tc, 15*time.Minute).WithClock(func() time.Time { return rg.now }, uuid.New).WithPro(service.ProDeps{
-		Store:      st,
-		DigiLocker: digilocker.Settings{Mode: digilocker.ModeMock, Client: dl, RedirectURI: "http://localhost:8080/doorstep-pro/digilocker"},
-		Faces:      &facecompare.Mock{Similarity: 93}, SelfieMinSimilarity: 80,
+		Store:         st,
+		Documents:     ownAll{},
+		VerifiedPhone: func(context.Context, uuid.UUID) (string, error) { return "+919876543210", nil },
+		DigiLocker:    digilocker.Settings{Mode: digilocker.ModeMock, Client: dl, RedirectURI: "http://localhost:8080/doorstep-pro/digilocker"},
+		Faces:         &facecompare.Mock{Similarity: 93}, SelfieMinSimilarity: 80,
 		Media: ownAll{}, Images: ownAll{}, PII: crypto, BGV: provider,
 	})
 	gin.SetMode(gin.TestMode)
@@ -214,7 +218,7 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 	}
 
 	// Bank: sealed in the database, masked on the wire.
-	status, body = rg.as(u, "PUT", "/me/bank", `{"account_holder":"Lakshmi Devi","account_number":"000123456789","ifsc":"SBIN0001234"}`)
+	status, body = rg.as(u, "PUT", "/me/bank", `{"account_holder":"Lakshmi Devi","account_number":"000123456789","ifsc":"SBIN0001234","bank_name":"State Bank","proof_kind":"passbook","proof_media_id":"`+m()+`"}`)
 	if status != 200 || bytes.Contains(body, []byte("123456789")) || !bytes.Contains(body, []byte(`"account_last4":"6789"`)) {
 		t.Fatalf("bank %d %s", status, body)
 	}
@@ -229,6 +233,11 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 	}
 
 	// Police certificate: pending document + pending background check.
+	var bankDoc string
+	if err := p.QueryRow(ctx, `SELECT proof_document_id FROM doorstep.pro_payout_accounts WHERE pro_id=$1 AND active`, pro.ID).Scan(&bankDoc); err != nil {
+		t.Fatal(err)
+	}
+	chk(t, "approve bank", 200)(rg.adminCall("POST", "/documents/"+bankDoc+"/decide", doorstephttp.PermDocumentsReview, `{"decision":"approve"}`))
 	issued := time.Now().In(service.IST).AddDate(0, -1, 0).Format("2006-01-02")
 	status, body = rg.as(u, "POST", "/me/police-certificate", `{"media_id":"`+m()+`","issued_on":"`+issued+`","certificate_number":"TSPCC/2026/118833"}`)
 	want(t, "police", status, body, 201)
@@ -244,7 +253,7 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 	if err := p.QueryRow(ctx, `SELECT number_sealed FROM doorstep.pro_documents WHERE id = $1`, police.ID).Scan(&numSealed); err != nil || len(numSealed) == 0 || bytes.Contains(numSealed, []byte("118833")) {
 		t.Fatalf("certificate number not sealed: %v", err)
 	}
-	chk(t, "agreement", 200)(rg.as(u, "POST", "/me/agreement", `{"version":"`+prokyc.AgreementVersion+`"}`))
+	chk(t, "agreement deferred", 409)(rg.as(u, "POST", "/me/agreement", `{"version":"`+prokyc.AgreementVersion+`"}`))
 	status, body = rg.as(u, "PUT", "/me/pan", `{"pan":"ABCPE1234F"}`)
 	if status != 200 || !bytes.Contains(body, []byte(`"status":"pending_verification"`)) {
 		t.Fatalf("pan / pending_verification: %d %s", status, body)
@@ -256,16 +265,14 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 		t.Fatalf("PAN not sealed (last4 %q, err %v)", panLast4, err)
 	}
 
-	// Admin: approval refused while the police certificate is in review.
+	// Admin: approval still requires identity, selfie, bank and skill review.
 	proPath := "/professionals/" + pro.ID
 	status, body = rg.adminCall("POST", proPath+"/approve", doorstephttp.PermProsApprove, "")
-	if status != 422 || errCode(body) != "DOORSTEP_ONBOARDING_INCOMPLETE" || !bytes.Contains(body, []byte(`"police_certificate"`)) {
+	if status != 422 || errCode(body) != "DOORSTEP_ONBOARDING_INCOMPLETE" || bytes.Contains(body, []byte(`"police_certificate"`)) {
 		t.Fatalf("approve early: %d %s", status, body)
 	}
 	status, body = rg.adminCall("POST", proPath+"/skills/electrician/verify", doorstephttp.PermProsApprove, `{"verified":true}`)
-	if status != 422 || errCode(body) != "DOORSTEP_CERTIFICATE_REQUIRED" {
-		t.Fatalf("verify without certificate: %d %s", status, body)
-	}
+	want(t, "admin may verify skills without an approved optional certificate", status, body, 200)
 	// View: bytes, audited.
 	status, body = rg.adminCall("GET", "/documents/"+police.ID+"/view", doorstephttp.PermDocumentsReview, "")
 	if status != 200 || !bytes.HasPrefix(body, []byte("\x89PNG")) {
@@ -289,6 +296,7 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 	// The admin reviews what the professional submitted: the selfie, and the
 	// certificate-free skills (electrician was verified by its certificate).
 	chk(t, "approve selfie", 200)(rg.adminCall("POST", "/documents/"+selfieDoc+"/decide", doorstephttp.PermDocumentsReview, `{"decision":"approve"}`))
+	chk(t, "manual identity review", 200)(rg.adminCall("POST", proPath+"/identity-review", doorstephttp.PermProsApprove, `{"gender":"female","reason":"Identity and salon eligibility reviewed"}`))
 	for _, code := range []string{"deep_cleaning", "salon_women"} {
 		chk(t, "verify "+code, 200)(rg.adminCall("POST", proPath+"/skills/"+code+"/verify", doorstephttp.PermProsApprove, `{"verified":true}`))
 	}
@@ -342,7 +350,7 @@ func TestProOnboardingOnTheDatabase(t *testing.T) {
 		types = append(types, et)
 	}
 	rows.Close()
-	if got := strings.Join(types, ","); got != "doorstep.pro.applied,doorstep.pro.status_changed,doorstep.pro.document_reviewed,doorstep.pro.document_reviewed,doorstep.pro.document_reviewed,"+
+	if got := strings.Join(types, ","); got != "doorstep.pro.applied,doorstep.pro.document_reviewed,doorstep.pro.status_changed,doorstep.pro.document_reviewed,doorstep.pro.document_reviewed,doorstep.pro.document_reviewed,"+
 		"doorstep.pro.status_changed,doorstep.pro.status_changed,doorstep.pro.status_changed,doorstep.pro.status_changed" {
 		t.Fatalf("events %s", got)
 	}

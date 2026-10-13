@@ -115,7 +115,7 @@ func newFoodConsumer(d foodPushDeliverer) *FoodConsumer {
 // Start consumes sequentially so one order's status pushes keep their order.
 func (c *FoodConsumer) Start(ctx context.Context) {
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("food consumer shutting down\n")
@@ -124,7 +124,9 @@ func (c *FoodConsumer) Start(ctx context.Context) {
 			}
 			break
 		}
-		c.processMessage(ctx, m)
+		if !processAndCommit(ctx, c.reader, m, c.processMessage) {
+			return
+		}
 	}
 }
 
@@ -148,12 +150,12 @@ func (c *FoodConsumer) countOf(o foodOutcome) int64 {
 	return c.counts[o]
 }
 
-// processMessage never returns an error and never panics: every outcome is
-// counted and logged, and the offset moves on.
-func (c *FoodConsumer) processMessage(ctx context.Context, m kafka.Message) {
+// Unknown/malformed events are counted; persistence failures retain the offset.
+func (c *FoodConsumer) processMessage(ctx context.Context, m kafka.Message) (deliveryErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			c.count(foodOutcomePanic)
+			deliveryErr = fmt.Errorf("food event processing panic")
 			slog.Error("food consumer: recovered panic", "panic", fmt.Sprint(r))
 		}
 	}()
@@ -196,11 +198,13 @@ func (c *FoodConsumer) processMessage(ctx context.Context, m kafka.Message) {
 		outcome, err := c.deliverer.DeliverFoodPush(ctx, p)
 		if err != nil {
 			c.count(foodOutcomeDeliveryError)
+			deliveryErr = err
 			slog.Warn("food consumer: delivery failed", "event", eventType, "type", p.Type, "app", p.App, "error", err)
 			continue
 		}
 		foodPushesTotal.WithLabelValues(p.Type, p.App, string(outcome)).Inc()
 	}
+	return
 }
 
 // decodeFoodMessage extracts the event type, optional event id and payload.
@@ -274,26 +278,29 @@ var foodKitchenNewOrderEvents = map[string]bool{
 
 // foodIgnoredEvents are known food events with no Feast push.
 var foodIgnoredEvents = map[string]bool{
-	events.EventFoodRestaurantCreated:       true,
-	events.EventFoodRestaurantApproved:      true,
-	events.EventFoodRestaurantRejected:      true,
-	events.EventFoodDeliveryPartnerCreated:  true,
-	events.EventFoodDeliveryPartnerApproved: true,
-	events.EventFoodRatingCreated:           true,
-	events.EventFoodSettlementGenerated:     true,
-	events.EventFoodSettlementPaid:          true,
-	"food.restaurant.fssai_expired":         true,
-	"food.order.substitution_proposed":      true,
-	"food.order.substitution_approved":      true,
-	"food.order.substitution_declined":      true,
-	"food.order.substitution_cancelled":     true,
-	"food.order.message":                    true,
-	"food.refund.approved":                  true,
-	"food.refund.rejected":                  true,
+	events.EventFoodRestaurantCreated:      true,
+	events.EventFoodRestaurantApproved:     true,
+	events.EventFoodRestaurantRejected:     true,
+	events.EventFoodDeliveryPartnerCreated: true,
+	events.EventFoodRatingCreated:          true,
+	events.EventFoodSettlementGenerated:    true,
+	events.EventFoodSettlementPaid:         true,
+	"food.restaurant.fssai_expired":        true,
+	"food.order.substitution_proposed":     true,
+	"food.order.substitution_approved":     true,
+	"food.order.substitution_declined":     true,
+	"food.order.substitution_cancelled":    true,
+	"food.order.message":                   true,
+	"food.refund.approved":                 true,
+	"food.refund.rejected":                 true,
 }
 
 func planFoodPushes(eventType string, payload json.RawMessage, base string, now time.Time) foodPushPlan {
 	switch {
+	case eventType == "food.restaurant.status_changed" || eventType == "food.restaurant.document_reviewed" || eventType == "food.restaurant.settlement_paid" || eventType == "food.delivery_partner.settlement_paid" || eventType == "food.restaurant.settlement_generated" || eventType == "food.delivery_partner.settlement_generated" || eventType == "food.refund.approved" || eventType == "food.refund.rejected":
+		return planFoodOperationalNotice(eventType, payload, base, now)
+	case eventType == "food.delivery_partner.status_changed" || eventType == "food.delivery_partner.document_reviewed" || eventType == events.EventFoodDeliveryPartnerApproved:
+		return planFoodDeliveryReview(eventType, payload, base, now)
 	case eventType == foodEventDeliveryOffered:
 		return planRiderOffer(payload, now)
 	case foodKitchenNewOrderEvents[eventType] || foodCustomerStatusCopy[eventType] != (foodCopy{}):
@@ -310,14 +317,17 @@ func planFoodPushes(eventType string, payload json.RawMessage, base string, now 
 // delivered, SLA restaurant_rejected), delivery.assigned in both shapes, and
 // refund requests. Only fields a push may use are decoded.
 type foodOrderEventPayload struct {
-	ID          string `json:"id"`
-	OrderID     string `json:"order_id"`
-	OrderNumber string `json:"order_number"`
-	UserID      string `json:"user_id"`
-	CustomerID  string `json:"customer_id"`
-	Status      string `json:"status"`
+	AcceptDeadlineAt *time.Time `json:"accept_deadline_at"`
+	ID               string     `json:"id"`
+	OrderID          string     `json:"order_id"`
+	OrderNumber      string     `json:"order_number"`
+	UserID           string     `json:"user_id"`
+	CustomerID       string     `json:"customer_id"`
+	Status           string     `json:"status"`
 
 	RestaurantOwnerUserID  string   `json:"restaurant_owner_user_id"`
+	RestaurantID           string   `json:"restaurant_id"`
+	DeliveryPartnerUserID  string   `json:"delivery_partner_user_id"`
 	RestaurantStaffUserIDs []string `json:"restaurant_staff_user_ids"`
 
 	Offer *struct {
@@ -352,6 +362,14 @@ func orderRef(orderNumber string) string {
 	return " #" + orderNumber
 }
 
+func kitchenOrderLink(order uuid.UUID, restaurant string) string {
+	link := "/kitchen/orders/" + order.String()
+	if id, ok := parseRecipient(restaurant); ok {
+		link += "?restaurant_id=" + id.String()
+	}
+	return link
+}
+
 func planOrderEvent(eventType string, raw json.RawMessage, base string, now time.Time) foodPushPlan {
 	var p foodOrderEventPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -362,6 +380,20 @@ func planOrderEvent(eventType string, raw json.RawMessage, base string, now time
 		return foodPushPlan{outcome: foodOutcomeMalformed, detail: "no order id"}
 	}
 	plan := foodPushPlan{outcome: foodOutcomePlanned}
+	// Operational updates never use the new-order/offer ringing channel.
+	operational := map[string]foodCopy{
+		events.EventFoodOrderCancelled:    {"Order cancelled", "This order was cancelled. Open your workspace for the latest status."},
+		events.EventFoodDeliveryAssigned:  {"Delivery assigned", "A delivery partner is assigned. Open the order for the latest details."},
+		events.EventFoodDeliveryDelivered: {"Delivery completed", "Delivery was confirmed. Open your workspace to review the completed order."},
+	}
+	if copy, ok := operational[eventType]; ok {
+		if owner, valid := parseRecipient(p.RestaurantOwnerUserID); valid {
+			plan.pushes = append(plan.pushes, service.FoodPush{DedupKey: base + ":" + eventType, RecipientID: owner, App: service.AppFeastKitchen, Type: service.FoodTypeKitchenStatus, OrderID: orderID, Title: copy.title, Body: copy.body, DeepLink: kitchenOrderLink(orderID, p.RestaurantID), AndroidChannel: service.FoodChannelOrders, CreatedAt: now})
+		}
+		if rider, valid := parseRecipient(p.DeliveryPartnerUserID); valid {
+			plan.pushes = append(plan.pushes, service.FoodPush{DedupKey: base + ":" + eventType, RecipientID: rider, App: service.AppFeastRider, Type: service.FoodTypeDeliveryStatus, OrderID: orderID, Title: copy.title, Body: copy.body, DeepLink: "/rider", AndroidChannel: service.FoodChannelOrders, CreatedAt: now})
+		}
+	}
 
 	if foodKitchenNewOrderEvents[eventType] &&
 		(eventType != events.EventFoodOrderPlaced || p.Status == foodOrderStatusConfirmed) {
@@ -380,16 +412,17 @@ func planOrderEvent(eventType string, raw json.RawMessage, base string, now time
 			plan.pushes = append(plan.pushes, service.FoodPush{
 				// Per order, not per event: payment_succeeded and confirmed
 				// can both announce the same order.
-				DedupKey:       "food_order_new:" + orderID.String(),
-				RecipientID:    uid,
-				App:            service.AppFeastKitchen,
-				Type:           service.FoodTypeOrderNew,
-				AndroidChannel: service.FoodChannelKitchenNewOrder,
-				Title:          "New order" + orderRef(p.OrderNumber),
-				Body:           "Tap to review and accept it before the timer runs out.",
-				DeepLink:       "/kitchen/orders/" + orderID.String(),
-				OrderID:        orderID,
-				CreatedAt:      now,
+				DedupKey:         "food_order_new:" + orderID.String(),
+				RecipientID:      uid,
+				App:              service.AppFeastKitchen,
+				Type:             service.FoodTypeOrderNew,
+				AndroidChannel:   service.FoodChannelKitchenNewOrder,
+				Title:            "New order" + orderRef(p.OrderNumber),
+				Body:             "Tap to review and accept it before the timer runs out.",
+				DeepLink:         kitchenOrderLink(orderID, p.RestaurantID),
+				OrderID:          orderID,
+				CreatedAt:        now,
+				AcceptDeadlineAt: p.AcceptDeadlineAt,
 			})
 		}
 	}

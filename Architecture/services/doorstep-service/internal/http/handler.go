@@ -4,6 +4,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"github.com/atpost/shared/partnerwork"
 	"io"
 	"log/slog"
 	"net/http"
@@ -105,6 +106,9 @@ func writeJSON(c *gin.Context, status int, v any) {
 // writeErr writes an apperr.Error with its status and code, anything else as
 // an opaque 500.
 func writeErr(c *gin.Context, err error) {
+	if partnerwork.WriteError(c, err) {
+		return
+	}
 	ctx := c.Request.Context()
 	var ae *apperr.Error
 	if errors.As(err, &ae) {

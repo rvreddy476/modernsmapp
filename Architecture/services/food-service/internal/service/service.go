@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -20,10 +21,11 @@ import (
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/payout"
-	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/routing"
+	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -83,6 +85,8 @@ type Store interface {
 	ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error
 	ListUnassignedReadyOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
 	ListUnbatchedReadyOrders(ctx context.Context, batch int) ([]postgres.ReadyOrderForBatching, error)
+	ListPendingDeliveryBatches(ctx context.Context, limit int) ([]postgres.PendingDeliveryBatch, error)
+	CreateSequentialDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, batchID *uuid.UUID, distanceKM float64) (*postgres.DeliveryOffer, error)
 	ListDispatchCandidates(ctx context.Context, q postgres.DispatchQuery) ([]postgres.DispatchCandidate, error)
 	CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time, distanceKM *float64) (*postgres.DeliveryOffer, error)
 	CreateBatch(ctx context.Context, restaurantID uuid.UUID, orderIDs []uuid.UUID) (*postgres.DeliveryBatch, error)
@@ -108,6 +112,7 @@ type Store interface {
 	ListRefundsForAdmin(ctx context.Context, status string, limit int) ([]postgres.RefundRequest, error)
 	CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error)
 	DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error
+	SupportRefundPlan(ctx context.Context, requestID uuid.UUID) (*postgres.RefundPlan, error)
 	CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error)
 	ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit int) ([]postgres.ItemReview, error)
 	HideItemReview(ctx context.Context, adminID, reviewID uuid.UUID) error
@@ -166,6 +171,8 @@ type Store interface {
 	AdminApproveDeliveryPartner(ctx context.Context, adminID, partnerID uuid.UUID, approve bool, reason string) error
 	AdminSetDeliveryPartnerStatus(ctx context.Context, adminID, partnerID uuid.UUID, status, reason string) error
 	AdminListOrders(ctx context.Context, page postgres.Pagination) ([]postgres.Order, error)
+	AdminDeliveryRecovery(ctx context.Context, page postgres.Pagination) ([]postgres.DeliveryRecoveryRow,error)
+	AdminReissueDeliveryCode(ctx context.Context, adminID,orderID uuid.UUID,kind,reason,key string)(map[string]any,error)
 	AdminGetOrder(ctx context.Context, orderID uuid.UUID) (*postgres.Order, error)
 	AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UUID, reason string) (*postgres.Order, error)
 	AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UUID, reason string, amount float64, idempotencyKey string) (*postgres.RefundPlan, error)
@@ -261,13 +268,15 @@ type Service struct {
 	// outboxSink replaces the outbox writer (tests capture event payloads).
 	outboxSink func(ctx context.Context, eventType, partitionKey string, body []byte) error
 	dbPool     *pgxpool.Pool
-	blob        *blob.Store
+	blob       *blob.Store
 	// Dispatch: offers go to partners within dispatchRadiusKM of the
 	// restaurant whose latest location ping is newer than dispatchLocationMaxAge.
 	dispatchRadiusKM       float64
 	dispatchLocationMaxAge time.Duration
 	// router prices ETA legs on rider pings (B6); nil means haversine.
-	router routing.Router
+	router            routing.Router
+	batchRoutePreview BatchRoutePreviewer
+	documentMedia     ownedmedia.Verifier
 	// Onboarding (onboarding.go): pii nil means the PII routes answer 503;
 	// bankVerifier nil means payout.DisabledVerifier.
 	pii           *foodpii.Crypto
@@ -276,7 +285,6 @@ type Service struct {
 	// mediaBaseURL prefixes the dish-photo URL a media id resolves to (B8).
 	mediaBaseURL string
 }
-
 
 func New(store Store) *Service {
 	return &Service{
@@ -634,6 +642,30 @@ func (s *Service) UpdatePartnerRestaurant(ctx context.Context, ownerID, restaura
 }
 
 func (s *Service) AddRestaurantDocument(ctx context.Context, ownerID, restaurantID uuid.UUID, input map[string]any) (map[string]any, error) {
+	kind, _ := input["document_type"].(string)
+	kind = strings.ToUpper(strings.TrimSpace(kind))
+	if kind == "SELFIE" || kind == "INTRODUCTION_VIDEO" {
+		raw, _ := input["media_id"].(string)
+		id, err := uuid.Parse(raw)
+		if err != nil || id == uuid.Nil {
+			return nil, &onboarding.FieldError{Code: "FOOD_MEDIA_ID_INVALID", Field: "media_id", Message: "Upload your own selfie or introduction first."}
+		}
+		if s.documentMedia == nil {
+			return nil, ownedmedia.ErrUnavailable
+		}
+		if kind == "SELFIE" {
+			err = s.documentMedia.VerifyOwnedImage(ctx, ownerID, id)
+		} else {
+			err = ownedmedia.VerifyIntroduction(ctx, s.documentMedia, ownerID, id)
+		}
+		if err != nil {
+			if errors.Is(err, ownedmedia.ErrUnavailable) {
+				return nil, ownedmedia.ErrUnavailable
+			}
+			return nil, &onboarding.FieldError{Code: "FOOD_DOCUMENT_MEDIA_INVALID", Field: "media_id", Message: "Upload your own processed media. Videos must be up to 60 seconds and 64 MB."}
+		}
+		input = map[string]any{"document_type": kind, "media_id": id.String()}
+	}
 	return s.store.AddRestaurantDocument(ctx, ownerID, restaurantID, input)
 }
 

@@ -233,7 +233,7 @@ func placeAndDeliver(t *testing.T, s *Store, customer uuid.UUID) uuid.UUID {
 	if err != nil {
 		t.Fatalf("place: %v", err)
 	}
-	if _, err := s.db.Exec(ctx, `UPDATE food.orders SET status = 'DELIVERED', delivered_at = NOW() WHERE id = $1`, order.ID); err != nil {
+	if _, err := s.db.Exec(ctx, `UPDATE food.orders SET status = 'DELIVERED', payment_status = 'CAPTURED', delivered_at = NOW() WHERE id = $1`, order.ID); err != nil {
 		t.Fatal(err)
 	}
 	return order.ID
@@ -422,6 +422,7 @@ func seedReadyRestaurant(t *testing.T, s *Store) (ownerID, restaurantID uuid.UUI
 	t.Helper()
 	ctx := context.Background()
 	ownerID, restaurantID = seedDraftRestaurant(t, s)
+	seedRestaurantSelfie(t, s, restaurantID, "PENDING")
 	if _, err := s.SetRestaurantLocation(ctx, ownerID, restaurantID, testLocation()); err != nil {
 		t.Fatal(err)
 	}

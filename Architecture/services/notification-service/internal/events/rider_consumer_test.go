@@ -183,15 +183,12 @@ func TestRiderConsumer_RideOfferedBecomesCaptainOffer(t *testing.T) {
 		t.Fatalf("offer data = %v", data)
 	}
 
-	// Without partner_user_id the consumer falls back to partner_id (warned).
+	// A partner row ID must never be treated as the login account.
 	c, d = rideConsumer()
 	if _, err := c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderRideOffered, map[string]any{
 		"ride_id": rxRide, "offer_id": rxOffer, "partner_id": rxPartner,
-	})); err != nil || len(d.pushes) != 1 || d.pushes[0].RecipientID.String() != rxPartner {
-		t.Fatalf("partner_id fallback: err=%v pushes=%+v", err, d.pushes)
-	}
-	if d.pushes[0].TTL != rideOfferDefaultTTL {
-		t.Fatalf("ttl without expires_at = %v, want %v", d.pushes[0].TTL, rideOfferDefaultTTL)
+	})); err != nil || len(d.pushes) != 0 {
+		t.Fatalf("unsafe partner_id fallback: err=%v pushes=%+v", err, d.pushes)
 	}
 
 	// An offer that has already expired is not pushed at all.
@@ -220,7 +217,7 @@ func TestRideOfferTTLBounds(t *testing.T) {
 		expired bool
 	}{
 		{18 * time.Second, 18 * time.Second, false},
-		{2 * time.Second, rideOfferMinTTL, false},
+		{2 * time.Second, 2 * time.Second, false},
 		{5 * time.Minute, rideOfferMaxTTL, false},
 		{0, 0, true},
 		{-time.Minute, 0, true},
@@ -231,7 +228,7 @@ func TestRideOfferTTLBounds(t *testing.T) {
 			t.Errorf("rideOfferTTL(+%v) = %v,%v want %v,%v", tc.in, got, expired, tc.want, tc.expired)
 		}
 	}
-	if got, expired := rideOfferTTL(time.Time{}, now); got != rideOfferDefaultTTL || expired {
+	if got, expired := rideOfferTTL(time.Time{}, now); got != 0 || !expired {
 		t.Errorf("unset expires_at = %v,%v", got, expired)
 	}
 }
@@ -283,8 +280,8 @@ func TestRiderConsumer_PaymentPaidTellsCustomerAndCaptain(t *testing.T) {
 	c, d = rideConsumer()
 	if _, err := c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderRidePaymentPaid, map[string]any{
 		"ride_id": rxRide, "partner_id": rxPartner, "amount_paise": 9000, "method": "cash",
-	})); err != nil || len(d.pushes) != 1 || d.pushes[0].App != service.AppMopeduCaptain || d.pushes[0].RecipientID.String() != rxPartner {
-		t.Fatalf("captain only (partner_id fallback): err=%v pushes=%+v", err, d.pushes)
+	})); err != nil || len(d.pushes) != 0 {
+		t.Fatalf("unsafe payment recipient fallback: err=%v pushes=%+v", err, d.pushes)
 	}
 }
 
@@ -311,6 +308,16 @@ func TestRiderConsumer_UnwiredRidePushIsClaimedNotPanicked(t *testing.T) {
 	// The constructor wires the service only when there is one.
 	if NewConsumerWithDialer([]string{"127.0.0.1:1"}, "g", "t", nil, nil).ridePush != nil {
 		t.Fatal("a nil *Service was stored as a non-nil ridePushDeliverer")
+	}
+}
+
+func TestRiderConsumer_UnwiredPartnerPushMustNotBeAcknowledged(t *testing.T) {
+	c := &Consumer{}
+	handled, err := c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderRidePaymentPaid, map[string]any{
+		"ride_id": rxRide, "partner_id": rxPartner, "partner_user_id": rxPartnerUser, "amount_paise": 9000, "method": "cash",
+	}))
+	if !handled || err == nil {
+		t.Fatalf("partner event cannot be lost: handled=%v err=%v", handled, err)
 	}
 }
 
@@ -414,15 +421,14 @@ func TestRiderConsumer_CaptainAccountEventsBecomeCaptainTypes(t *testing.T) {
 	}
 }
 
-// Without partner_user_id the push falls back to partner_id (rider-service
-// is told); without either the event is claimed and counted, never pushed;
+// Without partner_user_id the event is claimed and counted, never pushed;
 // a missing subscription id is a decode error, not a silent drop. A payment
 // failure with no amount asks for payment without inventing one.
 func TestRiderConsumer_CaptainAccountRecipientFallbackAndMissing(t *testing.T) {
 	c, d := rideConsumer()
 	handled, err := c.handleRiderEvent(context.Background(), rideEnvelope(events.EventRiderPartnerApproved, map[string]any{"partner_id": rxPartner, "status": "approved"}))
-	if !handled || err != nil || len(d.pushes) != 1 || d.pushes[0].RecipientID.String() != rxPartner {
-		t.Fatalf("partner_id fallback: handled=%v err=%v pushes=%+v", handled, err, d.pushes)
+	if !handled || err != nil || len(d.pushes) != 0 {
+		t.Fatalf("unsafe account recipient fallback: handled=%v err=%v pushes=%+v", handled, err, d.pushes)
 	}
 
 	c, d = rideConsumer()

@@ -22,12 +22,14 @@ type DispatchQuery struct {
 // DispatchCandidate is one partner the dispatcher may offer a job to.
 // UserID keys the realtime topic; PartnerID keys the offer row.
 type DispatchCandidate struct {
-	PartnerID  uuid.UUID
-	UserID     uuid.UUID
-	Latitude   float64
-	Longitude  float64
-	DistanceKM float64
-	RecordedAt time.Time
+	PartnerID     uuid.UUID
+	UserID        uuid.UUID
+	Latitude      float64
+	Longitude     float64
+	DistanceKM    float64
+	RecordedAt    time.Time
+	OffersToday   int
+	LastOfferedAt *time.Time
 }
 
 // ListDispatchCandidates returns ACTIVE, online partners whose LATEST location
@@ -46,7 +48,7 @@ func (s *Store) ListDispatchCandidates(ctx context.Context, q DispatchQuery) ([]
 	}
 	minLat, maxLat, minLng, maxLng := geo.BoundingBox(q.Lat, q.Lng, q.RadiusKM)
 	rows, err := s.db.Query(ctx, `
-		SELECT dp.id, dp.user_id, loc.latitude::float8, loc.longitude::float8, loc.recorded_at
+		SELECT dp.id, dp.user_id, loc.latitude::float8, loc.longitude::float8, loc.recorded_at, h.n, h.last
 		FROM food.delivery_partners dp
 		JOIN LATERAL (
 			SELECT l.latitude, l.longitude, l.recorded_at
@@ -55,13 +57,18 @@ func (s *Store) ListDispatchCandidates(ctx context.Context, q DispatchQuery) ([]
 			ORDER BY l.recorded_at DESC
 			LIMIT 1
 		) loc ON TRUE
+		LEFT JOIN LATERAL (SELECT count(*)::int n,max(created_at) last FROM food.delivery_offers
+		 WHERE delivery_partner_id=dp.id AND created_at>=date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') h ON TRUE
 		WHERE dp.status = 'ACTIVE'
 		  AND dp.is_online = TRUE
 		  AND loc.recorded_at >= NOW() - make_interval(secs => $1::float8)
 		  AND loc.latitude::float8 BETWEEN $2::float8 AND $3::float8
 		  AND loc.longitude::float8 BETWEEN $4::float8 AND $5::float8
+		  AND NOT EXISTS (SELECT 1 FROM food.delivery_assignments a WHERE a.delivery_partner_id=dp.id AND a.status IN ('ASSIGNED','ACCEPTED','ARRIVED_AT_RESTAURANT','PICKED_UP','ARRIVED_AT_CUSTOMER'))
+		  AND (SELECT count(*) FROM food.delivery_offers f WHERE f.delivery_partner_id=dp.id AND f.status='pending' AND f.expires_at>clock_timestamp()) < $6
+		ORDER BY h.n,h.last NULLS FIRST,dp.id
 		LIMIT 500
-	`, q.MaxLocationAge.Seconds(), minLat, maxLat, minLng, maxLng)
+	`, q.MaxLocationAge.Seconds(), minLat, maxLat, minLng, maxLng, MaxPendingDeliveryOffers)
 	if err != nil {
 		return nil, fmt.Errorf("list dispatch candidates: %w", err)
 	}
@@ -69,7 +76,7 @@ func (s *Store) ListDispatchCandidates(ctx context.Context, q DispatchQuery) ([]
 	var out []DispatchCandidate
 	for rows.Next() {
 		var c DispatchCandidate
-		if err := rows.Scan(&c.PartnerID, &c.UserID, &c.Latitude, &c.Longitude, &c.RecordedAt); err != nil {
+		if err := rows.Scan(&c.PartnerID, &c.UserID, &c.Latitude, &c.Longitude, &c.RecordedAt, &c.OffersToday, &c.LastOfferedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -92,7 +99,22 @@ func rankCandidates(in []DispatchCandidate, lat, lng, radiusKM float64, limit in
 		c.DistanceKM = d
 		out = append(out, c)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].DistanceKM < out[j].DistanceKM })
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.OffersToday != b.OffersToday {
+			return a.OffersToday < b.OffersToday
+		}
+		if a.LastOfferedAt == nil && b.LastOfferedAt != nil {
+			return true
+		}
+		if a.LastOfferedAt != nil && b.LastOfferedAt == nil {
+			return false
+		}
+		if a.LastOfferedAt != nil && b.LastOfferedAt != nil && !a.LastOfferedAt.Equal(*b.LastOfferedAt) {
+			return a.LastOfferedAt.Before(*b.LastOfferedAt)
+		}
+		return a.DistanceKM < b.DistanceKM
+	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}

@@ -113,6 +113,7 @@ const (
 	DoorstepTypeProAccountSuspended        = "doorstep.pro.account.suspended"
 	DoorstepTypeProAccountReinstated       = "doorstep.pro.account.reinstated"
 	DoorstepTypeProDocumentReviewed        = "doorstep.pro.document.reviewed"
+	DoorstepTypeProChangeReviewed          = "doorstep.pro.change.reviewed"
 	DoorstepTypeProBackgroundCheckExpiring = "doorstep.pro.background_check.expiring"
 	DoorstepTypeProRatingReceived          = "doorstep.pro.rating.received"
 	DoorstepTypeProSettlementComputed      = "doorstep.pro.settlement.computed"
@@ -178,6 +179,7 @@ var doorstepPushSpecs = map[string]DoorstepPushSpec{
 	DoorstepTypeProAccountSuspended:        proSpec(DoorstepChannelProAccount, DoorstepEntityPro, true, "pro_id"),
 	DoorstepTypeProAccountReinstated:       proSpec(DoorstepChannelProAccount, DoorstepEntityPro, true, "pro_id"),
 	DoorstepTypeProDocumentReviewed:        proSpec(DoorstepChannelProAccount, DoorstepEntityDocument, true, "document_id", "decision"),
+	DoorstepTypeProChangeReviewed:          proSpec(DoorstepChannelProAccount, DoorstepEntityPro, true, "pro_id", "decision"),
 	DoorstepTypeProBackgroundCheckExpiring: proSpec(DoorstepChannelProAccount, DoorstepEntityPro, true, "valid_until"),
 	DoorstepTypeProRatingReceived:          proSpec(DoorstepChannelProJobs, DoorstepEntityJob, true, "booking_id", "stars"),
 	DoorstepTypeProSettlementComputed:      proSpec(DoorstepChannelProEarnings, DoorstepEntitySettlement, true, "settlement_id", "net_paise"),
@@ -358,6 +360,30 @@ type doorstepPushTransports interface {
 // DeliverDoorstepPush delivers one Doorstep push. See the notes at the top
 // of the file.
 func (s *Service) DeliverDoorstepPush(ctx context.Context, p DoorstepPush) (DoorstepPushOutcome, error) {
+	if s.pgStore != nil && p.App == postgres.AppMomentum {
+		if err := p.validate(); err != nil {
+			return "", err
+		}
+		spec := doorstepPushSpecs[p.Type]
+		err := s.queueCustomerNotice(ctx, PartnerNotice{ID: DoorstepDedupID(p), UserID: p.RecipientID, App: p.App, Type: p.Type, EntityID: p.EntityID, EntityType: spec.EntityType, Title: p.Title, Body: p.Body, DeepLink: p.DeepLink, Data: DoorstepPushData(p), CreatedAt: p.CreatedAt, Inbox: spec.Inbox})
+		return DoorstepPushOutcome("queued"), err
+	}
+	if s.pgStore != nil && p.App == postgres.AppDoorstepPro {
+		if err := p.validate(); err != nil {
+			return "", err
+		}
+		spec := doorstepPushSpecs[p.Type]
+		expiry := expiryAfter(p.TTL)
+		if raw := p.Data["expires_at"]; raw != "" {
+			t, err := time.Parse(time.RFC3339Nano, raw)
+			if err != nil {
+				return "", err
+			}
+			expiry = &t
+		}
+		err := s.queuePartnerNotice(ctx, PartnerNotice{ID: DoorstepDedupID(p), UserID: p.RecipientID, App: p.App, Type: p.Type, EntityID: p.EntityID, EntityType: spec.EntityType, Title: p.Title, Body: p.Body, DeepLink: p.DeepLink, Data: DoorstepPushData(p), CreatedAt: p.CreatedAt, ExpiresAt: expiry, Inbox: spec.Inbox})
+		return DoorstepPushOutcome("queued"), err
+	}
 	return runDoorstepPush(ctx, s, p)
 }
 
@@ -408,7 +434,7 @@ func runDoorstepPush(ctx context.Context, t doorstepPushTransports, p DoorstepPu
 	for _, d := range devices {
 		// THE app guard: a token registered for another app never receives
 		// this push, whatever the device lookup returned.
-		if d.App != p.App {
+		if !postgres.DeviceAppReceives(d.App, p.App) {
 			continue
 		}
 		err := t.sendAppPush(ctx, d, p.Title, p.Body, data)

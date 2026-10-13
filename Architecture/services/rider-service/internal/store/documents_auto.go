@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/atpost/shared/outbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -128,7 +130,25 @@ func (s *Store) SetDocumentAutoCheckDetail(ctx context.Context, id uuid.UUID, de
 // SetPartnerDocumentStatusBy is the admin path with the actor recorded
 // (verified_by_actor = the admin's id).
 func (s *Store) SetPartnerDocumentStatusBy(ctx context.Context, id uuid.UUID, status string, reason *string, adminID uuid.UUID) (*PartnerDocument, error) {
-	d, err := scanPartnerDoc(s.db.QueryRow(ctx, `
+	if adminID == uuid.Nil || (status != "approved" && status != "rejected") {
+		return nil, fmt.Errorf("invalid: reviewing admin and decision are required")
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	previous, err := scanPartnerDoc(tx.QueryRow(ctx, `SELECT `+partnerDocColumns+` FROM rider_partner_documents WHERE id=$1 FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrDocumentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if previous.Status == status && stringValue(previous.RejectionReason) == stringValue(reason) {
+		return previous, nil
+	}
+	d, err := scanPartnerDoc(tx.QueryRow(ctx, `
         UPDATE rider_partner_documents
         SET status = $2::rider_verification_status, rejection_reason = $3, verified_by_actor = $4, verified_by = $5,
             verified_at = CASE WHEN $2 = 'approved' THEN NOW() ELSE verified_at END, updated_at = NOW()
@@ -140,7 +160,17 @@ func (s *Store) SetPartnerDocumentStatusBy(ctx context.Context, id uuid.UUID, st
 		}
 		return nil, err
 	}
-	return d, nil
+	if err := enqueuePartnerReviewTx(ctx, tx, "rider.partner.document_reviewed", d.PartnerID, status, PartnerReview{ActorID: adminID, Reason: stringValue(reason)}); err != nil {
+		return nil, err
+	}
+	return d, tx.Commit(ctx)
+}
+
+func stringValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // --- Vehicles ------------------------------------------------------------
@@ -189,7 +219,36 @@ func (s *Store) UpsertDigiLockerVehicleRC(ctx context.Context, vehicleID uuid.UU
 
 // SetVehicleStatusBy is the admin path with the actor recorded.
 func (s *Store) SetVehicleStatusBy(ctx context.Context, id uuid.UUID, status string, adminID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
+	if adminID == uuid.Nil {
+		return fmt.Errorf("invalid: reviewing admin is required")
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var partnerID uuid.UUID
+	var previous string
+	if err := tx.QueryRow(ctx, `SELECT partner_id,status::text FROM rider_vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&partnerID, &previous); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrVehicleNotFoundAdmin
+		}
+		return err
+	}
+	if status == "approved" {
+		var docID uuid.UUID
+		var valid bool
+		if err := tx.QueryRow(ctx, `SELECT id,(expires_at IS NULL OR expires_at>NOW()) AND status IN ('pending','approved') FROM rider_vehicle_documents WHERE vehicle_id=$1 AND document_type='vehicle_rc' ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE`, id).Scan(&docID, &valid); err != nil || !valid {
+			return fmt.Errorf("invalid: upload a current RC before vehicle review")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE rider_vehicle_documents SET status='approved',verified_by_actor=$2,verified_at=NOW(),rejection_reason=NULL WHERE id=$1`, docID, adminID.String()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO rider_admin_audit_logs(admin_user_id,action,entity_type,entity_id,new_value)VALUES($1,'vehicle.rc.review','vehicle_document',$2,jsonb_build_object('vehicle_id',$3::text,'method','manual_review'))`, adminID, docID, id.String()); err != nil {
+			return err
+		}
+	}
+	tag, err := tx.Exec(ctx, `
         UPDATE rider_vehicles
         SET status = $2::rider_verification_status, verified_by_actor = $3,
             verified_at = CASE WHEN $2 = 'approved' THEN NOW() ELSE verified_at END, updated_at = NOW()
@@ -200,7 +259,12 @@ func (s *Store) SetVehicleStatusBy(ctx context.Context, id uuid.UUID, status str
 	if tag.RowsAffected() == 0 {
 		return ErrVehicleNotFoundAdmin
 	}
-	return nil
+	if previous != status && (status == "approved" || status == "rejected") {
+		if err := enqueuePartnerReviewTx(ctx, tx, "rider.partner.vehicle_"+status, partnerID, status, PartnerReview{ActorID: adminID}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // --- Approval evaluation reads --------------------------------------------
@@ -218,10 +282,11 @@ type DocumentState struct {
 // same type, so a re-upload never un-verifies a DigiLocker document).
 func (s *Store) LatestPartnerDocuments(ctx context.Context, partnerID uuid.UUID) (map[string]DocumentState, error) {
 	rows, err := s.db.Query(ctx, `
-        SELECT DISTINCT ON (document_type) id, document_type::text, status::text, source
+        SELECT DISTINCT ON (document_type) id, document_type::text,
+          CASE WHEN expires_at IS NOT NULL AND expires_at<=NOW() THEN 'expired' ELSE status::text END, source
         FROM rider_partner_documents
         WHERE partner_id = $1
-        ORDER BY document_type, (status = 'approved') DESC, created_at DESC`, partnerID)
+        ORDER BY document_type, created_at DESC, id DESC`, partnerID)
 	if err != nil {
 		return nil, fmt.Errorf("latest partner documents: %w", err)
 	}
@@ -256,7 +321,7 @@ func (s *Store) PartnerVehicleStates(ctx context.Context, partnerID uuid.UUID) (
         LEFT JOIN LATERAL (
             SELECT status, source FROM rider_vehicle_documents
             WHERE vehicle_id = v.id AND document_type = 'vehicle_rc'
-            ORDER BY (status = 'approved') DESC, created_at DESC LIMIT 1
+            ORDER BY created_at DESC,id DESC LIMIT 1
         ) d ON TRUE
         WHERE v.partner_id = $1 AND v.deleted_at IS NULL AND v.is_active
         ORDER BY v.created_at ASC`, partnerID)
@@ -325,6 +390,9 @@ func (s *Store) AutoApprovePartner(ctx context.Context, partnerID uuid.UUID, det
 	if err := recordSystemAuditTx(ctx, tx, "partner.auto_approve", "partner", partnerID, detail); err != nil {
 		return false, err
 	}
+	if err := enqueuePartnerReviewTx(ctx, tx, partnerStatusEvent("approved"), partnerID, "approved", PartnerReview{}); err != nil {
+		return false, err
+	}
 	return true, tx.Commit(ctx)
 }
 
@@ -354,12 +422,54 @@ func (s *Store) UnderReviewPending(ctx context.Context, partnerID uuid.UUID) ([]
 	return v.Pending, true, nil
 }
 
-// RecordUnderReview writes the audit row that remembers the pending set the
-// under_review event was published for.
+// RecordUnderReview atomically remembers and queues a changed pending set.
+// The partner lock prevents concurrent evaluators producing duplicates or
+// reporting an already-approved partner as under review.
 func (s *Store) RecordUnderReview(ctx context.Context, partnerID uuid.UUID, pending []string) error {
-	body, _ := json.Marshal(map[string]any{"actor": "system", "pending": pending})
-	_, err := s.RecordAudit(ctx, RecordAuditInput{AdminUserID: SystemActorID, Action: "partner.under_review", EntityType: "partner", EntityID: &partnerID, NewValue: body})
-	return err
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var userID uuid.UUID
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT user_id,status::text FROM rider_partners WHERE id=$1 FOR UPDATE`, partnerID).Scan(&userID, &status); err != nil {
+		return err
+	}
+	if status != "draft" && status != "pending_verification" {
+		return nil
+	}
+	pending = slices.Clone(pending)
+	slices.Sort(pending)
+	pending = slices.Compact(pending)
+	var previous []byte
+	err = tx.QueryRow(ctx, `SELECT new_value FROM rider_admin_audit_logs WHERE action='partner.under_review' AND entity_type='partner' AND entity_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`, partnerID).Scan(&previous)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		var old struct {
+			Pending []string `json:"pending"`
+		}
+		if err := json.Unmarshal(previous, &old); err != nil {
+			return err
+		}
+		slices.Sort(old.Pending)
+		if slices.Equal(slices.Compact(old.Pending), pending) {
+			return nil
+		}
+	}
+	if err := recordSystemAuditTx(ctx, tx, "partner.under_review", "partner", partnerID, map[string]any{"actor": "system", "pending": pending}); err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{"partner_id": partnerID, "partner_user_id": userID, "pending": pending, "occurred_at": time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	if err := outbox.NewQueuer("rider").Enqueue(ctx, tx, "rider.partner.under_review", "rider.partner."+partnerID.String(), body); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // recordSystemAuditTx writes one audit row under the system actor.

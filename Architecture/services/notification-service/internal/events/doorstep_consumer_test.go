@@ -169,8 +169,8 @@ func TestDoorstepRegistryMatchesContract(t *testing.T) {
 	}
 
 	events := c.contractEvents(t)
-	if len(events) != 38 {
-		t.Fatalf("contract lists %d events; this test was written against 38 — re-check the registry", len(events))
+	if len(events) != 39 {
+		t.Fatalf("contract lists %d events; this test was written against 39 — re-check the registry", len(events))
 	}
 	for _, e := range events {
 		if !doorstepKnownEvents[e] {
@@ -321,6 +321,7 @@ var dsConditionOverrides = map[string]map[string]any{
 	service.DoorstepTypeBookingProUnavailable:  {"choice_deadline": dsNow.Add(30 * time.Minute).Format(time.RFC3339), "cause": "declined"},
 	service.DoorstepTypeBookingProChanged:      {"difference_paise": -5000, "new_pro_user_id": dsPro.String()},
 	service.DoorstepTypeProPriceReviewed:       {"decision": "approved"},
+	service.DoorstepTypeProChangeReviewed:      {"decision": "approved"},
 	service.DoorstepTypeBookingProNoShow:       {"party": "pro"},
 	service.DoorstepTypeMessageNew:             {"sender_kind": "pro"},
 	service.DoorstepTypeProMessageNew:          {"sender_kind": "customer"},

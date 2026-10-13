@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/food-service/internal/riderkyc"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/kyc"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/atpost/shared/pii"
 	"github.com/google/uuid"
 )
@@ -278,6 +279,26 @@ func (s *Service) AddDeliveryDocument(ctx context.Context, userID uuid.UUID, in 
 		return nil, err
 	}
 	rec := postgres.DeliveryDocumentRecord{DocumentType: v.DocumentType, MediaID: v.MediaID, FileURL: v.FileURL, Status: postgres.DocumentStatusPending}
+	if v.MediaID != nil {
+		if s.documentMedia == nil {
+			return nil, ownedmedia.ErrUnavailable
+		}
+		verify := s.documentMedia.VerifyOwnedImage
+		if v.DocumentType == "INTRODUCTION_VIDEO" {
+			verify = func(ctx context.Context, owner, id uuid.UUID) error {
+				return ownedmedia.VerifyIntroduction(ctx, s.documentMedia, owner, id)
+			}
+		}
+		if err := verify(ctx, userID, *v.MediaID); err != nil {
+			if errors.Is(err, ownedmedia.ErrUnavailable) {
+				return nil, ownedmedia.ErrUnavailable
+			}
+			if v.DocumentType == "INTRODUCTION_VIDEO" {
+				return nil, &onboarding.FieldError{Code: "FOOD_INTRODUCTION_INVALID", Field: "media_id", Message: "Upload your own processed video, up to 60 seconds and 64 MB, or remove it to continue."}
+			}
+			return nil, &onboarding.FieldError{Code: "FOOD_DOCUMENT_IMAGE_INVALID", Field: "media_id", Message: "Upload your own processed document image; if it just uploaded, retry in a moment"}
+		}
+	}
 	if v.Number != "" {
 		if !s.pii.Configured() {
 			return nil, ErrPIINotConfigured
@@ -290,6 +311,8 @@ func (s *Service) AddDeliveryDocument(ctx context.Context, userID uuid.UUID, in 
 	}
 	return s.store.AddDeliveryPartnerDocument(ctx, userID, rec)
 }
+
+func (s *Service) WithDocumentMedia(v ownedmedia.Verifier) *Service { s.documentMedia = v; return s }
 
 // sealDocumentNumber picks the lookup domain by document type: DL and RC are
 // hashed for uniqueness; any other number is sealed without a lookup.

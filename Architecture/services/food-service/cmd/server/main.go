@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/database"
+	"github.com/atpost/food-service/internal/batchroute"
 	"github.com/atpost/food-service/internal/digilocker"
 	"github.com/atpost/food-service/internal/foodpii"
 	foodhttp "github.com/atpost/food-service/internal/http"
@@ -26,6 +27,8 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/ownedmedia"
+	"github.com/atpost/shared/partnerwork"
 	"github.com/atpost/shared/realtime"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
@@ -70,6 +73,10 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("food schema ready")
+	if err := partnerwork.Bootstrap(ctx, dbPool, partnerwork.FoodDelivery, os.Getenv); err != nil {
+		slog.Error("partner work coordination unavailable", "error", err)
+		os.Exit(1)
+	}
 
 	httpMetrics := metrics.NewHTTPMetrics("food-service")
 	dbMetrics := metrics.NewDBPoolMetrics("food-service", "postgres")
@@ -131,6 +138,16 @@ func main() {
 		WithPricingConfig(pricingCfg).
 		WithSettlementRules(settlementRules)
 	svc := service.New(store)
+	svc.WithDocumentMedia(ownedmedia.New(env("MEDIA_SERVICE_URL", "http://media-service:8087"), internalKey))
+	batchRouteClient, err := batchroute.FromEnv(ctx, os.Getenv)
+	if err != nil {
+		slog.Error("invalid batch route preview configuration", "error", err)
+		os.Exit(1)
+	}
+	if batchRouteClient != nil {
+		svc.WithBatchRoutePreview(batchRouteClient)
+		slog.Info("food-service: advisory batch route previews enabled")
+	}
 
 	// Wave 1 B1/B2: restaurant PAN and payout-account sealing. FOOD_PII_KEYS
 	// ("v1:<base64 32-byte key>[,v2:<key>]") and FOOD_PII_LOOKUP_SALT are
@@ -381,6 +398,7 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.Use(partnerwork.RevisionMiddleware())
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())

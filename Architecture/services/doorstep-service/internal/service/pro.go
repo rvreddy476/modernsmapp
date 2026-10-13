@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/atpost/doorstep-service/internal/apperr"
@@ -21,6 +20,7 @@ import (
 	"github.com/atpost/doorstep-service/internal/propii"
 	"github.com/atpost/doorstep-service/internal/store"
 	"github.com/atpost/shared/kyc"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/google/uuid"
 )
 
@@ -47,14 +47,14 @@ type ProStore interface {
 	ReplaceSkills(ctx context.Context, proID uuid.UUID, decls []store.SkillDecl) ([]model.ProSkill, error)
 	ProSkills(ctx context.Context, proID uuid.UUID) ([]model.ProSkill, error)
 	UploadDocument(ctx context.Context, d store.NewDocument, bg *store.BackgroundInit) (*model.ProDocument, error)
-	SetArea(ctx context.Context, proID uuid.UUID, zoneIDs []uuid.UUID, lat, lng float64, radiusM int) (*model.ProArea, error)
+	SetArea(ctx context.Context, proID uuid.UUID, zoneIDs []uuid.UUID, lat, lng float64, radiusM int, labels ...string) (*model.ProArea, error)
 	ProZoneIDs(ctx context.Context, proID uuid.UUID) ([]uuid.UUID, error)
 	ReplaceHours(ctx context.Context, proID uuid.UUID, ws []prokyc.Window) error
 	Hours(ctx context.Context, proID uuid.UUID) ([]model.HoursWindow, error)
 	AddDayOff(ctx context.Context, proID uuid.UUID, day string, reason *string, from, to time.Time) (*model.DayOff, error)
 	DaysOff(ctx context.Context, proID uuid.UUID, fromDay string) ([]model.DayOff, error)
 	DeleteDayOff(ctx context.Context, proID uuid.UUID, day string) error
-	SetPayoutAccount(ctx context.Context, proID uuid.UUID, holder string, sealed []byte, keyVersion uint32, last4, ifsc string) (*model.PayoutAccount, error)
+	SetPayoutAccount(ctx context.Context, proID uuid.UUID, in store.BankSubmission) (*model.PayoutAccount, error)
 	PayoutAccount(ctx context.Context, proID uuid.UUID) (*model.PayoutAccount, error)
 	SetPAN(ctx context.Context, proID uuid.UUID, sealed []byte, last4 string) error
 	AcceptAgreement(ctx context.Context, proID uuid.UUID, version string, at time.Time) error
@@ -75,6 +75,9 @@ type ProStore interface {
 // ProDeps are onboarding's dependencies. Main builds every one from config
 // (each mock refused in production there and again in its own package).
 type ProDeps struct {
+	DevPhoneOTP         bool
+	VerifiedPhone       func(context.Context, uuid.UUID) (string, error)
+	Documents           ownedmedia.Verifier
 	Store               ProStore
 	DigiLocker          digilocker.Settings
 	Faces               facecompare.Comparer
@@ -163,7 +166,7 @@ func readinessOf(st *store.ProState) *model.ProReadiness {
 		MissingSteps:     prokyc.Strings(missing),
 		CompletedSteps:   prokyc.Strings(prokyc.CompletedSteps(st.Facts)),
 		RecommendedSteps: prokyc.Strings(prokyc.RecommendedSteps(st.Facts)),
-		CanGoOnDuty:      st.Status == "approved" && len(missing) == 0 && !st.IncidentSuspended,
+		CanGoOnDuty:      st.Status == "approved" && len(prokyc.WorkMissingSteps(st.Facts)) == 0 && !st.IncidentSuspended,
 	}
 }
 
@@ -388,7 +391,7 @@ func (s *Service) ProPatchMe(ctx context.Context, uid uuid.UUID, in model.ProPat
 	}
 	out, err := s.pro.Store.UpdateProfile(ctx, p.ID, name, photo)
 	if err != nil {
-		return nil, internal(ctx, "update profile", err)
+		return nil, partnerChangeError(ctx, "update profile", err)
 	}
 	if _, err := s.afterStep(ctx, p.ID); err != nil {
 		return nil, err
@@ -538,18 +541,12 @@ func (s *Service) ProSelfie(ctx context.Context, uid uuid.UUID, in model.MediaIn
 	if aerr != nil {
 		return nil, aerr
 	}
-	passed, reference, err := s.pro.Store.AadhaarReference(ctx, p.ID)
+	_, reference, err := s.pro.Store.AadhaarReference(ctx, p.ID)
 	if err != nil {
 		return nil, internal(ctx, "aadhaar reference", err)
 	}
-	if !passed {
-		return nil, incomplete(prokyc.StepAadhaar)
-	}
 	if err := s.verifyMedia(ctx, "media_id", media, uid, mediaclient.KindImage); err != nil {
 		return nil, err
-	}
-	if s.pro.Faces == nil {
-		return nil, apperr.New(http.StatusServiceUnavailable, apperr.CodeMediaUnavailable, "face comparison is not configured")
 	}
 	details := map[string]any{"selfie_media_id": media.String()}
 	record := func(status string, score *float64) (*model.KycCheck, error) {
@@ -561,6 +558,12 @@ func (s *Service) ProSelfie(ctx context.Context, uid uuid.UUID, in model.MediaIn
 			return nil, err
 		}
 		return c, nil
+	}
+	// Offline onboarding: absence of an Aadhaar photo is not a refusal.
+	// The uploaded selfie waits for audited human review, never auto-passes.
+	if reference == nil || s.pro.Faces == nil {
+		details["reason"] = "manual_identity_review"
+		return record("pending", nil)
 	}
 	target := uuid.Nil
 	if reference != nil {
@@ -672,7 +675,7 @@ func (s *Service) ProPutSkills(ctx context.Context, uid uuid.UUID, in model.ProS
 	}
 	out, err := s.pro.Store.ReplaceSkills(ctx, p.ID, decls)
 	if err != nil {
-		return nil, internal(ctx, "replace skills", err)
+		return nil, partnerChangeError(ctx, "replace skills", err)
 	}
 	if _, err := s.afterStep(ctx, p.ID); err != nil {
 		return nil, err
@@ -698,9 +701,8 @@ func (s *Service) ProTradeCertificate(ctx context.Context, uid uuid.UUID, code s
 	if r == nil {
 		return nil, apperr.Invalid("code", "unknown skill")
 	}
-	if !r.RequiresCertificate {
-		return nil, apperr.Invalid("code", "this skill needs no certificate; declaring it verifies it")
-	}
+	// Experience and course certificates may support any declared skill,
+	// including skills for which evidence is optional. Review remains mandatory.
 	media, aerr := parseMediaID("media_id", in.MediaID)
 	if aerr != nil {
 		return nil, aerr
@@ -750,8 +752,10 @@ func (s *Service) ProPutArea(ctx context.Context, uid uuid.UUID, in model.ProAre
 		return nil, err
 	}
 	zones := dedupeIDs(in.ZoneIDs)
-	if len(zones) == 0 || len(zones) > 20 {
-		return nil, apperr.Invalid("zone_ids", "choose 1 to 20 zones")
+	// A location can be saved before coverage opens. Without an active zone,
+	// service_area remains incomplete and the professional cannot accept jobs.
+	if len(zones) > 20 {
+		return nil, apperr.Invalid("zone_ids", "choose up to 20 zones")
 	}
 	lat, lng, aerr := checkPoint(in.HomeLat, in.HomeLng)
 	if aerr != nil {
@@ -761,12 +765,20 @@ func (s *Service) ProPutArea(ctx context.Context, uid uuid.UUID, in model.ProAre
 	if in.RadiusM == nil || *in.RadiusM < 1000 || *in.RadiusM > MaxServiceRadiusM {
 		return nil, apperr.Invalid("radius_m", "radius_m must be between 1000 and 15000")
 	}
-	out, err := s.pro.Store.SetArea(ctx, p.ID, zones, lat, lng, *in.RadiusM)
+	label := strings.TrimSpace(in.AreaLabel)
+	if label != "" {
+		var ae *apperr.Error
+		label, ae = cleanText("area_label", label, 2, 500)
+		if ae != nil {
+			return nil, ae
+		}
+	}
+	out, err := s.pro.Store.SetArea(ctx, p.ID, zones, lat, lng, *in.RadiusM, label)
 	if errors.Is(err, store.ErrBadReference) {
 		return nil, apperr.Invalid("zone_ids", "every zone must be an active zone of your city")
 	}
 	if err != nil {
-		return nil, internal(ctx, "set area", err)
+		return nil, partnerChangeError(ctx, "set area", err)
 	}
 	if _, err := s.afterStep(ctx, p.ID); err != nil {
 		return nil, err
@@ -805,7 +817,7 @@ func (s *Service) ProPutHours(ctx context.Context, uid uuid.UUID, in model.Weekl
 		return nil, apperr.Invalid("items", err.Error())
 	}
 	if err := s.pro.Store.ReplaceHours(ctx, p.ID, valid); err != nil {
-		return nil, internal(ctx, "replace hours", err)
+		return nil, partnerChangeError(ctx, "replace hours", err)
 	}
 	if _, err := s.afterStep(ctx, p.ID); err != nil {
 		return nil, err
@@ -893,36 +905,15 @@ func (s *Service) ProPutBank(ctx context.Context, uid uuid.UUID, in model.BankIn
 	if err != nil {
 		return nil, err
 	}
-	if in.AccountHolder == nil || !holderRe.MatchString(strings.TrimSpace(*in.AccountHolder)) {
-		return nil, apperr.Invalid("account_holder", "account_holder must be the name on the account (letters, spaces, '.', ''', '-')")
-	}
-	holder := strings.Join(strings.FieldsFunc(*in.AccountHolder, unicode.IsSpace), " ")
-	if in.AccountNumber == nil {
-		return nil, apperr.Invalid("account_number", "account_number is required")
-	}
-	number, err := kyc.NormalizeBankAccountNumber(*in.AccountNumber)
+	bank, err := s.prepareBank(ctx, uid, in)
 	if err != nil {
-		return nil, apperr.Invalid("account_number", "account_number must be 9 to 18 digits")
+		return nil, err
 	}
-	if in.IFSC == nil {
-		return nil, apperr.Invalid("ifsc", "ifsc is required")
-	}
-	ifsc, err := kyc.NormalizeIFSC(*in.IFSC)
+	out, err := s.pro.Store.SetPayoutAccount(ctx, p.ID, bank)
 	if err != nil {
-		return nil, apperr.Invalid("ifsc", "ifsc must look like ABCD0123456")
+		return nil, proAdminErr(ctx, "set payout account", err)
 	}
-	sealed, err := s.pro.PII.SealAccountNumber(ctx, number)
-	if errors.Is(err, propii.ErrNotConfigured) {
-		return nil, piiUnavailable()
-	}
-	if err != nil {
-		return nil, internal(ctx, "seal account", err)
-	}
-	out, err := s.pro.Store.SetPayoutAccount(ctx, p.ID, holder, sealed.Blob, sealed.KeyVersion, kyc.BankAccountLast4(number), ifsc)
-	if err != nil {
-		return nil, internal(ctx, "set payout account", err)
-	}
-	if _, err := s.afterStep(ctx, p.ID); err != nil {
+	if _, err = s.afterStep(ctx, p.ID); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -998,6 +989,9 @@ func (s *Service) ProAcceptAgreement(ctx context.Context, uid uuid.UUID, in mode
 		return nil, apperr.Invalid("version", "accept the current agreement version").
 			WithDetails(map[string]any{"field": "version", "current_version": prokyc.AgreementVersion})
 	}
+	if !prokyc.AgreementAcceptanceEnabled {
+		return nil, apperr.New(409, "DOORSTEP_AGREEMENT_DEFERRED", "Agreement acceptance is not required while updated terms are being prepared.")
+	}
 	if err := s.pro.Store.AcceptAgreement(ctx, p.ID, prokyc.AgreementVersion, s.now().UTC()); err != nil {
 		return nil, internal(ctx, "accept agreement", err)
 	}
@@ -1028,7 +1022,7 @@ func (s *Service) ProPutPAN(ctx context.Context, uid uuid.UUID, in model.PANInpu
 		return nil, internal(ctx, "seal pan", err)
 	}
 	if err := s.pro.Store.SetPAN(ctx, p.ID, sealed.Blob, pan.Normalized[len(pan.Normalized)-4:]); err != nil {
-		return nil, internal(ctx, "set pan", err)
+		return nil, partnerChangeError(ctx, "set pan", err)
 	}
 	return s.afterStep(ctx, p.ID)
 }

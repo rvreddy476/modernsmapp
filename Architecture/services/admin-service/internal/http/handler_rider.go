@@ -88,6 +88,7 @@ var RiderRoutes = []productRoute{
 
 	// Documents: the list is a KYC reveal (document numbers in the clear).
 	{method: http.MethodGet, path: "/documents", operation: "rider.documents.list", permission: permRiderDocumentsReview, stepUp: true},
+	{method: http.MethodGet, path: "/documents/:id/view", operation: "rider.evidence.view", permission: permRiderDocumentsReview, stepUp: true, targetType: "rider_document"},
 	{method: http.MethodPost, path: "/documents/:id/verify", operation: "rider.document.verify", permission: permRiderDocumentsReview, stepUp: true, targetType: "rider_document"},
 	{method: http.MethodPost, path: "/documents/:id/reject", operation: "rider.document.reject", permission: permRiderDocumentsReview, stepUp: true, targetType: "rider_document"},
 
@@ -173,6 +174,7 @@ func (h *Handler) RegisterRiderRoutes(r *gin.Engine) {
 	routes := make([]productRoute, len(RiderRoutes))
 	copy(routes, RiderRoutes)
 	special := map[string]gin.HandlerFunc{}
+	special["rider.evidence.view"] = h.viewPartnerEvidence(p, "", "", "id")
 	for i := range routes {
 		if routes[i].operation == opRiderRefundIssue {
 			routes[i].decide = riderRefundDecision

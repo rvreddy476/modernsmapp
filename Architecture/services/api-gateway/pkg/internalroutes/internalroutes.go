@@ -342,6 +342,7 @@ var StampPolicy = map[string]bool{
 	"/v1/dating":             true,
 	"/v1/food":               true,
 	"/v1/rider":              true,
+	"/v1/partner":            true,
 
 	// doorstep-service: the whole /v1/doorstep public group sits behind
 	// RequireInternalKey, as rider's does, and its user routes trust the

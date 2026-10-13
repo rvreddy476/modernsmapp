@@ -4,10 +4,10 @@
 // rules at approval, and the weekly-hours shape. Nothing here touches the
 // database, a key or the network (the food-service riderkyc pattern).
 //
-// Step names are the contract's OnboardingStep enum, in the plan's order:
-// profile -> aadhaar_digilocker (sets gender) -> selfie_face_match -> skills
-// -> service_area -> weekly_hours -> bank -> police_certificate (the
-// background check) -> agreement; pan is recommended, never required.
+// Identity, selfie, skills, bank and PAN are reviewed before approval.
+// Location and hours are work setup requirements. Agreement acceptance is
+// deferred until revised terms are published. Historical
+// police documents are retained but are not required for approval or work.
 package prokyc
 
 import (
@@ -22,7 +22,8 @@ type Step string
 
 const (
 	StepProfile           Step = "profile"
-	StepAadhaar           Step = "aadhaar_digilocker"
+	StepIdentity          Step = "identity_review"
+	StepAadhaar           Step = StepIdentity // compatibility name for the internal readiness facts
 	StepSelfie            Step = "selfie_face_match"
 	StepSkills            Step = "skills"
 	StepServiceArea       Step = "service_area"
@@ -36,21 +37,26 @@ const (
 // RequiredSteps is the required checklist in presentation order.
 var RequiredSteps = []Step{
 	StepProfile, StepAadhaar, StepSelfie, StepSkills, StepServiceArea,
-	StepWeeklyHours, StepBank, StepPoliceCertificate, StepAgreement,
+	StepWeeklyHours, StepBank,
+	StepPAN,
 }
 
-// AgreementVersion is the professional agreement the app must show and the
-// professional must accept. Bump it (and ship the new text to the pro app)
-// to require everyone to accept again.
+// AgreementVersion identifies the legacy text for historical records.
+// Before re-enabling acceptance, publish revised text in both clients, bump
+// this version and restore StepAgreement to RequiredSteps. Never backfill consent.
 const AgreementVersion = "2026-10-04"
+
+const AgreementAcceptanceEnabled = false
 
 // Facts are what the store knows about one professional.
 type Facts struct {
-	DisplayName string
-	HasPhoto    bool
-	// AadhaarVerified: a passed, unexpired DigiLocker Aadhaar check exists
-	// AND the gender was recorded from it (gender_source = digilocker).
-	AadhaarVerified bool
+	SimpleApplication        bool
+	IdentityDocumentApproved bool
+	DisplayName              string
+	HasPhoto                 bool
+	// A passed manual identity review exists. Neither
+	// a saved PAN nor an uploaded certificate is identity verification.
+	IdentityReviewed bool
 	// SelfieMatched: a passed selfie face match exists.
 	SelfieMatched bool
 	// VerifiedSkills counts pro_skills rows in status verified.
@@ -66,8 +72,9 @@ type Facts struct {
 	// HasServiceArea: at least one zone and a home point.
 	HasServiceArea bool
 	HasWeeklyHours bool
-	// HasPayoutAccount: an active payout account not marked failed.
-	HasPayoutAccount bool
+	// HasPayoutAccount requires an active account with admin-approved bank proof.
+	HasPayoutAccount   bool
+	BankAwaitingReview bool
 	// BackgroundClear: a clear background check valid today.
 	BackgroundClear bool
 	// PoliceCertificatePending: a police certificate is under admin review.
@@ -82,7 +89,7 @@ func (f Facts) done(s Step) bool {
 	case StepProfile:
 		return strings.TrimSpace(f.DisplayName) != "" && f.HasPhoto
 	case StepAadhaar:
-		return f.AadhaarVerified
+		return f.IdentityReviewed
 	case StepSelfie:
 		return f.SelfieMatched
 	case StepSkills:
@@ -106,6 +113,30 @@ func (f Facts) done(s Step) bool {
 // MissingSteps returns the unmet required steps in order; an empty, non-nil
 // slice means the professional may be approved.
 func MissingSteps(f Facts) []Step {
+	if f.SimpleApplication {
+		out := []Step{}
+		if !f.SelfieMatched {
+			out = append(out, StepSelfie)
+		}
+		if !f.IdentityReviewed {
+			out = append(out, StepIdentity)
+		}
+		if f.VerifiedSkills == 0 {
+			out = append(out, StepSkills)
+		}
+		if !f.HasPAN {
+			out = append(out, StepPAN)
+		}
+		if !f.HasPayoutAccount {
+			out = append(out, StepBank)
+		}
+		return out
+	}
+	return WorkMissingSteps(f)
+}
+
+// Identity approval opens the workspace, not permission to accept jobs.
+func WorkMissingSteps(f Facts) []Step {
 	out := []Step{}
 	for _, s := range RequiredSteps {
 		if !f.done(s) {
@@ -118,7 +149,7 @@ func MissingSteps(f Facts) []Step {
 // CompletedSteps returns every step (required and recommended) already done.
 func CompletedSteps(f Facts) []Step {
 	out := []Step{}
-	for _, s := range append(append([]Step{}, RequiredSteps...), StepPAN) {
+	for _, s := range RequiredSteps {
 		if f.done(s) {
 			out = append(out, s)
 		}
@@ -126,12 +157,9 @@ func CompletedSteps(f Facts) []Step {
 	return out
 }
 
-// RecommendedSteps are optional steps not yet done (PAN).
+// RecommendedSteps are optional setup steps; none are currently required here.
 func RecommendedSteps(f Facts) []Step {
-	if f.HasPAN {
-		return []Step{}
-	}
-	return []Step{StepPAN}
+	return []Step{}
 }
 
 // AwaitingReviewOnly reports whether the professional has done everything
@@ -143,7 +171,9 @@ func RecommendedSteps(f Facts) []Step {
 func AwaitingReviewOnly(f Facts) bool {
 	for _, s := range MissingSteps(f) {
 		switch {
+		case s == StepIdentity && f.HasPAN && (f.SelfieMatched || f.SelfieAwaitingReview):
 		case s == StepSkills && f.SkillsAwaitingReview > 0:
+		case s == StepBank && f.BankAwaitingReview:
 		case s == StepSelfie && f.SelfieAwaitingReview:
 		case s == StepPoliceCertificate && f.PoliceCertificatePending:
 		default:
@@ -209,17 +239,13 @@ const (
 )
 
 // ApprovalBlocks applies the category rules to the professional's verified
-// skills: every category using a skill must accept the professional's
-// DigiLocker gender (women's salon: women only; men's salon: men only), and
-// a salon skill needs a clear background check. Results are sorted.
-func ApprovalBlocks(cats []SkillCategory, gender string, backgroundClear bool) []Block {
+// skills: every category using a skill must accept the admin-reviewed
+// gender. Police clearance is not required. Results are sorted.
+func ApprovalBlocks(cats []SkillCategory, gender string, _ bool) []Block {
 	seen := map[Block]bool{}
 	for _, c := range cats {
 		if !GenderAllowed(c.GenderRule, gender) {
 			seen[Block{Skill: c.Skill, Reason: BlockGender}] = true
-		}
-		if c.Family == FamilySalon && !backgroundClear {
-			seen[Block{Skill: c.Skill, Reason: BlockBackgroundCheck}] = true
 		}
 	}
 	out := make([]Block, 0, len(seen))

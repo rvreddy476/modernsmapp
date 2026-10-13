@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -78,26 +79,32 @@ func (s *Service) SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UU
 	return nil
 }
 
-// CreateRefundRequest is the customer-facing path. Amount must be ≤
-// order final_amount; we don't enforce here (the admin-side decision
-// step does that with full pricing visibility).
+// CreateRefundRequest validates ownership and available balance transactionally.
 func (s *Service) CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error) {
 	r, err := s.store.CreateRefundRequest(ctx, customerID, orderID, ticketID, amount, reason)
 	if err != nil {
 		return nil, err
 	}
 	s.publishRealtime(ctx, "food.admin.refunds", "food.refund.requested", r)
-	s.emit(ctx, "food.order."+orderID.String(), "food.order.refund_requested", r)
+	s.publishRealtime(ctx, "food.order."+orderID.String(), "food.refund.requested", r)
 	return r, nil
 }
 
-// DecideRefund is the admin verdict. On approval the payments-service
-// async worker handles the actual refund and later calls
-// MarkRefundProcessed via an internal endpoint (out of scope for
-// this slice — refunds flow through commerce-service's gateway).
+// DecideRefund records the verdict and executable refund atomically. Submission
+// failures are durable and retried by the existing refund worker; approval never
+// means processed until the authoritative payment event settles the refund.
 func (s *Service) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error {
 	if err := s.store.DecideRefund(ctx, adminID, refundID, status, reason); err != nil {
 		return err
+	}
+	if status == "approved" {
+		plan, err := s.store.SupportRefundPlan(ctx, refundID)
+		if err == nil {
+			_, err = s.submitRefundPlan(ctx, plan.OrderID, plan, reason)
+		}
+		if err != nil {
+			slog.WarnContext(ctx, "food-service: approved support refund awaits retry", "refund_request_id", refundID, "error", err)
+		}
 	}
 	eventType := "food.refund.approved"
 	if status == "rejected" {
@@ -114,5 +121,5 @@ var errForbidden = newServiceError("forbidden")
 
 type serviceError struct{ msg string }
 
-func (e *serviceError) Error() string         { return e.msg }
+func (e *serviceError) Error() string          { return e.msg }
 func newServiceError(msg string) *serviceError { return &serviceError{msg: msg} }

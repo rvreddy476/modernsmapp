@@ -54,28 +54,29 @@ type AssignmentRef struct {
 
 // DispatchFacts is what dispatch needs to know about one booking.
 type DispatchFacts struct {
-	BookingID     uuid.UUID
-	Customer      uuid.UUID
-	Status        string
-	Version       int
-	CityCode      string
-	ZoneID        uuid.UUID
-	CategoryID    uuid.UUID
-	CategorySlug  string
-	Skill         string
-	GenderRule    string
-	RequireFemale bool
-	Lat, Lng      float64
-	Locality      string
-	SlotStart     time.Time
-	SlotEnd       time.Time
-	Duration      int
-	BufferMinutes int
-	ReservedProID *uuid.UUID
-	Windows       dispatch.Windows
-	RescueUntil   *time.Time
-	RescueCause   *string
-	Exhausted     bool
+	AssignmentMode string
+	BookingID      uuid.UUID
+	Customer       uuid.UUID
+	Status         string
+	Version        int
+	CityCode       string
+	ZoneID         uuid.UUID
+	CategoryID     uuid.UUID
+	CategorySlug   string
+	Skill          string
+	GenderRule     string
+	RequireFemale  bool
+	Lat, Lng       float64
+	Locality       string
+	SlotStart      time.Time
+	SlotEnd        time.Time
+	Duration       int
+	BufferMinutes  int
+	ReservedProID  *uuid.UUID
+	Windows        dispatch.Windows
+	RescueUntil    *time.Time
+	RescueCause    *string
+	Exhausted      bool
 	// Asap: a same-day job (B1): its offer lapses after 3 minutes.
 	Asap bool
 	// Live is the open offer or the accepted assignment, if any.
@@ -100,7 +101,7 @@ func (s *Store) DispatchFacts(ctx context.Context, id uuid.UUID) (*DispatchFacts
 		       b.gender_rule, b.require_female_pro, ST_Y(b.location::geometry), ST_X(b.location::geometry), b.locality,
 		       b.slot_start, b.slot_end, b.duration_minutes, z.travel_buffer_minutes, b.reserved_pro_id,
 		       ci.offer_window_far_minutes, ci.offer_window_near_minutes, ci.offer_far_threshold_minutes,
-		       b.rescue_until, b.rescue_cause, b.dispatch_exhausted_at, b.asap
+		       b.rescue_until, b.rescue_cause, b.dispatch_exhausted_at, b.asap, b.assignment_mode
 		FROM doorstep.bookings b
 		JOIN doorstep.categories c ON c.id = b.category_id
 		JOIN doorstep.services s ON s.id = b.service_id
@@ -109,7 +110,7 @@ func (s *Store) DispatchFacts(ctx context.Context, id uuid.UUID) (*DispatchFacts
 		WHERE b.id = $1`, id).Scan(&f.BookingID, &f.Customer, &f.Status, &f.Version, &f.CityCode, &f.ZoneID, &f.CategoryID,
 		&f.CategorySlug, &f.Skill, &f.GenderRule, &f.RequireFemale, &f.Lat, &f.Lng, &f.Locality, &f.SlotStart, &f.SlotEnd,
 		&f.Duration, &f.BufferMinutes, &f.ReservedProID, &f.Windows.FarMinutes, &f.Windows.NearMinutes,
-		&f.Windows.FarThresholdMinutes, &f.RescueUntil, &f.RescueCause, &exhausted, &f.Asap)
+		&f.Windows.FarThresholdMinutes, &f.RescueUntil, &f.RescueCause, &exhausted, &f.Asap, &f.AssignmentMode)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -499,6 +500,7 @@ type AcceptInput struct {
 type AcceptResult struct {
 	BookingID uuid.UUID
 	Customer  uuid.UUID
+	Status    string
 	// Already: the offer had been accepted by this professional before
 	// (an idempotent replay).
 	Already bool
@@ -513,6 +515,14 @@ type AcceptResult struct {
 // professional's acceptance counter moves — one transaction, with
 // doorstep.booking.assigned and doorstep.pro.offer_closed (accepted).
 func (s *Store) AcceptOffer(ctx context.Context, in AcceptInput) (*AcceptResult, error) {
+	var mode string
+	if err := s.db.QueryRow(ctx, `SELECT b.assignment_mode FROM doorstep.booking_assignments a JOIN doorstep.bookings b ON b.id=a.booking_id
+ WHERE a.id=$1 AND a.pro_id=$2`, in.OfferID, in.ProID).Scan(&mode); err != nil {
+		return nil, mapErr(err)
+	}
+	if mode == "automatic" {
+		return s.AcceptAutomatic(ctx, in)
+	}
 	var bookingID uuid.UUID
 	err := s.db.QueryRow(ctx, `SELECT booking_id FROM doorstep.booking_assignments WHERE id = $1 AND pro_id = $2`,
 		in.OfferID, in.ProID).Scan(&bookingID)
@@ -571,14 +581,10 @@ func (s *Store) AcceptOffer(ctx context.Context, in AcceptInput) (*AcceptResult,
 	}
 	// Re-check the professional on the row that will be written.
 	var pStatus, gender, name string
-	var suspended, bgClear bool
+	var suspended bool
 	if err := tx.QueryRow(ctx, `
-		SELECT p.status, p.incident_suspended, COALESCE(p.gender, ''), p.display_name,
-		       EXISTS (SELECT 1 FROM doorstep.background_checks c WHERE c.pro_id = p.id AND c.status = 'clear'
-		                 AND c.valid_from <= ($2::timestamptz AT TIME ZONE 'Asia/Kolkata')::date
-		                 AND c.valid_until > ($2::timestamptz AT TIME ZONE 'Asia/Kolkata')::date)
-		FROM doorstep.professionals p WHERE p.id = $1 FOR SHARE`, in.ProID, slotStart).Scan(&pStatus, &suspended, &gender, &name,
-		&bgClear); err != nil {
+		SELECT p.status, p.incident_suspended, COALESCE(p.gender, ''), p.display_name
+		FROM doorstep.professionals p WHERE p.id = $1 FOR SHARE`, in.ProID).Scan(&pStatus, &suspended, &gender, &name); err != nil {
 		return nil, mapErr(err)
 	}
 	switch {
@@ -588,8 +594,6 @@ func (s *Store) AcceptOffer(ctx context.Context, in AcceptInput) (*AcceptResult,
 		return nil, &IneligibleError{Reason: "suspended"}
 	case !slots.GenderAllowed(genderRule, requireFemale, gender):
 		return nil, &IneligibleError{Reason: "gender"}
-	case !bgClear:
-		return nil, &IneligibleError{Reason: "background"}
 	}
 	tag, err := tx.Exec(ctx, `UPDATE doorstep.bookings SET status = 'assigned', assigned_at = $3, version = version + 1,
 		dispatch_exhausted_at = NULL, rescue_until = NULL, rescue_cause = NULL, updated_at = $3

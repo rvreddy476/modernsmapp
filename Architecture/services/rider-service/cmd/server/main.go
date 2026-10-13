@@ -34,6 +34,8 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/ownedmedia"
+	"github.com/atpost/shared/partnerwork"
 	"github.com/atpost/shared/realtime"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
@@ -157,6 +159,10 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("rider schema ready")
+	if err := partnerwork.Bootstrap(ctx, dbPool, partnerwork.Moped, os.Getenv); err != nil {
+		slog.Error("partner work coordination unavailable", "error", err)
+		os.Exit(1)
+	}
 
 	httpMetrics := metrics.NewHTTPMetrics("rider-service")
 	dbMetrics := metrics.NewDBPoolMetrics("rider-service", "postgres")
@@ -174,6 +180,7 @@ func main() {
 	slog.Info("wallet client wired", "url", walletURL)
 
 	riderSvc := service.New(riderStore, walletClient, svcCfg)
+	riderSvc.WithDocumentMedia(ownedmedia.New(env("MEDIA_SERVICE_URL", "http://media-service:8087"), os.Getenv("INTERNAL_SERVICE_KEY")))
 	riderSvc.SetDigiLockerClient(dlClient)
 	riderSvc.SetRedis(rdb)
 	riderSvc.SetOTPCrypto(otpCrypto)
@@ -285,6 +292,7 @@ func main() {
 		riderSvc, kafkaBrokers, kafkaTopic, rdb, kafkaConsumerMetrics,
 	)
 	go dispatchConsumer.Start(dispatchCtx)
+	go riderSvc.StartSequentialDispatchWorker(dispatchCtx)
 	slog.Info("rider dispatch consumer started", "topic", kafkaTopic)
 
 	// Payments lane: a ride payment is marked paid, failed or refunded, and
@@ -326,6 +334,7 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.Use(partnerwork.RevisionMiddleware())
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
@@ -334,6 +343,9 @@ func main() {
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
+	if partnerwork.Enabled(os.Getenv) {
+		r.POST("/internal/partner-work", gin.WrapH(partnerwork.InternalHandler(dbPool, internalKey)))
+	}
 
 	if err := server.Run(r, server.Config{
 		Port:            port,

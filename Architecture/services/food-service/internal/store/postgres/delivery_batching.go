@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/atpost/food-service/internal/orderstate"
@@ -14,13 +15,13 @@ import (
 // DeliveryBatch is one pickup group. Members are the (order_id,
 // sequence) tuples the partner picks/drops in order.
 type DeliveryBatch struct {
-	ID           uuid.UUID         `json:"id"`
-	RestaurantID uuid.UUID         `json:"restaurant_id"`
-	Status       string            `json:"status"`
-	CreatedAt    string            `json:"created_at"`
-	AssignedAt   *string           `json:"assigned_at,omitempty"`
-	CompletedAt  *string           `json:"completed_at,omitempty"`
-	Members      []BatchMember     `json:"members,omitempty"`
+	ID           uuid.UUID     `json:"id"`
+	RestaurantID uuid.UUID     `json:"restaurant_id"`
+	Status       string        `json:"status"`
+	CreatedAt    string        `json:"created_at"`
+	AssignedAt   *string       `json:"assigned_at,omitempty"`
+	CompletedAt  *string       `json:"completed_at,omitempty"`
+	Members      []BatchMember `json:"members,omitempty"`
 }
 
 // BatchMember is one order's slot within a batch.
@@ -60,6 +61,7 @@ func (s *Store) ListUnbatchedReadyOrders(ctx context.Context, batch int) ([]Read
 		WHERE o.status = 'DELIVERY_ASSIGNING'
 		  AND da.id IS NULL
 		  AND offers.id IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM food.delivery_assignments a WHERE a.order_id=o.id AND a.batch_id IS NOT NULL)
 		ORDER BY o.restaurant_id, o.placed_at ASC
 		LIMIT $1
 	`, batch)
@@ -95,6 +97,30 @@ func (s *Store) CreateBatch(ctx context.Context, restaurantID uuid.UUID, orderID
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	// Lock member orders in the same deterministic order used by accept.
+	// A concurrent tick must not steal them into a second batch.
+	lockedIDs := append([]uuid.UUID(nil), orderIDs...)
+	sort.Slice(lockedIDs, func(i, j int) bool { return lockedIDs[i].String() < lockedIDs[j].String() })
+	for i, id := range lockedIDs {
+		if i > 0 && id == lockedIDs[i-1] {
+			return nil, fmt.Errorf("duplicate batch order")
+		}
+		var st string
+		var rid uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT status::text,restaurant_id FROM food.orders WHERE id=$1 FOR UPDATE`, id).Scan(&st, &rid); err != nil {
+			return nil, err
+		}
+		if st != "DELIVERY_ASSIGNING" || rid != restaurantID {
+			return nil, fmt.Errorf("order is not ready for this pickup")
+		}
+		var claimed bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM food.delivery_assignments WHERE order_id=$1 AND (batch_id IS NOT NULL OR status<>'CREATED')) OR EXISTS(SELECT 1 FROM food.delivery_offers WHERE order_id=$1 AND status='pending' AND expires_at>clock_timestamp())`, id).Scan(&claimed); err != nil {
+			return nil, err
+		}
+		if claimed {
+			return nil, fmt.Errorf("order already dispatched")
+		}
+	}
 	var batchID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.delivery_batches (restaurant_id) VALUES ($1) RETURNING id
@@ -195,10 +221,19 @@ func (s *Store) AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUI
 		return nil, uuid.Nil, fmt.Errorf("batch lookup: %w", err)
 	}
 	var offerStatus string
+	var offerExpired bool
 	if err := tx.QueryRow(ctx, `
 		SELECT status::text FROM food.delivery_offers WHERE id = $1 FOR UPDATE
 	`, offerID).Scan(&offerStatus); err != nil {
 		return nil, uuid.Nil, fmt.Errorf("offer lookup: %w", err)
+	}
+	// Check wall-clock time AFTER acquiring the row lock. NOW() would use
+	// transaction start and could accept an offer that expired while waiting.
+	if err := tx.QueryRow(ctx, `SELECT expires_at <= clock_timestamp() FROM food.delivery_offers WHERE id=$1`, offerID).Scan(&offerExpired); err != nil {
+		return nil, uuid.Nil, err
+	}
+	if offerExpired {
+		return nil, uuid.Nil, fmt.Errorf("offer expired")
 	}
 	if offerStatus != "pending" {
 		return nil, uuid.Nil, fmt.Errorf("offer not pending: %s", offerStatus)
@@ -236,6 +271,15 @@ func (s *Store) AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUI
 	}
 	// Every member must still be waiting for a partner; one cancelled member
 	// rolls the whole accept back.
+	if err := lockAvailableDeliveryPartner(ctx, tx, partnerID); err != nil {
+		return nil, uuid.Nil, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT expires_at <= clock_timestamp() FROM food.delivery_offers WHERE id=$1`, offerID).Scan(&offerExpired); err != nil {
+		return nil, uuid.Nil, err
+	}
+	if offerExpired {
+		return nil, uuid.Nil, fmt.Errorf("offer expired")
+	}
 	for _, m := range memberOrders {
 		if err := transitionOrderTx(ctx, tx, OrderTransition{
 			OrderID: m.id, From: m.status, To: orderstate.DeliveryAssigned,

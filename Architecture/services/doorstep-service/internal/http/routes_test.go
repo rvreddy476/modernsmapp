@@ -14,6 +14,11 @@ import (
 // The route inventory is exact: a route added without updating this list
 // (and the contract) fails here.
 var wantRoutes = []string{
+	"POST /v1/doorstep/pro/me/alternate-phone/request",
+	"POST /v1/doorstep/pro/me/alternate-phone/verify",
+	"GET /v1/doorstep/pro/application/states",
+	"POST /v1/doorstep/pro/application",
+	"POST /v1/doorstep/pro/application/identity",
 	"DELETE /v1/doorstep/bookings/:id/share",
 	"GET /v1/doorstep/bookings/:id/rework",
 	"POST /v1/doorstep/bookings/:id/rework",
@@ -72,6 +77,10 @@ var wantRoutes = []string{
 	// Professional onboarding (A2).
 	"POST /v1/doorstep/pro/apply",
 	"GET /v1/doorstep/pro/me",
+	"GET /v1/doorstep/pro/me/changes",
+	"GET /v1/doorstep/internal/admin/partner-changes",
+	"GET /v1/doorstep/internal/admin/partner-changes/:id/photo",
+	"POST /v1/doorstep/internal/admin/partner-changes/:id/decide",
 	"PATCH /v1/doorstep/pro/me",
 	"GET /v1/doorstep/pro/readiness",
 	"POST /v1/doorstep/pro/digilocker/start",
@@ -133,6 +142,7 @@ var wantRoutes = []string{
 	"DELETE /v1/doorstep/pro/jobs/:id/extras/:extraId",
 	"GET /v1/doorstep/internal/admin/professionals/:id",
 	"POST /v1/doorstep/internal/admin/professionals/:id/approve",
+	"POST /v1/doorstep/internal/admin/professionals/:id/identity-review",
 	"POST /v1/doorstep/internal/admin/professionals/:id/reject",
 	"POST /v1/doorstep/internal/admin/professionals/:id/suspend",
 	"POST /v1/doorstep/internal/admin/professionals/:id/reinstate",
@@ -141,6 +151,7 @@ var wantRoutes = []string{
 	"GET /v1/doorstep/internal/admin/documents",
 	"POST /v1/doorstep/internal/admin/documents/:id/decide",
 	"GET /v1/doorstep/internal/admin/documents/:id/view",
+	"GET /v1/doorstep/internal/admin/documents/:id/evidence",
 	// Bookings and payments (A3).
 	"GET /v1/doorstep/addresses",
 	"POST /v1/doorstep/addresses",
@@ -178,6 +189,7 @@ var wantRoutes = []string{
 	"POST /v1/doorstep/pro/offers/:id/decline",
 	"GET /v1/doorstep/pro/jobs",
 	"GET /v1/doorstep/pro/jobs/:id",
+	"GET /v1/doorstep/pro/jobs/:id/customer-contact",
 	"POST /v1/doorstep/pro/jobs/:id/cancel",
 	"POST /v1/doorstep/pro/realtime/token",
 	"POST /v1/doorstep/internal/admin/bookings/:id/redispatch",
@@ -279,9 +291,13 @@ func TestAdminRoutePermissions(t *testing.T) {
 // The A2 admin routes carry the contract's x-permission exactly.
 func TestProAdminRoutePermissions(t *testing.T) {
 	want := map[string]string{
+		"GET /partner-changes/:id/photo":              PermProsRead,
+		"GET /partner-changes":                        PermProsRead,
+		"POST /partner-changes/:id/decide":            PermProsApprove,
 		"GET /professionals":                          PermProsRead,
 		"GET /professionals/:id":                      PermProsRead,
 		"POST /professionals/:id/approve":             PermProsApprove,
+		"POST /professionals/:id/identity-review":     PermProsApprove,
 		"POST /professionals/:id/reject":              PermProsApprove,
 		"POST /professionals/:id/suspend":             PermProsSuspend,
 		"POST /professionals/:id/reinstate":           PermProsSuspend,
@@ -290,6 +306,7 @@ func TestProAdminRoutePermissions(t *testing.T) {
 		"GET /documents":                              PermDocumentsReview,
 		"POST /documents/:id/decide":                  PermDocumentsReview,
 		"GET /documents/:id/view":                     PermDocumentsReview,
+		"GET /documents/:id/evidence":                 PermDocumentsReview,
 	}
 	h := &Handler{}
 	routes := h.proAdminRoutes()

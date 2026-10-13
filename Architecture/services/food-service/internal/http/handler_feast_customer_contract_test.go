@@ -201,7 +201,7 @@ func (f *feastContractStore) GetOrderTracking(_ context.Context, _, orderID uuid
 func feastContractRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(service.New(&feastContractStore{})).RegisterRoutes(router)
+	New(service.New(&feastContractStore{})).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

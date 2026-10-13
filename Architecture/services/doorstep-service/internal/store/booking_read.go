@@ -56,7 +56,7 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 		       ST_Y(b.location::geometry), ST_X(b.location::geometry), z.travel_buffer_minutes, b.created_at, b.updated_at,
 		       COALESCE((SELECT sum(o.amount_paise) FROM doorstep.outstanding o WHERE o.booking_id = b.id AND o.status = 'open'), 0)::bigint,
 		       b.asap, b.choice_deadline, b.unavailable_cause, b.excluded_pro_ids, ci.state_code,
-		       (SELECT pc.id FROM doorstep.booking_pro_changes pc WHERE pc.booking_id = b.id AND pc.status = 'pending_payment')
+		       (SELECT pc.id FROM doorstep.booking_pro_changes pc WHERE pc.booking_id = b.id AND pc.status = 'pending_payment'), b.assignment_mode,b.matching_deadline
 		FROM doorstep.bookings b
 		JOIN doorstep.services s ON s.id = b.service_id
 		JOIN doorstep.categories c ON c.id = b.category_id
@@ -69,12 +69,15 @@ func (s *Store) BookingRecord(ctx context.Context, id uuid.UUID, customer *uuid.
 		&b.ExtrasTotalPaise, &b.HoldExpiresAt, &snap, &r.AddressSealed, &b.ParentBookingID,
 		&r.RescheduleCount, &r.ReservedProID, &r.NeedsAttention, &r.AttentionReason, &r.ProLateAt,
 		&r.Lat, &r.Lng, &r.BufferMinutes, &b.CreatedAt, &b.UpdatedAt, &b.OutstandingPaise,
-		&b.Asap, &b.ChoiceDeadline, &b.UnavailableCause, &r.ExcludedProIDs, &r.CityState, &r.PendingChangeID)
+		&b.Asap, &b.ChoiceDeadline, &b.UnavailableCause, &r.ExcludedProIDs, &r.CityState, &r.PendingChangeID, &b.AssignmentMode, &b.MatchingDeadline)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	b.SlotStart, b.SlotEnd, b.CreatedAt, b.UpdatedAt = b.SlotStart.UTC(), b.SlotEnd.UTC(), b.CreatedAt.UTC(), b.UpdatedAt.UTC()
 	utcPtr(&b.HoldExpiresAt)
+	if b.AssignmentMode == "customer_selected" {
+		b.AssignmentMode = ""
+	}
 	utcPtr(&b.ChoiceDeadline)
 	if r.ExcludedProIDs == nil {
 		r.ExcludedProIDs = []uuid.UUID{}

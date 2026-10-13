@@ -27,17 +27,21 @@ const (
 // with the change it announces and always names the customer and the kitchen.
 func enqueueOrderEventTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, eventType, previous string) error {
 	h := foodevents.OrderHeader{OrderID: orderID}
-	var owner *uuid.UUID
+	var owner, rider *uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		SELECT o.order_number, o.user_id, o.restaurant_id, r.owner_user_id, o.status::text
+		SELECT o.order_number, o.user_id, o.restaurant_id, r.owner_user_id, o.status::text, o.accept_deadline_at,
+		       (SELECT dp.user_id FROM food.delivery_assignments da JOIN food.delivery_partners dp ON dp.id=da.delivery_partner_id WHERE da.order_id=o.id LIMIT 1)
 		FROM food.orders o
 		LEFT JOIN food.restaurants r ON r.id = o.restaurant_id
 		WHERE o.id = $1
-	`, orderID).Scan(&h.OrderNumber, &h.UserID, &h.RestaurantID, &owner, &h.Status); err != nil {
+	`, orderID).Scan(&h.OrderNumber, &h.UserID, &h.RestaurantID, &owner, &h.Status, &h.AcceptDeadlineAt, &rider); err != nil {
 		return fmt.Errorf("read order for %s event: %w", eventType, err)
 	}
 	if owner != nil {
 		h.RestaurantOwnerUserID = *owner
+	}
+	if rider != nil {
+		h.DeliveryPartnerUserID = *rider
 	}
 	body, err := foodevents.Marshal(eventType, foodevents.NewOrderEvent(h, previous))
 	if err != nil {

@@ -101,6 +101,30 @@ func (s *Store) applyPaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments
 		return fmt.Errorf("read order for payment event: %w", err)
 	}
 	applied.UserID = snap.UserID
+	if ev.EventType == "payment.refund_failed" {
+		if ev.IntentID != snap.IntentID || ev.CommandID == "" || ev.AmountMinor <= 0 || ev.AmountMinor > snap.AmountMinor {
+			applied.Decision = payments.Decision{Outcome: payments.OutcomeAmountMismatch, Detail: "refund failure does not match order payment"}
+		} else {
+			_, err = tx.Exec(ctx, `UPDATE food.refunds SET status='SUBMITTED',raw_response=raw_response || jsonb_build_object('last_submission_error','provider_failure_requires_finance_review','payments_command_id',$2::text)
+			 WHERE order_id=$1 AND status IN ('PENDING','SUBMITTED') AND ROUND(amount*100)::bigint=$3
+			 AND (raw_response->>'payments_command_id'=$2 OR raw_response->>'payments_command_id' IS NULL)`, ev.OrderID, ev.CommandID, ev.AmountMinor)
+			if err != nil {
+				return err
+			}
+			applied.Decision = payments.Decision{Outcome: payments.OutcomeRefundIgnored, Detail: "provider failure recorded for finance review"}
+		}
+		return recordInboxOutcomeTx(ctx, tx, ev.EventID, applied.Decision)
+	}
+	if ev.ProviderRefundID != "" {
+		var duplicate bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM food.refunds WHERE order_id=$1 AND provider_refund_id=$2 AND status='PROCESSED')`, ev.OrderID, ev.ProviderRefundID).Scan(&duplicate); err != nil {
+			return err
+		}
+		if duplicate {
+			applied.Decision = payments.Decision{Outcome: payments.OutcomeDuplicate}
+			return recordInboxOutcomeTx(ctx, tx, ev.EventID, applied.Decision)
+		}
+	}
 
 	d := payments.Decide(snap, ev)
 	applied.Decision = d
@@ -114,11 +138,11 @@ func (s *Store) applyPaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments
 		err = markPaymentFailedTx(ctx, tx, snap, paymentID, ev.EventID)
 	case payments.EffectRefund:
 		err = settleRefundTx(ctx, tx, refundSettlement{
-			OrderID: snap.OrderID, OrderStatus: snap.Status, PaymentID: paymentID, Full: true, AmountMinor: ev.AmountMinor,
+			OrderID: snap.OrderID, OrderStatus: snap.Status, PaymentID: paymentID, Full: true, AmountMinor: ev.AmountMinor, CommandID: ev.CommandID, ProviderRefundID: ev.ProviderRefundID,
 		})
 	case payments.EffectPartialRefund:
 		err = settleRefundTx(ctx, tx, refundSettlement{
-			OrderID: snap.OrderID, OrderStatus: snap.Status, PaymentID: paymentID, AmountMinor: ev.AmountMinor,
+			OrderID: snap.OrderID, OrderStatus: snap.Status, PaymentID: paymentID, AmountMinor: ev.AmountMinor, CommandID: ev.CommandID, ProviderRefundID: ev.ProviderRefundID,
 		})
 	}
 	if err != nil {
@@ -155,9 +179,11 @@ func markPaymentFailedTx(ctx context.Context, tx pgx.Tx, snap payments.OrderSnap
 }
 
 type refundSettlement struct {
-	OrderID     uuid.UUID
-	OrderStatus string
-	PaymentID   *uuid.UUID
+	CommandID        string
+	ProviderRefundID string
+	OrderID          uuid.UUID
+	OrderStatus      string
+	PaymentID        *uuid.UUID
 	// Full: the payment is now fully refunded. Otherwise partial.
 	Full        bool
 	AmountMinor int64
@@ -205,21 +231,21 @@ func settleRefundTx(ctx context.Context, tx pgx.Tx, r refundSettlement) error {
 		_, err = tx.Exec(ctx, `
 			UPDATE food.refunds SET status = 'PROCESSED', processed_at = NOW() WHERE id = $1
 		`, *r.RefundID)
-	case r.Full:
-		_, err = tx.Exec(ctx, `
-			UPDATE food.refunds SET status = 'PROCESSED', processed_at = NOW()
-			WHERE order_id = $1 AND status IN ('PENDING', 'SUBMITTED')
-		`, r.OrderID)
 	default:
 		_, err = tx.Exec(ctx, `
-			UPDATE food.refunds SET status = 'PROCESSED', processed_at = NOW()
+			UPDATE food.refunds SET status = 'PROCESSED', processed_at = NOW(), provider_refund_id=NULLIF($3,''),
+			 raw_response=(raw_response - 'last_submission_error') || CASE WHEN $4::text<>'' THEN jsonb_build_object('payments_command_id',$4::text) ELSE '{}'::jsonb END
 			WHERE id = (
 				SELECT id FROM food.refunds
 				WHERE order_id = $1 AND status IN ('PENDING', 'SUBMITTED') AND (amount * 100)::bigint = $2
-				ORDER BY created_at
+				AND ($4::text='' OR raw_response->>'payments_command_id'=$4 OR raw_response->>'payments_command_id' IS NULL)
+				ORDER BY (raw_response->>'payments_command_id'=$4) DESC NULLS LAST, created_at
 				LIMIT 1
 			)
-		`, r.OrderID, r.AmountMinor)
+		`, r.OrderID, r.AmountMinor, r.ProviderRefundID, r.CommandID)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return reconcileSupportRefundsTx(ctx, tx, r.OrderID)
 }

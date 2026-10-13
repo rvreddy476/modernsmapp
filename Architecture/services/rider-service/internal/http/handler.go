@@ -3,6 +3,7 @@ package http
 
 import (
 	"errors"
+	"github.com/atpost/shared/partnerwork"
 	"net/http"
 	"strings"
 
@@ -54,6 +55,12 @@ func CheckInternalKey(production bool, key string) error {
 // (RIDER_PUBLIC_ENABLED) and the session-revocation check; a bearer path here
 // would let a caller who can reach the pod skip all three.
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	partner := r.Group("/v1/partner")
+	if h.internalKey != "" {
+		partner.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
+	partner.Use(middleware.GatewayIdentity())
+	partner.GET("/work-session", h.GetPartnerWorkSession)
 	rider := r.Group("/v1/rider")
 	if h.internalKey != "" {
 		rider.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
@@ -111,6 +118,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			protected.POST("/partners/me/location", h.PostUpdateLocation)
 			protected.GET("/partners/me/dashboard", h.GetPartnerDashboard)
 			protected.GET("/partners/me/earnings", h.GetPartnerEarnings)
+			protected.GET("/partners/me/rides/active", h.GetPartnerActiveRide)
+			protected.GET("/partners/me/rides", h.GetPartnerRides)
+			protected.POST("/partners/me/rides/:id/support", h.PostPartnerRideSupport)
+			protected.GET("/partners/me/rides/:id", h.GetPartnerRide)
 
 			// --- Offers (S2) -------------------------------------------------
 			protected.GET("/offers/incoming", h.GetIncomingOffers)
@@ -205,6 +216,9 @@ func parseUUIDParam(c *gin.Context, param string) (uuid.UUID, bool) {
 //   - "not_found: …" -> 404
 //   - everything else -> defaultStatus.
 func respondServiceError(c *gin.Context, err error, defaultStatus int, defaultCode string) {
+	if partnerwork.WriteError(c, err) {
+		return
+	}
 	if err == nil {
 		return
 	}

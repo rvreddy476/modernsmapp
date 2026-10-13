@@ -330,7 +330,7 @@ func (s *Service) deliverWithDecision(ctx context.Context, decision DeliveryDeci
 		return nil
 	}
 	if s.pusher != nil && s.pgStore != nil {
-		tokens, err := s.pgStore.GetUserDevices(ctx, userID)
+		tokens, err := s.eventDevices(ctx, userID, notifType)
 		if err == nil && len(tokens) > 0 {
 			title, body, pushData := buildPushData(userID, notifType, entityType, entityID, deepLink, render)
 			for _, t := range tokens {

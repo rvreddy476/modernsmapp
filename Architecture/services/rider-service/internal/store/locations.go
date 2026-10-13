@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/atpost/shared/partnerwork"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -51,22 +52,33 @@ func (s *Store) UpsertPartnerLocation(ctx context.Context, in UpsertPartnerLocat
 // SetPartnerOnlineFlag flips the partner's is_online flag without touching
 // the location coordinates. Used by GoOnline / GoOffline.
 func (s *Store) SetPartnerOnlineFlag(ctx context.Context, partnerID uuid.UUID, online bool) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var userID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT user_id FROM rider_partners WHERE id=$1`, partnerID).Scan(&userID); err != nil {
+		return err
+	}
+	if err := partnerwork.DomainDutyTx(ctx, tx, userID, partnerwork.Moped, online); err != nil {
+		return err
+	}
 	const q = `
         INSERT INTO rider_partner_locations (partner_id, last_lat, last_lng, last_geohash, is_online, updated_at)
         VALUES ($1, 0, 0, '', $2, NOW())
         ON CONFLICT (partner_id) DO UPDATE SET
-            is_online  = EXCLUDED.is_online,
-            updated_at = NOW()`
-	if _, err := s.db.Exec(ctx, q, partnerID, online); err != nil {
+            is_online  = EXCLUDED.is_online`
+	if _, err := tx.Exec(ctx, q, partnerID, online); err != nil {
 		return fmt.Errorf("set partner online flag: %w", err)
 	}
 	// Also keep the partners table in sync so existing queries that filter on
 	// rider_partners.is_online (e.g. admin lists) see the same truth.
 	const q2 = `UPDATE rider_partners SET is_online = $2, last_online_at = CASE WHEN $2 THEN NOW() ELSE last_online_at END, last_offline_at = CASE WHEN NOT $2 THEN NOW() ELSE last_offline_at END, updated_at = NOW() WHERE id = $1`
-	if _, err := s.db.Exec(ctx, q2, partnerID, online); err != nil {
+	if _, err := tx.Exec(ctx, q2, partnerID, online); err != nil {
 		return fmt.Errorf("sync partner online: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // GetPartnerLocation returns the partner's last-known location.

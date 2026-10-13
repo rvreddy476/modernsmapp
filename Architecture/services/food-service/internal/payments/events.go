@@ -52,14 +52,16 @@ const (
 // a decision reads. AmountMinor is integer paise; the deprecated float
 // `amount` is never parsed. For payment.refunded, AmountMinor is the refund.
 type Event struct {
-	EventID     string
-	EventType   string
-	IntentID    string
-	OrderID     uuid.UUID
-	PayerID     uuid.UUID
-	AmountMinor int64
-	Currency    string
-	Status      string
+	EventID          string
+	EventType        string
+	IntentID         string
+	OrderID          uuid.UUID
+	PayerID          uuid.UUID
+	AmountMinor      int64
+	Currency         string
+	Status           string
+	CommandID        string
+	ProviderRefundID string
 }
 
 // OrderSnapshot is the order as read FOR UPDATE inside the applying

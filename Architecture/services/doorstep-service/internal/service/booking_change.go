@@ -36,6 +36,9 @@ func minutesLeft(now, slotStart time.Time) int {
 
 // customerVerdict applies the cancellation rules to a booking.
 func (s *Service) customerVerdict(ctx context.Context, b *store.LockedBooking) (cancelrules.Verdict, *apperr.Error) {
+	if b.Status == "matching" {
+		return cancelrules.Verdict{Allowed: true, Rule: "matching_free"}, nil
+	}
 	if b.Status == "pro_unavailable" {
 		return cancelrules.Verdict{Allowed: true, RefundPaise: b.Refundable, Rule: RuleProUnavailable}, nil
 	}
@@ -68,7 +71,7 @@ func (s *Service) CancelPreview(ctx context.Context, user, id uuid.UUID) (*model
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := cancelrules.Stage(lb.Status); !ok && lb.Status != "pro_unavailable" {
+	if _, ok := cancelrules.Stage(lb.Status); !ok && lb.Status != "pro_unavailable" && lb.Status != "matching" {
 		return &model.CancelPreview{Allowed: false, Rule: lb.Status}, nil
 	}
 	v, aerr := s.customerVerdict(ctx, lb)

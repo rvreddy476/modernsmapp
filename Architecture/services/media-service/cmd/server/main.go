@@ -426,6 +426,10 @@ func main() {
 	mediaHandler.RegisterFaceCompareRoutes(r)
 	mediaHandler.RegisterDatingPhotoRoutes(r)
 	mediaHandler.RegisterDatingClipRoutes(r)
+	if err := mediaHandler.RegisterPartnerEvidence(r, env("ADMIN_SERVICE_TOKEN_KID", "a1"), os.Getenv("ADMIN_SERVICE_TOKEN_PUBKEY")); err != nil {
+		slog.Error("invalid partner evidence verifier")
+		os.Exit(1)
+	}
 
 	// 10. Graceful shutdown
 	if err := server.Run(r, server.Config{

@@ -99,7 +99,20 @@ func TestFareWindows_SeededPerCity(t *testing.T) {
 		t.Fatalf("sedan gets the all-vehicle windows only: %d", len(sedan))
 	}
 	pw := PricingWindows(ws)
-	if w := pricing.SelectWindow(pw, "auto", time.Date(2026, 9, 18, 9, 0, 0, 0, time.FixedZone("IST", 19800))); w == nil || w.Name != "Morning peak" {
+	// Seed windows start at migration time; a hardcoded past date eventually
+	// precedes effective_from. Pick a weekday after the actual seed instead.
+	start := time.Now()
+	for _, w := range ws {
+		if w.EffectiveFrom.After(start) {
+			start = w.EffectiveFrom
+		}
+	}
+	local := start.In(time.FixedZone("IST", 19800)).AddDate(0, 0, 1)
+	for local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
+		local = local.AddDate(0, 0, 1)
+	}
+	when := time.Date(local.Year(), local.Month(), local.Day(), 9, 0, 0, 0, local.Location())
+	if w := pricing.SelectWindow(pw, "auto", when); w == nil || w.Name != "Morning peak" {
 		t.Fatalf("select %+v", w)
 	}
 }

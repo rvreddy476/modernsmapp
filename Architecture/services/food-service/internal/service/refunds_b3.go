@@ -41,8 +41,8 @@ func (s *Service) submitRejectedOrderRefund(ctx context.Context, orderID uuid.UU
 	}
 }
 
-// ResubmitPendingSystemRefunds submits system refund requests that payments
-// never accepted. It returns how many were submitted.
+// ResubmitPendingSystemRefunds also recovers direct-admin and approved-support
+// requests that payments never accepted. Deterministic keys prevent duplicates.
 func (s *Service) ResubmitPendingSystemRefunds(ctx context.Context) (int, error) {
 	plans, err := s.store.ListUnsubmittedSystemRefunds(ctx, systemRefundRetryAge, 50)
 	if err != nil {
@@ -51,8 +51,8 @@ func (s *Service) ResubmitPendingSystemRefunds(ctx context.Context) (int, error)
 	submitted := 0
 	for i := range plans {
 		p := plans[i]
-		if _, err := s.submitRefundPlan(ctx, p.OrderID, &p, "system refund resubmitted"); err != nil {
-			slog.WarnContext(ctx, "food-service: system refund resubmission failed",
+		if _, err := s.submitRefundPlan(ctx, p.OrderID, &p, "durable food refund resubmitted"); err != nil {
+			slog.WarnContext(ctx, "food-service: refund resubmission failed",
 				"order_id", p.OrderID, "refund_id", p.RefundID, "error", err)
 			continue
 		}

@@ -111,8 +111,11 @@ DO $$ BEGIN
     CREATE TYPE rider_document_type AS ENUM (
         'aadhaar',
         'pan',
+        'passport',
+        'voter_id',
         'driving_license',
         'profile_photo',
+        'introduction_video',
         'police_verification',
         'vehicle_rc',
         'vehicle_insurance',

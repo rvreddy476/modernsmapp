@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"github.com/atpost/shared/partnerwork"
 	"net/http"
 
 	"github.com/atpost/food-service/internal/payments"
@@ -35,6 +36,11 @@ var lifecycleErrors = []errorMapping{
 	{postgres.ErrAddressLocationRequired, http.StatusUnprocessableEntity, "FOOD_ADDRESS_LOCATION_REQUIRED"},
 	{postgres.ErrRestaurantLocationMissing, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_LOCATION_MISSING"},
 	{postgres.ErrAddonInvalid, http.StatusUnprocessableEntity, "FOOD_CART_ADDON_INVALID"},
+	{postgres.ErrCartItemUnavailable, http.StatusUnprocessableEntity, "FOOD_CART_ITEM_UNAVAILABLE"},
+	{postgres.ErrCartVariantInvalid, http.StatusUnprocessableEntity, "FOOD_CART_VARIANT_INVALID"},
+	{postgres.ErrRestaurantMinimum, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_MINIMUM_NOT_MET"},
+	{postgres.ErrIdempotencyPayloadMismatch, http.StatusConflict, "FOOD_IDEMPOTENCY_PAYLOAD_MISMATCH"},
+	{postgres.ErrIdempotencyInProgress, http.StatusConflict, "FOOD_IDEMPOTENCY_IN_PROGRESS"},
 	{postgres.ErrCartAddressNotFound, http.StatusNotFound, "FOOD_NOT_FOUND"},
 
 	// Wave 1 B3 pricing through shared/gst.
@@ -78,6 +84,9 @@ func knownError(err error) (errorMapping, bool) {
 // text). Otherwise it writes nothing and returns false so the caller keeps its
 // existing fallback.
 func writeKnownError(c *gin.Context, err error) bool {
+	if partnerwork.WriteError(c, err) {
+		return true
+	}
 	if m, ok := knownError(err); ok {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, m.status, m.code, err.Error(), nil)
 		return true

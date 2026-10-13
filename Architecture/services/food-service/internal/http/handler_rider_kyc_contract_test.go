@@ -21,6 +21,7 @@ import (
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/kyc"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -148,11 +149,12 @@ func kycContractRouter(t *testing.T, st *kycContractStore, withPII bool, setting
 	gin.SetMode(gin.TestMode)
 	st.crypto = contractCrypto(t)
 	svc := service.New(st).WithOnboardingClock(func() time.Time { return time.Date(2026, 9, 13, 12, 0, 0, 0, onboarding.IST) }).WithDigiLocker(settings)
+	svc.WithDocumentMedia(ownedmedia.Func(func(context.Context, uuid.UUID, uuid.UUID) error { return nil }))
 	if withPII {
 		svc.WithPII(st.crypto)
 	}
 	router := gin.New()
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 
@@ -346,7 +348,7 @@ func TestDigiLockerReturnRedirectsToTheAppLinkWithoutAuth(t *testing.T) {
 	settings.AppLinkURL = ctAppLink + "?src=digilocker"
 	svc := service.New(&kycContractStore{}).WithDigiLocker(settings)
 	router := gin.New()
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	state, _ := digilocker.NewState()
 	req := httptest.NewRequest(http.MethodGet, digilocker.ReturnPath+"?code=provider-code-1&state="+state+"&error=", nil)
 	rec := httptest.NewRecorder()
@@ -384,7 +386,7 @@ func TestDevDigiLockerAuthorizeRouteOnlyInLocalDevWithTheMock(t *testing.T) {
 	for _, tc := range cases {
 		svc := service.New(&kycContractStore{}).WithDigiLocker(mockSettings())
 		router := gin.New()
-		New(svc).WithDigiLockerDevRoutes(tc.env, tc.mock).RegisterRoutes(router)
+		New(svc).WithDigiLockerDevRoutes(tc.env, tc.mock).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 		state, _ := digilocker.NewState()
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, digilocker.DevAuthorizePath+"?state="+state, nil))

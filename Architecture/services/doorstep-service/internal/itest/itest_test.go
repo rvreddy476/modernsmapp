@@ -103,6 +103,18 @@ func setup(dsn string) (*pgxpool.Pool, error) {
 		}
 	}
 	for i := 0; i < 2; i++ {
+		if err := devseed.SeedCatalogue(ctx, p); err != nil {
+			return nil, err
+		}
+	}
+	var menu, prices, cities, zones int
+	if err := p.QueryRow(ctx, `SELECT (SELECT count(*) FROM doorstep.service_options),(SELECT count(*) FROM doorstep.city_prices),(SELECT count(*) FROM doorstep.cities),(SELECT count(*) FROM doorstep.zones)`).Scan(&menu, &prices, &cities, &zones); err != nil {
+		return nil, err
+	}
+	if menu == 0 || prices != 0 || cities != 0 || zones != 0 {
+		return nil, fmt.Errorf("catalogue-only seed changed coverage/pricing: %d %d %d %d", menu, prices, cities, zones)
+	}
+	for i := 0; i < 2; i++ {
 		if err := devseed.Seed(ctx, p); err != nil {
 			return nil, err
 		}

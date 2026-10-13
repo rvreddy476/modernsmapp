@@ -29,7 +29,7 @@ func join(s []string) string { return strings.Join(s, ",") }
 // nothing (fail closed); the selfie, Aadhaar check and payout account are
 // required for everyone.
 func TestMissingStepsMatrix(t *testing.T) {
-	full := Facts{VehicleType: "MOTORCYCLE", HasAadhaarCheck: true, HasValidDrivingLicence: true, HasValidVehicleRC: true, HasApprovedSelfie: true, HasPayoutAccount: true}
+	full := Facts{VehicleType: "MOTORCYCLE", HasApprovedIdentity: true, HasValidDrivingLicence: true, HasValidVehicleRC: true, HasApprovedSelfie: true, HasPayoutAccount: true}
 	if got := MissingSteps(full); got == nil || len(got) != 0 {
 		t.Fatalf("complete motorised facts: missing = %#v, want empty non-nil", got)
 	}
@@ -38,13 +38,14 @@ func TestMissingStepsMatrix(t *testing.T) {
 		facts Facts
 		want  string
 	}{
-		{"nothing", Facts{}, "vehicle,aadhaar_digilocker,driving_licence,vehicle_rc,selfie,payout_account"},
-		{"bicycle with nothing", Facts{VehicleType: "BICYCLE"}, "aadhaar_digilocker,selfie,payout_account"},
-		{"bicycle complete without DL or RC", Facts{VehicleType: "bicycle", HasAadhaarCheck: true, HasApprovedSelfie: true, HasPayoutAccount: true}, ""},
-		{"motorcycle without DL or RC", Facts{VehicleType: "MOTORCYCLE", HasAadhaarCheck: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "driving_licence,vehicle_rc"},
-		{"unknown vehicle otherwise complete", Facts{VehicleType: "truck", HasAadhaarCheck: true, HasValidDrivingLicence: true, HasValidVehicleRC: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "vehicle"},
-		{"unknown vehicle still needs DL and RC", Facts{HasAadhaarCheck: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "vehicle,driving_licence,vehicle_rc"},
-		{"bicycle without selfie", Facts{VehicleType: "BICYCLE", HasAadhaarCheck: true, HasPayoutAccount: true}, "selfie"},
+		{"nothing", Facts{}, "vehicle,identity_document,driving_licence,vehicle_rc,selfie,payout_account"},
+		{"bicycle with nothing", Facts{VehicleType: "BICYCLE"}, "identity_document,driving_licence,selfie,payout_account"},
+		{"bicycle still needs licence", Facts{VehicleType: "bicycle", HasApprovedIdentity: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "driving_licence"},
+		{"motorcycle without DL or RC", Facts{VehicleType: "MOTORCYCLE", HasApprovedIdentity: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "driving_licence,vehicle_rc"},
+		{"unknown vehicle otherwise complete", Facts{VehicleType: "truck", HasApprovedIdentity: true, HasValidDrivingLicence: true, HasValidVehicleRC: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "vehicle"},
+		{"unknown vehicle still needs DL and RC", Facts{HasApprovedIdentity: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "vehicle,driving_licence,vehicle_rc"},
+		{"bicycle without selfie", Facts{VehicleType: "BICYCLE", HasApprovedIdentity: true, HasValidDrivingLicence: true, HasPayoutAccount: true}, "selfie"},
+		{"legacy Aadhaar assertion is not offline ID review", Facts{VehicleType: "BICYCLE", HasAadhaarCheck: true, HasValidDrivingLicence: true, HasApprovedSelfie: true, HasPayoutAccount: true}, "identity_document"},
 	}
 	for _, tc := range cases {
 		if got := join(MissingSteps(tc.facts)); got != tc.want {
@@ -55,7 +56,7 @@ func TestMissingStepsMatrix(t *testing.T) {
 		step  string
 		unset func(*Facts)
 	}{
-		{StepAadhaar, func(f *Facts) { f.HasAadhaarCheck = false }},
+		{StepIdentity, func(f *Facts) { f.HasApprovedIdentity = false }},
 		{StepDrivingLicence, func(f *Facts) { f.HasValidDrivingLicence = false }},
 		{StepVehicleRC, func(f *Facts) { f.HasValidVehicleRC = false }},
 		{StepSelfie, func(f *Facts) { f.HasApprovedSelfie = false }},
@@ -112,8 +113,12 @@ func TestValidateDocument(t *testing.T) {
 		{"selfie with number", DocumentInput{DocumentType: "SELFIE", MediaID: media, DocumentNumber: "X1"}, CodeSelfieNumberNotAllowed, "", "", LookupNone},
 		{"selfie without media", DocumentInput{DocumentType: "SELFIE"}, onboarding.CodeMediaRequired, "", "", LookupNone},
 		{"aadhaar type", DocumentInput{DocumentType: "Aadhaar", DocumentNumber: "x"}, CodeAadhaarUseDigiLocker, "", "", LookupNone},
-		{"driving licence", DocumentInput{DocumentType: "DRIVING_LICENCE", DocumentNumber: "ka-01-2020-0000001"}, "", DocumentTypeDrivingLicence, "KA0120200000001", LookupDrivingLicence},
-		{"licence alias", DocumentInput{DocumentType: "driving_license", DocumentNumber: "KA0120200000001"}, "", DocumentTypeDrivingLicence, "KA0120200000001", LookupDrivingLicence},
+		{"driving licence", DocumentInput{DocumentType: "DRIVING_LICENCE", DocumentNumber: "ka-01-2020-0000001", MediaID: media}, "", DocumentTypeDrivingLicence, "KA0120200000001", LookupDrivingLicence},
+		{"licence alias", DocumentInput{DocumentType: "driving_license", DocumentNumber: "KA0120200000001", MediaID: media}, "", DocumentTypeDrivingLicence, "KA0120200000001", LookupDrivingLicence},
+		{"licence needs upload", DocumentInput{DocumentType: "DRIVING_LICENCE", DocumentNumber: "KA0120200000001"}, onboarding.CodeMediaRequired, "", "", LookupNone},
+		{"passport image", DocumentInput{DocumentType: "PASSPORT", MediaID: media}, "", DocumentTypePassport, "", LookupNone},
+		{"voter image", DocumentInput{DocumentType: "VOTER_ID", MediaID: media}, "", DocumentTypeVoterID, "", LookupNone},
+		{"PAN image", DocumentInput{DocumentType: "PAN", MediaID: media}, "", DocumentTypePAN, "", LookupNone},
 		{"driving licence malformed", DocumentInput{DocumentType: "DRIVING_LICENCE", DocumentNumber: "KA01"}, CodeInvalidDrivingLicence, "", "", LookupNone},
 		{"driving licence without number", DocumentInput{DocumentType: "DRIVING_LICENCE"}, CodeDocumentNumberRequired, "", "", LookupNone},
 		{"vehicle rc", DocumentInput{DocumentType: "VEHICLE_RC", DocumentNumber: "KA 01 AB 1234"}, "", DocumentTypeVehicleRC, "KA01AB1234", LookupVehicleRegistration},

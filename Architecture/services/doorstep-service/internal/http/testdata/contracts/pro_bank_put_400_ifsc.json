@@ -1,1 +1,1 @@
-{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"ifsc must look like ABCD0123456","details":{"field":"ifsc"}},"meta":{"request_id":"fixture"}}
+{"error":{"code":"DOORSTEP_INVALID_REQUEST","message":"Enter a valid 11-character IFSC.","details":{"field":"ifsc"}},"meta":{"request_id":"fixture"}}

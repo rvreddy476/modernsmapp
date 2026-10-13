@@ -82,6 +82,11 @@ type ProJob struct {
 	EarningEstimatePaise int64       `json:"earning_estimate_paise"`
 }
 
+// ProCustomerContact is fetched separately; never embedded in job lists.
+type ProCustomerContact struct {
+	Phone string `json:"phone"`
+}
+
 // ProJobPage is GET /pro/jobs.
 type ProJobPage struct {
 	Items      []ProJob `json:"items"`

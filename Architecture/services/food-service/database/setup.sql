@@ -589,6 +589,12 @@ CREATE TABLE IF NOT EXISTS food.cart_items (
 
 CREATE INDEX IF NOT EXISTS ix_food_cart_items_cart ON food.cart_items(cart_id);
 
+-- Keep the customer's variant selection even if a merchant removes that
+-- variant (the live FK is SET NULL). Checkout must refuse, not base-price it.
+ALTER TABLE food.cart_items ADD COLUMN IF NOT EXISTS selected_variant_id UUID;
+UPDATE food.cart_items SET selected_variant_id = variant_id
+WHERE selected_variant_id IS NULL AND variant_id IS NOT NULL;
+
 DROP TRIGGER IF EXISTS trg_cart_items_updated_at ON food.cart_items;
 CREATE TRIGGER trg_cart_items_updated_at
 BEFORE UPDATE ON food.cart_items
@@ -843,6 +849,10 @@ CREATE TABLE IF NOT EXISTS food.delivery_tracking_events (
 );
 
 CREATE INDEX IF NOT EXISTS ix_food_tracking_assignment_time ON food.delivery_tracking_events(assignment_id, created_at DESC);
+
+-- Retain a privacy-filtered released-job snapshot when the current assignment
+-- is recycled for redispatch. No handover codes or customer address are kept.
+ALTER TABLE food.delivery_tracking_events ADD COLUMN IF NOT EXISTS snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- ============================================================
 -- COUPON REDEMPTIONS, RATINGS
@@ -1931,3 +1941,24 @@ ALTER TABLE food.orders
 -- code does.
 ALTER TABLE food.delivery_assignments
     ADD COLUMN IF NOT EXISTS pickup_code_failed_attempts INT NOT NULL DEFAULT 0;
+
+-- Food audit: support approval and its executable payment refund share one TX.
+-- Existing proof URLs are retained as historical data only. New uploads bind
+-- private media records and are not rendered as untrusted external links.
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS proof_of_pickup_media_id UUID,
+    ADD COLUMN IF NOT EXISTS proof_of_delivery_media_id UUID;
+
+-- Food audit: support approval and its executable payment refund share one TX.
+-- Existing decisions are preserved; unlinked legacy approvals remain visible
+-- for finance review and are never silently replayed as new money movements.
+ALTER TABLE food.refund_requests
+    ADD COLUMN IF NOT EXISTS execution_refund_id UUID REFERENCES food.refunds(id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_food_refund_request_execution
+    ON food.refund_requests(execution_refund_id) WHERE execution_refund_id IS NOT NULL;
+
+-- Preserve the date basis of historical rider payouts. Newly generated periods
+-- use the India business day; old paid rows remain UTC and cannot credit an
+-- assignment again across the timezone boundary.
+ALTER TABLE food.delivery_partner_settlements
+    ADD COLUMN IF NOT EXISTS period_timezone TEXT NOT NULL DEFAULT 'UTC';

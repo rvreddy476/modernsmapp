@@ -30,7 +30,8 @@ var (
 
 // Store is the pgx-backed store.
 type Store struct {
-	db *pgxpool.Pool
+	automaticPricing bool
+	db               *pgxpool.Pool
 	// roles is the identity role queue (identity_roles.go); nil is a no-op.
 	roles *identityroles.Outbox
 	// events is the schema-local doorstep.events outbox.

@@ -55,6 +55,27 @@ func newTestConsumer(f *fakeApplier) (*Consumer, *[]Applied) {
 	return &Consumer{store: f, notify: func(_ context.Context, a Applied) { notified = append(notified, a) }}, &notified
 }
 
+func TestHandle_RefundCommandIdentityAndFailureArePreserved(t *testing.T) {
+	for _, typ := range []string{events.EventPaymentRefunded, events.EventPaymentRefundFailed} {
+		f := &fakeApplier{}
+		c, _ := newTestConsumer(f)
+		p := foodPayload()
+		p["intent_id"] = tIntentID
+		p["command_id"] = "command-1"
+		p["provider_refund_id"] = "refund-1"
+		p["status"] = "partially_refunded"
+		if err := c.Handle(context.Background(), envelope(t, typ, "event-1", p)); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.calls) != 1 || f.calls[0].CommandID != "command-1" {
+			t.Fatalf("missing command: %+v", f.calls)
+		}
+		if typ == events.EventPaymentRefunded && f.calls[0].ProviderRefundID != "refund-1" {
+			t.Fatal("missing provider identity")
+		}
+	}
+}
+
 func TestHandle_IgnoresOtherEventTypes(t *testing.T) {
 	f := &fakeApplier{}
 	c, _ := newTestConsumer(f)

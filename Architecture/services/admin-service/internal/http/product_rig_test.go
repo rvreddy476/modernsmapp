@@ -177,6 +177,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	doorstepURL := stub("doorstep", doorstepAll)
 	liveURL := stub("live", liveAll)
 	identityURL := stub("identity", identityAll)
+	evidenceURL := stub("media", []string{"media:partner-evidence.read"})
 
 	var signer *servicetoken.Signer
 	if withKey {
@@ -190,6 +191,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	rg.r.Use(middleware.RequestID())
 	rg.gate = NewGate(rg.perms, rg.rec, true)
 	h := New(&stubAdminService{}, rg.gate, approvals.NewService(rg.store, rg.holders))
+	h.WithEvidence(service.NewEvidenceClient(evidenceURL, signer))
 	h.WithFood(service.NewFoodClient(foodURL, signer)).
 		WithCommerce(service.NewCommerceClient(commerceURL, signer)).
 		WithTrustSafety(service.NewTrustSafetyClient(trustURL, signer)).
@@ -290,6 +292,20 @@ func fill(path string) (string, map[string]string) {
 func routeTableCase(t *testing.T, rg *productsRig, appPrefix, productPrefix, aud, app string, all []string, rt productRoute,
 	body string, opts ...reqOpt) {
 	t.Helper()
+	isEvidence := strings.HasSuffix(rt.operation, ".evidence.view")
+	if isEvidence {
+		ref := `{"data":{"media_id":"` + uuid.NewString() + `","owner_id":"` + uuid.NewString() + `","kind":"introduction_video"}}`
+		upstream := strings.TrimSuffix(rt.path, "/view")
+		if !strings.HasSuffix(upstream, "/evidence") {
+			upstream += "/evidence"
+		}
+		rt.upstream = upstream
+		rg.onTemplate(http.MethodGet, productPrefix+upstream, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(ref))
+		})
+		rg.onTemplate(http.MethodGet, "/v1/media/admin/evidence/:mediaId", serveImage("video/mp4", []byte("private-video"), true))
+	}
 	path, _ := fill(rt.path)
 	excluded := map[string]bool{rt.permission: true}
 	for _, a := range rt.alternatives {
@@ -319,8 +335,21 @@ func routeTableCase(t *testing.T, rg *productsRig, appPrefix, productPrefix, aud
 		t.Fatalf("%s with %s: status=%d body=%s", rt.operation, rt.permission, w.Code, w.Body.String())
 	}
 	hits := rg.takeHits()
-	if len(hits) != 1 {
-		t.Fatalf("%s: product hits = %d, want 1: %+v", rt.operation, len(hits), hits)
+	wantHits := 1
+	if isEvidence {
+		wantHits = 2
+	}
+	if len(hits) != wantHits {
+		t.Fatalf("%s: product hits = %d, want %d: %+v", rt.operation, len(hits), wantHits, hits)
+	}
+	if isEvidence {
+		m := hits[1]
+		if m.aud != "media" || m.verifyErr != nil || m.verified.Actor != actor || len(m.verified.Scope) != 1 || m.verified.Scope[0] != "media:partner-evidence.read" || m.userHdr != "" || m.keyHdr != "" {
+			t.Fatalf("unsafe evidence request: %+v", m)
+		}
+		if !strings.Contains(w.Header().Get("Cache-Control"), "no-store") || w.Body.String() != "private-video" {
+			t.Fatal("private video was not relayed safely")
+		}
 	}
 	h := hits[0]
 	if h.aud != aud || h.verifyErr != nil {

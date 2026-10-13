@@ -88,6 +88,7 @@ func validateCartAddonsTx(ctx context.Context, tx pgx.Tx, menuItemID uuid.UUID, 
 		SELECT id, name, min_select, max_select, is_required
 		FROM food.menu_item_addon_groups
 		WHERE menu_item_id = $1
+		ORDER BY id FOR SHARE
 	`, menuItemID)
 	if err != nil {
 		return err
@@ -116,6 +117,7 @@ func validateCartAddonsTx(ctx context.Context, tx pgx.Tx, menuItemID uuid.UUID, 
 			FROM food.menu_item_addons a
 			JOIN food.menu_item_addon_groups g ON g.id = a.addon_group_id
 			WHERE a.id = ANY($1::uuid[])
+			ORDER BY a.id FOR SHARE OF a, g
 		`, ids)
 		if err != nil {
 			return err

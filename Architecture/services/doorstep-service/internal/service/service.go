@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"github.com/atpost/shared/partnerwork"
 	"log/slog"
 	"math"
 	"net/http"
@@ -81,11 +82,12 @@ type Store interface {
 
 // Service is the application layer.
 type Service struct {
-	store    Store
-	tax      tax.Computer
-	now      func() time.Time
-	newID    func() uuid.UUID
-	quoteTTL time.Duration
+	automaticAssignment bool
+	store               Store
+	tax                 tax.Computer
+	now                 func() time.Time
+	newID               func() uuid.UUID
+	quoteTTL            time.Duration
 	// pro is professional onboarding (A2), wired by WithPro.
 	pro ProDeps
 	// bk is bookings and payments (A3), wired by WithBookings.
@@ -102,6 +104,16 @@ type Service struct {
 // New builds the service.
 func New(st Store, tc tax.Computer, quoteTTL time.Duration) *Service {
 	return &Service{store: st, tax: tc, now: time.Now, newID: uuid.New, quoteTTL: quoteTTL}
+}
+
+// WithAutomaticAssignment enables admin-priced, acceptance-before-payment
+// bookings. Kept explicit so old quotes and bookings can still be honoured.
+func (s *Service) WithAutomaticAssignment(enabled bool) *Service {
+	s.automaticAssignment = enabled
+	if st, ok := s.store.(interface{ SetAutomaticPricing(bool) }); ok {
+		st.SetAutomaticPricing(enabled)
+	}
+	return s
 }
 
 // WithClock pins the clock and id source (contract fixtures, tests).
@@ -121,6 +133,9 @@ func normaliseCity(raw string) (string, *apperr.Error) {
 }
 
 func internal(ctx context.Context, op string, err error) *apperr.Error {
+	if e := partnerwork.Translate(err); partnerwork.ErrorCode(e) != "UNAVAILABLE" {
+		return apperr.New(409, "WORK_"+partnerwork.ErrorCode(e), e.Error())
+	}
 	slog.ErrorContext(ctx, "doorstep: "+op, "error", err)
 	return apperr.Internal()
 }
@@ -219,6 +234,17 @@ func (s *Service) ServiceDetail(ctx context.Context, city string, id uuid.UUID) 
 	if !ok {
 		return nil, notAvailable()
 	}
+	if s.automaticAssignment {
+		d.AssignmentMode = "automatic"
+		for i := range d.Options {
+			d.Options[i].FromPricePaise = d.Options[i].SuggestedPricePaise
+		}
+		for i := range d.AddonGroups {
+			for j := range d.AddonGroups[i].Addons {
+				d.AddonGroups[i].Addons[j].FromPricePaise = d.AddonGroups[i].Addons[j].SuggestedPricePaise
+			}
+		}
+	}
 	return &model.ServicePage{City: c, Service: d}, nil
 }
 
@@ -260,8 +286,11 @@ func (s *Service) CreateQuote(ctx context.Context, customer uuid.UUID, req model
 	if req.ServiceID == nil || *req.ServiceID == uuid.Nil {
 		return nil, apperr.Invalid("service_id", "service_id is required")
 	}
-	if req.ProID == nil || *req.ProID == uuid.Nil {
+	if !s.automaticAssignment && (req.ProID == nil || *req.ProID == uuid.Nil) {
 		return nil, apperr.Invalid("pro_id", "pro_id is required: pick a professional from the professionals list")
+	}
+	if s.automaticAssignment && req.ProID != nil && *req.ProID != uuid.Nil {
+		return nil, apperr.Invalid("pro_id", "a professional is assigned after you choose a service and time")
 	}
 	if req.OptionID == nil || *req.OptionID == uuid.Nil {
 		return nil, apperr.Invalid("option_id", "option_id is required")
@@ -299,16 +328,23 @@ func (s *Service) CreateQuote(ctx context.Context, customer uuid.UUID, req model
 	if _, ok := catalogue.DetailView(b); !ok {
 		return nil, notAvailable()
 	}
-	ps, err := s.pricing(ctx)
-	if err != nil {
-		return nil, err
+	var priceSet catalogue.ProPrices
+	var proID uuid.UUID
+	if s.automaticAssignment {
+		priceSet = catalogue.AdminPrices(b)
+	} else {
+		ps, err := s.pricing(ctx)
+		if err != nil {
+			return nil, err
+		}
+		prices, err := ps.ProItemPrices(ctx, hit.City.Code, now, []uuid.UUID{*req.ProID}, sel.ItemIDs())
+		if err != nil {
+			return nil, internal(ctx, "professional prices", err)
+		}
+		proID, priceSet = *req.ProID, prices[*req.ProID]
 	}
-	prices, err := ps.ProItemPrices(ctx, hit.City.Code, now, []uuid.UUID{*req.ProID}, sel.ItemIDs())
-	if err != nil {
-		return nil, internal(ctx, "professional prices", err)
-	}
-	q, err := catalogue.BuildQuote(b, sel, prices[*req.ProID], catalogue.QuoteInput{
-		QuoteID: s.newID(), ProID: *req.ProID, ZoneID: hit.Zone.ID, PlaceOfSupplyState: hit.StateCode, Now: now, TTL: s.quoteTTL,
+	q, err := catalogue.BuildQuote(b, sel, priceSet, catalogue.QuoteInput{
+		QuoteID: s.newID(), ProID: proID, ZoneID: hit.Zone.ID, PlaceOfSupplyState: hit.StateCode, Now: now, TTL: s.quoteTTL,
 	}, s.tax)
 	if err != nil {
 		var ae *apperr.Error
@@ -316,6 +352,9 @@ func (s *Service) CreateQuote(ctx context.Context, customer uuid.UUID, req model
 			return nil, ae
 		}
 		return nil, internal(ctx, "price quote", err)
+	}
+	if s.automaticAssignment {
+		q.AssignmentMode = "automatic"
 	}
 	if err := s.store.InsertQuote(ctx, q, customer, lat, lng); err != nil {
 		return nil, internal(ctx, "insert quote", err)

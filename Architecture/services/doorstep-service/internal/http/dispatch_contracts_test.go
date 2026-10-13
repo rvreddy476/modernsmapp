@@ -121,7 +121,7 @@ func TestContract_DispatchJourney(t *testing.T) {
 	// Offers: locality only, never the address.
 	w := dr.call(proUser, "GET", "/offers", "")
 	assertFixture(t, "pro_offers_get_200.json", w, 200)
-	if strings.Contains(w.Body.String(), "Cyber") || !strings.Contains(w.Body.String(), `"expires_at":"2026-10-04T08:30:00Z"`) {
+	if strings.Contains(w.Body.String(), "Cyber") || !strings.Contains(w.Body.String(), `"expires_at":"2026-10-04T06:30:20Z"`) {
 		t.Fatalf("offers: %s", w.Body.String())
 	}
 	assertFixture(t, "pro_offer_get_200.json", dr.call(proUser, "GET", "/offers/"+offer.String(), ""), 200)

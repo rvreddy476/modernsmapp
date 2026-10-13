@@ -348,6 +348,11 @@ func (f *fakeDispatchStore) ProJobRecord(ctx context.Context, proID, bookingID u
 		MinBefore: 2, MinAfter: 2, CommissionBPS: 2000}, nil
 }
 
+func (f *fakeDispatchStore) ProContactCustomer(context.Context, uuid.UUID, uuid.UUID) (uuid.UUID, error) {
+	// Contact authorization is exercised against the real store by the contact suite.
+	return uuid.Nil, store.ErrNotFound
+}
+
 func (f *fakeDispatchStore) ProJobIDs(_ context.Context, proID uuid.UUID, mode, date string, _ *store.BookingCursor, limit int) ([]store.BookingCursor, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

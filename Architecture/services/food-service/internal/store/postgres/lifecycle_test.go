@@ -188,7 +188,7 @@ func TestOrderLifecycle_HappyPath(t *testing.T) {
 	if err := s.VerifyPickupCode(ctx, owner, orderID, pickup); err != nil {
 		t.Fatalf("pickup: %v", err)
 	}
-	assertOrderStatus(t, s, orderID, "PICKED_UP")
+	assertOrderStatus(t, s, orderID, "OUT_FOR_DELIVERY")
 	if _, err := s.DeliveryUpdateAssignment(ctx, user, aid, "ARRIVED_AT_CUSTOMER", ""); err != nil {
 		t.Fatalf("arrived customer: %v", err)
 	}

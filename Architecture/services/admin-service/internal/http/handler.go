@@ -69,6 +69,7 @@ func requireAnyScope(c *gin.Context, scopes ...string) bool {
 // through gate, which resolves the caller's permissions, enforces MFA, step-up
 // and the declared permission, and writes the request's audit row.
 type Handler struct {
+	evidence  *service.ProductClient
 	svc       adminService
 	gate      *Gate
 	approvals *approvals.Service
@@ -97,7 +98,8 @@ type Handler struct {
 	// Live moderation: live-service-v2.
 	live *service.ProductClient
 	// Access page: identity's admin console family (roles, users, sessions).
-	identity *service.ProductClient
+	identity      *service.ProductClient
+	notifications *service.ProductClient
 }
 
 // WithMonetization installs the Monetization client.
@@ -210,6 +212,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterRiderRoutes(r)
 	h.RegisterDoorstepRoutes(r)
 	h.RegisterAccessRoutes(r)
+	h.RegisterNotificationOpsRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err
 	}

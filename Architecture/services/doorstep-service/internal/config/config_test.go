@@ -60,6 +60,44 @@ func load(m map[string]string) (Config, error) {
 	return FromEnv(func(k string) string { return m[k] })
 }
 
+func TestAutomaticAssignmentRequiresExplicitEnablement(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		want    bool
+		invalid bool
+	}{{"", false, false}, {"false", false, false}, {"true", true, false}, {"invalid", false, true}} {
+		t.Run("flag="+tc.value, func(t *testing.T) {
+			env := prodEnv(t)
+			env["DOORSTEP_AUTOMATIC_ASSIGNMENT_ENABLED"] = tc.value
+			cfg, err := load(env)
+			if tc.invalid {
+				if err == nil || !strings.Contains(err.Error(), "DOORSTEP_AUTOMATIC_ASSIGNMENT_ENABLED") {
+					t.Fatalf("invalid flag must fail startup: %v", err)
+				}
+				return
+			}
+			if err != nil || cfg.AutomaticAssignment != tc.want {
+				t.Fatalf("automatic assignment = %v, want %v; error: %v", cfg.AutomaticAssignment, tc.want, err)
+			}
+		})
+	}
+}
+
+func TestPartnerIntakeRequiresEncryption(t *testing.T) {
+	env := prodEnv(t)
+	env["ENV"] = "dev"
+	env["PARTNER_DEV_PHONE_OTP_ENABLED"] = "true"
+	env["DOORSTEP_PII_KEYS"], env["DOORSTEP_PII_LOOKUP_SALT"] = "", ""
+	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "PII_KEYS") {
+		t.Fatal("partner intake started without encryption")
+	}
+	env["DOORSTEP_PII_KEYS"] = "v1:" + testKey(1)
+	env["DOORSTEP_PII_LOOKUP_SALT"] = "0123456789abcdef-salt"
+	if _, err := load(env); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProductionHappyPath(t *testing.T) {
 	cfg, err := load(prodEnv(t))
 	if err != nil {

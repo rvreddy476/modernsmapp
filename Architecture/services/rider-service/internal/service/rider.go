@@ -23,6 +23,7 @@ import (
 	"github.com/atpost/rider-service/internal/wallet"
 	sharedevents "github.com/atpost/shared/events"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,6 +32,7 @@ import (
 
 // Service is the rider-service business-logic layer.
 type Service struct {
+	documentMedia    ownedmedia.Verifier
 	store            *store.Store
 	wallet           wallet.Client
 	digilockerClient digilocker.Client
@@ -404,6 +406,11 @@ func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (str
 	// Partner side: if this user is a partner, grant their offer topic.
 	if p, err := s.store.GetPartnerByUserID(ctx, userID); err == nil && p != nil {
 		topics = append(topics, "rider.partner."+p.ID.String()+".offers")
+		if rides, err := s.store.ListPartnerRides(ctx, userID, 20); err == nil {
+			for _, ride := range rides {
+				topics = append(topics, "rider.ride."+ride.ID.String())
+			}
+		}
 	}
 	if len(topics) == 0 {
 		topics = []string{"rider.user." + userID.String()}

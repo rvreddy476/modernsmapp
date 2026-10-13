@@ -29,8 +29,8 @@ func TestRidePushesNameTheirChannelPriorityAndTTL(t *testing.T) {
 			data[AndroidTTLDataKey] = tc.ttl
 		}
 		msg := BuildFCMMessage("tok", "Title", "Body", data)
-		if _, has := msg["notification"]; !has {
-			t.Fatalf("%s: lost its notification block", tc.typ)
+		if _, has := msg["notification"]; has == (tc.typ == "captain.offer") {
+			t.Fatalf("%s: wrong system/app rendering contract", tc.typ)
 		}
 		got := msg["data"].(map[string]string)
 		if _, leaked := got[AndroidChannelDataKey]; leaked {
@@ -46,7 +46,7 @@ func TestRidePushesNameTheirChannelPriorityAndTTL(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no android config", tc.typ)
 		}
-		if notification, _ := android["notification"].(map[string]string); notification["channel_id"] != tc.channel {
+		if notification, _ := android["notification"].(map[string]string); tc.typ != "captain.offer" && notification["channel_id"] != tc.channel {
 			t.Fatalf("%s: channel = %v", tc.typ, android)
 		}
 		if (android["priority"] == "high") != tc.high {

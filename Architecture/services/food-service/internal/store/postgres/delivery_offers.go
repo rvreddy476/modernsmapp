@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/internal/orderstate"
+	"github.com/atpost/shared/partnerwork"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -81,12 +82,14 @@ func (s *Store) CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid
 func (s *Store) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]DeliveryOffer, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT o.id, o.order_id, o.delivery_partner_id, o.status::text,
-			o.distance_km::float8, o.expires_at::text, o.responded_at::text, o.reject_reason, o.created_at::text
+			o.distance_km::float8, o.expires_at::text, o.responded_at::text, o.reject_reason, o.created_at::text, COALESCE(o.batch_id,o.order_id)
 		FROM food.delivery_offers o
 		JOIN food.delivery_partners dp ON dp.id = o.delivery_partner_id
 		WHERE dp.user_id = $1
 		  AND o.status = 'pending'
 		  AND o.expires_at > NOW()
+		  AND NOT EXISTS (SELECT 1 FROM food.delivery_assignments a WHERE a.delivery_partner_id=dp.id
+		      AND a.status IN ('ASSIGNED','ACCEPTED','ARRIVED_AT_RESTAURANT','PICKED_UP','ARRIVED_AT_CUSTOMER'))
 		ORDER BY o.expires_at ASC
 	`, userID)
 	if err != nil {
@@ -94,15 +97,35 @@ func (s *Store) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUI
 	}
 	defer rows.Close()
 	var out []DeliveryOffer
+	jobs := map[uuid.UUID]uuid.UUID{}
 	for rows.Next() {
 		var o DeliveryOffer
+		var job uuid.UUID
 		if err := rows.Scan(&o.ID, &o.OrderID, &o.DeliveryPartnerID, &o.Status,
-			&o.DistanceKM, &o.ExpiresAt, &o.RespondedAt, &o.RejectReason, &o.CreatedAt); err != nil {
+			&o.DistanceKM, &o.ExpiresAt, &o.RespondedAt, &o.RejectReason, &o.CreatedAt, &job); err != nil {
 			return nil, err
 		}
 		out = append(out, o)
+		jobs[o.ID] = job
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	visible, enabled, err := partnerwork.VisibleOfferJobs(ctx, s.db, userID, partnerwork.FoodDelivery)
+	if err != nil {
+		return nil, err
+	}
+	if enabled {
+		filtered := out[:0]
+		for _, o := range out {
+			if visible[jobs[o.ID]] {
+				filtered = append(filtered, o)
+			}
+		}
+		out = filtered
+	}
+	return out, nil
 }
 
 // AcceptDeliveryOfferTx atomically:
@@ -110,6 +133,7 @@ func (s *Store) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUI
 //  2. Marks this offer accepted; supersedes all sibling offers.
 //  3. Inserts/updates food.delivery_assignments to this partner.
 //  4. Moves the order to DELIVERY_ASSIGNED.
+//
 // First caller wins: the ORDER row is locked before the offer row, so two
 // partners accepting sibling offers serialise on the order instead of
 // deadlocking on each other's offer rows, and the loser then sees its offer
@@ -145,7 +169,7 @@ func (s *Store) AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.
 	if err := tx.QueryRow(ctx, `
 		SELECT id, order_id, delivery_partner_id, status::text, distance_km::float8,
 			expires_at::text, responded_at::text, reject_reason, created_at::text,
-			expires_at <= NOW()
+			expires_at <= clock_timestamp()
 		FROM food.delivery_offers
 		WHERE id = $1 AND delivery_partner_id = $2
 		FOR UPDATE
@@ -155,6 +179,13 @@ func (s *Store) AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.
 	}
 	if offer.Status != "pending" {
 		return nil, fmt.Errorf("offer not pending: %s", offer.Status)
+	}
+	if err := lockAvailableDeliveryPartner(ctx, tx, partnerID); err != nil {
+		return nil, err
+	}
+	// Recheck after all blocking locks, not at transaction start.
+	if err := tx.QueryRow(ctx, `SELECT expires_at <= clock_timestamp() FROM food.delivery_offers WHERE id=$1`, offerID).Scan(&expired); err != nil {
+		return nil, err
 	}
 	if expired {
 		return nil, fmt.Errorf("offer expired")

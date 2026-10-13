@@ -34,7 +34,7 @@ func TestVerifyPickupCode_HappyPath(t *testing.T) {
 	if err := s.VerifyPickupCode(ctx, ownerID, orderID, pickup); err != nil {
 		t.Fatalf("verify pickup: %v", err)
 	}
-	assertOrderStatus(t, s, orderID, "PICKED_UP")
+	assertOrderStatus(t, s, orderID, "OUT_FOR_DELIVERY")
 }
 
 // TestVerifyPickupCode_RejectsWrongCode confirms a wrong OTP does not

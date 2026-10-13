@@ -92,11 +92,22 @@ func (s *Store) enqueueRoleIntentTx(ctx context.Context, tx pgx.Tx, op identityr
 // approval, the fraud job) were previously three unrelated bare Execs with no
 // transaction between them.
 func (s *Store) updatePartnerStatusTx(ctx context.Context, sql, status, reason string, args ...any) error {
+	return s.updatePartnerStatusWithReviewTx(ctx, sql, status, reason, PartnerReview{}, args...)
+}
+
+func (s *Store) updatePartnerStatusWithReviewTx(ctx context.Context, sql, status, reason string, review PartnerReview, args ...any) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// All status writers pass the owning partner ID first. Serialize the
+	// transition and notification so concurrent retries cannot send duplicates.
+	partnerID := args[0].(uuid.UUID)
+	var previous string
+	if err := tx.QueryRow(ctx, `SELECT status::text FROM rider_partners WHERE id=$1 FOR UPDATE`, partnerID).Scan(&previous); err != nil {
+		return err
+	}
 
 	var userID uuid.UUID
 	if err := tx.QueryRow(ctx, sql, args...).Scan(&userID); err != nil {
@@ -104,6 +115,11 @@ func (s *Store) updatePartnerStatusTx(ctx context.Context, sql, status, reason s
 	}
 	if op, ok := riderRoleForStatus(status); ok {
 		if err := s.enqueueRoleIntentTx(ctx, tx, op, userID, reason); err != nil {
+			return err
+		}
+	}
+	if previous != status {
+		if err := enqueuePartnerReviewTx(ctx, tx, partnerStatusEvent(status), partnerID, status, review); err != nil {
 			return err
 		}
 	}

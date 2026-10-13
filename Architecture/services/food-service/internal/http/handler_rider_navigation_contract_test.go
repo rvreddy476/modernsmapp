@@ -98,7 +98,7 @@ func riderNavRouter() *gin.Engine {
 		WithRealtimeClock(func() time.Time { return ctRtNow }).
 		WithDispatchConfig(5, 120*time.Second)
 	router := gin.New()
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router
 }
 

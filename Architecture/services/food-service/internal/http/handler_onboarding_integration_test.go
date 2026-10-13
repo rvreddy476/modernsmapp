@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/kyc"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -58,10 +59,10 @@ func onboardingIntegrationRouter(t *testing.T, withPII bool) (*gin.Engine, *pgxp
 			t.Fatal(err)
 		}
 	}
-	svc := service.New(postgres.New(pool)).WithPII(crypto)
+	svc := service.New(postgres.New(pool)).WithPII(crypto).WithDocumentMedia(ownedmedia.Func(func(context.Context, uuid.UUID, uuid.UUID) error { return nil }))
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(svc).RegisterRoutes(router)
+	New(svc).WithServiceAuth(testAdminVerifier()).RegisterRoutes(router)
 	return router, pool, crypto
 }
 
@@ -403,7 +404,7 @@ func TestSubmitDecideApproveThroughRoutes(t *testing.T) {
 		t.Fatalf("code = %s", env.Error.Code)
 	}
 	missing, _ := env.Error.Details["missing"].([]any)
-	if len(missing) != 7 || missing[1] != "state" {
+	if len(missing) != 8 || missing[1] != "state" {
 		t.Fatalf("missing = %v", env.Error.Details["missing"])
 	}
 
@@ -414,6 +415,9 @@ func TestSubmitDecideApproveThroughRoutes(t *testing.T) {
 	expectStatus(t, fs, http.StatusOK, "fssai")
 	docID := dataField(t, fs, "document", "id").(string)
 	expectStatus(t, doJSON(r, http.MethodPut, base+"/payout-account", itPayout, owner, false), http.StatusOK, "payout")
+	selfie := doJSON(r, http.MethodPost, base+"/documents", `{"document_type":"SELFIE","media_id":"`+uuid.NewString()+`"}`, owner, false)
+	expectStatus(t, selfie, http.StatusCreated, "selfie upload")
+	selfieID := dataField(t, selfie, "id").(string)
 
 	rec = doJSON(r, http.MethodPost, base+"/submit", `{}`, owner, false)
 	expectStatus(t, rec, http.StatusUnprocessableEntity, "submit without a menu item")
@@ -439,6 +443,7 @@ func TestSubmitDecideApproveThroughRoutes(t *testing.T) {
 	if dataField(t, rec, "status") != "APPROVED" || dataField(t, rec, "verified_by") != admin.String() {
 		t.Fatalf("decided = %s", rec.Body.String())
 	}
+	expectStatus(t, doJSON(r, http.MethodPost, "/v1/food/admin/restaurants/"+rid.String()+"/documents/"+selfieID+"/decide", `{"decision":"APPROVED"}`, admin, true), http.StatusOK, "approve selfie")
 	expectStatus(t, doJSON(r, http.MethodPost, approve, `{}`, admin, true), http.StatusOK, "approve")
 	rec = doJSON(r, http.MethodPatch, base+"/accepting", `{"is_accepting_orders":true}`, owner, false)
 	expectStatus(t, rec, http.StatusOK, "accepting")

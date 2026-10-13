@@ -111,6 +111,10 @@ func main() {
 	}
 	identity := adminauth.NewIdentityClient(authURL, internalKey)
 	gate := http.NewGate(adminauth.NewCachedPermissions(identity, adminauth.PermissionCacheTTL), svc, requireMFA)
+	if err := gate.ConfigureDevelopment2FA(os.Getenv); err != nil {
+		slog.Error("invalid development authentication configuration", "error", err)
+		os.Exit(1)
+	}
 	approvalSvc := approvals.NewService(store, identity)
 	handler := http.New(svc, gate, approvalSvc)
 
@@ -131,6 +135,7 @@ func main() {
 	handler.WithDating(service.NewDatingClient(env("DATING_SERVICE_URL", "http://dating-service:8112"), tokenSigner)).
 		WithFood(service.NewFoodClient(env("FOOD_SERVICE_URL", "http://food-service:8113"), tokenSigner)).
 		WithCommerce(service.NewCommerceClient(env("COMMERCE_SERVICE_URL", "http://commerce-service:8109"), tokenSigner)).
+		WithNotifications(service.NewNotificationOpsClient(env("NOTIFICATION_SERVICE_URL", "http://notification-service:8088"), tokenSigner)).
 		WithTrustSafety(service.NewTrustSafetyClient(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"), tokenSigner)).
 		WithMonetization(service.NewMonetizationClient(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"), tokenSigner)).
 		WithPayments(service.NewPaymentsClient(env("PAYMENTS_SERVICE_URL", "http://payments-service:8102"), tokenSigner)).
@@ -149,6 +154,7 @@ func main() {
 		// Doorstep (home services): doorstep-service (audience "doorstep"; it
 		// registers ADMIN_SERVICE_TOKEN_PUBKEY / _KID for admin-service).
 		WithDoorstep(service.NewDoorstepClient(env("DOORSTEP_SERVICE_URL", "http://doorstep-service:8122"), tokenSigner)).
+		WithEvidence(service.NewEvidenceClient(env("MEDIA_SERVICE_URL", "http://media-service:8087"), tokenSigner)).
 		// Live moderation: live-service-v2 (audience "live"; it registers
 		// ADMIN_SERVICE_TOKEN_PUBKEY / _KID for admin-service).
 		WithLive(service.NewLiveClient(env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117"), tokenSigner)).

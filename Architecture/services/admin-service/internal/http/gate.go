@@ -150,16 +150,35 @@ const (
 
 // Gate enforces declarations and writes the audit trail.
 type Gate struct {
-	perms      adminauth.PermissionSource
-	audit      auditRecorder
-	requireMFA bool
-	now        func() time.Time
-	declared   map[string]Requirement
+	perms             adminauth.PermissionSource
+	audit             auditRecorder
+	requireMFA        bool
+	devStepUpDisabled bool
+	now               func() time.Time
+	declared          map[string]Requirement
 }
 
 // NewGate builds a gate. requireMFA is ADMIN_REQUIRE_MFA.
 func NewGate(perms adminauth.PermissionSource, audit auditRecorder, requireMFA bool) *Gate {
 	return &Gate{perms: perms, audit: audit, requireMFA: requireMFA, now: time.Now, declared: map[string]Requirement{}}
+}
+
+// ConfigureDevelopment2FA is deliberately opt-in and refuses non-development
+// environments. Permissions, actor identity, audit and two-person rules remain.
+func (g *Gate) ConfigureDevelopment2FA(getenv func(string) string) error {
+	v := strings.TrimSpace(getenv("ADMIN_DEV_DISABLE_2FA"))
+	if v == "" || v == "false" {
+		return nil
+	}
+	if v != "true" {
+		return errors.New("ADMIN_DEV_DISABLE_2FA must be true or false")
+	}
+	env := strings.ToLower(strings.TrimSpace(getenv("ENV")))
+	if (env != "local" && env != "dev" && env != "development") || g.requireMFA {
+		return errors.New("ADMIN_DEV_DISABLE_2FA requires a development environment and ADMIN_REQUIRE_MFA=false")
+	}
+	g.devStepUpDisabled = true
+	return nil
 }
 
 func routeKey(method, path string) string { return method + " " + path }
@@ -405,7 +424,7 @@ func (g *Gate) enforce(declared Requirement) gin.HandlerFunc {
 			}
 		}
 		c.Set(ctxEffective, req)
-		if req.StepUp {
+		if req.StepUp && !g.devStepUpDisabled {
 			if _, ok := adminauth.StepUpValidUntil(c.GetHeader(adminauth.HeaderStepUpAt), g.now()); !ok {
 				g.deny(c, info, http.StatusForbidden, adminauth.CodeStepUpRequired, "A fresh two-factor check is required for this action")
 				return

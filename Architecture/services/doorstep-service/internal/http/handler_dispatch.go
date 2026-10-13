@@ -32,6 +32,7 @@ func (h *Handler) registerDispatchRoutes(user *gin.RouterGroup) {
 	user.POST("/pro/offers/:id/decline", h.proDeclineOffer)
 	user.GET("/pro/jobs", h.proJobs)
 	user.GET("/pro/jobs/:id", h.proJob)
+	user.GET("/pro/jobs/:id/customer-contact", h.proCustomerContact)
 	user.POST("/pro/jobs/:id/cancel", h.proCancelJob)
 	user.POST("/pro/realtime/token", h.proRealtimeToken)
 }
@@ -137,6 +138,7 @@ func (h *Handler) proMyArea(c *gin.Context) {
 }
 
 func (h *Handler) proMyBank(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
 	proGet(c, func(uid uuid.UUID) (*model.PayoutAccount, error) { return h.svc.ProMyBank(c.Request.Context(), uid) })
 }
 
@@ -220,6 +222,13 @@ func (h *Handler) proCancelJob(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) proCustomerContact(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	proWithID(c, http.StatusOK, func(uid, id uuid.UUID) (*model.ProCustomerContact, error) {
+		return h.svc.ProCustomerContact(c.Request.Context(), uid, id)
+	})
 }
 
 func (h *Handler) adminRedispatch(c *gin.Context) {

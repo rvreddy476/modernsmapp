@@ -14,6 +14,8 @@ package service
 //     admin_mfa=false, the platform ladder roles (superadmin/admin/moderator)
 //     are removed from `scopes`, and /me/capabilities reports
 //     admin.mfa_required=true with an empty permission map.
+//     Exception: explicitly keyed local password admin sessions keep their
+//     real scopes, but still carry admin_mfa=false and never fake an OTP.
 //  4. The consumer session is untouched by rule 3: same login, same refresh
 //     token, same ecosystem scopes (seller, …). An admin signing in to a
 //     consumer app just gets a consumer token.
@@ -147,7 +149,7 @@ func (s *Service) sessionClaims(ctx context.Context, user *store.User, sess *sto
 	adminMFA := isAdmin && user.TwoFactorEnabled && hasAMR(sess.AMR, AMROTP)
 
 	scopes := s.resolveScopes(ctx, user.ID)
-	if !adminMFA {
+	if !adminMFA && !(isAdmin && s.localAdminSession(sess)) {
 		scopes = stripLadderScopes(scopes)
 	}
 
@@ -172,7 +174,13 @@ func (s *Service) sessionClaims(ctx context.Context, user *store.User, sess *sto
 // except on POST /v1/auth/step-up.
 func (s *Service) mintAccessToken(ctx context.Context, user *store.User, sess *store.Session, stepUpAt time.Time) (string, time.Time, error) {
 	scopes, claims := s.sessionClaims(ctx, user, sess, stepUpAt)
-	return accesstoken.MintSession(s.accessTokenConfig(), s.accessSigningKey, user.ID, sess.ID, scopes, claims, time.Now())
+	cfg := s.accessTokenConfig()
+	// The laptop stack may use very long consumer TTLs; never inherit those
+	// for a password-only local admin session.
+	if s.localAdminSession(sess) && (cfg.TTL <= 0 || cfg.TTL > accesstoken.AdminSessionMaxTTL) {
+		cfg.TTL = accesstoken.AdminSessionMaxTTL
+	}
+	return accesstoken.MintSession(cfg, s.accessSigningKey, user.ID, sess.ID, scopes, claims, time.Now())
 }
 
 // startSession creates a session row authenticated by amr and mints its
@@ -214,6 +222,7 @@ func (s *Service) startSessionOfKind(ctx context.Context, user *store.User, devi
 		return nil, nil, err
 	}
 	return &AuthResponse{
+		LocalAdminPasswordLogin: s.localAdminSession(sess) && !(user.TwoFactorEnabled && hasAMR(sess.AMR, AMROTP)),
 		Tokens: TokenPair{
 			AccessToken:  accessToken,
 			RefreshToken: refreshToken,

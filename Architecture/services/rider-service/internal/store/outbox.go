@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/shared/outbox"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -30,7 +32,41 @@ func InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, eventType, aggregateTyp
 	if err != nil {
 		return fmt.Errorf("insert outbox event: %w", err)
 	}
+	// Keep the historical table for audit/read compatibility, but deliver
+	// supported state events through the queue drained by the live publisher.
+	// Recipients come from the locked aggregate, not caller-supplied payloads.
+	if aggregateType == "ride" && durableRideStateEvent(eventType) {
+		var body []byte
+		err = tx.QueryRow(ctx, `SELECT jsonb_strip_nulls(jsonb_build_object(
+		 'ride_id',r.id,'customer_user_id',r.customer_user_id,'partner_id',r.partner_id,
+		 'partner_user_id',p.user_id,'vehicle_id',r.vehicle_id,'status',r.status,
+		 'revision',r.revision,'occurred_at',r.updated_at,'assigned_at',r.assigned_at,
+		 'completed_at',r.completed_at,'cancelled_at',r.cancelled_at,
+		 'cancelled_by_kind',r.cancelled_by_kind,'cancelled_by_user_id',r.cancelled_by_user_id,
+		 'cancellation_fee_paise',r.cancellation_fee_paise,'reason',r.cancellation_reason,
+		 'final_distance_km',r.final_distance_km,'final_duration_min',r.final_duration_min,
+		 'final_fare_paise',r.final_fare_paise,'payment_method',r.payment_method,
+		 'payment_status',(SELECT status::text FROM rider_ride_payments WHERE ride_id=r.id ORDER BY created_at DESC LIMIT 1),
+		 'flagged_for_review',r.flagged_for_review,
+		 'offer_id',(SELECT id FROM rider_ride_offers WHERE ride_id=r.id AND status='accepted' ORDER BY decided_at DESC LIMIT 1)))
+		 FROM rider_rides r LEFT JOIN rider_partners p ON p.id=r.partner_id WHERE r.id=$1::uuid`, aggregateID).Scan(&body)
+		if err != nil {
+			return fmt.Errorf("build durable ride event: %w", err)
+		}
+		if err = outbox.NewQueuer("rider").Enqueue(ctx, tx, eventType, "rider.ride."+aggregateID, body); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func durableRideStateEvent(typ string) bool {
+	switch typ {
+	case "rider.ride.assigned", "rider.ride.arriving", "rider.ride.arrived", "rider.ride.started", "rider.ride.completed", "rider.ride.cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 // FetchUnpublishedOutboxEvents retrieves batches of unpublished events with SKIP LOCKED.

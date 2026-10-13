@@ -23,6 +23,7 @@ import (
 const (
 	StepVehicle        = "vehicle"
 	StepAadhaar        = "aadhaar_digilocker"
+	StepIdentity       = "identity_document"
 	StepDrivingLicence = "driving_licence"
 	StepVehicleRC      = "vehicle_rc"
 	StepSelfie         = "selfie"
@@ -35,6 +36,9 @@ const (
 	DocumentTypeDrivingLicence = "DRIVING_LICENCE"
 	DocumentTypeVehicleRC      = "VEHICLE_RC"
 	DocumentTypeSelfie         = "SELFIE"
+	DocumentTypePassport       = "PASSPORT"
+	DocumentTypeVoterID        = "VOTER_ID"
+	DocumentTypePAN            = "PAN"
 )
 
 const (
@@ -83,8 +87,8 @@ func ClassifyVehicle(vehicleType string) VehicleClass {
 	return VehicleUnknown
 }
 
-// DrivingDocumentsRequired is false only for a bicycle. An unknown vehicle
-// needs them: the rule fails closed.
+// Legacy motorised-document flag: a bicycle skips RC only. Every rider's
+// driving licence is required separately by MissingSteps.
 func DrivingDocumentsRequired(vehicleType string) bool {
 	return ClassifyVehicle(vehicleType) != VehicleBicycle
 }
@@ -94,8 +98,9 @@ func DrivingDocumentsRequired(vehicleType string) bool {
 // Facts are what the store knows about one partner.
 type Facts struct {
 	VehicleType string
-	// HasAadhaarCheck: a DigiLocker AADHAAR check (reference only) exists.
-	HasAadhaarCheck bool
+	// Retained for old provider records; it is not a manual identity document.
+	HasAadhaarCheck     bool
+	HasApprovedIdentity bool
 	// HasValidDrivingLicence / HasValidVehicleRC: a DigiLocker check still in
 	// validity AND an APPROVED, unexpired document of that type.
 	HasValidDrivingLicence bool
@@ -112,13 +117,14 @@ func MissingSteps(f Facts) []string {
 	if class == VehicleUnknown {
 		missing = append(missing, StepVehicle)
 	}
-	if !f.HasAadhaarCheck {
-		missing = append(missing, StepAadhaar)
+	if !f.HasApprovedIdentity {
+		missing = append(missing, StepIdentity)
+	}
+	// Founder policy: every rider uploads a licence, including bicycle riders.
+	if !f.HasValidDrivingLicence {
+		missing = append(missing, StepDrivingLicence)
 	}
 	if class != VehicleBicycle {
-		if !f.HasValidDrivingLicence {
-			missing = append(missing, StepDrivingLicence)
-		}
 		if !f.HasValidVehicleRC {
 			missing = append(missing, StepVehicleRC)
 		}
@@ -181,6 +187,7 @@ var (
 		"DRIVING_LICENSE": DocumentTypeDrivingLicence, "DL": DocumentTypeDrivingLicence,
 		"RC": DocumentTypeVehicleRC, "VEHICLE_REGISTRATION": DocumentTypeVehicleRC,
 		"AADHAR": DocumentTypeAadhaar, "AADHAAR_CARD": DocumentTypeAadhaar,
+		"VOTERID": DocumentTypeVoterID, "VOTER_ID_CARD": DocumentTypeVoterID,
 	}
 )
 
@@ -208,7 +215,7 @@ func ValidateDocument(in DocumentInput) (ValidatedDocument, error) {
 		docType = alias
 	}
 	if docType == DocumentTypeAadhaar {
-		return ValidatedDocument{}, fieldErr(CodeAadhaarUseDigiLocker, "document_type", "Aadhaar is verified through DigiLocker, not uploaded")
+		return ValidatedDocument{}, fieldErr(CodeAadhaarUseDigiLocker, "document_type", "Aadhaar uploads are not accepted; use a passport, voter ID, driving licence or PAN")
 	}
 	number := strings.TrimSpace(in.DocumentNumber)
 	if number != "" {
@@ -233,7 +240,7 @@ func ValidateDocument(in DocumentInput) (ValidatedDocument, error) {
 		return ValidatedDocument{}, fieldErr(CodeFileURLInvalid, "file_url", "file_url is not a URL")
 	}
 	switch docType {
-	case DocumentTypeSelfie:
+	case DocumentTypeSelfie, "INTRODUCTION_VIDEO":
 		if number != "" {
 			return ValidatedDocument{}, fieldErr(CodeSelfieNumberNotAllowed, "document_number", "a selfie carries no document number")
 		}
@@ -264,7 +271,18 @@ func ValidateDocument(in DocumentInput) (ValidatedDocument, error) {
 		}
 		out.Number = number
 	}
+	if IsIdentityDocument(docType) && out.MediaID == nil {
+		return ValidatedDocument{}, fieldErr(onboarding.CodeMediaRequired, "media_id", "upload a clear image of the identity document")
+	}
 	return out, nil
+}
+
+func IsIdentityDocument(kind string) bool {
+	switch kind {
+	case DocumentTypeDrivingLicence, DocumentTypePassport, DocumentTypeVoterID, DocumentTypePAN:
+		return true
+	}
+	return false
 }
 
 // MaskName shows the initial of each of the first four words: "M*** R***".

@@ -66,6 +66,7 @@ var (
 
 // TrustRoutes is the Trust & safety route table under /v1/admin/trust.
 var TrustRoutes = []productRoute{
+	{method: http.MethodPost, path: "/grievances", operation: "trust.grievance.create", permission: permTrustGrievancesAct, targetType: "trust_grievance"},
 	{method: http.MethodGet, path: "/stats", operation: "trust.stats", permission: permTrustStatsRead},
 	{method: http.MethodGet, path: "/reports", operation: "trust.reports.list", permission: permTrustReportsRead},
 	{method: http.MethodGet, path: "/reports/:id", operation: "trust.report.read", permission: permTrustReportsRead, targetType: "trust_report"},

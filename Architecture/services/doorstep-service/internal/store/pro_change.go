@@ -53,6 +53,7 @@ type Unavailable struct {
 
 // UnavailableResult is what the transition did.
 type UnavailableResult struct {
+	AssignmentMode    string
 	RefundIDs         []uuid.UUID
 	ClosedOfferID     *uuid.UUID
 	ClosedProUserID   *uuid.UUID
@@ -81,18 +82,29 @@ func (s *Store) MakeProUnavailable(ctx context.Context, in Unavailable) (*Unavai
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	at := in.At
-	var status string
+	var status, mode string
 	var version int
 	var customer uuid.UUID
 	var slotStart, slotEnd time.Time
-	if err := tx.QueryRow(ctx, `SELECT status, version, customer_user_id, slot_start, slot_end FROM doorstep.bookings
-		WHERE id = $1 FOR UPDATE`, in.BookingID).Scan(&status, &version, &customer, &slotStart, &slotEnd); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT status, version, customer_user_id, slot_start, slot_end, assignment_mode FROM doorstep.bookings
+		WHERE id = $1 FOR UPDATE`, in.BookingID).Scan(&status, &version, &customer, &slotStart, &slotEnd, &mode); err != nil {
 		return nil, mapErr(err)
 	}
 	if !contains(in.From, status) || (in.Version > 0 && version != in.Version) {
 		return nil, ErrStale
 	}
 	res := &UnavailableResult{Customer: customer, FromStatus: status, SlotStart: slotStart.UTC(), SlotEnd: slotEnd.UTC()}
+	next := "pro_unavailable"
+	var matchingDeadline *time.Time
+	if mode == "automatic" {
+		res.AssignmentMode, next = mode, "matching"
+		deadline := at.Add(10 * time.Minute)
+		if cutoff := slotStart.Add(-5 * time.Minute); cutoff.Before(deadline) {
+			deadline = cutoff
+		}
+		matchingDeadline = &deadline
+		in.Deadline = deadline
+	}
 	exclude := append([]uuid.UUID(nil), in.Exclude...)
 	if in.Close != nil {
 		var aStatus string
@@ -141,16 +153,16 @@ func (s *Store) MakeProUnavailable(ctx context.Context, in Unavailable) (*Unavai
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE doorstep.bookings SET status = 'pro_unavailable', reserved_pro_id = NULL, assigned_at = NULL, en_route_at = NULL,
+		UPDATE doorstep.bookings SET status = $7, reserved_pro_id = NULL, assigned_at = NULL, en_route_at = NULL,
 		       arrived_at = NULL, pro_unavailable_at = $2, choice_deadline = $3, unavailable_cause = $4,
 		       excluded_pro_ids = ARRAY(SELECT DISTINCT x FROM unnest(excluded_pro_ids || $5::uuid[]) x WHERE x IS NOT NULL),
 		       rescue_until = NULL, rescue_cause = NULL, dispatch_exhausted_at = NULL, pro_late_at = NULL,
-		       version = version + 1, updated_at = $2
-		 WHERE id = $1`, in.BookingID, at, in.Deadline, in.Cause, exclude); err != nil {
+		       matching_deadline=$6, hold_expires_at=NULL, version = version + 1, updated_at = $2
+		 WHERE id = $1`, in.BookingID, at, in.Deadline, in.Cause, exclude, matchingDeadline, next); err != nil {
 		return nil, mapErr(err)
 	}
 	reason := in.Reason
-	if err := historyTx(ctx, tx, in.BookingID, &status, "pro_unavailable", in.ActorKind, in.ActorID, &reason, at); err != nil {
+	if err := historyTx(ctx, tx, in.BookingID, &status, next, in.ActorKind, in.ActorID, &reason, at); err != nil {
 		return nil, err
 	}
 	core, err := bookingCoreTx(ctx, tx, in.BookingID)
@@ -158,12 +170,12 @@ func (s *Store) MakeProUnavailable(ctx context.Context, in Unavailable) (*Unavai
 		return nil, err
 	}
 	if err := s.enqueueBookingEvent(ctx, tx, events.BookingProUnavailable, core, at, events.BookingProUnavailableData{
-		BookingCore: core, PreviousProUserID: res.PreviousProUserID, Cause: in.Cause, ChoiceDeadline: in.Deadline.UTC()}); err != nil {
+		BookingCore: core, AssignmentMode: res.AssignmentMode, PreviousProUserID: res.PreviousProUserID, Cause: in.Cause, ChoiceDeadline: in.Deadline.UTC()}); err != nil {
 		return nil, err
 	}
 	if in.Audit != nil {
 		if err := auditTx(ctx, tx, *in.Audit, "booking.redispatch", "booking", in.BookingID.String(), map[string]any{
-			"from_status": status, "reason": in.Reason, "outcome": "pro_unavailable", "excluded": exclude}); err != nil {
+			"from_status": status, "reason": in.Reason, "outcome": next, "excluded": exclude}); err != nil {
 			return nil, err
 		}
 	}

@@ -158,10 +158,17 @@ type AdminCategoryPatch struct {
 // the skill is verified only through an admin-approved trade certificate,
 // false that declaring it verifies it (cleaning, painting, salon...).
 type Skill struct {
-	Code                string `json:"code"`
-	Name                string `json:"name"`
-	Description         string `json:"description"`
-	RequiresCertificate bool   `json:"requires_certificate"`
+	Code                string          `json:"code"`
+	Name                string          `json:"name"`
+	Description         string          `json:"description"`
+	RequiresCertificate bool            `json:"requires_certificate"`
+	Categories          []SkillCategory `json:"categories,omitempty"`
+}
+
+// SkillCategory is catalogue presentation, not a new qualification or access rule.
+type SkillCategory struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
 }
 
 type SkillInput struct {
