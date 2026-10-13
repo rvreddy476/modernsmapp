@@ -5,12 +5,14 @@ import org.junit.Test
 
 class FeedQueryTest {
 
-    /** The default narrows nothing: an absent flag is the whole timeline. */
+    /** For You narrows nothing and asks for the ranked order. */
     @Test
-    fun `for you is the plain home surface`() {
-        assertThat(FeedQuery.ForYou).isEqualTo(FeedQuery(FeedSurface.Home))
+    fun `for you is the whole home surface, ranked`() {
+        assertThat(FeedQuery.ForYou).isEqualTo(FeedQuery(FeedSurface.Home, ranked = true))
         assertThat(FeedQuery.ForYou.followingOnly).isFalse()
         assertThat(FeedQuery.ForYou.circleOnly).isFalse()
+        assertThat(FeedQuery.Following.ranked).isFalse()
+        assertThat(FeedQuery.Friends.ranked).isFalse()
     }
 
     /** Following and Friends are the SAME surface with one flag each. */

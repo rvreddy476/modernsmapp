@@ -118,6 +118,7 @@ class PostMoreViewModelTest {
             cursor: String?,
             followingOnly: Boolean?,
             circleOnly: Boolean?,
+            feedMode: String?,
         ): ApiEnvelope<List<FeedItemDto>> = ApiEnvelope(data = page, meta = null)
 
         override suspend fun feedback(body: FeedFeedbackRequest): ApiEnvelope<FeedFeedbackDto> {

@@ -12,8 +12,10 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -451,6 +453,7 @@ internal fun viewerStartPage(ids: List<String>, tappedId: String, tappedIndex: I
 // Flat callbacks rather than a bundled object: a data class of lambdas gets a
 // new identity on every recomposition, which would recompose every visible row.
 @Suppress("LongParameterList", "LongMethod")
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FeedList(
     items: LazyPagingItems<FeedItem>,
@@ -502,70 +505,81 @@ private fun FeedList(
         // pager. The immersive one-post-per-screen presentation belongs to
         // Reels, where every item is video; on a mixed feed it turns a
         // two-line text post into a full screen of empty space.
-        else -> LazyColumn(
-            state = listState,
+        //
+        // Pull down to refresh, as on Tube home. Until this the home feed
+        // had no way to load new posts short of leaving and coming back.
+        // The indicator shows only for a refresh over loaded rows; the
+        // first load keeps the full-screen state above.
+        else -> PullToRefreshBox(
+            isRefreshing = refresh is LoadState.Loading && items.itemCount > 0,
+            onRefresh = items::refresh,
             modifier = modifier.fillMaxSize(),
-            // No side gutter, no top inset (founder, 2026-09-04): the posts run
-            // edge to edge like Instagram's, and the tabs row above is already
-            // an edge. 12dp between neighbours is the only separation.
-            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
-            // `key` is what lets Compose keep an item's state across a page
-            // append. Without it every append re-keys by index and the whole
-            // visible list recomposes, which is the classic feed jank.
-            // The post the viewer has just published, above everything the
-            // server ranked (founder, 2026-09-06). It is filtered out of the
-            // paged rows by the ViewModel, so it appears here and nowhere
-            // else. Never autoplayed: the autoplay target is computed over the
-            // paging snapshot, which this row is deliberately not in.
-            head?.let { pinned ->
-                // The key carries the id so the dwell rule can read it back
-                // ([dwellPostId]); prefixed so it cannot collide with the
-                // paged row for the same post during the moment both exist.
-                item(key = "$HEAD_KEY_PREFIX${pinned.id}") {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                // No side gutter, no top inset (founder, 2026-09-04): the posts run
+                // edge to edge like Instagram's, and the tabs row above is already
+                // an edge. 12dp between neighbours is the only separation.
+                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+            ) {
+                // `key` is what lets Compose keep an item's state across a page
+                // append. Without it every append re-keys by index and the whole
+                // visible list recomposes, which is the classic feed jank.
+                // The post the viewer has just published, above everything the
+                // server ranked (founder, 2026-09-06). It is filtered out of the
+                // paged rows by the ViewModel, so it appears here and nowhere
+                // else. Never autoplayed: the autoplay target is computed over the
+                // paging snapshot, which this row is deliberately not in.
+                head?.let { pinned ->
+                    // The key carries the id so the dwell rule can read it back
+                    // ([dwellPostId]); prefixed so it cannot collide with the
+                    // paged row for the same post during the moment both exist.
+                    item(key = "$HEAD_KEY_PREFIX${pinned.id}") {
+                        FeedRow(
+                            item = pinned,
+                            overlay = overlays[pinned.id] ?: EngagementOverlay(),
+                            poster = posterUrl(pinned),
+                            pages = mediaPages(pinned),
+                            votes = pollVotes[pinned.id].orEmpty(),
+                            followEdge = followEdges[pinned.author.id],
+                            ownUserId = ownUserId,
+                            callbacks = callbacks,
+                            video = null,
+                            onClick = { onOpenMedia(0, pinned) },
+                        )
+                    }
+                }
+
+                items(
+                    count = items.itemCount,
+                    key = { index -> items.peek(index)?.id ?: index },
+                ) { index ->
+                    val item = items[index] ?: return@items
+                    val poster = posterUrl(item)
                     FeedRow(
-                        item = pinned,
-                        overlay = overlays[pinned.id] ?: EngagementOverlay(),
-                        poster = posterUrl(pinned),
-                        pages = mediaPages(pinned),
-                        votes = pollVotes[pinned.id].orEmpty(),
-                        followEdge = followEdges[pinned.author.id],
+                        item = item,
+                        overlay = overlays[item.id] ?: EngagementOverlay(),
+                        poster = poster,
+                        pages = mediaPages(item),
+                        votes = pollVotes[item.id].orEmpty(),
+                        followEdge = followEdges[item.author.id],
                         ownUserId = ownUserId,
                         callbacks = callbacks,
-                        video = null,
-                        onClick = { onOpenMedia(0, pinned) },
+                        video = autoplaySlot(
+                            item = item,
+                            playing = item.id == playingId,
+                            player = autoplay.player,
+                            posterUrl = poster,
+                            onClick = { onOpenMedia(index, item) },
+                        ),
+                        onClick = { onOpenMedia(index, item) },
                     )
                 }
-            }
 
-            items(
-                count = items.itemCount,
-                key = { index -> items.peek(index)?.id ?: index },
-            ) { index ->
-                val item = items[index] ?: return@items
-                val poster = posterUrl(item)
-                FeedRow(
-                    item = item,
-                    overlay = overlays[item.id] ?: EngagementOverlay(),
-                    poster = poster,
-                    pages = mediaPages(item),
-                    votes = pollVotes[item.id].orEmpty(),
-                    followEdge = followEdges[item.author.id],
-                    ownUserId = ownUserId,
-                    callbacks = callbacks,
-                    video = autoplaySlot(
-                        item = item,
-                        playing = item.id == playingId,
-                        player = autoplay.player,
-                        posterUrl = poster,
-                        onClick = { onOpenMedia(index, item) },
-                    ),
-                    onClick = { onOpenMedia(index, item) },
-                )
-            }
-
-            item(key = APPEND_KEY) {
-                AppendState(state = items.loadState.append, onRetry = items::retry)
+                item(key = APPEND_KEY) {
+                    AppendState(state = items.loadState.append, onRetry = items::retry)
+                }
             }
         }
     }

@@ -33,16 +33,21 @@ interface FeedApi {
      * difference is enforced by [com.us.android.core.model.FeedSurface], where
      * it is visible, rather than by which function a caller happened to pick.
      *
-     * [cursor] is `meta.next_cursor` from the previous page: an RFC3339
-     * timestamp on home. It is passed back opaquely and never parsed or
-     * constructed.
+     * [cursor] is `meta.next_cursor` from the previous page: an opaque token
+     * on every surface (home's used to be an RFC3339 timestamp). It is passed
+     * back as received and never parsed or constructed.
      *
      * [followingOnly] and [circleOnly] are home's two narrowings
      * (feed-service handler.go reads `following_only` / `circle_only` as the
      * literal string `true`). Null OMITS the parameter — Retrofit drops a null
      * query — which the server reads as "the whole timeline". They are never
-     * sent as `false`, so the request for the plain feed is byte-identical to
-     * what it was before the tabs existed.
+     * sent as `false`.
+     *
+     * [feedMode] is home's ordering: [FEED_MODE_RANKED] for For You,
+     * [FEED_MODE_CHRONOLOGICAL] for Following and Friends. Omitted, the server
+     * falls back to the user's saved preference, which defaults to
+     * chronological — so before this was sent, For You on Android was never
+     * actually ranked.
      */
     @GET("v1/feed/{surface}")
     suspend fun getFeed(
@@ -51,6 +56,7 @@ interface FeedApi {
         @Query("cursor") cursor: String? = null,
         @Query("following_only") followingOnly: Boolean? = null,
         @Query("circle_only") circleOnly: Boolean? = null,
+        @Query("feed_mode") feedMode: String? = null,
     ): ApiEnvelope<List<FeedItemDto>>
 
     /**
@@ -148,6 +154,10 @@ interface FeedApi {
 
         const val FEEDBACK_INTERESTED = "interested"
         const val FEEDBACK_NOT_INTERESTED = "not_interested"
+
+        /** `feed_mode` values feed-service accepts on the home surface. */
+        const val FEED_MODE_RANKED = "ranked"
+        const val FEED_MODE_CHRONOLOGICAL = "chronological"
     }
 }
 

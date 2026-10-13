@@ -128,6 +128,7 @@ class ReelsViewModelTest {
             cursor: String?,
             followingOnly: Boolean?,
             circleOnly: Boolean?,
+            feedMode: String?,
         ): ApiEnvelope<List<FeedItemDto>> {
             this.followingOnly += followingOnly
             return ApiEnvelope(data = emptyList(), meta = null)

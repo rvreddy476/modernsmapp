@@ -5,12 +5,25 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedQuery
+import com.us.android.core.model.FeedSurface
 import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * The `feed_mode` a query sends: ranked for For You, chronological for the
+ * narrowed home tabs (Following, Friends), nothing for the other surfaces,
+ * which rank on their own.
+ */
+internal fun FeedQuery.feedModeParam(): String? = when {
+    surface != FeedSurface.Home -> null
+    followingOnly || circleOnly -> FeedApi.FEED_MODE_CHRONOLOGICAL
+    ranked -> FeedApi.FEED_MODE_RANKED
+    else -> null
+}
 
 @Singleton
 class FeedRepository @Inject constructor(
@@ -35,6 +48,7 @@ class FeedRepository @Inject constructor(
             // so the request the server has served since day one is unchanged.
             followingOnly = query.followingOnly.takeIf { on -> on },
             circleOnly = query.circleOnly.takeIf { on -> on },
+            feedMode = query.feedModeParam(),
         ).toFeedPage().withCovers()
     }
 

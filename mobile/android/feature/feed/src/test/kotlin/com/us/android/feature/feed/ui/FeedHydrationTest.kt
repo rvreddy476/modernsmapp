@@ -211,6 +211,7 @@ private class UnusedFeedApi : com.us.android.core.feed.data.FeedApi {
         cursor: String?,
         followingOnly: Boolean?,
         circleOnly: Boolean?,
+        feedMode: String?,
     ): Nothing = error("feed loading is not under test")
 
     override suspend fun getTrendingHashtags(limit: Int): Nothing = error("trending is not under test")
