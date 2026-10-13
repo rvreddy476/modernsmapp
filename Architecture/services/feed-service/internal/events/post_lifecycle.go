@@ -59,30 +59,42 @@ func (c *Consumer) handlePostDeleted(ctx context.Context, envelope events.EventE
 		c.rdb.Del(ctx, fmt.Sprintf("post:likers:%s", event.PostID))
 	}
 
-	removed := 0
-	if c.timelineStore != nil {
-		owners, err := c.timelineStore.DeletePostFromTimelines(ctx, postID)
-		if err != nil {
-			return fmt.Errorf("PostDeleted: remove timeline rows for %s: %w", postID, err)
-		}
-		removed = len(owners)
-		if c.rdb != nil && len(owners) > 0 {
-			keys := make([]string, 0, len(owners)+1)
-			for _, o := range owners {
-				keys = append(keys, service.HydrationCacheKey(o.OwnerID, postID))
-			}
-			if authorID, err := uuid.Parse(event.AuthorID); err == nil {
-				keys = append(keys, service.HydrationCacheKey(authorID, postID))
-			}
-			if err := c.rdb.Del(ctx, keys...).Err(); err != nil {
-				log.Printf("PostDeleted: hydration cache invalidation failed for %s: %v", postID, err)
-			}
-		}
+	removed, err := c.removePostFromTimelines(ctx, postID, event.AuthorID)
+	if err != nil {
+		return fmt.Errorf("PostDeleted: %w", err)
 	}
 
 	log.Printf("Processing PostDeleted: post=%s author=%s type=%s timeline_rows_removed=%d purge_at=%v",
 		event.PostID, event.AuthorID, event.ContentType, removed, event.PurgeAt)
 	return nil
+}
+
+// removePostFromTimelines deletes every timeline row that holds the post —
+// each follower's home copy and the author's own — through the HF4 reverse
+// index, then drops the per-viewer hydration cache rows of every owner it
+// found (and the author's). Shared by PostDeleted and UploadDeleted.
+// Idempotent. Returns how many timeline rows it removed.
+func (c *Consumer) removePostFromTimelines(ctx context.Context, postID uuid.UUID, authorIDStr string) (int, error) {
+	if c.timelineStore == nil {
+		return 0, nil
+	}
+	owners, err := c.timelineStore.DeletePostFromTimelines(ctx, postID)
+	if err != nil {
+		return 0, fmt.Errorf("remove timeline rows for %s: %w", postID, err)
+	}
+	if c.rdb != nil && len(owners) > 0 {
+		keys := make([]string, 0, len(owners)+1)
+		for _, o := range owners {
+			keys = append(keys, service.HydrationCacheKey(o.OwnerID, postID))
+		}
+		if authorID, err := uuid.Parse(authorIDStr); err == nil {
+			keys = append(keys, service.HydrationCacheKey(authorID, postID))
+		}
+		if err := c.rdb.Del(ctx, keys...).Err(); err != nil {
+			log.Printf("hydration cache invalidation failed for %s: %v", postID, err)
+		}
+	}
+	return len(owners), nil
 }
 
 func (c *Consumer) handlePostRestored(ctx context.Context, envelope events.EventEnvelope) error {

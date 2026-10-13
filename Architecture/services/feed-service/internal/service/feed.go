@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atpost/feed-service/internal/ranking"
@@ -412,7 +414,9 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		return HomeFeedResult{}, err
 	}
 	candidates = applyBlockFilter(candidates, blockedSet)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
+	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
+		return HomeFeedResult{}, err
+	}
 
 	// Filter to circle-only (friends) if requested.
 	//
@@ -484,7 +488,11 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			// candidates — this is the path most likely to surface a
 			// stranger who blocked the viewer, because it is precisely the
 			// path used for viewers with no graph of their own.
-			for _, item := range s.applyHiddenAuthorFilter(ctx, applyBlockFilter(coldItems, blockedSet)) {
+			visible, hideErr := s.applyHiddenAuthorFilter(ctx, applyBlockFilter(coldItems, blockedSet))
+			if hideErr != nil {
+				return HomeFeedResult{}, hideErr
+			}
+			for _, item := range visible {
 				if excludeSelf && item.AuthorID == userID {
 					continue
 				}
@@ -610,7 +618,9 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 		return nil, "", err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
+	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
+		return nil, "", err
+	}
 
 	// Reels "Following" tab. Fail CLOSED, unlike the home feed's older
 	// version of this filter: an unresolved follow graph is an error, never
@@ -655,7 +665,7 @@ func (s *Service) shortFormDiscoveryFill(ctx context.Context, userID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked)), nil
+	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked))
 }
 
 // isShortFormFillType is the belt-and-braces type check on reels fill rows,
@@ -801,7 +811,9 @@ func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, lim
 		return nil, "", nil, err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
+	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
+		return nil, "", nil, err
+	}
 
 	// Watch "Following" tab: authors the viewer follows, the social graph
 	// (graph-service) — the same set and the same fail-closed rule as the
@@ -855,7 +867,7 @@ func (s *Service) longVideoDiscoveryFill(ctx context.Context, userID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked)), nil
+	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked))
 }
 
 // rankVideoWindow runs the main ranker over one fixed window (full
@@ -1095,6 +1107,13 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	//
 	// Skipped entirely for a celeb (pull model): the set stays empty and
 	// only the subscriber leg below can add anyone.
+	//
+	// A failed fetch no longer just logs and carries on with whoever was
+	// reached: everyone who WAS resolved still gets the row now, and the
+	// error is returned at the end so the consumer retries the event and
+	// the rest arrive. That is safe because every write here upserts
+	// (scylla.TimelineTS); a retry rewrites the rows that landed.
+	var incomplete []error
 	recipientSet := make(map[uuid.UUID]struct{})
 	if !isCeleb {
 		type fetchResult struct {
@@ -1115,6 +1134,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			r := <-results
 			if r.err != nil {
 				log.Printf("Failed to fetch %s for fanout: %v", r.tag, r.err)
+				incomplete = append(incomplete, fmt.Errorf("fetch %s: %w", r.tag, r.err))
 				continue
 			}
 			for _, id := range r.ids {
@@ -1135,6 +1155,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	const fanoutWorkers = 16
 	recipientCh := make(chan uuid.UUID, fanoutWorkers*4)
 	var fanoutWG sync.WaitGroup
+	var failedWrites atomic.Int64
 	for w := 0; w < fanoutWorkers; w++ {
 		fanoutWG.Add(1)
 		go func() {
@@ -1142,6 +1163,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			for recipientID := range recipientCh {
 				if err := s.timelines.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
 					log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
+					failedWrites.Add(1)
 				}
 			}
 		}()
@@ -1158,11 +1180,9 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	// follower/circle set already covered. The pages stream straight into
 	// the pool rather than being collected first, so a channel with many
 	// subscribers costs memory proportional to one page, not to the
-	// channel. A post-service failure here is logged, not returned: the
-	// follower rows are already in flight and Kafka redelivery would
-	// duplicate them (AddToHomeTimeline is not idempotent; see
-	// scylla/timelines.go), which is worse than a subscriber missing
-	// one upload from the tab.
+	// channel. A post-service failure here is returned with the others
+	// below: the rows already written are upserts, so the retry it causes
+	// rewrites them rather than duplicating them.
 	if channelID != uuid.Nil && isLongVideoContentType(contentType) {
 		err := s.eachChannelSubscriber(ctx, channelID, func(subscriberID uuid.UUID) {
 			if subscriberID == authorID {
@@ -1176,11 +1196,18 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 		})
 		if err != nil {
 			log.Printf("Subscriber fanout for channel %s (post %s) incomplete: %v", channelID, postID, err)
+			incomplete = append(incomplete, fmt.Errorf("fetch channel subscribers: %w", err))
 		}
 	}
 
 	close(recipientCh)
 	fanoutWG.Wait()
+	if n := failedWrites.Load(); n > 0 {
+		incomplete = append(incomplete, fmt.Errorf("%d timeline write(s) failed", n))
+	}
+	if len(incomplete) > 0 {
+		return fmt.Errorf("fanout of post %s incomplete, will be retried: %w", postID, errors.Join(incomplete...))
+	}
 	return nil
 }
 

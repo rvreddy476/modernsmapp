@@ -128,17 +128,13 @@ func main() {
 	slog.Info("ranking middleware initialized", "circuit_breaker", "20ms")
 
 	// 10. Data pipelines (v2.0)
-	affinityPipeline := pipeline.NewAffinityPipeline(dbPool, rdb)
+	//
+	// user:affinities:{viewer} is written by analytics-service's
+	// personalization warmer alone (every 15 min, squashed scores). This
+	// service used to HSET raw user_interactions totals into the same hash
+	// at every boot — a second writer on a different scale, from a table
+	// nothing populated — so that pipeline is gone.
 	velocityTracker := pipeline.NewVelocityTracker(rdb)
-
-	// Warm affinity signals from Postgres into Redis on startup
-	go func() {
-		if err := affinityPipeline.Run(ctx); err != nil {
-			slog.Warn("affinity warmup failed", "error", err)
-		} else {
-			slog.Info("affinity signals warmed into redis")
-		}
-	}()
 
 	// Start velocity tracker (runs every 5 minutes)
 	go velocityTracker.Start(ctx)

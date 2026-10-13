@@ -595,20 +595,19 @@ func (c *Consumer) handleUploadDeleted(ctx context.Context, envelope events.Even
 	c.rdb.Del(ctx, fmt.Sprintf("post:counters:%s:comments", event.PostID))
 	c.rdb.Del(ctx, fmt.Sprintf("post:likers:%s", event.PostID))
 
-	// If author provided, delete from author timeline
-	if event.AuthorID != "" {
-		authorID, parseErr := uuid.Parse(event.AuthorID)
-		if parseErr == nil && c.timelineStore != nil {
-			// Delete the specific post entry from author timeline (current month)
-			now := time.Now().UTC()
-			b := now.Year()*100 + int(now.Month())
-			if delErr := c.timelineStore.DeleteAuthorTimelineEntry(ctx, authorID, postID, b); delErr != nil {
-				log.Printf("Failed to delete author timeline entry for %s: %v", event.PostID, delErr)
-			}
-		}
+	// Remove the post from every timeline that holds it, as PostDeleted
+	// does. This used to delete only the author's own row, and only from
+	// the CURRENT month's bucket — a post uploaded last month kept its
+	// author row, and every follower kept theirs (masked only by the
+	// tombstone and post-service's batch gate, but still counted by the
+	// new-posts pill and still taking slots in each page's window).
+	removed, err := c.removePostFromTimelines(ctx, postID, event.AuthorID)
+	if err != nil {
+		return fmt.Errorf("UploadDeleted: %w", err)
 	}
 
-	log.Printf("Processing UploadDeleted: post=%s author=%s type=%s", event.PostID, event.AuthorID, event.ContentType)
+	log.Printf("Processing UploadDeleted: post=%s author=%s type=%s timeline_rows_removed=%d",
+		event.PostID, event.AuthorID, event.ContentType, removed)
 	return nil
 }
 

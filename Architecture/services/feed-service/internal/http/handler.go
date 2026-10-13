@@ -53,8 +53,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 	// MF5: per-user feed rate limit. 120 req/min per user (sustained
 	// 2/sec) — generous for legitimate tab-switching + pull-to-refresh,
-	// blocks scrape bursts. Internal callers (X-Internal-Service-Key)
-	// bypass; the gateway is trusted not to abuse.
+	// blocks scrape bursts. Keyed on X-User-Id; requests without one
+	// (none reach here through the gateway) are not limited.
 	if h.rdb != nil {
 		r.Use(h.feedRateLimit())
 	}
@@ -134,7 +134,7 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 
 	result, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, followingOnly, cursor)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	feedItems := result.Items
@@ -187,6 +187,17 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(result.NextCursor))
 }
 
+// internalError logs a server-side failure in full and answers the client
+// with a generic 500. The error text used to go into the response body,
+// and it carries upstream URLs and statuses ("graph-service returned 502:
+// …", "home following filter: …") that are nobody's business outside the
+// cluster.
+func internalError(c *gin.Context, err error) {
+	slog.ErrorContext(c.Request.Context(), "feed request failed", "path", c.FullPath(), "error", err)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR",
+		"Something went wrong loading this feed — try again", nil)
+}
+
 // parseHomeCursor reads the home feed's cursor: the opaque v1 keyset token
 // this handler now issues, or — for a client still holding a page served
 // before it did — the legacy RFC3339 timestamp.
@@ -222,7 +233,7 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
 	feedItems, next, err := h.svc.GetReelFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -260,7 +271,7 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
 	feedItems, next, err := h.svc.GetFlickFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -334,7 +345,7 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 
 	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -393,7 +404,7 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 
 	feedItems, next, err := h.svc.GetVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -539,13 +550,13 @@ func (h *Handler) SetPreference(c *gin.Context) {
 
 	if req.FeedMode != "" {
 		if err := h.svc.SetUserFeedMode(c.Request.Context(), userID, req.FeedMode); err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			internalError(c, err)
 			return
 		}
 	}
 	if req.LongVideoFrequency != "" {
 		if err := h.svc.SetLongVideoFrequency(c.Request.Context(), userID, req.LongVideoFrequency); err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			internalError(c, err)
 			return
 		}
 	}
@@ -600,7 +611,7 @@ func (h *Handler) PostSignal(c *gin.Context) {
 	}
 
 	if err := h.svc.RecordSignal(c.Request.Context(), userID, postID, req.Signal); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -746,19 +757,15 @@ func (h *Handler) feedRateLimit() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// Skip if the request is from an internal caller.
-		if h.internalKey != "" && c.GetHeader("X-Internal-Service-Key") == h.internalKey {
-			// Trusted callsite — let it through.
-			c.Next()
-			return
-		}
+		// No exemption for X-Internal-Service-Key: the gateway stamps it on
+		// EVERY /v1/feed request it proxies (internalroutes StampPolicy), so
+		// exempting it exempted every user and this limiter never limited
+		// anyone. The gateway is the only caller; it forwards the user's id.
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 200*time.Millisecond)
 		defer cancel()
 		key := fmt.Sprintf("feed_rl:%s", userID)
-		pipe := h.rdb.Pipeline()
-		incr := pipe.Incr(ctx, key)
-		pipe.Expire(ctx, key, window)
-		if _, err := pipe.Exec(ctx); err != nil {
+		n, err := h.rdb.Incr(ctx, key).Result()
+		if err != nil {
 			// Fail-OPEN on Redis blip: feed is not security-critical
 			// (no money, no auth), and dropping every request during a
 			// Redis hiccup is worse than serving a few extra.
@@ -766,7 +773,16 @@ func (h *Handler) feedRateLimit() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if incr.Val() > limit {
+		// The window opens on the first request and is NOT pushed back by
+		// later ones. Re-arming EXPIRE on every request (as before) meant a
+		// client that never paused for a full minute never got its count
+		// reset.
+		if n == 1 {
+			if err := h.rdb.Expire(ctx, key, window).Err(); err != nil {
+				slog.Warn("feed rate limit: could not arm window", "err", err)
+			}
+		}
+		if n > limit {
 			c.Header("Retry-After", "60")
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED",
 				"feed request rate exceeded", nil)
@@ -797,7 +813,7 @@ func (h *Handler) DebugFeed(c *gin.Context) {
 
 	debug, err := h.svc.DebugFeed(c.Request.Context(), userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -816,7 +832,7 @@ func (h *Handler) HidePost(c *gin.Context) {
 		return
 	}
 	if err := h.svc.HidePost(c.Request.Context(), userID, postID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -834,7 +850,7 @@ func (h *Handler) UnhidePost(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UnhidePost(c.Request.Context(), userID, postID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -877,7 +893,7 @@ func (h *Handler) UnmuteTarget(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UnmuteTarget(c.Request.Context(), userID, req.TargetType, req.TargetID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -891,7 +907,7 @@ func (h *Handler) GetMutedTargets(c *gin.Context) {
 	}
 	mutes, err := h.svc.GetMutedTargets(c.Request.Context(), userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	if mutes == nil {
