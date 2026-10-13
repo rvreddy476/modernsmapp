@@ -115,6 +115,29 @@ class FeedApiRequestTest {
         assertThat(target).doesNotContain("feed_mode")
     }
 
+    /** The "new posts" pill: each home tab asks for its own delta, Friends for none. */
+    @Test
+    fun `the home tabs map to their delta feed types`() {
+        assertThat(FeedQuery.ForYou.deltaFeedType()).isEqualTo("home")
+        assertThat(FeedQuery.Following.deltaFeedType()).isEqualTo("following")
+        assertThat(FeedQuery.Friends.deltaFeedType()).isNull()
+        assertThat(FeedQuery.Videos.deltaFeedType()).isNull()
+    }
+
+    @Test
+    fun `the delta request carries the feed type and the anchor verbatim`() {
+        enqueue("""{"data":{"new_count":4,"newest_anchor":"2026-10-13T10:00:00Z","has_more":false}}""")
+
+        val delta = runBlocking { api.getDelta(feedType = "home", anchor = "2026-10-13T09:00:00Z", limit = 50) }
+
+        val target = server.takeRequest().target
+        assertThat(target).startsWith("/v1/feed/delta?")
+        assertThat(target).contains("feed_type=home")
+        // The colons may or may not be percent-encoded; the date and hour may not.
+        assertThat(target).contains("anchor=2026-10-13T09")
+        assertThat(delta.data!!.newCount).isEqualTo(4)
+    }
+
     private fun feedbackBody(request: FeedFeedbackRequest): String {
         enqueue("""{"data":{}}""")
         runBlocking { api.feedback(request) }

@@ -27,6 +27,7 @@ import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.KeywordFilter
+import com.us.android.core.feed.data.NewPostCount
 import com.us.android.core.feed.data.hides
 import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
@@ -44,13 +45,16 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.OffsetDateTime
 
 /**
  * What one [FeedViewModel] serves. Decided by the destination, not by a
@@ -461,6 +465,7 @@ class FeedViewModel @AssistedInject constructor(
      */
     fun onRefreshHydrated(items: List<FeedItem>) {
         learnAuthors(items)
+        resetNewPosts(items)
         hydratedIds.clear()
         items.forEach { item ->
             hydratedIds += item.id
@@ -517,6 +522,72 @@ class FeedViewModel @AssistedInject constructor(
      */
     fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
 
+    // ── "N new posts" ───────────────────────────────────────────────────
+
+    /**
+     * Per home tab, the `created_at` of the newest post its last refresh
+     * loaded — the anchor the delta endpoint counts from. Set on refresh only:
+     * an appended page is older, and anything newer arrived by refreshing.
+     */
+    private val newPostAnchors = mutableMapOf<FeedTab, String>()
+    private val newPostCounts = MutableStateFlow<Map<FeedTab, NewPostCount>>(emptyMap())
+
+    /**
+     * What the pill above the timeline says for the tab on screen, or null
+     * for no pill. Only For You and Following have one: the server keeps no
+     * delta for Friends or a hashtag.
+     */
+    val newPosts: StateFlow<NewPostCount?> = combine(tab, newPostCounts) { current, counts ->
+        counts[current]?.takeIf { mode == FeedMode.Home && it.count > 0 }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), null)
+
+    /**
+     * Asks for the count now, then every [NEW_POSTS_POLL_MILLIS], until the
+     * caller's scope ends — the screen runs it while resumed, so coming back
+     * to the app shows what arrived meanwhile at once, and a backgrounded app
+     * asks nothing. Ten minutes, like the web client: the count covers
+     * everything since the anchor, so a longer interval only means a later
+     * pill, never a missed post.
+     */
+    suspend fun watchNewPosts() {
+        if (mode != FeedMode.Home) return
+        while (true) {
+            checkNewPosts()
+            delay(NEW_POSTS_POLL_MILLIS)
+        }
+    }
+
+    /** One delta request for the tab on screen. Failures leave the pill as it was. */
+    internal suspend fun checkNewPosts() {
+        val current = tab.value
+        val query = current.query() ?: return
+        val anchor = newPostAnchors[current] ?: return
+        val result = repository.newPostCount(query, anchor) ?: return
+        // A refresh since the request was sent has moved the anchor: this
+        // count is about posts the reader may already have.
+        if (result is AppResult.Success && newPostAnchors[current] == anchor) {
+            newPostCounts.update { it + (current to result.data) }
+        }
+    }
+
+    /** The pill was tapped: the screen refreshes and scrolls to the top. */
+    fun onNewPostsShown() {
+        newPostCounts.update { it - tab.value }
+    }
+
+    private fun resetNewPosts(items: List<FeedItem>) {
+        if (mode != FeedMode.Home) return
+        val current = tab.value
+        newestCreatedAt(items)?.let { newPostAnchors[current] = it }
+        newPostCounts.update { it - current }
+    }
+
+    private fun FeedTab.query(): FeedQuery? = when (this) {
+        FeedTab.FOR_YOU -> FeedQuery.ForYou
+        FeedTab.FOLLOWING -> FeedQuery.Following
+        FeedTab.HASHTAG -> null
+    }
+
     /** One relationship lookup per author never seen before, off the hydration path. */
     private fun learnAuthors(items: List<FeedItem>) = viewModelScope.launch {
         follows.ensureKnown(items.map { it.author.id })
@@ -532,6 +603,25 @@ private const val FEED_IMAGE_MAX_HEIGHT = 720
 
 /** `kind` on a feed media entry; `image` is the other value in use. */
 private const val VIDEO_KIND = "video"
+
+/**
+ * The newest `created_at` among [items], as the server sent it (the delta
+ * endpoint takes it back verbatim). Rows whose timestamp does not parse are
+ * skipped; null when none does.
+ */
+internal fun newestCreatedAt(items: List<FeedItem>): String? = items
+    .mapNotNull { item ->
+        val at = runCatching { OffsetDateTime.parse(item.createdAt) }.getOrNull() ?: return@mapNotNull null
+        item.createdAt to at.toInstant()
+    }
+    .maxByOrNull { it.second }
+    ?.first
+
+/** How often the home timeline asks whether anything new has arrived. */
+private const val NEW_POSTS_POLL_MILLIS = 10 * 60 * 1000L
+
+/** Keeps [FeedViewModel.newPosts] alive across a configuration change. */
+private const val STOP_TIMEOUT_MILLIS = 5_000L
 
 /** How many times the pinned post is asked for before the feed lets it go. */
 private const val PIN_FETCH_ATTEMPTS = 3

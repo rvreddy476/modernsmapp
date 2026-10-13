@@ -158,6 +158,10 @@ interface FeedApi {
         /** `feed_mode` values feed-service accepts on the home surface. */
         const val FEED_MODE_RANKED = "ranked"
         const val FEED_MODE_CHRONOLOGICAL = "chronological"
+
+        /** `feed_type` values the delta endpoint serves for the home tabs. */
+        const val DELTA_HOME = "home"
+        const val DELTA_FOLLOWING = "following"
     }
 }
 

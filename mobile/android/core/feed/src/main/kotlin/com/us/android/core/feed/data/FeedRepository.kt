@@ -25,6 +25,21 @@ internal fun FeedQuery.feedModeParam(): String? = when {
     else -> null
 }
 
+/**
+ * The delta `feed_type` that counts new posts for a query: For You is the
+ * home timeline, Following its follow-narrowed form. Null for everything
+ * else — the server has no delta for Friends or a hashtag, so those show no
+ * "new posts" pill.
+ */
+internal fun FeedQuery.deltaFeedType(): String? = when {
+    surface != FeedSurface.Home || circleOnly -> null
+    followingOnly -> FeedApi.DELTA_FOLLOWING
+    else -> FeedApi.DELTA_HOME
+}
+
+/** How many posts are newer than what the reader has; [more] means "at least". */
+data class NewPostCount(val count: Int, val more: Boolean)
+
 @Singleton
 class FeedRepository @Inject constructor(
     private val api: FeedApi,
@@ -77,6 +92,17 @@ class FeedRepository @Inject constructor(
         apiCall(errorMapper) { api.getPost(postId) }.map { dto ->
             hashtagHydrator.hydrate(listOf(dto.toDomain())).first()
         }
+
+    /**
+     * How many posts [query]'s timeline holds that are newer than [anchor],
+     * the `created_at` of the newest post the reader has loaded. Null when
+     * the query has no delta (see [deltaFeedType]).
+     */
+    suspend fun newPostCount(query: FeedQuery, anchor: String): AppResult<NewPostCount>? {
+        val feedType = query.deltaFeedType() ?: return null
+        return apiCall(errorMapper) { api.getDelta(feedType, anchor, NEW_POSTS_LIMIT) }
+            .map { NewPostCount(it.newCount, it.hasMore) }
+    }
 
     /** Today's trending tags, most-used first. Empty is a real answer, not a failure. */
     suspend fun trendingHashtags(): AppResult<List<TrendingHashtag>> =
@@ -131,5 +157,8 @@ class FeedRepository @Inject constructor(
     private companion object {
         /** The server clamps to 30; a phone screen shows about half that. */
         const val TRENDING_LIMIT = 20
+
+        /** The pill reads "50+" past this; counting further buys nothing. */
+        const val NEW_POSTS_LIMIT = 50
     }
 }

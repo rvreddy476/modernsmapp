@@ -21,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -28,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.paging.LoadState
@@ -35,6 +37,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
@@ -44,6 +47,7 @@ import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.engagement.data.repostCountOr
 import com.us.android.core.engagement.data.repostedOr
+import com.us.android.core.feed.data.NewPostCount
 import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
@@ -64,6 +68,7 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberPostSharer
+import kotlinx.coroutines.launch
 
 /**
  * The Home tab.
@@ -226,6 +231,16 @@ internal fun FeedContent(
 
     ReconcileHydration(items = items, viewModel = viewModel)
 
+    // "N new posts": asked while the screen is resumed (watchNewPosts is a
+    // no-op off the home timeline). Tapping it loads the new posts and goes
+    // to the top, where they are.
+    val newPosts by viewModel.newPosts.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    LifecycleResumeEffect(viewModel) {
+        val watch = scope.launch { viewModel.watchNewPosts() }
+        onPauseOrDispose { watch.cancel() }
+    }
+
     val callbacks = remember(viewModel, onOpenAuthor, share) {
         FeedRowCallbacks(
             onOpenAuthor = onOpenAuthor,
@@ -267,6 +282,19 @@ internal fun FeedContent(
                 listState = listState,
                 empty = empty,
                 autoplay = autoplay,
+            )
+        }
+        newPosts?.let { count ->
+            NewPostsPill(
+                count = count,
+                onClick = {
+                    viewModel.onNewPostsShown()
+                    items.refresh()
+                    scope.launch { listState.animateScrollToItem(0) }
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = UsTheme.spacing.m),
             )
         }
         MoreSheetMessage(more)
@@ -408,6 +436,18 @@ private fun ReconcileHydration(items: LazyPagingItems<FeedItem>, viewModel: Feed
             viewModel.onAppendHydrated(items.itemSnapshotList.items)
         }
     }
+}
+
+/** "3 new posts" floating over the top of the timeline. */
+@Composable
+private fun NewPostsPill(count: NewPostCount, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    UsPillButton(text = newPostsLabel(count), onClick = onClick, modifier = modifier)
+}
+
+/** "1 new post", "12 new posts", "50+ new posts" when the server stopped counting. */
+internal fun newPostsLabel(count: NewPostCount): String {
+    val number = if (count.more) "${count.count}+" else count.count.toString()
+    return if (count.count == 1 && !count.more) "↑ 1 new post" else "↑ $number new posts"
 }
 
 /** The post the viewer opened on: its id, and the index it was tapped at. */
