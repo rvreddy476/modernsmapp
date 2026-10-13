@@ -10,6 +10,7 @@ use (
 	./services/commerce-service
 	./services/community-service
 	./services/dating-service
+	./services/doorstep-service
 	./services/feature-flag-service
 	./services/feed-service
 	./services/food-service
@@ -25,17 +26,16 @@ use (
 	./services/post-service
 	./services/qa-service
 	./services/reviewer-service
+	./services/rider-service
 	./services/search-service
 	./services/suggestion-service
 	./services/trust-safety-service
 	./services/user-service
 	./services/wallet-service
-	./services/rider-service
-	./services/doorstep-service
 	./shared
-	./tools/schemacheck
-	./tools/integration
-	./tools/identityrolebackfill
 	./tools/contentownershipbackfill
+	./tools/identityrolebackfill
+	./tools/integration
+	./tools/schemacheck
 	./tools/scyllaschema
 )
