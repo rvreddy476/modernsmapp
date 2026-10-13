@@ -69,6 +69,61 @@ func (c *Consumer) handlePostDeleted(ctx context.Context, envelope events.EventE
 	return nil
 }
 
+// handlePostVisibilityChanged re-derives a post's timeline rows after its
+// owner edited the visibility. post.visibility_changed was defined but never
+// produced or consumed, so an edit left every row written for the OLD
+// visibility in place: a post made unlisted stayed in every follower's feed,
+// and per-viewer hydration caches kept serving the old value for minutes.
+//
+// Everything goes first — every timeline row and the cached copies of every
+// owner (removePostFromTimelines) — then FanoutPost writes exactly what the
+// new visibility calls for: the author's rows only for unlisted / private,
+// the full audience for public / followers. Both steps are idempotent, so a
+// retry is safe.
+func (c *Consumer) handlePostVisibilityChanged(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.PostVisibilityChangedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	postID, err := uuid.Parse(event.PostID)
+	if err != nil {
+		return fmt.Errorf("PostVisibilityChanged: bad post_id %q: %w", event.PostID, err)
+	}
+	authorID, err := uuid.Parse(event.AuthorID)
+	if err != nil {
+		return fmt.Errorf("PostVisibilityChanged: bad author_id %q: %w", event.AuthorID, err)
+	}
+
+	removed, err := c.removePostFromTimelines(ctx, postID, event.AuthorID)
+	if err != nil {
+		return fmt.Errorf("PostVisibilityChanged: %w", err)
+	}
+	if c.service == nil {
+		return nil
+	}
+	contentType := event.ContentType
+	if contentType == "" {
+		contentType = "post"
+	}
+	createdAt := event.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	channelID := uuid.Nil
+	if event.ChannelID != "" {
+		if parsed, err := uuid.Parse(event.ChannelID); err == nil {
+			channelID = parsed
+		}
+	}
+	if err := c.service.FanoutPost(ctx, postID, authorID, createdAt, contentType, event.NewVisibility, channelID); err != nil {
+		return fmt.Errorf("PostVisibilityChanged: re-fan-out %s: %w", postID, err)
+	}
+	log.Printf("Processing PostVisibilityChanged: post=%s %s -> %s timeline_rows_removed=%d",
+		event.PostID, event.OldVisibility, event.NewVisibility, removed)
+	return nil
+}
+
 // removePostFromTimelines deletes every timeline row that holds the post —
 // each follower's home copy and the author's own — through the HF4 reverse
 // index, then drops the per-viewer hydration cache rows of every owner it
@@ -132,11 +187,20 @@ func (c *Consumer) handlePostRestored(ctx context.Context, envelope events.Event
 	// (scylla.TimelineTS), so a row that somehow survived the delete is not
 	// duplicated.
 	//
-	// No channel id: PostRestoredPayload does not carry one, so a restored
-	// long video reaches the author's followers and circle but not the
-	// channel subscribers who are neither. The subscriber leg is skipped
-	// on uuid.Nil rather than guessed at; see FanoutPost.
-	if err := c.service.FanoutPost(ctx, postID, authorID, createdAt, contentType, event.Visibility, uuid.Nil); err != nil {
+	// The channel id (post-service stamps it on PostRestored as on
+	// PostCreated) brings a restored long video back to the channel's
+	// subscribers too. Older producers leave it empty and a malformed one
+	// is ignored: the subscriber leg is skipped on uuid.Nil rather than
+	// guessed at, and the followers' rows still land. See FanoutPost.
+	channelID := uuid.Nil
+	if event.ChannelID != "" {
+		if parsed, err := uuid.Parse(event.ChannelID); err == nil {
+			channelID = parsed
+		} else {
+			log.Printf("PostRestored %s: ignoring malformed channel_id %q: %v", event.PostID, event.ChannelID, err)
+		}
+	}
+	if err := c.service.FanoutPost(ctx, postID, authorID, createdAt, contentType, event.Visibility, channelID); err != nil {
 		return fmt.Errorf("PostRestored: fan-out %s: %w", postID, err)
 	}
 	log.Printf("Processing PostRestored: post=%s author=%s type=%s", event.PostID, event.AuthorID, contentType)

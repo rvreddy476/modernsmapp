@@ -90,6 +90,9 @@ func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) 
 	case events.PostReacted:
 		return c.handlePostReacted(ctx, envelope)
 
+	case events.PostUnreacted:
+		return c.handlePostUnreacted(ctx, envelope)
+
 	case events.CommentCreated:
 		return c.handleCommentCreated(ctx, envelope)
 
@@ -117,6 +120,9 @@ func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) 
 
 	case events.PostRestored:
 		return c.handlePostRestored(ctx, envelope)
+
+	case events.EventPostVisibilityChanged:
+		return c.handlePostVisibilityChanged(ctx, envelope)
 
 	case events.HandleChanged:
 		return c.handleHandleChanged(ctx, envelope)
@@ -513,6 +519,40 @@ func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventE
 	}
 
 	log.Printf("Processing PostReacted: post=%s reactor=%s type=%s", postID, reactorID, event.ReactType)
+	return nil
+}
+
+// unreactScript decrements a velocity counter without taking it below zero
+// (a PostUnreacted for a reaction this service never counted — one made
+// before the counter existed, or whose key already expired — must not make
+// the post look less popular than nothing).
+var unreactScript = redis.NewScript(`
+local n = tonumber(redis.call('GET', KEYS[1]) or '0')
+if n > 0 then return redis.call('DECR', KEYS[1]) end
+return 0`)
+
+// handlePostUnreacted is handlePostReacted's inverse: the velocity counter
+// comes back down and the reactor leaves the likers set. Before PostUnreacted
+// existed the counter only ever went up, so a like taken back still counted
+// toward a post's trending velocity for a week.
+func (c *Consumer) handlePostUnreacted(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.PostReactedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	if c.rdb == nil || event.PostID == "" {
+		return nil
+	}
+	counterKey := fmt.Sprintf("post:counters:%s:likes", event.PostID)
+	if err := unreactScript.Run(ctx, c.rdb, []string{counterKey}).Err(); err != nil {
+		return fmt.Errorf("PostUnreacted: decrement %s: %w", counterKey, err)
+	}
+	if event.ReactorID != "" {
+		if err := c.rdb.SRem(ctx, fmt.Sprintf("post:likers:%s", event.PostID), event.ReactorID).Err(); err != nil {
+			return fmt.Errorf("PostUnreacted: likers %s: %w", event.PostID, err)
+		}
+	}
 	return nil
 }
 

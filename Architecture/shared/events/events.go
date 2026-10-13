@@ -27,7 +27,8 @@ const (
 	UserFollowed                 = "UserFollowed"                 // payload: UserFollowedPayload
 	UserUnfollowed               = "UserUnfollowed"               // payload: UserUnfollowedPayload
 
-	PostReacted        = "PostReacted"        // payload: PostReactedPayload
+	PostReacted        = "PostReacted"        // payload: PostReactedPayload — a NEW reaction only, never a type switch
+	PostUnreacted      = "PostUnreacted"      // payload: PostReactedPayload (ReactType = the removed type)
 	CommentReacted     = "CommentReacted"     // payload: CommentReactedPayload
 	CommentCreated     = "CommentCreated"     // payload: CommentCreatedPayload
 	UserProfileUpdated = "UserProfileUpdated" // payload: UserProfileUpdatedPayload
@@ -815,6 +816,28 @@ type PostRestoredPayload struct {
 	CreatedAt   time.Time `json:"created_at"`
 	RestoredAt  time.Time `json:"restored_at"`
 	SearchRev   int64     `json:"search_rev,omitempty"`
+	// ChannelID is the author's canonical channel, as on PostCreated: the
+	// key for re-adding a restored long video to its subscribers' timelines.
+	// Empty when the author has none (and from older producers).
+	ChannelID string `json:"channel_id,omitempty"`
+}
+
+// PostVisibilityChangedPayload is post.visibility_changed (EventPostVisibility
+// Changed): the owner edited a published post's visibility. Emitted from the
+// edit's transaction through the outbox. Feed-service re-derives the post's
+// timeline rows from NewVisibility (an unlisted or private post leaves every
+// timeline but the author's; a post made public again is fanned out again)
+// and drops the per-viewer caches that still carry the old value.
+type PostVisibilityChangedPayload struct {
+	PostID        string    `json:"post_id"`
+	AuthorID      string    `json:"author_id"`
+	ContentType   string    `json:"content_type"`
+	OldVisibility string    `json:"old_visibility"`
+	NewVisibility string    `json:"new_visibility"`
+	CreatedAt     time.Time `json:"created_at"`
+	ChangedAt     time.Time `json:"changed_at"`
+	// ChannelID, as on PostCreated: the subscriber leg of a re-fan-out.
+	ChannelID string `json:"channel_id,omitempty"`
 }
 
 // PostPurgedPayload is the HARD delete: the post's rows are gone and the

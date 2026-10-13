@@ -2013,15 +2013,17 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 	if err != nil {
 		return err
 	}
-	if err := s.scyllaStore.React(ctx, postID, userID, reaction); err != nil {
+	added, err := s.scyllaStore.React(ctx, postID, userID, reaction)
+	if err != nil {
 		return err
 	}
 	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Audit H4: PostReacted via outbox. Synchronous insert so a
 	// process crash in the React goroutine window doesn't drop the
-	// notification trigger.
-	if s.producer != nil {
+	// notification trigger. Only for a NEW reaction: a repeat tap or a
+	// change of type adds no reaction to announce (see reactionEvent).
+	if s.producer != nil && added {
 		payload := events.PostReactedPayload{
 			PostID:       postID.String(),
 			PostAuthorID: post.AuthorID.String(),
@@ -2060,10 +2062,26 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
 		return err
 	}
-	if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
+	removed, err := s.scyllaStore.Unreact(ctx, postID, userID)
+	if err != nil {
 		return err
 	}
 	s.invalidateFeedHydration(ctx, userID, postID)
+
+	// PostUnreacted, so feed-service's velocity counter comes back down
+	// (it used to only ever go up). Only when a reaction was actually
+	// removed. Author id is not loaded on this path; the consumers key on
+	// post and reactor.
+	if s.producer != nil && removed {
+		payload := events.PostReactedPayload{
+			PostID:    postID.String(),
+			ReactorID: userID.String(),
+			CreatedAt: time.Now(),
+		}
+		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostUnreacted, "post", postID, payload); err != nil {
+			log.Printf("Warning: failed to enqueue PostUnreacted to outbox: %v", err)
+		}
+	}
 
 	// Fire-and-forget: Redis publish in background
 	go func() {
@@ -2265,7 +2283,7 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 
 	// Sync ScyllaDB reactions_by_post so feed hydration sees the change immediately
 	if result.IsSet {
-		if err := s.scyllaStore.React(ctx, postID, userID, "like"); err != nil {
+		if _, err := s.scyllaStore.React(ctx, postID, userID, "like"); err != nil {
 			log.Printf("Warning: failed to write reaction to ScyllaDB: %v", err)
 		}
 		// Like and tune are mutually exclusive (tune.go): a like being
@@ -2274,7 +2292,7 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 			log.Printf("Warning: failed to clear tune on like: %v", err)
 		}
 	} else {
-		if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
+		if _, err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
 			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
 		}
 	}
@@ -3110,18 +3128,27 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
 
-	newType, isSet, err := s.pgStore.ToggleReaction(ctx, "post", postID, userID, reactionType)
+	// Audit H4: the reaction event rides the reaction's own transaction
+	// (store/postgres/reactions.go). Self-reactions announce nothing, as
+	// before. `post` is already in scope from the visibility check above.
+	toggle, err := s.pgStore.ToggleReaction(ctx, "post", postID, userID, reactionType, func(t postgres.ReactionToggle) (string, interface{}, bool) {
+		if s.producer == nil || post.AuthorID == userID {
+			return "", nil, false
+		}
+		return reactionEvent(t, postID, post.AuthorID, userID)
+	})
 	if err != nil {
 		return nil, err
 	}
+	newType, isSet := toggle.NewType, toggle.IsSet
 
 	// Also sync to ScyllaDB for feed hydration compatibility
 	if isSet {
-		if err := s.scyllaStore.React(ctx, postID, userID, newType); err != nil {
+		if _, err := s.scyllaStore.React(ctx, postID, userID, newType); err != nil {
 			log.Printf("Warning: failed to sync reaction to ScyllaDB: %v", err)
 		}
 	} else {
-		if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
+		if _, err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
 			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
 		}
 	}
@@ -3132,28 +3159,35 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		log.Printf("Warning: failed to get reaction counts: %v", err)
 	}
 
-	// Audit H4: PostReacted via outbox. Skip self-reactions same as
-	// before — those don't generate notifications. `post` is already
-	// in scope from the H2 visibility check at the top of this
-	// function, so no extra GetPost round trip is needed.
-	if s.producer != nil && isSet && post.AuthorID != userID {
-		payload := events.PostReactedPayload{
-			PostID:       postID.String(),
-			PostAuthorID: post.AuthorID.String(),
-			ReactorID:    userID.String(),
-			ReactType:    newType,
-			CreatedAt:    time.Now(),
-		}
-		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostReacted, "post", postID, payload); err != nil {
-			log.Printf("Warning: failed to enqueue PostReacted (ToggleReaction) to outbox: %v", err)
-		}
-	}
-
 	return &ReactionToggleResult{
 		ReactionType: newType,
 		IsSet:        isSet,
 		Counts:       counts,
 	}, nil
+}
+
+// reactionEvent is the event a reaction toggle announces: PostReacted for a
+// NEW reaction, PostUnreacted for a removed one, and nothing for a change of
+// type — the post gained no reaction, so neither the author's notification
+// nor feed-service's velocity counter should move. A type switch used to be
+// announced as a fresh PostReacted, so flipping like → love → like inflated
+// a post's velocity and re-notified its author.
+func reactionEvent(t postgres.ReactionToggle, postID, authorID, reactorID uuid.UUID) (string, interface{}, bool) {
+	payload := events.PostReactedPayload{
+		PostID:       postID.String(),
+		PostAuthorID: authorID.String(),
+		ReactorID:    reactorID.String(),
+		CreatedAt:    time.Now(),
+	}
+	switch {
+	case t.IsSet && t.PrevType == "":
+		payload.ReactType = t.NewType
+		return events.PostReacted, payload, true
+	case !t.IsSet && t.PrevType != "":
+		payload.ReactType = t.PrevType
+		return events.PostUnreacted, payload, true
+	}
+	return "", nil, false
 }
 
 // ── Video Creator Tools ────────────────────────────────────────

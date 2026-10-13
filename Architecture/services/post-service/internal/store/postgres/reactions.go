@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,14 +37,33 @@ var ValidReactionTypes = map[string]bool{
 	"wow": true, "sad": true, "angry": true,
 }
 
+// ReactionToggle is the outcome of ToggleReaction.
+type ReactionToggle struct {
+	// NewType is the reaction now on the target ("" when it was removed).
+	NewType string
+	// PrevType is the reaction that was there before ("" when there was none).
+	PrevType string
+	// IsSet reports whether the viewer has a reaction after the toggle.
+	IsSet bool
+}
+
+// ReactionEventFunc builds the outbox event for a toggle, or returns ok =
+// false for none. It runs inside the toggle's transaction.
+type ReactionEventFunc func(t ReactionToggle) (eventType string, payload interface{}, ok bool)
+
 // ToggleReaction inserts or updates a user's reaction on a target.
 // If the user already reacted with the same type, it removes the reaction (toggle off).
 // If the user already reacted with a different type, it updates to the new type.
-// Returns the new reaction type ("" if removed) and whether it was set.
-func (s *Store) ToggleReaction(ctx context.Context, targetType string, targetID, userID uuid.UUID, reactionType string) (string, bool, error) {
+//
+// event, when non-nil, is asked for the outbox event of the outcome, and
+// the event is written in the SAME transaction as the reaction row — it
+// used to be a separate insert after the commit, whose failure was only
+// logged, so a reaction could persist with its notification and ranking
+// signal lost.
+func (s *Store) ToggleReaction(ctx context.Context, targetType string, targetID, userID uuid.UUID, reactionType string, event ReactionEventFunc) (ReactionToggle, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return "", false, err
+		return ReactionToggle{}, err
 	}
 	defer tx.Rollback(ctx)
 
@@ -55,31 +75,25 @@ func (s *Store) ToggleReaction(ctx context.Context, targetType string, targetID,
 	`, targetType, targetID, userID).Scan(&existingType)
 
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return "", false, err
+		return ReactionToggle{}, err
 	}
 
-	if existingType == reactionType {
+	result := ReactionToggle{NewType: reactionType, PrevType: existingType, IsSet: true}
+	switch {
+	case existingType == reactionType:
 		// Same type — toggle off (remove)
+		result = ReactionToggle{PrevType: existingType}
 		_, err = tx.Exec(ctx, `
 			DELETE FROM reactions
 			WHERE target_type = $1 AND target_id = $2 AND user_id = $3
 		`, targetType, targetID, userID)
-		if err != nil {
-			return "", false, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return "", false, err
-		}
-		return "", false, nil
-	}
-
-	if existingType != "" {
+	case existingType != "":
 		// Different type — update
 		_, err = tx.Exec(ctx, `
 			UPDATE reactions SET reaction_type = $4, created_at = $5
 			WHERE target_type = $1 AND target_id = $2 AND user_id = $3
 		`, targetType, targetID, userID, reactionType, time.Now())
-	} else {
+	default:
 		// No existing — insert
 		_, err = tx.Exec(ctx, `
 			INSERT INTO reactions (id, target_type, target_id, user_id, reaction_type, created_at)
@@ -87,13 +101,21 @@ func (s *Store) ToggleReaction(ctx context.Context, targetType string, targetID,
 		`, uuid.New(), targetType, targetID, userID, reactionType, time.Now())
 	}
 	if err != nil {
-		return "", false, err
+		return ReactionToggle{}, err
+	}
+
+	if event != nil {
+		if eventType, payload, ok := event(result); ok {
+			if err := InsertOutboxEventTx(ctx, tx, eventType, targetType, targetID, payload); err != nil {
+				return ReactionToggle{}, fmt.Errorf("emit %s: %w", eventType, err)
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return "", false, err
+		return ReactionToggle{}, err
 	}
-	return reactionType, true, nil
+	return result, nil
 }
 
 // GetReactionCounts returns reaction counts by type for a target.

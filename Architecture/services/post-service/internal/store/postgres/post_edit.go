@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -175,9 +176,29 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 			return nil, fmt.Errorf("emit distribution update on edit: %w", err)
 		}
 	}
-	if _, changed := changes["visibility"]; changed {
+	if vis, changed := changes["visibility"]; changed {
 		if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
 			return nil, fmt.Errorf("emit search eligibility on edit: %w", err)
+		}
+		// Feed: the post's timeline rows were written for the old
+		// visibility (an unlisted post must leave followers' feeds, a
+		// public one must reach them). Not for a scheduled post: it has
+		// not been fanned out, and the schedule worker's PostCreated will
+		// carry the visibility it publishes with.
+		if after.PublishAt == nil {
+			old, _ := vis.From.(string)
+			if err := InsertOutboxEventTx(ctx, tx, events.EventPostVisibilityChanged, "post", postID, events.PostVisibilityChangedPayload{
+				PostID:        postID.String(),
+				AuthorID:      after.AuthorID.String(),
+				ContentType:   after.ContentType,
+				OldVisibility: old,
+				NewVisibility: after.Visibility,
+				CreatedAt:     after.CreatedAt,
+				ChangedAt:     time.Now().UTC(),
+				ChannelID:     channelIDForAuthorTx(ctx, tx, after.AuthorID),
+			}); err != nil {
+				return nil, fmt.Errorf("emit visibility change on edit: %w", err)
+			}
 		}
 	}
 	// Offline copies (2026-10-02, offline_copies.go), in this transaction:

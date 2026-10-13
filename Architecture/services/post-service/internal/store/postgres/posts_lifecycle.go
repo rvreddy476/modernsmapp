@@ -85,6 +85,7 @@ func (s *Store) RestorePost(ctx context.Context, postID, authorID uuid.UUID, win
 		if err := InsertOutboxEventTx(ctx, tx, events.PostRestored, "post", postID, events.PostRestoredPayload{
 			PostID: postID.String(), AuthorID: authorID.String(), ContentType: contentType,
 			Visibility: visibility, CreatedAt: createdAt, RestoredAt: time.Now().UTC(), SearchRev: rev,
+			ChannelID: channelIDForAuthorTx(ctx, tx, authorID),
 		}); err != nil {
 			return 0, fmt.Errorf("restore: emit PostRestored: %w", err)
 		}
@@ -130,6 +131,7 @@ func (s *Store) RestorePost(ctx context.Context, postID, authorID uuid.UUID, win
 			if err := InsertOutboxEventTx(ctx, tx, events.PostRestored, "post", t.id, events.PostRestoredPayload{
 				PostID: t.id.String(), AuthorID: t.author.String(), ContentType: t.contentType,
 				Visibility: t.visibility, CreatedAt: t.createdAt, RestoredAt: time.Now().UTC(), SearchRev: trev,
+				ChannelID: channelIDForAuthorTx(ctx, tx, t.author),
 			}); err != nil {
 				return 0, fmt.Errorf("restore: emit PostRestored (cascade): %w", err)
 			}
@@ -141,6 +143,23 @@ func (s *Store) RestorePost(ctx context.Context, postID, authorID uuid.UUID, win
 		return 0, err
 	}
 	return rev, nil
+}
+
+// channelIDForAuthorTx is the author's channel id for PostRestored, read in
+// the restore's own transaction, or "" when they have none. A failed lookup
+// must not undo the restore — the channel only feeds the subscriber leg of
+// the fan-out — so it runs under a savepoint and any error reads as "".
+func channelIDForAuthorTx(ctx context.Context, tx pgx.Tx, authorID uuid.UUID) string {
+	if _, err := tx.Exec(ctx, "SAVEPOINT restore_channel"); err != nil {
+		return ""
+	}
+	var id uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM channels WHERE user_id = $1`, authorID).Scan(&id); err != nil {
+		_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT restore_channel")
+		return ""
+	}
+	_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT restore_channel")
+	return id.String()
 }
 
 // ListDeletedPostsByAuthor is the author's "Recently deleted" list, newest
