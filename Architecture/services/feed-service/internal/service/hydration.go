@@ -301,7 +301,12 @@ type HydratedMedia struct {
 // intentionally short (5 min) so engagement counts don't go stale
 // long enough to be misleading. On any Redis miss/error we fall
 // through to the original batch fetch — best-effort cache.
-func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID uuid.UUID) ([]HydratedPost, error) {
+func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID uuid.UUID) (_ []HydratedPost, err error) {
+	defer func() {
+		if err != nil {
+			hydrationFailures.Inc()
+		}
+	}()
 	if len(items) == 0 {
 		return []HydratedPost{}, nil
 	}

@@ -454,35 +454,66 @@ func (s *TimelineStore) queryHomeTimelineBucketCursor(ctx context.Context, userI
 	return items, nil
 }
 
-// GetAuthorTimeline (for Pull merge)
-func (s *TimelineStore) GetAuthorTimeline(ctx context.Context, authorID uuid.UUID, limit int) ([]FeedItem, error) {
-	b := currentBucket()
-
-	iter := s.session.Query(`
-		SELECT post_id, created_at, content_type FROM author_timeline_by_author
-		WHERE author_id = ? AND bucket = ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, toGocql(authorID), b, limit).Iter()
-
-	var items []FeedItem
-	var pid gocql.UUID
-	var createdAt time.Time
-	var contentType *string
-	for iter.Scan(&pid, &createdAt, &contentType) {
-		ct := "post"
-		if contentType != nil && *contentType != "" {
-			ct = *contentType
-		}
-		items = append(items, FeedItem{
-			PostID:      uuid.UUID(pid),
-			AuthorID:    authorID,
-			CreatedAt:   createdAt,
-			ContentType: ct,
-		})
+// GetAuthorTimelineBefore is the pull side of the celeb model: up to limit
+// of the author's rows strictly older than beforeToken ("" = from the
+// newest), newest first, each carrying its exact key as CursorToken. Author
+// and home rows of one post share a key (TimelineTS), so pulled rows merge
+// into a home page and page with the same cursor.
+func (s *TimelineStore) GetAuthorTimelineBefore(ctx context.Context, authorID uuid.UUID, beforeToken string, limit int) ([]FeedItem, error) {
+	if limit <= 0 {
+		return nil, nil
 	}
-	if err := iter.Close(); err != nil {
-		return nil, err
+	start := time.Now().UTC()
+	var before *gocql.UUID
+	if beforeToken != "" {
+		parsed, err := gocql.ParseUUID(beforeToken)
+		if err != nil {
+			return nil, err
+		}
+		before = &parsed
+		start = parsed.Time().UTC()
+	}
+	gAuthor := toGocql(authorID)
+	items := make([]FeedItem, 0, limit)
+	current := monthStart(start)
+	for i := 0; i < maxTimelineBucketLookback && len(items) < limit; i++ {
+		b := bucket(current)
+		var iter *gocql.Iter
+		if before != nil && bucket(before.Time().UTC()) == b {
+			iter = s.session.Query(`
+				SELECT ts, post_id, created_at, content_type FROM author_timeline_by_author
+				WHERE author_id = ? AND bucket = ? AND ts < ?
+				ORDER BY ts DESC
+				LIMIT ?
+			`, gAuthor, b, *before, limit-len(items)).WithContext(ctx).Iter()
+		} else {
+			iter = s.session.Query(`
+				SELECT ts, post_id, created_at, content_type FROM author_timeline_by_author
+				WHERE author_id = ? AND bucket = ?
+				ORDER BY ts DESC
+				LIMIT ?
+			`, gAuthor, b, limit-len(items)).WithContext(ctx).Iter()
+		}
+		var ts, pid gocql.UUID
+		var createdAt time.Time
+		var contentType *string
+		for iter.Scan(&ts, &pid, &createdAt, &contentType) {
+			ct := "post"
+			if contentType != nil && *contentType != "" {
+				ct = *contentType
+			}
+			items = append(items, FeedItem{
+				PostID:      uuid.UUID(pid),
+				AuthorID:    authorID,
+				CreatedAt:   createdAt,
+				ContentType: ct,
+				CursorToken: ts.String(),
+			})
+		}
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
+		current = current.AddDate(0, -1, 0)
 	}
 	return items, nil
 }

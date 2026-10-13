@@ -30,21 +30,41 @@ externalSecret:
   enabled: true
   remoteKey: atpost/staging/feed-service
   data:
+    # The same keys as prod (atpost/prod/feed-service), from the staging
+    # secret. Without POSTGRES_DSN / REDIS_ADDR / KAFKA_BROKERS the service
+    # fell back to localhost defaults and could not start: it exits when the
+    # Postgres ping fails (cmd/server/main.go).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
+    - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
-    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
 
 env:
   ENV: staging
   LOG_LEVEL: info
+  AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_TLS_ENABLED: "true"
+  KAFKA_TLS_ENABLED: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  # module.scylla.client_service for environment "staging"
+  # (infra/terraform/modules/scylla/outputs.tf). Unset, it defaulted to
+  # localhost.
+  SCYLLA_HOSTS: atpost-staging-client.scylla.svc.cluster.local
   USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  ANALYTICS_SERVICE_URL: http://analytics-service.atpost.svc.cluster.local:8094
+  IDENTITY_KAFKA_TOPIC: identity.events.v1
+  PURGE_ACKS_TOPIC: platform.purge-acks.v1
 
 # Internal-only — api-gateway is the external surface.
 ingress:

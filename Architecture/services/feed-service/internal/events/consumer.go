@@ -199,6 +199,11 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		return fmt.Errorf("parse followee_id: %w", err)
 	}
 
+	// The follower's cached followed-celeb set (celeb pull) is stale now.
+	if c.rdb != nil {
+		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID))
+	}
+
 	// Audit HF6: celebs use the pull model (FanoutPost short-circuits
 	// for them — feed.go:467), so a backfill into the new follower's
 	// timeline would diverge from the read path: nothing else lands
@@ -269,6 +274,11 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.Eve
 	followeeID, err := uuid.Parse(p.FolloweeID)
 	if err != nil {
 		return fmt.Errorf("parse followee_id: %w", err)
+	}
+
+	// A celeb the follower no longer follows must stop being pulled now.
+	if c.rdb != nil {
+		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID))
 	}
 
 	if c.service == nil {

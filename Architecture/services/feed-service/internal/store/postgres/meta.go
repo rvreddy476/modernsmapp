@@ -42,6 +42,29 @@ func (s *MetaStore) SetCelebStatus(ctx context.Context, authorID uuid.UUID, isCe
 	return err
 }
 
+// CelebsAmong returns the subset of authorIDs flagged as celebs — the
+// accounts whose posts are pulled at read time instead of pushed.
+func (s *MetaStore) CelebsAmong(ctx context.Context, authorIDs []uuid.UUID) ([]uuid.UUID, error) {
+	if len(authorIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT author_id FROM celeb_authors WHERE is_celeb AND author_id = ANY($1)`, authorIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // GetFeedMode returns the user's preferred feed mode (e.g. "ranked" or "chronological").
 // Defaults to "chronological" if no preference is stored.
 func (s *MetaStore) GetFeedMode(ctx context.Context, userID uuid.UUID) (string, error) {

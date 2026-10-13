@@ -63,6 +63,9 @@ type Service struct {
 	// lvTiers is the long-video frequency configuration (P0-4), loaded
 	// once at construction from defaults + env overrides.
 	lvTiers map[string]lvTier
+	// celeb is the pull-model switch and the auto-flag threshold
+	// (FEED_CELEB_PULL / FEED_CELEB_FOLLOWER_THRESHOLD) — see celebpull.go.
+	celeb celebConfig
 	// feedback is the per-viewer Interested / Not-interested store — the
 	// Postgres MetaStore in production, swapped by tests. See feedback.go.
 	feedback feedbackStore
@@ -146,6 +149,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		trustClient:         httpclient.NewWithBreaker(5*time.Second, "feed->trust-safety"),
 		kwCache:             make(map[uuid.UUID]keywordCacheEntry),
 		lvTiers:             loadLVTiers(),
+		celeb:               loadCelebConfig(),
 	}
 	// A typed-nil *MetaStore must not become a non-nil interface, or every
 	// hydration would fail closed on a nil pool instead of on a real error.
@@ -382,6 +386,19 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		return HomeFeedResult{}, err
 	}
 
+	// Celeb pull (celebpull.go): followed celebs' own timelines join the
+	// read before any filter, merged by timeline key. Not on a legacy
+	// timestamp cursor — that page was cut before pull rows existed.
+	if s.celeb.pull && cursor.Time == nil {
+		pulled, pullErr := s.pullCelebRows(ctx, userID, cursor.Token, fetchLimit)
+		if pullErr != nil {
+			log.Printf("celeb pull unavailable for %s, page served from the pushed timeline only: %v", userID, pullErr)
+		}
+		if len(pulled) > 0 {
+			items = mergeTimelineRows(items, pulled, fetchLimit)
+		}
+	}
+
 	// Convert to FeedItems, optionally filtering out viewer's own original posts.
 	// Reposts are kept even when excludeSelf is true — the user wants to see
 	// content they reposted (it's someone else's post they chose to amplify).
@@ -531,6 +548,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		if err != nil {
 			// Circuit breaker or error: fallback to chronological
 			log.Printf("Ranking failed, falling back to chronological: %v", err)
+			rankFallbacks.WithLabelValues("home").Inc()
 		} else if feedMode == "ranked" {
 			candidates = wholeWindow(candidates, candidatesToFeedItems(rankedCandidates))
 		}
@@ -545,6 +563,8 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// preferred get the multiplier (ranked mode) + composition target,
 	// which reorders and never drops.
 	candidates = s.applyLongVideoFrequency(candidates, lvFreq, feedMode == "ranked")
+
+	homePageItems.Observe(float64(len(candidates)))
 
 	// A page the filters emptied while the timeline goes on is not an empty
 	// feed: it carries a cursor and no reason, and the client reads on.
@@ -879,6 +899,7 @@ func (s *Service) rankVideoWindow(ctx context.Context, userID uuid.UUID, candida
 	ranked, err := s.ranker.Rank(ctx, userID, feedItemsToCandidates(candidates), limit)
 	if err != nil {
 		log.Printf("%s ranking failed, fallback to chronological: %v", surface, err)
+		rankFallbacks.WithLabelValues(surface).Inc()
 		return candidates
 	}
 	return candidatesToFeedItems(ranked)
@@ -1045,7 +1066,15 @@ func (s *Service) DebugFeed(ctx context.Context, userID uuid.UUID) (interface{},
 // a subscriber's row carries no provenance either, and post-service makes
 // a subscribe a follow edge as well, so an unsubscribe reaches this
 // service as an unfollow.
-func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType, visibility string, channelID uuid.UUID) error {
+func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType, visibility string, channelID uuid.UUID) (err error) {
+	start := time.Now()
+	defer func() {
+		fanoutDuration.Observe(time.Since(start).Seconds())
+		if err != nil {
+			fanoutIncomplete.Inc()
+		}
+	}()
+
 	// 1. Always add to Author Timeline
 	if err := s.timelines.AddToAuthorTimeline(ctx, authorID, postID, createdAt, contentType); err != nil {
 		return err
@@ -1130,6 +1159,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			ids, err := s.fetchCircleMembers(ctx, authorID)
 			results <- fetchResult{ids: ids, err: err, tag: "circle"}
 		}()
+		followerCount := 0
 		for i := 0; i < 2; i++ {
 			r := <-results
 			if r.err != nil {
@@ -1137,8 +1167,27 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 				incomplete = append(incomplete, fmt.Errorf("fetch %s: %w", r.tag, r.err))
 				continue
 			}
+			if r.tag == "followers" {
+				followerCount = len(r.ids)
+			}
 			for _, id := range r.ids {
 				recipientSet[id] = struct{}{}
+			}
+		}
+
+		// Celeb threshold (celebpull.go): an author this large switches to
+		// the pull model now — flagged, and this post is not pushed to
+		// followers; GetHomeFeed pulls it. Only with pull enabled, or the
+		// post would reach nobody.
+		if s.celeb.pull && s.celeb.threshold > 0 && followerCount >= s.celeb.threshold {
+			if marker, ok := s.celebs.(celebMarker); ok {
+				if err := marker.SetCelebStatus(ctx, authorID, true); err != nil {
+					log.Printf("celeb flag for %s (%d followers) failed; pushing as before: %v", authorID, followerCount, err)
+				} else {
+					log.Printf("author %s reached %d followers: flagged celeb, pull model from now on", authorID, followerCount)
+					isCeleb = true
+					recipientSet = make(map[uuid.UUID]struct{})
+				}
 			}
 		}
 	}
@@ -1164,7 +1213,10 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 				if err := s.timelines.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
 					log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
 					failedWrites.Add(1)
+					fanoutWrites.WithLabelValues("failed").Inc()
+					continue
 				}
+				fanoutWrites.WithLabelValues("ok").Inc()
 			}
 		}()
 	}

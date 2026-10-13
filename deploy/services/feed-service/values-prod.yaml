@@ -77,3 +77,52 @@ ingress:
 pdb:
   enabled: true
   minAvailable: 1
+
+# Feed alerts (metrics: Architecture/services/feed-service/internal/service/
+# metrics.go and the shared Kafka consumer). Thresholds are starting points;
+# tune them against the k6 scenarios in docs/production-readiness/FEED_AUDIT.md.
+prometheusRule:
+  enabled: true
+  rules:
+    - alert: FeedConsumerLagHigh
+      expr: max by (consumer_group) (atpost_feed_service_kafka_consumer_lag{consumer_group="feed-service-group"}) > 10000
+      for: 10m
+      labels: { severity: page }
+      annotations:
+        summary: feed-service is more than 10k social events behind
+        description: New posts, deletes and unfollows are reaching feeds late. Check fan-out duration and Scylla/graph health.
+    - alert: FeedEventsDeadLettered
+      expr: sum(increase(atpost_feed_service_kafka_dlq_messages_total[15m])) > 0
+      for: 0m
+      labels: { severity: ticket }
+      annotations:
+        summary: feed-service parked events on social.events.v1.dlq
+        description: An event failed every retry. Inspect the x-dlq-error header and replay once fixed.
+    - alert: FeedFanoutIncomplete
+      expr: sum(rate(atpost_feed_service_fanout_incomplete_total[10m])) / clamp_min(sum(rate(atpost_feed_service_fanout_duration_seconds_count[10m])), 1e-9) > 0.05
+      for: 15m
+      labels: { severity: ticket }
+      annotations:
+        summary: More than 5% of feed fan-outs are failing and being retried
+        description: Graph-, profile- or post-service lookups or Scylla writes are failing during fan-out.
+    - alert: FeedRankerFallingBack
+      expr: sum(rate(atpost_feed_service_rank_fallback_total{surface="home"}[10m])) / clamp_min(sum(rate(atpost_feed_service_http_requests_total{path="/v1/feed/home"}[10m])), 1e-9) > 0.10
+      for: 15m
+      labels: { severity: ticket }
+      annotations:
+        summary: Over 10% of home pages are served unranked
+        description: The ranker is failing or exceeding its 20 ms budget (Redis signal loads). Pages fall back to chronological order.
+    - alert: FeedHydrationFailing
+      expr: sum(rate(atpost_feed_service_hydration_failures_total[5m])) > 0.5
+      for: 10m
+      labels: { severity: page }
+      annotations:
+        summary: Feed hydration is failing (users see HYDRATION_FAILED)
+        description: post-service batch, graph privacy checks or trust-safety keyword lookups are failing.
+    - alert: FeedHomeLatencyHigh
+      expr: histogram_quantile(0.95, sum by (le) (rate(atpost_feed_service_http_request_duration_seconds_bucket{path="/v1/feed/home"}[10m]))) > 0.2
+      for: 15m
+      labels: { severity: ticket }
+      annotations:
+        summary: Home feed p95 above the 200 ms target
+        description: See the per-dependency breakdown in traces; hydration and graph calls dominate.
