@@ -79,6 +79,12 @@ env:
   # Account control: identity-topic consumer + purge acks.
   IDENTITY_KAFKA_TOPIC: identity.events.v1
   PURGE_ACKS_TOPIC: platform.purge-acks.v1
+  # Timeline post index (F-24/F-28). No ALLOW FILTERING table scans: a post
+  # with no index rows is not looked for (the code default; explicit here).
+  # Legacy unsharded index still read until timeline-maintenance --apply has
+  # run (deploy/jobs/timeline-maintenance/run.sh), then set "false".
+  FEED_HF4_FALLBACK: "false"
+  FEED_INDEX_LEGACY_READ: "true"
 
 ingress:
   enabled: false
