@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -270,6 +271,11 @@ func main() {
 	if extrasStore != nil {
 		handler.WithExtrasStore(extrasStore)
 	}
+	// Popular searches show a query only once this many distinct people
+	// searched it in the last 7 days (default 5, never below 3).
+	if v, err := strconv.Atoi(os.Getenv("SEARCH_POPULAR_MIN_USERS")); err == nil {
+		handler.WithPopularMinUsers(v)
+	}
 
 	// Startup auto-heal: if users_v1 is empty (wiped index / fresh
 	// OpenSearch volume / events lost beyond Kafka retention), rebuild
@@ -295,6 +301,9 @@ func main() {
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
 			consumerCancel()
+			// Best-effort search-history writes are bounded (2 s each);
+			// let the in-flight ones land before the process exits.
+			handler.WaitHistoryWrites()
 			rdb.Close()
 			slog.Info("cleanup completed")
 		},
