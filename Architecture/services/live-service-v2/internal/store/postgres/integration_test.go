@@ -201,7 +201,7 @@ func TestIntegrationPresence(t *testing.T) {
 	_, _ = s.ApplyTransition(ctx, st.ID, to(StatusLive, ""), nil, nil)
 	a, b := uuid.New(), uuid.New()
 	for _, u := range []uuid.UUID{host, a, b, b} {
-		if _, _, err := s.ApplyPresence(ctx, st.ID, u, true); err != nil {
+		if _, _, _, err := s.ApplyPresence(ctx, st.ID, u, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -209,11 +209,21 @@ func TestIntegrationPresence(t *testing.T) {
 	if got.ViewerCount != 2 || got.ViewerPeak != 2 {
 		t.Fatalf("count=%d peak=%d", got.ViewerCount, got.ViewerPeak)
 	}
-	next, changed, _ := s.ApplyPresence(ctx, st.ID, a, false)
-	if !changed || next.ViewerCount != 1 || next.ViewerPeak != 2 {
-		t.Fatalf("after leave: %+v changed=%v", next, changed)
+	next, changed, joined, _ := s.ApplyPresence(ctx, st.ID, a, false)
+	if !changed || joined || next.ViewerCount != 1 || next.ViewerPeak != 2 {
+		t.Fatalf("after leave: %+v changed=%v joined=%v", next, changed, joined)
 	}
-	if _, _, err := s.ApplyPresence(ctx, uuid.New(), a, true); !errors.Is(err, ErrNotFound) {
+	// joined: only the move from absent to present (viewer.joined, 2-B7).
+	if _, _, joined, _ := s.ApplyPresence(ctx, st.ID, a, true); !joined {
+		t.Fatal("a rejoin after a leave is a join")
+	}
+	if _, _, joined, _ := s.ApplyPresence(ctx, st.ID, a, true); joined {
+		t.Fatal("a repeated join of a present viewer is not a join")
+	}
+	if _, _, joined, _ := s.ApplyPresence(ctx, st.ID, uuid.New(), true); !joined {
+		t.Fatal("a first join is a join")
+	}
+	if _, _, _, err := s.ApplyPresence(ctx, uuid.New(), a, true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing stream: %v", err)
 	}
 }
@@ -411,7 +421,7 @@ func TestIntegrationPurgeCoversNewTables(t *testing.T) {
 	st := itStream(t, s, host)
 	_, _ = s.ApplyTransition(ctx, st.ID, to(StatusStarting, ""), nil, nil)
 	_, _ = s.ApplyTransition(ctx, st.ID, to(StatusLive, ""), nil, nil)
-	_, _, _ = s.ApplyPresence(ctx, st.ID, viewer, true)
+	_, _, _, _ = s.ApplyPresence(ctx, st.ID, viewer, true)
 	_ = s.BanFromStream(ctx, st.ID, viewer, host, "")
 	_ = s.ReplaceModerators(ctx, st.ID, []uuid.UUID{uuid.New()}, host)
 	_, _ = s.CreateReport(ctx, NewReport{StreamID: st.ID, ReporterID: viewer, TargetUserID: host, Reason: "spam"}, 20, time.Hour)

@@ -368,22 +368,23 @@ func (m *MemStore) noteAttempt(j *postgres.RecordingImport, mediaID *uuid.UUID, 
 	}
 }
 
-func (m *MemStore) ApplyPresence(_ context.Context, streamID, userID uuid.UUID, present bool) (*postgres.LiveStream, bool, error) {
+func (m *MemStore) ApplyPresence(_ context.Context, streamID, userID uuid.UUID, present bool) (*postgres.LiveStream, bool, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st, ok := m.Streams[streamID]
 	if !ok {
-		return nil, false, postgres.ErrNotFound
+		return nil, false, false, postgres.ErrNotFound
 	}
 	if m.Presence[streamID] == nil {
 		m.Presence[streamID] = map[uuid.UUID]bool{}
 	}
+	joined := present && !m.Presence[streamID][userID]
 	m.Presence[streamID][userID] = present
 	if userID != st.CreatorUserID {
 		m.ViewerEvents++
 	}
 	if postgres.IsTerminal(st.Status) {
-		return clone(st), false, nil
+		return clone(st), false, joined, nil
 	}
 	n := 0
 	for uid, p := range m.Presence[streamID] {
@@ -396,7 +397,7 @@ func (m *MemStore) ApplyPresence(_ context.Context, streamID, userID uuid.UUID, 
 	if n > st.ViewerPeak {
 		st.ViewerPeak = n
 	}
-	return clone(st), n != old, nil
+	return clone(st), n != old, joined, nil
 }
 
 func (m *MemStore) ListDueForTimeout(_ context.Context, startTimeout, encoderStartTimeout, grace time.Duration, limit int) ([]uuid.UUID, error) {

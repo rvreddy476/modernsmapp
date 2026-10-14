@@ -120,7 +120,7 @@ type Store interface {
 	CompleteImport(ctx context.Context, streamID, mediaID uuid.UUID, events func(*postgres.LiveStream, postgres.RecordingImport) ([]postgres.OutboxEvent, error)) error
 	RetryImport(ctx context.Context, streamID uuid.UUID, mediaID *uuid.UUID, processingStatus, msg string, retryIn time.Duration) error
 	TerminateImport(ctx context.Context, streamID uuid.UUID, mediaID *uuid.UUID, processingStatus, msg string) error
-	ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, present bool) (*postgres.LiveStream, bool, error)
+	ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, present bool) (st *postgres.LiveStream, changed, joined bool, err error)
 	ListDueForTimeout(ctx context.Context, startTimeout, encoderStartTimeout, grace time.Duration, limit int) ([]uuid.UUID, error)
 	// Encoder streams (ingress.go).
 	SetIngress(ctx context.Context, id uuid.UUID, ingressID, encoderIdentity string) (stored bool, err error)

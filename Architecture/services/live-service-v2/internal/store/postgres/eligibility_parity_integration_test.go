@@ -30,7 +30,7 @@ type eligStore interface {
 	CreateStream(ctx context.Context, p postgres.CreateStreamParams) (*postgres.LiveStream, error)
 	CountCompletedStreams(ctx context.Context, creatorID uuid.UUID, minLive time.Duration) (int, error)
 	IsViewerPresent(ctx context.Context, streamID, userID uuid.UUID) (bool, error)
-	ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, present bool) (*postgres.LiveStream, bool, error)
+	ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, present bool) (*postgres.LiveStream, bool, bool, error)
 	AddWordFilter(ctx context.Context, streamID uuid.UUID, word string, addedBy uuid.UUID) error
 	RemoveWordFilter(ctx context.Context, streamID uuid.UUID, word string) error
 	ListWordFilters(ctx context.Context, streamID uuid.UUID) ([]string, error)
@@ -107,7 +107,7 @@ func eligScenario(t *testing.T, s eligStore, place endPlacer) map[string]any {
 		u       uuid.UUID
 		present bool
 	}{{a, true}, {b, true}, {b, false}} {
-		if _, _, err := s.ApplyPresence(ctx, live.ID, step.u, step.present); err != nil {
+		if _, _, _, err := s.ApplyPresence(ctx, live.ID, step.u, step.present); err != nil {
 			t.Fatal(err)
 		}
 	}
