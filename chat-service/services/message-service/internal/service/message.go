@@ -202,6 +202,7 @@ type MessageResponse struct {
 	Type              string            `json:"type"`
 	Text              string            `json:"text,omitempty"`
 	MediaID           *uuid.UUID        `json:"media_id,omitempty"`
+	PostID            *uuid.UUID        `json:"post_id,omitempty"` // "post" card only; see MessageTypePost
 	ReplyToID         *uuid.UUID        `json:"reply_to_id,omitempty"`
 	ReplyToPreview    string            `json:"reply_to_preview,omitempty"`
 	ReplyToSenderID   *uuid.UUID        `json:"reply_to_sender_id,omitempty"`
@@ -986,10 +987,17 @@ func replyRefSenderID(r *ReplyRef) *uuid.UUID {
 	return &r.SenderID
 }
 
-func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, replyTo *ReplyRef, idempotencyKey string) (*MessageResponse, error) {
+func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID, postID *uuid.UUID, replyTo *ReplyRef, idempotencyKey string) (*MessageResponse, error) {
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return nil, ErrIdempotencyKeyRequired
 	}
+	if err := validateMessageContent(msgType, text, mediaID, postID); err != nil {
+		return nil, err
+	}
+	// A post card runs every gate below unchanged — membership (blocks sever
+	// it), chat pause on either side, dating closure / first move, rate limit
+	// and the message-request rules. Who-can-message was decided when the
+	// conversation was opened; a post is just another message in it.
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
 		return nil, err
@@ -1051,8 +1059,9 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		Type           string     `json:"type"`
 		Text           string     `json:"text"`
 		MediaID        *uuid.UUID `json:"media_id,omitempty"`
+		PostID         *uuid.UUID `json:"post_id,omitempty"` // omitempty: pre-existing request hashes unchanged
 		ReplyToID      *uuid.UUID `json:"reply_to_id,omitempty"`
-	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID}
+	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID, PostID: postID}
 	if replyTo != nil {
 		req.ReplyToID = &replyTo.ID
 	}
@@ -1123,7 +1132,15 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 					// The one allowed first message was already sent.
 					return nil, ErrAwaitingRequestAcceptance
 				}
-				if msgType != "text" || strings.TrimSpace(text) == "" {
+				// A post card is refused here exactly like a link: the
+				// single message allowed before acceptance is plain text,
+				// so a stranger cannot push content (or a link-equivalent
+				// card) into a request. Once the recipient accepts — or
+				// replies, which accepts — posts flow like any message.
+				if msgType == MessageTypePost {
+					return nil, fmt.Errorf("%w: posts are not allowed until the request is accepted", ErrRequestFirstMessageInvalid)
+				}
+				if msgType != MessageTypeText || strings.TrimSpace(text) == "" {
 					return nil, fmt.Errorf("%w: first message must be non-empty text", ErrRequestFirstMessageInvalid)
 				}
 				if containsLink(text) {
@@ -1179,6 +1196,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			MessageType:       msgType,
 			MessageText:       text,
 			MediaID:           mediaID,
+			PostID:            postID,
 			MemberIDs:         activeMemberIDs(members),
 			FirstRequest:      firstRequestMessage,
 			RequestReceiverID: requestReceiverID,
@@ -1205,6 +1223,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			Type:           msgType,
 			Text:           text,
 			MediaID:        mediaID,
+			PostID:         postID,
 			IsDeleted:      false,
 			CreatedAt:      now,
 		}
@@ -1233,15 +1252,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		go func() {
 			pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			msgBody := map[string]interface{}{
-				"conversation_id": conversationID,
-				"message_id":      msgID,
-				"sender_id":       userID,
-				"type":            msgType,
-				"text":            text,
-				"media_id":        mediaID,
-				"created_at":      now,
-			}
+			msgBody := messageFrameBody(conversationID, msgID, userID, msgType, text, mediaID, postID, now)
 			if intent.ReplyToID != nil {
 				msgBody["reply_to_id"] = intent.ReplyToID
 				msgBody["reply_to_preview"] = intent.ReplyToPreview
@@ -1324,6 +1335,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			Type:            msgType,
 			Text:            text,
 			MediaID:         mediaID,
+			PostID:          postID,
 			ReplyToID:       intent.ReplyToID,
 			ReplyToPreview:  intent.ReplyToPreview,
 			ReplyToSenderID: intent.ReplyToSenderID,
@@ -1390,6 +1402,7 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 			Type:            m.Type,
 			Text:            m.Text,
 			MediaID:         m.MediaID,
+			PostID:          m.PostID,
 			ReplyToID:       m.ReplyToID,
 			ReplyToPreview:  m.ReplyToPreview,
 			ReplyToSenderID: m.ReplyToSenderID,
@@ -2278,4 +2291,24 @@ func (s *Service) discloseOnlineTo(ctx context.Context, viewerID, targetID uuid.
 	}
 	s.rdb.Set(ctx, cacheKey, value, 30*time.Second)
 	return allowed
+}
+
+// messageFrameBody is the realtime "message" frame payload published to
+// chat:<user> and convroom:<conversation>. post_id rides only on a post card;
+// it is the card's whole content (no post data is copied — see
+// MessageTypePost).
+func messageFrameBody(conversationID, msgID, senderID uuid.UUID, msgType, text string, mediaID, postID *uuid.UUID, createdAt time.Time) map[string]interface{} {
+	body := map[string]interface{}{
+		"conversation_id": conversationID,
+		"message_id":      msgID,
+		"sender_id":       senderID,
+		"type":            msgType,
+		"text":            text,
+		"media_id":        mediaID,
+		"created_at":      createdAt,
+	}
+	if postID != nil {
+		body["post_id"] = postID
+	}
+	return body
 }

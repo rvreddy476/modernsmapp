@@ -32,7 +32,7 @@ func monthBuckets(from time.Time) []string {
 }
 
 // RedactUserMessages blanks every message the user authored in the
-// conversation (text='', media_id=null, is_deleted=true), keeping the row so
+// conversation (text='', media_id=null, post_id=null, is_deleted=true), keeping the row so
 // other members' timelines stay consistent, and removes the user's
 // reactions. Scans each month bucket from `since`.
 func (s *MessageStore) RedactUserMessages(ctx context.Context, convID, userID uuid.UUID, since time.Time) error {
@@ -59,7 +59,7 @@ func (s *MessageStore) RedactUserMessages(ctx context.Context, convID, userID uu
 		}
 		for _, k := range mine {
 			if err := s.session.Query(`
-				UPDATE messages SET text = '', media_id = null, is_deleted = true
+				UPDATE messages SET text = '', media_id = null, post_id = null, is_deleted = true
 				WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?`,
 				cid, bucket, k.ts, k.id).WithContext(ctx).Exec(); err != nil {
 				return fmt.Errorf("redact message %s: %w", k.id, err)

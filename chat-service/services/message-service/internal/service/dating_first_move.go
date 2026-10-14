@@ -107,5 +107,5 @@ func (s *Service) SendDatingOpeningAnswer(ctx context.Context, matchID, senderID
 	if meta == nil || meta.ClosedAt != nil || !firstMoveBlocks(meta, senderID) {
 		return nil, ErrOpeningAnswerNotAllowed
 	}
-	return s.SendMessage(withFirstMoveBypass(ctx), senderID, convID, "text", text, nil, nil, idempotencyKey)
+	return s.SendMessage(withFirstMoveBypass(ctx), senderID, convID, "text", text, nil, nil, nil, idempotencyKey)
 }
