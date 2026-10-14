@@ -256,8 +256,13 @@ var StampPolicy = map[string]bool{
 	"/v1/grievances":               true,
 	"/v1/verification-requests":    true,
 
-	// graph-service: engine-wide RequireInternalKey.
-	"/v1/graph": true,
+	// graph-service: engine-wide RequireInternalKey. The permission check API
+	// is registered on the same engine beside /v1/graph, so it needs the key
+	// the same way; its actor is the gateway-set X-User-Id. graph-service's
+	// service-only routes are under /v1/internal/graph, which neither prefix
+	// reaches.
+	"/v1/graph":       true,
+	"/v1/permissions": true,
 
 	// post-service: engine-wide RequireInternalKey.
 	"/v1/channels":     true,
@@ -285,9 +290,12 @@ var StampPolicy = map[string]bool{
 	// anonymous edge access to anything on media that trusts the key alone.
 	// The captions group is registered at the root of media-service beside
 	// /v1/media and reads the key nowhere, so it is classified the same way.
-	"/v1/audio":     false,
-	"/v1/media":     false,
-	"/v1/subtitles": false,
+	// The curated sound library (/v1/audio-library) is a public read beside
+	// /v1/audio and reads neither the key nor an identity.
+	"/v1/audio":         false,
+	"/v1/audio-library": false,
+	"/v1/media":         false,
+	"/v1/subtitles":     false,
 
 	// notification-service: engine-wide RequireInternalKey (SSE included).
 	"/v1/notifications": true,
