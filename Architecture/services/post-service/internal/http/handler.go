@@ -1100,6 +1100,12 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
 		limit = l
 	}
+	// ?sort=latest|popular|oldest (T-21). Absent is latest, the old order.
+	sort, err := postgres.ParseAuthorPostSort(c.Query("sort"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SORT", "sort must be latest, popular or oldest", nil)
+		return
+	}
 
 	var viewerID *uuid.UUID
 	if v := c.GetHeader("X-User-Id"); v != "" {
@@ -1108,7 +1114,11 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 		}
 	}
 
-	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, limit, cursor, viewerID)
+	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, sort, limit, cursor, viewerID)
+	if errors.Is(err, postgres.ErrInvalidAuthorCursor) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "cursor is not valid for this sort", nil)
+		return
+	}
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -2255,12 +2265,45 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 		posts = []service.PostDetail{}
 	}
 
-	var meta *api.Meta
-	if nextCursor != "" {
-		meta = &api.Meta{NextCursor: nextCursor}
+	// T-34: the first page carries the tag's post count ("N videos"). It
+	// counts what this list pages over, for the same content_type filter,
+	// and is best-effort: a failed count leaves `total` off, never the page.
+	var total *int
+	capped := false
+	if cursor == "" {
+		n, hitCap, err := h.svc.HashtagTotal(c.Request.Context(), tag, contentTypes)
+		if err != nil {
+			slog.WarnContext(c.Request.Context(), "hashtag total unavailable", "tag", tag, "error", err)
+		} else {
+			total, capped = &n, hitCap
+		}
 	}
 
-	api.JSON(c.Writer, http.StatusOK, posts, meta)
+	c.JSON(http.StatusOK, hashtagPostsResponse{Data: posts, Meta: newHashtagPostsMeta(nextCursor, total, capped)})
+}
+
+// hashtagPostsMeta is the meta of GET /v1/hashtags/:tag/posts: api.Meta plus
+// the tag's post count. total is present on the first page only (no cursor);
+// total_capped means the count stopped at postgres.HashtagTotalCap, so the
+// client shows "10,000+" rather than an exact figure.
+type hashtagPostsMeta struct {
+	NextCursor  string `json:"next_cursor,omitempty"`
+	Total       *int   `json:"total,omitempty"`
+	TotalCapped bool   `json:"total_capped,omitempty"`
+}
+
+type hashtagPostsResponse struct {
+	Data []service.PostDetail `json:"data"`
+	Meta *hashtagPostsMeta    `json:"meta,omitempty"`
+}
+
+// newHashtagPostsMeta returns nil when there is nothing to say, so a last
+// page without a count keeps the old envelope (no meta at all).
+func newHashtagPostsMeta(nextCursor string, total *int, capped bool) *hashtagPostsMeta {
+	if nextCursor == "" && total == nil {
+		return nil
+	}
+	return &hashtagPostsMeta{NextCursor: nextCursor, Total: total, TotalCapped: total != nil && capped}
 }
 
 // SearchHashtags handles GET /v1/hashtags/search?q=...&limit=...

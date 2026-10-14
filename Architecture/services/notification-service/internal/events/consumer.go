@@ -372,8 +372,7 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		mentionedID, _ := uuid.Parse(e.MentionedUserID)
 		authorID, _ := uuid.Parse(e.AuthorID)
 		postID, _ := uuid.Parse(e.PostID)
-		deepLink := fmt.Sprintf("/post/%s", e.PostID)
-		return c.service.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, deepLink, e.OccurredAt)
+		return c.service.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, mentionDeepLink(e), e.OccurredAt)
 
 	case events.EventPostReposted:
 		var e events.PostRepostedPayload
@@ -641,6 +640,17 @@ func (c *Consumer) flushFriendRequest(key string) {
 		slog.Error("friend-request: failed to dispatch notification",
 			"sender", entry.senderID, "receiver", entry.receiverID, "error", err)
 	}
+}
+
+// mentionDeepLink is where a user.mentioned notification opens. A mention in
+// a comment or reply (post-service T-12 sets comment_id) opens the post with
+// that comment focused — the same link comment and comment-reaction
+// notifications use; a mention in the post itself opens the post.
+func mentionDeepLink(e events.UserMentionedPayload) string {
+	if e.CommentID != "" {
+		return fmt.Sprintf("/post/%s?focusComment=%s", e.PostID, e.CommentID)
+	}
+	return fmt.Sprintf("/post/%s", e.PostID)
 }
 
 func unmarshalPayload(raw json.RawMessage, v interface{}) error {

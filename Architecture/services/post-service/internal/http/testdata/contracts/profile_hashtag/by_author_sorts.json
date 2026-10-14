@@ -1,0 +1,10 @@
+{
+  "default": "latest",
+  "param": "sort",
+  "pinned_first_only_for": "latest",
+  "values": [
+    "latest",
+    "popular",
+    "oldest"
+  ]
+}
