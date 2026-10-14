@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -81,12 +82,30 @@ type categoryPage struct {
 // whole window is consumed, Next is that window's own cursor. Either way
 // nothing is skipped and nothing repeats.
 func collectCategoryPage(ctx context.Context, limit int, before, category string, fetch windowFetcher, hydrate hydrator) (categoryPage, error) {
+	return collectCategoryPageWithin(ctx, limit, before, category, fetch, hydrate, maxCategoryWindows, maxCategoryWindows)
+}
+
+// collectCategoryPageWithin is collectCategoryPage with an explicit window
+// budget: up to `windows` windows in any case, and up to `windowsWhileEmpty`
+// (>= windows) while the page has matched nothing at all. The second budget
+// exists for sparse surfaces (the reels category chips, reels_category.go),
+// where a run of other-category rows longer than `windows` windows would
+// otherwise hand the client an empty page with a cursor. Paging stays exact
+// either way: the budget only decides where this request stops, never which
+// rows are skipped.
+func collectCategoryPageWithin(ctx context.Context, limit int, before, category string, fetch windowFetcher, hydrate hydrator, windows, windowsWhileEmpty int) (categoryPage, error) {
 	page := categoryPage{Items: make(map[uuid.UUID]FeedItem)}
 	if limit <= 0 {
 		return page, nil
 	}
+	if windowsWhileEmpty < windows {
+		windowsWhileEmpty = windows
+	}
 	cursor := before
-	for w := 0; w < maxCategoryWindows; w++ {
+	for w := 0; w < windowsWhileEmpty; w++ {
+		if w >= windows && len(page.Posts) > 0 {
+			return page, nil // the extended budget is for empty pages only
+		}
 		items, next, err := fetch(ctx, cursor, limit)
 		if err != nil {
 			return categoryPage{}, err
@@ -195,10 +214,52 @@ func chronologicalHydratedPage(page categoryPage) []HydratedPost {
 }
 
 func (s *Service) collectHydratedCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, fetch windowFetcher) (categoryPage, error) {
+	return s.collectHydratedCategoryPageWithin(ctx, userID, limit, before, category, fetch, maxCategoryWindows, maxCategoryWindows)
+}
+
+func (s *Service) collectHydratedCategoryPageWithin(ctx context.Context, userID uuid.UUID, limit int, before, category string, fetch windowFetcher, windows, windowsWhileEmpty int) (categoryPage, error) {
 	hydrate := func(ctx context.Context, items []FeedItem) ([]HydratedPost, error) {
 		return s.HydratePosts(ctx, items, userID)
 	}
-	return collectCategoryPage(ctx, limit, before, category, fetch, hydrate)
+	return collectCategoryPageWithin(ctx, limit, before, category, fetch, hydrate, windows, windowsWhileEmpty)
+}
+
+// appendHydratedFill tops an assembled category page up from discovery
+// fill candidates: merged behind the page's own rows under the surface's
+// content-type guard (`keep`), hydrated as the viewer — so every
+// hydration-time rule (privacy, listing visibility, processing, keywords,
+// "Not interested" / "Don't recommend") holds for fill rows too — and
+// re-checked against `category`, so a stale cached row cannot slip a
+// different category in even though post-service already narrowed the
+// fill. Never past `limit`. Shared by the Tube and reels category pages so
+// their fill rules cannot drift.
+func (s *Service) appendHydratedFill(ctx context.Context, userID uuid.UUID, page *categoryPage, fill []FeedItem, limit int, category string, keep func(contentType string) bool) error {
+	kept := make([]FeedItem, 0, len(page.Posts))
+	for _, p := range page.Posts {
+		kept = append(kept, page.Items[p.ID])
+	}
+	merged := mergeDiscoveryFillWith(kept, fill, limit, keep)
+	extra := merged[len(kept):]
+	if len(extra) == 0 {
+		return nil
+	}
+	hydrated, err := s.HydratePosts(ctx, extra, userID)
+	if err != nil {
+		return fmt.Errorf("hydrate discovery fill: %w", err)
+	}
+	for _, p := range filterHydratedByCategory(hydrated, category) {
+		if len(page.Posts) >= limit {
+			break
+		}
+		page.Posts = append(page.Posts, p)
+		for _, it := range extra {
+			if it.PostID == p.ID {
+				page.Items[p.ID] = it
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // rankHydratedPage runs the main ranker over the assembled page — one
