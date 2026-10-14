@@ -34,8 +34,12 @@ const (
 type Relationship struct {
 	Follows    bool `json:"follows"`
 	FollowedBy bool `json:"followed_by"`
-	Blocked    bool `json:"blocked"`
-	// BlockedBy: the TARGET blocked the viewer.
+	// Blocked (LEGACY wire key, meaning unchanged): the VIEWER blocked the
+	// target. GET /v1/graph/relationship uses the same key for the OPPOSITE
+	// direction — new code reads ViewerBlockedTarget.
+	Blocked bool `json:"blocked"`
+	// BlockedBy (LEGACY wire key, meaning unchanged): the TARGET blocked the
+	// viewer. New code reads TargetBlockedViewer.
 	//
 	// Module 4 M4-P0-1 — the batch contract omitted this, so a caller asking
 	// "may this viewer see that author" got "not blocked" for a viewer the
@@ -43,7 +47,13 @@ type Relationship struct {
 	// contract that reports only one direction cannot express it, and the
 	// omission reads as permission.
 	BlockedBy bool `json:"blocked_by"`
-	IsMuted   bool `json:"is_muted"`
+	// ViewerBlockedTarget / TargetBlockedViewer name the two block directions
+	// so they mean the same thing here and on the single-pair route. Set only
+	// through MarkViewerBlockedTarget / MarkTargetBlockedViewer, which keep
+	// them in step with the legacy pair.
+	ViewerBlockedTarget bool `json:"viewer_blocked_target"`
+	TargetBlockedViewer bool `json:"target_blocked_viewer"`
+	IsMuted             bool `json:"is_muted"`
 	// IsConnection: viewer and target are friends (a connections row in
 	// either direction). Drives friend-aware CTAs on the client.
 	IsConnection bool `json:"is_connection"`
@@ -72,6 +82,18 @@ type Relationship struct {
 	// IsPrivate: the target's account_visibility is "private". Filled at the
 	// service layer from the privacy snapshot, not by the store.
 	IsPrivate bool `json:"is_private"`
+}
+
+// MarkViewerBlockedTarget records a blocks row blocker=viewer, blocked=target.
+func (r *Relationship) MarkViewerBlockedTarget() {
+	r.Blocked = true // legacy batch meaning: viewer blocked target
+	r.ViewerBlockedTarget = true
+}
+
+// MarkTargetBlockedViewer records a blocks row blocker=target, blocked=viewer.
+func (r *Relationship) MarkTargetBlockedViewer() {
+	r.BlockedBy = true // legacy batch meaning: target blocked viewer
+	r.TargetBlockedViewer = true
 }
 
 type Block struct {
@@ -1126,13 +1148,13 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 		{
 			"blocked",
 			`SELECT blocked_id FROM blocks WHERE blocker_id = $1 AND blocked_id = ANY($2)`,
-			func(r *Relationship) { r.Blocked = true },
+			(*Relationship).MarkViewerBlockedTarget,
 		},
 		{
 			// The direction the old contract omitted entirely.
 			"blocked_by",
 			`SELECT blocker_id FROM blocks WHERE blocked_id = $1 AND blocker_id = ANY($2)`,
-			func(r *Relationship) { r.BlockedBy = true },
+			(*Relationship).MarkTargetBlockedViewer,
 		},
 		{
 			"muted",
