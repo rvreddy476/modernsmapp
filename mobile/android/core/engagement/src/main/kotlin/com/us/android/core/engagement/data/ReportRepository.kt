@@ -32,11 +32,22 @@ class ReportRepository @Inject constructor(
      * Reports one post. [reason] must be one of [REASONS]; [details] is free
      * text and is sent even when blank, because the handler accepts either.
      */
-    suspend fun reportPost(postId: String, reason: String, details: String): ReportOutcome {
+    suspend fun reportPost(postId: String, reason: String, details: String): ReportOutcome =
+        file(ENTITY_POST, postId, reason, details)
+
+    /**
+     * Reports an account, from its profile (2026-10-14, audit T-03): entity
+     * type `user`, the profile's user id. Same reasons, same 409 handling as
+     * a post — trust-safety's intake treats them alike.
+     */
+    suspend fun reportUser(userId: String, reason: String, details: String): ReportOutcome =
+        file(ENTITY_USER, userId, reason, details)
+
+    private suspend fun file(entityType: String, entityId: String, reason: String, details: String): ReportOutcome {
         require(reason in REASONS) { "unknown report reason: $reason" }
         val request = FileReportRequest(
-            entityType = ENTITY_POST,
-            entityId = postId,
+            entityType = entityType,
+            entityId = entityId,
             reason = reason,
             details = details,
         )
@@ -58,6 +69,7 @@ class ReportRepository @Inject constructor(
 
     companion object {
         const val ENTITY_POST = "post"
+        const val ENTITY_USER = "user"
         const val CODE_ACTIVE_REPORT_EXISTS = "ACTIVE_REPORT_EXISTS"
 
         /** The reason tokens trust-safety accepts, in the sheet's order. */

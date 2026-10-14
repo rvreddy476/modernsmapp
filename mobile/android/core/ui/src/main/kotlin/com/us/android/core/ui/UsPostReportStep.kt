@@ -55,12 +55,18 @@ import com.us.android.core.designsystem.theme.UsTheme
  *
  * Scrolls as a whole: eleven rows plus a field can outgrow a short screen,
  * and the keyboard for "Other" lifts the field with `imePadding`.
+ *
+ * [subject] is the noun the sentences name — "post" from the post sheet,
+ * "account" from a profile's More sheet (2026-10-14, audit T-03). The reasons
+ * and the outcome states are the same for both: one vocabulary, one sheet.
+ * Public so a feature's own sheet can host it, as the profile's does.
  */
 @Composable
-internal fun UsPostReportStep(
+fun UsPostReportStep(
     report: UsPostReportState,
     onBack: () -> Unit,
     onSubmit: (reason: UsReportReason, details: String) -> Unit,
+    subject: String = "post",
 ) {
     var chosen by rememberSaveable { mutableStateOf<UsReportReason?>(null) }
     var details by rememberSaveable { mutableStateOf("") }
@@ -74,7 +80,7 @@ internal fun UsPostReportStep(
         when (report) {
             UsPostReportState.Sent -> ReportOutcomeView(
                 title = "Thanks for reporting",
-                detail = "We'll take a look at this post.",
+                detail = "We'll take a look at this $subject.",
             )
 
             UsPostReportState.AlreadyReported -> ReportOutcomeView(
@@ -83,6 +89,7 @@ internal fun UsPostReportStep(
             )
 
             else -> ReportForm(
+                subject = subject,
                 report = report,
                 chosen = chosen,
                 details = details,
@@ -136,6 +143,7 @@ private fun ReportHeader(onBack: () -> Unit, showBack: Boolean) {
 @Suppress("LongParameterList")
 @Composable
 private fun ReportForm(
+    subject: String,
     report: UsPostReportState,
     chosen: UsReportReason?,
     details: String,
@@ -151,7 +159,7 @@ private fun ReportForm(
             .imePadding(),
     ) {
         Text(
-            text = "Why are you reporting this post?",
+            text = "Why are you reporting this $subject?",
             style = MaterialTheme.typography.bodyMedium,
             color = UsTheme.extended.textMuted,
             modifier = Modifier.padding(horizontal = SIDE, vertical = UsTheme.spacing.m),

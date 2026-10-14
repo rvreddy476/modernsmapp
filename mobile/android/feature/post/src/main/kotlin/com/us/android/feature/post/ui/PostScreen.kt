@@ -251,7 +251,7 @@ private fun LoadedPost(
                 onComment = onOpenComments,
                 onRepost = onRepost,
                 onBookmark = onBookmark,
-                onShare = { share(post.text, author?.nameForDisplay) },
+                onShare = { share(post.id, post.text, author?.nameForDisplay) },
             )
         }
 

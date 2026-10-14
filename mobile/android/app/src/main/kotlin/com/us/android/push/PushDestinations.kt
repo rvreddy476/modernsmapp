@@ -1,5 +1,6 @@
 package com.us.android.push
 
+import com.us.android.core.model.WebLinks
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,20 +37,40 @@ class PushDestinations @Inject constructor() {
     }
 
     /**
-     * An App Link the activity was opened with. Only the group invite link is
-     * routed here today — `https://atpost.app/chat/join/{code}` — and it rides
-     * the same pending slot as a notification tap so it waits through the
-     * login like one. Any other URL is ignored.
+     * An App Link the activity was opened with: the group invite link
+     * (`https://atpost.app/chat/join/{code}`) or a post's public permalink
+     * (`https://cleestudio.com/post/{id}`, 2026-10-14). Either rides the same
+     * pending slot as a notification tap so it waits through the login like
+     * one. Any other URL is ignored — see [linkDestinationOf].
      */
     fun offerLink(uri: android.net.Uri?) {
-        val link = uri?.toString() ?: return
-        val code = joinCodeOf(link) ?: return
-        _pending.value = PushDestination(type = TYPE_CHAT_JOIN, entityId = code, deepLink = link)
+        val destination = linkDestinationOf(uri?.toString()) ?: return
+        _pending.value = destination
     }
 
     companion object {
         const val TYPE_CHAT_JOIN = "chat_join"
-        private const val LINK_HOST = "atpost.app"
+
+        /** The push-destination type minted for an `cleestudio.com/post/{id}` App Link. */
+        const val TYPE_POST_LINK = "post_link"
+
+        /** The invite App Link host ([WebLinks.INVITE_HOST]); post links are parsed by [WebLinks.postIdOf]. */
+        private const val LINK_HOST = WebLinks.INVITE_HOST
+
+        /**
+         * What an App Link routes to, or null for any link this app does not
+         * open. Pure string work, like [joinCodeOf], so it is unit-tested.
+         */
+        fun linkDestinationOf(link: String?): PushDestination? {
+            val trimmed = link?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            joinCodeOf(trimmed)?.let { code ->
+                return PushDestination(type = TYPE_CHAT_JOIN, entityId = code, deepLink = trimmed)
+            }
+            WebLinks.postIdOf(trimmed)?.let { postId ->
+                return PushDestination(type = TYPE_POST_LINK, entityId = postId, deepLink = trimmed)
+            }
+            return null
+        }
 
         /**
          * The code in `https://atpost.app/chat/join/{code}`; null for any other

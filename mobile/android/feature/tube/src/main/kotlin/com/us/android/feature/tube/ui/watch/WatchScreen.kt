@@ -105,7 +105,7 @@ fun WatchScreen(
     val playhead = rememberPlayhead(viewModel.player, polling = true)
     val share = rememberPostSharer()
     val onShare: (FeedItem) -> Unit = { item ->
-        share(item.title.ifBlank { item.text }, item.author.nameForDisplay)
+        share(item.id, item.title.ifBlank { item.text }, item.author.nameForDisplay)
         viewModel.onExternalShared(item.id)
     }
 

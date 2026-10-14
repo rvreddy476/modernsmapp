@@ -251,7 +251,7 @@ internal fun FeedContent(
             onVotePoll = viewModel::onVotePoll,
             onFollow = viewModel::onFollow,
             onShare = { item ->
-                share(item.text, item.author.nameForDisplay)
+                share(item.id, item.text, item.author.nameForDisplay)
                 // Recorded only after the chooser was actually launched, and
                 // only here — the repost endpoint already records repost and
                 // quote shares, so counting this one through both would

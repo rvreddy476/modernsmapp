@@ -540,6 +540,10 @@ private fun NavHostController.openPushDestination(
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
         // destination so it waits through the login like a notification tap.
         CHAT_JOIN_LINK -> if (destination.entityId.isNotBlank()) navigateToJoinByLink(destination.entityId)
+        // A post's public permalink, `cleestudio.com/post/{id}` (2026-10-14): the
+        // post detail, which reads the post (and its visibility) from the
+        // server. The id was already checked to be a UUID by the parser.
+        PushDestinations.TYPE_POST_LINK -> if (destination.entityId.isNotBlank()) navigateToPost(destination.entityId)
         // Call pushes: the ring tap attaches to the live call state; a
         // missed-call tap opens the history.
         "incoming_call", "incoming_video_call" -> navigateToCallSurface()

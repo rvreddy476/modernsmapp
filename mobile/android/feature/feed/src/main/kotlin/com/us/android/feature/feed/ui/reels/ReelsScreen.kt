@@ -266,7 +266,7 @@ fun ReelsScreen(
     // Recorded only AFTER the chooser was launched, and shared by the rail's
     // glyph and the more sheet's row so the count cannot be taken twice.
     val onShare: (FeedItem) -> Unit = { item ->
-        share(item.text, item.author.nameForDisplay)
+        share(item.id, item.text, item.author.nameForDisplay)
         viewModel.onExternalShared(item.id)
     }
 
