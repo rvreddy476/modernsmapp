@@ -34,6 +34,26 @@ object WebLinks {
     fun postPermalink(postId: String): String = "$ORIGIN/$POST_SEGMENT/$postId"
 
     /**
+     * `https://cleestudio.com/u/<username>` — a profile's public page, the
+     * route postbook-ui serves at `src/app/u/[username]` (a public prefix
+     * there, so the link opens for someone who is not signed in). Share
+     * profile hands this out (T-21, 2026-10-15).
+     *
+     * A leading `@` and surrounding space are dropped, and everything outside
+     * the URL's unreserved characters is percent-encoded, so a handle can
+     * never add a path segment, a query or a fragment. Null for a blank
+     * handle: there is no page to link to, and `/u/` alone is not one.
+     *
+     * Not parsed back: the app has no profile-by-username route, so there is
+     * no `/u/` App Link and a tapped profile link opens the web page.
+     */
+    fun profileUrl(username: String?): String? {
+        val handle = username?.trim()?.removePrefix("@")?.trim().orEmpty()
+        if (handle.isEmpty()) return null
+        return "$ORIGIN/$PROFILE_SEGMENT/${handle.percentEncoded()}"
+    }
+
+    /**
      * The post id in `https://cleestudio.com/post/<id>` (a trailing slash, query
      * and fragment ignored), or null for any other link: another host, plain
      * http, another path, extra segments, or an id that is not a UUID. Post
@@ -62,6 +82,29 @@ object WebLinks {
     }
 
     private fun String.isUuid(): Boolean = UUID.matches(this)
+
+    /** RFC 3986 percent-encoding of everything but the unreserved set, over UTF-8. */
+    private fun String.percentEncoded(): String = buildString {
+        for (byte in this@percentEncoded.encodeToByteArray()) {
+            val code = byte.toInt() and BYTE_MASK
+            val char = code.toChar()
+            if (char.isUnreserved()) {
+                append(char)
+            } else {
+                append('%').append(HEX[code shr NIBBLE]).append(HEX[code and NIBBLE_MASK])
+            }
+        }
+    }
+
+    private fun Char.isUnreserved(): Boolean =
+        this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this in UNRESERVED_MARKS
+
+    private const val PROFILE_SEGMENT = "u"
+    private const val UNRESERVED_MARKS = "-._~"
+    private const val HEX = "0123456789ABCDEF"
+    private const val BYTE_MASK = 0xFF
+    private const val NIBBLE = 4
+    private const val NIBBLE_MASK = 0x0F
 
     private const val POST_SEGMENTS = 2
     private val UUID = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.us.android.core.feed.data.AuthorPostSort
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoThumb
@@ -21,6 +22,7 @@ import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.model.FeedItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -29,18 +31,63 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** The three tabs of a profile's media grid, in the order they are drawn. */
+/**
+ * The tabs of a profile's media grid, in the order they are drawn.
+ *
+ * The first three are the AUTHOR's posts by content type, read from
+ * `GET /v1/posts/by-author/:id` and sortable ([sortable]). [SAVED] is the
+ * VIEWER's bookmarks (`GET /v1/posts/bookmarks`), so it exists on the
+ * viewer's own profile only ([gridTabsFor]); it carries no content type of
+ * its own and has no server sort.
+ *
+ * There is no Liked tab: `GET /v1/reels/liked` reads `user_reel_likes`,
+ * which nothing in post-service writes, so it would always be empty.
+ */
 enum class ProfileGridTab(val label: String, val contentType: String) {
     POSTS("Posts", "post"),
     REELS("Reels", "flick"),
     VIDEOS("Videos", "long_video"),
+    SAVED("Saved", ""),
+    ;
+
+    /** An author tab — one content type of the profile's own posts. */
+    val authored: Boolean get() = this != SAVED
+
+    /** Whether the Latest / Popular / Oldest control applies (the by-author sort, T-21). */
+    val sortable: Boolean get() = authored
 }
+
+/**
+ * The grid's tabs for a viewer: the three author tabs for everyone, and
+ * Saved after them on the viewer's OWN profile — bookmarks are private to
+ * the viewer, so nobody else's profile could show them. Pure, so the two
+ * sets are a table test.
+ */
+fun gridTabsFor(isOwn: Boolean): List<ProfileGridTab> =
+    ProfileGridTab.entries.filter { it.authored || isOwn }
+
+/**
+ * One tab's pages, re-read whenever that tab's sort changes.
+ *
+ * `flatMapLatest` drops the old sort's pager and subscribes a new one, so
+ * the new sort starts from its first page with no cursor — the server mints
+ * each cursor for one sort and answers 400 `INVALID_CURSOR` to it under
+ * another. `distinctUntilChanged` keeps a re-selection of the current sort
+ * from throwing the loaded pages away. Generic and pure, so it is tested
+ * without Paging.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun <T> pagesBySort(sort: Flow<AuthorPostSort>, pages: (AuthorPostSort) -> Flow<T>): Flow<T> =
+    sort.distinctUntilChanged().flatMapLatest(pages)
 
 /**
  * A video the viewer is posting, as a tile at the head of its tab
@@ -101,7 +148,7 @@ data class PublishSuccess(val tab: ProfileGridTab) {
 
 /** Which tab a scheduled post belongs on, by its content type; null for a kind the grid has no tab for. */
 fun scheduledTabFor(contentType: String): ProfileGridTab? =
-    ProfileGridTab.entries.firstOrNull { it.contentType == contentType }
+    ProfileGridTab.entries.firstOrNull { it.authored && it.contentType == contentType }
 
 /**
  * The profile's media grid (2026-09-05): a user's posts, reels and long
@@ -163,9 +210,25 @@ class ProfileGridViewModel @Inject constructor(
      */
     val success: StateFlow<PublishSuccess?> = _success
 
+    /** The tabs this viewer gets — Saved only on their own profile. */
+    val tabs: List<ProfileGridTab> = gridTabsFor(isOwn)
+
+    private val _sorts = MutableStateFlow<Map<ProfileGridTab, AuthorPostSort>>(emptyMap())
+
+    /**
+     * Each author tab's sort (T-21); a tab absent from the map is on
+     * [AuthorPostSort.LATEST]. Per tab, so re-sorting Reels leaves the Posts
+     * pages where they were.
+     */
+    val sorts: StateFlow<Map<ProfileGridTab, AuthorPostSort>> = _sorts
+
     val posts: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.POSTS)
     val reels: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.REELS)
     val longVideos: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.VIDEOS)
+
+    /** The viewer's own bookmarks; never requested on anyone else's profile. */
+    val saved: Flow<PagingData<FeedItem>> =
+        if (isOwn) videos.savedPosts().cachedIn(viewModelScope) else flowOf(PagingData.empty())
 
     /** The viewer's own pending videos, oldest first, each on its tab; empty on anyone else's profile. */
     val pending: StateFlow<List<PendingVideoTile>> = tracker.items
@@ -264,6 +327,8 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.POSTS -> feedEntry.showFirst(postId)
             ProfileGridTab.REELS -> reelsEntry.open(postId)
             ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
+            // Nothing is ever published INTO Saved; pendingTabFor never answers it.
+            ProfileGridTab.SAVED -> return
         }
         _published.tryEmit(tab)
     }
@@ -280,7 +345,20 @@ class ProfileGridViewModel @Inject constructor(
     }
 
     fun select(tab: ProfileGridTab) {
-        _tab.value = tab
+        if (tab in tabs) _tab.value = tab
+    }
+
+    /** The sort [tab] is on; Latest until the viewer picks another. */
+    fun sortFor(tab: ProfileGridTab): AuthorPostSort = _sorts.value[tab] ?: AuthorPostSort.LATEST
+
+    /**
+     * Re-sorts one author tab. The tab's pager is replaced ([pagesBySort]),
+     * so it reloads from the top under the new order; the other tabs keep
+     * their pages. Saved has no server sort and ignores this.
+     */
+    fun selectSort(tab: ProfileGridTab, sort: AuthorPostSort) {
+        if (!tab.sortable) return
+        _sorts.update { it + (tab to sort) }
     }
 
     fun retryPublish(creationKey: String) = publishActions.retry(creationKey)
@@ -305,7 +383,9 @@ class ProfileGridViewModel @Inject constructor(
     }
 
     private fun paged(tab: ProfileGridTab): Flow<PagingData<FeedItem>> =
-        videos.authorPosts(userId, tab.contentType).cachedIn(viewModelScope)
+        pagesBySort(_sorts.map { it[tab] ?: AuthorPostSort.LATEST }) { sort ->
+            videos.authorPosts(userId, tab.contentType, sort)
+        }.cachedIn(viewModelScope)
 
     private companion object {
         const val USER_ID_KEY = "userId"

@@ -1,9 +1,12 @@
 package com.us.android.feature.profile.ui
 
 import androidx.compose.runtime.Immutable
+import com.us.android.core.model.FollowCounts
 import com.us.android.core.model.Profile
+import com.us.android.core.model.ProfileCounts
 import com.us.android.core.model.ProfileRelationship
 import com.us.android.core.model.ProfileStats
+import com.us.android.core.model.withGraph
 
 /**
  * Everything the profile screen renders, as one immutable value.
@@ -69,9 +72,29 @@ sealed interface ProfileUiState {
          * renders.
          */
         val incomingFollowRequestCount: Int? = null,
+        /**
+         * The graph's live follower / following / friend counts
+         * (`GET /v1/graph/counts/:id`, T-20). Null until they arrive or when
+         * the read failed; re-read after every follow, unfollow and block so
+         * the header moves with the action.
+         */
+        val graphCounts: FollowCounts? = null,
     ) : ProfileUiState {
 
-        /** Stats when available, profile counts otherwise. Never both. */
-        val counts get() = stats?.counts ?: profile.counts
+        /**
+         * Stats when available, profile counts otherwise — never both — with
+         * the graph's follow counts laid over them when those arrived. The
+         * profile-side follow counts read `profile_stats`, which stopped
+         * moving when follows moved to the graph (audit R-1), so they are
+         * only the fallback; the post count still comes from that side.
+         */
+        val counts: ProfileCounts get() = (stats?.counts ?: profile.counts).withGraph(graphCounts)
+
+        /**
+         * This profile blocked the viewer: the screen draws a neutral
+         * "not available" state in place of the follow and message controls
+         * and the grid, and never says that a block is the reason.
+         */
+        val unavailable: Boolean get() = !profile.isOwnProfile && relationship.isBlockedByTarget
     }
 }

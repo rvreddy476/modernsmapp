@@ -119,6 +119,31 @@ data class ProfileCounts(
     val posts: Int,
 )
 
+/**
+ * The graph's own follower, following and friend counts —
+ * graph-service `GET /v1/graph/counts/:id` (T-20, 2026-10-15).
+ *
+ * These are the live numbers. The profile payload and
+ * `GET /v1/profiles/:id/stats` read `profile_stats`, which only the retired
+ * profile-service follow route ever incremented, so once the graph took over
+ * follows those copies stopped moving (audit R-1). Where both exist these
+ * win for the three counts they carry; the post count still comes from the
+ * profile side.
+ */
+data class FollowCounts(
+    val followers: Int,
+    val following: Int,
+    val friends: Int,
+)
+
+/** These counts with the graph's live follow counts laid over them; the post count is kept. */
+fun ProfileCounts.withGraph(graph: FollowCounts?): ProfileCounts =
+    if (graph == null) {
+        this
+    } else {
+        copy(followers = graph.followers, following = graph.following, friends = graph.friends)
+    }
+
 /** The extra fields only the stats endpoint returns. */
 data class ProfileStats(
     val counts: ProfileCounts,
@@ -139,7 +164,15 @@ data class ProfileStats(
  */
 data class ProfileRelationship(
     val isFollowing: Boolean = false,
+    /** The VIEWER blocked this profile: the block the viewer can undo with Unblock. */
     val isBlocked: Boolean = false,
+    /**
+     * This profile blocked the VIEWER (graph `target_blocked_viewer`,
+     * 2026-10-15). The screen answers it with a neutral "not available"
+     * state and no Follow or Message controls, and never says who blocked
+     * whom.
+     */
+    val isBlockedByTarget: Boolean = false,
     /**
      * Whether the PROFILE (not the viewer) is private. Carried on the
      * relationship rather than only on [Profile] because the graph endpoint

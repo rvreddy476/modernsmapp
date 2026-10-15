@@ -5,10 +5,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.common.result.getOrNull
+import com.us.android.core.model.FollowCounts
+import com.us.android.core.model.FollowRequest
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.Profile
 import com.us.android.core.model.ProfileRelationship
+import com.us.android.core.model.ProfileStats
 import com.us.android.core.model.SessionState
+import com.us.android.core.network.Paged
+import com.us.android.core.profile.data.GraphCountsRepository
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
@@ -23,6 +29,8 @@ import javax.inject.Inject
 @HiltViewModel
 class ProfileViewModel @Inject constructor(
     private val repository: ProfileRepository,
+    /** The live follow counts (graph-service, T-20); see [refreshCounts]. */
+    private val graphCounts: GraphCountsRepository,
     sessionStateProvider: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -48,70 +56,67 @@ class ProfileViewModel @Inject constructor(
     fun load() {
         _state.value = ProfileUiState.Loading
         viewModelScope.launch {
-            // All three requests go out together. Serialising them would put
-            // extra round trips in front of first paint for data the header
-            // can already render from the profile payload.
-            val (profileResult, statsResult, requestsResult) = coroutineScope {
-                val profile = async {
-                    if (userId == null) repository.getOwnProfile() else repository.getProfile(userId)
-                }
-                // The stats id is only known for another user up front; for
-                // the owner it needs the profile's id, so this call is issued
-                // after the profile resolves in that case.
-                val stats = async {
-                    userId?.let { repository.getStats(it) }
-                }
-                // Only the own-profile screen shows the "Requests" pill —
-                // asking who wants to follow SOMEONE ELSE is not a thing the
-                // viewer is authorized to know.
-                val requests = async {
-                    if (userId == null) repository.incomingFollowRequests() else null
-                }
-                Triple(profile.await(), stats.await(), requests.await())
-            }
-
-            when (profileResult) {
-                is AppResult.Failure -> {
-                    _state.value = ProfileUiState.Error(
-                        message = ProfileErrorText.forLoad(profileResult.error),
-                        retryable = ProfileErrorText.isRetryable(profileResult.error),
-                    )
-                }
-
-                is AppResult.Success -> {
-                    val profile = profileResult.data
-                    // Stats failing must not fail the screen — the profile
-                    // payload already carries follower/following/post counts,
-                    // so the header degrades to those rather than to an error.
-                    val stats = when {
-                        statsResult is AppResult.Success -> statsResult.data
-                        userId == null -> repository.getStats(profile.userId).let {
-                            (it as? AppResult.Success)?.data
-                        }
-                        else -> null
-                    }
-                    // The REAL relationship, not a guess. This used to be
-                    // hardcoded empty, so Follow reset to "Follow" on every
-                    // visit no matter what the server knew. Best-effort: a
-                    // graph blip degrades to what the PROFILE payload already
-                    // said about privacy and follow status, never an error.
-                    val relationship = if (!profile.isOwnProfile && viewerId.isNotBlank()) {
-                        val edge = repository.relationship(viewerId, profile.userId)
-                        (edge as? AppResult.Success)?.data ?: profile.fallbackRelationship()
-                    } else {
-                        ProfileRelationship(isPrivate = profile.isPrivate)
-                    }
-                    _state.value = ProfileUiState.Content(
-                        profile = profile,
-                        stats = stats,
-                        relationship = relationship,
-                        // The count from whichever page loaded; a failed fetch
-                        // leaves the pill absent rather than claiming zero.
-                        incomingFollowRequestCount = (requestsResult as? AppResult.Success)?.data?.items?.size,
-                    )
-                }
+            val batch = firstReads()
+            _state.value = when (val profileResult = batch.profile) {
+                is AppResult.Failure -> ProfileUiState.Error(
+                    message = ProfileErrorText.forLoad(profileResult.error),
+                    retryable = ProfileErrorText.isRetryable(profileResult.error),
+                )
+                is AppResult.Success -> contentFor(profileResult.data, batch)
             }
         }
+    }
+
+    /**
+     * All four first requests, out together. Serialising them would put
+     * extra round trips in front of first paint for data the header can
+     * already render from the profile payload.
+     */
+    private suspend fun firstReads(): LoadBatch = coroutineScope {
+        val profile = async {
+            if (userId == null) repository.getOwnProfile() else repository.getProfile(userId)
+        }
+        // The stats id is only known for another user up front; for the
+        // owner it needs the profile's id, so this call is issued after the
+        // profile resolves in that case.
+        val stats = async { userId?.let { repository.getStats(it) } }
+        // Only the own-profile screen shows the "Requests" pill — asking who
+        // wants to follow SOMEONE ELSE is not a thing the viewer is
+        // authorized to know.
+        val requests = async { if (userId == null) repository.incomingFollowRequests() else null }
+        // The graph's live follow counts (T-20). Like stats, the owner's are
+        // read once the profile names the id.
+        val counts = async { userId?.let { graphCounts.counts(it) } }
+        LoadBatch(profile.await(), stats.await(), requests.await(), counts.await())
+    }
+
+    private suspend fun contentFor(profile: Profile, batch: LoadBatch): ProfileUiState.Content {
+        // Stats failing must not fail the screen — the profile payload
+        // already carries follower/following/post counts, so the header
+        // degrades to those rather than to an error.
+        val stats = (batch.stats ?: repository.getStats(profile.userId)).getOrNull()
+        // Best-effort, like stats: a failed read leaves the profile-side
+        // follow counts on the header.
+        val liveCounts = (batch.counts ?: graphCounts.counts(profile.userId)).getOrNull()
+        // The REAL relationship, not a guess. This used to be hardcoded
+        // empty, so Follow reset to "Follow" on every visit no matter what
+        // the server knew. Best-effort: a graph blip degrades to what the
+        // PROFILE payload already said about privacy and follow status,
+        // never an error.
+        val relationship = if (!profile.isOwnProfile && viewerId.isNotBlank()) {
+            repository.relationship(viewerId, profile.userId).getOrNull() ?: profile.fallbackRelationship()
+        } else {
+            ProfileRelationship(isPrivate = profile.isPrivate)
+        }
+        return ProfileUiState.Content(
+            profile = profile,
+            stats = stats,
+            relationship = relationship,
+            // The count from whichever page loaded; a failed fetch leaves the
+            // pill absent rather than claiming zero.
+            incomingFollowRequestCount = batch.requests?.getOrNull()?.items?.size,
+            graphCounts = liveCounts,
+        )
     }
 
     /**
@@ -126,7 +131,7 @@ class ProfileViewModel @Inject constructor(
      */
     fun onFollowToggle() {
         val current = _state.value as? ProfileUiState.Content ?: return
-        if (current.relationshipBusy || current.profile.isOwnProfile) return
+        if (current.relationshipBusy || current.profile.isOwnProfile || current.unavailable) return
 
         when (current.relationship.followStatus) {
             FollowStatus.NONE -> startFollow(current)
@@ -218,6 +223,7 @@ class ProfileViewModel @Inject constructor(
                     )
                 }
             }
+            if (result is AppResult.Success) refreshCounts(target)
         }
     }
 
@@ -248,6 +254,7 @@ class ProfileViewModel @Inject constructor(
                     )
                 }
             }
+            if (result is AppResult.Success) refreshCounts(target)
         }
     }
 
@@ -289,11 +296,28 @@ class ProfileViewModel @Inject constructor(
                     )
                 }
             }
+            if (result is AppResult.Success) refreshCounts(target)
         }
     }
 
     fun dismissActionError() = _state.update {
         (it as? ProfileUiState.Content)?.copy(actionError = null) ?: it
+    }
+
+    /**
+     * Re-reads the graph's counts for the profile on screen after a follow,
+     * unfollow, block or unblock went through (T-20), so the header moves
+     * with the action. graph-service drops its 60 s count cache for both
+     * accounts on each of those writes, so this read is already fresh. A
+     * failed read keeps the numbers the header had; a profile that changed
+     * meanwhile is left alone.
+     */
+    private suspend fun refreshCounts(userId: String) {
+        val fresh = (graphCounts.counts(userId) as? AppResult.Success)?.data ?: return
+        _state.update { state ->
+            val content = state as? ProfileUiState.Content
+            if (content == null || content.profile.userId != userId) state else content.copy(graphCounts = fresh)
+        }
     }
 }
 
@@ -321,3 +345,11 @@ private fun Profile.fallbackRelationship() = ProfileRelationship(
 private fun SavedStateHandle.profileUserId(): String? = get<String>(USER_ID_KEY)
 
 private const val USER_ID_KEY = "userId"
+
+/** The four first reads of [ProfileViewModel.load], awaited together. */
+private data class LoadBatch(
+    val profile: AppResult<Profile>,
+    val stats: AppResult<ProfileStats>?,
+    val requests: AppResult<Paged<FollowRequest>>?,
+    val counts: AppResult<FollowCounts>?,
+)

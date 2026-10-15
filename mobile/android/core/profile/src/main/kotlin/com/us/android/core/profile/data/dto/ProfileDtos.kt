@@ -238,13 +238,43 @@ data class GraphStatusDto(
 data class RelationshipDto(
     val follows: Boolean = false,
     @SerialName("followed_by") val followedBy: Boolean = false,
+    /**
+     * LEGACY, and on THIS route it means the TARGET blocked the viewer —
+     * the opposite of the same key on `POST /v1/graph/relationships/batch`.
+     * Read through [targetBlockedViewer] first.
+     */
     val blocked: Boolean = false,
+    /** LEGACY: on this route, the VIEWER blocked the target. Read through [viewerBlockedTarget] first. */
     @SerialName("blocked_by") val blockedBy: Boolean = false,
+    /**
+     * The two block directions by name (graph-service, 2026-10-15), meaning
+     * the same thing here and on the batch route. Nullable so an older
+     * server that does not send them is told apart from one that says
+     * `false`; the mapping then falls back to the legacy pair above.
+     */
+    @SerialName("viewer_blocked_target") val viewerBlockedTarget: Boolean? = null,
+    @SerialName("target_blocked_viewer") val targetBlockedViewer: Boolean? = null,
     @SerialName("is_connection") val isConnection: Boolean = false,
     @SerialName("connection_status") val connectionStatus: String = "",
     /** `"none"|"pending_sent"|"pending_received"`. */
     @SerialName("follow_request_status") val followRequestStatus: String = "",
     @SerialName("is_private") val isPrivate: Boolean = false,
+)
+
+/**
+ * `GET /v1/graph/counts/:userId` — graph-service `store.Counts`, the live
+ * follow counts (T-20). Cached server-side for 60 s and invalidated for
+ * both accounts on every follow, unfollow and block, so a read straight
+ * after a mutation already carries it. The counts are int64 on the server;
+ * `Long` here so no real number can overflow the decode.
+ */
+@Serializable
+data class GraphCountsDto(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("follower_count") val followerCount: Long = 0,
+    @SerialName("following_count") val followingCount: Long = 0,
+    @SerialName("friend_count") val friendCount: Long = 0,
+    @SerialName("updated_at") val updatedAt: String = "",
 )
 
 /** One row of `GET /v1/graph/follow-requests/incoming`. */
