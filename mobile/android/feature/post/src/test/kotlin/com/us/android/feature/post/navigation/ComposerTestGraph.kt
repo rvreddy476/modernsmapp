@@ -1,6 +1,7 @@
 package com.us.android.feature.post.navigation
 
 import com.us.android.core.common.session.SessionTeardownTask
+import com.us.android.core.engagement.data.CommentMentionSource
 import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.telemetry.TelemetryConfig
@@ -73,6 +74,14 @@ object ComposerTestGraph {
     @Provides
     @Singleton
     fun provideCommentsViewerSource(): CommentsViewerSource = CommentsViewerSource { null }
+
+    /**
+     * No `@` suggestions. The real source lives in `:app`
+     * (`PeopleCommentMentionSource`, over `:core:chat`'s people search).
+     */
+    @Provides
+    @Singleton
+    fun provideCommentMentionSource(): CommentMentionSource = CommentMentionSource.None
 }
 
 /**

@@ -583,7 +583,7 @@ class PostMoreViewModelTest {
         assertThat(state.username).isEqualTo("call_userb")
         assertThat(state.isBookmarked).isTrue()
         assertThat(state.isOwnPost).isFalse()
-        assertThat(state.link).isEqualTo("https://momentum.app/p/p1")
+        assertThat(state.link).isEqualTo("https://cleestudio.com/post/p1")
     }
 
     // ── Offline copies (2026-10-02) ─────────────────────────────────────

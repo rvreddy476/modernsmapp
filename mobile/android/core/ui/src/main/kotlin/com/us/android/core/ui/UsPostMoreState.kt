@@ -1,6 +1,7 @@
 package com.us.android.core.ui
 
 import androidx.compose.runtime.Immutable
+import com.us.android.core.model.WebLinks
 
 /**
  * Everything the post "more" sheet needs to decide what to show.
@@ -507,13 +508,13 @@ enum class UsReportReason(val label: String, val wire: String) {
 }
 
 /**
- * The post's public address, for "Copy link".
+ * The post's public address, for "Copy link" and Share: the web client's
+ * permalink, `https://cleestudio.com/post/<id>` ([WebLinks.postPermalink]), which
+ * the manifest also routes back into the app as a verified App Link.
  *
- * There is no canonical post URL on the server yet and no App Link in the
- * manifest (see [rememberPostSharer]), so this is the address the product
- * will own once both exist. It is assembled here, in ONE place, so the day
- * the payload carries a real link only this function changes.
+ * It was `https://momentum.app/p/<id>` until 2026-10-14 — a host and a route
+ * nothing served, so every copied link was a 404 (audit T-07). The address is
+ * still assembled in ONE place, so the day the payload carries a canonical
+ * link only [WebLinks] changes.
  */
-fun postShareLink(postId: String): String = "$POST_LINK_BASE$postId"
-
-private const val POST_LINK_BASE = "https://momentum.app/p/"
+fun postShareLink(postId: String): String = WebLinks.postPermalink(postId)

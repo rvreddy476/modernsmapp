@@ -39,13 +39,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -54,6 +59,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.us.android.core.common.error.AppError
@@ -63,8 +69,11 @@ import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.engagement.data.CommentNotice
 import com.us.android.core.engagement.data.CommentRow
 import com.us.android.core.engagement.data.CommentsUiState
+import com.us.android.core.engagement.data.MentionCandidate
+import com.us.android.core.engagement.data.ReplyThread
 
 /**
  * The comments sheet — the ONE way comments open anywhere in the app.
@@ -152,6 +161,10 @@ fun UsCommentsPanel(
     LaunchedEffect(shouldLoadMore) {
         if (shouldLoadMore) callbacks.onLoadMore()
     }
+    // The comment whose ⋮ is open, by id: the menu always reflects the row
+    // as it is NOW (a like or a pin that landed meanwhile), and closes
+    // itself once the row is gone.
+    var menuFor by rememberSaveable { mutableStateOf<String?>(null) }
 
     Column(modifier = modifier.fillMaxWidth()) {
         PanelHeader(onOverflow = onOverflow)
@@ -182,7 +195,9 @@ fun UsCommentsPanel(
                     ),
                     verticalArrangement = Arrangement.spacedBy(ROW_GAP),
                 ) {
-                    items(state.rows, key = { it.id }) { row -> CommentItem(row) }
+                    items(state.rows, key = { it.id }) { row ->
+                        CommentItem(row = row, state = state, callbacks = callbacks, onMenu = { menuFor = it })
+                    }
                     if (state.appending || state.appendError != null) {
                         item(key = "append") {
                             AppendFooter(
@@ -198,7 +213,29 @@ fun UsCommentsPanel(
 
         ComposerBlock(state = state, callbacks = callbacks)
     }
+
+    menuFor?.let { id ->
+        val row = state.findRow(id)
+        val actions = row?.let(state::menuFor).orEmpty()
+        if (row == null || actions.isEmpty()) {
+            LaunchedEffect(id) { menuFor = null }
+        } else {
+            UsCommentActionsSheet(
+                row = row,
+                actions = actions,
+                report = state.report,
+                callbacks = callbacks,
+                onDismiss = { menuFor = null },
+            )
+        }
+    }
 }
+
+/** A comment wherever the panel shows it: the list, an open thread, or a preview. */
+internal fun CommentsUiState.findRow(id: String): CommentRow? =
+    rows.firstOrNull { it.id == id }
+        ?: threads.values.firstNotNullOfOrNull { t -> t.replies.firstOrNull { it.id == id } }
+        ?: rows.firstNotNullOfOrNull { r -> r.reply?.takeIf { it.id == id } }
 
 // ── Header ──────────────────────────────────────────────────────────────
 
@@ -287,57 +324,95 @@ private fun EmptyComments() {
 }
 
 /**
- * One comment, and the post owner's inline reply under it when there is one.
+ * One top-level comment and its replies — two levels, as on the web.
  *
- * No like heart and no "Reply" control — deliberately. post-service exposes
- * `POST /v1/comments/{id}/like`, but it is a TOGGLE and the list carries no
- * viewer-liked flag, so a heart could neither show its own state nor survive
- * a retry honestly. Replies are owner-only, one per comment, and arrive
- * nested in the list, so there is nothing to expand and nothing most viewers
- * could send. Dead controls are worse than none.
+ * Collapsed, the oldest reply shows as a preview (the list response carries
+ * it inline) and "View N replies" opens the thread; open, the paged thread
+ * replaces the preview, with "View more replies" while the server has more
+ * and "Hide replies" to fold it again.
  */
 @Composable
-private fun CommentItem(row: CommentRow) {
+private fun CommentItem(
+    row: CommentRow,
+    state: CommentsUiState,
+    callbacks: UsCommentsCallbacks,
+    onMenu: (String) -> Unit,
+) {
+    val thread = state.thread(row.id)
     Column(modifier = Modifier.fillMaxWidth()) {
-        CommentBody(row)
-        row.reply?.let { reply ->
-            Row(modifier = Modifier.padding(start = REPLY_INDENT, top = ROW_GAP)) {
-                CommentBody(reply)
+        CommentBody(row = row, state = state, callbacks = callbacks, onMenu = onMenu)
+        val shown = if (thread.expanded) thread.replies else listOfNotNull(row.reply)
+        Column(
+            modifier = Modifier.padding(start = REPLY_INDENT, top = if (shown.isEmpty()) 0.dp else REPLY_GAP),
+            verticalArrangement = Arrangement.spacedBy(REPLY_GAP),
+        ) {
+            shown.forEach { reply ->
+                CommentBody(row = reply, state = state, callbacks = callbacks, onMenu = onMenu)
             }
+            ReplyControls(row = row, thread = thread, callbacks = callbacks)
         }
     }
 }
 
+/** The thread's own controls under a top-level comment. */
 @Composable
-private fun CommentBody(row: CommentRow) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        // Named when the server's batch hydration supplied an author; the
-        // seed keeps a stable colour identity either way.
-        UsAvatar(name = row.authorName, size = UsAvatarSize.Small, seed = row.authorId.ifBlank { row.id })
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
+private fun ReplyControls(row: CommentRow, thread: ReplyThread, callbacks: UsCommentsCallbacks) {
+    if (thread.expanded) {
+        when {
+            thread.loading -> CircularProgressIndicator(
+                strokeWidth = 2.dp,
+                color = UsTheme.extended.accentSolid,
+                modifier = Modifier
+                    .padding(top = UsTheme.spacing.s)
+                    .size(SMALL_SPINNER),
+            )
+
+            thread.error != null -> Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
             ) {
-                if (row.authorName.isNotBlank()) {
-                    Text(
-                        text = row.authorName,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = UsTheme.extended.textPrimary,
-                    )
-                }
-                val age = formatRelativeTime(row.createdAt)
-                if (age.isNotEmpty()) {
-                    Text(
-                        text = age,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = UsTheme.extended.textMuted,
-                    )
-                }
+                Text(
+                    text = "Replies couldn't load.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textSecondary,
+                )
+                TextAction(text = "Try again", onClick = { callbacks.onLoadMoreReplies(row.id) })
             }
+
+            thread.nextCursor != null || !thread.loaded -> TextAction(
+                text = "View more replies",
+                onClick = { callbacks.onLoadMoreReplies(row.id) },
+            )
+        }
+        TextAction(text = "Hide replies", onClick = { callbacks.onToggleReplies(row.id) })
+    } else if (row.replyCount > if (row.reply != null) 1 else 0) {
+        TextAction(text = repliesLabel(row.replyCount), onClick = { callbacks.onToggleReplies(row.id) })
+    }
+}
+
+@Composable
+private fun CommentBody(
+    row: CommentRow,
+    state: CommentsUiState,
+    callbacks: UsCommentsCallbacks,
+    onMenu: (String) -> Unit,
+) {
+    val menu = state.menuFor(row)
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("comment_row:${row.id}"),
+    ) {
+        // Named when the server's batch hydration supplied an author; the
+        // seed keeps a stable colour identity either way.
+        UsAvatar(
+            name = row.authorName.ifBlank { row.authorUsername },
+            size = UsAvatarSize.Small,
+            seed = row.authorId.ifBlank { row.id },
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            CommentMeta(row)
             Text(
                 text = row.body,
                 style = MaterialTheme.typography.bodyLarge,
@@ -347,8 +422,149 @@ private fun CommentBody(row: CommentRow) {
                 color = if (row.pending) UsTheme.extended.textMuted else UsTheme.extended.textPrimary,
                 modifier = Modifier.padding(top = BODY_TOP),
             )
+            if (!row.pending) {
+                TextAction(
+                    text = "Reply",
+                    onClick = { callbacks.onReply(row.id) },
+                    modifier = Modifier.semantics { contentDescription = "Reply to ${row.displayName()}" },
+                )
+            }
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (menu.isNotEmpty()) {
+                IconTap(
+                    icon = UsIcons.More,
+                    description = "Comment options",
+                    tint = UsTheme.extended.textMuted,
+                    size = MENU_GLYPH,
+                    onClick = { onMenu(row.id) },
+                )
+            }
+            if (!row.pending) LikeControl(row = row, onToggle = { callbacks.onToggleLike(row.id) })
         }
     }
+}
+
+/** Name, age, and the creator's marks: "Pinned" and their heart. */
+@Composable
+private fun CommentMeta(row: CommentRow) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+    ) {
+        val name = row.displayName()
+        if (name.isNotBlank()) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.labelLarge,
+                color = UsTheme.extended.textPrimary,
+            )
+        }
+        val age = formatRelativeTime(row.createdAt)
+        if (age.isNotEmpty()) {
+            Text(
+                text = age,
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+        if (row.pinned) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                modifier = Modifier.semantics { contentDescription = "Pinned by the creator" },
+            ) {
+                Icon(
+                    imageVector = UsIcons.Pin,
+                    contentDescription = null,
+                    tint = UsTheme.extended.textSecondary,
+                    modifier = Modifier.size(BADGE_GLYPH),
+                )
+                Text(
+                    text = "Pinned",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textSecondary,
+                )
+            }
+        }
+        if (row.heartedByAuthor) {
+            Icon(
+                imageVector = UsIcons.HeartFilled,
+                contentDescription = "Hearted by the creator",
+                tint = UsTheme.extended.liveRed,
+                modifier = Modifier.size(BADGE_GLYPH),
+            )
+        }
+    }
+}
+
+/** The heart and its count, on the right of the row. Red when the viewer likes it. */
+@Composable
+private fun LikeControl(row: CommentRow, onToggle: () -> Unit) {
+    IconTap(
+        icon = if (row.viewerLiked) UsIcons.HeartFilled else UsIcons.HeartOutline,
+        description = if (row.viewerLiked) "Unlike comment" else "Like comment",
+        tint = if (row.viewerLiked) UsTheme.extended.liveRed else UsTheme.extended.textMuted,
+        size = LIKE_GLYPH,
+        onClick = onToggle,
+    )
+    if (row.likeCount > 0) {
+        Text(
+            text = formatCount(row.likeCount),
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.semantics { contentDescription = "${row.likeCount} likes" },
+        )
+    }
+}
+
+@Suppress("LongParameterList")
+@Composable
+private fun IconTap(
+    icon: ImageVector,
+    description: String,
+    tint: Color,
+    size: Dp,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .pressScale(interaction)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .semantics { contentDescription = description }
+            .padding(UsTheme.spacing.xs),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(size))
+    }
+}
+
+/** A small text control: "Reply", "View 3 replies", "Hide replies". */
+@Composable
+private fun TextAction(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = UsTheme.extended.textSecondary,
+        modifier = Modifier
+            .pressScale(interaction)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(vertical = UsTheme.spacing.xs)
+            .then(modifier),
+    )
 }
 
 @Composable
@@ -377,7 +593,8 @@ private fun AppendFooter(loading: Boolean, failed: Boolean, onRetry: () -> Unit)
 // ── Composer ────────────────────────────────────────────────────────────
 
 /**
- * Everything pinned to the bottom: the submit error, the quick reactions and
+ * Everything pinned to the bottom: a failed row action's notice, the submit
+ * error, "Replying to @name", the `@` suggestions, the quick reactions and
  * the composer. One block so `imePadding` lifts all of it together above the
  * keyboard — without it the field is covered by the very keyboard being used
  * to type in it — and the list above simply gives up the space.
@@ -393,6 +610,9 @@ private fun ComposerBlock(state: CommentsUiState, callbacks: UsCommentsCallbacks
             .padding(top = UsTheme.spacing.s, bottom = UsTheme.spacing.m),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
+        state.notice?.let { notice ->
+            NoticeLine(text = commentNoticeMessage(notice), onDismiss = callbacks.onDismissNotice)
+        }
         state.submitError?.let {
             Text(
                 text = commentSubmitErrorMessage(it),
@@ -400,8 +620,108 @@ private fun ComposerBlock(state: CommentsUiState, callbacks: UsCommentsCallbacks
                 color = MaterialTheme.colorScheme.error,
             )
         }
-        QuickReactions(enabled = !state.submitting, onPick = callbacks.onQuickReaction)
+        state.replyingTo?.let { target ->
+            ReplyingToBar(name = target.name, enabled = !state.submitting, onCancel = callbacks.onCancelReply)
+        }
+        if (state.mentions.isNotEmpty()) {
+            MentionSuggestions(candidates = state.mentions, onPick = callbacks.onPickMention)
+        } else {
+            QuickReactions(enabled = !state.submitting, onPick = callbacks.onQuickReaction)
+        }
         Composer(state = state, callbacks = callbacks)
+    }
+}
+
+/** One line, dismissable: a row action that did not stick. */
+@Composable
+private fun NoticeLine(text: String, onDismiss: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().testTag("comments_notice"),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        IconTap(
+            icon = UsIcons.Close,
+            description = "Dismiss",
+            tint = UsTheme.extended.textMuted,
+            size = BADGE_GLYPH,
+            onClick = onDismiss,
+        )
+    }
+}
+
+/** "Replying to @name" with its ×: the composer's target, and the way back to a plain comment. */
+@Composable
+private fun ReplyingToBar(name: String, enabled: Boolean, onCancel: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().testTag("comments_replying_to"),
+    ) {
+        Text(
+            text = replyingToLabel(name),
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        if (enabled) {
+            IconTap(
+                icon = UsIcons.Close,
+                description = "Cancel reply",
+                tint = UsTheme.extended.textMuted,
+                size = BADGE_GLYPH,
+                onClick = onCancel,
+            )
+        }
+    }
+}
+
+/** Up to six people for the `@` being typed; a tap completes the handle. */
+@Composable
+private fun MentionSuggestions(candidates: List<MentionCandidate>, onPick: (MentionCandidate) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().testTag("comments_mentions")) {
+        candidates.forEach { candidate ->
+            val interaction = remember(candidate.userId) { MutableInteractionSource() }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pressScale(interaction)
+                    .clickable(
+                        interactionSource = interaction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = { onPick(candidate) },
+                    )
+                    .semantics { contentDescription = "Mention @${candidate.username}" }
+                    .padding(vertical = UsTheme.spacing.xs),
+            ) {
+                UsAvatar(
+                    name = candidate.displayName.ifBlank { candidate.username },
+                    size = UsAvatarSize.Small,
+                    seed = candidate.userId,
+                )
+                Column {
+                    Text(
+                        text = "@${candidate.username}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = UsTheme.extended.textPrimary,
+                    )
+                    if (candidate.displayName.isNotBlank()) {
+                        Text(
+                            text = candidate.displayName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = UsTheme.extended.textMuted,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -453,6 +773,7 @@ private fun Composer(state: CommentsUiState, callbacks: UsCommentsCallbacks) {
             value = state.draft,
             enabled = !state.submitting,
             canSubmit = state.canSubmit,
+            placeholder = if (state.replyingTo != null) "Add a reply…" else "Add a comment…",
             onValueChange = callbacks.onDraftChange,
             onSubmit = callbacks.onSubmit,
             modifier = Modifier.weight(1f),
@@ -474,11 +795,13 @@ private fun Composer(state: CommentsUiState, callbacks: UsCommentsCallbacks) {
 }
 
 /** A pill on the raised surface with a hairline border. No Material outline. */
+@Suppress("LongParameterList")
 @Composable
 private fun DraftField(
     value: String,
     enabled: Boolean,
     canSubmit: Boolean,
+    placeholder: String,
     onValueChange: (String) -> Unit,
     onSubmit: () -> Unit,
     modifier: Modifier = Modifier,
@@ -502,7 +825,7 @@ private fun DraftField(
             Box(contentAlignment = Alignment.CenterStart) {
                 if (value.isEmpty()) {
                     Text(
-                        text = "Add a comment…",
+                        text = placeholder,
                         style = MaterialTheme.typography.bodyLarge,
                         color = UsTheme.extended.textDim,
                     )
@@ -558,6 +881,9 @@ private fun Modifier.pressScale(interaction: MutableInteractionSource): Modifier
 
 // ── State → UI rules ────────────────────────────────────────────────────
 
+/** The name a row shows: the display name, else the handle. */
+private fun CommentRow.displayName(): String = authorName.ifBlank { authorUsername.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty() }
+
 /**
  * Whether the send control exists at all.
  *
@@ -567,6 +893,21 @@ private fun Modifier.pressScale(interaction: MutableInteractionSource): Modifier
  * rather than making it vanish.
  */
 internal fun CommentsUiState.showsSend(): Boolean = draft.isNotEmpty()
+
+/** "View 1 reply" / "View 3 replies" — the web's words. */
+internal fun repliesLabel(count: Int): String = if (count == 1) "View 1 reply" else "View $count replies"
+
+/** "Replying to @name" — the handle when there is one, else the display name. */
+internal fun replyingToLabel(name: String): String =
+    if (name.isBlank()) "Replying to a comment" else "Replying to $name"
+
+/** A row action that was rolled back, said once and plainly. */
+internal fun commentNoticeMessage(notice: CommentNotice): String = when (notice) {
+    CommentNotice.LIKE -> "Your like wasn't saved. Try again."
+    CommentNotice.DELETE -> "That comment wasn't deleted. Try again."
+    CommentNotice.PIN -> "The pin wasn't saved. Try again."
+    CommentNotice.HEART -> "The heart wasn't saved. Try again."
+}
 
 /**
  * What the composer says under a failed submit.
@@ -616,8 +957,13 @@ private val HEADER_HEIGHT = 44.dp
 private val HEADER_TEXT_SIZE = 16.sp
 private val ICON_SIZE = 22.dp
 private val ROW_GAP = 16.dp
+private val REPLY_GAP = 10.dp
 private val REPLY_INDENT = 40.dp
 private val BODY_TOP = 2.dp
+private val BADGE_GLYPH = 14.dp
+private val LIKE_GLYPH = 18.dp
+private val MENU_GLYPH = 18.dp
+private val SMALL_SPINNER = 18.dp
 private val EMOJI_SIZE = 24.sp
 private val HAIRLINE = 1.dp
 private val FIELD_RADIUS = 22.dp

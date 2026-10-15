@@ -78,6 +78,24 @@
                 <data android:host="atpost.app" />
                 <data android:pathPrefix="/chat/join/" />
             </intent-filter>
+            <!--
+              A post's public permalink (2026-10-14, audit T-07):
+              https://cleestudio.com/post/{id} (also app.cleestudio.com, the hosts
+              production serves the web app on) - what Copy link and Share hand out
+              (core/model WebLinks) - opens the post detail. autoVerify like the
+              invite link above (which stays on atpost.app); verification needs
+              /.well-known/assetlinks.json on both hosts. PushDestinations.offerLink
+              parses it and refuses anything that is not a UUID post id.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="cleestudio.com" />
+                <data android:host="app.cleestudio.com" />
+                <data android:pathPrefix="/post/" />
+            </intent-filter>
         </activity>
 
 

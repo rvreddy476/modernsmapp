@@ -21,6 +21,9 @@ android {
 dependencies {
     api(projects.core.designsystem)
     implementation(projects.core.common)
+    // Pure Kotlin values only: WebLinks, the one place a post's public
+    // permalink is built (also reachable through :core:common's api edge).
+    implementation(projects.core.model)
     // State TYPES only (CommentsUiState, CommentRow) — plain data classes.
     // The rule this module states is that a component here must not be able
     // to fetch; CommentsPanel receives state and callbacks and cannot.

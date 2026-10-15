@@ -54,6 +54,8 @@ import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.UsPostReportState
+import com.us.android.core.ui.UsReportReason
 import com.us.android.core.ui.UsStat
 import com.us.android.core.ui.UsStatRow
 import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
@@ -77,10 +79,12 @@ fun ProfileScreen(
     viewModel: ProfileViewModel = hiltViewModel(),
     startChatViewModel: StartChatViewModel = hiltViewModel(),
     mediaViewModel: ProfileMediaViewModel = hiltViewModel(),
+    reportViewModel: ProfileReportViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val chatState by startChatViewModel.state.collectAsStateWithLifecycle()
     val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
+    val reportState by reportViewModel.report.collectAsStateWithLifecycle()
 
     val loadedProfile = (state as? ProfileUiState.Content)?.profile
     LaunchedEffect(loadedProfile?.avatarMediaId, loadedProfile?.coverMediaId) {
@@ -115,9 +119,16 @@ fun ProfileScreen(
                 { userId, name -> startChatViewModel.open(userId, name) }
             },
             onDismissChatError = startChatViewModel::dismissError,
+            onOpenMenu = reportViewModel::reset,
+            // The LOADED profile's id — the account on screen — never a
+            // route argument the screen has not resolved yet.
+            onReportProfile = { reason, details ->
+                loadedProfile?.let { reportViewModel.report(it, reason, details) }
+            },
         ),
         chatState = chatState,
         media = ProfileMediaUrls(mediaState.avatarUrl, mediaState.coverUrl),
+        report = reportState,
     )
 }
 
@@ -165,6 +176,10 @@ internal data class ProfileActions(
     val onDismissCancelRequestConfirm: () -> Unit = {},
     val onMessage: ((userId: String, displayName: String) -> Unit)? = null,
     val onDismissChatError: () -> Unit = {},
+    /** The More menu on someone else's profile opened: a fresh report step. */
+    val onOpenMenu: () -> Unit = {},
+    /** Report the account on screen (entity type `user`, audit T-03). */
+    val onReportProfile: (reason: UsReportReason, details: String) -> Unit = { _, _ -> },
 )
 
 internal data class ProfileMediaUrls(
@@ -181,7 +196,15 @@ internal fun ProfileContent(
     modifier: Modifier = Modifier,
     chatState: StartChatUiState = StartChatUiState(),
     media: ProfileMediaUrls = ProfileMediaUrls(),
+    report: UsPostReportState = UsPostReportState.Idle,
 ) {
+    // Someone else's loaded profile only: the viewer's own gets no rows, so
+    // no More control is drawn at all (audit T-03).
+    val menuRows = (state as? ProfileUiState.Content)
+        ?.let { profileMenuRows(isOwnProfile = it.profile.isOwnProfile) }
+        .orEmpty()
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+
     UsScaffold(
         modifier = modifier,
         topBar = {
@@ -203,6 +226,17 @@ internal fun ProfileContent(
                         if (destinations.onOpenSettings != null) {
                             IconButton(onClick = destinations.onOpenSettings) {
                                 Icon(UsIcons.Settings, contentDescription = "Settings")
+                            }
+                        }
+                        if (menuRows.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    actions.onOpenMenu()
+                                    menuOpen = true
+                                },
+                                modifier = Modifier.testTag("profile_more"),
+                            ) {
+                                Icon(UsIcons.More, contentDescription = "More options")
                             }
                         }
                     },
@@ -232,6 +266,15 @@ internal fun ProfileContent(
                 modifier = Modifier.padding(padding),
             )
         }
+    }
+
+    if (menuOpen && menuRows.isNotEmpty()) {
+        ProfileMoreSheet(
+            rows = menuRows,
+            report = report,
+            onReport = actions.onReportProfile,
+            onDismiss = { menuOpen = false },
+        )
     }
 }
 

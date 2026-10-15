@@ -1,5 +1,6 @@
 package com.us.android.core.engagement.di
 
+import com.us.android.core.engagement.data.CommentActionsApi
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -28,6 +29,12 @@ object EngagementModule {
     @Singleton
     fun provideEngagementApi(retrofit: Retrofit): EngagementApi =
         retrofit.create(EngagementApi::class.java)
+
+    /** Comment-level routes: replies, likes, delete, pin and heart (audit T-17). */
+    @Provides
+    @Singleton
+    fun provideCommentActionsApi(retrofit: Retrofit): CommentActionsApi =
+        retrofit.create(CommentActionsApi::class.java)
 
     /** trust-safety's report intake, on the same authenticated client. */
     @Provides

@@ -105,7 +105,7 @@ fun WatchScreen(
     val playhead = rememberPlayhead(viewModel.player, polling = true)
     val share = rememberPostSharer()
     val onShare: (FeedItem) -> Unit = { item ->
-        share(item.title.ifBlank { item.text }, item.author.nameForDisplay)
+        share(item.id, item.title.ifBlank { item.text }, item.author.nameForDisplay)
         viewModel.onExternalShared(item.id)
     }
 
@@ -242,7 +242,11 @@ private fun WatchSheetsHost(
         )
     }
     sheets.commentsFor?.let { postId ->
-        CommentsSheet(postId = postId, onDismiss = { sheets.commentsFor = null })
+        CommentsSheet(
+            postId = postId,
+            onDismiss = { sheets.commentsFor = null },
+            postAuthorId = (content as? WatchContent.Ready)?.item?.takeIf { it.id == postId }?.let { it.author.id }.orEmpty(),
+        )
     }
     sheets.moreFor?.let { item ->
         PostMoreSheetHost(

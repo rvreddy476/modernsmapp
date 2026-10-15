@@ -92,7 +92,10 @@ fun PostScreen(
         onPageSettled = viewModel::onPageSettled,
     )
     if (commentsOpen) {
-        PostCommentsSheet(onDismiss = { commentsOpen = false })
+        PostCommentsSheet(
+            onDismiss = { commentsOpen = false },
+            postAuthorId = (state as? PostUiState.Content)?.post?.authorId.orEmpty(),
+        )
     }
 }
 
@@ -251,7 +254,7 @@ private fun LoadedPost(
                 onComment = onOpenComments,
                 onRepost = onRepost,
                 onBookmark = onBookmark,
-                onShare = { share(post.text, author?.nameForDisplay) },
+                onShare = { share(post.id, post.text, author?.nameForDisplay) },
             )
         }
 

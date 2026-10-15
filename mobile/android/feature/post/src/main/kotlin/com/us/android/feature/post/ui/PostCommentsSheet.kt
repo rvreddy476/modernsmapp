@@ -9,17 +9,19 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.engagement.data.CommentActionsRepository
+import com.us.android.core.engagement.data.CommentMentionSource
+import com.us.android.core.engagement.data.CommentsActions
 import com.us.android.core.engagement.data.CommentsController
+import com.us.android.core.engagement.data.CommentsSession
 import com.us.android.core.engagement.data.CommentsUiState
 import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.engagement.data.EngagementRepository
+import com.us.android.core.engagement.data.ReportRepository
 import com.us.android.core.ui.UsCommentsCallbacks
 import com.us.android.core.ui.UsCommentsSheet
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
@@ -29,27 +31,20 @@ import javax.inject.Inject
  * the four places comments open (feed card, reels rail, media viewer, post
  * detail) look and behave identically. The post id comes from the SAME
  * `postId` argument the post route already carries, so this needs no route
- * of its own.
+ * of its own. [postAuthorId] (the loaded post's author) gives the creator
+ * Pin and Heart.
  */
 @Composable
 internal fun PostCommentsSheet(
     onDismiss: () -> Unit,
+    postAuthorId: String = "",
     viewModel: PostCommentsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) { viewModel.open() }
+    LaunchedEffect(Unit) { viewModel.open(postAuthorId) }
 
-    val callbacks = remember(viewModel) {
-        UsCommentsCallbacks(
-            onDraftChange = viewModel::onDraftChange,
-            onSubmit = viewModel::submit,
-            onQuickReaction = viewModel::quickReaction,
-            onLoadMore = viewModel::loadMore,
-            onRetryAppend = viewModel::loadMore,
-            onRetryRefresh = viewModel::refresh,
-        )
-    }
+    val callbacks = remember(viewModel) { UsCommentsCallbacks.of(viewModel.actions) }
     UsCommentsSheet(
         postId = viewModel.postId,
         state = state,
@@ -61,35 +56,26 @@ internal fun PostCommentsSheet(
 @HiltViewModel
 class PostCommentsViewModel @Inject constructor(
     repository: EngagementRepository,
+    commentActions: CommentActionsRepository,
+    reports: ReportRepository,
+    mentionSource: CommentMentionSource,
     private val viewerSource: CommentsViewerSource,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     val postId: String = savedStateHandle.get<String>(POST_ID_KEY).orEmpty()
 
-    private val controller = CommentsController(postId = postId, repository = repository)
+    private val session = CommentsSession(viewModelScope).apply {
+        attach(CommentsController(postId, repository, commentActions, reports, mentionSource))
+    }
 
-    private val _state = MutableStateFlow(CommentsUiState())
-    val state: StateFlow<CommentsUiState> = _state.asStateFlow()
+    val state: StateFlow<CommentsUiState> = session.state
+
+    /** The verbs the sheet's callbacks call. */
+    val actions: CommentsActions get() = session
 
     /** First open: the list, and the viewer's avatar alongside it, not before it. */
-    fun open() {
-        refresh()
-        viewModelScope.launch { _state.value = controller.setViewer(viewerSource.current()) }
-    }
-
-    fun refresh() = viewModelScope.launch { _state.value = controller.refresh() }
-
-    fun loadMore() = viewModelScope.launch { _state.value = controller.loadMore() }
-
-    /** Synchronous: a coroutine hop here drops characters from a fast typist. */
-    fun onDraftChange(text: String) {
-        _state.value = controller.onDraftChange(text)
-    }
-
-    fun submit() = viewModelScope.launch { _state.value = controller.submit() }
-
-    fun quickReaction(emoji: String) = viewModelScope.launch { _state.value = controller.quickReaction(emoji) }
+    fun open(postAuthorId: String = "") = session.open(postAuthorId, viewerSource)
 
     private companion object {
         const val POST_ID_KEY = "postId"
