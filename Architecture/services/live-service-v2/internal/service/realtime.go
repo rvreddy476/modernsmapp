@@ -10,13 +10,15 @@ package service
 // repeated under "payload". chat.message carries exactly the row GET /chat
 // returns; chat.removed {message_id, by_role}; status.changed {status,
 // ended_reason, status_changed_at, started_at, ended_at, viewer_count,
-// viewer_peak}; viewer.count {viewer_count, viewer_peak}; moderation.*
-// carry user_id, or user_ids for moderation.moderators.
+// viewer_peak}; viewer.count {viewer_count, viewer_peak}; viewer.joined
+// {user_id, user, joined_at} (joins.go); moderation.* carry user_id, or
+// user_ids for moderation.moderators; hearts (hearts.go).
 //
-// Types: status.changed, chat.message, chat.removed, viewer.count, and
-// moderation.{mute,unmute,word_filter_added,word_filter_removed,pin,unpin,
-// ban,unban,moderators}. Publishing is best-effort: the database is the
-// truth and every client can re-read it over HTTP.
+// Types: status.changed, chat.message, chat.removed, viewer.count,
+// viewer.joined, hearts, and moderation.{mute,unmute,word_filter_added,
+// word_filter_removed,pin,unpin,ban,unban,moderators}. Publishing is
+// best-effort: the database is the truth and every client can re-read it
+// over HTTP (viewer.joined alone has no HTTP read: a missed one is gone).
 
 import (
 	"context"
@@ -34,6 +36,7 @@ const (
 	EventChatMessage                 = "chat.message"
 	EventChatRemoved                 = "chat.removed"
 	EventViewerCount                 = "viewer.count"
+	EventViewerJoined                = "viewer.joined"
 	EventModerationMute              = "moderation.mute"
 	EventModerationUnmute            = "moderation.unmute"
 	EventModerationWordFilterAdded   = "moderation.word_filter_added"
