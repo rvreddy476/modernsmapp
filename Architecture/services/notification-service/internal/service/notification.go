@@ -91,6 +91,47 @@ func (s *Service) CreateNotificationWithoutPush(ctx context.Context, userID, act
 	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, "", true)
 }
 
+// CreateMessageNotification is the "dm" delivery for one chat message. It is
+// CreateNotification (or, when muted, CreateNotificationWithoutPush) with the
+// push copy chosen by the chat message type, so a shared post reads "Sent you
+// a post" instead of the generic "You have a new message". Text, media and
+// unknown types keep the generic copy and collapse key.
+func (s *Service) CreateMessageNotification(ctx context.Context, userID, actorID, conversationID uuid.UUID, deepLink string, createdAt time.Time, messageType string, muted bool) error {
+	if s.recipientSuppressed(ctx, userID, "dm") {
+		return nil
+	}
+	decision := s.resolveGeneralDelivery(ctx, userID, "dm")
+	if muted {
+		decision.SendPush = false
+		decision.DeferPush = false
+	}
+	return s.deliverWithDecision(ctx, decision, userID, actorID, "dm", "conversation", conversationID, deepLink, createdAt, "", DMRender(messageType))
+}
+
+// Chat message types as chat message-service publishes them on
+// MessageCreated.type. Mirrored here (chat is a separate module).
+const (
+	ChatMessageTypeText  = "text"
+	ChatMessageTypeMedia = "media"
+	ChatMessageTypePost  = "post"
+)
+
+// DMPostBody is the push body for a shared post. Text DMs name no sender
+// ("You have a new message"), so neither does this.
+const DMPostBody = "Sent you a post"
+
+// DMRender picks the push copy for a "dm" by chat message type. The zero
+// value means "generic per-type copy" (notifTitleBody), which text and media
+// keep. The event carries no post id or caption by design, so the copy says
+// nothing about the post itself.
+func DMRender(messageType string) RenderOverride {
+	if messageType == ChatMessageTypePost {
+		title, _ := notifTitleBody("dm")
+		return RenderOverride{Title: title, Body: DMPostBody}
+	}
+	return RenderOverride{}
+}
+
 // CreateNotificationIdempotent writes the inbox row under a deterministic
 // identity (Module 1 fixes-v1/v2, Codex P0-1).
 //
