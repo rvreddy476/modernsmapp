@@ -85,6 +85,12 @@ fun PostMoreSheetHost(
      * open the list of copies does not offer to make one.
      */
     onOpenOffline: (() -> Unit)? = null,
+    /** The video hosts (T-32): a speed was picked from Playback speed; the host applies it to its player. */
+    onSelectSpeed: (Float) -> Unit = {},
+    /** The video hosts (T-32): a caption track was picked by language, or null for Off. */
+    onSelectCaption: (String?) -> Unit = {},
+    /** Reels alone (T-32): "Auto scroll" was tapped; the host flips and stores it. */
+    onToggleAutoScroll: () -> Unit = {},
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
@@ -105,6 +111,9 @@ fun PostMoreSheetHost(
         onUseSound,
         onBlocked,
         onOpenOffline,
+        onSelectSpeed,
+        onSelectCaption,
+        onToggleAutoScroll,
     ) {
         UsPostMoreCallbacks(
             onToggleSave = { viewModel.toggleSave(item) },
@@ -126,6 +135,9 @@ fun PostMoreSheetHost(
             onSaveOffline = { viewModel.saveOffline(item) },
             onRemoveOffline = { viewModel.removeOffline(item) },
             onOpenOffline = { onOpenOffline?.invoke() },
+            onSelectSpeed = onSelectSpeed,
+            onSelectCaption = onSelectCaption,
+            onToggleAutoScroll = onToggleAutoScroll,
         )
     }
     UsPostMoreSheet(

@@ -31,6 +31,9 @@ dependencies {
     // The Me tab wears the Momentum header, whose bell reads the shared unread
     // count through UnreadBadgeViewModel. A core module, no feature edge.
     implementation(projects.core.notifications)
+    // The settings hub's Appearance rows (T-32) read and write the stored
+    // theme choice the app's root applies. A core module, no feature edge.
+    implementation(projects.core.datastore)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)

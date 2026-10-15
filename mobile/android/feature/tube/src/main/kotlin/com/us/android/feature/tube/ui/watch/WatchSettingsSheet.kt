@@ -32,8 +32,10 @@ import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlaybackCaption
+import com.us.android.core.ui.PLAYBACK_SPEEDS
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.UsSettingsSwitchRow
+import com.us.android.core.ui.speedLabel
 
 /**
  * The gear's sheet: Quality (Auto and the HLS ladder the player reports,

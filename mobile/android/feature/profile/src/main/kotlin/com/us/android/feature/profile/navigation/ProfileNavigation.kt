@@ -5,9 +5,13 @@
 
 package com.us.android.feature.profile.navigation
 
+import androidx.compose.runtime.getValue
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import com.us.android.feature.profile.ui.AppearanceViewModel
 import com.us.android.feature.profile.ui.DirectMessagesScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.FollowRequestsScreen
@@ -209,11 +213,15 @@ fun NavGraphBuilder.settingsScreens(
     destinations: SettingsDestinations,
 ) {
     composable<SettingsRoute> {
+        val appearance: AppearanceViewModel = hiltViewModel()
+        val mode by appearance.mode.collectAsStateWithLifecycle()
         SettingsHubScreen(
             destinations.onBack,
             destinations.onEditProfile,
             destinations.onProfileDetails,
             destinations.sections,
+            appearance = mode,
+            onAppearance = appearance::select,
         )
     }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }

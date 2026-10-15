@@ -11,6 +11,7 @@ import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.datastore.ReelsAutoScrollStore
 import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementApi
@@ -41,6 +42,8 @@ import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.offline.OfflineStream
 import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.MediaUrlResolver
+import com.us.android.core.media.Playback
+import com.us.android.core.media.PlaybackCaption
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.media.SoundEntry
@@ -63,6 +66,9 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.core.ui.SPEED_NORMAL
+import com.us.android.core.ui.SPEED_QUICKER
+import com.us.android.core.ui.UsCaptionOption
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.feature.feed.data.RecordingChannelApi
 import com.us.android.feature.feed.data.RecordingGraphApi
@@ -219,6 +225,19 @@ class ReelsViewModelTest {
         }
     }
 
+    /** "Auto scroll", stored in memory (T-32). [stored] null is a file that has not answered yet. */
+    private class FakeAutoScrollStore(initial: Boolean? = false) : ReelsAutoScrollStore {
+        val stored = MutableStateFlow(initial)
+        val writes = mutableListOf<Boolean>()
+
+        override val autoScroll: Flow<Boolean> = stored.filterNotNull()
+
+        override suspend fun setAutoScroll(on: Boolean) {
+            writes += on
+            stored.value = on
+        }
+    }
+
     /** Answers "use this sound" with a sound or a refusal, and counts the asks. */
     private class FakeSoundsApi(
         private val sound: FeedSoundDto? = FeedSoundDto(id = "s-made", title = "Original sound - Ada", artist = "Ada"),
@@ -267,6 +286,7 @@ class ReelsViewModelTest {
         val sounds: FakeSoundsApi = FakeSoundsApi(),
         val soundEntry: SoundEntry = SoundEntry(),
         val soundStore: FakeSoundStore = FakeSoundStore(),
+        val autoScrollStore: FakeAutoScrollStore = FakeAutoScrollStore(),
         val watch: VideoWatchTracker = VideoWatchTracker.disabled(),
         val writes: EngagementWrites = AcceptingWrites(),
         val offline: OfflineLibrary = NoOfflineLibrary,
@@ -287,6 +307,7 @@ class ReelsViewModelTest {
         sounds = SoundsRepository(h.sounds, ErrorMapper(json)) { it },
         soundEntry = h.soundEntry,
         soundStore = h.soundStore,
+        autoScrollStore = h.autoScrollStore,
         offline = h.offline,
         hidden = HiddenPosts(),
     )
@@ -1494,5 +1515,131 @@ class ReelsViewModelTest {
 
         assertThat(row.controls.railVisibility())
             .isEqualTo(ReelRailVisibility(showComment = false, showShare = false))
+    }
+
+    // ── The player's rows (T-32) ────────────────────────────────────────
+
+    /** Speed is a SESSION choice, like quality: it outlives the reel it was made on and leaving the screen. */
+    @Test
+    fun `reels start at 1x and a picked speed is held for the session`() {
+        val vm = viewModel()
+        assertThat(vm.speed.value).isEqualTo(SPEED_NORMAL)
+
+        vm.selectSpeed(SPEED_QUICKER)
+        vm.onReelShown(item(video()))
+        vm.resetView()
+
+        assertThat(vm.speed.value).isEqualTo(SPEED_QUICKER)
+    }
+
+    /** What every page's player is set to: the session's speed, on every page alike. */
+    @Test
+    fun `the picked speed is what each player is set to`() {
+        val vm = viewModel()
+        vm.selectSpeed(SPEED_QUICKER)
+
+        val settings = reelPlayerSettings(
+            speed = vm.speed.value,
+            autoScroll = vm.autoScroll.value,
+            captionLanguage = vm.captionLanguage.value,
+            offeredLanguages = emptyList(),
+        )
+
+        assertThat(settings.speed).isEqualTo(SPEED_QUICKER)
+        assertThat(settings.loops).isTrue()
+        assertThat(settings.captionLanguage).isNull()
+    }
+
+    @Test
+    fun `a reel from the network has no caption tracks, so the sheet has no captions row`() {
+        assertThat(viewModel().captions(item(video()))).isEmpty()
+        assertThat(reelCaptions(null)).isEmpty()
+    }
+
+    @Test
+    fun `a stored copy's caption tracks are the reel's captions`() {
+        val stored = Playback.offline(
+            url = "https://cdn/r.mp4",
+            cacheKey = "k",
+            captions = listOf(PlaybackCaption(uri = "file:///c/en.vtt", language = "en", label = "English")),
+        )
+
+        assertThat(reelCaptions(stored)).containsExactly(UsCaptionOption(language = "en", label = "English"))
+    }
+
+    /** The long video's rule: a choice is carried to a reel with the same language, off for one without. */
+    @Test
+    fun `a caption choice is carried only to a reel that has that language`() {
+        val vm = viewModel()
+        vm.selectCaption("en")
+
+        // A reel from the network has no tracks: captions go off, they never come back on by themselves.
+        vm.onReelShown(item(video()))
+
+        assertThat(vm.captionLanguage.value).isNull()
+        assertThat(reelPlayerSettings(SPEED_NORMAL, false, "en", listOf("en")).captionLanguage).isEqualTo("en")
+        assertThat(reelPlayerSettings(SPEED_NORMAL, false, "en", listOf("hi")).captionLanguage).isNull()
+    }
+
+    @Test
+    fun `auto scroll is off for a viewer who never chose, and nothing is written`() {
+        val h = Harness()
+
+        val vm = viewModel(h)
+
+        assertThat(vm.autoScroll.value).isFalse()
+        assertThat(h.autoScrollStore.writes).isEmpty()
+    }
+
+    @Test
+    fun `turning auto scroll on is stored, and a new ViewModel reads it back on`() {
+        val store = FakeAutoScrollStore()
+        viewModel(Harness(autoScrollStore = store)).toggleAutoScroll()
+
+        assertThat(store.writes).containsExactly(true)
+        assertThat(viewModel(Harness(autoScrollStore = store)).autoScroll.value).isTrue()
+    }
+
+    /** A tap that beats the read is the newer choice: the file's older answer must not undo it. */
+    @Test
+    fun `an auto scroll tap before the stored choice is read stands`() {
+        val store = FakeAutoScrollStore(initial = null)
+        val vm = viewModel(Harness(autoScrollStore = store))
+
+        vm.toggleAutoScroll()
+        store.stored.value = false
+
+        assertThat(vm.autoScroll.value).isTrue()
+    }
+
+    /** Off, a reel loops and never ends; on, it ends and the pager moves on — to the next page only. */
+    @Test
+    fun `the pager advances on a reel's end only when auto scroll is on and there is a next reel`() {
+        assertThat(autoScrollTarget(autoScroll = false, current = 0, pageCount = 5)).isNull()
+        assertThat(autoScrollTarget(autoScroll = true, current = 0, pageCount = 5)).isEqualTo(1)
+        assertThat(autoScrollTarget(autoScroll = true, current = 3, pageCount = 5)).isEqualTo(4)
+        // The last reel loaded has nowhere to go: it plays again.
+        assertThat(autoScrollTarget(autoScroll = true, current = 4, pageCount = 5)).isNull()
+        assertThat(autoScrollTarget(autoScroll = true, current = 0, pageCount = 0)).isNull()
+    }
+
+    @Test
+    fun `players loop unless auto scroll is on`() {
+        assertThat(reelPlayerSettings(SPEED_NORMAL, autoScroll = false, null, emptyList()).loops).isTrue()
+        assertThat(reelPlayerSettings(SPEED_NORMAL, autoScroll = true, null, emptyList()).loops).isFalse()
+    }
+
+    /** founder, 2026-09-30: reels open MUTED. Auto scroll, a speed or captions never change that. */
+    @Test
+    fun `the player's rows leave the muted start alone`() {
+        val h = Harness(autoScrollStore = FakeAutoScrollStore(initial = true))
+        val vm = viewModel(h)
+
+        vm.selectSpeed(SPEED_QUICKER)
+        vm.selectCaption("en")
+        vm.toggleAutoScroll()
+
+        assertThat(vm.muted.value).isTrue()
+        assertThat(h.soundStore.writes).isEmpty()
     }
 }

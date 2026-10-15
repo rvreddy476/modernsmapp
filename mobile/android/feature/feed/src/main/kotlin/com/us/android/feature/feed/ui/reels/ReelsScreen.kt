@@ -53,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -123,9 +124,11 @@ import com.us.android.core.feed.ui.sound.ReelSoundViewModel
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerPool
+import com.us.android.core.media.applyCaption
 import com.us.android.core.media.sound.ReelSoundPlayer
 import com.us.android.core.media.sound.SoundTrack
 import com.us.android.core.media.sound.appliedVolume
+import com.us.android.core.media.ui.CaptionsOverlay
 import com.us.android.core.media.ui.OfflineCopyBadge
 import com.us.android.core.media.ui.OfflineSaveRing
 import com.us.android.core.media.ui.VideoLoadingIndicator
@@ -136,6 +139,8 @@ import com.us.android.core.model.canUseSound
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.LightStatusBarGlyphs
+import com.us.android.core.ui.PLAYBACK_SPEEDS
+import com.us.android.core.ui.SPEED_NORMAL
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -147,6 +152,7 @@ import com.us.android.feature.feed.ui.watchProbe
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * The reels surface: Instagram Reels on Momentum's palette (founder,
@@ -378,6 +384,9 @@ private fun ReelMoreSheet(
 ) {
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
+    val speed by viewModel.speed.collectAsStateWithLifecycle()
+    val captionLanguage by viewModel.captionLanguage.collectAsStateWithLifecycle()
+    val autoScroll by viewModel.autoScroll.collectAsStateWithLifecycle()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     PostMoreSheetHost(
@@ -395,11 +404,22 @@ private fun ReelMoreSheet(
             quality = quality,
             playback = viewModel.playback(item),
             canUseSound = item.canUseSound(item.isOwnedBy(viewModel.ownUserId)),
+        ).copy(
+            // The player's rows (T-32): the long video's speeds, the reel's
+            // caption tracks (none from the network, so no row), Auto scroll.
+            speeds = PLAYBACK_SPEEDS,
+            speed = speed,
+            captions = viewModel.captions(item),
+            captionLanguage = captionLanguage,
+            autoScroll = autoScroll,
         ),
         onClearScreen = viewModel::toggleMode,
         onSelectQuality = viewModel::selectQuality,
         onUseSound = { reel -> viewModel.onUseSound(reel, SoundIntent.CREATE) },
         onOpenOffline = onOpenOffline,
+        onSelectSpeed = viewModel::selectSpeed,
+        onSelectCaption = viewModel::selectCaption,
+        onToggleAutoScroll = viewModel::toggleAutoScroll,
     )
 }
 
@@ -411,12 +431,18 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
     val paused by viewModel.paused.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
+    val speed by viewModel.speed.collectAsStateWithLifecycle()
+    val autoScroll by viewModel.autoScroll.collectAsStateWithLifecycle()
+    val captionLanguage by viewModel.captionLanguage.collectAsStateWithLifecycle()
     val offline by viewModel.offlineState.collectAsStateWithLifecycle()
     return ReelsViewState(
         muted = muted,
         paused = paused,
         chrome = mode.chrome(),
         quality = quality,
+        speed = speed,
+        autoScroll = autoScroll,
+        captionLanguage = captionLanguage,
         soundChoiceRead = soundChoiceRead,
         fullMode = mode == ReelsMode.FULL,
         offline = offline,
@@ -615,6 +641,12 @@ internal data class ReelsViewState(
     val paused: Boolean,
     val chrome: ReelsChrome,
     val quality: UsReelQuality,
+    /** The session's playback speed (T-32), on every page's player. */
+    val speed: Float = SPEED_NORMAL,
+    /** Auto scroll (T-32): players END instead of looping, and the pager moves on. */
+    val autoScroll: Boolean = false,
+    /** The caption track on (T-32), by language; null is off. */
+    val captionLanguage: String? = null,
     /** The viewer's stored choice of sound has been read; until then nothing starts. */
     val soundChoiceRead: Boolean = true,
     /** Full mode is on: Back brings the controls back rather than leaving the tab. */
@@ -887,12 +919,17 @@ private fun ReelsPager(
     // peek, not get: a neighbour lookup must not trigger a page load.
     fun reelAt(page: Int): FeedItem? = (pageAt(page, head, items, load = false) as? ReelsPage.Reel)?.item
 
+    // The settled page's player, for Auto scroll to hear it end.
+    var settledPlayer by remember { mutableStateOf<Player?>(null) }
+    AutoScrollOnEnd(player = settledPlayer, pagerState = pagerState, autoScroll = view.autoScroll)
+
     // Keyed on the SETTLED page rather than the scroll offset: a fast flick
     // through five reels must start one playback, not five.
     LaunchedEffect(pagerState.settledPage, pageCount, head) {
         val current = pagerState.settledPage
         val reel = reelAt(current)
         val player = reel?.let(playbackFor)?.let { pool.acquire(current, it) }
+        settledPlayer = player
         actions.onSettledReel(reel)
         actions.onSettledPlayer(player)
         // The added sound serves the settled page and no other. It is
@@ -954,6 +991,38 @@ private fun ReelsPager(
                 )
             }
         }
+    }
+}
+
+/**
+ * Auto scroll (T-32, 2026-10-15): when the settled reel ENDS, the pager
+ * moves to the next one, as a swipe would. A reel only ends while Auto
+ * scroll is on — otherwise its player loops ([reelPlayerSettings]) — and
+ * the last reel loaded, with nowhere to go, plays again. The reel left
+ * behind is put back at its start, held, so a swipe back plays it from the
+ * top rather than showing its last frame.
+ */
+@Composable
+private fun AutoScrollOnEnd(player: Player?, pagerState: PagerState, autoScroll: Boolean) {
+    val scope = rememberCoroutineScope()
+    val on by rememberUpdatedState(autoScroll)
+    DisposableEffect(player, pagerState) {
+        if (player == null) return@DisposableEffect onDispose {}
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState != Player.STATE_ENDED) return
+                val target = autoScrollTarget(on, pagerState.settledPage, pagerState.pageCount)
+                if (target == null) {
+                    player.seekTo(0)
+                    return
+                }
+                player.playWhenReady = false
+                player.seekTo(0)
+                scope.launch { pagerState.animateScrollToPage(target) }
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
     }
 }
 
@@ -1264,6 +1333,21 @@ private fun ReelVideo(
     // neighbours too, so a swipe lands on the chosen rung, not on a
     // beat of Auto before it corrects.
     LaunchedEffect(view.quality, player) { player.applyQuality(view.quality) }
+    // The player's choices from the More sheet (T-32) on every player as it
+    // is prepared, the neighbours too: the session's speed, a loop unless
+    // Auto scroll is on (then the reel ENDS and the pager moves on), and the
+    // caption track when this reel has it.
+    val settings = reelPlayerSettings(
+        speed = view.speed,
+        autoScroll = view.autoScroll,
+        captionLanguage = view.captionLanguage,
+        offeredLanguages = playback.captions.map { it.language },
+    )
+    LaunchedEffect(settings, player) {
+        player.setPlaybackSpeed(settings.speed)
+        player.repeatMode = if (settings.loops) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        player.applyCaption(settings.captionLanguage)
+    }
     // SURFACE_VIEW, not TEXTURE_VIEW. A TextureView goes through the
     // view hierarchy's compositor, costing a full-screen copy every
     // frame; the difference is visible on mid-range hardware and this
@@ -1280,6 +1364,12 @@ private fun ReelVideo(
     // playWhenReady false, and a paused reel shows the play glyph
     // instead. Retry re-prepares the player where it stands.
     VideoLoadingIndicator(player = player, onRetry = player::prepare)
+    // The caption line, lifted clear of the author block and the caption.
+    if (settings.captionLanguage != null) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            CaptionsOverlay(player = player, modifier = Modifier.padding(bottom = CAPTIONS_LIFT))
+        }
+    }
     // An offline copy says so, and one being saved shows how far it is (2026-10-02).
     ReelOfflineStatus(playsOffline = playback.kind == PlaybackKind.Offline, entry = offline)
     // The same four-a-second poll is the sound's running clock: a
@@ -1861,6 +1951,9 @@ private val RAIL_LABEL_SIZE = 11.sp
 
 private val OVERLAY_SIDE = 16.dp
 private val OVERLAY_BOTTOM = 56.dp
+
+/** How far above the frame's bottom the caption line sits (T-32): over the author block, not on it. */
+private val CAPTIONS_LIFT = 160.dp
 
 /** The overlay stops short of the rail so a long name never runs under it. */
 private val OVERLAY_RAIL_CLEARANCE = 72.dp
