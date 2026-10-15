@@ -175,42 +175,75 @@ func TestHashtagTotalMatchesTheListedPosts(t *testing.T) {
 	pool := openCommentCountDB(t)
 	store := postgres.New(pool)
 	ctx := context.Background()
-	author := uuid.New()
+	author, other := uuid.New(), uuid.New()
 	tag := "t34" + uuid.NewString()[:8]
 	t.Cleanup(func() {
 		bg := context.Background()
-		pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id IN (SELECT id FROM posts WHERE author_id = $1)`, author)
-		pool.Exec(bg, `DELETE FROM posts WHERE author_id = $1`, author)
+		for _, a := range []uuid.UUID{author, other} {
+			pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id IN (SELECT id FROM posts WHERE author_id = $1)`, a)
+			pool.Exec(bg, `DELETE FROM posts WHERE author_id = $1`, a)
+		}
 	})
-	insert := func(contentType, visibility, extra string) {
+	insert := func(by uuid.UUID, contentType, visibility, extra string) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `INSERT INTO posts (id, author_id, text, visibility, content_type, hashtags, created_at, updated_at`+extraCols(extra)+`)
 			VALUES ($1, $2, 'tagged', $3, $4, ARRAY[$5, 'other']::text[], now(), now()`+extraVals(extra)+`)`,
-			uuid.New(), author, visibility, contentType, tag); err != nil {
+			uuid.New(), by, visibility, contentType, tag); err != nil {
 			t.Fatal(err)
 		}
 	}
-	insert("flick", "public", "")
-	insert("flick", "public", "")
-	insert("post", "public", "")
-	insert("post", "followers", "")     // not on the public tag page
-	insert("post", "public", "deleted") // gone
-	insert("post", "public", "scheduled")
+	insert(author, "flick", "public", "")
+	insert(author, "flick", "public", "")
+	insert(author, "post", "public", "")
+	insert(author, "post", "followers", "")     // not on the public tag page
+	insert(author, "post", "public", "deleted") // gone
+	insert(author, "post", "public", "scheduled")
+	insert(author, "post", "public", "flagged") // not approved: neither listed nor counted
+	insert(author, "post", "public", "pending")
+	insert(other, "post", "public", "")
 
-	total, capped, err := store.CountPostsByHashtag(ctx, tag, nil)
-	if err != nil || total != 3 || capped {
-		t.Fatalf("total = %d capped=%v (%v), want 3", total, capped, err)
+	// The top sort reads two counters cmd/server adds at boot (ensureSchema).
+	for _, ddl := range []string{
+		`ALTER TABLE post_engagement_counts ADD COLUMN IF NOT EXISTS views_count BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE post_engagement_counts ADD COLUMN IF NOT EXISTS reports_count INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := pool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
 	}
-	listed, _, err := store.GetPostsByHashtag(ctx, tag, 50, "", postgres.HashtagSortRecent, nil)
-	if err != nil || len(listed) != total {
-		t.Fatalf("the list has %d posts (%v); the total must match it (%d)", len(listed), err, total)
+	sum := func(byAuthor map[uuid.UUID]int) int {
+		n := 0
+		for _, c := range byAuthor {
+			n += c
+		}
+		return n
 	}
-	flicks, _, err := store.CountPostsByHashtag(ctx, tag, []string{"flick"})
-	if err != nil || flicks != 2 {
-		t.Fatalf("flick total = %d (%v), want 2", flicks, err)
+	byAuthor, truncated, err := store.CountPostsByHashtag(ctx, tag, nil, nil)
+	if err != nil || sum(byAuthor) != 4 || truncated || byAuthor[author] != 3 || byAuthor[other] != 1 {
+		t.Fatalf("counts = %v truncated=%v (%v), want author 3 + other 1", byAuthor, truncated, err)
 	}
-	if none, _, err := store.CountPostsByHashtag(ctx, tag+"x", nil); err != nil || none != 0 {
-		t.Fatalf("unknown tag total = %d (%v), want 0", none, err)
+	for _, sort := range []postgres.HashtagSortMode{postgres.HashtagSortRecent, postgres.HashtagSortTop} {
+		listed, _, err := store.GetPostsByHashtag(ctx, tag, 50, "", sort, nil)
+		if err != nil || len(listed) != sum(byAuthor) {
+			t.Fatalf("%s: the list has %d posts (%v); the total must match it (%d)", sort, len(listed), err, sum(byAuthor))
+		}
+		for _, p := range listed {
+			if p.ReviewStatus != "approved" || p.Visibility != "public" {
+				t.Fatalf("%s listed a %s/%s post", sort, p.ReviewStatus, p.Visibility)
+			}
+		}
+	}
+	flicks, _, err := store.CountPostsByHashtag(ctx, tag, []string{"flick"}, nil)
+	if err != nil || sum(flicks) != 2 {
+		t.Fatalf("flick total = %v (%v), want 2", flicks, err)
+	}
+	// Excluding a denied author is how the service narrows a full scan.
+	rest, _, err := store.CountPostsByHashtag(ctx, tag, nil, []uuid.UUID{author})
+	if err != nil || sum(rest) != 1 || rest[other] != 1 {
+		t.Fatalf("excluding the author = %v (%v), want other's 1", rest, err)
+	}
+	if none, _, err := store.CountPostsByHashtag(ctx, tag+"x", nil, nil); err != nil || len(none) != 0 {
+		t.Fatalf("unknown tag counts = %v (%v), want none", none, err)
 	}
 }
 
@@ -220,6 +253,8 @@ func extraCols(kind string) string {
 		return ", deleted_at"
 	case "scheduled":
 		return ", publish_at"
+	case "flagged", "pending":
+		return ", review_status"
 	}
 	return ""
 }
@@ -230,6 +265,10 @@ func extraVals(kind string) string {
 		return ", now()"
 	case "scheduled":
 		return ", now() + interval '1 day'"
+	case "flagged":
+		return ", 'flagged'"
+	case "pending":
+		return ", 'pending'"
 	}
 	return ""
 }

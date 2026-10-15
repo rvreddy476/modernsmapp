@@ -2256,7 +2256,17 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	// content_type can be repeated: ?content_type=post&content_type=flick
 	contentTypes := c.QueryArray("content_type")
 
-	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor, sort, contentTypes)
+	// The viewer decides which authors' posts the list (and its count) may
+	// include: private accounts, blocks, deactivated authors. Absent or
+	// malformed is the signed-out stranger.
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+
+	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), viewerID, tag, limit, cursor, sort, contentTypes)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -2266,12 +2276,13 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	}
 
 	// T-34: the first page carries the tag's post count ("N videos"). It
-	// counts what this list pages over, for the same content_type filter,
-	// and is best-effort: a failed count leaves `total` off, never the page.
+	// counts what this list pages over for this viewer, for the same
+	// content_type filter and author gate, and is best-effort: a failed
+	// count leaves `total` off, never the page.
 	var total *int
 	capped := false
 	if cursor == "" {
-		n, hitCap, err := h.svc.HashtagTotal(c.Request.Context(), tag, contentTypes)
+		n, hitCap, err := h.svc.HashtagTotal(c.Request.Context(), viewerID, tag, contentTypes)
 		if err != nil {
 			slog.WarnContext(c.Request.Context(), "hashtag total unavailable", "tag", tag, "error", err)
 		} else {

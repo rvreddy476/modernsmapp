@@ -312,16 +312,12 @@ func (s *Store) GetPostsByHashtag(ctx context.Context, hashtag string, limit int
 }
 
 func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, limit int, cursor string, contentTypes []string) ([]Post, string, error) {
-	args := []interface{}{hashtag, limit + 1}
+	// The one hashtag-page filter (hashtag_total.go), shared with the count.
+	where, args := hashtagPostsFilter([]any{hashtag, limit + 1}, contentTypes, nil)
 
 	query := `SELECT ` + postCols + `
 		FROM posts p
-		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public' AND p.publish_at IS NULL`
-
-	if len(contentTypes) > 0 {
-		args = append(args, contentTypes)
-		query += fmt.Sprintf(` AND p.content_type = ANY($%d)`, len(args))
-	}
+		WHERE ` + where
 
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
@@ -359,7 +355,8 @@ func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, lim
 }
 
 func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit int, cursor string, contentTypes []string) ([]Post, string, error) {
-	args := []interface{}{hashtag, limit + 1}
+	// The one hashtag-page filter (hashtag_total.go), shared with the count.
+	where, args := hashtagPostsFilter([]any{hashtag, limit + 1}, contentTypes, nil)
 
 	prefixedCols := strings.ReplaceAll(
 		strings.ReplaceAll(postCols, "\n", " "),
@@ -378,12 +375,7 @@ func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit 
 	query := `SELECT ` + selectList + `, ` + hashtagTopScoreExpr + ` AS top_score
 		FROM posts p
 		LEFT JOIN post_engagement_counts c ON c.post_id = p.id
-		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public' AND p.publish_at IS NULL`
-
-	if len(contentTypes) > 0 {
-		args = append(args, contentTypes)
-		query += fmt.Sprintf(` AND p.content_type = ANY($%d)`, len(args))
-	}
+		WHERE ` + where
 
 	if cursor != "" {
 		if cur, err := decodeHashtagTopCursor(cursor); err == nil {

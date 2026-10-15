@@ -12,7 +12,7 @@ func TestFileReportRequestAcceptsReleasedEntityAliases(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
-	for _, entityType := range []string{"user", "post", "comment", "reel", "video"} {
+	for _, entityType := range []string{"user", "post", "comment", "hashtag", "sound", "reel", "video"} {
 		entityType := entityType
 		t.Run(entityType, func(t *testing.T) {
 			t.Parallel()

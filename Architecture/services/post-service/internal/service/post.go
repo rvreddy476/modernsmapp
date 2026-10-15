@@ -3421,7 +3421,13 @@ func (s *Service) ListCollections(ctx context.Context, userID uuid.UUID) ([]post
 // GetPostsByHashtag returns posts with a specific hashtag.
 // sort accepts "top" or "recent" (default).
 // contentTypes filters by content_type (e.g. ["post"], ["flick"], ["long_video"]); nil = all.
-func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor, sort string, contentTypes []string) ([]PostDetail, string, error) {
+//
+// The store lists public, viewer-eligible (effectively approved, live)
+// posts; the author gate — private accounts the viewer does not follow,
+// blocks, deactivated authors — is canViewPosts, the same fail-closed
+// choke point GetRecentPosts and the sound page use. viewerID nil is the
+// signed-out stranger. HashtagTotal counts exactly this set.
+func (s *Service) GetPostsByHashtag(ctx context.Context, viewerID *uuid.UUID, hashtag string, limit int, cursor, sort string, contentTypes []string) ([]PostDetail, string, error) {
 	mode := postgres.HashtagSortRecent
 	if sort == "top" {
 		mode = postgres.HashtagSortTop
@@ -3431,11 +3437,13 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 		return nil, "", err
 	}
 
-	details := make([]PostDetail, len(posts))
-	for i, p := range posts {
+	posts = s.hashtagPostsVisibleTo(ctx, viewerID, posts)
+
+	details := make([]PostDetail, 0, len(posts))
+	for _, p := range posts {
 		post := p
 		counts, _ := s.countsForPost(ctx, p.ID)
-		details[i] = PostDetail{Post: &post, Counts: counts}
+		details = append(details, PostDetail{Post: &post, Counts: counts})
 	}
 
 	// Instant publish (processing.go): public discovery surface with no
@@ -3447,11 +3455,7 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 	return details, nextCursor, nil
 }
 
-// HashtagTotal counts the posts GetPostsByHashtag pages over for tag, bounded
-// at postgres.HashtagTotalCap (T-34; capped reports the bound was hit).
-func (s *Service) HashtagTotal(ctx context.Context, hashtag string, contentTypes []string) (total int, capped bool, err error) {
-	return s.pgStore.CountPostsByHashtag(ctx, hashtag, contentTypes)
-}
+// HashtagTotal is in hashtag_total.go.
 
 // GetTrendingPosts returns trending posts globally, optionally scoped to one
 // or more content types. Used by the Posttube/Reels "Trending" tabs and the
