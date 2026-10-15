@@ -79,24 +79,28 @@ func (s *Service) mutedRecipients(ctx context.Context, conversationID uuid.UUID,
 
 func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.MessageDeliveryIntent) error {
 	message := &scylla.Message{
-		ConversationID: intent.ConversationID,
-		Bucket:         intent.Bucket,
-		Ts:             intent.MessageTS,
-		MsgID:          intent.MessageID,
-		SenderID:       intent.SenderID,
-		Type:           intent.MessageType,
-		Text:           intent.MessageText,
+		ConversationID:  intent.ConversationID,
+		Bucket:          intent.Bucket,
+		Ts:              intent.MessageTS,
+		MsgID:           intent.MessageID,
+		SenderID:        intent.SenderID,
+		Type:            intent.MessageType,
+		Text:            intent.MessageText,
 		MediaID:         intent.MediaID,
 		ReplyToID:       intent.ReplyToID,
 		ReplyToPreview:  intent.ReplyToPreview,
 		ReplyToSenderID: intent.ReplyToSenderID,
+		PostID:          intent.PostID,
 		CreatedAt:       intent.MessageTS,
 	}
 	if err := s.msgStore.CreateMessage(ctx, message); err != nil {
 		return fmt.Errorf("persist message: %w", err)
 	}
+	// One preview for every denormalised copy: a post card reads "Sent a
+	// post" (or its caption), never anything taken from the post.
+	preview := messagePreview(intent.MessageType, intent.MessageText)
 	for _, memberID := range intent.MemberIDs {
-		if err := s.msgStore.UpsertInbox(ctx, memberID, intent.ConversationID, intent.SenderID, intent.MessageText, intent.MessageTS); err != nil {
+		if err := s.msgStore.UpsertInbox(ctx, memberID, intent.ConversationID, intent.SenderID, preview, intent.MessageTS); err != nil {
 			return fmt.Errorf("project inbox for %s: %w", memberID, err)
 		}
 	}
@@ -106,7 +110,7 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 	// Inbox last-message metadata (unread previews). The ts guard inside
 	// makes repair replay idempotent — an older intent never overwrites a
 	// newer preview.
-	if err := s.lastMessageStore().SetLastMessage(ctx, intent.ConversationID, intent.SenderID, intent.MessageText, intent.MessageTS); err != nil {
+	if err := s.lastMessageStore().SetLastMessage(ctx, intent.ConversationID, intent.SenderID, preview, intent.MessageTS); err != nil {
 		return fmt.Errorf("set last message: %w", err)
 	}
 	if intent.MediaID != nil {
@@ -138,9 +142,9 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 	}
 
 	if intent.SourceApp == "dating" && intent.MatchID != nil {
-		preview := intent.MessageText
-		if len(preview) > 140 {
-			preview = preview[:140]
+		datingPreview := preview
+		if len(datingPreview) > 140 {
+			datingPreview = datingPreview[:140]
 		}
 		for _, recipientID := range recipients {
 			payload := sharedEvents.ChatDatingMessageNewPayload{
@@ -148,7 +152,7 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 				MatchID:        intent.MatchID.String(),
 				SenderID:       intent.SenderID.String(),
 				RecipientID:    recipientID,
-				MessagePreview: preview,
+				MessagePreview: datingPreview,
 				SentAt:         intent.MessageTS,
 			}
 			dedupe := "dating-message:" + intent.MessageID.String() + ":" + recipientID
@@ -175,14 +179,14 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		if intent.RequestReceiverID == nil {
 			return fmt.Errorf("request delivery has no receiver")
 		}
-		if err := s.convStore.SetMessageRequestPreview(ctx, intent.ConversationID, intent.MessageText); err != nil {
+		if err := s.convStore.SetMessageRequestPreview(ctx, intent.ConversationID, preview); err != nil {
 			return fmt.Errorf("set message request preview: %w", err)
 		}
 		payload := sharedEvents.MessageRequestPayload{
 			ConversationID: intent.ConversationID.String(),
 			SenderID:       intent.SenderID.String(),
 			ReceiverID:     intent.RequestReceiverID.String(),
-			Preview:        intent.MessageText,
+			Preview:        preview,
 			OccurredAt:     intent.MessageTS,
 		}
 		/*

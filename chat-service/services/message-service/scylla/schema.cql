@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS chatservice.messages (
     reply_to_id UUID,
     reply_to_preview TEXT,
     reply_to_sender_id UUID,
+    -- Post cards (TikTok parity T-25): the shared post id, nothing else.
+    -- Existing clusters: message-service adds it at boot, or
+    -- ALTER TABLE chatservice.messages ADD post_id UUID;
+    post_id UUID,
     is_deleted BOOLEAN,
     -- Edit metadata. Existing clusters:
     -- ALTER TABLE chatservice.messages ADD (is_edited BOOLEAN, edited_at TIMESTAMP);

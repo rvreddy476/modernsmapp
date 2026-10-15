@@ -239,7 +239,7 @@ func newDatingFixture(t *testing.T, datingURL string, dating bool) *datingFixtur
 
 func (f *datingFixture) send(t *testing.T, from uuid.UUID, key string) {
 	t.Helper()
-	if _, err := f.svc.SendMessage(context.Background(), from, f.convID, "text", "hello", nil, nil, key); err != nil {
+	if _, err := f.svc.SendMessage(context.Background(), from, f.convID, "text", "hello", nil, nil, nil, key); err != nil {
 		t.Fatalf("send %s: %v", key, err)
 	}
 }
@@ -396,7 +396,7 @@ func TestDatingSendSucceedsWhileDatingIsDown(t *testing.T) {
 	down.Close() // connection refused from here on
 
 	f := newDatingFixture(t, downURL, true)
-	resp, err := f.svc.SendMessage(context.Background(), f.userA, f.convID, "text", "hi", nil, nil, "d4-down")
+	resp, err := f.svc.SendMessage(context.Background(), f.userA, f.convID, "text", "hi", nil, nil, nil, "d4-down")
 	if err != nil || resp == nil {
 		t.Fatalf("send must succeed while dating-service is down: resp=%v err=%v", resp, err)
 	}
