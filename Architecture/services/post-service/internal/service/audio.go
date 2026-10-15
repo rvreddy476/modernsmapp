@@ -37,9 +37,13 @@ import (
 //  4. The author is admitted to the sound's media by this service's own
 //     media-access decision, the one that gates the bytes: their own upload,
 //     or a video whose audience includes them. A sound with no media has
-//     nobody to answer for it and is refused.
+//     nobody to answer for it and is refused, except a platform library
+//     sound (library_id, 2026-10-15): media-service materialised it from
+//     its curated library on first use (POST /v1/audio-library/:id/use),
+//     it is public, and every author may hear it.
 //  5. Creator consent: no reel the sound was taken from has turned reuse
-//     off (remix_setting = 'disallow'). Its own author always may.
+//     off (remix_setting = 'disallow'). Its own author always may. A
+//     library sound comes from no reel, so there is no one to withhold it.
 //
 // The link stores where in the sound playback starts (audio_start_ms); a
 // start outside the sound is 0.
@@ -150,30 +154,34 @@ func (s *Service) AttachAudioToPost(ctx context.Context, actorID, postID, audioT
 			return nil, ErrAudioTrackPrivate
 		}
 	}
-	if track.MediaID == nil || *track.MediaID == uuid.Nil {
-		return nil, ErrAudioTrackNotFound
-	}
-	// The post's own video's sound is the audio it already plays.
-	own, err := s.isOwnSound(ctx, postID, track)
-	if err != nil {
-		return nil, fmt.Errorf("audio track source: %w", err)
-	}
-	if own {
-		return nil, nil
-	}
-	allowed, err := s.authorMayHear(ctx, actorID, *track.MediaID)
-	if err != nil {
-		return nil, fmt.Errorf("audio track audience: %w", err)
-	}
-	if !allowed {
-		return nil, ErrAudioTrackNotFound
-	}
-	sources, err := s.audioStore().SoundSourcePosts(ctx, track.SourcePostID, track.MediaID)
-	if err != nil {
-		return nil, fmt.Errorf("audio track consent: %w", err)
-	}
-	if !soundReuseAllowed(sources, actorID) {
-		return nil, ErrSoundReuseNotAllowed
+	// A platform library sound has no media and no source reel: it is
+	// public and every author may hear and reuse it (rules 4 and 5).
+	if !track.IsLibrarySound() {
+		if track.MediaID == nil || *track.MediaID == uuid.Nil {
+			return nil, ErrAudioTrackNotFound
+		}
+		// The post's own video's sound is the audio it already plays.
+		own, err := s.isOwnSound(ctx, postID, track)
+		if err != nil {
+			return nil, fmt.Errorf("audio track source: %w", err)
+		}
+		if own {
+			return nil, nil
+		}
+		allowed, err := s.authorMayHear(ctx, actorID, *track.MediaID)
+		if err != nil {
+			return nil, fmt.Errorf("audio track audience: %w", err)
+		}
+		if !allowed {
+			return nil, ErrAudioTrackNotFound
+		}
+		sources, err := s.audioStore().SoundSourcePosts(ctx, track.SourcePostID, track.MediaID)
+		if err != nil {
+			return nil, fmt.Errorf("audio track consent: %w", err)
+		}
+		if !soundReuseAllowed(sources, actorID) {
+			return nil, ErrSoundReuseNotAllowed
+		}
 	}
 	link := &SoundLink{AudioTrackID: audioTrackID, StartMs: clampSoundStart(startMs, track.DurationMs)}
 	newToPost, err := s.audioStore().AttachAudioToPost(ctx, postID, audioTrackID, link.StartMs)

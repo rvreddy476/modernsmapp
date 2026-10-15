@@ -1,0 +1,14 @@
+-- Migration 064: library sounds (2026-10-15).
+--
+-- media-service now materialises a curated library sound (audio_library) as
+-- an audio_tracks row on its first use (POST /v1/audio-library/:id/use) and
+-- marks it with library_id (its migration 028). Such a sound has no source
+-- video: post-service reads library_id to know the sound is the
+-- platform's, public, and heard by everyone, so an attach, a feed read and
+-- the sound page admit it without a media-access decision.
+--
+-- Declared here exactly as media-service declares it, the same way 013 and
+-- 058 add each other's columns, so the reads work whichever service
+-- migrated first. The unique index and the foreign key to audio_library are
+-- media-service's (it owns that table) and are not repeated here.
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS library_id UUID;

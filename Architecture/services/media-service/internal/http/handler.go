@@ -56,6 +56,10 @@ type Handler struct {
 	// (sound_handler.go); nil means the service. An interface so the ensure
 	// path can be driven without PostgreSQL or ffmpeg.
 	sounds soundService
+	// library backs POST /v1/audio-library/:id/use and the library preview
+	// (library_sound_handler.go); nil means the service. An interface so
+	// the routes can be pinned without PostgreSQL.
+	library librarySoundService
 	// imageBytes backs GET /v1/media/internal/:mediaId/image-bytes
 	// (image_bytes_handler.go); nil means the service's reader. An interface
 	// so a test can stand fake stores behind the real reader.

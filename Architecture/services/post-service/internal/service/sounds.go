@@ -49,6 +49,11 @@ import (
 	No storage path and no presigned URL is ever part of a PostSound: the
 	bytes are media-service's to serve, re-gated on every request.
 
+	A platform library sound (library_id, 2026-10-15) is the exception to
+	"follows its source video": it has none. media-service materialised it
+	from the curated library on first use; it is public and every viewer,
+	signed out included, may hear and reuse it while it is ready.
+
 	Reuse needs the creator's consent (soundReuseAllowed, audio.go); hearing
 	does not. A reel that already plays a sound keeps playing it after its
 	source turns reuse off.
@@ -127,6 +132,9 @@ type PostSound struct {
 	// author. Both null on a sound that names neither.
 	SourcePostID  *uuid.UUID `json:"source_post_id"`
 	CreatorUserID *uuid.UUID `json:"creator_user_id"`
+	// LibraryID is set on a platform library sound only (the curated
+	// library row it was made from); absent on every other sound.
+	LibraryID *uuid.UUID `json:"library_id,omitempty"`
 }
 
 // SoundPage is one page of GET /v1/posts/by-sound/:soundId.
@@ -194,9 +202,18 @@ func (s *Service) soundMakerOrHTTP() soundSource {
 
 // playableSound reports whether a sound row can be played at all: it
 // exists, it is ready, and it names the media that answers for its
-// audience.
+// audience, or it is a platform library sound, which needs none.
 func playableSound(t *postgres.AudioTrack) bool {
-	return t != nil && t.Status == audioTrackReady && t.MediaID != nil && *t.MediaID != uuid.Nil
+	if t == nil || t.Status != audioTrackReady {
+		return false
+	}
+	return t.IsLibrarySound() || (t.MediaID != nil && *t.MediaID != uuid.Nil)
+}
+
+// needsAudience reports whether a playable sound's hearing is decided on
+// its media. A library sound's is not: everyone may hear it.
+func needsAudience(t *postgres.AudioTrack) bool {
+	return !t.IsLibrarySound()
 }
 
 // reusableSound adds the private-sound rule to playableSound: a private
@@ -216,6 +233,7 @@ func postSoundOf(t *postgres.AudioTrack, startMs int) *PostSound {
 		ID: t.ID, Title: t.Title, Artist: t.Artist, DurationMs: t.DurationMs,
 		StartMs: clampSoundStart(startMs, t.DurationMs), UseCount: t.UseCount,
 		SourcePostID: t.SourcePostID, CreatorUserID: t.CreatorUserID,
+		LibraryID: t.LibraryID,
 	}
 }
 
@@ -276,25 +294,28 @@ func (s *Service) attachSounds(ctx context.Context, viewerID *uuid.UUID, details
 	var mediaIDs []uuid.UUID
 	seenMedia := make(map[uuid.UUID]bool)
 	for _, t := range tracks {
-		if playableSound(t) && !seenMedia[*t.MediaID] {
+		if playableSound(t) && needsAudience(t) && !seenMedia[*t.MediaID] {
 			seenMedia[*t.MediaID] = true
 			mediaIDs = append(mediaIDs, *t.MediaID)
 		}
 	}
-	if len(mediaIDs) == 0 {
-		return
-	}
-	allowed, err := s.mayHear(ctx, viewerID, mediaIDs)
-	if err != nil {
-		slog.WarnContext(ctx, "sounds omitted: audience unresolved", "sounds", len(soundIDs), "err", err)
-		return
+	// Library sounds need no decision; a page of only those asks nobody.
+	allowed := map[uuid.UUID]bool{}
+	if len(mediaIDs) > 0 {
+		allowed, err = s.mayHear(ctx, viewerID, mediaIDs)
+		if err != nil {
+			// The library sounds on the page are still heard: their
+			// hearing never depended on this answer.
+			slog.WarnContext(ctx, "sounds omitted: audience unresolved", "sounds", len(soundIDs), "err", err)
+			allowed = map[uuid.UUID]bool{}
+		}
 	}
 	for _, d := range details {
 		if d == nil || d.Post == nil || d.Post.AudioTrackID == nil {
 			continue
 		}
 		t := tracks[*d.Post.AudioTrackID]
-		if !playableSound(t) || !allowed[*t.MediaID] {
+		if !playableSound(t) || (needsAudience(t) && !allowed[*t.MediaID]) {
 			continue
 		}
 		startMs := 0
@@ -320,6 +341,10 @@ func (s *Service) soundForViewer(ctx context.Context, viewerID *uuid.UUID, sound
 	track := tracks[soundID]
 	if !reusableSound(track, viewerID) {
 		return nil, ErrSoundNotFound
+	}
+	if !needsAudience(track) {
+		// A platform library sound: public, heard by everyone.
+		return track, nil
 	}
 	allowed, err := s.mayHear(ctx, viewerID, []uuid.UUID{*track.MediaID})
 	if err != nil {
