@@ -1,18 +1,22 @@
 package com.us.android.feature.notifications.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -35,9 +39,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -58,6 +66,7 @@ import com.us.android.core.model.Notification
 import com.us.android.core.model.NotificationKind
 import com.us.android.core.model.NotificationTarget
 import com.us.android.core.ui.UsEmptyState
+import com.us.android.core.ui.UsErrorState
 import com.us.android.feature.notifications.permission.NotificationPermissionPrompt
 import java.time.Duration
 import java.time.Instant
@@ -115,7 +124,11 @@ fun NotificationsScreen(
             last >= listState.layoutInfo.totalItemsCount - LOAD_MORE_THRESHOLD
         }
     }
-    LaunchedEffect(shouldLoadMore) {
+    // Keyed on the row count too: a short filtered page leaves the end in
+    // view, and the next page must still be asked for once it lands. A page
+    // that added nothing does not re-trigger it — "Show more" does — so a
+    // sparse filter never walks the inbox on its own.
+    LaunchedEffect(shouldLoadMore, state.items.size) {
         if (shouldLoadMore) viewModel.loadMore()
     }
 
@@ -154,6 +167,8 @@ fun NotificationsScreen(
             // first launch. Renders nothing unless there is something to say.
             permissionPrompt()
 
+            FilterChips(selected = state.filter, onSelect = viewModel::selectFilter)
+
             // Momentum's Follow Requests panel — a raised shortcut to the
             // approval queue, derived from the SAME rows the list below
             // already loaded rather than a second fetch.
@@ -171,19 +186,28 @@ fun NotificationsScreen(
             when {
                 state.isLoading -> LoadingBlock()
 
-                state.error != null -> UsEmptyState(
-                    title = "Something went wrong",
-                    detail = state.error.orEmpty(),
+                state.error != null -> UsErrorState(
+                    message = state.error.orEmpty(),
+                    onRetry = viewModel::refresh,
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                state.isEmpty -> UsEmptyState(
-                    title = "Nothing yet",
-                    detail = "Reactions, comments, follows and message requests will show up here.",
-                    modifier = Modifier.fillMaxWidth(),
+                // Nothing in the pages read so far. With a cursor left the
+                // filter may still have older rows — say so, and let one tap
+                // look further rather than claiming there are none.
+                state.isEmpty -> FilterEmpty(
+                    filter = state.filter,
+                    hasMore = state.hasMore,
+                    loadingMore = state.isLoadingMore,
+                    onLookFurther = viewModel::loadMore,
                 )
 
-                else -> SectionedNotificationList(state = state, listState = listState, callbacks = callbacks)
+                else -> SectionedNotificationList(
+                    state = state,
+                    listState = listState,
+                    callbacks = callbacks,
+                    onShowMore = viewModel::loadMore,
+                )
             }
         }
     }
@@ -330,11 +354,92 @@ private data class RowCallbacks(
  */
 private enum class AgeBand(val label: String) { New("New"), Week("This Week"), Older("Earlier") }
 
+/**
+ * All · Likes · Comments · Mentions · Followers (T-11). Glass pills; the
+ * selected one is the selected-pill surface, never the accent — the same
+ * rule the search tabs keep.
+ */
+@Composable
+private fun FilterChips(selected: ActivityFilter, onSelect: (ActivityFilter) -> Unit) {
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("activity_filters"),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        contentPadding = PaddingValues(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m),
+    ) {
+        items(ActivityFilter.entries, key = { it.name }) { filter ->
+            FilterChip(filter = filter, active = filter == selected, onClick = { onSelect(filter) })
+        }
+    }
+}
+
+@Composable
+private fun FilterChip(filter: ActivityFilter, active: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(UsTheme.radii.full)
+    val fill = if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBg
+    val outline = if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .height(CHIP_HEIGHT)
+            .clip(shape)
+            .background(fill, shape)
+            .border(CHIP_HAIRLINE, outline, shape)
+            .clickable(onClick = onClick)
+            .semantics {
+                role = Role.Tab
+                selected = active
+            }
+            .padding(horizontal = CHIP_HORIZONTAL)
+            .testTag("activity_filter:${filter.name.lowercase()}"),
+    ) {
+        Text(
+            text = filter.label,
+            style = MaterialTheme.typography.labelLarge,
+            fontSize = CHIP_TEXT,
+            fontWeight = FontWeight.SemiBold,
+            color = if (active) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
+            maxLines = 1,
+        )
+    }
+}
+
+/** The filter's own "nothing here", and — while older pages remain — one way to look further back. */
+@Composable
+private fun FilterEmpty(filter: ActivityFilter, hasMore: Boolean, loadingMore: Boolean, onLookFurther: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        UsEmptyState(
+            title = filter.emptyTitle,
+            detail = if (hasMore) "Nothing in your recent activity. Older activity may still have some." else filter.emptyDetail,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .testTag("activity_empty"),
+        )
+        if (hasMore) {
+            UsPillButton(
+                text = "Look further back",
+                filled = false,
+                busy = loadingMore,
+                onClick = onLookFurther,
+                modifier = Modifier
+                    .padding(bottom = UsTheme.spacing.xxxxl)
+                    .testTag("activity_look_further"),
+            )
+        }
+    }
+}
+
 @Composable
 private fun SectionedNotificationList(
     state: NotificationsUiState,
     listState: LazyListState,
     callbacks: RowCallbacks,
+    onShowMore: () -> Unit,
 ) {
     val now = remember(state.items) { Instant.now() }
     val bands = remember(state.items, now) { state.items.groupBy { ageBand(it.createdAt, now) } }
@@ -348,6 +453,22 @@ private fun SectionedNotificationList(
         }
         if (state.isLoadingMore) {
             item { LoadingBlock() }
+        } else if (state.hasMore) {
+            // Reaching the end asks for the next page by itself; this is the
+            // way on when a filtered page added nothing (see InboxPaging).
+            item(key = "show-more") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(UsTheme.spacing.l),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    UsPillButton(
+                        text = "Show more",
+                        filled = false,
+                        onClick = onShowMore,
+                        modifier = Modifier.testTag("activity_show_more"),
+                    )
+                }
+            }
         }
     }
 }
@@ -681,6 +802,10 @@ private val HEADER_LINK_SIZE = 13.sp
 private val SECTION_SIZE = 14.sp
 private val PANEL_TITLE_SIZE = 14.sp
 private val PANEL_SUBTITLE_SIZE = 12.sp
+private val CHIP_HEIGHT = 34.dp
+private val CHIP_HORIZONTAL = 14.dp
+private val CHIP_HAIRLINE = 1.dp
+private val CHIP_TEXT = 13.sp
 
 /** How much of the danger colour the badge fill behind a missed call is. */
 private const val MISSED_CALL_BAND_ALPHA = 0.12f

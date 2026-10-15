@@ -94,7 +94,7 @@ class NotificationsJourneyTest {
         val markedRead = mutableListOf<NotificationAddress>()
         var markAllCalls = 0
 
-        override suspend fun page(limit: Int, cursor: String?) =
+        override suspend fun page(limit: Int, cursor: String?, category: String?) =
             AppResult.Success(NotificationPage(rows, null))
 
         override suspend fun unreadCount() = AppResult.Success(count)
@@ -123,7 +123,7 @@ class NotificationsJourneyTest {
     }
 
     private class UnusedApi : NotificationsApi {
-        override suspend fun list(limit: Int, cursor: String?) = error("not used")
+        override suspend fun list(limit: Int, cursor: String?, category: String?) = error("not used")
         override suspend fun unreadCount() = error("not used")
         override suspend fun markRead(body: MarkReadRequest) = error("not used")
         override suspend fun markAllRead() = error("not used")

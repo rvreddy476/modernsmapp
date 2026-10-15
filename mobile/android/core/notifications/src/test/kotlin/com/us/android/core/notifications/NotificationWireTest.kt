@@ -239,6 +239,21 @@ class NotificationWireTest {
         assertThat(server.takeRequest().target).isEqualTo("/v1/notifications?limit=20")
     }
 
+    /** An Activity tab (T-11) is `?category=`; the whole inbox sends none. */
+    @Test
+    fun `a filtered page carries its category, the whole inbox none`() = runBlocking {
+        enqueue("""{"data":null,"meta":{"next_cursor":"c2"}}""")
+        val filtered = repository().page(cursor = "c1", category = "likes")
+        assertThat(server.takeRequest().target).isEqualTo("/v1/notifications?limit=20&cursor=c1&category=likes")
+        // Empty, yet not the end: the cursor is carried through.
+        assertThat((filtered as com.us.android.core.common.result.AppResult.Success).data.nextCursor).isEqualTo("c2")
+        assertThat(filtered.data.items).isEmpty()
+
+        enqueue("""{"data":null}""")
+        repository().page()
+        assertThat(server.takeRequest().target).isEqualTo("/v1/notifications?limit=20")
+    }
+
     /**
      * An unknown `type` decodes rather than failing the page.
      *

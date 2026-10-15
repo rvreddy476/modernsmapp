@@ -10,33 +10,41 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -48,24 +56,38 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsAvatar
+import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.feature.search.data.RecentSearch
 import com.us.android.feature.search.data.SearchHit
+import com.us.android.feature.search.data.SearchSuggestion
 import com.us.android.feature.search.navigation.SearchDestinations
 import com.us.android.feature.search.navigation.SearchScope
 import java.time.Instant
 
 /**
- * Search (founder, 2026-09-05): the field on top with the search glyph,
- * a clear × once something is typed, focused on arrival with the keyboard
- * up and its action set to Search; under it the scope chips for where the
- * page was opened from; under those the results — or, while the field is
- * empty, the last ten searches with "Clear all". Every row opens what it
- * names; `:app` resolves where that is.
+ * Search (founder, 2026-09-05; T-16, 2026-10-15): the field on top with
+ * the search glyph, a clear × once something is typed, focused on arrival
+ * with the keyboard up and its action set to Search. Under it, one of three
+ * bodies ([SearchBody]):
+ *
+ *  - the box empty: the signed-in viewer's recent searches — each with its
+ *    own ×, and "Clear all" behind a confirmation — then popular searches;
+ *  - typing: "Search for …" and autocomplete's suggestions;
+ *  - searched: the tabs for where the page was opened from, and that tab's
+ *    results, with loading, empty, and error-with-retry states.
+ *
+ * Every row opens what it names; `:app` resolves where that is.
  */
 @Composable
 fun SearchScreen(
@@ -74,25 +96,24 @@ fun SearchScreen(
 ) {
     val query by viewModel.query.collectAsStateWithLifecycle()
     val scope by viewModel.scope.collectAsStateWithLifecycle()
+    val body by viewModel.body.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
+    val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
+    val signedIn by viewModel.signedIn.collectAsStateWithLifecycle()
     val recent by viewModel.recent.collectAsStateWithLifecycle()
+    val popular by viewModel.popular.collectAsStateWithLifecycle()
+    val confirmClear by viewModel.confirmClear.collectAsStateWithLifecycle()
+    val notice by viewModel.notice.collectAsStateWithLifecycle()
     val edges by viewModel.followEdges.collectAsStateWithLifecycle()
     val followBusy by viewModel.followBusy.collectAsStateWithLifecycle()
     val keyboard = LocalSoftwareKeyboardController.current
 
     val actions = remember(viewModel, destinations) {
         SearchRowActions(
-            onOpenUser = { hit ->
-                viewModel.onHitOpened()
-                destinations.onOpenProfile(hit.id)
-            },
+            onOpenUser = { hit -> destinations.onOpenProfile(hit.id) },
             onFollow = { hit -> viewModel.follow(hit.id) },
-            onOpenPost = { hit ->
-                viewModel.onHitOpened()
-                destinations.onOpenPost(hit.id)
-            },
+            onOpenPost = { hit -> destinations.onOpenPost(hit.id) },
             onOpenVideo = { hit ->
-                viewModel.onHitOpened()
                 if (hit.isReel) {
                     viewModel.openReel(hit.id)
                     destinations.onOpenReels()
@@ -100,11 +121,16 @@ fun SearchScreen(
                     destinations.onOpenVideo(hit.id)
                 }
             },
-            onOpenChannel = { hit ->
-                viewModel.onHitOpened()
-                destinations.onOpenChannel(hit.id)
-            },
+            onOpenChannel = { hit -> destinations.onOpenChannel(hit.id) },
+            onOpenHashtag = { hit -> destinations.onOpenHashtag(hit.tag) },
+            onOpenSound = { hit -> destinations.onOpenSound(hit.id) },
         )
+    }
+    val submitAnd: (() -> Unit) -> Unit = remember(keyboard) {
+        { submit ->
+            keyboard?.hide()
+            submit()
+        }
     }
 
     UsScaffold(
@@ -117,12 +143,11 @@ fun SearchScreen(
                     onValueChange = viewModel::onQueryChanged,
                     onClear = viewModel::onClear,
                     onBack = destinations.onBack,
-                    onSubmit = {
-                        keyboard?.hide()
-                        viewModel.onSubmit()
-                    },
+                    onSubmit = { submitAnd(viewModel::onSubmit) },
                 )
-                ScopeChips(scopes = viewModel.scopes, selected = scope, onSelect = viewModel::onScopeSelected)
+                if (body == SearchBody.Results) {
+                    ScopeTabs(scopes = viewModel.scopes, selected = scope, onSelect = viewModel::onScopeSelected)
+                }
             }
         },
     ) { padding ->
@@ -131,14 +156,25 @@ fun SearchScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            when {
-                query.isBlank() -> Recents(
+            when (body) {
+                SearchBody.Start -> StartBody(
+                    signedIn = signedIn,
                     recent = recent,
-                    onPick = viewModel::onRecentPicked,
-                    onClearAll = viewModel::onClearRecents,
+                    popular = popular,
                     placeholder = viewModel.origin.placeholder,
+                    onPickRecent = { item -> submitAnd { viewModel.onRecentPicked(item) } },
+                    onRemoveRecent = viewModel::removeRecent,
+                    onClearAll = viewModel::onClearAllRequested,
+                    onPickPopular = { text -> submitAnd { viewModel.onPopularPicked(text) } },
                 )
-                else -> Results(
+                SearchBody.Suggestions -> Suggestions(
+                    typed = query.trim(),
+                    suggestions = suggestions,
+                    onSearch = { text -> submitAnd { viewModel.onSuggestionPicked(text) } },
+                    onOpenPerson = { person -> destinations.onOpenProfile(person.userId) },
+                    onOpenTag = { tag -> destinations.onOpenHashtag(tag) },
+                )
+                SearchBody.Results -> Results(
                     results = results,
                     query = query,
                     follow = FollowFacts(ownUserId = viewModel.ownUserId, edges = edges, busy = followBusy),
@@ -146,7 +182,15 @@ fun SearchScreen(
                     onRetry = viewModel::retry,
                 )
             }
+            UsMessageHost(
+                message = remember(notice) { notice?.let { UsMessage(it) } },
+                onDismiss = viewModel::onNoticeShown,
+            )
         }
+    }
+
+    if (confirmClear) {
+        ClearAllSheet(onConfirm = viewModel::onClearAllConfirmed, onDismiss = viewModel::onClearAllDismissed)
     }
 }
 
@@ -233,7 +277,7 @@ private fun SearchField(
     LaunchedEffect(Unit) { focus.requestFocus() }
 }
 
-/** A square target, the icon in the text colour, no ripple — a dip on press. */
+/** A square target, the icon in [tint], no ripple — a dip on press. */
 @Composable
 private fun Glyph(
     icon: ImageVector,
@@ -242,6 +286,7 @@ private fun Glyph(
     tag: String,
     size: Dp = GLYPH_TARGET,
     glyph: Dp = GLYPH_SIZE,
+    tint: Color = UsTheme.extended.textPrimary,
 ) {
     Box(
         contentAlignment = Alignment.Center,
@@ -257,17 +302,17 @@ private fun Glyph(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = UsTheme.extended.textPrimary,
+            tint = tint,
             modifier = Modifier.size(glyph),
         )
     }
 }
 
-// ── The chips ───────────────────────────────────────────────────────────
+// ── The tabs ────────────────────────────────────────────────────────────
 
 /** Glass pills; the selected one is WHITE with navy text — the bar's rule, selected is never the accent. */
 @Composable
-private fun ScopeChips(scopes: List<SearchScope>, selected: SearchScope, onSelect: (SearchScope) -> Unit) {
+private fun ScopeTabs(scopes: List<SearchScope>, selected: SearchScope, onSelect: (SearchScope) -> Unit) {
     LazyRow(
         modifier = Modifier
             .fillMaxWidth()
@@ -276,13 +321,13 @@ private fun ScopeChips(scopes: List<SearchScope>, selected: SearchScope, onSelec
         contentPadding = PaddingValues(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.l),
     ) {
         items(scopes, key = { it.name }) { scope ->
-            ScopeChip(scope = scope, active = scope == selected, onClick = { onSelect(scope) })
+            ScopeTab(scope = scope, active = scope == selected, onClick = { onSelect(scope) })
         }
     }
 }
 
 @Composable
-private fun ScopeChip(scope: SearchScope, active: Boolean, onClick: () -> Unit) {
+private fun ScopeTab(scope: SearchScope, active: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(UsTheme.radii.full)
     val fill = if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBg
     val outline = if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder
@@ -311,20 +356,25 @@ private fun ScopeChip(scope: SearchScope, active: Boolean, onClick: () -> Unit) 
     }
 }
 
-// ── The body ────────────────────────────────────────────────────────────
+// ── The empty box ───────────────────────────────────────────────────────
 
-/** The last searches while the field is empty; the hint when there are none yet. */
+/** Recent searches (signed in only), then popular searches; the hint when there is neither. */
 @Composable
-private fun Recents(
-    recent: List<String>,
-    onPick: (String) -> Unit,
-    onClearAll: () -> Unit,
+private fun StartBody(
+    signedIn: Boolean,
+    recent: List<RecentSearch>,
+    popular: List<String>,
     placeholder: String,
+    onPickRecent: (RecentSearch) -> Unit,
+    onRemoveRecent: (RecentSearch) -> Unit,
+    onClearAll: () -> Unit,
+    onPickPopular: (String) -> Unit,
 ) {
-    if (recent.isEmpty()) {
+    val recents = if (signedIn) recent else emptyList()
+    if (recents.isEmpty() && popular.isEmpty()) {
         UsEmptyState(
             title = placeholder,
-            detail = "Type at least ${SearchQueries.MIN_CHARS} characters.",
+            detail = "Search for people, videos, reels, sounds and hashtags.",
             modifier = Modifier.testTag("search_hint"),
         )
         return
@@ -332,59 +382,264 @@ private fun Recents(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("search_recents"),
+            .testTag("search_start"),
         contentPadding = PaddingValues(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s),
     ) {
-        item(key = "header") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.m),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Recent",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = UsTheme.extended.textPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "Clear all",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = UsTheme.extended.textMuted,
-                    modifier = Modifier
-                        .pressScale(onClearAll)
-                        .semantics { role = Role.Button }
-                        .padding(UsTheme.spacing.s)
-                        .testTag("search_recents_clear"),
+        if (recents.isNotEmpty()) {
+            item(key = "recent_header") {
+                SectionHeader(title = "Recent", action = "Clear all", onAction = onClearAll, actionTag = "search_recents_clear")
+            }
+            items(recents, key = { "recent:${it.id}" }) { item ->
+                RecentRow(item = item, onPick = { onPickRecent(item) }, onRemove = { onRemoveRecent(item) })
+            }
+        }
+        if (popular.isNotEmpty()) {
+            item(key = "popular_header") { SectionHeader(title = "Popular searches") }
+            items(popular, key = { "popular:$it" }) { text ->
+                QueryRow(
+                    icon = UsIcons.Search,
+                    text = text,
+                    description = "Search $text",
+                    tag = "search_popular:$text",
+                    onClick = { onPickPopular(text) },
                 )
             }
         }
-        items(recent, key = { it }) { query ->
-            Row(
+    }
+}
+
+@Composable
+private fun SectionHeader(
+    title: String,
+    action: String? = null,
+    onAction: () -> Unit = {},
+    actionTag: String = "",
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = UsTheme.extended.textPrimary,
+            modifier = Modifier
+                .weight(1f)
+                .semantics { heading() },
+        )
+        if (action != null) {
+            Text(
+                text = action,
+                style = MaterialTheme.typography.labelLarge,
+                color = UsTheme.extended.textMuted,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .pressScale { onPick(query) }
-                    .semantics {
-                        role = Role.Button
-                        contentDescription = "Search $query"
-                    }
-                    .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.l)
-                    .testTag("search_recent:$query"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-            ) {
-                Icon(
-                    imageVector = UsIcons.Clock,
-                    contentDescription = null,
-                    tint = UsTheme.extended.textMuted,
-                    modifier = Modifier.size(RECENT_GLYPH),
-                )
+                    .pressScale(onAction)
+                    .semantics { role = Role.Button }
+                    .padding(UsTheme.spacing.s)
+                    .testTag(actionTag),
+            )
+        }
+    }
+}
+
+/** The clock, the words, and × to remove just this one. */
+@Composable
+private fun RecentRow(item: RecentSearch, onPick: () -> Unit, onRemove: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(modifier = Modifier.weight(1f)) {
+            QueryRow(
+                icon = UsIcons.Clock,
+                text = item.query,
+                description = "Search ${item.query}",
+                tag = "search_recent:${item.id}",
+                onClick = onPick,
+            )
+        }
+        Glyph(
+            icon = UsIcons.Close,
+            description = "Remove ${item.query} from recent searches",
+            onClick = onRemove,
+            tag = "search_recent_remove:${item.id}",
+            size = CLEAR_TARGET,
+            glyph = CLEAR_GLYPH,
+            tint = UsTheme.extended.textMuted,
+        )
+    }
+}
+
+@Composable
+private fun QueryRow(icon: ImageVector, text: String, description: String, tag: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pressScale(onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            }
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.l)
+            .testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = UsTheme.extended.textMuted,
+            modifier = Modifier.size(ROW_GLYPH),
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = UsTheme.extended.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * Confirming "Clear all", as a Momentum sheet from the bottom — the app's
+ * one way of asking before something cannot be undone. Both ways out are
+ * real buttons.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ClearAllSheet(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = UsTheme.extended.bgSheet,
+        contentColor = UsTheme.extended.textPrimary,
+        shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = SCRIM_ALPHA),
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .padding(top = UsTheme.spacing.xl, bottom = UsTheme.spacing.pageHorizontal)
+                .navigationBarsPadding()
+                .testTag("search_clear_confirm"),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
+            Text(
+                text = "Clear all recent searches?",
+                style = MaterialTheme.typography.titleLarge,
+                color = UsTheme.extended.textPrimary,
+            )
+            Text(
+                text = "Your search history will be removed from your account. This can't be undone.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textMuted,
+            )
+            UsButton(text = "Clear all", onClick = onConfirm, modifier = Modifier.fillMaxWidth())
+            UsSecondaryButton(text = "Cancel", onClick = onDismiss, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+// ── Typing ──────────────────────────────────────────────────────────────
+
+/** "Search for …" first — the words as typed — then autocomplete's people, tags and queries. */
+@Composable
+private fun Suggestions(
+    typed: String,
+    suggestions: List<SearchSuggestion>,
+    onSearch: (String) -> Unit,
+    onOpenPerson: (SearchSuggestion.Person) -> Unit,
+    onOpenTag: (String) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("search_suggestions"),
+        contentPadding = PaddingValues(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s),
+    ) {
+        item(key = "search_for") {
+            QueryRow(
+                icon = UsIcons.Search,
+                text = "Search for “$typed”",
+                description = "Search for $typed",
+                tag = "search_for",
+                onClick = { onSearch(typed) },
+            )
+        }
+        suggestionRows(suggestions, onSearch, onOpenPerson, onOpenTag)
+    }
+}
+
+private fun LazyListScope.suggestionRows(
+    suggestions: List<SearchSuggestion>,
+    onSearch: (String) -> Unit,
+    onOpenPerson: (SearchSuggestion.Person) -> Unit,
+    onOpenTag: (String) -> Unit,
+) {
+    items(suggestions, key = { suggestionKey(it) }) { suggestion ->
+        when (suggestion) {
+            is SearchSuggestion.Person -> PersonSuggestion(suggestion, onClick = { onOpenPerson(suggestion) })
+            is SearchSuggestion.Tag -> QueryRow(
+                icon = UsIcons.Hash,
+                text = "#${suggestion.tag}",
+                description = "Hashtag ${suggestion.tag}",
+                tag = "search_suggestion_tag:${suggestion.tag}",
+                onClick = { onOpenTag(suggestion.tag) },
+            )
+            is SearchSuggestion.Query -> QueryRow(
+                icon = UsIcons.Search,
+                text = suggestion.text,
+                description = "Search ${suggestion.text}",
+                tag = "search_suggestion:${suggestion.text}",
+                onClick = { onSearch(suggestion.text) },
+            )
+        }
+    }
+}
+
+private fun suggestionKey(suggestion: SearchSuggestion): String = when (suggestion) {
+    is SearchSuggestion.Person -> "person:${suggestion.userId}"
+    is SearchSuggestion.Tag -> "tag:${suggestion.tag}"
+    is SearchSuggestion.Query -> "query:${suggestion.text}"
+}
+
+@Composable
+private fun PersonSuggestion(person: SearchSuggestion.Person, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .pressScale(onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = person.nameForDisplay
+            }
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.m)
+            .testTag("search_suggestion_person:${person.userId}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        UsAvatar(name = person.nameForDisplay, seed = person.userId, size = UsAvatarSize.Small)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = person.nameForDisplay,
+                style = MaterialTheme.typography.bodyLarge,
+                color = UsTheme.extended.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            person.handle?.let {
                 Text(
-                    text = query,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = UsTheme.extended.textPrimary,
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -392,6 +647,8 @@ private fun Recents(
         }
     }
 }
+
+// ── Results ─────────────────────────────────────────────────────────────
 
 @Composable
 private fun Results(
@@ -403,23 +660,24 @@ private fun Results(
 ) {
     val now = remember(results) { Instant.now() }
     when (results) {
-        SearchResults.Idle -> UsEmptyState(
-            title = "Keep typing",
-            detail = "Type at least ${SearchQueries.MIN_CHARS} characters.",
-            modifier = Modifier.testTag("search_hint"),
-        )
-        SearchResults.Loading -> UsLoadingState(label = "Searching")
+        SearchResults.Idle, SearchResults.Loading -> UsLoadingState(label = "Searching")
         is SearchResults.Error -> UsErrorState(message = results.message, onRetry = onRetry)
         is SearchResults.Loaded -> if (results.hits.isEmpty()) {
             UsEmptyState(
-                title = "No ${results.request.scope.label.lowercase()} for “${query.trim()}”",
-                detail = "Try another word, or another chip.",
+                title = "No ${emptyNoun(results.request.scope)} for “${query.trim()}”",
+                detail = "Try other words, or another tab.",
                 modifier = Modifier.testTag("search_empty"),
             )
         } else {
             HitList(hits = results.hits, follow = follow, actions = actions, now = now)
         }
     }
+}
+
+/** What "nothing found" names, per tab. */
+internal fun emptyNoun(scope: SearchScope): String = when (scope) {
+    SearchScope.TOP -> "results"
+    else -> scope.label.lowercase()
 }
 
 @Composable
@@ -437,6 +695,8 @@ private fun HitList(hits: List<SearchHit>, follow: FollowFacts, actions: SearchR
     }
 }
 
+private const val SCRIM_ALPHA = 0.55f
+private val SHEET_RADIUS = 28.dp
 private val HAIRLINE = 1.dp
 private val FIELD_HEIGHT = 46.dp
 private val FIELD_PADDING_START = 16.dp
@@ -448,4 +708,4 @@ private val CLEAR_GLYPH = 18.dp
 private val CHIP_HEIGHT = 34.dp
 private val CHIP_HORIZONTAL = 14.dp
 private val CHIP_TEXT = 13.sp
-private val RECENT_GLYPH = 18.dp
+private val ROW_GLYPH = 18.dp

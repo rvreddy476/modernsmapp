@@ -11,7 +11,7 @@ data class SearchAuthor(
     val handle: String? get() = username.takeIf { it.isNotBlank() }?.let { "@$it" }
 }
 
-/** One row of results. Four kinds, one list: the page draws each by its shape. */
+/** One row of results. Several kinds, one list: the page draws each by its shape. */
 sealed interface SearchHit {
     val id: String
 
@@ -57,4 +57,41 @@ sealed interface SearchHit {
     ) : SearchHit {
         val handleForDisplay: String get() = "@$handle"
     }
+
+    /** A tag, kept without its `#`; [id] is the tag itself. */
+    data class Hashtag(val tag: String) : SearchHit {
+        override val id: String get() = tag
+        val label: String get() = "#$tag"
+    }
+
+    /** A sound from media-service's sound search; [usageCount] is how many reels play it. */
+    data class Sound(
+        override val id: String,
+        val title: String,
+        val artist: String,
+        val durationMs: Long,
+        val usageCount: Long,
+        val isOriginal: Boolean,
+    ) : SearchHit {
+        val titleForDisplay: String get() = title.ifBlank { if (isOriginal) "Original sound" else "Untitled sound" }
+    }
+}
+
+/** One of the signed-in viewer's past searches, as search-service keeps it; [id] is what `DELETE` takes. */
+data class RecentSearch(val id: String, val query: String)
+
+/**
+ * A suggestion while typing, from `GET v1/search/autocomplete`. A person
+ * opens their profile; a tag opens its page; anything else is a query to
+ * search for.
+ */
+sealed interface SearchSuggestion {
+    data class Person(val userId: String, val username: String, val displayName: String) : SearchSuggestion {
+        val nameForDisplay: String get() = displayName.ifBlank { username.ifBlank { "Unnamed" } }
+        val handle: String? get() = username.takeIf { it.isNotBlank() }?.let { "@$it" }
+    }
+
+    data class Tag(val tag: String) : SearchSuggestion
+
+    data class Query(val text: String) : SearchSuggestion
 }

@@ -1060,11 +1060,12 @@ private fun NavGraphBuilder.tabDestinations(
         ),
     )
 
-    // Search (founder, 2026-09-05): one page, scoped by the header that
-    // opened it. Every row hands back an id and this is where it resolves: a
-    // user opens a profile, a post the post, a reel the Reels tab (the page
-    // has left the id in ReelsEntry, as the Home feed does), a video the
-    // watch screen, a channel its page inside Tube.
+    // Search (founder, 2026-09-05; T-16): one page, its tabs set by the
+    // header that opened it. Every row hands back an id and this is where it
+    // resolves: a user opens a profile, a post the post, a reel the Reels tab
+    // (the page has left the id in ReelsEntry, as the Home feed does), a
+    // video the watch screen, a channel its page inside Tube, a tag its posts
+    // and a sound its page.
     searchScreen(
         SearchDestinations(
             onBack = { navController.popBackStack() },
@@ -1073,6 +1074,8 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenReels = onOpenReels,
             onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
+            onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
+            onOpenSound = { soundId -> navController.navigateToSound(soundId) },
         ),
     )
 
