@@ -7,13 +7,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// ReactToReel adds a reaction to a reel.
+// ReactToReel adds a reaction to a reel. The liked list's record is written
+// first (liked_reels.go); both writes are idempotent, so a failure is an
+// error the client retries.
 func (s *Service) ReactToReel(ctx context.Context, reelID, userID uuid.UUID, reaction string) error {
+	if err := s.indexReaction(ctx, reelID, userID, reaction, true); err != nil {
+		return err
+	}
 	return s.scyllaStore.ReactToReel(ctx, reelID, userID, reaction)
 }
 
-// UnreactToReel removes a reaction from a reel.
+// UnreactToReel removes a reaction from a reel, and from the liked list.
 func (s *Service) UnreactToReel(ctx context.Context, reelID, userID uuid.UUID) error {
+	if err := s.indexReaction(ctx, reelID, userID, "", false); err != nil {
+		return err
+	}
 	return s.scyllaStore.UnreactToReel(ctx, reelID, userID)
 }
 
@@ -85,7 +93,4 @@ func (s *Service) BatchGetReelCounts(ctx context.Context, reelIDs []uuid.UUID) (
 	return s.scyllaStore.BatchGetReelCounts(ctx, reelIDs)
 }
 
-// GetUserReelLikes returns reel IDs liked by a user.
-func (s *Service) GetUserReelLikes(ctx context.Context, userID uuid.UUID, limit int) ([]string, error) {
-	return s.scyllaStore.GetUserReelLikes(ctx, userID, limit)
-}
+// The viewer's liked reels are ListLikedReels (liked_reels.go).

@@ -183,6 +183,9 @@ type Service struct {
 
 	postEdits       postEditStore
 	systemPlaylists systemPlaylistStore
+	// likedReels is the per-viewer like record behind GET /v1/reels/liked
+	// and every like path's index write (liked_reels.go). Nil = no index.
+	likedReels      likedReelsStore
 	creatorComments creatorCommentStore
 	liveVOD         liveVODStore
 	// liveServiceURL is live-service-v2, asked for a stream's title when the
@@ -259,6 +262,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.videoSeries = pg
 		svc.postEdits = pg
 		svc.systemPlaylists = pg
+		svc.likedReels = pg
 		svc.creatorComments = pg
 		svc.liveVOD = pg
 		svc.privateShare = pg
@@ -2023,6 +2027,11 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 	if err != nil {
 		return err
 	}
+	// The liked list's record first (liked_reels.go): idempotent, so a
+	// failure here or below is an error the client retries.
+	if err := s.indexReaction(ctx, postID, userID, reaction, true); err != nil {
+		return err
+	}
 	added, err := s.scyllaStore.React(ctx, postID, userID, reaction)
 	if err != nil {
 		return err
@@ -2070,6 +2079,9 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 
 func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+		return err
+	}
+	if err := s.indexReaction(ctx, postID, userID, "", false); err != nil {
 		return err
 	}
 	removed, err := s.scyllaStore.Unreact(ctx, postID, userID)
@@ -2306,6 +2318,9 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
 		}
 	}
+	// The liked list's record (liked_reels.go). Best-effort: the toggle has
+	// already flipped, and a retried toggle would flip it back.
+	s.indexReactionBestEffort(ctx, postID, userID, "like", result.IsSet)
 	// A liked long video joins the viewer's "Loved" collection; an unliked
 	// one leaves it (system_playlists.go; reels are never written there).
 	s.syncLikedCollection(ctx, userID, post, result.IsSet)
@@ -3145,6 +3160,8 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
 
+	// The reactions row this writes is also the liked list's record
+	// (liked_reels.go); no separate index write.
 	// Audit H4: the reaction event rides the reaction's own transaction
 	// (store/postgres/reactions.go). Self-reactions announce nothing, as
 	// before. `post` is already in scope from the visibility check above.
