@@ -411,6 +411,11 @@ func (s *Store) BlockAtomic(ctx context.Context, blockerID, blockedID uuid.UUID)
 				BlockerID: blockerID.String(),
 				BlockedID: blockedID.String(),
 				BlockedAt: time.Now().UTC(),
+				// The follows this block severed, so follower-change
+				// consumers (analytics) can count them; no UserUnfollowed
+				// is emitted for them.
+				RemovedFollowForward: res.RemovedFollowForward,
+				RemovedFollowReverse: res.RemovedFollowReverse,
 			})
 		if err != nil {
 			return fmt.Errorf("block: outbox: %w", err)

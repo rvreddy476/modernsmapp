@@ -120,11 +120,15 @@ func (p *Producer) PublishUserFollowed(ctx context.Context, followerID, followee
 	return p.publish(ctx, events.UserFollowed, &followerID, payload)
 }
 
-func (p *Producer) PublishUserUnfollowed(ctx context.Context, followerID, followeeID uuid.UUID) error {
+func (p *Producer) PublishUserUnfollowed(ctx context.Context, followerID, followeeID uuid.UUID, edgeRemoved bool) error {
+	// edge_removed lets a counting consumer (analytics' follower delta)
+	// tell a real unfollow from a repeat on a pair that no longer follows;
+	// the repeat is still published so a lost first publish converges.
 	payload := events.UserUnfollowedPayload{
-		FollowerID: followerID.String(),
-		FolloweeID: followeeID.String(),
-		OccurredAt: time.Now(),
+		FollowerID:  followerID.String(),
+		FolloweeID:  followeeID.String(),
+		OccurredAt:  time.Now(),
+		EdgeRemoved: &edgeRemoved,
 	}
 	return p.publish(ctx, events.UserUnfollowed, &followerID, payload)
 }

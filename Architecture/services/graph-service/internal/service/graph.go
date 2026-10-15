@@ -281,7 +281,7 @@ func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
 
-	s.publishUserUnfollowedAsync(followerID, followeeID)
+	s.publishUserUnfollowedAsync(followerID, followeeID, removed)
 	return nil
 }
 
@@ -370,14 +370,14 @@ func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) e
 // ack the user action immediately. If the broker is slow or unavailable
 // the failure is logged and the durable downstream path (counter
 // reconciliation + outbox replay) closes the gap.
-func (s *Service) publishUserUnfollowedAsync(followerID, followeeID uuid.UUID) {
+func (s *Service) publishUserUnfollowedAsync(followerID, followeeID uuid.UUID, edgeRemoved bool) {
 	if s.producer == nil {
 		return
 	}
 	go func() {
 		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := s.producer.PublishUserUnfollowed(pubCtx, followerID, followeeID); err != nil {
+		if err := s.producer.PublishUserUnfollowed(pubCtx, followerID, followeeID, edgeRemoved); err != nil {
 			log.Printf("[graph] async PublishUserUnfollowed failed: %v", err)
 		}
 	}()

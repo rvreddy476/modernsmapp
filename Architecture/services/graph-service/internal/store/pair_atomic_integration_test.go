@@ -403,6 +403,12 @@ func TestPairAtomic_OutboxUsesCanonicalEventNamesAndPayloads(t *testing.T) {
 				t.Errorf("%s payload does not decode: %v", want, err)
 			} else if p.BlockerID != alice.String() || p.BlockedID != bob.String() {
 				t.Errorf("%s payload fields do not match the shared type: %+v", want, p)
+			} else if !p.RemovedFollowForward || p.RemovedFollowReverse {
+				// alice followed bob, then blocked him: the block severed
+				// the forward edge only, and analytics counts it as bob
+				// losing a follower.
+				t.Errorf("%s payload reports severed follows forward=%v reverse=%v, want true/false",
+					want, p.RemovedFollowForward, p.RemovedFollowReverse)
 			}
 		case events.UserUnblocked:
 			var p events.UserUnblockedPayload

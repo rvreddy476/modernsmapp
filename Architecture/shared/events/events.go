@@ -750,6 +750,13 @@ type UserUnfollowedPayload struct {
 	FollowerID string    `json:"follower_id"`
 	FolloweeID string    `json:"followee_id"`
 	OccurredAt time.Time `json:"occurred_at"`
+	// EdgeRemoved says whether this unfollow actually deleted a follow
+	// edge. graph-service publishes UserUnfollowed on every unfollow call,
+	// including a repeat on a pair that no longer follows (so a publish
+	// lost the first time is re-sent and idempotent consumers converge);
+	// a consumer that COUNTS unfollows must skip edge_removed=false. nil
+	// means a producer that predates the field (2026-10-15).
+	EdgeRemoved *bool `json:"edge_removed,omitempty"`
 }
 
 // PostDeletedPayload is the SOFT delete (product decision 2026-09-04: post
@@ -991,6 +998,13 @@ type UserBlockedPayload struct {
 	BlockerID string    `json:"blocker_id"`
 	BlockedID string    `json:"blocked_id"`
 	BlockedAt time.Time `json:"blocked_at"`
+	// A block severs follows in both directions without a UserUnfollowed.
+	// These say which edges this block removed, so a consumer counting
+	// follower changes can see them (2026-10-15; absent = not reported).
+	// RemovedFollowForward: the blocker had been following the blocked.
+	// RemovedFollowReverse: the blocked had been following the blocker.
+	RemovedFollowForward bool `json:"removed_follow_forward,omitempty"`
+	RemovedFollowReverse bool `json:"removed_follow_reverse,omitempty"`
 }
 
 type UserUnblockedPayload struct {

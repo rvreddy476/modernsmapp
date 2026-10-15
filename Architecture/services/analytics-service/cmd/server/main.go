@@ -182,6 +182,14 @@ func main() {
 		svc = svc.WithWatchStore(watchStore)
 	}
 	creatorSvc := service.NewCreatorService(aggStore)
+	// followers_delta needs the follower consumer below; without Kafka it
+	// would read as a confident 0, so it stays null ("Not tracked yet").
+	// ANALYTICS_FOLLOWERS_DELTA_ENABLED=false turns both off.
+	followerDeltas := kafkaBrokers != "" &&
+		!strings.EqualFold(strings.TrimSpace(os.Getenv("ANALYTICS_FOLLOWERS_DELTA_ENABLED")), "false")
+	if followerDeltas {
+		creatorSvc = creatorSvc.WithFollowerDeltas(aggStore)
+	}
 	// The viewer-signal warmer publishes the four Redis keys feed-service's
 	// ranker reads and nothing wrote. See internal/personalization.
 	personalizationWarmer := personalization.NewWarmer(dbPool, rdb)
@@ -212,6 +220,14 @@ func main() {
 		engagementConsumer := consumers.NewEngagementConsumer(dbPool, rdb)
 		go engagementConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
 		slog.Info("engagement analytics consumer started")
+
+		if followerDeltas {
+			// graph-service follow/unfollow/block events -> the daily
+			// follower counts behind creator/me followers_delta.
+			followerConsumer := consumers.NewFollowerDeltaConsumer(store)
+			go followerConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
+			slog.Info("follower delta consumer started", "group", consumers.FollowerDeltaGroupID)
+		}
 	}
 
 	// 11. Start TrustFactor worker (10-min interval)

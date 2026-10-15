@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/analytics-service/internal/store/postgres"
@@ -59,9 +60,16 @@ type CreatorStats struct {
 	// MTube (2026-09-27).
 	WatchTimeMS   int64 `json:"watch_time_ms"`
 	UniqueViewers int64 `json:"unique_viewers"`
-	// FollowersDelta is null until graph-service publishes follower counts
-	// into analytics; follows_from_content (follower_growth above) is a
-	// different number and is not substituted for it.
+	// FollowersDelta is new followers minus lost followers over the
+	// period (UTC days, like views), from graph-service's follow events
+	// (consumers.FollowerDeltaConsumer, migration 013). History starts at
+	// that deploy; there is no backfill. It is null — clients show "Not
+	// tracked yet" — when follower tracking is not wired on this
+	// deployment (no Kafka, or ANALYTICS_FOLLOWERS_DELTA_ENABLED=false),
+	// has not started on this database, or cannot be read; once tracking
+	// has started, a creator with no follow activity gets 0.
+	// follows_from_content (follower_growth above) is a different number
+	// and is not substituted for it.
 	FollowersDelta *int64                       `json:"followers_delta"`
 	TopContent     []postgres.ContentPeriodStat `json:"top_content"`
 	Realtime       RealtimeStats                `json:"realtime"`
@@ -80,8 +88,39 @@ type CreatorStatsStore interface {
 
 // CreatorService provides analytics aggregations for creators.
 type CreatorService struct {
-	store CreatorStatsStore
-	now   func() time.Time
+	store     CreatorStatsStore
+	followers FollowerDeltaReader
+	now       func() time.Time
+}
+
+// FollowerDeltaReader is the follower-change read behind followers_delta.
+// tracked=false means tracking has not started and the delta is unknown.
+type FollowerDeltaReader interface {
+	CreatorFollowersDelta(ctx context.Context, creatorID uuid.UUID, since, now time.Time) (delta int64, tracked bool, err error)
+}
+
+// WithFollowerDeltas turns on followers_delta. Without it (or with nil)
+// the field stays null, which is what clients read as "Not tracked yet".
+func (s *CreatorService) WithFollowerDeltas(r FollowerDeltaReader) *CreatorService {
+	s.followers = r
+	return s
+}
+
+// followersDelta resolves followers_delta: nil when it is not tracked or
+// the read fails (the rest of the dashboard still renders), else the sum.
+func (s *CreatorService) followersDelta(ctx context.Context, userID uuid.UUID, since, now time.Time) *int64 {
+	if s.followers == nil {
+		return nil
+	}
+	delta, tracked, err := s.followers.CreatorFollowersDelta(ctx, userID, since, now)
+	if err != nil {
+		slog.WarnContext(ctx, "followers_delta unavailable", "creator_id", userID.String(), "error", err)
+		return nil
+	}
+	if !tracked {
+		return nil
+	}
+	return &delta
 }
 
 func NewCreatorService(store *postgres.AggregateStore) *CreatorService {
@@ -188,7 +227,7 @@ func (s *CreatorService) GetStats(ctx context.Context, userID uuid.UUID, period 
 
 	stats.WatchTimeMS = totals.WatchTimeMS
 	stats.UniqueViewers = totals.UniqueViewers
-	stats.FollowersDelta = nil
+	stats.FollowersDelta = s.followersDelta(ctx, userID, since, now)
 	stats.TopContent = topContent
 	if stats.TopContent == nil {
 		stats.TopContent = []postgres.ContentPeriodStat{}
