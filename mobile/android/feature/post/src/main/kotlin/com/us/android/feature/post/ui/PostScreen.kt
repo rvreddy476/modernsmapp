@@ -92,7 +92,10 @@ fun PostScreen(
         onPageSettled = viewModel::onPageSettled,
     )
     if (commentsOpen) {
-        PostCommentsSheet(onDismiss = { commentsOpen = false })
+        PostCommentsSheet(
+            onDismiss = { commentsOpen = false },
+            postAuthorId = (state as? PostUiState.Content)?.post?.authorId.orEmpty(),
+        )
     }
 }
 

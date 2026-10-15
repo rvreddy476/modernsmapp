@@ -339,7 +339,11 @@ fun ReelsScreen(
     // Comments open over the reel rather than navigating away: the reel keeps
     // playing behind the conversation about it.
     commentsFor?.let { postId ->
-        CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
+        CommentsSheet(
+            postId = postId,
+            onDismiss = { commentsFor = null },
+            postAuthorId = items.itemSnapshotList.items.firstOrNull { it.id == postId }?.let { it.author.id }.orEmpty(),
+        )
     }
 
     moreFor?.let { item ->

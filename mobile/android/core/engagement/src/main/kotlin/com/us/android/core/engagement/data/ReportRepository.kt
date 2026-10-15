@@ -43,6 +43,14 @@ class ReportRepository @Inject constructor(
     suspend fun reportUser(userId: String, reason: String, details: String): ReportOutcome =
         file(ENTITY_USER, userId, reason, details)
 
+    /**
+     * Reports one comment, from its row's ⋮ in the comments sheet
+     * (2026-10-14, audit T-17): entity type `comment` — in trust-safety's
+     * `oneof=user post comment reel video` — and the comment's id.
+     */
+    suspend fun reportComment(commentId: String, reason: String, details: String): ReportOutcome =
+        file(ENTITY_COMMENT, commentId, reason, details)
+
     private suspend fun file(entityType: String, entityId: String, reason: String, details: String): ReportOutcome {
         require(reason in REASONS) { "unknown report reason: $reason" }
         val request = FileReportRequest(
@@ -70,6 +78,7 @@ class ReportRepository @Inject constructor(
     companion object {
         const val ENTITY_POST = "post"
         const val ENTITY_USER = "user"
+        const val ENTITY_COMMENT = "comment"
         const val CODE_ACTIVE_REPORT_EXISTS = "ACTIVE_REPORT_EXISTS"
 
         /** The reason tokens trust-safety accepts, in the sheet's order. */

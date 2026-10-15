@@ -242,7 +242,11 @@ private fun WatchSheetsHost(
         )
     }
     sheets.commentsFor?.let { postId ->
-        CommentsSheet(postId = postId, onDismiss = { sheets.commentsFor = null })
+        CommentsSheet(
+            postId = postId,
+            onDismiss = { sheets.commentsFor = null },
+            postAuthorId = (content as? WatchContent.Ready)?.item?.takeIf { it.id == postId }?.let { it.author.id }.orEmpty(),
+        )
     }
     sheets.moreFor?.let { item ->
         PostMoreSheetHost(

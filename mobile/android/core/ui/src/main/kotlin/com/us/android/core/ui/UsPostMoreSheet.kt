@@ -667,7 +667,7 @@ private fun StatusPill(visible: Boolean, text: String, testTag: String, modifier
  */
 @Suppress("LongParameterList")
 @Composable
-private fun ConfirmDialog(
+internal fun ConfirmDialog(
     title: String,
     body: String,
     confirmLabel: String,

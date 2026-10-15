@@ -196,15 +196,29 @@ data class CommentDto(
     @SerialName("like_count") val likeCount: Int = 0,
     @SerialName("reply_count") val replyCount: Int = 0,
     @SerialName("is_reply") val isReply: Boolean = false,
+    /** The top-level comment a reply hangs off; absent on a top-level comment. */
+    @SerialName("parent_id") val parentId: String? = null,
     @SerialName("created_at") val createdAt: String = "",
     val author: CommentAuthorDto? = null,
     /**
-     * The post owner's reply, loaded inline by `ListComments`.
+     * Every reaction on the comment (migration 050). The server computes
+     * `like_count` as the same number at read time; null on an older payload,
+     * which then falls back to [likeCount].
+     */
+    @SerialName("reaction_count") val reactionCount: Int? = null,
+    /** The viewer's own reaction emoji; null when none or signed out. */
+    @SerialName("viewer_reaction") val viewerReaction: String? = null,
+    /** The post author pinned it (at most one per post; it leads the list). */
+    val pinned: Boolean = false,
+    /** The post author hearted it. */
+    @SerialName("hearted_by_author") val heartedByAuthor: Boolean = false,
+    /**
+     * The OLDEST visible reply, inline — a preview kept by `ListComments` for
+     * clients that predate `GET /v1/comments/:id/replies`.
      *
-     * post-service's reply model is ONE reply per comment, by the post owner
-     * only (`REPLY_OWNER_ONLY`, `REPLY_EXISTS`, `CANNOT_REPLY_TO_REPLY`), and
-     * the list endpoint nests it under its parent rather than paging it. So
-     * there is no "view replies" fetch — this is the whole thread.
+     * Replies are open to everyone since 2026-09-27 (`CreateReply` no longer
+     * answers `REPLY_OWNER_ONLY` / `REPLY_EXISTS`), so this is NOT the whole
+     * thread: [replyCount] is, and the rest is paged from the replies route.
      */
     val reply: CommentDto? = null,
 )

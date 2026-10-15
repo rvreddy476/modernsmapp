@@ -1,8 +1,11 @@
 package com.us.android.di
 
+import com.us.android.core.chat.data.PeopleLookupRepository
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.engagement.data.CommentMentionSource
 import com.us.android.core.engagement.data.CommentsViewer
 import com.us.android.core.engagement.data.CommentsViewerSource
+import com.us.android.core.engagement.data.MentionCandidate
 import com.us.android.core.media.data.MediaRepository
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.Binds
@@ -48,9 +51,39 @@ class ProfileCommentsViewerSource @Inject constructor(
     }
 }
 
+/**
+ * The comment composer's `@` suggestions (2026-10-14, audit T-17), from the
+ * people search `:core:chat` already runs — search-service's
+ * `GET /v1/search/users?q=` — rather than a fourth client for the same
+ * route. Only people with a handle can be mentioned; any failure is no
+ * suggestions, never an error in the composer.
+ */
+@Singleton
+class PeopleCommentMentionSource @Inject constructor(
+    private val people: PeopleLookupRepository,
+) : CommentMentionSource {
+
+    override suspend fun search(query: String): List<MentionCandidate> =
+        when (val result = people.search(query, MENTION_SEARCH_LIMIT)) {
+            is AppResult.Success -> result.data
+                .filter { it.username.isNotBlank() }
+                .map { MentionCandidate(userId = it.userId, username = it.username, displayName = it.displayName) }
+
+            is AppResult.Failure -> emptyList()
+        }
+
+    private companion object {
+        /** Twice the six shown: rows without a handle are dropped first, as on the web. */
+        const val MENTION_SEARCH_LIMIT = 12
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class CommentsModule {
     @Binds
     abstract fun bindCommentsViewerSource(impl: ProfileCommentsViewerSource): CommentsViewerSource
+
+    @Binds
+    abstract fun bindCommentMentionSource(impl: PeopleCommentMentionSource): CommentMentionSource
 }
