@@ -41,6 +41,13 @@ type Handler struct {
 	// postClient walks post-service's Tube catalogue listing for the tube
 	// reindex (handler_tube.go). Nil-safe: that route answers 503.
 	postClient *postclient.Client
+
+	// history records searches and serves DELETE /history/:id and
+	// /popular (history.go). Set by WithExtrasStore; nil-safe.
+	history         searchHistoryStore
+	recorder        historyRecorder
+	popular         popularCache
+	popularMinUsers int
 }
 
 // WithPrivacyLookup wires the identity settings lookup the reindex uses.
@@ -67,6 +74,9 @@ func New(store *search.Store, rdb *redis.Client) *Handler {
 // WithExtrasStore sets the Postgres extras store (saved searches, history).
 func (h *Handler) WithExtrasStore(s *postgres.SearchExtrasStore) *Handler {
 	h.extrasStore = s
+	if s != nil {
+		h.history = s
+	}
 	return h
 }
 
@@ -133,6 +143,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/saved/:id", h.DeleteSavedSearch)
 		v1.GET("/history", h.GetSearchHistory)
 		v1.DELETE("/history", h.ClearSearchHistory)
+		v1.DELETE("/history/:id", h.DeleteSearchHistoryItem)
+		// Popular searches for the empty state (history.go).
+		v1.GET("/popular", h.PopularSearches)
 		v1.GET("/products", h.SearchProducts)
 		// The filter rail beside the product results. A static sibling of
 		// /products, not a child of a param, so there is no route conflict.
@@ -188,6 +201,8 @@ func (h *Handler) SearchUsers(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
+	// Opt-in (?record=1): this route also serves @mention / invite pickers.
+	h.recordHistory(c, query, false)
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": h.userResults(c.Request.Context(), viewerFrom(c), results)}, nil)
 }
@@ -258,6 +273,7 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
+	h.recordHistory(c, query, true)
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": h.postResults(c.Request.Context(), viewerFrom(c), results)}, nil)
 }
@@ -311,6 +327,7 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
+	h.recordHistory(c, query, true)
 
 	// Same hydrated rows as /v1/search/users and /v1/search/posts.
 	viewerID := viewerFrom(c)
@@ -412,6 +429,8 @@ func (h *Handler) universalSearchMultiEntity(c *gin.Context, query string) {
 		}
 	}
 
+	h.recordHistory(c, query, true)
+
 	resp := gin.H{"results": results}
 	if queryID != uuid.Nil {
 		resp["query_id"] = queryID
@@ -505,6 +524,8 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Hashtag search failed", nil)
 		return
 	}
+	// Opt-in (?record=1): this route also serves the composer hashtag picker.
+	h.recordHistory(c, query, false)
 
 	// Always an array, never null. SearchHashtags returns a nil slice when
 	// the aggregation matches nothing, and a nil []string marshals to JSON
@@ -873,6 +894,7 @@ func (h *Handler) SearchEvents(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Event search failed", nil)
 		return
 	}
+	h.recordHistory(c, query, false) // opt-in (?record=1)
 	if results == nil {
 		results = []map[string]any{}
 	}

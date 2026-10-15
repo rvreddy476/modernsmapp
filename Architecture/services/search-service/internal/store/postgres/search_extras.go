@@ -109,60 +109,6 @@ func (s *SearchExtrasStore) DeleteSavedSearch(ctx context.Context, id, userID uu
 	return nil
 }
 
-// RecordSearchHistory inserts a search_history row for the user.
-// After insert, rows beyond the most-recent 20 are deleted.
-func (s *SearchExtrasStore) RecordSearchHistory(ctx context.Context, userID uuid.UUID, query string) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO search_history (id, user_id, query, searched_at)
-		VALUES ($1, $2, $3, $4)
-	`, uuid.New(), userID, query, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-
-	// Enforce max-20 history rows per user.
-	_, _ = s.db.Exec(ctx, `
-		DELETE FROM search_history
-		WHERE user_id = $1
-		  AND id NOT IN (
-		      SELECT id FROM search_history
-		      WHERE user_id = $1
-		      ORDER BY searched_at DESC
-		      LIMIT 20
-		  )
-	`, userID)
-	return nil
-}
-
-// GetSearchHistory returns recent search history for a user, newest first.
-// limit is capped at 20.
-func (s *SearchExtrasStore) GetSearchHistory(ctx context.Context, userID uuid.UUID, limit int) ([]SearchHistoryItem, error) {
-	if limit <= 0 || limit > 20 {
-		limit = 20
-	}
-	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, query, searched_at
-		FROM search_history
-		WHERE user_id = $1
-		ORDER BY searched_at DESC
-		LIMIT $2
-	`, userID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []SearchHistoryItem
-	for rows.Next() {
-		var h SearchHistoryItem
-		if err := rows.Scan(&h.ID, &h.UserID, &h.Query, &h.SearchedAt); err != nil {
-			return nil, err
-		}
-		results = append(results, h)
-	}
-	return results, rows.Err()
-}
-
 // ClearSearchHistory deletes all search history for a user.
 func (s *SearchExtrasStore) ClearSearchHistory(ctx context.Context, userID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM search_history WHERE user_id = $1`, userID)
