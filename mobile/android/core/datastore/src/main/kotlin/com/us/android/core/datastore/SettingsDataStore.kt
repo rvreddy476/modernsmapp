@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.us.android.core.model.AppearanceMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -207,6 +208,33 @@ class SettingsDataStore @Inject constructor(
     }
 
     /**
+     * "Auto scroll" in Reels (TikTok parity T-32, 2026-10-15): when a reel
+     * ends, the pager moves on to the next one instead of playing it again.
+     * OFF by default — a reel loops until the viewer swipes, as it always
+     * has — and kept across restarts once the viewer turns it on.
+     */
+    val reelsAutoScroll: Flow<Boolean> = store.data
+        .safe()
+        .map { it[KEY_REELS_AUTO_SCROLL] ?: false }
+
+    suspend fun setReelsAutoScroll(on: Boolean) {
+        store.edit { it[KEY_REELS_AUTO_SCROLL] = on }
+    }
+
+    /**
+     * The Appearance setting (T-32, 2026-10-15): System, Light or Dark.
+     * System until the viewer picks, which is what the app did before the
+     * setting existed.
+     */
+    val appearanceMode: Flow<AppearanceMode> = store.data
+        .safe()
+        .map { AppearanceMode.fromWire(it[KEY_APPEARANCE_MODE]) }
+
+    suspend fun setAppearanceMode(mode: AppearanceMode) {
+        store.edit { it[KEY_APPEARANCE_MODE] = mode.wire }
+    }
+
+    /**
      * "Save on Wi-Fi only" for offline copies (2026-10-02). On by default: a
      * long video is hundreds of megabytes, and nobody should find that on a
      * mobile bill because they tapped Save offline on the bus.
@@ -259,6 +287,8 @@ class SettingsDataStore @Inject constructor(
         val KEY_AUTOPLAY_NEXT_EPISODE = booleanPreferencesKey("autoplay_next_episode")
         val KEY_REELS_SOUND_ON = booleanPreferencesKey("reels_sound_on")
         val KEY_OFFLINE_WIFI_ONLY = booleanPreferencesKey("offline_wifi_only")
+        val KEY_REELS_AUTO_SCROLL = booleanPreferencesKey("reels_auto_scroll")
+        val KEY_APPEARANCE_MODE = stringPreferencesKey("appearance_mode")
         val KEY_OFFLINE_DEVICE_ID = stringPreferencesKey("offline_device_id")
         const val KEYWORD_SEPARATOR = ","
     }

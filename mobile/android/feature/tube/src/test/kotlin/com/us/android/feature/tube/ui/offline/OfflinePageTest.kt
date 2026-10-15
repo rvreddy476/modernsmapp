@@ -7,8 +7,8 @@ import com.us.android.core.feed.offline.OfflineKind
 import com.us.android.core.feed.offline.OfflinePhase
 import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.offline.OfflineStream
+import com.us.android.core.media.captionChoice
 import com.us.android.feature.tube.ui.watch.WatchOfflineStatus
-import com.us.android.feature.tube.ui.watch.captionChoice
 import com.us.android.feature.tube.ui.watch.watchOfflineStatus
 import org.junit.Test
 

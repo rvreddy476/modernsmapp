@@ -14,6 +14,7 @@ import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.datastore.ReelsAutoScrollStore
 import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.engagement.data.EngagementAction
@@ -40,6 +41,7 @@ import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.media.SoundEntry
+import com.us.android.core.media.captionChoice
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
@@ -53,6 +55,8 @@ import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.ReelSound
 import com.us.android.core.model.canUseSound
+import com.us.android.core.ui.SPEED_NORMAL
+import com.us.android.core.ui.UsCaptionOption
 import com.us.android.core.ui.UsReelQuality
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -210,6 +214,41 @@ fun reelsMuted(soundOn: Boolean?): Boolean = soundOn != true
 fun reelMayPlay(paused: Boolean, soundChoiceRead: Boolean): Boolean = !paused && soundChoiceRead
 
 /**
+ * The caption tracks a reel offers (T-32): the ones stored with its offline
+ * copy, as the long video reads them. A reel played from the network carries
+ * none, and the More sheet then has no Captions row.
+ */
+fun reelCaptions(playback: Playback?): List<UsCaptionOption> =
+    playback?.captions.orEmpty().map { UsCaptionOption(language = it.language, label = it.label) }
+
+/**
+ * Where the pager goes when the settled reel ENDS (T-32): the next page when
+ * Auto scroll is on and there is one; null otherwise — Auto scroll off (the
+ * reel loops and never ends), or the last reel loaded, which then plays again.
+ */
+fun autoScrollTarget(autoScroll: Boolean, current: Int, pageCount: Int): Int? =
+    (current + 1).takeIf { autoScroll && current >= 0 && it < pageCount }
+
+/**
+ * What one page's player is set to from the viewer's choices (T-32): the
+ * session's speed; whether it loops — always, unless Auto scroll is on, when
+ * it must END for the pager to move on; and the caption track, the session's
+ * language when this reel has it ([captionChoice]), else off.
+ */
+data class ReelPlayerSettings(val speed: Float, val loops: Boolean, val captionLanguage: String?)
+
+fun reelPlayerSettings(
+    speed: Float,
+    autoScroll: Boolean,
+    captionLanguage: String?,
+    offeredLanguages: List<String>,
+): ReelPlayerSettings = ReelPlayerSettings(
+    speed = speed,
+    loops = !autoScroll,
+    captionLanguage = captionChoice(captionLanguage, offeredLanguages),
+)
+
+/**
  * A pager page as the rank analytics reports: 1-based, so the first reel is
  * position 1. Null when the page is not known, or is not a page at all.
  */
@@ -235,6 +274,8 @@ class ReelsViewModel @Inject constructor(
     private val sounds: SoundsRepository,
     private val soundEntry: SoundEntry,
     private val soundStore: ReelsSoundStore,
+    /** "Auto scroll" (T-32): kept across restarts, off until the viewer turns it on. */
+    private val autoScrollStore: ReelsAutoScrollStore,
     /** Offline copies (2026-10-02): a stored reel plays from the device, and opens with no network. */
     private val offline: OfflineLibrary,
     hidden: HiddenPosts,
@@ -489,6 +530,72 @@ class ReelsViewModel @Inject constructor(
         _quality.value = quality
     }
 
+    private val _speed = MutableStateFlow(SPEED_NORMAL)
+
+    /**
+     * The speed the viewer picked from the More sheet's "Playback speed" row
+     * (T-32, 2026-10-15), from the long video's own six (`PLAYBACK_SPEEDS`).
+     * Held for the SESSION, the way the long video holds it — a viewer who
+     * picked 1.5x wants the next reel at 1.5x too — and applied to every
+     * page's player, so it survives swipes and the pool recycling players;
+     * a new process starts back at 1x. The added sound follows the video's
+     * speed by itself.
+     */
+    val speed: StateFlow<Float> = _speed.asStateFlow()
+
+    fun selectSpeed(speed: Float) {
+        _speed.value = speed
+    }
+
+    private val _captionLanguage = MutableStateFlow<String?>(null)
+
+    /**
+     * The caption track the viewer turned on from "Captions" (T-32), by
+     * language; null is off, which is where Reels starts. The long video's
+     * rule ([captionChoice]): carried to the next reel when it has the same
+     * language, off when it does not — captions never turn themselves on.
+     */
+    val captionLanguage: StateFlow<String?> = _captionLanguage.asStateFlow()
+
+    fun selectCaption(language: String?) {
+        _captionLanguage.value = language
+    }
+
+    /**
+     * The caption tracks [item] offers: those stored with its offline copy,
+     * the same source the long video reads ([Playback.captions]). Empty for a
+     * reel played from the network, and the sheet then has no Captions row.
+     */
+    fun captions(item: FeedItem): List<UsCaptionOption> = reelCaptions(playback(item))
+
+    private val _autoScroll = MutableStateFlow(false)
+
+    /**
+     * "Auto scroll" (T-32): when a reel ends, the pager moves on to the next
+     * one instead of playing it again. OFF until the viewer turns it on, and
+     * kept across restarts ([ReelsAutoScrollStore]). It decides nothing
+     * about sound: reels still open muted.
+     */
+    val autoScroll: StateFlow<Boolean> = _autoScroll.asStateFlow()
+
+    private var autoScrollTapped = false
+
+    init {
+        viewModelScope.launch {
+            val stored = autoScrollStore.autoScroll.first()
+            // A tap that beat the read is the newer choice, and it stands.
+            if (!autoScrollTapped) _autoScroll.value = stored
+        }
+    }
+
+    /** The More sheet's "Auto scroll" row: the other state, at once, and kept for the next launch. */
+    fun toggleAutoScroll() {
+        autoScrollTapped = true
+        val on = !_autoScroll.value
+        _autoScroll.value = on
+        viewModelScope.launch { autoScrollStore.setAutoScroll(on) }
+    }
+
     private val _paused = MutableStateFlow(false)
 
     /**
@@ -728,6 +835,8 @@ class ReelsViewModel @Inject constructor(
      */
     fun onReelShown(item: FeedItem, probe: (suspend () -> WatchProbe)? = null, page: Int? = null) {
         _paused.value = false
+        // The caption choice carried to this reel, by the long video's rule.
+        _captionLanguage.value = captionChoice(_captionLanguage.value, captions(item).map { it.language })
         viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
         (reelRelationship(item) as? ReelRelationship.Subscribe)?.let { subscribe ->
             viewModelScope.launch { subscriptions.ensureKnown(listOf(subscribe.ref)) }

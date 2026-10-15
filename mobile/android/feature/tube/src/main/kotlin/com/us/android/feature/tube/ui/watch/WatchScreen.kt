@@ -50,6 +50,8 @@ import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.HideShellBottomBar
+import com.us.android.core.ui.PLAYBACK_SPEEDS
+import com.us.android.core.ui.UsCaptionOption
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -275,8 +277,16 @@ private fun WatchSheetsHost(
                 ),
                 selected = quality,
                 shareHidden = item.controls.hideShare,
+                // The same Playback speed and Captions rows as a reel's
+                // (T-32), from the state the gear's sheet already reads.
+                speeds = PLAYBACK_SPEEDS,
+                speed = speed,
+                captions = captions.map { UsCaptionOption(language = it.language, label = it.label) },
+                captionLanguage = captionLanguage,
             ),
             onSelectQuality = viewModel::selectQuality,
+            onSelectSpeed = viewModel::selectSpeed,
+            onSelectCaption = viewModel::selectCaption,
             // What makes it the long video's: the words that say "video", and the channel a block names.
             longVideo = UsLongVideoMoreState(
                 channelName = item.creatorName,

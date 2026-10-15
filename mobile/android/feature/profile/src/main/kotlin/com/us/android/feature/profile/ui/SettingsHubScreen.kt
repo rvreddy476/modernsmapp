@@ -8,10 +8,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.model.AppearanceMode
 import com.us.android.core.ui.UsSettingsLinkRow
+import com.us.android.core.ui.UsSettingsRadioRow
 import com.us.android.core.ui.UsSettingsSection
 import com.us.android.feature.profile.navigation.SettingsSections
 
@@ -26,6 +29,9 @@ fun SettingsHubScreen(
     onEditProfile: () -> Unit,
     onProfileDetails: () -> Unit,
     sections: SettingsSections,
+    /** The Appearance setting (T-32): the one picked, shown checked. */
+    appearance: AppearanceMode = AppearanceMode.SYSTEM,
+    onAppearance: (AppearanceMode) -> Unit = {},
 ) {
     UsScaffold(
         topBar = { UsTopBar(title = "Settings", onBack = onBack) },
@@ -82,6 +88,19 @@ fun SettingsHubScreen(
                     description = "Keywords to filter out of your feed",
                 )
             }
+            // T-32 (2026-10-15): three choices on the hub itself, applied the
+            // moment one is picked; the app re-themes under the viewer's thumb.
+            UsSettingsSection("Appearance") {
+                AppearanceMode.entries.forEach { mode ->
+                    UsSettingsRadioRow(
+                        title = mode.label,
+                        selected = mode == appearance,
+                        onClick = { onAppearance(mode) },
+                        description = appearanceDescription(mode),
+                        modifier = Modifier.testTag("settings_appearance:${mode.wire}"),
+                    )
+                }
+            }
             UsSettingsSection("Your profile") {
                 UsSettingsLinkRow(
                     "Identity and bio",
@@ -103,4 +122,11 @@ fun SettingsHubScreen(
             }
         }
     }
+}
+
+/** The line under each Appearance choice: what it does, in a few words. */
+internal fun appearanceDescription(mode: AppearanceMode): String = when (mode) {
+    AppearanceMode.SYSTEM -> "Follow this device's light or dark setting"
+    AppearanceMode.LIGHT -> "Always light"
+    AppearanceMode.DARK -> "Always dark"
 }
