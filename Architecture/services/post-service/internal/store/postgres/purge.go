@@ -201,6 +201,12 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 			   OR (target_type = 'post' AND target_id IN (SELECT id FROM _purge_posts))
 			   OR (target_type = 'comment' AND target_id IN (SELECT id FROM _purge_comments))`,
 
+		// Counted comment reports (migration 062): those the user filed,
+		// and those against comments being deleted.
+		`DELETE FROM comment_report_reporters
+			WHERE reporter_id = $1
+			   OR comment_id IN (SELECT id FROM _purge_comments)`,
+
 		// Dedup ledger entries about content being deleted.
 		`DELETE FROM engagement_event_log
 			WHERE target_id IN (SELECT id FROM _purge_posts)

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_CURSOR",
+    "message": "cursor is not valid for this sort"
+  },
+  "meta": {}
+}

@@ -454,6 +454,16 @@ func main() {
 	)
 	go storyModerationApplier.Start(consumerCtx)
 
+	// Comment reports filed in trust-safety-service (ReportFiled on the
+	// social topic) count toward the comment auto-review hold (T-13,
+	// internal/consumers/comment_report_hold.go). The gateway sends
+	// /v1/reports to trust-safety, so without this the hold never runs.
+	commentReportHold := mediaConsumers.NewCommentReportHoldConsumer(
+		postSvc, brokers, env("TRUST_SAFETY_KAFKA_TOPIC", engTopic), consumerMetrics,
+	)
+	go commentReportHold.Start(consumerCtx)
+	defer commentReportHold.Close()
+
 	slog.Info("engagement, media, entitlement, and authenticated story moderation consumers started")
 
 	// Real-time trending leaderboard. Single goroutine per replica;

@@ -66,6 +66,7 @@ func openTrustTestDB(t *testing.T) *pgxpool.Pool {
 		"migrations/011_strike_lifecycle_outbox.sql",
 		"migrations/012_appeal_decision_binding.sql",
 		"migrations/013_copyright_holds.sql",
+		"migrations/014_report_entity_key.sql",
 	} {
 		raw, err := database.Migrations.ReadFile(name)
 		if err != nil {

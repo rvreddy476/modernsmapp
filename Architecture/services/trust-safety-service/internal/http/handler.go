@@ -131,10 +131,12 @@ func (h *Handler) RegisterRoutes(r gin.IRouter) {
 type FileReportRequest struct {
 	// reel and video remain accepted only as wire-compatibility aliases. The
 	// service normalizes both to post before validation or persistence.
-	EntityType string `json:"entity_type" binding:"required,oneof=user post comment reel video"`
-	EntityID   string `json:"entity_id" binding:"required"`
-	Reason     string `json:"reason" binding:"required"`
-	Details    string `json:"details"`
+	EntityType string `json:"entity_type" binding:"required,oneof=user post comment hashtag sound reel video"`
+	// EntityID is a UUID for user, post, comment and sound (a media-service
+	// audio id), and the tag text (with or without '#') for hashtag.
+	EntityID string `json:"entity_id" binding:"required"`
+	Reason   string `json:"reason" binding:"required"`
+	Details  string `json:"details"`
 }
 
 func (h *Handler) FileReport(c *gin.Context) {
@@ -151,16 +153,21 @@ func (h *Handler) FileReport(c *gin.Context) {
 		return
 	}
 
-	entityID, err := uuid.Parse(req.EntityID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid entity ID", nil)
-		return
-	}
-
-	report, err := h.svc.FileReport(c.Request.Context(), userID, entityID, req.EntityType, req.Reason, req.Details)
+	report, err := h.svc.FileReportRef(c.Request.Context(), userID, req.EntityType, req.EntityID, req.Reason, req.Details)
 	if err != nil {
 		if errors.Is(err, postgres.ErrActiveReportExists) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ACTIVE_REPORT_EXISTS", "You already have an active report for this content", nil)
+			return
+		}
+		if errors.Is(err, service.ErrInvalidReport) {
+			// The reporter can fix it: an id that does not fit its type
+			// (still "Invalid entity ID" for a bad UUID), or a reason
+			// outside the allowlist. Never a 500.
+			msg := strings.TrimPrefix(err.Error(), service.ErrInvalidReport.Error()+": ")
+			if strings.HasPrefix(msg, "invalid entity ID") {
+				msg = "Invalid entity ID"
+			}
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", msg, nil)
 			return
 		}
 		slog.Error("FileReport error", "error", err)

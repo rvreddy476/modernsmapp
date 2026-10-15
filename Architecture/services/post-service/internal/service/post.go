@@ -116,6 +116,10 @@ type Service struct {
 	// leaks.
 	storyAudience *StoryAudience
 
+	// commentMentionPublisher replaces the Kafka producer for comment
+	// @mentions in tests (comment_mentions.go). Nil in production.
+	commentMentionPublisher commentMentionPublisher
+
 	// Sharded post_engagement_counts counters. Each replaces a hot-row
 	// UPDATE on post_engagement_counts.<col> = <col> + 1 — at celebrity-
 	// post scale a single row was bottlenecking every like/share/etc.
@@ -1680,7 +1684,11 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 // GetPostsByAuthor returns paginated posts by a specific author. The author
 // sees their own posts regardless of review status (a flagged reel still
 // shows in their own profile grid); every other viewer sees only approved.
-func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
+//
+// sort is latest (pinned first, newest), popular or oldest (T-21,
+// postgres/author_sort.go). A cursor minted for another sort, or one that does
+// not decode, is postgres.ErrInvalidAuthorCursor.
+func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, sort postgres.AuthorPostSort, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
 	isAuthor := viewerID != nil && *viewerID == authorID
 	// Private account: the whole grid is follower-only. An empty page — not
 	// an error — is the honest answer for a stranger: the profile itself
@@ -1689,7 +1697,7 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 	if !isAuthor && !s.canViewAuthor(ctx, viewerID, authorID) {
 		return []PostDetail{}, "", nil
 	}
-	posts, nextCursor, err := s.pgStore.GetPostsByAuthor(ctx, authorID, contentType, limit, cursor, isAuthor)
+	posts, nextCursor, err := s.pgStore.GetPostsByAuthorSorted(ctx, authorID, contentType, sort, limit, cursor, isAuthor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2701,6 +2709,10 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		}
 	}
 
+	// @mentions in the comment (T-12): blocks, self and the post's audience
+	// are applied per mentioned user (comment_mentions.go).
+	s.announceCommentMentions(post, authorID, comment.ID, body)
+
 	return comment, nil
 }
 
@@ -2768,6 +2780,9 @@ func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, 
 			}
 		}()
 	}
+
+	// @mentions in the reply (T-12), same rules as a top-level comment.
+	s.announceCommentMentions(post, userID, reply.ID, body)
 
 	return reply, nil
 }
@@ -3406,7 +3421,13 @@ func (s *Service) ListCollections(ctx context.Context, userID uuid.UUID) ([]post
 // GetPostsByHashtag returns posts with a specific hashtag.
 // sort accepts "top" or "recent" (default).
 // contentTypes filters by content_type (e.g. ["post"], ["flick"], ["long_video"]); nil = all.
-func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor, sort string, contentTypes []string) ([]PostDetail, string, error) {
+//
+// The store lists public, viewer-eligible (effectively approved, live)
+// posts; the author gate — private accounts the viewer does not follow,
+// blocks, deactivated authors — is canViewPosts, the same fail-closed
+// choke point GetRecentPosts and the sound page use. viewerID nil is the
+// signed-out stranger. HashtagTotal counts exactly this set.
+func (s *Service) GetPostsByHashtag(ctx context.Context, viewerID *uuid.UUID, hashtag string, limit int, cursor, sort string, contentTypes []string) ([]PostDetail, string, error) {
 	mode := postgres.HashtagSortRecent
 	if sort == "top" {
 		mode = postgres.HashtagSortTop
@@ -3416,11 +3437,13 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 		return nil, "", err
 	}
 
-	details := make([]PostDetail, len(posts))
-	for i, p := range posts {
+	posts = s.hashtagPostsVisibleTo(ctx, viewerID, posts)
+
+	details := make([]PostDetail, 0, len(posts))
+	for _, p := range posts {
 		post := p
 		counts, _ := s.countsForPost(ctx, p.ID)
-		details[i] = PostDetail{Post: &post, Counts: counts}
+		details = append(details, PostDetail{Post: &post, Counts: counts})
 	}
 
 	// Instant publish (processing.go): public discovery surface with no
@@ -3431,6 +3454,8 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 	}
 	return details, nextCursor, nil
 }
+
+// HashtagTotal is in hashtag_total.go.
 
 // GetTrendingPosts returns trending posts globally, optionally scoped to one
 // or more content types. Used by the Posttube/Reels "Trending" tabs and the

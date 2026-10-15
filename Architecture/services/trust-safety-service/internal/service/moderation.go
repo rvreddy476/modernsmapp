@@ -21,6 +21,10 @@ var validEntityTypes = map[string]bool{
 	"user":    true,
 	"post":    true,
 	"comment": true,
+	// T-13 / T-03: a hashtag is addressed by its text and a sound by its
+	// media-service audio id (report_entities.go).
+	"hashtag": true,
+	"sound":   true,
 }
 
 var legacyEntityTypeAliases = map[string]string{
@@ -81,16 +85,41 @@ func New(store *postgres.ReportStore, kafkaWriter *kafka.Writer) *Service {
 	return &Service{store: store, kafkaWriter: kafkaWriter}
 }
 
+// FileReport files a report against a UUID-addressed entity. It is
+// FileReportRef with the id already parsed, kept for in-process callers.
 func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID, entityType, reason, details string) (*postgres.Report, error) {
+	return s.FileReportRef(ctx, reporterID, entityType, entityID.String(), reason, details)
+}
+
+// reportFiledWire is the ReportFiled payload plus entity_key, which names a
+// key-addressed entity (the hashtag text) next to its derived entity_id.
+// Same superset shape consumers already decode: an older reader ignores it.
+type reportFiledWire struct {
+	events.ReportFiledPayload
+	EntityKey string `json:"entity_key,omitempty"`
+}
+
+// FileReportRef files a report. entityRef is the wire entity_id: a UUID
+// for user, post, comment and sound, the tag text for hashtag. Every type
+// goes through the same allowlists, the same one-active-report index and
+// the same event, so duplicate and rate rules cannot differ by type.
+// Validation failures wrap ErrInvalidReport.
+func (s *Service) FileReportRef(ctx context.Context, reporterID uuid.UUID, entityType, entityRef, reason, details string) (*postgres.Report, error) {
 	entityType, reason = NormalizeReportInput(entityType, reason)
 	// 1. Validate entityType
 	if !validEntityTypes[entityType] {
-		return nil, fmt.Errorf("invalid entity_type: %s (must be user, post, or comment)", entityType)
+		return nil, fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, or sound)", ErrInvalidReport, entityType)
 	}
 
 	// 1b. Validate report category against the spec §10.5 allowlist.
 	if !validReportCategories[reason] {
-		return nil, fmt.Errorf("invalid reason: %s (must be one of the 12 spec report categories)", reason)
+		return nil, fmt.Errorf("%w: invalid reason: %s (must be one of the 12 spec report categories)", ErrInvalidReport, reason)
+	}
+
+	// 1c. The id must be valid for its type (report_entities.go).
+	entityID, entityKey, err := ResolveReportEntity(entityType, entityRef)
+	if err != nil {
+		return nil, err
 	}
 
 	// The database partial unique index is the concurrency-safe duplicate
@@ -100,6 +129,7 @@ func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID
 		ReporterID: reporterID,
 		EntityType: entityType,
 		EntityID:   entityID,
+		EntityKey:  entityKey,
 		Reason:     reason,
 		Details:    details,
 		Status:     "open",
@@ -113,13 +143,16 @@ func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID
 
 	// 4. Publish ReportFiled event to Kafka
 	if s.kafkaWriter != nil {
-		payload := events.ReportFiledPayload{
-			ReportID:   report.ID.String(),
-			ReporterID: report.ReporterID.String(),
-			EntityType: report.EntityType,
-			EntityID:   report.EntityID.String(),
-			Reason:     report.Reason,
-			CreatedAt:  report.CreatedAt,
+		payload := reportFiledWire{
+			ReportFiledPayload: events.ReportFiledPayload{
+				ReportID:   report.ID.String(),
+				ReporterID: report.ReporterID.String(),
+				EntityType: report.EntityType,
+				EntityID:   report.EntityID.String(),
+				Reason:     report.Reason,
+				CreatedAt:  report.CreatedAt,
+			},
+			EntityKey: report.EntityKey,
 		}
 		pBytes, _ := json.Marshal(payload)
 		reporterStr := report.ReporterID.String()
@@ -212,6 +245,7 @@ func (s *Service) UpdateReport(ctx context.Context, meta postgres.AuditMeta, rep
 			"report_id":   report.ID.String(),
 			"entity_type": report.EntityType,
 			"entity_id":   report.EntityID.String(),
+			"entity_key":  report.EntityKey,
 			"status":      newStatus,
 			"actor_id":    actorID,
 		}

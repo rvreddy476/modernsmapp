@@ -979,65 +979,12 @@ func (s *Store) GetPost(ctx context.Context, id uuid.UUID) (*Post, error) {
 }
 
 // GetPostsByAuthor returns paginated posts by author, optionally filtered by
-// content type. When includeNonApproved is false, only approved posts are
-// returned — callers pass true only when the viewer is the author.
+// content type, newest first with pinned posts leading (the profile grid's
+// default). When includeNonApproved is false, only approved posts are
+// returned — callers pass true only when the viewer is the author. The other
+// orders are GetPostsByAuthorSorted (author_sort.go).
 func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string, includeNonApproved bool) ([]Post, string, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	var args []interface{}
-	args = append(args, authorID, limit+1)
-
-	query := `SELECT ` + postCols + `
-		FROM posts
-		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL`
-
-	if !includeNonApproved {
-		query += " AND " + viewerApprovedSQL
-	}
-
-	argIdx := 3
-	if contentType != "" && contentType != "all" {
-		query += fmt.Sprintf(` AND content_type = $%d`, argIdx)
-		args = append(args, contentType)
-		argIdx++
-	}
-
-	if cursor != "" {
-		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
-		if err == nil {
-			query += fmt.Sprintf(` AND created_at < $%d`, argIdx)
-			args = append(args, cursorTime)
-		}
-	}
-
-	query += ` ORDER BY is_pinned DESC, created_at DESC LIMIT $2`
-
-	rows, err := s.db.Query(ctx, query, args...)
-	if err != nil {
-		return nil, "", err
-	}
-	defer rows.Close()
-
-	posts, err := scanPostRows(rows)
-	if err != nil {
-		return nil, "", err
-	}
-
-	var nextCursor string
-	if len(posts) > limit {
-		nextCursor = posts[limit-1].CreatedAt.Format(time.RFC3339Nano)
-		posts = posts[:limit]
-	}
-
-	// Batch-fetch media for all posts
-	// Ordered + normalized in one place; see post_media.go.
-	if err := s.attachPostMedia(ctx, posts); err != nil {
-		return nil, "", err
-	}
-
-	return posts, nextCursor, nil
+	return s.GetPostsByAuthorSorted(ctx, authorID, contentType, AuthorSortLatest, limit, cursor, includeNonApproved)
 }
 
 // GetRecentPosts returns recent public posts from all users, paginated by cursor.
