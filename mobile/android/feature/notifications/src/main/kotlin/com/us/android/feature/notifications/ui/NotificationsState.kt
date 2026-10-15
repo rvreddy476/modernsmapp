@@ -10,6 +10,8 @@ import com.us.android.core.model.NotificationAddress
  * it never holds its own copy of read-state or paging position.
  */
 data class NotificationsUiState(
+    /** The chip the list is filtered by; [items] and [nextCursor] are that filter's. */
+    val filter: ActivityFilter = ActivityFilter.All,
     val items: List<Notification> = emptyList(),
     /**
      * The server's whole-inbox unread count, adjusted optimistically.
@@ -73,6 +75,26 @@ object NotificationsReducer {
 
     fun onLoadStarted(state: NotificationsUiState): NotificationsUiState =
         state.copy(isLoading = state.items.isEmpty(), isRefreshing = state.items.isNotEmpty(), error = null)
+
+    /**
+     * A chip was chosen: the list starts over for that filter. The unread
+     * count is whole-inbox and the row facts are per notification, so both
+     * are kept; only the rows and the cursor belong to the filter.
+     */
+    fun onFilterSelected(state: NotificationsUiState, filter: ActivityFilter): NotificationsUiState =
+        if (state.filter == filter) {
+            state
+        } else {
+            state.copy(
+                filter = filter,
+                items = emptyList(),
+                nextCursor = null,
+                isLoading = false,
+                isRefreshing = false,
+                isLoadingMore = false,
+                error = null,
+            )
+        }
 
     fun onLoadMoreStarted(state: NotificationsUiState): NotificationsUiState =
         if (!state.hasMore || state.isLoadingMore) state else state.copy(isLoadingMore = true)

@@ -30,10 +30,18 @@ import retrofit2.http.Query
  */
 interface NotificationsApi {
 
+    /**
+     * [category] is an Activity tab (T-11, 2026-10-14): `likes`, `comments`,
+     * `mentions` or `followers`; null omits it and the page is everything.
+     * A filtered page is the unfiltered page with the other kinds taken out,
+     * so it can be short, or EMPTY, and still carry `next_cursor` — see
+     * `InboxPaging` in `:feature:notifications`. An unknown category is 400.
+     */
     @GET("v1/notifications")
     suspend fun list(
         @Query("limit") limit: Int,
         @Query("cursor") cursor: String? = null,
+        @Query("category") category: String? = null,
     ): ApiEnvelope<List<NotificationDto>>
 
     @GET("v1/notifications/unread-count")
