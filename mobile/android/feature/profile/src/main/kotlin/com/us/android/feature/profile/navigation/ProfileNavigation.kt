@@ -92,6 +92,7 @@ fun NavGraphBuilder.profileScreen(
  * No `onBack`: this is a tab root, and the top bar renders no back control
  * when none is supplied.
  */
+@Suppress("LongParameterList") // one callback per door out of the Me tab, all owned by :app
 fun NavGraphBuilder.ownProfileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
@@ -108,6 +109,8 @@ fun NavGraphBuilder.ownProfileScreen(
      * it — nobody watches a stranger's upload.
      */
     onPublished: (contentType: String) -> Unit,
+    /** The More menu's "Creator Hub" (T-31): `:app` pushes the read-only hub, which lives in Tube. */
+    onOpenCreatorHub: () -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -125,6 +128,9 @@ fun NavGraphBuilder.ownProfileScreen(
                 header = header,
                 onOpenPost = onOpenPost,
                 onPublished = onPublished,
+                // OWN-profile only, like onEditProfile: the hub shows the
+                // signed-in creator's own numbers and comments.
+                onOpenCreatorHub = onOpenCreatorHub,
             ),
         )
     }

@@ -167,6 +167,12 @@ data class ProfileDestinations(
      * profile could raise it.
      */
     val onPublished: ((contentType: String) -> Unit)? = null,
+    /**
+     * The Me tab's More menu "Creator Hub" (T-31): `:app` pushes the
+     * read-only hub. OWN-profile only, like [onEditProfile]: a creator's
+     * numbers are theirs alone.
+     */
+    val onOpenCreatorHub: (() -> Unit)? = null,
 )
 
 internal data class ProfileActions(
@@ -219,7 +225,11 @@ internal fun ProfileContent(
                 // (Search, the bell, More). Messages left the bar for the
                 // More menu on 2026-10-02; Settings is there too, and still
                 // beside "Edit profile".
-                OwnProfileHeader(header, onOpenSettings = destinations.onOpenSettings)
+                OwnProfileHeader(
+                    header,
+                    onOpenSettings = destinations.onOpenSettings,
+                    onOpenCreatorHub = destinations.onOpenCreatorHub,
+                )
             } else {
                 // A pushed profile. The title tracks the loaded profile; while
                 // loading it stays generic rather than flashing a placeholder
@@ -910,6 +920,7 @@ private fun ProfileErrorTerminalPreview() =
 private fun OwnProfileHeader(
     header: MomentumHeaderDestinations,
     onOpenSettings: (() -> Unit)?,
+    onOpenCreatorHub: (() -> Unit)?,
     viewModel: UnreadBadgeViewModel = hiltViewModel(),
 ) {
     val count by viewModel.count.collectAsStateWithLifecycle()
@@ -926,9 +937,10 @@ private fun OwnProfileHeader(
     )
     if (menuOpen) {
         MeMoreSheet(
-            rows = meMenuRows(hasSettings = onOpenSettings != null),
+            rows = meMenuRows(hasSettings = onOpenSettings != null, hasCreatorHub = onOpenCreatorHub != null),
             onRow = { row ->
                 when (row) {
+                    MeMenuRow.CREATOR_HUB -> onOpenCreatorHub?.invoke()
                     MeMenuRow.MESSAGES -> header.onOpenMessages()
                     MeMenuRow.SETTINGS -> onOpenSettings?.invoke()
                 }

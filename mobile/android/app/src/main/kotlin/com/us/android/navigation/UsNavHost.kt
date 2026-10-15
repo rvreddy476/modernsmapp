@@ -181,6 +181,7 @@ import com.us.android.feature.settings.navigation.onboardingScreen
 import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
+import com.us.android.feature.tube.navigation.navigateToCreatorHub
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeCollection
@@ -1060,6 +1061,11 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenCollections = { navController.navigateToTubeCollections() },
             onOpenCollection = { id -> navController.navigateToTubeCollection(id) },
             onOpenOffline = { navController.navigateToTubeOffline() },
+            // T-31: the read-only Creator Hub. A comment on an ordinary post
+            // opens post detail; reels and long videos go through
+            // onOpenReels / onOpenVideo like every other Tube row.
+            onOpenCreatorHub = { navController.navigateToCreatorHub() },
+            onOpenPost = { postId -> navController.navigateToPost(postId) },
         ),
     )
 
@@ -1173,6 +1179,9 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 else -> Unit
             }
         },
+        // T-31: the Me tab's More menu opens the read-only Creator Hub,
+        // which lives in Tube's graph (pushed, so Back returns to Me).
+        onOpenCreatorHub = { navController.navigateToCreatorHub() },
     )
     profileScreen(
         onOpenFollowers = {},

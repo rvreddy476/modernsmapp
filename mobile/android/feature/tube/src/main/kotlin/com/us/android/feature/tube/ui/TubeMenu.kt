@@ -71,6 +71,9 @@ enum class TubeMenuRow(val label: String, val icon: ImageVector) {
     /** What this device keeps to watch with no network (2026-10-02). */
     OFFLINE("Offline", UsIcons.ArrowDownToLine),
     WATCH_LATER("Watch later", UsIcons.ListVideo),
+
+    /** The read-only Creator Hub: overview, library, conversations (T-31, 2026-10-15). */
+    CREATOR_HUB("Creator Hub", UsIcons.Gauge),
 }
 
 /**
@@ -90,6 +93,7 @@ fun tubeMenuRows(channel: ChannelState): List<TubeMenuRow> = listOf(
     TubeMenuRow.NOTIFICATIONS,
     TubeMenuRow.OFFLINE,
     TubeMenuRow.WATCH_LATER,
+    TubeMenuRow.CREATOR_HUB,
 ).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
 
 /** The sheet's one question: does the viewer have a channel? The cached answer, loaded once per process. */
@@ -142,6 +146,7 @@ fun TubeMenuSheet(
             TubeMenuRow.WATCH_LATER -> destinations.onOpenCollection(TubeCollectionRoute.WATCH_LATER)
             TubeMenuRow.NOTIFICATIONS -> destinations.onOpenNotifications()
             TubeMenuRow.OFFLINE -> destinations.onOpenOffline()
+            TubeMenuRow.CREATOR_HUB -> destinations.onOpenCreatorHub()
         }
     }
 

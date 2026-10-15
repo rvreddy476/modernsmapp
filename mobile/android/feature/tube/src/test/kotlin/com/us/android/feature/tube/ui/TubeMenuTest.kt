@@ -22,6 +22,7 @@ class TubeMenuTest {
         assertThat(tubeMenuRows(ChannelState.Present(channel)).map { it.label })
             .containsExactly(
                 "Collections",
+                "Creator Hub",
                 "Notifications",
                 "Offline",
                 "Saved",
@@ -95,6 +96,16 @@ class TubeMenuTest {
     @Test
     fun `every row has a label and none is empty`() {
         TubeMenuRow.entries.forEach { assertThat(it.label).isNotEmpty() }
-        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(8)
+        // 9 since 2026-10-15: Creator Hub joined (T-31).
+        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(9)
+    }
+
+    /** T-31: the read-only Creator Hub is reachable from the video app whatever is known of the channel. */
+    @Test
+    fun `creator hub is always offered`() {
+        for (state in listOf(ChannelState.Present(channel), ChannelState.None, ChannelState.Unknown)) {
+            assertThat(tubeMenuRows(state)).contains(TubeMenuRow.CREATOR_HUB)
+        }
+        assertThat(TubeMenuRow.CREATOR_HUB.label).isEqualTo("Creator Hub")
     }
 }
