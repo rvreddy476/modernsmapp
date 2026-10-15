@@ -54,6 +54,22 @@ object WebLinks {
     }
 
     /**
+     * `https://cleestudio.com/live/<streamId>` — a live stream's room on the
+     * web, the route postbook-ui serves at `src/app/live/[streamId]`. Share
+     * in the Android live room hands this out (T-30, 2026-10-15).
+     *
+     * Surrounding space is dropped and the id is percent-encoded like a
+     * handle, so it can never add a path segment, a query or a fragment.
+     * Null for a blank id. Not parsed back: there is no `/live/` App Link,
+     * so a tapped link opens the web page.
+     */
+    fun liveUrl(streamId: String?): String? {
+        val id = streamId?.trim().orEmpty()
+        if (id.isEmpty()) return null
+        return "$ORIGIN/$LIVE_SEGMENT/${id.percentEncoded()}"
+    }
+
+    /**
      * The post id in `https://cleestudio.com/post/<id>` (a trailing slash, query
      * and fragment ignored), or null for any other link: another host, plain
      * http, another path, extra segments, or an id that is not a UUID. Post
@@ -100,6 +116,7 @@ object WebLinks {
         this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this in UNRESERVED_MARKS
 
     private const val PROFILE_SEGMENT = "u"
+    private const val LIVE_SEGMENT = "live"
     private const val UNRESERVED_MARKS = "-._~"
     private const val HEX = "0123456789ABCDEF"
     private const val BYTE_MASK = 0xFF

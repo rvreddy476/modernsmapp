@@ -5,17 +5,25 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.us.android.core.common.result.AppResult
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.live.data.BanUserRequest
 import com.us.android.feature.live.data.CreateStreamRequest
 import com.us.android.feature.live.data.EndStreamDto
+import com.us.android.feature.live.data.HeartsAnswerDto
+import com.us.android.feature.live.data.HeartsRequest
 import com.us.android.feature.live.data.LiveApi
+import com.us.android.feature.live.data.LiveCategoryDto
 import com.us.android.feature.live.data.LiveChatMessageDto
 import com.us.android.feature.live.data.LiveEligibilityDto
+import com.us.android.feature.live.data.LiveFollows
 import com.us.android.feature.live.data.LiveReportRequest
 import com.us.android.feature.live.data.LiveRoomFactory
 import com.us.android.feature.live.data.LiveRoomSession
 import com.us.android.feature.live.data.LiveRoomSignal
+import com.us.android.feature.live.data.LiveRoomSocket
+import com.us.android.feature.live.data.LiveSocketEvent
 import com.us.android.feature.live.data.LiveStreamDto
 import com.us.android.feature.live.data.SendChatRequest
 import com.us.android.feature.live.data.SetModeratorsRequest
@@ -23,7 +31,11 @@ import com.us.android.feature.live.data.StartStreamDto
 import com.us.android.feature.live.data.ViewerTokenDto
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.VideoTrack
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -94,9 +106,54 @@ class FakeLiveApi : LiveApi {
         return ApiEnvelope(data = EndStreamDto(status = "ended"))
     }
 
-    override suspend fun listLiveNow(limit: Int): ApiEnvelope<List<LiveStreamDto>> {
+    /** The live list; null means "answer with [stream] alone". */
+    var live: List<LiveStreamDto>? = null
+    var upcoming: List<LiveStreamDto> = emptyList()
+    var categories: List<LiveCategoryDto> = emptyList()
+    var userStreams: Map<String, List<LiveStreamDto>> = emptyMap()
+    var pinned: LiveChatMessageDto? = null
+    var heartsAnswer = HeartsAnswerDto(heartCount = 0)
+    val heartBatches = mutableListOf<Int>()
+
+    /** Every listing's query, as "following=… category=…". */
+    val listQueries = mutableListOf<String>()
+    val upcomingQueries = mutableListOf<String>()
+
+    override suspend fun listLiveNow(limit: Int, following: Boolean?, category: String?): ApiEnvelope<List<LiveStreamDto>> {
+        listQueries += "following=$following category=$category"
         record("GET list")
-        return ApiEnvelope(data = listOf(stream))
+        return ApiEnvelope(data = live ?: listOf(stream))
+    }
+
+    override suspend fun listUpcoming(
+        limit: Int,
+        following: Boolean?,
+        category: String?,
+    ): ApiEnvelope<List<LiveStreamDto>> {
+        upcomingQueries += "following=$following category=$category"
+        record("GET upcoming")
+        return ApiEnvelope(data = upcoming)
+    }
+
+    override suspend fun liveCategories(): ApiEnvelope<List<LiveCategoryDto>> {
+        record("GET categories")
+        return ApiEnvelope(data = categories)
+    }
+
+    override suspend fun userStreams(userId: String, status: String, limit: Int): ApiEnvelope<List<LiveStreamDto>> {
+        record("GET users/$userId/streams?status=$status")
+        return ApiEnvelope(data = userStreams[status].orEmpty())
+    }
+
+    override suspend fun pinnedMessage(id: String): ApiEnvelope<LiveChatMessageDto> {
+        record("GET pinned")
+        return ApiEnvelope(data = pinned)
+    }
+
+    override suspend fun sendHearts(id: String, body: HeartsRequest): ApiEnvelope<HeartsAnswerDto> {
+        record("POST hearts")
+        heartBatches += body.count
+        return ApiEnvelope(data = heartsAnswer)
     }
 
     override suspend fun getStream(id: String): ApiEnvelope<LiveStreamDto> {
@@ -141,6 +198,47 @@ class FakeLiveApi : LiveApi {
     override suspend fun report(id: String, body: LiveReportRequest) {
         record("POST reports")
         reports += body
+    }
+}
+
+/**
+ * The room's socket without a socket: every [room] call is recorded and
+ * collects [events], which a test emits into. The flow never completes on
+ * its own; a test ends it with a [LiveSocketEvent.Closed].
+ */
+class FakeRoomSocket : LiveRoomSocket {
+    val opened = mutableListOf<String>()
+    val events = MutableSharedFlow<LiveSocketEvent>(extraBufferCapacity = 64)
+
+    override fun room(streamId: String): Flow<LiveSocketEvent> {
+        opened += streamId
+        return events
+    }
+}
+
+/** Who the viewer is and whom they follow, without the graph's HTTP stack. */
+class FakeLiveFollows(
+    override val ownId: String = "me",
+    /** User id → what `relationship` answers. Absent ids answer "not following". */
+    private val known: Map<String, FollowStatus> = emptyMap(),
+    var followResult: AppResult<Unit> = AppResult.Success(Unit),
+) : LiveFollows {
+    private val _edges = MutableStateFlow<Map<String, FollowStatus>>(emptyMap())
+    override val edges: StateFlow<Map<String, FollowStatus>> = _edges
+    val asked = mutableListOf<String>()
+    val followed = mutableListOf<String>()
+
+    override suspend fun ensureKnown(userIds: Collection<String>) {
+        userIds.filter { it.isNotBlank() && it != ownId }.forEach { id ->
+            asked += id
+            _edges.update { it + (id to (known[id] ?: FollowStatus.NONE)) }
+        }
+    }
+
+    override suspend fun follow(userId: String): AppResult<Unit> {
+        followed += userId
+        if (followResult is AppResult.Success) _edges.update { it + (userId to FollowStatus.FOLLOWING) }
+        return followResult
     }
 }
 

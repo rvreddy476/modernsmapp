@@ -45,8 +45,41 @@ interface LiveApi {
     @POST("v1/livestream/streams/{id}/end")
     suspend fun endStream(@Path("id") id: String): ApiEnvelope<EndStreamDto>
 
+    /**
+     * Live now (live surfaces contract, 2026-10-02). [following] is sent only
+     * as `true` (the people the viewer follows); [category] is a slug from
+     * [liveCategories]. Absent parameters are the plain live-now list.
+     */
     @GET("v1/livestream/streams")
-    suspend fun listLiveNow(@Query("limit") limit: Int = 20): ApiEnvelope<List<LiveStreamDto>>
+    suspend fun listLiveNow(
+        @Query("limit") limit: Int = 20,
+        @Query("following") following: Boolean? = null,
+        @Query("category") category: String? = null,
+    ): ApiEnvelope<List<LiveStreamDto>>
+
+    /** Scheduled streams still ahead, soonest first. */
+    @GET("v1/livestream/streams/upcoming")
+    suspend fun listUpcoming(
+        @Query("limit") limit: Int = 20,
+        @Query("following") following: Boolean? = null,
+        @Query("category") category: String? = null,
+    ): ApiEnvelope<List<LiveStreamDto>>
+
+    /** The categories with at least one stream on air, by viewers. */
+    @GET("v1/livestream/categories/live")
+    suspend fun liveCategories(): ApiEnvelope<List<LiveCategoryDto>>
+
+    /**
+     * One creator's streams: `live`, `upcoming` or `past` ([LiveUserStreams]).
+     * Past rows carry `recording_post_id` / `recording_url` once a recording
+     * exists. Read-only: the creator centre lists, it never edits.
+     */
+    @GET("v1/livestream/users/{userId}/streams")
+    suspend fun userStreams(
+        @Path("userId") userId: String,
+        @Query("status") status: String,
+        @Query("limit") limit: Int = 20,
+    ): ApiEnvelope<List<LiveStreamDto>>
 
     @GET("v1/livestream/streams/{id}")
     suspend fun getStream(@Path("id") id: String): ApiEnvelope<LiveStreamDto>
@@ -59,6 +92,17 @@ interface LiveApi {
 
     @GET("v1/livestream/streams/{id}/chat")
     suspend fun listChat(@Path("id") id: String, @Query("limit") limit: Int = 50): ApiEnvelope<List<LiveChatMessageDto>>
+
+    /** Any viewer: the pinned chat row, or `data: null` when nothing is pinned. */
+    @GET("v1/livestream/streams/{id}/chat/pinned")
+    suspend fun pinnedMessage(@Path("id") id: String): ApiEnvelope<LiveChatMessageDto>
+
+    /**
+     * Free hearts (no money anywhere): a batch of 1..[HEART_BATCH_MAX] taps.
+     * Answers the stream's total.
+     */
+    @POST("v1/livestream/streams/{id}/hearts")
+    suspend fun sendHearts(@Path("id") id: String, @Body body: HeartsRequest): ApiEnvelope<HeartsAnswerDto>
 
     /** Host, stream moderators or admin: hides the message for everyone (`chat.removed`). */
     @DELETE("v1/livestream/streams/{id}/chat/{messageId}")
@@ -111,7 +155,59 @@ data class LiveStreamDto(
     @SerialName("moderator_user_ids") val moderatorUserIds: List<String>? = null,
     @SerialName("started_at") val startedAt: String = "",
     @SerialName("created_at") val createdAt: String = "",
+    // ── Live surfaces (2026-10-02) ──
+    /** A post-service category slug; "" when the host chose none. */
+    val category: String = "",
+    /** landscape | portrait. */
+    val orientation: String = "",
+    /** Free hearts sent on the stream so far. */
+    @SerialName("heart_count") val heartCount: Long = 0,
+    /** The host card: user_id always, the rest when the profile lookup answered. */
+    val creator: LiveCreatorCardDto? = null,
+    @SerialName("scheduled_at") val scheduledAt: String = "",
+    @SerialName("ended_at") val endedAt: String = "",
+    /** The video post the recording became; "" until (or unless) it exists. */
+    @SerialName("recording_post_id") val recordingPostId: String = "",
+    @SerialName("recording_url") val recordingUrl: String = "",
+    @SerialName("recording_duration_seconds") val recordingDurationSeconds: Int = 0,
 )
+
+/**
+ * The host card on a stream row (`creator`). Only `user_id` is guaranteed;
+ * read the name through [creatorName], never a piece of the id.
+ */
+@Serializable
+data class LiveCreatorCardDto(
+    @SerialName("user_id") val userId: String = "",
+    val name: String = "",
+    val handle: String = "",
+    @SerialName("avatar_url") val avatarUrl: String = "",
+    val badges: List<String> = emptyList(),
+)
+
+/** `GET /categories/live`: one category with streams on air. */
+@Serializable
+data class LiveCategoryDto(
+    val slug: String = "",
+    val label: String = "",
+    @SerialName("live_count") val liveCount: Int = 0,
+    @SerialName("viewer_count") val viewerCount: Int = 0,
+)
+
+/** `POST /streams/:id/hearts`. */
+@Serializable
+data class HeartsRequest(val count: Int)
+
+/** The stream's heart total after a batch. */
+@Serializable
+data class HeartsAnswerDto(@SerialName("heart_count") val heartCount: Long = 0)
+
+/** The `status` values `GET /users/:userId/streams` accepts. */
+object LiveUserStreams {
+    const val LIVE = "live"
+    const val UPCOMING = "upcoming"
+    const val PAST = "past"
+}
 
 @Serializable
 data class StartStreamDto(

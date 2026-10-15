@@ -16,6 +16,13 @@ dependencies {
     implementation(projects.core.designsystem)
     implementation(projects.core.network)
     implementation(projects.core.ui)
+    // WebLinks (the room's Share address) and FollowStatus.
+    implementation(projects.core.model)
+    // Follow in the room writes through the app's shared FollowGraph, which
+    // also knows the signed-in user's id (T-30, 2026-10-15).
+    implementation(projects.core.feed)
+    // The room's realtime frames: ws-gateway's socket on the shared client.
+    implementation(libs.okhttp)
 
     // The LiveKit client SDK. It bundles the SAME webrtc-sdk org.webrtc the
     // calling stack compiles against (see :core:call) — one native copy.

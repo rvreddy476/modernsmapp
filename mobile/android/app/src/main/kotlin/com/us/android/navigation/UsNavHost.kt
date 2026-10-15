@@ -123,6 +123,7 @@ import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.live.navigation.LiveWatchRoute
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
+import com.us.android.feature.live.navigation.navigateToLiveCreatorCentre
 import com.us.android.feature.live.navigation.navigateToLiveHub
 import com.us.android.feature.live.navigation.navigateToLiveWatch
 import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreens
@@ -733,6 +734,8 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         onGoLive = { navController.navigateToGoLive() },
         onWatch = { streamId -> navController.navigateToLiveWatch(streamId) },
+        // T-30: the creator's own upcoming, past and recorded streams, read-only.
+        onCreatorCentre = { navController.navigateToLiveCreatorCentre() },
         // Go live's "not yet" screen (2026-10-02). "Create a post" opens the
         // Create hub on Text; Back from it (or from the new post) returns to
         // the screen, which asks the server again. "Verify email" (and "Verify
