@@ -70,7 +70,11 @@ type relationshipResp struct {
 	Data struct {
 		Follows          bool   `json:"follows"`
 		FollowedBy       bool   `json:"followed_by"`
+		// On this single-pair route "blocked" means the creator blocked the
+		// reviewer and "blocked_by" means the reviewer blocked the creator.
+		// A block either way is a tie, so both are read.
 		Blocked          bool   `json:"blocked"`
+		BlockedBy        bool   `json:"blocked_by"`
 		ConnectionStatus string `json:"connection_status"`
 	} `json:"data"`
 }
@@ -97,7 +101,7 @@ func (c *Clients) IsRelated(ctx context.Context, reviewerUserID, creatorID uuid.
 		return true, err
 	}
 	d := r.Data
-	related := d.Follows || d.FollowedBy || d.Blocked ||
+	related := d.Follows || d.FollowedBy || d.Blocked || d.BlockedBy ||
 		(d.ConnectionStatus != "" && d.ConnectionStatus != "none")
 	return related, nil
 }

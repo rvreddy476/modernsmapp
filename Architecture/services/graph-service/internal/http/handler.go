@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -24,6 +25,16 @@ type Handler struct {
 	// refused rather than logged. See canonical_guard.go.
 	strictWriteSource bool
 	warn              func(string, ...any)
+	// relationships serves the two relationship read routes. It is svc in
+	// production; tests substitute a fake to pin the wire contract.
+	relationships relationshipReader
+}
+
+// relationshipReader is the slice of the service the relationship read
+// routes need.
+type relationshipReader interface {
+	GetRelationship(ctx context.Context, actorID, targetID uuid.UUID) (*service.Relationship, error)
+	GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]store.Relationship, error)
 }
 
 // WithCanonicalWriteSource enables the source guard on mutating routes.
@@ -36,7 +47,7 @@ func (h *Handler) WithCanonicalWriteSource(strict bool, warn func(string, ...any
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, relationships: svc}
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -523,7 +534,7 @@ func (h *Handler) GetRelationship(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid other_id", nil)
 		return
 	}
-	rel, err := h.svc.GetRelationship(c.Request.Context(), actorID, targetID)
+	rel, err := h.relationships.GetRelationship(c.Request.Context(), actorID, targetID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -1101,7 +1112,7 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 		}
 		targetIDs = append(targetIDs, uid)
 	}
-	result, err := h.svc.GetRelationshipBatch(c.Request.Context(), viewerID, targetIDs)
+	result, err := h.relationships.GetRelationshipBatch(c.Request.Context(), viewerID, targetIDs)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
