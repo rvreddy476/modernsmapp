@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"log"
 
 	"github.com/google/uuid"
@@ -59,30 +58,11 @@ func (s *Service) GetLongVideoFilteredPage(ctx context.Context, userID uuid.UUID
 			log.Printf("long video discovery fill (category %q, chip %q) failed for %s: %v", filter.Category, filter.Chip, userID, err)
 		} else {
 			fill = filterItemsByChip(fill, filter.Chip, scope)
-			kept := make([]FeedItem, 0, len(page.Posts))
-			for _, p := range page.Posts {
-				kept = append(kept, page.Items[p.ID])
-			}
-			merged := mergeDiscoveryFill(kept, fill, limit)
-			if extra := merged[len(kept):]; len(extra) > 0 {
-				hydrated, err := s.HydratePosts(ctx, extra, userID)
-				if err != nil {
-					return nil, "", fmt.Errorf("hydrate discovery fill: %w", err)
-				}
-				// post-service already filtered by category; re-check so a
-				// stale cached row cannot slip a different category in.
-				for _, p := range filterHydratedByCategory(hydrated, filter.Category) {
-					if len(page.Posts) >= limit {
-						break
-					}
-					page.Posts = append(page.Posts, p)
-					for _, it := range extra {
-						if it.PostID == p.ID {
-							page.Items[p.ID] = it
-							break
-						}
-					}
-				}
+			// post-service already filtered by category; appendHydratedFill
+			// re-checks so a stale cached row cannot slip a different
+			// category in.
+			if err := s.appendHydratedFill(ctx, userID, &page, fill, limit, filter.Category, isLongVideoType); err != nil {
+				return nil, "", err
 			}
 		}
 	}
