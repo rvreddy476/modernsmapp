@@ -30,6 +30,15 @@ class MeMenuRowsTest {
 
     @Test
     fun `every row says what it opens`() {
-        assertThat(MeMenuRow.entries.map { it.label }).containsExactly("Messages", "Settings")
+        assertThat(MeMenuRow.entries.map { it.label }).containsExactly("Creator Hub", "Messages", "Settings")
+    }
+
+    /** T-31: the owner's Me tab opens the read-only Creator Hub, first in alphabetical order. */
+    @Test
+    fun `Creator Hub is offered when the Me tab has somewhere to send it`() {
+        assertThat(meMenuRows(hasSettings = true, hasCreatorHub = true))
+            .containsExactly(MeMenuRow.CREATOR_HUB, MeMenuRow.MESSAGES, MeMenuRow.SETTINGS)
+            .inOrder()
+        assertThat(meMenuRows(hasSettings = true, hasCreatorHub = false)).doesNotContain(MeMenuRow.CREATOR_HUB)
     }
 }

@@ -46,4 +46,8 @@ dependencies {
     implementation(libs.media3.ui.compose)
 
     testImplementation(projects.core.testing)
+    // The Creator Hub's requests pinned against a local server (CreatorHubApiRequestTest).
+    // The converter is `implementation` in :core:network, so the test needs it explicitly.
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.retrofit.kotlinx.serialization)
 }
