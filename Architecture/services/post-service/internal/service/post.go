@@ -144,6 +144,8 @@ type Service struct {
 
 	// Private-account / comments-audience gate state (privacy_gate.go).
 	privacyGateState
+	// Hashtag SSE gate state (hashtag_stream_gate.go).
+	hashtagStreamGateState
 
 	// channels is the Tube channel store (channels.go). Nil when there is no
 	// Postgres store; every channel flow then fails closed.
