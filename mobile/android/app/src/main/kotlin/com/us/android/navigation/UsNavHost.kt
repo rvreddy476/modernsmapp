@@ -1066,6 +1066,9 @@ private fun NavGraphBuilder.tabDestinations(
             // onOpenReels / onOpenVideo like every other Tube row.
             onOpenCreatorHub = { navController.navigateToCreatorHub() },
             onOpenPost = { postId -> navController.navigateToPost(postId) },
+            // The hub's Sounds tab (library sounds, 2026-10-15): the same
+            // door as Reels' "Use this sound" — the sound is in SoundEntry.
+            onCreateWithSound = onCreateWithSound,
         ),
     )
 

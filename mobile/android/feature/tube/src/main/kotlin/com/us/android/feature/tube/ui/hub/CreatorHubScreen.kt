@@ -47,6 +47,7 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsSurfaceCard
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.sound.LibrarySoundsList
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -71,8 +72,10 @@ import java.time.format.DateTimeParseException
  * The Creator Hub on Android (T-31, 2026-10-15) — READ-ONLY.
  *
  * Overview (the period's views, likes, comments, shares, followers and
- * watch time, and a daily views line), Library (videos, reels, drafts) and
- * Conversations (the newest comments on the creator's posts). A row opens
+ * watch time, and a daily views line), Library (videos, reels, drafts),
+ * Conversations (the newest comments on the creator's posts) and Sounds
+ * (the curated sound library: preview, and "Use this sound" into a new
+ * reel). A row opens
  * the post where it plays; a comment opens the shared comments sheet over
  * the hub, where the creator can reply, pin and heart as on any of their
  * posts. Editing, bulk edit, the end-screen editor and payouts stay on the
@@ -113,6 +116,12 @@ fun CreatorHubScreen(
                 onOpenCommentPost = { row -> open(row.postId, row.postContentType, HubOpenKind.POST) },
             ),
             bottomPadding = padding,
+            // Sounds (library sounds, 2026-10-15), the web hub's tab: "Use
+            // this sound" leaves the sound in SoundEntry by its audio_tracks
+            // id, and `:app` opens the reel create flow, which takes it.
+            sounds = { listPadding ->
+                LibrarySoundsList(onChosen = destinations.onCreateWithSound, contentPadding = listPadding)
+            },
         )
     }
 
@@ -145,6 +154,8 @@ internal fun CreatorHubBody(
     state: CreatorHubUiState,
     callbacks: CreatorHubCallbacks,
     bottomPadding: PaddingValues,
+    /** The Sounds tab, drawn by the screen: the shared library list holds its own ViewModel and player. */
+    sounds: @Composable (PaddingValues) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize().testTag("creator_hub")) {
         Text(
@@ -168,6 +179,7 @@ internal fun CreatorHubBody(
                 HubSection.OVERVIEW -> OverviewSection(state, callbacks, bottomPadding)
                 HubSection.LIBRARY -> LibrarySection(state, callbacks, bottomPadding)
                 HubSection.CONVERSATIONS -> ConversationsSection(state.inbox, callbacks, bottomPadding)
+                HubSection.SOUNDS -> sounds(bottomPadding)
             }
         }
     }

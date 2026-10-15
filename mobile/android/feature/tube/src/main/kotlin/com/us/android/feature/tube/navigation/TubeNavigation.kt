@@ -149,6 +149,12 @@ data class TubeDestinations(
      * video): `:app` opens post detail.
      */
     val onOpenPost: (postId: String) -> Unit,
+    /**
+     * The Creator Hub's Sounds tab, "Use this sound" (library sounds,
+     * 2026-10-15): the sound is already waiting in `SoundEntry`; `:app` opens
+     * the reel create flow, which takes it.
+     */
+    val onCreateWithSound: () -> Unit = {},
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {

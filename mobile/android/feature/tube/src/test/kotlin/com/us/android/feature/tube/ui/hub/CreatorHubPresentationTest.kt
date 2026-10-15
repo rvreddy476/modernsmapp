@@ -89,7 +89,7 @@ class CreatorHubPresentationTest {
     @Test
     fun `the hub's pages and library tabs, in order and in the web's words`() {
         assertThat(HubSection.entries.map { it.label })
-            .containsExactly("Overview", "Library", "Conversations")
+            .containsExactly("Overview", "Library", "Conversations", "Sounds")
             .inOrder()
         assertThat(HubLibraryTab.entries.map { it.label }).containsExactly("Videos", "Reels", "Drafts").inOrder()
     }

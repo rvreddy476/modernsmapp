@@ -272,6 +272,10 @@ class ReelPublishViewModel @Inject constructor(
         /** The Sound section is drawn: a reel with a sound chosen. A long video carries none. */
         val showsSound: Boolean
             get() = kind == PublishKind.REEL && sound != null
+
+        /** The "Add sound" row, which opens the Library sheet: a reel with no sound yet. */
+        val showsAddSound: Boolean
+            get() = kind == PublishKind.REEL && sound == null
     }
 
     private val _state = MutableStateFlow(
@@ -296,10 +300,7 @@ class ReelPublishViewModel @Inject constructor(
     init {
         // The sound "Use this sound" left for this visit, else the one this
         // form had before the process died.
-        (soundEntry.take() ?: restoredSound())?.let { sound ->
-            _state.update { it.copy(sound = sound) }
-            rememberSound(sound)
-        }
+        (soundEntry.take() ?: restoredSound())?.let(::adoptSound)
         viewModelScope.launch {
             lookups.categories()?.let { loaded -> _state.update { it.copy(categories = loaded) } }
         }
@@ -510,6 +511,22 @@ class ReelPublishViewModel @Inject constructor(
     fun onScheduleChanged(publishAt: Instant?) = _state.update { it.copy(publishAt = publishAt) }
 
     // ── The sound ───────────────────────────────────────────────────────
+
+    /**
+     * A sound chosen while the form is open — the Library sheet's "Use"
+     * (library sounds, 2026-10-15). The sheet has left it in [SoundEntry],
+     * the door every "Use this sound" takes; the form takes it from there
+     * exactly as it does when it starts, so a library sound is carried by its
+     * `audio_tracks` id like any other. Nothing waiting changes nothing.
+     */
+    fun takeChosenSound() {
+        soundEntry.take()?.let(::adoptSound)
+    }
+
+    private fun adoptSound(sound: ChosenSound) {
+        _state.update { it.copy(sound = sound) }
+        rememberSound(sound)
+    }
 
     /** Remove: the reel plays its own audio alone. The sliders go back to full for the next sound. */
     fun removeSound() {

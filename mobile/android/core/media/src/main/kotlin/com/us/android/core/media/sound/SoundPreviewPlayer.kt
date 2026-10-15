@@ -52,6 +52,10 @@ fun soundPreview(load: SoundLoad, wantsPlay: Boolean): SoundPreview = when (load
  * mute switch: the listener pressed Play on a sound, which is not a reel
  * starting by itself. Held by the screen's ViewModel, paused when the
  * surface stops and released with it.
+ *
+ * A curated LIBRARY sound (2026-10-15) is previewed on the same player by
+ * [toggleLibrary], from its own route: a library row has no sound id until
+ * it is used. One player either way, so starting one preview stops the other.
  */
 @OptIn(UnstableApi::class)
 class SoundPreviewPlayer internal constructor(
@@ -59,6 +63,7 @@ class SoundPreviewPlayer internal constructor(
     private val sourceFor: (url: String) -> MediaSource,
     private val serveUrl: (soundId: String) -> String?,
     private val clock: () -> Long,
+    private val libraryServeUrl: (libraryId: String) -> String? = { null },
 ) {
 
     @Inject
@@ -67,10 +72,16 @@ class SoundPreviewPlayer internal constructor(
         sourceFor = { url -> sources.create(Playback.original(url)) },
         serveUrl = { id -> soundServeUrl(config.baseUrl, id) },
         clock = SystemClock::elapsedRealtime,
+        libraryServeUrl = { id -> librarySoundServeUrl(config.baseUrl, id) },
     )
 
     private var player: ExoPlayer? = null
+
+    /** What is loaded: a sound id, or [LIBRARY_KEY] + a library id. Null when nothing is. */
     private var soundId: String? = null
+
+    /** Where [soundId]'s bytes are, kept for a reload after an error. */
+    private var soundUrl: String? = null
     private var load = SoundLoad.NONE
     private var wantsPlay = false
     private var level = 1.0
@@ -113,12 +124,22 @@ class SoundPreviewPlayer internal constructor(
     }
 
     /** Play ↔ pause for [soundId]; a different sound, or one that failed, is loaded afresh and played. */
-    fun toggle(soundId: String) {
-        val same = this.soundId == soundId && (load == SoundLoad.LOADING || load == SoundLoad.READY)
+    fun toggle(soundId: String) = toggleSource(key = soundId) { serveUrl(soundId) }
+
+    /**
+     * Play ↔ pause for the curated library row [libraryId], before anyone
+     * has used it — the Library list's preview. Its bytes are
+     * `v1/audio-library/{id}/serve`; everything else is [toggle]'s.
+     */
+    fun toggleLibrary(libraryId: String) = toggleSource(key = LIBRARY_KEY + libraryId) { libraryServeUrl(libraryId) }
+
+    private fun toggleSource(key: String, url: () -> String?) {
+        val same = this.soundId == key && (load == SoundLoad.LOADING || load == SoundLoad.READY)
         if (same) {
             wantsPlay = !wantsPlay
         } else {
-            this.soundId = soundId
+            this.soundId = key
+            this.soundUrl = url()
             wantsPlay = true
             startLoading()
         }
@@ -141,6 +162,7 @@ class SoundPreviewPlayer internal constructor(
     /** Forgets the sound: the button is back to idle. */
     fun stop() {
         soundId = null
+        soundUrl = null
         load = SoundLoad.NONE
         wantsPlay = false
         loadedAt = null
@@ -162,7 +184,7 @@ class SoundPreviewPlayer internal constructor(
     }
 
     private fun startLoading() {
-        val url = soundId?.let(serveUrl)
+        val url = soundUrl
         if (url == null) {
             load = SoundLoad.FAILED
             wantsPlay = false
@@ -188,5 +210,10 @@ class SoundPreviewPlayer internal constructor(
             if (sound.playWhenReady != play) sound.playWhenReady = play
         }
         _state.value = soundPreview(load, wantsPlay)
+    }
+
+    private companion object {
+        /** Keeps a library id apart from a sound id on the one player. */
+        const val LIBRARY_KEY = "library:"
     }
 }
