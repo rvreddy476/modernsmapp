@@ -213,4 +213,78 @@ class LiveApiRequestTest {
         assertThat(server.takeRequest().target).isEqualTo("/v1/livestream/streams/s1/start")
         assertThat((result as AppResult.Failure).error.liveCode()).isEqualTo(CODE_LIVE_NOT_ENABLED)
     }
+
+    // ── T-30 (2026-10-15): discover, creator centre, pin, hearts ──────
+
+    @Test
+    fun `the live list sends following and category only when set`() {
+        enqueue(body = """{"data":[]}""")
+        enqueue(body = """{"data":[]}""")
+
+        runBlocking { api.listLiveNow() }
+        runBlocking { api.listLiveNow(following = true, category = "music") }
+
+        assertThat(server.takeRequest().target).isEqualTo("/v1/livestream/streams?limit=20")
+        assertThat(server.takeRequest().target).isEqualTo("/v1/livestream/streams?limit=20&following=true&category=music")
+    }
+
+    @Test
+    fun `upcoming, categories and a creator's streams are the surfaces routes`() {
+        enqueue(body = """{"data":[]}""")
+        enqueue(body = """{"data":[{"slug":"music","label":"Music","live_count":1,"viewer_count":128}]}""")
+        enqueue(body = """{"data":[{"id":"p1","status":"ended","recording_post_id":"post-1","ended_reason":null}]}""")
+
+        runBlocking { api.listUpcoming(following = true) }
+        val categories = runBlocking { api.liveCategories() }.data.orEmpty()
+        val past = runBlocking { api.userStreams("u1", LiveUserStreams.PAST) }.data.orEmpty()
+
+        assertThat(server.takeRequest().target).isEqualTo("/v1/livestream/streams/upcoming?limit=20&following=true")
+        assertThat(server.takeRequest().target).isEqualTo("/v1/livestream/categories/live")
+        assertThat(server.takeRequest().target).isEqualTo("/v1/livestream/users/u1/streams?status=past&limit=20")
+        assertThat(categories.single().viewerCount).isEqualTo(128)
+        assertThat(past.single().recordingPostId).isEqualTo("post-1")
+    }
+
+    @Test
+    fun `the pinned read takes a null as nothing pinned`() {
+        enqueue(body = """{"data":null}""")
+        enqueue(body = """{"data":{"id":"m1","user_id":"u1","text":"Rules","is_pinned":true}}""")
+
+        val none = runBlocking { api.pinnedMessage("s1") }
+        val some = runBlocking { api.pinnedMessage("s1") }
+
+        assertThat(server.takeRequest().target).isEqualTo("/v1/livestream/streams/s1/chat/pinned")
+        assertThat(none.data).isNull()
+        assertThat(none.error).isNull()
+        assertThat(some.data?.text).isEqualTo("Rules")
+    }
+
+    @Test
+    fun `hearts post the batch count and read the total`() {
+        enqueue(body = """{"data":{"heart_count":515}}""")
+
+        val answer = runBlocking { apiCall(errorMapper) { api.sendHearts("s1", HeartsRequest(count = 20)) } }
+
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("POST")
+        assertThat(request.target).isEqualTo("/v1/livestream/streams/s1/hearts")
+        assertThat(request.body?.utf8()).isEqualTo("""{"count":20}""")
+        assertThat((answer as AppResult.Success).data.heartCount).isEqualTo(515L)
+    }
+
+    @Test
+    fun `a stream row reads the surfaces fields`() {
+        enqueue(
+            body = """{"data":{"id":"s1","creator_user_id":"u1","status":"live","category":"music",
+                "orientation":"portrait","heart_count":512,"creator":{"user_id":"u1","name":"Asha","badges":["founding_creator"]},
+                "ended_reason":null}}""",
+        )
+
+        val row = runBlocking { api.getStream("s1") }.data!!
+
+        assertThat(row.category).isEqualTo("music")
+        assertThat(row.heartCount).isEqualTo(512L)
+        assertThat(row.creator?.name).isEqualTo("Asha")
+        assertThat(row.endedReason).isEmpty()
+    }
 }

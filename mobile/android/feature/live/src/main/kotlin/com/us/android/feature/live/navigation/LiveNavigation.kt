@@ -8,6 +8,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.us.android.feature.live.ui.GoLiveScreen
+import com.us.android.feature.live.ui.LiveCreatorCentreScreen
 import com.us.android.feature.live.ui.LiveHubScreen
 import com.us.android.feature.live.ui.LiveWatchScreen
 import kotlinx.serialization.Serializable
@@ -24,18 +25,25 @@ data object GoLiveRoute
 @Serializable
 data class LiveWatchRoute(val streamId: String)
 
-/** Registers the three live destinations. */
+/** The creator's own streams, read-only: upcoming, past and recordings (T-30). */
+@Serializable
+data object LiveCreatorCentreRoute
+
+/** Registers the live destinations. */
+@Suppress("LongParameterList") // one callback per door out of live, all owned by :app
 fun NavGraphBuilder.liveScreens(
     onBack: () -> Unit,
     onGoLive: () -> Unit,
     onWatch: (streamId: String) -> Unit,
+    /** The hub's "Your live streams". */
+    onCreatorCentre: () -> Unit,
     /** Go live's "not yet" screen: the action that helps. `:app` opens the create flow / the account screen. */
     onCreatePost: () -> Unit,
     onVerifyEmail: () -> Unit,
     onVerifyPhone: () -> Unit,
 ) {
     composable<LiveHubRoute> {
-        LiveHubScreen(onClose = onBack, onGoLive = onGoLive, onWatch = onWatch)
+        LiveHubScreen(onClose = onBack, onGoLive = onGoLive, onWatch = onWatch, onCreatorCentre = onCreatorCentre)
     }
     composable<GoLiveRoute> {
         GoLiveScreen(
@@ -48,6 +56,9 @@ fun NavGraphBuilder.liveScreens(
     composable<LiveWatchRoute> {
         LiveWatchScreen(onClose = onBack)
     }
+    composable<LiveCreatorCentreRoute> {
+        LiveCreatorCentreScreen(onClose = onBack)
+    }
 }
 
 /** Type-safe navigation into live. */
@@ -56,3 +67,5 @@ fun NavController.navigateToLiveHub() = navigate(LiveHubRoute)
 fun NavController.navigateToGoLive() = navigate(GoLiveRoute)
 
 fun NavController.navigateToLiveWatch(streamId: String) = navigate(LiveWatchRoute(streamId))
+
+fun NavController.navigateToLiveCreatorCentre() = navigate(LiveCreatorCentreRoute)

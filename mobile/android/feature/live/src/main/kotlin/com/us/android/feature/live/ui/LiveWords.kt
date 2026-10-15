@@ -10,7 +10,17 @@ import com.us.android.feature.live.data.CODE_CHAT_BLOCKED_WORD
 import com.us.android.feature.live.data.CODE_CHAT_MUTED
 import com.us.android.feature.live.data.CODE_LIVE_NOT_ENABLED
 import com.us.android.feature.live.data.CODE_STREAM_FULL
+import com.us.android.core.model.WebLinks
 import com.us.android.feature.live.data.ChatRole
+import com.us.android.feature.live.data.HeartBlock
+import com.us.android.feature.live.data.LiveCategoryDto
+import com.us.android.feature.live.data.LiveCreatorCardDto
+import com.us.android.feature.live.data.LiveStreamDto
+import com.us.android.feature.live.data.parseInstantMillis
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import com.us.android.feature.live.data.EndedReason
 import com.us.android.feature.live.data.LiveChatAuthorDto
 import com.us.android.feature.live.data.LiveGateAction
@@ -128,7 +138,8 @@ fun watchJoinFailure(error: AppError): String = when {
 /** Why a chat message was not sent. */
 fun chatSendRefusal(error: AppError): String = when {
     error.liveCode() == CODE_CHAT_MUTED -> "You've been muted in this chat."
-    error.liveCode() == CODE_CHAT_BLOCKED_WORD -> "That message has a word the host has blocked."
+    // The draft is given back (LiveWatchViewModel), so the copy says what to do with it.
+    error.liveCode() == CODE_CHAT_BLOCKED_WORD -> BLOCKED_WORD_COPY
     error.liveCode() == CODE_CHAT_BANNED -> "You've been banned from this chat."
     error is AppError.RateLimited -> "You're sending messages too fast. Slow down."
     // A ban from this stream (or from live everywhere) arrives as a 403.
@@ -136,6 +147,80 @@ fun chatSendRefusal(error: AppError): String = when {
     error is AppError.NoNetwork || error is AppError.Timeout -> "No connection. Your message wasn't sent."
     else -> "Couldn't send your message."
 }
+
+/** A message caught by the host's word filter (400 CHAT_BLOCKED_WORD). The draft stays. */
+const val BLOCKED_WORD_COPY = "Your message wasn't sent: it has a word the host has blocked. Edit it and try again."
+
+/** In place of the composer while the viewer is muted. */
+const val MUTED_NOTICE_COPY = "You've been muted in this chat."
+
+/** In place of the composer once the viewer is banned from the chat. */
+const val CHAT_BANNED_NOTICE_COPY = "You can't chat in this stream."
+
+/**
+ * What Share puts in `EXTRA_TEXT`: the stream's title, then its web address
+ * on its own line (last, so a messenger's link preview reads it). Null when
+ * there is no address.
+ */
+fun liveShareText(title: String, streamId: String): String? {
+    val url = WebLinks.liveUrl(streamId) ?: return null
+    val name = title.trim()
+    return if (name.isEmpty()) url else "$name\n\n$url"
+}
+
+/** The heart button's screen-reader words, and why it is off when it is. */
+fun heartLabel(count: Long, block: HeartBlock?): String = when (block) {
+    null -> "Send a heart. ${formatCount(count.coerceIn(0, Int.MAX_VALUE.toLong()).toInt())} hearts"
+    HeartBlock.SignedOut -> "Sign in to send hearts."
+    HeartBlock.Banned -> "You can't send hearts on this stream."
+    HeartBlock.NotLive -> "Hearts open when the stream is live."
+}
+
+/** The host's name on a stream row or in the room: name, else @handle, else "Creator". Never an id. */
+fun creatorName(card: LiveCreatorCardDto?): String {
+    val name = card?.name?.trim().orEmpty()
+    if (name.isNotEmpty()) return name
+    val handle = card?.handle?.trim()?.trimStart('@').orEmpty()
+    return if (handle.isNotEmpty()) "@$handle" else CREATOR_FALLBACK
+}
+
+const val CREATOR_FALLBACK = "Creator"
+
+/** A category chip's words: the label, else the slug. */
+fun categoryLabel(category: LiveCategoryDto): String = category.label.trim().ifEmpty { category.slug }
+
+/**
+ * When an upcoming stream starts, in the phone's zone: "Starts 12 Oct, 18:00".
+ * Null when the server sent no time (or one that does not parse).
+ */
+fun startsAtLabel(scheduledAt: String, zone: ZoneId = ZoneId.systemDefault()): String? {
+    val millis = parseInstantMillis(scheduledAt) ?: return null
+    return "Starts " + START_FORMAT.format(Instant.ofEpochMilli(millis).atZone(zone))
+}
+
+/** A past stream's line: when it ended and its peak, "12 Oct · Peak 140 watching". */
+fun pastStreamLabel(stream: LiveStreamDto, zone: ZoneId = ZoneId.systemDefault()): String {
+    val millis = parseInstantMillis(stream.endedAt.ifBlank { stream.startedAt })
+    val day = millis?.let { DAY_FORMAT.format(Instant.ofEpochMilli(it).atZone(zone)) }
+    val peak = "Peak ${formatCount(stream.viewerPeak.coerceAtLeast(0))} watching"
+    return listOfNotNull(day, peak).joinToString(" · ")
+}
+
+/** A recording's line: "Recording · 1:02:03", or just "Recording" without a duration. */
+fun recordingLabel(stream: LiveStreamDto): String {
+    val seconds = stream.recordingDurationSeconds
+    if (seconds <= 0) return "Recording"
+    val h = seconds / SECONDS_PER_HOUR
+    val m = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE
+    val s = seconds % SECONDS_PER_MINUTE
+    val clock = if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+    return "Recording · $clock"
+}
+
+private val START_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM, HH:mm", Locale.ENGLISH)
+private val DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
+private const val SECONDS_PER_HOUR = 3_600
+private const val SECONDS_PER_MINUTE = 60
 
 /** Why a host or moderator action did not go through. */
 fun moderationFailure(error: AppError): String = when (error) {

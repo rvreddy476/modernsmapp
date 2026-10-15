@@ -1,6 +1,7 @@
 package com.us.android.feature.live.ui
 
 import android.Manifest
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,18 +39,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsMessageType
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
@@ -57,6 +63,7 @@ import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.feature.live.data.BADGE_FOUNDING_CREATOR
 import com.us.android.feature.live.data.EndedReason
 import com.us.android.feature.live.data.LiveChatMessageDto
 import com.us.android.feature.live.data.LiveGateAction
@@ -84,6 +91,8 @@ fun LiveHubScreen(
     onClose: () -> Unit,
     onGoLive: () -> Unit,
     onWatch: (streamId: String) -> Unit,
+    /** The creator's own LIVE centre: upcoming, past and recordings. */
+    onCreatorCentre: () -> Unit,
     viewModel: LiveHubViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -98,18 +107,26 @@ fun LiveHubScreen(
                 .testTag("live-hub"),
         ) {
             LiveTopBar(title = "Live", onClose = onClose) {
+                IconButton(onClick = onCreatorCentre, modifier = Modifier.testTag("live-creator-centre")) {
+                    Icon(UsIcons.Radio, contentDescription = "Your live streams", tint = UsTheme.extended.onMedia)
+                }
                 UsButton(
                     text = "Go live",
                     onClick = onGoLive,
                     modifier = Modifier.testTag("live-go-live"),
                 )
             }
+            HubFilters(state = state, onFeed = viewModel::onFeed, onCategory = viewModel::onCategory)
 
             when {
                 state.loading -> UsLoadingState()
                 state.error != null -> UsErrorState(message = state.error.orEmpty(), onRetry = viewModel::refresh)
-                state.streams.isEmpty() -> UsEmptyState(
-                    title = "Nobody is live right now",
+                state.streams.isEmpty() && state.upcoming.isEmpty() -> UsEmptyState(
+                    title = if (state.feed == LiveHubViewModel.Feed.Following) {
+                        "Nobody you follow is live"
+                    } else {
+                        "Nobody is live right now"
+                    },
                     detail = "Go live and be the first.",
                 )
 
@@ -117,13 +134,82 @@ fun LiveHubScreen(
                     contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.m),
                     verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
                 ) {
+                    if (state.streams.isEmpty()) {
+                        item(key = "none-live") { HubNote("Nobody is live here right now.") }
+                    }
                     items(state.streams, key = { it.id }) { stream ->
                         LiveNowRow(stream = stream, onClick = { onWatch(stream.id) })
+                    }
+                    if (state.upcoming.isNotEmpty()) {
+                        item(key = "upcoming-heading") { HubHeading("Upcoming") }
+                        items(state.upcoming, key = { "upcoming-${it.id}" }) { stream -> UpcomingRow(stream) }
                     }
                 }
             }
         }
     }
+}
+
+/** For you / Following, then the categories on air. Selected is filled; the rest are outlined. */
+@Composable
+private fun HubFilters(
+    state: LiveHubViewModel.UiState,
+    onFeed: (LiveHubViewModel.Feed) -> Unit,
+    onCategory: (String?) -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.xs)
+            .testTag("live-feeds"),
+    ) {
+        LiveHubViewModel.Feed.entries.forEach { feed ->
+            UsPillButton(
+                text = feed.label,
+                onClick = { onFeed(feed) },
+                filled = state.feed == feed,
+                modifier = Modifier.testTag("live-feed-${feed.name}"),
+            )
+        }
+    }
+    if (state.categories.isNotEmpty()) {
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.xs),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("live-categories"),
+        ) {
+            item(key = "all") {
+                UsPillButton(text = "All", onClick = { onCategory(null) }, filled = state.category == null)
+            }
+            items(state.categories, key = { it.slug }) { category ->
+                UsPillButton(
+                    text = categoryLabel(category),
+                    onClick = { onCategory(category.slug) },
+                    filled = state.category == category.slug,
+                    modifier = Modifier.testTag("live-category"),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HubHeading(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = UsTheme.extended.onMedia,
+        modifier = Modifier.padding(top = UsTheme.spacing.s),
+    )
+}
+
+@Composable
+private fun HubNote(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.onMediaMuted)
 }
 
 @Composable
@@ -141,11 +227,9 @@ private fun LiveNowRow(stream: LiveStreamDto, onClick: () -> Unit) {
     ) {
         val status = liveStatusOf(stream.status)
         LiveStatusPill(status = status)
-        Text(
-            stream.title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = UsTheme.extended.textPrimary,
+        StreamText(
+            title = stream.title,
+            detail = creatorName(stream.creator),
             modifier = Modifier.weight(1f),
         )
         if (showsViewerCount(status)) {
@@ -156,6 +240,121 @@ private fun LiveNowRow(stream: LiveStreamDto, onClick: () -> Unit) {
             )
         }
     }
+}
+
+/** An upcoming stream: read-only here (reminders are a web control for now). */
+@Composable
+private fun UpcomingRow(stream: LiveStreamDto) {
+    StreamCard(
+        title = stream.title,
+        detail = listOfNotNull(creatorName(stream.creator), startsAtLabel(stream.scheduledAt)).joinToString(" · "),
+        tag = "live-upcoming-row",
+    )
+}
+
+/** A stream's title and one quiet line under it. */
+@Composable
+private fun StreamText(title: String, detail: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.textPrimary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (detail.isNotBlank()) {
+            Text(
+                detail,
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** A list card that is not a door anywhere: title and a detail line. */
+@Composable
+private fun StreamCard(title: String, detail: String, tag: String) {
+    StreamText(
+        title = title,
+        detail = detail,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.large))
+            .background(UsTheme.extended.bgCardSolid)
+            .padding(UsTheme.spacing.xl)
+            .testTag(tag),
+    )
+}
+
+// ── Your LIVE (creator centre, read-only) ──────────────────────────────
+
+@Composable
+fun LiveCreatorCentreScreen(
+    onClose: () -> Unit,
+    viewModel: LiveCreatorCentreViewModel = hiltViewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    UsTheme(darkTheme = true) {
+        LightSystemBarGlyphs()
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim)
+                .testTag("live-creator-centre-screen"),
+        ) {
+            LiveTopBar(title = "Your live streams", onClose = onClose)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.xs),
+            ) {
+                LiveCreatorCentreViewModel.Tab.entries.forEach { tab ->
+                    UsPillButton(
+                        text = tab.label,
+                        onClick = { viewModel.onTab(tab) },
+                        filled = state.tab == tab,
+                        modifier = Modifier.testTag("live-centre-tab-${tab.name}"),
+                    )
+                }
+            }
+            when {
+                state.loading -> UsLoadingState()
+                state.error != null -> UsErrorState(message = state.error.orEmpty(), onRetry = viewModel::refresh)
+                state.rows.isEmpty() -> UsEmptyState(title = centreEmptyTitle(state.tab))
+                else -> LazyColumn(
+                    contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.m),
+                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+                ) {
+                    items(state.rows, key = { it.id }) { stream ->
+                        StreamCard(
+                            title = stream.title,
+                            detail = centreDetail(state.tab, stream),
+                            tag = "live-centre-row",
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun centreEmptyTitle(tab: LiveCreatorCentreViewModel.Tab): String = when (tab) {
+    LiveCreatorCentreViewModel.Tab.Upcoming -> "Nothing scheduled"
+    LiveCreatorCentreViewModel.Tab.Past -> "No past streams yet"
+    LiveCreatorCentreViewModel.Tab.Recordings -> "No recordings yet"
+}
+
+private fun centreDetail(tab: LiveCreatorCentreViewModel.Tab, stream: LiveStreamDto): String = when (tab) {
+    LiveCreatorCentreViewModel.Tab.Upcoming -> startsAtLabel(stream.scheduledAt).orEmpty()
+    LiveCreatorCentreViewModel.Tab.Past -> pastStreamLabel(stream)
+    LiveCreatorCentreViewModel.Tab.Recordings -> recordingLabel(stream)
 }
 
 /** The shared top bar: close, a title, and whatever the screen puts on the right. */
@@ -605,6 +804,7 @@ fun LiveWatchScreen(
     // Full screen (2026-10-02): the chat list steps aside and the latest
     // comments float over the video instead. A tap on them brings the list back.
     var fullScreen by rememberSaveable { mutableStateOf(false) }
+    val share = rememberLiveSharer()
 
     UsTheme(darkTheme = true) {
         // 2026-10-02: the room is dark on a light device too, so both system bars keep light glyphs.
@@ -623,8 +823,16 @@ fun LiveWatchScreen(
                     WatchBarActions(
                         fullScreen = fullScreen,
                         onToggleFullScreen = { fullScreen = !fullScreen },
+                        onShare = if (state.showsShare) {
+                            { share(state.title, state.streamId) }
+                        } else {
+                            null
+                        },
                         onReport = viewModel::onReportStream,
                     )
+                }
+                if (!state.isHost && state.hostId.isNotBlank()) {
+                    WatchHostRow(state = state, onFollow = viewModel::onFollowHost)
                 }
                 Box(
                     modifier = Modifier
@@ -642,7 +850,18 @@ fun LiveWatchScreen(
                             modifier = Modifier.align(Alignment.BottomStart),
                         )
                     }
+                    if (state.showsHearts) {
+                        LiveHeartButton(
+                            count = state.heartCount,
+                            block = state.heartBlock,
+                            onTap = viewModel::onHeart,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(UsTheme.spacing.l),
+                        )
+                    }
                 }
+                if (chatShown(state)) state.pinned?.let { LivePinnedBar(it) }
                 if (!fullScreen && chatShown(state)) {
                     LiveChatList(
                         messages = state.chat.messages,
@@ -655,15 +874,20 @@ fun LiveWatchScreen(
                         } else {
                             "Press and hold a message to report it."
                         },
+                        joins = state.joins,
+                        meId = state.meId,
                     )
                 }
-                if (state.canChat) {
-                    LiveChatComposer(
+                when {
+                    state.showsComposer -> LiveChatComposer(
                         draft = state.draft,
                         sending = state.sending,
                         onDraftChanged = viewModel::onDraftChanged,
                         onSend = viewModel::onSendChat,
                     )
+                    !state.canChat -> Unit
+                    state.chatBanned -> LiveChatClosedNotice(CHAT_BANNED_NOTICE_COPY)
+                    state.muted -> LiveChatClosedNotice(MUTED_NOTICE_COPY)
                 }
             }
             UsMessageHost(
@@ -676,9 +900,14 @@ fun LiveWatchScreen(
     }
 }
 
-/** Full screen (or back to the chat), and Report. */
+/** Full screen (or back to the chat), Share (viewers only; null hides it), and Report. */
 @Composable
-private fun WatchBarActions(fullScreen: Boolean, onToggleFullScreen: () -> Unit, onReport: () -> Unit) {
+private fun WatchBarActions(
+    fullScreen: Boolean,
+    onToggleFullScreen: () -> Unit,
+    onShare: (() -> Unit)?,
+    onReport: () -> Unit,
+) {
     IconButton(onClick = onToggleFullScreen, modifier = Modifier.testTag("live-full-screen")) {
         Icon(
             if (fullScreen) UsIcons.Minimize else UsIcons.Maximize,
@@ -686,8 +915,69 @@ private fun WatchBarActions(fullScreen: Boolean, onToggleFullScreen: () -> Unit,
             tint = UsTheme.extended.onMedia,
         )
     }
+    if (onShare != null) {
+        IconButton(onClick = onShare, modifier = Modifier.testTag("live-share")) {
+            Icon(UsIcons.Share, contentDescription = "Share this live stream", tint = UsTheme.extended.onMedia)
+        }
+    }
     IconButton(onClick = onReport, modifier = Modifier.testTag("live-report-stream")) {
         Icon(UsIcons.Flag, contentDescription = "Report stream", tint = UsTheme.extended.onMedia)
+    }
+}
+
+/**
+ * Who is live, under the bar: the host's name (never an id), the Founding
+ * creator badge, and Follow while the viewer is known not to follow them.
+ * Not drawn for the host watching their own stream.
+ */
+@Composable
+private fun WatchHostRow(state: LiveWatchViewModel.UiState, onFollow: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.xs)
+            .testTag("live-host-row"),
+    ) {
+        Text(
+            creatorName(state.host),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = UsTheme.extended.onMedia,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (state.host?.badges.orEmpty().any { it.equals(BADGE_FOUNDING_CREATOR, ignoreCase = true) }) {
+            FoundingCreatorBadge()
+        }
+        Spacer(Modifier.weight(1f))
+        if (state.showsFollow) {
+            UsFollowButton(
+                onClick = onFollow,
+                busy = state.followBusy,
+                modifier = Modifier.testTag("live-follow"),
+            )
+        }
+    }
+}
+
+/** Share the room's web address through the system sheet. */
+@Composable
+private fun rememberLiveSharer(): (title: String, streamId: String) -> Unit {
+    val context = LocalContext.current
+    return remember(context) {
+        { title, streamId ->
+            liveShareText(title, streamId)?.let { text ->
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, text)
+                }
+                // createChooser: without it Android can silently reuse a previous default target.
+                context.startActivity(Intent.createChooser(send, null))
+            }
+        }
     }
 }
 
