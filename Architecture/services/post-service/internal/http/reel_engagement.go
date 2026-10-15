@@ -409,6 +409,16 @@ func (h *Handler) ListSavedReels(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, reelIDs, nil)
 }
 
+// GetUserReelLikes is GET /v1/reels/liked?limit=&cursor=: the caller's
+// liked short-form posts they may still open, newest like first.
+//
+//	→ {data: ["<post id>", …], meta: {next_cursor}}
+//
+// data stays the bare id array clients already parse; meta.next_cursor
+// (absent on the last page) is the keyset on (liked-at desc, id) to pass
+// back as ?cursor=. limit defaults to 50, at most 100. A page can be
+// shorter than limit and still carry a cursor (service/liked_reels.go).
+// An unreadable cursor is 400 INVALID_CURSOR, never the first page.
 func (h *Handler) GetUserReelLikes(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
@@ -416,22 +426,25 @@ func (h *Handler) GetUserReelLikes(c *gin.Context) {
 		return
 	}
 
-	limit := 20
-	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
-		limit = l
-	}
-
-	reelIDs, err := h.svc.GetUserReelLikes(c.Request.Context(), userID, limit)
+	limit := service.NormalizeLikedReelsLimit(c.Query("limit"))
+	reelIDs, next, err := h.svc.ListLikedReels(c.Request.Context(), userID, limit, c.Query("cursor"))
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		if errors.Is(err, service.ErrInvalidLikedCursor) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "cursor is not one this list returned", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "could not load liked reels", nil)
 		return
 	}
 
 	if reelIDs == nil {
 		reelIDs = []string{}
 	}
-
-	api.JSON(c.Writer, http.StatusOK, reelIDs, nil)
+	var meta *api.Meta
+	if next != "" {
+		meta = &api.Meta{NextCursor: next}
+	}
+	api.JSON(c.Writer, http.StatusOK, reelIDs, meta)
 }
 
 // maxReelCountsBatch bounds POST /v1/reels/batch/counts: every id runs the

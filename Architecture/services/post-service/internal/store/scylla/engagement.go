@@ -276,29 +276,10 @@ func (s *InteractionStore) BatchGetReelCounts(ctx context.Context, reelIDs []uui
 
 // ─── User Reel Likes Timeline ──────────────────────────────────────
 
-// GetUserReelLikes returns reel IDs that a user has liked (for "Liked reels" tab).
-func (s *InteractionStore) GetUserReelLikes(ctx context.Context, userID uuid.UUID, limit int) ([]string, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	bucket := currentBucket()
-	iter := s.session.Query(`
-		SELECT reel_id FROM user_reel_likes WHERE user_id = ? AND bucket = ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, userID.String(), bucket, limit).Iter()
-
-	var reelIDs []string
-	var rid string
-	for iter.Scan(&rid) {
-		reelIDs = append(reelIDs, rid)
-	}
-	if err := iter.Close(); err != nil {
-		return nil, err
-	}
-	return reelIDs, nil
-}
+// The "Liked reels" list is no longer read here (2026-10-15): it read
+// user_reel_likes, which nothing ever wrote, so it was always empty. It is
+// served from Postgres reactions (service/liked_reels.go), which every like
+// path writes.
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -379,14 +360,8 @@ var ReelEngagementDDL = []string{
 		view_count counter
 	)`,
 
-	// User reel likes timeline — for "Liked reels" tab
-	`CREATE TABLE IF NOT EXISTS user_reel_likes (
-		user_id text,
-		bucket int,
-		ts timeuuid,
-		reel_id text,
-		PRIMARY KEY ((user_id, bucket), ts)
-	) WITH CLUSTERING ORDER BY (ts DESC)`,
+	// user_reel_likes is no longer created (2026-10-15): nothing wrote or
+	// reads it. A table an older build created is left as it is.
 }
 
 // EnsureReelEngagementSchema creates the engagement tables if they don't exist.
