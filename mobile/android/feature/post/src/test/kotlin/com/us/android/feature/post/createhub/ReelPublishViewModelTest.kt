@@ -1036,4 +1036,65 @@ class ReelPublishViewModelTest {
 
         assertThat(viewModel(savedStateHandle = saved).state.value.sound).isNull()
     }
+
+    // ── A library sound (2026-10-15) ────────────────────────────────────
+
+    /** What the Library sheet's "Use" leaves in SoundEntry: the audio_tracks id, never the library id. */
+    private val library = ChosenSound(id = "track-9", title = "Morning run", artist = "Studio", durationMs = 28_000L)
+
+    @Test
+    fun `a reel with no sound offers Add sound, and a long video does not`() = runTest {
+        val vm = viewModel()
+        assertThat(vm.state.value.showsAddSound).isTrue()
+
+        val (_, withOne) = withSound()
+        assertThat(withOne.state.value.showsAddSound).isFalse()
+
+        val long = viewModel(probe = probe(durationMs = 6L * 60L * 1_000L))
+        long.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+        long.switchToLong()
+        assertThat(long.state.value.showsAddSound).isFalse()
+    }
+
+    @Test
+    fun `a sound used from the Library sheet is taken through SoundEntry and posted by its track id`() = runTest {
+        val launcher = FakeLauncher()
+        val entry = SoundEntry()
+        val vm = viewModel(launcher = launcher, soundEntry = entry)
+        assertThat(vm.state.value.sound).isNull()
+
+        // The sheet's "Use" answered: the sound waits in SoundEntry, as Reels' does.
+        entry.choose(library)
+        vm.takeChosenSound()
+
+        assertThat(vm.state.value.sound).isEqualTo(library)
+        assertThat(vm.state.value.showsSound).isTrue()
+        assertThat(vm.state.value.showsAddSound).isFalse()
+        assertThat(entry.chosen.value).isNull()
+
+        vm.pickAndPost("with a library sound")
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.single().audioTrackId).isEqualTo("track-9")
+    }
+
+    @Test
+    fun `taking with nothing waiting keeps the sound the form has`() = runTest {
+        val (_, vm) = withSound()
+
+        vm.takeChosenSound()
+
+        assertThat(vm.state.value.sound).isEqualTo(asha)
+    }
+
+    @Test
+    fun `a library sound outlives the process like any other`() = runTest {
+        val saved = savedState()
+        val entry = SoundEntry()
+        val vm = viewModel(soundEntry = entry, savedStateHandle = saved)
+        entry.choose(library)
+        vm.takeChosenSound()
+
+        assertThat(viewModel(soundEntry = SoundEntry(), savedStateHandle = saved).state.value.sound).isEqualTo(library)
+    }
 }

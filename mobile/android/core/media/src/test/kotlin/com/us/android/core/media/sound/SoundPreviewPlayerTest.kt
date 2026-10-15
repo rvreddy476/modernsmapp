@@ -37,6 +37,7 @@ class SoundPreviewPlayerTest {
         },
         serveUrl = { id -> "https://api.test/v1/audio/$id/serve" },
         clock = { now },
+        libraryServeUrl = { id -> "https://api.test/v1/audio-library/$id/serve" },
     )
 
     private val sound: FakeExoPlayer get() = factory.made.single()
@@ -204,5 +205,75 @@ class SoundPreviewPlayerTest {
 
         preview.toggle("s1")
         assertThat(factory.made).hasSize(2)
+    }
+
+    // ── Library sounds (2026-10-15) ─────────────────────────────────────
+
+    @Test
+    fun `a library row is previewed from the library route, audibly and once`() {
+        preview.toggleLibrary("lib-1")
+
+        assertThat(asked).containsExactly("https://api.test/v1/audio-library/lib-1/serve")
+        assertThat(sound.playWhenReady).isTrue()
+        assertThat(sound.volume).isEqualTo(1f)
+        assertThat(sound.repeatMode).isEqualTo(Player.REPEAT_MODE_OFF)
+
+        sound.becomeReady()
+        assertThat(preview.state.value).isEqualTo(SoundPreview.PLAYING)
+    }
+
+    @Test
+    fun `a library preview pauses on a second press, and the next row replaces it on the one player`() {
+        preview.toggleLibrary("lib-1")
+        sound.becomeReady()
+
+        preview.toggleLibrary("lib-1")
+        assertThat(preview.state.value).isEqualTo(SoundPreview.PAUSED)
+        assertThat(sound.playWhenReady).isFalse()
+
+        preview.toggleLibrary("lib-2")
+        assertThat(factory.made).hasSize(1)
+        assertThat(asked.last()).isEqualTo("https://api.test/v1/audio-library/lib-2/serve")
+        assertThat(preview.state.value).isEqualTo(SoundPreview.LOADING)
+    }
+
+    @Test
+    fun `a library id and a sound id with the same text are two different sounds`() {
+        preview.toggleLibrary("same")
+        sound.becomeReady()
+
+        preview.toggle("same")
+
+        assertThat(asked).containsExactly(
+            "https://api.test/v1/audio-library/same/serve",
+            "https://api.test/v1/audio/same/serve",
+        ).inOrder()
+        assertThat(preview.state.value).isEqualTo(SoundPreview.LOADING)
+    }
+
+    @Test
+    fun `stopping a library preview forgets it, and a failed one reloads from the library route`() {
+        preview.toggleLibrary("lib-1")
+        sound.becomeReady()
+        now += SOUND_RELOAD_AFTER_MS
+        sound.fail()
+        assertThat(asked).containsExactly(
+            "https://api.test/v1/audio-library/lib-1/serve",
+            "https://api.test/v1/audio-library/lib-1/serve",
+        )
+
+        preview.stop()
+        assertThat(preview.state.value).isEqualTo(SoundPreview.IDLE)
+        assertThat(sound.playWhenReady).isFalse()
+    }
+
+    @Test
+    fun `without a library address a library row has failed, and no player is made for it`() {
+        val none = SoundPreviewPlayer(factory, { fakeMediaSource() }, { "https://api.test/v1/audio/$it/serve" }, { now })
+
+        none.toggleLibrary("lib-1")
+
+        assertThat(none.state.value).isEqualTo(SoundPreview.FAILED)
+        assertThat(factory.made).isEmpty()
     }
 }

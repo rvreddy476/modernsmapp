@@ -54,5 +54,29 @@ fun soundServeUrl(baseUrl: String, soundId: String): String? {
         .toString()
 }
 
+/**
+ * Where a LIBRARY sound's preview is: `{API base}/v1/audio-library/{id}/serve`
+ * (library sounds, 2026-10-15). A curated library row has no sound of its own
+ * until someone uses it, so it cannot be asked for by a sound id; this route
+ * answers the same 307 as [soundServeUrl], to the presigned audio or to the
+ * row's own https address. Public, and the token is dropped on the redirect
+ * exactly as it is there.
+ *
+ * Only for listening BEFORE "Use": the sound a post carries is always the
+ * `audio_track_id` the use answers, played through [soundServeUrl].
+ */
+fun librarySoundServeUrl(baseUrl: String, libraryId: String): String? {
+    val id = libraryId.trim()
+    if (id.isEmpty()) return null
+    val base = baseUrl.toHttpUrlOrNull() ?: return null
+    return base.newBuilder()
+        .addPathSegments(AUDIO_LIBRARY_PATH)
+        .addPathSegment(id)
+        .addPathSegment(SERVE_SEGMENT)
+        .build()
+        .toString()
+}
+
 private const val AUDIO_PATH = "v1/audio"
+private const val AUDIO_LIBRARY_PATH = "v1/audio-library"
 private const val SERVE_SEGMENT = "serve"

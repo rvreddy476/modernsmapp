@@ -72,6 +72,18 @@ class SoundServeUrlTest {
         assertThat(soundServeUrl("", "s1")).isNull()
     }
 
+    @Test
+    fun `a library row's preview comes from the library serve route, its id kept in its place`() {
+        assertThat(librarySoundServeUrl("https://api.example.test/", "lib-1"))
+            .isEqualTo("https://api.example.test/v1/audio-library/lib-1/serve")
+        assertThat(librarySoundServeUrl("https://api.example.test/gateway", "lib-1"))
+            .isEqualTo("https://api.example.test/gateway/v1/audio-library/lib-1/serve")
+        assertThat(librarySoundServeUrl("https://api.example.test", "../use"))
+            .isEqualTo("https://api.example.test/v1/audio-library/..%2Fuse/serve")
+        assertThat(librarySoundServeUrl("https://api.example.test", " ")).isNull()
+        assertThat(librarySoundServeUrl("not a url", "lib-1")).isNull()
+    }
+
     // ── The redirect ────────────────────────────────────────────────────
 
     /** The media chain's client, as far as credentials go: the app's interceptor on OkHttp's defaults. */

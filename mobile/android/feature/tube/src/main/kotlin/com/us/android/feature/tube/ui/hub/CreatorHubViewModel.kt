@@ -29,6 +29,9 @@ enum class HubSection(val label: String) {
     OVERVIEW("Overview"),
     LIBRARY("Library"),
     CONVERSATIONS("Conversations"),
+
+    /** The curated sound library (2026-10-15): browse, preview, and "Use this sound" into a new reel. */
+    SOUNDS("Sounds"),
 }
 
 /** The library's lists. "Reels" is this app's word for the web's "Shorts" tab (the same `flicks` route). */
@@ -105,6 +108,8 @@ class CreatorHubViewModel @Inject constructor(
             HubSection.OVERVIEW -> Unit
             HubSection.LIBRARY -> ensureLoaded(_state.value.libraryTab)
             HubSection.CONVERSATIONS -> if (!_state.value.inbox.loaded) loadInbox(more = false)
+            // The Sounds list is its own ViewModel, made when the tab is first shown.
+            HubSection.SOUNDS -> Unit
         }
     }
 
