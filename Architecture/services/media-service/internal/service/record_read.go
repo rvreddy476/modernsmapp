@@ -220,9 +220,13 @@ func mediaStatusResponse(ctx context.Context, media *postgres.MediaAsset,
 // redirect to the URL or discard it.
 //
 // A track with no source asset has nobody to answer for it, so it is refused:
-// every sound this service writes records its source (sounds.go). A track
+// every sound this service writes records its source (sounds.go), or is a
+// platform library sound (library_sounds.go), heard by everyone. A track
 // with no audio object (a row post-service's shape wrote) has nothing to
 // sign, and is the missing answer rather than a URL to nothing.
+//
+// A library sound whose library row named an https URL is sent there as it
+// is; every other audio_key is a storage key and is presigned.
 func (r *RecordReads) AudioTrackURLForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (string, error) {
 	track, err := r.AudioTrackForViewer(ctx, viewerID, audioID)
 	if err != nil {
@@ -231,12 +235,5 @@ func (r *RecordReads) AudioTrackURLForViewer(ctx context.Context, viewerID, audi
 	if track.AudioKey == "" {
 		return "", delivery.ErrDeliveryDenied
 	}
-	if r.blobs == nil {
-		return "", fmt.Errorf("%w: blob store not configured", delivery.ErrDeliveryUnresolved)
-	}
-	u, err := r.blobs.GeneratePresignedGetURL(ctx, track.AudioKey, defaultURLExpiry)
-	if err != nil {
-		return "", fmt.Errorf("%w: sign audio url: %v", delivery.ErrDeliveryUnresolved, err)
-	}
-	return u.String(), nil
+	return signSoundAudio(ctx, r.blobs, track.AudioKey, track.IsLibrarySound())
 }

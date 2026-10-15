@@ -32,7 +32,9 @@ import (
 // One decision, the record's (record_read.go, MediaForViewer on the source
 // asset): the uploader, then whoever the content authority admits, signed
 // out included for a public video. A sound with no source has nobody to
-// answer for it and is refused. A list leaves out what the viewer may not
+// answer for it and is refused, except a platform library sound
+// (library_id, 2026-10-15), which is public and heard by everyone while it
+// is ready. A list leaves out what the viewer may not
 // hear; it never says that something was left out.
 //
 // Fail-closed: an authority that cannot answer is ErrDeliveryUnresolved for
@@ -75,7 +77,17 @@ func (r *RecordReads) AudioTrackForViewer(ctx context.Context, viewerID, audioID
 }
 
 // admitToTrack is the audience decision for one sound.
+//
+// A platform library sound (library_id, library_sounds.go) has no source
+// video: it is public and heard by everyone, the signed-out viewer included,
+// while it is 'ready'. Withdrawing it (any other status) silences it.
 func (r *RecordReads) admitToTrack(ctx context.Context, viewerID uuid.UUID, track *postgres.AudioTrack) error {
+	if track.IsLibrarySound() {
+		if track.Status != "ready" {
+			return delivery.ErrDeliveryDenied
+		}
+		return nil
+	}
 	if track.SourceMediaID == nil || *track.SourceMediaID == uuid.Nil {
 		return delivery.ErrDeliveryDenied
 	}
@@ -116,6 +128,13 @@ func (r *RecordReads) audibleTo(ctx context.Context, viewerID uuid.UUID, tracks 
 	decided := make(map[uuid.UUID]bool, len(tracks))
 	for i := range tracks {
 		track := &tracks[i]
+		if track.IsLibrarySound() {
+			// The platform's: no source video to ask.
+			if r.admitToTrack(ctx, viewerID, track) == nil {
+				out = append(out, *track)
+			}
+			continue
+		}
 		if track.SourceMediaID == nil || *track.SourceMediaID == uuid.Nil {
 			continue
 		}
