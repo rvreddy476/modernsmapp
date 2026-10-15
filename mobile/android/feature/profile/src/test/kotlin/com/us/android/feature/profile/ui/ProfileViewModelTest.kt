@@ -8,9 +8,12 @@ import com.us.android.core.model.SessionState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
+import com.us.android.core.profile.data.GraphCountsApi
+import com.us.android.core.profile.data.GraphCountsRepository
 import com.us.android.core.profile.data.ProfileApi
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.profile.data.dto.FollowRequestDto
+import com.us.android.core.profile.data.dto.GraphCountsDto
 import com.us.android.core.profile.data.dto.GraphStatusDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
@@ -105,8 +108,27 @@ class ProfileViewModelTest {
         override val sessionState: StateFlow<SessionState> = MutableStateFlow(state)
     }
 
-    private fun viewModel(api: FakeApi, userId: String? = "other-user") = ProfileViewModel(
+    /**
+     * graph-service's count route. Fails by default, so every older test
+     * here still sees the profile-side counts it was written against.
+     */
+    private class FakeCountsApi : GraphCountsApi {
+        var answers: ArrayDeque<ApiEnvelope<GraphCountsDto>> = ArrayDeque()
+        val calls = mutableListOf<String>()
+
+        override suspend fun counts(userId: String): ApiEnvelope<GraphCountsDto> {
+            calls += userId
+            return answers.removeFirstOrNull() ?: ApiEnvelope(error = ApiErrorBody(code = "INTERNAL_ERROR"))
+        }
+    }
+
+    private fun viewModel(
+        api: FakeApi,
+        userId: String? = "other-user",
+        counts: FakeCountsApi = FakeCountsApi(),
+    ) = ProfileViewModel(
         repository = ProfileRepository(api, ErrorMapper(json)),
+        graphCounts = GraphCountsRepository(counts, ErrorMapper(json)),
         sessionStateProvider = FakeSessionProvider(),
         savedStateHandle = SavedStateHandle(
             if (userId == null) emptyMap() else mapOf("userId" to userId),
@@ -444,5 +466,140 @@ class ProfileViewModelTest {
         viewModel(api, userId = "other-user")
 
         assertThat(api.calls).doesNotContain("incomingFollowRequests")
+    }
+
+    // ── Live counts (T-20, audit R-1) ────────────────────────────────────
+
+    private fun graph(followers: Long, following: Long, friends: Long = 0) =
+        ApiEnvelope(GraphCountsDto(followerCount = followers, followingCount = following, friendCount = friends))
+
+    /** profile_stats stopped moving when follows moved to the graph; the graph's numbers win. */
+    @Test
+    fun `the graph's follow counts replace the frozen profile-side ones and keep the post count`() = runTest {
+        val api = FakeApi().apply {
+            publicProfile = ApiEnvelope(PublicProfileDto(userId = "u", followerCount = 3, postCount = 5))
+            stats = ApiEnvelope(ProfileStatsDto(followerCount = 9, followingCount = 9, postCount = 6))
+        }
+        val counts = FakeCountsApi().apply { answers.add(graph(followers = 40, following = 12, friends = 2)) }
+
+        val content = viewModel(api, counts = counts).state.value as ProfileUiState.Content
+
+        assertThat(counts.calls).containsExactly("other-user")
+        assertThat(content.counts.followers).isEqualTo(40)
+        assertThat(content.counts.following).isEqualTo(12)
+        assertThat(content.counts.friends).isEqualTo(2)
+        assertThat(content.counts.posts).isEqualTo(6)
+    }
+
+    @Test
+    fun `the owner's counts are read for the id the own profile names`() = runTest {
+        val api = FakeApi()
+        val counts = FakeCountsApi().apply { answers.add(graph(followers = 1, following = 2)) }
+
+        val content = viewModel(api, userId = null, counts = counts).state.value as ProfileUiState.Content
+
+        assertThat(counts.calls).containsExactly("me")
+        assertThat(content.counts.following).isEqualTo(2)
+    }
+
+    @Test
+    fun `a graph counts failure falls back to the profile-side counts`() = runTest {
+        val api = FakeApi().apply { stats = ApiEnvelope(ProfileStatsDto(followerCount = 9)) }
+
+        val content = viewModel(api).state.value as ProfileUiState.Content
+
+        assertThat(content.graphCounts).isNull()
+        assertThat(content.counts.followers).isEqualTo(9)
+    }
+
+    @Test
+    fun `a follow re-reads the counts so the header moves with it`() = runTest {
+        val api = FakeApi()
+        val counts = FakeCountsApi().apply {
+            answers.add(graph(followers = 10, following = 0))
+            answers.add(graph(followers = 11, following = 0))
+        }
+        val vm = viewModel(api, counts = counts)
+
+        vm.onFollowToggle()
+
+        assertThat(counts.calls).containsExactly("other-user", "u").inOrder()
+        assertThat((vm.state.value as ProfileUiState.Content).counts.followers).isEqualTo(11)
+    }
+
+    @Test
+    fun `an unfollow re-reads the counts too`() = runTest {
+        val api = FakeApi().apply { relationship = ApiEnvelope(RelationshipDto(follows = true)) }
+        val counts = FakeCountsApi().apply {
+            answers.add(graph(followers = 11, following = 0))
+            answers.add(graph(followers = 10, following = 0))
+        }
+        val vm = viewModel(api, counts = counts)
+
+        vm.onFollowToggle()
+
+        assertThat(api.calls).contains("unfollow(u)")
+        assertThat((vm.state.value as ProfileUiState.Content).counts.followers).isEqualTo(10)
+    }
+
+    @Test
+    fun `a failed follow does not re-read the counts`() = runTest {
+        val api = FakeApi().apply { followResult = ApiEnvelope(error = ApiErrorBody(code = "INTERNAL_ERROR")) }
+        val counts = FakeCountsApi().apply { answers.add(graph(followers = 10, following = 0)) }
+        val vm = viewModel(api, counts = counts)
+
+        vm.onFollowToggle()
+
+        assertThat(counts.calls).containsExactly("other-user")
+        assertThat((vm.state.value as ProfileUiState.Content).counts.followers).isEqualTo(10)
+    }
+
+    @Test
+    fun `a failed re-read keeps the counts the header already had`() = runTest {
+        val api = FakeApi()
+        val counts = FakeCountsApi().apply { answers.add(graph(followers = 10, following = 0)) }
+        val vm = viewModel(api, counts = counts)
+
+        vm.onFollowToggle()
+
+        assertThat(counts.calls).hasSize(2)
+        assertThat((vm.state.value as ProfileUiState.Content).counts.followers).isEqualTo(10)
+    }
+
+    // ── Block state (graph viewer_blocked_target / target_blocked_viewer) ──
+
+    @Test
+    fun `a profile that blocked the viewer is unavailable and refuses a follow`() = runTest {
+        val api = FakeApi().apply {
+            relationship = ApiEnvelope(RelationshipDto(targetBlockedViewer = true, viewerBlockedTarget = false))
+        }
+        val vm = viewModel(api)
+
+        vm.onFollowToggle()
+
+        val content = vm.state.value as ProfileUiState.Content
+        assertThat(content.unavailable).isTrue()
+        assertThat(content.relationship.isBlocked).isFalse()
+        assertThat(api.calls.none { it.startsWith("follow(") }).isTrue()
+    }
+
+    /** An older graph without the named fields: on this route `blocked` is the target's block. */
+    @Test
+    fun `the legacy key still marks the profile unavailable`() = runTest {
+        val api = FakeApi().apply { relationship = ApiEnvelope(RelationshipDto(blocked = true)) }
+
+        val content = viewModel(api).state.value as ProfileUiState.Content
+
+        assertThat(content.unavailable).isTrue()
+    }
+
+    @Test
+    fun `the viewer's own block is not the unavailable state`() = runTest {
+        val api = FakeApi().apply { relationship = ApiEnvelope(RelationshipDto(viewerBlockedTarget = true)) }
+
+        val content = viewModel(api).state.value as ProfileUiState.Content
+
+        assertThat(content.unavailable).isFalse()
+        assertThat(content.relationship.isBlocked).isTrue()
     }
 }

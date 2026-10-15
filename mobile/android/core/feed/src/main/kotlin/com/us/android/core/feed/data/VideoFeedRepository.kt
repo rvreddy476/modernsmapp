@@ -144,14 +144,34 @@ class VideoFeedRepository @Inject constructor(
         }
 
     /**
-     * One author's posts of one kind, newest first — bare post-service rows,
+     * Every post the viewer saved, of every kind, newest save first —
+     * the bookmark list, hydrated per page. The owner's Saved tab on the
+     * profile grid reads this (T-21, 2026-10-15); a tile opens by its own
+     * content type, as on the other tabs.
+     */
+    fun savedPosts(): Flow<PagingData<FeedItem>> = feedPager(errorMapper) { request ->
+        val page = api.bookmarks(request.limit, request.cursor).toFeedPage()
+        page.copy(items = hydrator.hydrate(page.items))
+    }
+
+    /**
+     * One author's posts of one kind in one [sort] — bare post-service rows,
      * hydrated per page. The profile grid's three tabs (posts, reels, videos)
      * are three of these; [ownVideos] is the long-video one with the extra
      * client-side filter Tube wants.
+     *
+     * Each call is a NEW pager whose first load carries no cursor, and the
+     * cursor it then pages with was minted for this sort. That is how a sort
+     * change resets paging: the grid asks for a new flow rather than
+     * replaying a cursor the server would refuse under another sort.
      */
-    fun authorPosts(userId: String, contentType: String): Flow<PagingData<FeedItem>> =
+    fun authorPosts(
+        userId: String,
+        contentType: String,
+        sort: AuthorPostSort = AuthorPostSort.LATEST,
+    ): Flow<PagingData<FeedItem>> =
         feedPager(errorMapper) { request ->
-            val page = api.postsByAuthor(userId, contentType, request.limit, request.cursor).toFeedPage()
+            val page = api.postsByAuthor(userId, contentType, request.limit, request.cursor, sort.wire).toFeedPage()
             page.copy(items = hydrator.hydrate(page.items.filter { it.feedContentType == contentType }))
         }
 

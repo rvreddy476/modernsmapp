@@ -47,27 +47,32 @@ import kotlinx.coroutines.launch
 /**
  * The rows of the More menu on SOMEONE ELSE's profile (2026-10-14, audit T-03).
  *
- * Report is the only row today; the menu exists so the account can be
- * flagged at all — before this, abuse on a profile had no report path on
- * Android. [destructive] rows read in the danger tint, as Report does on the
- * post sheet.
+ * Report lets the account be flagged at all — before it, abuse on a profile
+ * had no report path on Android. Share profile (T-21, 2026-10-15) hands the
+ * profile's public web address to the system share sheet. [destructive] rows
+ * read in the danger tint, as Report does on the post sheet.
  */
 enum class ProfileMenuRow(val label: String, val icon: ImageVector, val destructive: Boolean) {
     REPORT("Report", UsIcons.Flag, destructive = true),
+    SHARE("Share profile", UsIcons.Share, destructive = false),
 }
 
 /**
  * The menu for a profile: empty on the viewer's OWN profile — nobody reports
- * themselves, and the Me tab has its own menu ([meMenuRows]) — and Report on
- * anyone else's. Ascending alphabetical order by label, the rule for every
+ * themselves, the Me tab has its own menu ([meMenuRows]), and the owner's
+ * Share profile is a button beside Edit profile — and on anyone else's,
+ * Report plus Share profile when the profile has a handle to link to
+ * ([canShare]). Ascending alphabetical order by label, the rule for every
  * menu. Pure, so it is a table test; the screen draws no More control at all
  * when this is empty.
  */
-fun profileMenuRows(isOwnProfile: Boolean): List<ProfileMenuRow> =
+fun profileMenuRows(isOwnProfile: Boolean, canShare: Boolean = false): List<ProfileMenuRow> =
     if (isOwnProfile) {
         emptyList()
     } else {
-        ProfileMenuRow.entries.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
+        ProfileMenuRow.entries
+            .filter { it != ProfileMenuRow.SHARE || canShare }
+            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
     }
 
 /**
@@ -85,6 +90,8 @@ internal fun ProfileMoreSheet(
     report: UsPostReportState,
     onReport: (reason: UsReportReason, details: String) -> Unit,
     onDismiss: () -> Unit,
+    /** Share profile was picked: the system share sheet takes over and this sheet leaves. */
+    onShare: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
@@ -132,6 +139,10 @@ internal fun ProfileMoreSheet(
                         onClick = {
                             when (row) {
                                 ProfileMenuRow.REPORT -> reporting = true
+                                ProfileMenuRow.SHARE -> {
+                                    onShare()
+                                    leave()
+                                }
                             }
                         },
                     )

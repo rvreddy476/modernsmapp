@@ -85,6 +85,7 @@ fun ProfileScreen(
     val chatState by startChatViewModel.state.collectAsStateWithLifecycle()
     val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
     val reportState by reportViewModel.report.collectAsStateWithLifecycle()
+    val shareProfile = rememberProfileSharer()
 
     val loadedProfile = (state as? ProfileUiState.Content)?.profile
     LaunchedEffect(loadedProfile?.avatarMediaId, loadedProfile?.coverMediaId) {
@@ -125,6 +126,7 @@ fun ProfileScreen(
             onReportProfile = { reason, details ->
                 loadedProfile?.let { reportViewModel.report(it, reason, details) }
             },
+            onShareProfile = { loadedProfile?.let(shareProfile) },
         ),
         chatState = chatState,
         media = ProfileMediaUrls(mediaState.avatarUrl, mediaState.coverUrl),
@@ -180,6 +182,8 @@ internal data class ProfileActions(
     val onOpenMenu: () -> Unit = {},
     /** Report the account on screen (entity type `user`, audit T-03). */
     val onReportProfile: (reason: UsReportReason, details: String) -> Unit = { _, _ -> },
+    /** Share the account on screen's public web address (T-21). */
+    val onShareProfile: () -> Unit = {},
 )
 
 internal data class ProfileMediaUrls(
@@ -199,9 +203,10 @@ internal fun ProfileContent(
     report: UsPostReportState = UsPostReportState.Idle,
 ) {
     // Someone else's loaded profile only: the viewer's own gets no rows, so
-    // no More control is drawn at all (audit T-03).
+    // no More control is drawn at all (audit T-03); the owner's Share profile
+    // is a button beside Edit profile instead.
     val menuRows = (state as? ProfileUiState.Content)
-        ?.let { profileMenuRows(isOwnProfile = it.profile.isOwnProfile) }
+        ?.let { profileMenuRows(isOwnProfile = it.profile.isOwnProfile, canShare = canShareProfile(it.profile)) }
         .orEmpty()
     var menuOpen by rememberSaveable { mutableStateOf(false) }
 
@@ -274,6 +279,7 @@ internal fun ProfileContent(
             report = report,
             onReport = actions.onReportProfile,
             onDismiss = { menuOpen = false },
+            onShare = actions.onShareProfile,
         )
     }
 }
@@ -337,27 +343,13 @@ private fun LoadedProfile(
             // keyed off the access token — an edit control on someone else's page
             // would silently overwrite the viewer's own profile.
             if (profile.isOwnProfile && destinations.onEditProfile != null) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    UsSecondaryButton(
-                        text = "Edit profile",
-                        onClick = destinations.onEditProfile,
-                        modifier = Modifier.weight(1f),
-                    )
+                OwnProfileActions(
+                    onEditProfile = destinations.onEditProfile,
+                    onShareProfile = actions.onShareProfile.takeIf { canShareProfile(profile) },
                     // Settings sits here when the Momentum header owns the top
                     // bar; a pushed own-profile (no header) keeps it in the bar.
-                    if (destinations.header != null && destinations.onOpenSettings != null) {
-                        IconButton(onClick = destinations.onOpenSettings) {
-                            Icon(
-                                imageVector = UsIcons.Settings,
-                                contentDescription = "Settings",
-                                tint = UsTheme.extended.textPrimary,
-                            )
-                        }
-                    }
-                }
+                    onOpenSettings = destinations.onOpenSettings?.takeIf { destinations.header != null },
+                )
             }
 
             // Same gating as Edit profile, and for the same reason: approving
@@ -370,7 +362,13 @@ private fun LoadedProfile(
                 )
             }
 
-            if (!profile.isOwnProfile) {
+            if (state.unavailable) {
+                UnavailableNotice(
+                    viewerBlocked = state.relationship.isBlocked,
+                    busy = state.relationshipBusy,
+                    onUnblock = actions.onBlockToggle,
+                )
+            } else if (!profile.isOwnProfile) {
                 MessageControls(
                     profile = profile,
                     chatState = chatState,
@@ -390,7 +388,9 @@ private fun LoadedProfile(
                 ActionErrorBanner(message = error, onDismiss = actions.onDismissActionError)
             }
 
-            ProfileMedia(state = state, destinations = destinations)
+            if (!state.unavailable) {
+                ProfileMedia(state = state, destinations = destinations)
+            }
         }
 
         // Over the page, not in the column — see [PublishSuccessBanner]. Own
@@ -450,6 +450,73 @@ private fun PrivatePlaceholder() {
         detail = "Follow to see their posts.",
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+/**
+ * A profile that blocked the viewer: one neutral sentence in place of the
+ * Follow and Message controls and the grid. It reads like any unavailable
+ * account, so it gives away neither the block nor who placed it. The
+ * viewer's OWN block, when they placed one too ([viewerBlocked]), stays
+ * theirs to undo.
+ */
+@Composable
+private fun UnavailableNotice(viewerBlocked: Boolean, busy: Boolean, onUnblock: () -> Unit) {
+    UsEmptyState(
+        title = "This account isn't available",
+        detail = "You can't follow or message this account right now.",
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("profile_unavailable"),
+    )
+    if (viewerBlocked) {
+        UsSecondaryButton(
+            text = "Unblock",
+            onClick = onUnblock,
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/**
+ * The owner's row under the counts: Edit profile, Share profile (T-21) when
+ * the profile has a handle to link to — the visitor's Share lives in the
+ * More menu — and the Settings glyph when the header does not carry it.
+ */
+@Composable
+private fun OwnProfileActions(
+    onEditProfile: () -> Unit,
+    onShareProfile: (() -> Unit)?,
+    onOpenSettings: (() -> Unit)?,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        UsSecondaryButton(
+            text = "Edit profile",
+            onClick = onEditProfile,
+            modifier = Modifier.weight(1f),
+        )
+        if (onShareProfile != null) {
+            UsSecondaryButton(
+                text = "Share profile",
+                onClick = onShareProfile,
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("profile_share"),
+            )
+        }
+        if (onOpenSettings != null) {
+            IconButton(onClick = onOpenSettings) {
+                Icon(
+                    imageVector = UsIcons.Settings,
+                    contentDescription = "Settings",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+        }
+    }
 }
 
 /** "Cancel your follow request?" — the one relationship action that confirms before it acts. */
@@ -746,6 +813,11 @@ private fun ProfileFollowingPreview() = PreviewHost(
 @Composable
 private fun ProfileBlockedPreview() =
     PreviewHost(previewState(relationship = ProfileRelationship(isBlocked = true)))
+
+@Preview(name = "Other user — not available to the viewer", showBackground = true, heightDp = 640)
+@Composable
+private fun ProfileUnavailablePreview() =
+    PreviewHost(previewState(relationship = ProfileRelationship(isBlockedByTarget = true)))
 
 @Preview(name = "Private account — not following", showBackground = true, heightDp = 640)
 @Composable

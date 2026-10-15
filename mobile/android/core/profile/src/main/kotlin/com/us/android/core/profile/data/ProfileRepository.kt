@@ -18,6 +18,7 @@ import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
 import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.RelationshipDto
 import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import javax.inject.Inject
@@ -77,19 +78,7 @@ class ProfileRepository @Inject constructor(
      * endpoint reads it from the query, not the gateway identity header.
      */
     suspend fun relationship(viewerId: String, otherId: String): AppResult<ProfileRelationship> =
-        apiCall(errorMapper) { api.relationship(viewerId, otherId) }
-            .map {
-                ProfileRelationship(
-                    isFollowing = it.follows,
-                    isBlocked = it.blockedBy,
-                    isPrivate = it.isPrivate,
-                    followStatus = if (it.follows) {
-                        FollowStatus.FOLLOWING
-                    } else {
-                        FollowStatus.fromWire(it.followRequestStatus)
-                    },
-                )
-            }
+        apiCall(errorMapper) { api.relationship(viewerId, otherId) }.map { it.toDomain() }
 
     /**
      * Follows [userId]. Returns the server's `status` — `"followed"` or
@@ -133,6 +122,25 @@ class ProfileRepository @Inject constructor(
 }
 
 private fun FollowRequestDto.toDomain() = FollowRequest(requesterId = requesterId, createdAt = createdAt)
+
+/**
+ * The viewer→profile edges as the header renders them.
+ *
+ * Block direction prefers the NAMED fields (`viewer_blocked_target`,
+ * `target_blocked_viewer`, graph-service 2026-10-15) and falls back to the
+ * legacy pair only when a server does not send them. On this single-pair
+ * route the legacy keys read backwards from their names: `blocked_by` is
+ * the VIEWER's block of the target and `blocked` is the TARGET's block of
+ * the viewer (the batch route uses the same keys the other way round, which
+ * is why the named pair exists). Internal so the precedence is unit-tested.
+ */
+internal fun RelationshipDto.toDomain() = ProfileRelationship(
+    isFollowing = follows,
+    isBlocked = viewerBlockedTarget ?: blockedBy,
+    isBlockedByTarget = targetBlockedViewer ?: blocked,
+    isPrivate = isPrivate,
+    followStatus = if (follows) FollowStatus.FOLLOWING else FollowStatus.fromWire(followRequestStatus),
+)
 
 /**
  * The one and only place an [UpdateProfileRequest] is constructed.
