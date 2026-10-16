@@ -66,8 +66,12 @@ class NotificationsViewModelTest {
         var markAllCalls = 0
         var pageCalls = 0
 
-        override suspend fun page(limit: Int, cursor: String?): AppResult<NotificationPage> {
+        /** Every page asked for, as (cursor, category). */
+        val asked = mutableListOf<Pair<String?, String?>>()
+
+        override suspend fun page(limit: Int, cursor: String?, category: String?): AppResult<NotificationPage> {
             pageCalls++
+            asked += cursor to category
             return if (pages.isEmpty()) {
                 AppResult.Success(NotificationPage(emptyList(), null))
             } else {
@@ -90,7 +94,7 @@ class NotificationsViewModelTest {
 
     /** Never called: every method the ViewModel reaches is overridden above. */
     private class UnusedApi : NotificationsApi {
-        override suspend fun list(limit: Int, cursor: String?) = error("not used")
+        override suspend fun list(limit: Int, cursor: String?, category: String?) = error("not used")
         override suspend fun unreadCount() = error("not used")
         override suspend fun markRead(
             body: com.us.android.core.notifications.data.MarkReadRequest,
@@ -582,5 +586,112 @@ class NotificationsViewModelTest {
 
         assertThat(actions.calls).containsExactly("declineFollow(actor)")
         assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Failed)
+    }
+
+    // ── Activity chips (T-11) ───────────────────────────────────────────
+
+    private fun inboxPage(vararg ids: String, next: String? = null): AppResult<NotificationPage> =
+        AppResult.Success(NotificationPage(ids.map { row(it) }, next))
+
+    @Test
+    fun `each chip asks for its category, and All asks for none`() = runTest {
+        val repo = FakeRepository()
+        val vm = viewModel(repo)
+        advanceUntilIdle()
+
+        ActivityFilter.entries.drop(1).forEach { filter ->
+            vm.selectFilter(filter)
+            advanceUntilIdle()
+        }
+        vm.selectFilter(ActivityFilter.All)
+        advanceUntilIdle()
+
+        assertThat(repo.asked.map { it.second })
+            .containsExactly(null, "likes", "comments", "mentions", "followers", null)
+            .inOrder()
+        assertThat(vm.state.value.filter).isEqualTo(ActivityFilter.All)
+    }
+
+    @Test
+    fun `a chip starts its list over, and the same chip again asks nothing`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(inboxPage("n1", "n2", next = "c1"))
+            pages.add(inboxPage("like1"))
+        }
+        val vm = viewModel(repo)
+        advanceUntilIdle()
+
+        vm.selectFilter(ActivityFilter.Likes)
+        advanceUntilIdle()
+        vm.selectFilter(ActivityFilter.Likes)
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.items.map { it.id }).containsExactly("like1")
+        assertThat(vm.state.value.hasMore).isFalse()
+        assertThat(repo.asked).containsExactly(null to null, null to "likes").inOrder()
+    }
+
+    @Test
+    fun `an empty filtered page with a cursor is paged through until rows appear`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(inboxPage()) // All: an empty inbox
+            pages.add(inboxPage(next = "c1"))
+            pages.add(inboxPage("like1", next = "c2"))
+        }
+        val vm = viewModel(repo)
+        advanceUntilIdle()
+
+        vm.selectFilter(ActivityFilter.Likes)
+        advanceUntilIdle()
+
+        assertThat(repo.asked.drop(1)).containsExactly(null to "likes", "c1" to "likes").inOrder()
+        assertThat(vm.state.value.items.map { it.id }).containsExactly("like1")
+        assertThat(vm.state.value.nextCursor).isEqualTo("c2")
+    }
+
+    @Test
+    fun `paging through empty pages stops at the cap and keeps the cursor for Show more`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(inboxPage())
+            repeat(InboxPaging.MAX_REQUESTS) { i -> pages.add(inboxPage(next = "c${i + 1}")) }
+            pages.add(inboxPage("like1"))
+        }
+        val vm = viewModel(repo)
+        advanceUntilIdle()
+
+        vm.selectFilter(ActivityFilter.Likes)
+        advanceUntilIdle()
+
+        assertThat(repo.asked.drop(1)).hasSize(InboxPaging.MAX_REQUESTS)
+        assertThat(vm.state.value.isEmpty).isTrue()
+        assertThat(vm.state.value.hasMore).isTrue()
+        assertThat(vm.state.value.nextCursor).isEqualTo("c${InboxPaging.MAX_REQUESTS}")
+
+        // "Look further back" / "Show more": one more user action, one more round.
+        vm.loadMore()
+        advanceUntilIdle()
+
+        assertThat(repo.asked.last()).isEqualTo("c${InboxPaging.MAX_REQUESTS}" to "likes")
+        assertThat(vm.state.value.items.map { it.id }).containsExactly("like1")
+        assertThat(vm.state.value.hasMore).isFalse()
+    }
+
+    @Test
+    fun `a missing cursor is the end, even on an empty filtered page`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(inboxPage())
+            pages.add(inboxPage())
+        }
+        val vm = viewModel(repo)
+        advanceUntilIdle()
+
+        vm.selectFilter(ActivityFilter.Mentions)
+        advanceUntilIdle()
+        vm.loadMore()
+        advanceUntilIdle()
+
+        assertThat(repo.asked.drop(1)).containsExactly(null to "mentions")
+        assertThat(vm.state.value.isEmpty).isTrue()
+        assertThat(vm.state.value.hasMore).isFalse()
     }
 }

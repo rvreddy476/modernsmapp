@@ -231,6 +231,9 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 
 	// Reels "Following" tab: only reels by authors the viewer follows.
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
+	if h.serveReelCategory(c, userID, limit, before, followingOnly, "reels") {
+		return
+	}
 	feedItems, next, err := h.svc.GetReelFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		internalError(c, err)
@@ -269,6 +272,9 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 	}
 
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
+	if h.serveReelCategory(c, userID, limit, before, followingOnly, "flicks") {
+		return
+	}
 	feedItems, next, err := h.svc.GetFlickFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		internalError(c, err)
@@ -287,6 +293,39 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 
 	c.Writer.Header().Set("X-Feed-Surface", "flicks")
 	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+}
+
+// serveReelCategory answers a short-form request (/v1/feed/reels or its
+// /v1/feed/flicks alias) that carries `category`, and reports whether it
+// did. TikTok parity T-18: the Explore chips. The value is validated
+// exactly as on the Tube surfaces (service.NormalizeCategoryFilter): a
+// malformed value is 400 INVALID_CATEGORY before the service is touched; a
+// well-formed id no reel carries is an empty page, never a 400 — the
+// taxonomy lives in post-service. Without a category it answers nothing and
+// the caller serves the plain page unchanged. `surface` is the
+// X-Feed-Surface value the caller would have set.
+func (h *Handler) serveReelCategory(c *gin.Context, userID uuid.UUID, limit int, before string, followingOnly bool, surface string) bool {
+	category, ok := service.NormalizeCategoryFilter(c.Query("category"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY",
+			"category must be a lowercase slug (letters, digits, '-', '_')", nil)
+		return true
+	}
+	if category == "" {
+		return false
+	}
+	hydrated, next, err := h.svc.GetReelCategoryPage(c.Request.Context(), userID, limit, before, category, followingOnly)
+	if err != nil {
+		// Same answer as the Tube category surfaces, and as the plain
+		// reels page's hydration failure: never a degraded page.
+		log.Printf("%s feed (category %q) failed: %v", surface, category, err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+			"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
+		return true
+	}
+	c.Writer.Header().Set("X-Feed-Surface", surface)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+	return true
 }
 
 func (h *Handler) GetLongVideoFeed(c *gin.Context) {

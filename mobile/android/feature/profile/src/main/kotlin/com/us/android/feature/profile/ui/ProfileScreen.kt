@@ -54,6 +54,8 @@ import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.UsPostReportState
+import com.us.android.core.ui.UsReportReason
 import com.us.android.core.ui.UsStat
 import com.us.android.core.ui.UsStatRow
 import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
@@ -77,10 +79,13 @@ fun ProfileScreen(
     viewModel: ProfileViewModel = hiltViewModel(),
     startChatViewModel: StartChatViewModel = hiltViewModel(),
     mediaViewModel: ProfileMediaViewModel = hiltViewModel(),
+    reportViewModel: ProfileReportViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val chatState by startChatViewModel.state.collectAsStateWithLifecycle()
     val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
+    val reportState by reportViewModel.report.collectAsStateWithLifecycle()
+    val shareProfile = rememberProfileSharer()
 
     val loadedProfile = (state as? ProfileUiState.Content)?.profile
     LaunchedEffect(loadedProfile?.avatarMediaId, loadedProfile?.coverMediaId) {
@@ -115,9 +120,17 @@ fun ProfileScreen(
                 { userId, name -> startChatViewModel.open(userId, name) }
             },
             onDismissChatError = startChatViewModel::dismissError,
+            onOpenMenu = reportViewModel::reset,
+            // The LOADED profile's id — the account on screen — never a
+            // route argument the screen has not resolved yet.
+            onReportProfile = { reason, details ->
+                loadedProfile?.let { reportViewModel.report(it, reason, details) }
+            },
+            onShareProfile = { loadedProfile?.let(shareProfile) },
         ),
         chatState = chatState,
         media = ProfileMediaUrls(mediaState.avatarUrl, mediaState.coverUrl),
+        report = reportState,
     )
 }
 
@@ -154,6 +167,12 @@ data class ProfileDestinations(
      * profile could raise it.
      */
     val onPublished: ((contentType: String) -> Unit)? = null,
+    /**
+     * The Me tab's More menu "Creator Hub" (T-31): `:app` pushes the
+     * read-only hub. OWN-profile only, like [onEditProfile]: a creator's
+     * numbers are theirs alone.
+     */
+    val onOpenCreatorHub: (() -> Unit)? = null,
 )
 
 internal data class ProfileActions(
@@ -165,6 +184,12 @@ internal data class ProfileActions(
     val onDismissCancelRequestConfirm: () -> Unit = {},
     val onMessage: ((userId: String, displayName: String) -> Unit)? = null,
     val onDismissChatError: () -> Unit = {},
+    /** The More menu on someone else's profile opened: a fresh report step. */
+    val onOpenMenu: () -> Unit = {},
+    /** Report the account on screen (entity type `user`, audit T-03). */
+    val onReportProfile: (reason: UsReportReason, details: String) -> Unit = { _, _ -> },
+    /** Share the account on screen's public web address (T-21). */
+    val onShareProfile: () -> Unit = {},
 )
 
 internal data class ProfileMediaUrls(
@@ -181,7 +206,16 @@ internal fun ProfileContent(
     modifier: Modifier = Modifier,
     chatState: StartChatUiState = StartChatUiState(),
     media: ProfileMediaUrls = ProfileMediaUrls(),
+    report: UsPostReportState = UsPostReportState.Idle,
 ) {
+    // Someone else's loaded profile only: the viewer's own gets no rows, so
+    // no More control is drawn at all (audit T-03); the owner's Share profile
+    // is a button beside Edit profile instead.
+    val menuRows = (state as? ProfileUiState.Content)
+        ?.let { profileMenuRows(isOwnProfile = it.profile.isOwnProfile, canShare = canShareProfile(it.profile)) }
+        .orEmpty()
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+
     UsScaffold(
         modifier = modifier,
         topBar = {
@@ -191,7 +225,11 @@ internal fun ProfileContent(
                 // (Search, the bell, More). Messages left the bar for the
                 // More menu on 2026-10-02; Settings is there too, and still
                 // beside "Edit profile".
-                OwnProfileHeader(header, onOpenSettings = destinations.onOpenSettings)
+                OwnProfileHeader(
+                    header,
+                    onOpenSettings = destinations.onOpenSettings,
+                    onOpenCreatorHub = destinations.onOpenCreatorHub,
+                )
             } else {
                 // A pushed profile. The title tracks the loaded profile; while
                 // loading it stays generic rather than flashing a placeholder
@@ -203,6 +241,17 @@ internal fun ProfileContent(
                         if (destinations.onOpenSettings != null) {
                             IconButton(onClick = destinations.onOpenSettings) {
                                 Icon(UsIcons.Settings, contentDescription = "Settings")
+                            }
+                        }
+                        if (menuRows.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    actions.onOpenMenu()
+                                    menuOpen = true
+                                },
+                                modifier = Modifier.testTag("profile_more"),
+                            ) {
+                                Icon(UsIcons.More, contentDescription = "More options")
                             }
                         }
                     },
@@ -232,6 +281,16 @@ internal fun ProfileContent(
                 modifier = Modifier.padding(padding),
             )
         }
+    }
+
+    if (menuOpen && menuRows.isNotEmpty()) {
+        ProfileMoreSheet(
+            rows = menuRows,
+            report = report,
+            onReport = actions.onReportProfile,
+            onDismiss = { menuOpen = false },
+            onShare = actions.onShareProfile,
+        )
     }
 }
 
@@ -294,27 +353,13 @@ private fun LoadedProfile(
             // keyed off the access token — an edit control on someone else's page
             // would silently overwrite the viewer's own profile.
             if (profile.isOwnProfile && destinations.onEditProfile != null) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    UsSecondaryButton(
-                        text = "Edit profile",
-                        onClick = destinations.onEditProfile,
-                        modifier = Modifier.weight(1f),
-                    )
+                OwnProfileActions(
+                    onEditProfile = destinations.onEditProfile,
+                    onShareProfile = actions.onShareProfile.takeIf { canShareProfile(profile) },
                     // Settings sits here when the Momentum header owns the top
                     // bar; a pushed own-profile (no header) keeps it in the bar.
-                    if (destinations.header != null && destinations.onOpenSettings != null) {
-                        IconButton(onClick = destinations.onOpenSettings) {
-                            Icon(
-                                imageVector = UsIcons.Settings,
-                                contentDescription = "Settings",
-                                tint = UsTheme.extended.textPrimary,
-                            )
-                        }
-                    }
-                }
+                    onOpenSettings = destinations.onOpenSettings?.takeIf { destinations.header != null },
+                )
             }
 
             // Same gating as Edit profile, and for the same reason: approving
@@ -327,7 +372,13 @@ private fun LoadedProfile(
                 )
             }
 
-            if (!profile.isOwnProfile) {
+            if (state.unavailable) {
+                UnavailableNotice(
+                    viewerBlocked = state.relationship.isBlocked,
+                    busy = state.relationshipBusy,
+                    onUnblock = actions.onBlockToggle,
+                )
+            } else if (!profile.isOwnProfile) {
                 MessageControls(
                     profile = profile,
                     chatState = chatState,
@@ -347,7 +398,9 @@ private fun LoadedProfile(
                 ActionErrorBanner(message = error, onDismiss = actions.onDismissActionError)
             }
 
-            ProfileMedia(state = state, destinations = destinations)
+            if (!state.unavailable) {
+                ProfileMedia(state = state, destinations = destinations)
+            }
         }
 
         // Over the page, not in the column — see [PublishSuccessBanner]. Own
@@ -407,6 +460,73 @@ private fun PrivatePlaceholder() {
         detail = "Follow to see their posts.",
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+/**
+ * A profile that blocked the viewer: one neutral sentence in place of the
+ * Follow and Message controls and the grid. It reads like any unavailable
+ * account, so it gives away neither the block nor who placed it. The
+ * viewer's OWN block, when they placed one too ([viewerBlocked]), stays
+ * theirs to undo.
+ */
+@Composable
+private fun UnavailableNotice(viewerBlocked: Boolean, busy: Boolean, onUnblock: () -> Unit) {
+    UsEmptyState(
+        title = "This account isn't available",
+        detail = "You can't follow or message this account right now.",
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("profile_unavailable"),
+    )
+    if (viewerBlocked) {
+        UsSecondaryButton(
+            text = "Unblock",
+            onClick = onUnblock,
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/**
+ * The owner's row under the counts: Edit profile, Share profile (T-21) when
+ * the profile has a handle to link to — the visitor's Share lives in the
+ * More menu — and the Settings glyph when the header does not carry it.
+ */
+@Composable
+private fun OwnProfileActions(
+    onEditProfile: () -> Unit,
+    onShareProfile: (() -> Unit)?,
+    onOpenSettings: (() -> Unit)?,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        UsSecondaryButton(
+            text = "Edit profile",
+            onClick = onEditProfile,
+            modifier = Modifier.weight(1f),
+        )
+        if (onShareProfile != null) {
+            UsSecondaryButton(
+                text = "Share profile",
+                onClick = onShareProfile,
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("profile_share"),
+            )
+        }
+        if (onOpenSettings != null) {
+            IconButton(onClick = onOpenSettings) {
+                Icon(
+                    imageVector = UsIcons.Settings,
+                    contentDescription = "Settings",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+        }
+    }
 }
 
 /** "Cancel your follow request?" — the one relationship action that confirms before it acts. */
@@ -704,6 +824,11 @@ private fun ProfileFollowingPreview() = PreviewHost(
 private fun ProfileBlockedPreview() =
     PreviewHost(previewState(relationship = ProfileRelationship(isBlocked = true)))
 
+@Preview(name = "Other user — not available to the viewer", showBackground = true, heightDp = 640)
+@Composable
+private fun ProfileUnavailablePreview() =
+    PreviewHost(previewState(relationship = ProfileRelationship(isBlockedByTarget = true)))
+
 @Preview(name = "Private account — not following", showBackground = true, heightDp = 640)
 @Composable
 private fun ProfilePrivateNotFollowingPreview() = PreviewHost(
@@ -795,6 +920,7 @@ private fun ProfileErrorTerminalPreview() =
 private fun OwnProfileHeader(
     header: MomentumHeaderDestinations,
     onOpenSettings: (() -> Unit)?,
+    onOpenCreatorHub: (() -> Unit)?,
     viewModel: UnreadBadgeViewModel = hiltViewModel(),
 ) {
     val count by viewModel.count.collectAsStateWithLifecycle()
@@ -811,9 +937,10 @@ private fun OwnProfileHeader(
     )
     if (menuOpen) {
         MeMoreSheet(
-            rows = meMenuRows(hasSettings = onOpenSettings != null),
+            rows = meMenuRows(hasSettings = onOpenSettings != null, hasCreatorHub = onOpenCreatorHub != null),
             onRow = { row ->
                 when (row) {
+                    MeMenuRow.CREATOR_HUB -> onOpenCreatorHub?.invoke()
                     MeMenuRow.MESSAGES -> header.onOpenMessages()
                     MeMenuRow.SETTINGS -> onOpenSettings?.invoke()
                 }

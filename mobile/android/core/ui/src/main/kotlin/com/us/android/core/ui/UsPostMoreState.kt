@@ -1,6 +1,7 @@
 package com.us.android.core.ui
 
 import androidx.compose.runtime.Immutable
+import com.us.android.core.model.WebLinks
 
 /**
  * Everything the post "more" sheet needs to decide what to show.
@@ -143,6 +144,27 @@ data class UsReelMoreState(
     val canUseSound: Boolean = false,
     /** The creator turned sharing off (`hide_share`): no Share row, as the rail has no share glyph. */
     val shareHidden: Boolean = false,
+    /**
+     * "Playback speed" (T-32, 2026-10-15): the speeds offered — the long
+     * video's own list, [PLAYBACK_SPEEDS]. Empty withholds the row, which is
+     * what a host that does not set a speed gets.
+     */
+    val speeds: List<Float> = emptyList(),
+    /** The speed playing now, shown at the right of the row. */
+    val speed: Float = SPEED_NORMAL,
+    /**
+     * "Captions" (T-32): the caption tracks this video has. Empty — no
+     * tracks — withholds the row: there is nothing to turn on.
+     */
+    val captions: List<UsCaptionOption> = emptyList(),
+    /** The track that is on, by language; null is off, which is where every video starts. */
+    val captionLanguage: String? = null,
+    /**
+     * "Auto scroll" (T-32), Reels alone: when a reel ends, the next one
+     * plays. Null withholds the row — a long video has no next reel to move
+     * to; its "Autoplay next episode" is on the gear's sheet.
+     */
+    val autoScroll: Boolean? = null,
 ) {
     /**
      * Auto alone means there is nothing to pick — the reel plays its original
@@ -238,6 +260,15 @@ enum class UsPostMoreRow(val label: String) {
 
     /** Videos (a reel, a long video): the rendition picker, the current choice at the right. */
     QUALITY("Quality"),
+
+    /** Videos (T-32): the speed picker, the current speed at the right. */
+    PLAYBACK_SPEED("Playback speed"),
+
+    /** Videos with caption tracks (T-32): Off and each track, the one on at the right. */
+    CAPTIONS("Captions"),
+
+    /** Reels only (T-32): move to the next reel when one ends. "On" / "Off" at the right; the sheet stays. */
+    AUTO_SCROLL("Auto scroll"),
 
     /** Reels only: make a reel with this reel's sound. */
     USE_SOUND("Use this sound"),
@@ -341,10 +372,16 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
  * cannot drift again; [rows] puts it in alphabetical order:
  *
  *   Block channel · Copy link · Description · Don't recommend this channel ·
- *   Not interested · Quality · Report · Share
+ *   Not interested · Playback speed · Quality · Report · Share
  *
- * Only two things may differ, and both are about the content, not the surface:
+ * Playback speed is listed when the host offers speeds (T-32, 2026-10-15:
+ * both do), and Captions only when the video HAS caption tracks — a row that
+ * could only say "Off" is withheld.
  *
+ * Only three things may differ, and all are about the content, not the surface:
+ *
+ *  - "Auto scroll": Reels alone ([UsReelMoreState.autoScroll]), because only
+ *    a reel has a next reel to move on to.
  *  - "Use this sound": a reel whose sound may be reused ([UsReelMoreState.canUseSound]).
  *  - The owner's rows: on the viewer's OWN video, Delete stands in for the four
  *    rows that act on "the channel" or judge the video (Block, Don't recommend,
@@ -368,6 +405,9 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
     add(UsPostMoreRow.COPY_LINK)
     add(UsPostMoreRow.DESCRIPTION)
     add(UsPostMoreRow.QUALITY)
+    if (reel?.speeds?.isNotEmpty() == true) add(UsPostMoreRow.PLAYBACK_SPEED)
+    if (reel?.captions?.isNotEmpty() == true) add(UsPostMoreRow.CAPTIONS)
+    if (reel?.autoScroll != null) add(UsPostMoreRow.AUTO_SCROLL)
     if (!shareHidden) add(UsPostMoreRow.SHARE)
     if (reel?.canUseSound == true) add(UsPostMoreRow.USE_SOUND)
     addAll(offlineRows())
@@ -507,13 +547,13 @@ enum class UsReportReason(val label: String, val wire: String) {
 }
 
 /**
- * The post's public address, for "Copy link".
+ * The post's public address, for "Copy link" and Share: the web client's
+ * permalink, `https://cleestudio.com/post/<id>` ([WebLinks.postPermalink]), which
+ * the manifest also routes back into the app as a verified App Link.
  *
- * There is no canonical post URL on the server yet and no App Link in the
- * manifest (see [rememberPostSharer]), so this is the address the product
- * will own once both exist. It is assembled here, in ONE place, so the day
- * the payload carries a real link only this function changes.
+ * It was `https://momentum.app/p/<id>` until 2026-10-14 — a host and a route
+ * nothing served, so every copied link was a 404 (audit T-07). The address is
+ * still assembled in ONE place, so the day the payload carries a canonical
+ * link only [WebLinks] changes.
  */
-fun postShareLink(postId: String): String = "$POST_LINK_BASE$postId"
-
-private const val POST_LINK_BASE = "https://momentum.app/p/"
+fun postShareLink(postId: String): String = WebLinks.postPermalink(postId)

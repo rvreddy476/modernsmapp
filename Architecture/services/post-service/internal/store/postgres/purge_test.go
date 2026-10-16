@@ -284,6 +284,22 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 		userA, postB1, userB, postA1); err != nil {
 		t.Fatal(err)
 	}
+	// Counted comment reports (migration 062, the real idempotent file):
+	// userA reported userB's reply; userB reported userA's comment and
+	// their own reply (the last one survives).
+	reportersDDL, err := database.Migrations.ReadFile("migrations/062_comment_report_reporters.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(reportersDDL)); err != nil {
+		t.Fatalf("apply migration 062: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO comment_report_reporters (comment_id, reporter_id, report_id)
+		VALUES ($1,$2,gen_random_uuid()), ($3,$4,gen_random_uuid()), ($1,$4,gen_random_uuid())`,
+		replyID, userA, commentID, userB); err != nil {
+		t.Fatal(err)
+	}
 
 	// Baseline counters on the survivor: seed non-zero so the decrement is
 	// unambiguous (the AFTER-INSERT trigger creates the row at all-zero).
@@ -326,6 +342,11 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	assertZero(t, pool, "post_offline_copies", "user_id=$1", userA)
 	assertZero(t, pool, "post_offline_copies", "post_id=$1", postA1)
 	assertOne(t, pool, "post_offline_copies", "user_id=$1", userB)
+	// Counted comment reports: the purged user's, and those on their
+	// comments; the survivor's report on another reply stays.
+	assertZero(t, pool, "comment_report_reporters", "reporter_id=$1", userA)
+	assertZero(t, pool, "comment_report_reporters", "comment_id=$1", commentID)
+	assertOne(t, pool, "comment_report_reporters", "reporter_id=$1", userB)
 
 	// Cross-user rows owned by userA are gone.
 	assertZero(t, pool, "comments", "id=$1", commentID)

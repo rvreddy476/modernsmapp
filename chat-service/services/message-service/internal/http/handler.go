@@ -27,7 +27,7 @@ type ChatService interface {
 	AddMember(ctx context.Context, userID, conversationID, targetUserID uuid.UUID) error
 	RemoveMember(ctx context.Context, userID, conversationID, targetUserID uuid.UUID) error
 	UpdateTitle(ctx context.Context, userID, conversationID uuid.UUID, title string) error
-	SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, replyTo *service.ReplyRef, idempotencyKey string) (*service.MessageResponse, error)
+	SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID, postID *uuid.UUID, replyTo *service.ReplyRef, idempotencyKey string) (*service.MessageResponse, error)
 	GetMessages(ctx context.Context, userID, conversationID uuid.UUID, cursor *scylla.MessageCursor, limit int) ([]service.MessageResponse, *scylla.MessageCursor, error)
 	DeleteMessage(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time) error
 	EditMessage(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time, newText string) (*scylla.Message, error)
@@ -656,9 +656,14 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 const replyPreviewMaxRunes = 140
 
 type SendMessageRequest struct {
-	Type    string     `json:"type" binding:"required,oneof=text media"`
+	// Keep oneof in step with service.KnownMessageTypes (a test pins it).
+	Type    string     `json:"type" binding:"required,oneof=text media post"`
 	Text    string     `json:"text" binding:"max=2000"`
 	MediaID *uuid.UUID `json:"media_id"`
+	// PostID is the shared post on a "post" card ("Send to friends"). Text
+	// is then an optional caption under the same 2000-character cap. A
+	// malformed UUID fails binding (400).
+	PostID *uuid.UUID `json:"post_id"`
 	// Quoted reply. The preview is a display snapshot of the quoted message
 	// as the sender saw it; the server truncates rather than rejects.
 	ReplyToID       *uuid.UUID `json:"reply_to_id"`
@@ -690,6 +695,19 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "media_id is required for media messages", nil, nil)
 		return
 	}
+	if req.Type == service.MessageTypePost {
+		if req.PostID == nil || *req.PostID == uuid.Nil {
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "post_id is required for post messages", nil, nil)
+			return
+		}
+		if req.MediaID != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "media_id is not allowed on post messages", nil, nil)
+			return
+		}
+	} else if req.PostID != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "post_id is only allowed on post messages", nil, nil)
+		return
+	}
 	idempotencyKey := c.GetHeader("Idempotency-Key")
 
 	var replyTo *service.ReplyRef
@@ -704,7 +722,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		}
 	}
 
-	msg, err := h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, replyTo, idempotencyKey)
+	msg, err := h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, req.PostID, replyTo, idempotencyKey)
 	if err != nil {
 		if handled := writeIdempotencyError(c, err); handled {
 			return
@@ -1489,6 +1507,9 @@ func writeMessagingError(c *gin.Context, err error) bool {
 		return true
 	case errors.Is(err, service.ErrRateLimited):
 		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil, nil)
+		return true
+	case errors.Is(err, service.ErrInvalidMessageContent):
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
 		return true
 	default:
 		return false

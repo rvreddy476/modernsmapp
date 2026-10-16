@@ -64,6 +64,8 @@ type HandlerTestDeps struct {
 	Relationships      GraphRelationships
 	OfflineCaptions    offlineCaptionSource
 	OfflineEntitlement func(ctx context.Context, viewerID uuid.UUID, p *postgres.Post) (bool, error)
+	// LikedReels backs GET /v1/reels/liked (liked_reels.go).
+	LikedReels likedReelsStore
 }
 
 // NewForHandlerTests builds a Service over HandlerTestDeps, with no
@@ -99,6 +101,7 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		offline:              d.Offline,
 		offlineCaptionTracks: d.OfflineCaptions,
 		offlineEntitlement:   d.OfflineEntitlement,
+		likedReels:           d.LikedReels,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

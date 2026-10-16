@@ -75,6 +75,10 @@ type messageRequestCreatedPayload struct {
 type chatNotifier interface {
 	CreateNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
 	CreateNotificationWithoutPush(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
+	// CreateMessageNotification is the "dm" row for one chat message: the
+	// message type picks the push copy ("Sent you a post" for a post card)
+	// and muted sends no device push.
+	CreateMessageNotification(ctx context.Context, userID, actorID, conversationID uuid.UUID, deepLink string, createdAt time.Time, messageType string, muted bool) error
 }
 
 type ChatConsumer struct {
@@ -206,12 +210,9 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 		if recipientID == senderID {
 			continue
 		}
-		create := c.service.CreateNotification
-		if _, isMuted := muted[ridStr]; isMuted {
-			create = c.service.CreateNotificationWithoutPush
-		}
-		if err := create(
-			ctx, recipientID, senderID, "dm", "conversation", conversationID, deepLink, createdAt,
+		_, isMuted := muted[ridStr]
+		if err := c.service.CreateMessageNotification(
+			ctx, recipientID, senderID, conversationID, deepLink, createdAt, e.Type, isMuted,
 		); err != nil {
 			log.Printf("chat: failed to create dm notification for %s: %v\n", ridStr, err)
 			if firstErr == nil {

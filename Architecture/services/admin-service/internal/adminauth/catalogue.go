@@ -46,6 +46,7 @@ const (
 	AppQA           = "qa"
 	AppChat         = "chat"
 	AppLive         = "live"
+	AppMedia        = "media"
 	AppRider        = "rider"
 	AppDoorstep     = "doorstep"
 	AppTrustSafety  = "trust_safety"
@@ -99,7 +100,7 @@ var adminRoles = []RoleInfo{
 
 var apps = []string{
 	AppDating, AppFood, AppCommerce, AppMonetization, AppPayments, AppWallet,
-	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppDoorstep, AppTrustSafety,
+	AppSocial, AppTube, AppQA, AppChat, AppLive, AppMedia, AppRider, AppDoorstep, AppTrustSafety,
 	AppPlatform,
 }
 
@@ -301,6 +302,12 @@ var catalogue = map[string][]entry{
 		p("reports.act", mod),
 		p("chat.moderate", mod),
 		p("users.ban"),
+	},
+	// Media (media-service): the platform sound library, admin only
+	// (handler_sounds.go).
+	AppMedia: {
+		p("sounds.read"),
+		p("sounds.manage"),
 	},
 	AppRider: {
 		p("stats.read", fin, sup),

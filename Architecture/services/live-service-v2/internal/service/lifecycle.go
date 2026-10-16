@@ -352,13 +352,14 @@ func remainingTracks(all []string, gone string) []string {
 }
 
 // applyPresence records a viewer join/leave and publishes viewer.count
-// (throttled to one per 5s per stream).
+// (throttled to one per 5s per stream) and, on a move to present,
+// viewer.joined (joins.go: at most once per user per stream per minute).
 func (s *Service) applyPresence(ctx context.Context, st *postgres.LiveStream, identity string, present bool) error {
 	userID, err := uuid.Parse(identity)
 	if err != nil || userID == uuid.Nil {
 		return nil // not a user identity (e.g. an egress participant)
 	}
-	next, changed, err := s.store.ApplyPresence(ctx, st.ID, userID, present)
+	next, changed, joined, err := s.store.ApplyPresence(ctx, st.ID, userID, present)
 	if errors.Is(err, postgres.ErrNotFound) {
 		return nil
 	}
@@ -367,6 +368,9 @@ func (s *Service) applyPresence(ctx context.Context, st *postgres.LiveStream, id
 	}
 	if changed {
 		s.publishViewerCount(ctx, next)
+	}
+	if joined {
+		s.announceJoin(ctx, next, userID)
 	}
 	return nil
 }

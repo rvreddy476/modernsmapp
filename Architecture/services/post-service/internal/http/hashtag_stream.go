@@ -14,6 +14,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -21,7 +22,46 @@ import (
 
 	sharedhttp "github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
+
+// hashtagStreamGate is the slice of the service the stream needs:
+// service.HashtagStreamAllows, the hashtag page's own rules (public,
+// effectively approved, live, author gate) for one viewer and one post.
+type hashtagStreamGate interface {
+	HashtagStreamAllows(ctx context.Context, viewerID *uuid.UUID, postID, authorID uuid.UUID) bool
+}
+
+// hashtagStreamEnvelope is the shape announcePublishedPost publishes:
+// {"type":"new_post","payload":{"post_id":…,"author_id":…,…}}.
+type hashtagStreamEnvelope struct {
+	Payload struct {
+		PostID   string `json:"post_id"`
+		AuthorID string `json:"author_id"`
+	} `json:"payload"`
+}
+
+// allowHashtagStreamEvent decides one published envelope for one connected
+// viewer. Fail-closed: no gate, an unparseable envelope or an undecidable
+// answer all drop the event.
+func allowHashtagStreamEvent(ctx context.Context, gate hashtagStreamGate, viewerID *uuid.UUID, payload string) bool {
+	if gate == nil {
+		return false
+	}
+	var env hashtagStreamEnvelope
+	if err := json.Unmarshal([]byte(payload), &env); err != nil {
+		return false
+	}
+	postID, err := uuid.Parse(env.Payload.PostID)
+	if err != nil {
+		return false
+	}
+	authorID, err := uuid.Parse(env.Payload.AuthorID)
+	if err != nil {
+		return false
+	}
+	return gate.HashtagStreamAllows(ctx, viewerID, postID, authorID)
+}
 
 // hashtagStreamHeartbeat is how often we send a `:` SSE comment line
 // to keep the connection alive through Cloudflare / Caddy. The
@@ -37,8 +77,9 @@ func HashtagChannel(tag string) string {
 }
 
 // StreamHashtagPosts handles GET /v1/hashtags/:tag/stream. Holds the
-// HTTP connection open as an SSE stream and forwards every published
-// envelope on the matching Redis channel until the client disconnects.
+// HTTP connection open as an SSE stream and forwards each published
+// envelope on the matching Redis channel that the hashtag page would list
+// for this viewer (allowHashtagStreamEvent), until the client disconnects.
 func (h *Handler) StreamHashtagPosts(c *gin.Context) {
 	tag := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(c.Param("tag")), "#"))
 	if tag == "" || len(tag) > 50 {
@@ -68,6 +109,16 @@ func (h *Handler) StreamHashtagPosts(c *gin.Context) {
 	heartbeat := time.NewTicker(hashtagStreamHeartbeat)
 	defer heartbeat.Stop()
 
+	// Every event is judged for THIS viewer by the hashtag page's own rules
+	// before it is written; absent or malformed X-User-Id is the signed-out
+	// stranger. A dropped event is invisible to the client: it simply never
+	// sees a pill for a post it could not open.
+	viewerID := optionalCallerID(c)
+	var gate hashtagStreamGate
+	if h.svc != nil {
+		gate = h.svc
+	}
+
 	channel := HashtagChannel(tag)
 	if h.hub != nil {
 		// Pooled path: one Redis SUB per channel shared across all
@@ -90,6 +141,9 @@ func (h *Handler) StreamHashtagPosts(c *gin.Context) {
 				if !ok {
 					return
 				}
+				if !allowHashtagStreamEvent(ctx, gate, viewerID, string(payload)) {
+					continue
+				}
 				fmt.Fprintf(c.Writer, "event: new_post\ndata: %s\n\n", payload)
 				c.Writer.Flush()
 			}
@@ -111,6 +165,9 @@ func (h *Handler) StreamHashtagPosts(c *gin.Context) {
 		case msg, ok := <-ch:
 			if !ok {
 				return
+			}
+			if !allowHashtagStreamEvent(ctx, gate, viewerID, msg.Payload) {
+				continue
 			}
 			fmt.Fprintf(c.Writer, "event: new_post\ndata: %s\n\n", msg.Payload)
 			c.Writer.Flush()

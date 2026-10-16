@@ -2,6 +2,7 @@ package com.us.android.core.engagement
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
+import com.us.android.core.engagement.data.CommentActionsRepository
 import com.us.android.core.engagement.data.CommentAuthorDto
 import com.us.android.core.engagement.data.CommentDto
 import com.us.android.core.engagement.data.CommentRow
@@ -9,6 +10,7 @@ import com.us.android.core.engagement.data.CommentsController
 import com.us.android.core.engagement.data.CommentsViewer
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
+import com.us.android.core.engagement.data.ReportRepository
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiMeta
 import com.us.android.core.network.ErrorMapper
@@ -75,7 +77,12 @@ class CommentsControllerTest {
     }
 
     private fun controller(api: FakeApi) =
-        CommentsController(postId, EngagementRepository(api, ErrorMapper(json)))
+        CommentsController(
+            postId,
+            EngagementRepository(api, ErrorMapper(json)),
+            CommentActionsRepository(FakeCommentActionsApi(), ErrorMapper(json)),
+            ReportRepository(FakeReportApi(), ErrorMapper(json)),
+        )
 
     private fun comment(id: String) = CommentDto(id = id, postId = postId, authorId = "a", body = "c$id")
 
@@ -477,9 +484,12 @@ class CommentsControllerTest {
         assertThat(state.viewer?.id).isEqualTo("me")
     }
 
-    // ── The owner's inline reply ──────────────────────────────────────────
+    // ── The inline reply preview ──────────────────────────────────────────
 
-    /** post-service nests the single owner reply under its parent; it rides along. */
+    /**
+     * post-service nests the OLDEST reply under its parent as a preview; it
+     * rides along, and knows which comment it answers.
+     */
     @Test
     fun `an inline reply is carried under its parent row`() = runTest {
         val api = FakeApi().apply {
@@ -507,5 +517,7 @@ class CommentsControllerTest {
         assertThat(row.reply?.id).isEqualTo("r1")
         assertThat(row.reply?.body).isEqualTo("thanks")
         assertThat(row.reply?.reply).isNull()
+        assertThat(row.reply?.parentId).isEqualTo("1")
+        assertThat(row.reply?.isReply).isTrue()
     }
 }

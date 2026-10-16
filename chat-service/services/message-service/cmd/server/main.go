@@ -119,6 +119,15 @@ func main() {
 	// 5. Stores + Service
 	convStore := pgStore.New(dbPool)
 	msgStore := scyllaStore.New(scyllaSession)
+	// Converge chatservice.messages to the columns the queries name (post_id
+	// for post cards, and the earlier hand-applied reply/edit columns). Not
+	// fatal: a cluster that refuses the ALTER is reported loudly here rather
+	// than taking the whole service down at boot.
+	if added, err := msgStore.EnsureMessageColumns(ctx, cfg.ScyllaKeyspace); err != nil {
+		logger.Error("scylla messages columns could not be converged; sends and reads will fail until they exist", "err", err, "added", added)
+	} else if len(added) > 0 {
+		logger.Info("scylla messages columns added", "columns", added)
+	}
 	svc := service.New(convStore, msgStore, rdb, producer, logger, cfg.OutboxPollInterval)
 	svc.SetUserDirectory(cfg.UserServiceURL, cfg.InternalServiceKey)
 	svc.SetIdentityAuthority(cfg.IdentityUserURL)

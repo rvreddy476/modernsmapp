@@ -158,7 +158,7 @@ func TestApplyKey(t *testing.T) {
 }
 
 func TestServiceOnlyUpstreamsAreNotStamped(t *testing.T) {
-	for _, p := range []string{"/v1/wallet", "/v1/billpay", "/v1/auth", "/v1/media", "/v1/audio", "/v1/chat", "/v1/calls", "/v1/ws"} {
+	for _, p := range []string{"/v1/wallet", "/v1/billpay", "/v1/auth", "/v1/media", "/v1/audio", "/v1/audio-library", "/v1/chat", "/v1/calls", "/v1/ws"} {
 		if ShouldStamp(p) {
 			t.Errorf("%s: stamped, but its user routes do not need the internal key", p)
 		}
@@ -168,6 +168,11 @@ func TestServiceOnlyUpstreamsAreNotStamped(t *testing.T) {
 	}
 	if !ShouldStamp("/v1/commerce") || !ShouldStamp("/v1/posts") {
 		t.Error("commerce and post-service still require the key on user traffic")
+	}
+	// graph-service gates its whole engine on the key, permission checks
+	// included.
+	if !ShouldStamp("/v1/graph") || !ShouldStamp("/v1/permissions") {
+		t.Error("graph-service (/v1/graph, /v1/permissions) still requires the key on user traffic")
 	}
 }
 

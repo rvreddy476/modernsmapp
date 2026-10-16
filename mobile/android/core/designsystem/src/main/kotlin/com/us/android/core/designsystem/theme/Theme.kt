@@ -111,8 +111,9 @@ private val UsShapes = Shapes(
  * follows the system light / dark setting on every screen, with the web's two
  * themes). It used to default to `true`: Momentum was a navy-only design and
  * the app wore it whatever the device said, so the light palette was never
- * seen. There is no in-app theme setting; when one is added, the shell passes
- * its answer here and nothing else changes.
+ * seen. Since T-32 (2026-10-15) the app's root passes the viewer's Appearance
+ * setting here — System (this default), Light or Dark — and nothing else
+ * changes; a screen that writes `UsTheme { }` still follows the device.
  *
  * A surface that is dark ON PURPOSE passes `darkTheme = true` itself: the
  * live screens do, because a live room is a stage. Dynamic colour stays

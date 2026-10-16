@@ -15,10 +15,14 @@ import (
 var ErrActiveReportExists = errors.New("an active report already exists for this entity")
 
 type Report struct {
-	ID              uuid.UUID  `json:"id"`
-	ReporterID      uuid.UUID  `json:"reporter_id"`
-	EntityType      string     `json:"entity_type"`
-	EntityID        uuid.UUID  `json:"entity_id"`
+	ID         uuid.UUID `json:"id"`
+	ReporterID uuid.UUID `json:"reporter_id"`
+	EntityType string    `json:"entity_type"`
+	EntityID   uuid.UUID `json:"entity_id"`
+	// EntityKey is the reported entity's own identifier when it is not a
+	// UUID: the normalised tag text for entity_type "hashtag" (EntityID is
+	// then derived from it, migration 014). Empty for every other type.
+	EntityKey       string     `json:"entity_key,omitempty"`
 	Reason          string     `json:"reason"`
 	Details         string     `json:"details"`
 	Status          string     `json:"status"`
@@ -39,8 +43,8 @@ func New(db *pgxpool.Pool) *ReportStore {
 
 func (s *ReportStore) CreateReport(ctx context.Context, report *Report) error {
 	query := `
-		INSERT INTO trust.reports (id, reporter_id, entity_type, entity_id, reason, details, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO trust.reports (id, reporter_id, entity_type, entity_id, entity_key, reason, details, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, NULLIF($10, ''), $5, $6, $7, $8, $9)
 	`
 	_, err := s.db.Exec(ctx, query,
 		report.ID,
@@ -52,6 +56,7 @@ func (s *ReportStore) CreateReport(ctx context.Context, report *Report) error {
 		report.Status,
 		report.CreatedAt,
 		report.UpdatedAt,
+		report.EntityKey,
 	)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_reports_one_active_per_reporter_entity" {
@@ -74,7 +79,7 @@ func (s *ReportStore) CheckDuplicate(ctx context.Context, reporterID, entityID u
 
 func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]Report, error) {
 	query := `
-		SELECT id, reporter_id, entity_type, entity_id, reason, details, status,
+		SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
 		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
 		FROM trust.reports
 		ORDER BY
@@ -98,7 +103,7 @@ func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]
 	for rows.Next() {
 		var r Report
 		if err := rows.Scan(
-			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
 			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -113,7 +118,7 @@ func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]
 // the useful and least surprising order for the user.
 func (s *ReportStore) GetReportsByReporter(ctx context.Context, reporterID uuid.UUID, limit, offset int) ([]Report, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, reporter_id, entity_type, entity_id, reason, details, status,
+		SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
 		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
 		FROM trust.reports
 		WHERE reporter_id = $1
@@ -129,7 +134,7 @@ func (s *ReportStore) GetReportsByReporter(ctx context.Context, reporterID uuid.
 	for rows.Next() {
 		var r Report
 		if err := rows.Scan(
-			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
 			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -141,13 +146,13 @@ func (s *ReportStore) GetReportsByReporter(ctx context.Context, reporterID uuid.
 
 func (s *ReportStore) GetReport(ctx context.Context, reportID uuid.UUID) (*Report, error) {
 	query := `
-        SELECT id, reporter_id, entity_type, entity_id, reason, details, status,
+        SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
                assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
         FROM trust.reports WHERE id = $1
     `
 	var r Report
 	err := s.db.QueryRow(ctx, query, reportID).Scan(
-		&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+		&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
 		&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -184,10 +189,10 @@ func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, allo
 			    resolution_notes = $4,
 			    updated_at = NOW()
 			WHERE id = $1
-			RETURNING id, reporter_id, entity_type, entity_id, reason, details, status,
+			RETURNING id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
 			          assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
 		`, reportID, status, assignedTo, resolutionNotes).Scan(
-			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
 			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return err

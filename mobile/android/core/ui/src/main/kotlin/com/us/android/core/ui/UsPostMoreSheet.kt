@@ -72,7 +72,9 @@ import kotlinx.coroutines.launch
  * dividers. Report and Delete post stay red wherever the alphabet puts them.
  * Opened from a REEL ([UsPostMoreState.reel]) the same list also holds
  * Description (unfolds the caption), Clear screen / Show controls, Quality
- * (unfolds the rendition picker) and Use this sound.
+ * (unfolds the rendition picker) and Use this sound — and, since T-32
+ * (2026-10-15), Playback speed and Captions (each unfolds its picker) and,
+ * on a reel, Auto scroll (flips in place).
  *
  * Which rows appear, and in what order, is [rows]'s decision, pinned by its
  * own test: the viewer's own post offers Delete and nothing that acts on "the
@@ -181,10 +183,21 @@ fun UsPostMoreSheet(
                     state = state,
                     ui = ui,
                     onRow = ::onRow,
-                    onSelectQuality = { quality ->
-                        ui.qualityOpen = false
-                        callbacks.onSelectQuality(quality)
-                    },
+                    // A pick folds its picker and applies; the sheet stays.
+                    picks = MorePicks(
+                        onSelectQuality = { quality ->
+                            ui.qualityOpen = false
+                            callbacks.onSelectQuality(quality)
+                        },
+                        onSelectSpeed = { speed ->
+                            ui.speedOpen = false
+                            callbacks.onSelectSpeed(speed)
+                        },
+                        onSelectCaption = { language ->
+                            ui.captionsOpen = false
+                            callbacks.onSelectCaption(language)
+                        },
+                    ),
                 )
 
                 MoreStep.REPORT -> UsPostReportStep(
@@ -256,6 +269,8 @@ private class MorePresentation {
     var reasonOpen by mutableStateOf(false)
     var descriptionOpen by mutableStateOf(false)
     var qualityOpen by mutableStateOf(false)
+    var speedOpen by mutableStateOf(false)
+    var captionsOpen by mutableStateOf(false)
     var confirmBlock by mutableStateOf(false)
     var confirmDelete by mutableStateOf(false)
     var linkCopied by mutableStateOf(false)
@@ -279,6 +294,9 @@ private class MorePresentation {
             UsPostMoreRow.CLEAR_SCREEN,
             UsPostMoreRow.SHOW_CONTROLS,
             UsPostMoreRow.QUALITY,
+            UsPostMoreRow.PLAYBACK_SPEED,
+            UsPostMoreRow.CAPTIONS,
+            UsPostMoreRow.AUTO_SCROLL,
             UsPostMoreRow.USE_SOUND,
             UsPostMoreRow.SAVE_OFFLINE,
             UsPostMoreRow.CANCEL_OFFLINE,
@@ -311,11 +329,18 @@ private class MorePresentation {
      * And a video's offline rows (2026-10-02): Save offline, Cancel and
      * Remove STAY on the sheet, where the row turns into the save's progress
      * or a refusal is read; Offline leaves and then opens the list.
+     *
+     * And the player's rows (T-32, 2026-10-15): Playback speed and Captions
+     * unfold their pickers in place, like Quality; Auto scroll flips where it
+     * is, so the viewer sees "On" before they leave.
      */
     private fun onReelRow(row: UsPostMoreRow, callbacks: UsPostMoreCallbacks, leaveThen: (() -> Unit) -> Unit) {
         when (row) {
             UsPostMoreRow.DESCRIPTION -> descriptionOpen = !descriptionOpen
             UsPostMoreRow.QUALITY -> qualityOpen = !qualityOpen
+            UsPostMoreRow.PLAYBACK_SPEED -> speedOpen = !speedOpen
+            UsPostMoreRow.CAPTIONS -> captionsOpen = !captionsOpen
+            UsPostMoreRow.AUTO_SCROLL -> callbacks.onToggleAutoScroll()
             UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS -> leaveThen(callbacks.onClearScreen)
             UsPostMoreRow.USE_SOUND -> leaveThen(callbacks.onUseSound)
             UsPostMoreRow.SAVE_OFFLINE -> callbacks.onSaveOffline()
@@ -328,13 +353,20 @@ private class MorePresentation {
 
 // ── The menu ────────────────────────────────────────────────────────────
 
+/** What the three pickers under a video's rows answer with: a rung, a speed, a caption track (null is Off). */
+private class MorePicks(
+    val onSelectQuality: (UsReelQuality) -> Unit,
+    val onSelectSpeed: (Float) -> Unit,
+    val onSelectCaption: (String?) -> Unit,
+)
+
 /** The rows, one list, with the "Link copied" pill floating over the top. */
 @Composable
 private fun MoreMenu(
     state: UsPostMoreState,
     ui: MorePresentation,
     onRow: (UsPostMoreRow) -> Unit,
-    onSelectQuality: (UsReelQuality) -> Unit,
+    picks: MorePicks,
 ) {
     val delete = state.delete
     val dontRecommend = state.dontRecommend
@@ -356,7 +388,7 @@ private fun MoreMenu(
                     // Quality with Auto alone is a fact, not a choice: the row stays, inert.
                     enabled = rowsEnabled && (row != UsPostMoreRow.QUALITY || state.reel?.canPickQuality == true),
                     onClick = { onRow(row) },
-                    onSelectQuality = onSelectQuality,
+                    picks = picks,
                 )
             }
             // A refused delete or "don't recommend" stays on the sheet, under
@@ -412,7 +444,7 @@ private fun MenuRow(
     ui: MorePresentation,
     enabled: Boolean,
     onClick: () -> Unit,
-    onSelectQuality: (UsReelQuality) -> Unit,
+    picks: MorePicks,
 ) {
     val label = state.labelOf(row)
     val tint = if (row.isDestructive) UsTheme.extended.liveRed else UsTheme.extended.textPrimary
@@ -437,10 +469,11 @@ private fun MenuRow(
                 UsPostMoreRow.CANCEL_OFFLINE -> {
                     { OfflineProgressValue(state.offline) }
                 }
-                else -> null
+                else -> playerValue(row, reel, ui)
             },
             testTag = "post_more_row:${row.name.lowercase()}",
         )
+        PlayerPicker(row = row, reel = reel, ui = ui, picks = picks)
         when (row) {
             UsPostMoreRow.WHY -> Unfolded(open = ui.reasonOpen, text = state.reasonText, testTag = "post_more_reason")
             UsPostMoreRow.DESCRIPTION -> Unfolded(
@@ -448,17 +481,103 @@ private fun MenuRow(
                 text = reel?.description.orEmpty().ifBlank { NO_DESCRIPTION },
                 testTag = "post_more_description",
             )
-            UsPostMoreRow.QUALITY -> AnimatedVisibility(
-                visible = ui.qualityOpen && reel != null,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut(),
-            ) {
-                QualityPicker(reel = reel, onSelect = onSelectQuality)
-            }
             else -> Unit
         }
     }
 }
+
+/**
+ * What sits at the right of a player row (T-32): the speed ("1.25x") or the
+ * caption track on ("English", else "Off") with the chevron that unfolds the
+ * picker, or Auto scroll's "On" / "Off". Null for every other row.
+ */
+private fun playerValue(row: UsPostMoreRow, reel: UsReelMoreState?, ui: MorePresentation): (@Composable () -> Unit)? =
+    when (row) {
+        UsPostMoreRow.PLAYBACK_SPEED -> {
+            {
+                RowValue(
+                    text = speedLabel(reel?.speed ?: SPEED_NORMAL),
+                    open = ui.speedOpen,
+                    testTag = "post_more_speed_value",
+                )
+            }
+        }
+        UsPostMoreRow.CAPTIONS -> {
+            {
+                RowValue(
+                    text = captionValueLabel(reel?.captions.orEmpty(), reel?.captionLanguage),
+                    open = ui.captionsOpen,
+                    testTag = "post_more_captions_value",
+                )
+            }
+        }
+        UsPostMoreRow.AUTO_SCROLL -> {
+            {
+                RowValue(
+                    text = if (reel?.autoScroll == true) "On" else "Off",
+                    open = null,
+                    testTag = "post_more_auto_scroll_value",
+                )
+            }
+        }
+        else -> null
+    }
+
+/** A row's current value, muted, with the chevron when the row unfolds a picker ([open] non-null). */
+@Composable
+private fun RowValue(text: String, open: Boolean?, testTag: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ROW_GAP / 2)) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.testTag(testTag),
+        )
+        if (open != null) ExpandChevron(open = open)
+    }
+}
+
+/**
+ * The picker a video row unfolds, under it: Quality's rungs, Playback
+ * speed's six speeds, or Captions' Off and each track. One shape for all
+ * three ([OptionPicker]); a pick folds it and the sheet stays.
+ */
+@Composable
+private fun PlayerPicker(row: UsPostMoreRow, reel: UsReelMoreState?, ui: MorePresentation, picks: MorePicks) {
+    if (reel == null) return
+    when (row) {
+        UsPostMoreRow.QUALITY -> OptionPicker(
+            open = ui.qualityOpen,
+            options = reel.qualities.map { quality ->
+                PickerOption(quality.label, quality.label.lowercase(), quality == reel.selected) {
+                    picks.onSelectQuality(quality)
+                }
+            },
+            tagPrefix = "post_more_quality",
+        )
+        UsPostMoreRow.PLAYBACK_SPEED -> OptionPicker(
+            open = ui.speedOpen,
+            options = reel.speeds.map { speed ->
+                PickerOption(speedLabel(speed), speedLabel(speed), speed == reel.speed) { picks.onSelectSpeed(speed) }
+            },
+            tagPrefix = "post_more_speed",
+        )
+        UsPostMoreRow.CAPTIONS -> OptionPicker(
+            open = ui.captionsOpen,
+            options = listOf(PickerOption(CAPTIONS_OFF, "off", reel.captionLanguage == null) { picks.onSelectCaption(null) }) +
+                reel.captions.map { track ->
+                    PickerOption(track.label, track.language, track.language == reel.captionLanguage) {
+                        picks.onSelectCaption(track.language)
+                    }
+                },
+            tagPrefix = "post_more_captions",
+        )
+        else -> Unit
+    }
+}
+
+/** One line of a picker: what it reads, its test key, whether it is the chosen one, and what a tap does. */
+private class PickerOption(val label: String, val key: String, val chosen: Boolean, val onSelect: () -> Unit)
 
 /** How far the offline save is, at the right of its row: "42%", or what it is held for. */
 @Composable
@@ -510,48 +629,58 @@ private fun QualityValue(reel: UsReelMoreState?, open: Boolean) {
 }
 
 /**
- * The picker: one 44dp line per option, indented to the label, the chosen
- * one marked with a check. Auto first, then the ladder tallest-first — the
- * order [reelQualityOptions] fixed.
+ * A picker: one 44dp line per option, indented to the label, the chosen one
+ * marked with a check, unfolding under its row while [open]. The options
+ * come in the order the host fixed: Quality's Auto first and then the ladder
+ * tallest-first ([reelQualityOptions]); the speeds slowest-first; Captions'
+ * Off first.
  */
 @Composable
-private fun QualityPicker(reel: UsReelMoreState?, onSelect: (UsReelQuality) -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(bottom = UsTheme.spacing.s)) {
-        reel?.qualities.orEmpty().forEach { option ->
-            val chosen = option == reel?.selected
-            val interaction = remember { MutableInteractionSource() }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(OPTION_HEIGHT)
-                    .sheetPressScale(interaction, scale = ROW_PRESS_SCALE)
-                    .clickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        role = Role.RadioButton,
-                        onClick = { onSelect(option) },
-                    )
-                    .padding(start = REASON_INDENT, end = ROW_SIDE)
-                    .testTag("post_more_quality:${option.label.lowercase()}")
-                    .semantics { contentDescription = if (chosen) "${option.label}, selected" else option.label },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = option.label,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontSize = ROW_TEXT_SIZE,
-                    color = if (chosen) UsTheme.extended.textPrimary else UsTheme.extended.textSecondary,
-                    modifier = Modifier.weight(1f),
-                )
-                if (chosen) {
-                    Icon(
-                        imageVector = UsIcons.Check,
-                        contentDescription = null,
-                        tint = UsTheme.extended.accentSolid,
-                        modifier = Modifier.size(CHEVRON_SIZE),
-                    )
-                }
-            }
+private fun OptionPicker(open: Boolean, options: List<PickerOption>, tagPrefix: String) {
+    AnimatedVisibility(
+        visible = open,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = UsTheme.spacing.s)) {
+            options.forEach { option -> OptionLine(option = option, testTag = "$tagPrefix:${option.key}") }
+        }
+    }
+}
+
+@Composable
+private fun OptionLine(option: PickerOption, testTag: String) {
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(OPTION_HEIGHT)
+            .sheetPressScale(interaction, scale = ROW_PRESS_SCALE)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.RadioButton,
+                onClick = option.onSelect,
+            )
+            .padding(start = REASON_INDENT, end = ROW_SIDE)
+            .testTag(testTag)
+            .semantics { contentDescription = if (option.chosen) "${option.label}, selected" else option.label },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = option.label,
+            style = MaterialTheme.typography.bodyLarge,
+            fontSize = ROW_TEXT_SIZE,
+            color = if (option.chosen) UsTheme.extended.textPrimary else UsTheme.extended.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        if (option.chosen) {
+            Icon(
+                imageVector = UsIcons.Check,
+                contentDescription = null,
+                tint = UsTheme.extended.accentSolid,
+                modifier = Modifier.size(CHEVRON_SIZE),
+            )
         }
     }
 }
@@ -568,6 +697,9 @@ private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.CLEAR_SCREEN -> UsIcons.Maximize
     UsPostMoreRow.SHOW_CONTROLS -> UsIcons.Minimize
     UsPostMoreRow.QUALITY -> UsIcons.Sliders
+    UsPostMoreRow.PLAYBACK_SPEED -> UsIcons.Gauge
+    UsPostMoreRow.CAPTIONS -> UsIcons.Type
+    UsPostMoreRow.AUTO_SCROLL -> UsIcons.ListVideo
     UsPostMoreRow.USE_SOUND -> UsIcons.Music
     UsPostMoreRow.SAVE_OFFLINE -> UsIcons.Download
     UsPostMoreRow.CANCEL_OFFLINE -> UsIcons.Close
@@ -591,6 +723,9 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.CLEAR_SCREEN,
     UsPostMoreRow.SHOW_CONTROLS,
     UsPostMoreRow.QUALITY,
+    UsPostMoreRow.PLAYBACK_SPEED,
+    UsPostMoreRow.CAPTIONS,
+    UsPostMoreRow.AUTO_SCROLL,
     UsPostMoreRow.USE_SOUND,
     UsPostMoreRow.SAVE_OFFLINE,
     UsPostMoreRow.CANCEL_OFFLINE,
@@ -667,7 +802,7 @@ private fun StatusPill(visible: Boolean, text: String, testTag: String, modifier
  */
 @Suppress("LongParameterList")
 @Composable
-private fun ConfirmDialog(
+internal fun ConfirmDialog(
     title: String,
     body: String,
     confirmLabel: String,

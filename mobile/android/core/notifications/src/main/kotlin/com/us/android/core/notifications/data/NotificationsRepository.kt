@@ -63,8 +63,10 @@ open class NotificationsRepository @Inject constructor(
     open suspend fun page(
         limit: Int = PAGE_SIZE,
         cursor: String? = null,
+        /** An Activity tab's `?category=`; null is the whole inbox. See [NotificationsApi.list]. */
+        category: String? = null,
     ): AppResult<NotificationPage> = try {
-        val envelope = api.list(limit = limit, cursor = cursor)
+        val envelope = api.list(limit = limit, cursor = cursor, category = category)
         val error = envelope.error
         if (error != null) {
             AppResult.Failure(

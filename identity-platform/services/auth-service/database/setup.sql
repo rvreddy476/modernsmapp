@@ -176,7 +176,7 @@ ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_pkey;
 ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_app_check;
 ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_app_check CHECK (app IS NULL OR app IN (
     'dating','food','commerce','monetization','payments','wallet','social',
-    'tube','qa','chat','live','rider','doorstep','trust_safety','platform'
+    'tube','qa','chat','live','media','rider','doorstep','trust_safety','platform'
 ));
 -- superadmin is platform-wide by definition, and the ecosystem roles belong to
 -- no admin app. The service refuses both; the database refuses them too.

@@ -1,11 +1,22 @@
 package com.us.android.feature.profile.ui
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.feed.data.AuthorPostSort
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishState
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
 /** The media grid's rules: where a pending video goes, what each tab reads, and the tile shapes. */
+@OptIn(ExperimentalCoroutinesApi::class)
 class ProfileGridTest {
 
     @Test
@@ -50,11 +61,110 @@ class ProfileGridTest {
     }
 
     @Test
-    fun `the tabs read the three content types in order`() {
-        assertThat(ProfileGridTab.entries.map { it.label }).containsExactly("Posts", "Reels", "Videos").inOrder()
-        assertThat(ProfileGridTab.entries.map { it.contentType })
+    fun `the author tabs read the three content types in order`() {
+        val authored = ProfileGridTab.entries.filter { it.authored }
+        assertThat(authored.map { it.label }).containsExactly("Posts", "Reels", "Videos").inOrder()
+        assertThat(authored.map { it.contentType })
             .containsExactly("post", "flick", "long_video")
             .inOrder()
+    }
+
+    // ── Owner / visitor tab sets (T-21) ──────────────────────────────────
+
+    @Test
+    fun `a visitor gets the three author tabs and never Saved`() {
+        assertThat(gridTabsFor(isOwn = false))
+            .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS)
+            .inOrder()
+    }
+
+    @Test
+    fun `the owner gets Saved after the author tabs`() {
+        assertThat(gridTabsFor(isOwn = true))
+            .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS, ProfileGridTab.SAVED)
+            .inOrder()
+    }
+
+    /** No Liked tab: `GET /v1/reels/liked` reads a table nothing writes. */
+    @Test
+    fun `there is no Liked tab for anyone`() {
+        assertThat((gridTabsFor(isOwn = true) + gridTabsFor(isOwn = false)).map { it.label })
+            .doesNotContain("Liked")
+    }
+
+    @Test
+    fun `only the author tabs sort, and Saved claims no content type`() {
+        assertThat(ProfileGridTab.entries.filter { it.sortable })
+            .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS)
+        assertThat(scheduledTabFor("")).isNull()
+        assertThat(emptyTitle(ProfileGridTab.SAVED)).isEqualTo("Nothing saved yet")
+        assertThat(emptyTitle(ProfileGridTab.REELS)).isEqualTo("No reels yet")
+    }
+
+    // ── Sort (T-21) ──────────────────────────────────────────────────────
+
+    @Test
+    fun `a sort change re-reads the tab from a fresh source`() = runTest {
+        val sort = MutableStateFlow(AuthorPostSort.LATEST)
+        val opened = mutableListOf<AuthorPostSort>()
+        val seen = mutableListOf<String>()
+
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            pagesBySort(sort) { s ->
+                opened += s
+                flowOf("page-1:${s.wire}")
+            }.collect { seen += it }
+        }
+        sort.value = AuthorPostSort.POPULAR
+        sort.value = AuthorPostSort.OLDEST
+        job.cancel()
+
+        assertThat(opened).containsExactly(AuthorPostSort.LATEST, AuthorPostSort.POPULAR, AuthorPostSort.OLDEST)
+            .inOrder()
+        assertThat(seen).containsExactly("page-1:latest", "page-1:popular", "page-1:oldest").inOrder()
+    }
+
+    /** Re-picking the sort already on screen must not throw the loaded pages away. */
+    @Test
+    fun `re-selecting the current sort keeps the source it has`() = runTest {
+        val sort = MutableStateFlow(AuthorPostSort.POPULAR)
+        val opened = mutableListOf<AuthorPostSort>()
+
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            pagesBySort(sort.map { it }) { s ->
+                opened += s
+                flowOf(s)
+            }.collect { }
+        }
+        sort.value = AuthorPostSort.POPULAR
+        job.cancel()
+
+        assertThat(opened).containsExactly(AuthorPostSort.POPULAR)
+    }
+
+    /** The old sort's pager is dropped, not left running beside the new one. */
+    @Test
+    fun `the previous sort's source is cancelled when the sort changes`() = runTest {
+        val sort = MutableStateFlow(AuthorPostSort.LATEST)
+        val live = mutableSetOf<AuthorPostSort>()
+
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            pagesBySort(sort) { s ->
+                flow<AuthorPostSort> {
+                    live += s
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        live -= s
+                    }
+                }
+            }.collect { }
+        }
+        sort.value = AuthorPostSort.OLDEST
+        val during = live.toSet()
+        job.cancel()
+
+        assertThat(during).containsExactly(AuthorPostSort.OLDEST)
     }
 
     @Test

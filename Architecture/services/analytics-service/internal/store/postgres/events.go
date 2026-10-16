@@ -59,11 +59,27 @@ func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
-// DeleteEventsByUser removes all analytics raw events for a given user (GDPR erasure).
+// DeleteEventsByUser is the service's account-erasure path (GDPR): it
+// removes the user's raw analytics events and, as a creator, their daily
+// follower counts (migration 013), in one transaction. Idempotent.
+//
+// The follower receipts are not touched: they carry no user id, and
+// keeping them stops a late redelivery from re-creating erased rows.
 func (s *Store) DeleteEventsByUser(ctx context.Context, userID string) error {
-	_, err := s.db.Exec(ctx,
-		`DELETE FROM analytics.events_raw WHERE user_id = $1::uuid`, userID)
-	return err
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM analytics.events_raw WHERE user_id = $1::uuid`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM analytics.creator_follower_daily WHERE creator_id = $1::uuid`, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) InsertBatch(ctx context.Context, events []Event) error {

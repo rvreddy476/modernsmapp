@@ -52,7 +52,70 @@ interface SoundsApi {
     /** The sound's own row — media-service (contract 1.3, shape 1.4). */
     @GET("v1/audio/{soundId}")
     suspend fun sound(@Path("soundId") soundId: String): ApiEnvelope<SoundRowDto>
+
+    /**
+     * The curated sound library (2026-10-15) — media-service
+     * `GET v1/audio-library`, public, most used first. [genre] null omits it
+     * (every genre); the server's default limit is 20. Answers
+     * `{tracks, total}`, where `total` is this page's row count, not the
+     * library's.
+     */
+    @GET("v1/audio-library")
+    suspend fun audioLibrary(
+        @Query("genre") genre: String?,
+        @Query("limit") limit: Int,
+        @Query("offset") offset: Int,
+    ): ApiEnvelope<LibraryTracksDto>
+
+    /**
+     * "Use" a library sound (signed in): the `audio_tracks` row the library
+     * row plays as, made on its first use. No body. The answer's
+     * `audio_track_id` is what a post carries — NEVER the library id.
+     * Refusals: 401, 400 `BAD_REQUEST`, 404 `NOT_FOUND` (gone or withdrawn),
+     * 422 `NOT_STORED`, 503 `SOUND_UNAVAILABLE` (retry).
+     */
+    @POST("v1/audio-library/{libraryId}/use")
+    suspend fun useLibrarySound(@Path("libraryId") libraryId: String): ApiEnvelope<LibrarySoundUseDto>
 }
+
+/** `GET v1/audio-library` → `{tracks, total}`. */
+@Serializable
+data class LibraryTracksDto(
+    val tracks: List<LibraryTrackDto> = emptyList(),
+    val total: Int = 0,
+)
+
+/**
+ * One curated library row, the keys media-service writes. `audio_url` is
+ * already presented for a client (a storage key comes back as the library
+ * serve path, an undeliverable source as ""); this app previews every row
+ * through `v1/audio-library/{id}/serve` instead and reads `audio_url` only
+ * for whether there is anything to play.
+ */
+@Serializable
+data class LibraryTrackDto(
+    val id: String = "",
+    val title: String = "",
+    val artist: String = "",
+    @SerialName("duration_ms") val durationMs: Long = 0L,
+    @SerialName("cover_url") val coverUrl: String? = null,
+    @SerialName("audio_url") val audioUrl: String = "",
+    val genre: String? = null,
+    val mood: String? = null,
+    val language: String = "",
+    @SerialName("usage_count") val usageCount: Long = 0L,
+    @SerialName("is_trending") val isTrending: Boolean = false,
+    @SerialName("is_active") val isActive: Boolean = true,
+    /** The sound this row was made into on its first use; null until then. */
+    @SerialName("audio_track_id") val audioTrackId: String? = null,
+)
+
+/** `POST v1/audio-library/{id}/use` → `{audio_track_id, sound}`. */
+@Serializable
+data class LibrarySoundUseDto(
+    @SerialName("audio_track_id") val audioTrackId: String? = null,
+    val sound: SoundRowDto? = null,
+)
 
 /** `POST v1/posts/{id}/sound` → `{sound}`. */
 @Serializable

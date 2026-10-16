@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/atpost/notification-service/internal/push"
@@ -22,6 +21,7 @@ import (
 
 type Service struct {
 	scyllaStore *scylla.NotificationStore
+	inbox       InboxPageReader // paginated inbox reads; the Scylla store by default
 	pgStore     *postgres.Store
 	rdb         *redis.Client
 	pusher      push.Pusher
@@ -38,10 +38,14 @@ type Service struct {
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
-	return &Service{
+	s := &Service{
 		scyllaStore: scyllaStore,
 		rdb:         rdb,
 	}
+	if scyllaStore != nil { // never store a typed nil in the interface
+		s.inbox = scyllaStore
+	}
+	return s
 }
 
 func (s *Service) SetPGStore(pg *postgres.Store) {
@@ -89,6 +93,47 @@ func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.U
 // event, because this service must not reach into chat's tables to ask.
 func (s *Service) CreateNotificationWithoutPush(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error {
 	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, "", true)
+}
+
+// CreateMessageNotification is the "dm" delivery for one chat message. It is
+// CreateNotification (or, when muted, CreateNotificationWithoutPush) with the
+// push copy chosen by the chat message type, so a shared post reads "Sent you
+// a post" instead of the generic "You have a new message". Text, media and
+// unknown types keep the generic copy and collapse key.
+func (s *Service) CreateMessageNotification(ctx context.Context, userID, actorID, conversationID uuid.UUID, deepLink string, createdAt time.Time, messageType string, muted bool) error {
+	if s.recipientSuppressed(ctx, userID, "dm") {
+		return nil
+	}
+	decision := s.resolveGeneralDelivery(ctx, userID, "dm")
+	if muted {
+		decision.SendPush = false
+		decision.DeferPush = false
+	}
+	return s.deliverWithDecision(ctx, decision, userID, actorID, "dm", "conversation", conversationID, deepLink, createdAt, "", DMRender(messageType))
+}
+
+// Chat message types as chat message-service publishes them on
+// MessageCreated.type. Mirrored here (chat is a separate module).
+const (
+	ChatMessageTypeText  = "text"
+	ChatMessageTypeMedia = "media"
+	ChatMessageTypePost  = "post"
+)
+
+// DMPostBody is the push body for a shared post. Text DMs name no sender
+// ("You have a new message"), so neither does this.
+const DMPostBody = "Sent you a post"
+
+// DMRender picks the push copy for a "dm" by chat message type. The zero
+// value means "generic per-type copy" (notifTitleBody), which text and media
+// keep. The event carries no post id or caption by design, so the copy says
+// nothing about the post itself.
+func DMRender(messageType string) RenderOverride {
+	if messageType == ChatMessageTypePost {
+		title, _ := notifTitleBody("dm")
+		return RenderOverride{Title: title, Body: DMPostBody}
+	}
+	return RenderOverride{}
 }
 
 // CreateNotificationIdempotent writes the inbox row under a deterministic
@@ -477,12 +522,49 @@ func (s *Service) GetNotificationsAfter(ctx context.Context, userID uuid.UUID, c
 	return s.scyllaStore.GetNotificationsAfter(ctx, userID, cursorBucket, cursorTS, limit)
 }
 
+// InboxPageReader is the slice of the Scylla inbox store the paginated list
+// reads. *scylla.NotificationStore satisfies it; tests substitute a fake.
+type InboxPageReader interface {
+	GetNotificationsWithCursor(ctx context.Context, userID uuid.UUID, cursorBucket int, cursorTS *gocql.UUID, limit int) ([]scylla.Notification, error)
+}
+
+// SetInboxPageReader replaces the reader behind GetNotificationsPage.
+func (s *Service) SetInboxPageReader(r InboxPageReader) {
+	s.inbox = r
+}
+
+// A filtered inbox page reads the newest-first inbox in batches until the
+// page is full, the inbox ends, or the scan budget runs out. The budget bounds
+// the work one request can do for a user whose inbox holds few rows of a tab.
+const (
+	filteredInboxBatch      = 100
+	filteredInboxScanBudget = 500
+)
+
 // GetNotificationsPage returns a cursor-paginated page of notifications.
 // Cursor format: "bucket:timeuuid" (e.g. "202603:550e8400-e29b-41d4-a716-446655440000").
-// When category is non-empty and recognized (currently only "qa"), notifications
-// are filtered server-side by notification-type prefix. The function over-fetches
-// from Scylla while filtering so the visible page still respects `limit`.
+//
+// category is an Activity tab (inbox_tabs.go): "" or "all" lists everything;
+// a known tab keeps only the types whose preference category maps onto it;
+// anything else returns ErrUnknownInboxCategory.
+//
+// Scylla cannot filter on the non-key `type` column without ALLOW FILTERING,
+// so the filter runs here over a bounded scan. When the budget runs out before
+// the page fills, the page may be short (even empty) but carries a next_cursor
+// at the last row scanned, so paging on neither skips nor repeats a row. A
+// missing next_cursor always means the end of the inbox.
 func (s *Service) GetNotificationsPage(ctx context.Context, userID uuid.UUID, limit int, cursor, category string) (*NotificationsPage, error) {
+	tab, ok := NormalizeInboxCategory(category)
+	if !ok {
+		return nil, ErrUnknownInboxCategory
+	}
+	if s.inbox == nil {
+		return nil, fmt.Errorf("notification inbox store not configured")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
 	var cursorBucket int
 	var cursorTS *gocql.UUID
 
@@ -498,55 +580,75 @@ func (s *Service) GetNotificationsPage(ctx context.Context, userID uuid.UUID, li
 		}
 	}
 
-	// Determine an optional type-prefix filter from the category.
-	prefix := categoryTypePrefix(category)
-
-	// Fetch up to limit+1 normally; when filtering, over-fetch (cap at 200)
-	// so the page still has a chance of returning `limit` items.
-	fetchLimit := limit + 1
-	if prefix != "" {
-		fetchLimit = limit * 4
-		if fetchLimit > 200 {
-			fetchLimit = 200
-		}
+	fetch := func(bucket int, ts *gocql.UUID, n int) ([]scylla.Notification, error) {
+		return s.inbox.GetNotificationsWithCursor(ctx, userID, bucket, ts, n)
 	}
+	if tab == "" {
+		return unfilteredInboxPage(fetch, limit, cursorBucket, cursorTS)
+	}
+	return filteredInboxPage(fetch, limit, cursorBucket, cursorTS, inboxTypeMatcher(tab))
+}
 
-	notifs, err := s.scyllaStore.GetNotificationsWithCursor(ctx, userID, cursorBucket, cursorTS, fetchLimit)
+type inboxFetch func(bucket int, ts *gocql.UUID, n int) ([]scylla.Notification, error)
+
+func inboxCursor(n scylla.Notification) string {
+	return fmt.Sprintf("%d:%s", n.Bucket, n.TS.String())
+}
+
+// unfilteredInboxPage is the "all" tab: one read of limit+1 rows.
+func unfilteredInboxPage(fetch inboxFetch, limit, bucket int, ts *gocql.UUID) (*NotificationsPage, error) {
+	notifs, err := fetch(bucket, ts, limit+1)
 	if err != nil {
 		return nil, err
 	}
-
-	if prefix != "" {
-		filtered := notifs[:0]
-		for _, n := range notifs {
-			if strings.HasPrefix(n.Type, prefix) {
-				filtered = append(filtered, n)
-			}
-		}
-		notifs = filtered
-	}
-
 	page := &NotificationsPage{}
 	if len(notifs) > limit {
 		page.Items = notifs[:limit]
-		last := notifs[limit-1]
-		page.NextCursor = fmt.Sprintf("%d:%s", last.Bucket, last.TS.String())
+		page.NextCursor = inboxCursor(notifs[limit-1])
 	} else {
 		page.Items = notifs
 	}
-
 	return page, nil
 }
 
-// categoryTypePrefix maps a category query param to a notification-type prefix.
-// Returns "" when the category is empty/"all" or unknown — in which case no
-// filtering is applied (preserves existing behavior for other tabs).
-func categoryTypePrefix(category string) string {
-	switch category {
-	case "qa":
-		return "qa."
-	default:
-		return ""
+// filteredInboxPage collects up to limit matching rows. It used to over-fetch
+// once (limit*4) and drop the cursor whenever fewer than limit+1 rows matched,
+// which ended paging early even though older matches existed.
+func filteredInboxPage(fetch inboxFetch, limit, bucket int, ts *gocql.UUID, match func(string) bool) (*NotificationsPage, error) {
+	page := &NotificationsPage{Items: []scylla.Notification{}}
+	scanned := 0
+	for {
+		batch := filteredInboxBatch
+		if rest := filteredInboxScanBudget - scanned; rest < batch {
+			batch = rest
+		}
+		rows, err := fetch(bucket, ts, batch)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range rows {
+			if !match(n.Type) {
+				continue
+			}
+			if len(page.Items) == limit {
+				// One more match exists: the page is full and more follow.
+				page.NextCursor = inboxCursor(page.Items[limit-1])
+				return page, nil
+			}
+			page.Items = append(page.Items, n)
+		}
+		scanned += len(rows)
+		if len(rows) < batch {
+			return page, nil // inbox exhausted
+		}
+		last := rows[len(rows)-1]
+		bucket, ts = last.Bucket, &last.TS
+		if scanned >= filteredInboxScanBudget {
+			// Budget spent: resume after the last row scanned. Every match
+			// up to that row is already in this page.
+			page.NextCursor = inboxCursor(last)
+			return page, nil
+		}
 	}
 }
 

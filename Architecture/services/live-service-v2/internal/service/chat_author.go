@@ -46,10 +46,28 @@ func (s *Service) withAuthors(ctx context.Context, st *postgres.LiveStream, msgs
 		return
 	}
 	ids := make([]uuid.UUID, 0, len(msgs))
-	needMods := false
 	for _, m := range msgs {
 		ids = append(ids, m.UserID)
-		if m.UserID != st.CreatorUserID {
+	}
+	authors := s.chatAuthors(ctx, st, ids)
+	for _, m := range msgs {
+		// Each row gets its own copy: two rows by one author share nothing.
+		a := *authors[m.UserID]
+		a.Badges = append([]string{}, a.Badges...)
+		m.Author = &a
+	}
+}
+
+// chatAuthors builds the author card of each of ids as a chat row carries
+// it (withAuthors) and the viewer.joined frame does (joins.go): user_id and
+// role always, name/handle/avatar_url/badges when the lookup answered.
+// Profiles come from the cached directory in its spare mode (one batch call
+// for the ids not cached in the last 60s, skipped for a while after a
+// failure), so no caller adds a per-user profile request.
+func (s *Service) chatAuthors(ctx context.Context, st *postgres.LiveStream, ids []uuid.UUID) map[uuid.UUID]*postgres.ChatAuthor {
+	needMods := false
+	for _, id := range ids {
+		if id != st.CreatorUserID {
 			needMods = true
 		}
 	}
@@ -64,20 +82,25 @@ func (s *Service) withAuthors(ctx context.Context, st *postgres.LiveStream, msgs
 		}
 	}
 	cards := s.userCardsWith(ctx, ids, true)
-	for _, m := range msgs {
-		a := &postgres.ChatAuthor{UserID: m.UserID, Badges: []string{}, Role: postgres.ChatRoleViewer}
+	out := make(map[uuid.UUID]*postgres.ChatAuthor, len(ids))
+	for _, id := range ids {
+		if _, done := out[id]; done {
+			continue
+		}
+		a := &postgres.ChatAuthor{UserID: id, Badges: []string{}, Role: postgres.ChatRoleViewer}
 		switch {
-		case m.UserID == st.CreatorUserID:
+		case id == st.CreatorUserID:
 			a.Role = postgres.ChatRoleHost
-		case mods[m.UserID]:
+		case mods[id]:
 			a.Role = postgres.ChatRoleModerator
 		}
-		if card := cards[m.UserID]; card != nil {
+		if card := cards[id]; card != nil {
 			a.Name, a.Handle, a.AvatarURL = card.Name, card.Handle, card.AvatarURL
 			if len(card.Badges) > 0 {
 				a.Badges = append([]string{}, card.Badges...)
 			}
 		}
-		m.Author = a
+		out[id] = a
 	}
+	return out
 }

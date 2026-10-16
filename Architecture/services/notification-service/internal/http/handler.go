@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -81,9 +82,19 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 	}
 
 	cursor := c.Query("cursor")
-	category := c.Query("category")
+	// Activity tab (T-11). An unknown tab is a client bug: refuse it rather
+	// than silently listing everything, which is how the tabs used to fail.
+	category, ok := service.NormalizeInboxCategory(c.Query("category"))
+	if !ok {
+		writeUnknownCategory(c)
+		return
+	}
 
 	page, err := h.svc.GetNotificationsPage(c.Request.Context(), userID, limit, cursor, category)
+	if errors.Is(err, service.ErrUnknownInboxCategory) {
+		writeUnknownCategory(c)
+		return
+	}
 	if err != nil {
 		log.Printf("Failed to get notifications: %v", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch notifications", nil)
@@ -97,6 +108,12 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, page.Items, meta)
+}
+
+func writeUnknownCategory(c *gin.Context) {
+	supported := append([]string{"all"}, service.InboxCategories()...)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY",
+		"Unknown notification category", map[string][]string{"supported": supported})
 }
 
 type MarkReadRequest struct {

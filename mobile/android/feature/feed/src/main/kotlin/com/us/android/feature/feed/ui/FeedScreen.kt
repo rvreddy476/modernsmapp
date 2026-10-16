@@ -251,7 +251,7 @@ internal fun FeedContent(
             onVotePoll = viewModel::onVotePoll,
             onFollow = viewModel::onFollow,
             onShare = { item ->
-                share(item.text, item.author.nameForDisplay)
+                share(item.id, item.text, item.author.nameForDisplay)
                 // Recorded only after the chooser was actually launched, and
                 // only here — the repost endpoint already records repost and
                 // quote shares, so counting this one through both would
@@ -304,7 +304,11 @@ internal fun FeedContent(
     // keeps their place in the list and the post stays visible above the
     // conversation about it.
     commentsFor?.let { postId ->
-        CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
+        CommentsSheet(
+            postId = postId,
+            onDismiss = { commentsFor = null },
+            postAuthorId = items.itemSnapshotList.items.firstOrNull { it.id == postId }?.let { it.author.id }.orEmpty(),
+        )
     }
 
     moreFor?.let { item ->

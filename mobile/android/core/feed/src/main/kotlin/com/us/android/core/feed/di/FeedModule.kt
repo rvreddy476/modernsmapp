@@ -9,6 +9,9 @@ import com.us.android.core.feed.data.VideoFeedApi
 import com.us.android.core.feed.data.VideoLibraryApi
 import com.us.android.core.feed.data.VideoLibraryRepository
 import com.us.android.core.feed.data.VideoLibraryWrites
+import com.us.android.core.feed.ui.sound.LibrarySoundPreview
+import com.us.android.core.feed.ui.sound.PlayerLibrarySoundPreview
+import com.us.android.core.media.sound.SoundPreviewPlayer
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -48,4 +51,12 @@ object FeedModule {
     /** The real hydrator behind the seam; tests bind the identity instead. */
     @Provides
     fun provideFeedItemHydrator(impl: HashtagPostHydrator): FeedItemHydrator = impl
+
+    /**
+     * The Library list's one preview player (library sounds, 2026-10-15).
+     * Unscoped on purpose: every list gets its own player, released by the
+     * ViewModel that holds it.
+     */
+    @Provides
+    fun provideLibrarySoundPreview(player: SoundPreviewPlayer): LibrarySoundPreview = PlayerLibrarySoundPreview(player)
 }

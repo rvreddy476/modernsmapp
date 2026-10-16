@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_SORT",
+    "message": "sort must be latest, popular or oldest"
+  },
+  "meta": {}
+}

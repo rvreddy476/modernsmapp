@@ -78,6 +78,7 @@ import com.us.android.core.feed.data.ChannelGate
 import com.us.android.core.feed.data.channelGate
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.feed.ui.schedule.ScheduleSheet
+import com.us.android.core.feed.ui.sound.LibrarySoundSheet
 import com.us.android.core.feed.ui.sound.SoundPreviewButton
 import com.us.android.core.feed.ui.sound.SoundPreviewViewModel
 import com.us.android.core.media.ChosenSound
@@ -134,7 +135,9 @@ import kotlin.math.roundToInt
  * sliders, "Original audio" and "Sound" — only while a sound is chosen. The
  * preview is the shared [SoundPreviewButton] on a [SoundPreviewViewModel] of
  * this screen's own. Banuba's music features stay off: the sound is never
- * mixed into the video.
+ * mixed into the video. A reel with no sound shows an "Add sound" row
+ * instead, which opens the curated Library sheet (2026-10-15); its "Use"
+ * goes through `SoundEntry` too, by the `audio_tracks` id the server answers.
  *
  * Post hands the publish to WorkManager and LEAVES onto the viewer's own
  * profile, whose grid shows the posting video first with its ring; several
@@ -350,7 +353,7 @@ private fun studioActions(studio: ReelStudioViewModel) = StudioActions(
     dismissExportError = studio::dismissExportError,
 )
 
-private enum class ReelSheet { None, Audience, Category, Location, People, Schedule }
+private enum class ReelSheet { None, Audience, Category, Location, People, Schedule, Sound }
 
 @Suppress("LongMethod") // One surface, one composable: the form IS the list of its parts.
 @Composable
@@ -419,6 +422,19 @@ private fun ReelForm(
                     )
                     Spacer(Modifier.height(UsTheme.spacing.xxl))
                 }
+                if (state.showsAddSound) {
+                    GlassCard {
+                        DetailRow(
+                            icon = UsIcons.Music,
+                            title = "Add sound",
+                            value = "",
+                            enabled = editable,
+                            onClick = { sheet = ReelSheet.Sound },
+                            testTag = "reel-add-sound-row",
+                        )
+                    }
+                    Spacer(Modifier.height(UsTheme.spacing.xxl))
+                }
                 HashtagsField(
                     hashtags = state.hashtags,
                     input = state.hashtagInput,
@@ -482,6 +498,21 @@ private fun ReelForm(
     }
 
     ReelPickerSheets(sheet = sheet, state = state, viewModel = viewModel, onClose = { sheet = ReelSheet.None })
+
+    // The Library sheet (library sounds, 2026-10-15): "Use" leaves the
+    // sound in SoundEntry and the form takes it, by its audio_tracks id, the
+    // way it takes a sound chosen in Reels. Its preview is its own player and
+    // stops when the sheet closes; the form's Sound section then plays the
+    // chosen sound from the ordinary sound route.
+    if (sheet == ReelSheet.Sound) {
+        LibrarySoundSheet(
+            onDismiss = { sheet = ReelSheet.None },
+            onChosen = {
+                viewModel.takeChosenSound()
+                sheet = ReelSheet.None
+            },
+        )
+    }
 }
 
 /** What the Post pill says to a screen reader: what it will do, or why it cannot. */
@@ -550,7 +581,7 @@ private fun ReelPickerSheets(
             },
             onDismiss = onClose,
         )
-        ReelSheet.None, ReelSheet.People -> Unit
+        ReelSheet.None, ReelSheet.People, ReelSheet.Sound -> Unit
     }
 }
 

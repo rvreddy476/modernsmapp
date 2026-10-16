@@ -44,6 +44,8 @@ class LiveWatchViewModelTest {
                 api,
                 ErrorMapper(NetworkModule.provideJson()),
                 rooms,
+                FakeRoomSocket(),
+                FakeLiveFollows(),
                 SavedStateHandle(mapOf("streamId" to "s1")),
             )
         }

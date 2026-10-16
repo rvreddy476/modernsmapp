@@ -415,6 +415,32 @@ func routeDefinitions() []routeDef {
 		{"/v1/users/me/keyword-filters", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/users", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/graph", env("GRAPH_SERVICE_URL", "http://graph-service:8083")},
+		// Permission check API (graph-service spec §9.8), registered at the
+		// ROOT of graph-service beside /v1/graph rather than under it:
+		//   GET  /v1/permissions/check         one actor→target tuple
+		//   POST /v1/permissions/check-batch   up to 50 targets (web
+		//                                      usePermissions.ts)
+		// No prefix matched it, so every client that rendered Message / Call /
+		// Follow buttons from it got a 404 at the edge. Same service, same env
+		// var and default as /v1/graph: a missing prefix, not a new upstream.
+		//
+		// The actor is the X-User-Id header and nothing else; both handlers
+		// answer 401 without it. The gateway strips any client copy and sets
+		// it only from a verified token, so an anonymous caller arrives with
+		// no actor and a caller can only ever ask about themselves.
+		//
+		// Stamped with the internal key (internalroutes.StampPolicy
+		// "/v1/permissions": true, matching "/v1/graph"): graph-service
+		// installs RequireInternalKey on its whole engine, so without the key
+		// every user request would be 401. graph-service's service-only
+		// routes live under /v1/internal/graph, which this prefix cannot
+		// reach, and any `internal` segment under it is refused at the edge.
+		// These reads are not under graph-service's write-source guard, which
+		// covers the /v1/graph group only, so they need no attribution label.
+		//
+		// `/v1/permissions` must NEVER be added to GATEWAY_QUERY_TOKEN_PATHS:
+		// ordinary JSON over the Authorization header.
+		{"/v1/permissions", env("GRAPH_SERVICE_URL", "http://graph-service:8083")},
 		// Post service: videos, reels, posts, comments, stories, reactions, saved, hashtags, uploads
 		{"/v1/uploads", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/videos", env("POST_SERVICE_URL", "http://post-service:8084")},
@@ -442,6 +468,27 @@ func routeDefinitions() []routeDef {
 		// live under /v1/posts and were reachable; this standalone one was not.
 		{"/v1/crossposts", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feed", env("FEED_SERVICE_URL", "http://feed-service:8086")},
+		// The curated sound library for the reel studio, media-service
+		// RegisterAudioRoutes:
+		//   GET /v1/audio-library            tracks by usage, ?genre=&limit=&offset=
+		//   GET /v1/audio-library/:audioId   one active track
+		//
+		// "/v1/audio" below does not cover it: route matching is exact or on a
+		// `/` boundary, so "/v1/audio-library" is a different prefix and was
+		// unreachable from every client.
+		//
+		// Public, like the /v1/audio reads beside it. In the same
+		// registration function media-service puts authMW on every /v1/audio
+		// write and on none of the library reads, and the two library
+		// handlers read no identity header at all: the catalogue is the same
+		// for every caller, so a signed-out studio can browse it.
+		//
+		// Not stamped with the internal key (internalroutes.StampPolicy
+		// "/v1/audio-library": false, matching "/v1/audio" and "/v1/media"):
+		// media-service reads the key only on its internal groups, which this
+		// prefix cannot reach, and `/v1/audio-library/internal/...` is refused
+		// at the edge like every internal path. Never a query-token path.
+		{"/v1/audio-library", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/audio", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/media", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		// Captions / subtitles, media-service RegisterClipsRoutes:

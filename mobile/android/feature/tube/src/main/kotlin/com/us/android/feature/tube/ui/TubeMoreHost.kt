@@ -38,7 +38,7 @@ fun BoxScope.TubeMoreHost(
             overlay = overlayMap[item.id] ?: EngagementOverlay(),
             followEdge = edges[item.author.id],
             ownUserId = ownUserId,
-            onShare = { shared -> share(shared.title.ifBlank { shared.text }, shared.author.nameForDisplay) },
+            onShare = { shared -> share(shared.id, shared.title.ifBlank { shared.text }, shared.author.nameForDisplay) },
             onDismiss = state::close,
             viewModel = more,
             suggested = state.suggested,

@@ -51,42 +51,7 @@ fun Player.applyQuality(quality: UsReelQuality) {
     playWhenReady = wasPlaying
 }
 
-/** The speeds the sheet offers, in its order — YouTube's six. [SPEED_NORMAL] is the player's rest. */
-val PLAYBACK_SPEEDS: List<Float> =
-    listOf(SPEED_HALF, SPEED_THREE_QUARTERS, SPEED_NORMAL, SPEED_QUICK, SPEED_QUICKER, SPEED_DOUBLE)
-
-const val SPEED_HALF = 0.5f
-const val SPEED_THREE_QUARTERS = 0.75f
-const val SPEED_NORMAL = 1f
-const val SPEED_QUICK = 1.25f
-const val SPEED_QUICKER = 1.5f
-const val SPEED_DOUBLE = 2f
-
-/** "1x", "1.25x", "0.5x" — no trailing zeros, the way YouTube prints them. */
-fun speedLabel(speed: Float): String {
-    val text = speed.toString().trimEnd('0').trimEnd('.')
-    return "${text}x"
-}
-
-/**
- * The caption track to show, by language, or none (offline copies,
- * 2026-10-02). Off disables the text renderer outright, so a track that
- * happens to be flagged default is not drawn against the viewer's choice.
- * Unlike a quality change this needs no re-prepare: a text track is
- * switched without touching the video decoder.
- */
-fun Player.applyCaption(language: String?) {
-    val before = trackSelectionParameters
-    val after = before.buildUpon()
-        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, language == null)
-        .setPreferredTextLanguage(language)
-        .build()
-    if (after != before) trackSelectionParameters = after
-}
-
-/**
- * The viewer's caption choice carried to the next video: kept when that
- * video has the same language, off when it does not. Captions never turn
- * themselves on.
- */
-fun captionChoice(current: String?, offered: List<String>): String? = current?.takeIf { it in offered }
+// The speeds, `speedLabel` and the caption switch moved out of this file on
+// 2026-10-15 (T-32), so Reels offers the very same ones: the speeds to
+// `:core:ui` (UsPlaybackChoices.kt), `applyCaption` and `captionChoice` to
+// `:core:media` (PlayerCaptions.kt).

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -59,6 +61,8 @@ internal class SearchRowActions(
     val onOpenPost: (SearchHit.Post) -> Unit,
     val onOpenVideo: (SearchHit.Video) -> Unit,
     val onOpenChannel: (SearchHit.Channel) -> Unit,
+    val onOpenHashtag: (SearchHit.Hashtag) -> Unit,
+    val onOpenSound: (SearchHit.Sound) -> Unit,
 )
 
 /** What the user rows need to decide on Follow: the viewer, the known edges, the follows in flight. */
@@ -82,6 +86,62 @@ internal fun SearchHitRow(hit: SearchHit, follow: FollowFacts, actions: SearchRo
         is SearchHit.Post -> PostRow(hit = hit, now = now, onOpen = { actions.onOpenPost(hit) })
         is SearchHit.Video -> VideoRow(hit = hit, now = now, onOpen = { actions.onOpenVideo(hit) })
         is SearchHit.Channel -> ChannelRow(hit = hit, onOpen = { actions.onOpenChannel(hit) })
+        is SearchHit.Hashtag -> HashtagRow(hit = hit, onOpen = { actions.onOpenHashtag(hit) })
+        is SearchHit.Sound -> SoundRow(hit = hit, onOpen = { actions.onOpenSound(hit) })
+    }
+}
+
+/** The tag's glyph in a raised circle, then `#tag`. */
+@Composable
+private fun HashtagRow(hit: SearchHit.Hashtag, onOpen: () -> Unit) {
+    RowFrame(onClick = onOpen, description = "Hashtag ${hit.tag}", testTag = "search_hashtag:${hit.tag}") {
+        GlyphDisc(icon = UsIcons.Hash)
+        TwoLines(primary = hit.label, secondary = null, modifier = Modifier.weight(1f))
+    }
+}
+
+/** The music glyph, the title over the artist and length, and how many reels play it. */
+@Composable
+private fun SoundRow(hit: SearchHit.Sound, onOpen: () -> Unit) {
+    val details = listOfNotNull(
+        hit.artist.takeIf { it.isNotBlank() },
+        hit.durationMs.takeIf { it > 0L }?.let { formatDuration(it) },
+    ).joinToString(" · ").ifBlank { null }
+    RowFrame(onClick = onOpen, description = "Sound ${hit.titleForDisplay}", testTag = "search_sound:${hit.id}") {
+        GlyphDisc(icon = UsIcons.Music)
+        TwoLines(primary = hit.titleForDisplay, secondary = details, modifier = Modifier.weight(1f))
+        if (hit.usageCount > 0L) {
+            Text(
+                text = reelCountLabel(hit.usageCount),
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+    }
+}
+
+/** "1 reel", "12 reels", "1.2K reels". */
+internal fun reelCountLabel(count: Long): String = when (count) {
+    1L -> "1 reel"
+    else -> "${formatCount(count.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())} reels"
+}
+
+/** A medium-avatar-sized disc on the raised ground with a glyph in it — for rows that have no picture. */
+@Composable
+internal fun GlyphDisc(icon: ImageVector) {
+    Box(
+        modifier = Modifier
+            .size(UsAvatarSize.Medium.diameter)
+            .clip(CircleShape)
+            .background(UsTheme.extended.bgRaised),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = UsTheme.extended.textPrimary,
+            modifier = Modifier.size(DISC_GLYPH),
+        )
     }
 }
 
@@ -336,6 +396,7 @@ private val THUMB_HEIGHT = 68.dp
 private val THUMB_PORTRAIT_WIDTH = 56.dp
 private val THUMB_PORTRAIT_HEIGHT = 84.dp
 private val PLACEHOLDER_GLYPH = 20.dp
+private val DISC_GLYPH = 20.dp
 private val PILL_MARGIN = 4.dp
 private val PILL_RADIUS = 4.dp
 private val PILL_PAD_H = 4.dp

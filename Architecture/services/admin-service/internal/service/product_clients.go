@@ -152,3 +152,17 @@ func NewCommerceClient(baseURL string, signer *servicetoken.Signer) *ProductClie
 func NewTrustSafetyClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
 	return newProductClient(baseURL, TrustSafetyAdminPrefix, TrustSafetyAudience, signer)
 }
+
+// Sound library (media-service): its token-only admin family for the
+// curated library (media-service internal/http/admin_sounds_handler.go),
+// audience "media", scopes media:sounds.read / media:sounds.manage. Same
+// host and key registration as the partner-evidence client.
+const (
+	MediaAudience          = "media"
+	MediaSoundsAdminPrefix = "/v1/media/internal/admin/sounds/library"
+)
+
+// NewMediaSoundsClient builds the client for the admin sound library.
+func NewMediaSoundsClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, MediaSoundsAdminPrefix, MediaAudience, signer)
+}

@@ -121,13 +121,22 @@ func (s *Service) WithUserEnsurer(c *userclient.Client) *Service {
 type Relationship struct {
 	Follows    bool `json:"follows"`
 	FollowedBy bool `json:"followed_by"`
-	// Blocked: the target blocked the actor.
+	// Blocked (LEGACY wire key, meaning unchanged): the TARGET blocked the
+	// actor (viewer). POST /v1/graph/relationships/batch uses the same key
+	// for the OPPOSITE direction — new code reads TargetBlockedViewer.
 	Blocked bool `json:"blocked"`
-	// BlockedBy: the actor blocked the target. Callers must check BOTH
-	// directions before granting access (fixes-v2 / Codex P1-6).
-	BlockedBy    bool `json:"blocked_by"`
-	IsMuted      bool `json:"is_muted"`
-	IsConnection bool `json:"is_connection"`
+	// BlockedBy (LEGACY wire key, meaning unchanged): the actor (viewer)
+	// blocked the TARGET. Callers must check BOTH directions before granting
+	// access (fixes-v2 / Codex P1-6). New code reads ViewerBlockedTarget.
+	BlockedBy bool `json:"blocked_by"`
+	// ViewerBlockedTarget / TargetBlockedViewer name the two block directions
+	// so they mean the same thing here and on the batch route. They are
+	// always derived from Blocked / BlockedBy by fillBlockDirections, never
+	// trusted from a cache entry (pre-existing entries lack them).
+	ViewerBlockedTarget bool `json:"viewer_blocked_target"`
+	TargetBlockedViewer bool `json:"target_blocked_viewer"`
+	IsMuted             bool `json:"is_muted"`
+	IsConnection        bool `json:"is_connection"`
 	// IsCloseFriend: exact membership of the target's close-friends list,
 	// which is the audience for `trusted` / `close_friends` visibility.
 	// Do NOT substitute IsConnection — it is strictly broader.
@@ -272,7 +281,7 @@ func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
 
-	s.publishUserUnfollowedAsync(followerID, followeeID)
+	s.publishUserUnfollowedAsync(followerID, followeeID, removed)
 	return nil
 }
 
@@ -361,14 +370,14 @@ func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) e
 // ack the user action immediately. If the broker is slow or unavailable
 // the failure is logged and the durable downstream path (counter
 // reconciliation + outbox replay) closes the gap.
-func (s *Service) publishUserUnfollowedAsync(followerID, followeeID uuid.UUID) {
+func (s *Service) publishUserUnfollowedAsync(followerID, followeeID uuid.UUID, edgeRemoved bool) {
 	if s.producer == nil {
 		return
 	}
 	go func() {
 		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := s.producer.PublishUserUnfollowed(pubCtx, followerID, followeeID); err != nil {
+		if err := s.producer.PublishUserUnfollowed(pubCtx, followerID, followeeID, edgeRemoved); err != nil {
 			log.Printf("[graph] async PublishUserUnfollowed failed: %v", err)
 		}
 	}()
@@ -384,6 +393,9 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 			if rel.FollowRequestStatus == "" {
 				rel.FollowRequestStatus = "none" // entry cached by a pre-010 build
 			}
+			// Entries cached before the named direction fields existed lack
+			// them; re-derive so a cached block is never reported as none.
+			rel.fillBlockDirections()
 			// is_private is resolved fresh on every read: the privacy
 			// snapshot has its own 3s cache + settings-changed invalidation,
 			// and a visibility flip must not hide behind this 60s entry.
@@ -399,7 +411,27 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 	if err != nil {
 		return nil, err
 	}
+	rel := RelationshipFromFull(full)
 
+	// Cache the graph facts only; is_private is layered on after the cache
+	// read so it tracks the privacy snapshot, not this entry's TTL. The
+	// snapshot is marshalled BEFORE IsPrivate is set (and before the
+	// goroutine) so the write below cannot race the encoder.
+	if data, err := json.Marshal(rel); err == nil {
+		go func() {
+			s.rdb.Set(context.Background(), cacheKey, data, 60*time.Second)
+		}()
+	}
+
+	rel.IsPrivate = s.fetchPrivacy(ctx, targetID).AccountVisibility == "private"
+	return rel, nil
+}
+
+// RelationshipFromFull maps the single-pair store facts onto the
+// GET /v1/graph/relationship wire shape (everything except is_private, which
+// the caller layers on from the privacy snapshot). Pure, so the wire contract
+// can be pinned without Postgres or Redis.
+func RelationshipFromFull(full *store.RelationshipFull) *Relationship {
 	connectionStatus := "none"
 	switch {
 	case full.IsConnection:
@@ -429,19 +461,16 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 		ConnectionStatus:    connectionStatus,
 		FollowRequestStatus: followRequestStatus,
 	}
+	rel.fillBlockDirections()
+	return rel
+}
 
-	// Cache the graph facts only; is_private is layered on after the cache
-	// read so it tracks the privacy snapshot, not this entry's TTL. The
-	// snapshot is marshalled BEFORE IsPrivate is set (and before the
-	// goroutine) so the write below cannot race the encoder.
-	if data, err := json.Marshal(rel); err == nil {
-		go func() {
-			s.rdb.Set(context.Background(), cacheKey, data, 60*time.Second)
-		}()
-	}
-
-	rel.IsPrivate = s.fetchPrivacy(ctx, targetID).AccountVisibility == "private"
-	return rel, nil
+// fillBlockDirections derives the unambiguous block fields from the legacy
+// pair. On this route Blocked = target blocked actor and BlockedBy = actor
+// blocked target (store.GetRelationshipFull column order).
+func (r *Relationship) fillBlockDirections() {
+	r.ViewerBlockedTarget = r.BlockedBy
+	r.TargetBlockedViewer = r.Blocked
 }
 
 // --- Counts ---

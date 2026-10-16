@@ -50,6 +50,8 @@ import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.HideShellBottomBar
+import com.us.android.core.ui.PLAYBACK_SPEEDS
+import com.us.android.core.ui.UsCaptionOption
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -105,7 +107,7 @@ fun WatchScreen(
     val playhead = rememberPlayhead(viewModel.player, polling = true)
     val share = rememberPostSharer()
     val onShare: (FeedItem) -> Unit = { item ->
-        share(item.title.ifBlank { item.text }, item.author.nameForDisplay)
+        share(item.id, item.title.ifBlank { item.text }, item.author.nameForDisplay)
         viewModel.onExternalShared(item.id)
     }
 
@@ -242,7 +244,11 @@ private fun WatchSheetsHost(
         )
     }
     sheets.commentsFor?.let { postId ->
-        CommentsSheet(postId = postId, onDismiss = { sheets.commentsFor = null })
+        CommentsSheet(
+            postId = postId,
+            onDismiss = { sheets.commentsFor = null },
+            postAuthorId = (content as? WatchContent.Ready)?.item?.takeIf { it.id == postId }?.let { it.author.id }.orEmpty(),
+        )
     }
     sheets.moreFor?.let { item ->
         PostMoreSheetHost(
@@ -271,8 +277,16 @@ private fun WatchSheetsHost(
                 ),
                 selected = quality,
                 shareHidden = item.controls.hideShare,
+                // The same Playback speed and Captions rows as a reel's
+                // (T-32), from the state the gear's sheet already reads.
+                speeds = PLAYBACK_SPEEDS,
+                speed = speed,
+                captions = captions.map { UsCaptionOption(language = it.language, label = it.label) },
+                captionLanguage = captionLanguage,
             ),
             onSelectQuality = viewModel::selectQuality,
+            onSelectSpeed = viewModel::selectSpeed,
+            onSelectCaption = viewModel::selectCaption,
             // What makes it the long video's: the words that say "video", and the channel a block names.
             longVideo = UsLongVideoMoreState(
                 channelName = item.creatorName,

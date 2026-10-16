@@ -138,6 +138,8 @@ func (h *Handler) SearchTubeChannels(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
+	// Opt-in (?record=1): this route also serves the Studio channel picker.
+	h.recordHistory(c, query, false)
 	api.JSON(c.Writer, http.StatusOK, tubeListResponse[TubeChannelResult]{
 		Items:      h.tubeChannelResults(c.Request.Context(), viewerString(viewerFrom(c)), docs),
 		NextCursor: tubeNextCursor(from, limit, len(docs)),
@@ -180,6 +182,7 @@ func (h *Handler) SearchTubeCollections(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
+	h.recordHistory(c, query, false) // opt-in (?record=1)
 	api.JSON(c.Writer, http.StatusOK, tubeListResponse[TubeCollectionResult]{
 		Items:      h.tubeCollectionResults(c.Request.Context(), viewerString(viewerFrom(c)), docs),
 		NextCursor: tubeNextCursor(from, limit, len(docs)),

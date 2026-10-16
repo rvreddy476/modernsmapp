@@ -147,13 +147,33 @@ func (p *Producer) PublishStoryCreated(ctx context.Context, storyID, authorID uu
 
 // PublishUserMentioned emits a user.mentioned event for a @mention in a post.
 func (p *Producer) PublishUserMentioned(ctx context.Context, mentionedUserID, authorID uuid.UUID, postID string) error {
+	payload := UserMentionedPayload(mentionedUserID, authorID, postID, uuid.Nil, time.Now())
+	return p.publish(ctx, events.EventUserMentioned, &authorID, payload)
+}
+
+// PublishUserMentionedInComment emits user.mentioned for a @mention in a
+// comment or reply (T-12). Same event as a post mention, with comment_id set:
+// notification-service deep-links it to /post/<post_id>?focusComment=<id>,
+// the link every other comment notification uses.
+func (p *Producer) PublishUserMentionedInComment(ctx context.Context, mentionedUserID, authorID, postID, commentID uuid.UUID) error {
+	payload := UserMentionedPayload(mentionedUserID, authorID, postID.String(), commentID, time.Now())
+	return p.publish(ctx, events.EventUserMentioned, &authorID, payload)
+}
+
+// UserMentionedPayload builds the user.mentioned payload. commentID is
+// uuid.Nil for a mention in the post itself, which leaves comment_id off the
+// wire (omitempty) exactly as before.
+func UserMentionedPayload(mentionedUserID, authorID uuid.UUID, postID string, commentID uuid.UUID, at time.Time) events.UserMentionedPayload {
 	payload := events.UserMentionedPayload{
 		MentionedUserID: mentionedUserID.String(),
 		AuthorID:        authorID.String(),
 		PostID:          postID,
-		OccurredAt:      time.Now(),
+		OccurredAt:      at,
 	}
-	return p.publish(ctx, events.EventUserMentioned, &authorID, payload)
+	if commentID != uuid.Nil {
+		payload.CommentID = commentID.String()
+	}
+	return payload
 }
 
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {

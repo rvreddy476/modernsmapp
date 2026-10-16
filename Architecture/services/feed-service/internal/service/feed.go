@@ -630,11 +630,51 @@ func (s *Service) GetFlickFeed(ctx context.Context, userID uuid.UUID, limit int)
 // feed's and the watch feed's following_only). The viewer's own reels are
 // not "followed" and are excluded, matching the home feed.
 func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
+	window, next, blocked, err := s.reelTimelineWindow(ctx, userID, limit, before, followingOnly)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Discovery fill (2026-09-27), the same rule Tube has had since
+	// 2026-09-05: the timeline only holds reels from people the viewer
+	// follows, so a viewer who follows nobody opened Reels to "No reels
+	// yet" while eighteen public reels sat on the platform. When the FIRST
+	// page comes up short, top it up from recent public short-form through
+	// post-service, evaluated as the viewer, passed through the SAME
+	// block/mute and hidden-author filters, failing closed to the timeline
+	// page on error. Never under following_only — a short Following page is
+	// the honest answer — and never on later pages, which stay keyed to the
+	// timeline cursor. A short window carries no cursor (keysetWindow), so
+	// a fill row never sits in front of a timeline continuation.
+	if discoveryFillAllowed(followingOnly, before, len(window), limit) {
+		fill, err := s.shortFormDiscoveryFill(ctx, userID, blocked, "", limit*2)
+		if err != nil {
+			log.Printf("reels discovery fill failed for %s: %v", userID, err)
+		} else {
+			window = mergeDiscoveryFillWith(window, fill, limit, isShortFormFillType)
+		}
+	}
+
+	return scoreReels(window), next, nil
+}
+
+// reelTimelineWindow is the keyset window every short-form surface reads
+// (/v1/feed/reels and /v1/feed/flicks, plain or narrowed to a category):
+// the viewer's flick/reel timeline rows — short-form only, never another
+// content type — block/mute and hidden-author filtered (M2-P0-6, fail
+// closed), optionally narrowed to authors the viewer follows, cut to
+// `limit` with the cursor of the last row kept. Chronological and
+// unfilled: the discovery fill and the ordering are the callers' business,
+// so the category path (reels_category.go) can pull several windows. The
+// resolved block set is returned so a caller's fill passes the same filter
+// without a second graph round trip. The short-form sibling of
+// videoTimelineWindow.
+func (s *Service) reelTimelineWindow(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, map[uuid.UUID]struct{}, error) {
 	s.warmViewerSignals(ctx, userID) // see mutuals.go
 	target := limit + 1
 	items, err := s.windows.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"flick", "reel"}, before, target*3)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	candidates := make([]FeedItem, 0, len(items))
@@ -652,11 +692,11 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 	// no blocked author can occupy a slot in the returned page.
 	blocked, err := s.resolveBlockedSet(ctx, userID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
 	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	// Reels "Following" tab. Fail CLOSED, unlike the home feed's older
@@ -665,40 +705,22 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 	if followingOnly {
 		candidates, err = s.applyFollowingFilter(ctx, userID, candidates, "reels")
 		if err != nil {
-			return nil, "", err
-		}
-	}
-
-	// Discovery fill (2026-09-27), the same rule Tube has had since
-	// 2026-09-05: the timeline only holds reels from people the viewer
-	// follows, so a viewer who follows nobody opened Reels to "No reels
-	// yet" while eighteen public reels sat on the platform. When the FIRST
-	// page comes up short, top it up from recent public short-form through
-	// post-service, evaluated as the viewer, passed through the SAME
-	// block/mute and hidden-author filters, failing closed to the timeline
-	// page on error. Never under following_only — a short Following page is
-	// the honest answer — and never on later pages, which stay keyed to the
-	// timeline cursor.
-	if discoveryFillAllowed(followingOnly, before, len(candidates), limit) {
-		fill, err := s.shortFormDiscoveryFill(ctx, userID, blocked, limit*2)
-		if err != nil {
-			log.Printf("reels discovery fill failed for %s: %v", userID, err)
-		} else {
-			candidates = mergeDiscoveryFillWith(candidates, fill, limit, isShortFormFillType)
+			return nil, "", nil, err
 		}
 	}
 
 	window, next := keysetWindow(candidates, limit)
-	return scoreReels(window), next, nil
+	return window, next, blocked, nil
 }
 
 // shortFormDiscoveryFill is the recent-public short-form source behind the
 // reels first-page fill: post-service's recent list narrowed to flick/reel,
 // evaluated as the viewer, then the same block/mute and hidden-author
-// filters the timeline rows pass.
-func (s *Service) shortFormDiscoveryFill(ctx context.Context, userID uuid.UUID, blocked map[uuid.UUID]struct{}, limit int) ([]FeedItem, error) {
+// filters the timeline rows pass. `category` narrows it at post-service
+// (empty = any), exactly as longVideoDiscoveryFill's does.
+func (s *Service) shortFormDiscoveryFill(ctx context.Context, userID uuid.UUID, blocked map[uuid.UUID]struct{}, category string, limit int) ([]FeedItem, error) {
 	viewer := userID
-	fill, err := s.getRecentPublicPostsFor(ctx, &viewer, []string{"flick", "reel"}, "", limit)
+	fill, err := s.getRecentPublicPostsFor(ctx, &viewer, []string{"flick", "reel"}, category, limit)
 	if err != nil {
 		return nil, err
 	}

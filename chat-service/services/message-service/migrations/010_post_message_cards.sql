@@ -1,0 +1,17 @@
+-- Post cards in chat (TikTok parity T-25, "Send to friends").
+--
+-- A message of type 'post' carries a post-service post id and an optional
+-- caption in message_text. message_type has no CHECK constraint, so the new
+-- type needs no constraint change; the durable delivery intent gains the id
+-- so the repair worker replays it into Scylla exactly as the live path does.
+--
+-- Only the id is stored. Clients hydrate the card through post-service
+-- /v1/posts/batch as the viewer (which enforces visibility) and render "not
+-- available" for an id the batch does not return.
+--
+-- Scylla: chatservice.messages gains post_id UUID. message-service adds any
+-- missing column at boot (EnsureMessageColumns); for a manual apply:
+--   ALTER TABLE chatservice.messages ADD post_id uuid;
+--
+-- Mirrored in database/setup.sql (applied on every boot).
+ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS post_id UUID;

@@ -55,12 +55,17 @@ import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmojiPanel
+import com.us.android.core.ui.formatCount
 import com.us.android.feature.live.data.ChatRole
+import com.us.android.feature.live.data.ChatTimelineItem
+import com.us.android.feature.live.data.HeartBlock
 import com.us.android.feature.live.data.LiveChatAuthorDto
 import com.us.android.feature.live.data.LiveChatMessageDto
+import com.us.android.feature.live.data.LiveJoin
 import com.us.android.feature.live.data.canSendChat
 import com.us.android.feature.live.data.chatAuthorName
 import com.us.android.feature.live.data.chatRoleOf
+import com.us.android.feature.live.data.chatTimeline
 import com.us.android.feature.live.data.isFoundingCreator
 
 /*
@@ -83,8 +88,13 @@ internal fun LiveChatList(
     onMessageLongClick: (LiveChatMessageDto) -> Unit,
     hint: String,
     modifier: Modifier = Modifier,
+    /** `viewer.joined` arrivals, shown as collapsed system rows between the messages (T-30). */
+    joins: List<LiveJoin> = emptyList(),
+    /** The reader: their own join is never shown. */
+    meId: String = "",
 ) {
-    if (messages.isEmpty()) {
+    val timeline = remember(messages, joins, meId) { chatTimeline(messages, joins, meId) }
+    if (timeline.isEmpty()) {
         Text(
             "No messages yet.",
             style = MaterialTheme.typography.bodySmall,
@@ -102,13 +112,16 @@ internal fun LiveChatList(
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
         reverseLayout = true,
     ) {
-        items(messages, key = { it.id }) { message ->
-            LiveChatRow(
-                message = message,
-                role = chatRoleOf(message, hostId, moderators),
-                onClick = onMessageClick?.let { { it(message) } },
-                onLongClick = { onMessageLongClick(message) },
-            )
+        items(timeline, key = { it.key }) { item ->
+            when (item) {
+                is ChatTimelineItem.Message -> LiveChatRow(
+                    message = item.message,
+                    role = chatRoleOf(item.message, hostId, moderators),
+                    onClick = onMessageClick?.let { { it(item.message) } },
+                    onLongClick = { onMessageLongClick(item.message) },
+                )
+                is ChatTimelineItem.Joins -> LiveJoinRow(label = item.label)
+            }
         }
         item(key = "hint") {
             Text(hint, style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.onMediaMuted)
@@ -131,6 +144,128 @@ private fun LiveChatRow(
     ) {
         LiveChatAuthorLine(author = message.author, role = role)
         Text(message.text, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.onMedia)
+    }
+}
+
+/** "Asha and Ravi joined": a quiet system row, not a message — nothing to report or moderate. */
+@Composable
+private fun LiveJoinRow(label: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("live-chat-join"),
+    ) {
+        Icon(
+            UsIcons.UserPlus,
+            contentDescription = null,
+            tint = UsTheme.extended.onMediaDim,
+            modifier = Modifier.size(SYSTEM_GLYPH),
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.onMediaMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * The pinned message, over the chat: the pin, who wrote it, and the text in
+ * two lines at most. Shown to everyone in the room; only the host pins.
+ */
+@Composable
+internal fun LivePinnedBar(pinned: LivePinned, modifier: Modifier = Modifier) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.xs)
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.mediaPlate)
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s)
+            .semantics(mergeDescendants = true) {}
+            .testTag("live-pinned"),
+    ) {
+        Icon(UsIcons.Pin, contentDescription = "Pinned", tint = UsTheme.extended.onMedia, modifier = Modifier.size(PIN_GLYPH))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                chatAuthorName(pinned.author),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.onMediaMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                pinned.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.onMedia,
+                maxLines = PINNED_LINES,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** In place of the composer: why this viewer cannot write (muted, or banned from the chat). */
+@Composable
+internal fun LiveChatClosedNotice(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = UsTheme.extended.onMediaMuted,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.l)
+            .testTag("live-chat-closed"),
+    )
+}
+
+/**
+ * The free heart: one tap, one heart, the stream's total under it. No money
+ * and nothing to buy — there are no gifts or coins in live. Off (dimmed,
+ * and saying why to a screen reader) once the server refused hearts.
+ */
+@Composable
+internal fun LiveHeartButton(
+    count: Long,
+    block: HeartBlock?,
+    onTap: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val label = heartLabel(count, block)
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.testTag("live-hearts"),
+    ) {
+        IconButton(
+            onClick = onTap,
+            enabled = block == null,
+            modifier = Modifier
+                .clip(RoundedCornerShape(UsTheme.radii.full))
+                .background(UsTheme.extended.mediaPlate)
+                .semantics { contentDescription = label }
+                .testTag("live-heart"),
+        ) {
+            Icon(
+                UsIcons.HeartFilled,
+                contentDescription = null,
+                tint = if (block == null) UsTheme.extended.liveRed else UsTheme.extended.onMediaDim,
+            )
+        }
+        if (count > 0) {
+            Text(
+                formatCount(count.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()),
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.onMedia,
+                modifier = Modifier.testTag("live-heart-count"),
+            )
+        }
     }
 }
 
@@ -388,6 +523,9 @@ internal fun LiveChatComposer(
 
 private val CHAT_HEIGHT = 160.dp
 private val BADGE_GLYPH = 12.dp
+private val SYSTEM_GLYPH = 12.dp
+private val PIN_GLYPH = 16.dp
+private const val PINNED_LINES = 2
 private val OVERLAY_MAX_HEIGHT = 168.dp
 private const val OVERLAY_WIDTH_FRACTION = 0.78f
 private const val OVERLAY_LINES = 2

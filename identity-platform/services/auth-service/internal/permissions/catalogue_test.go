@@ -144,6 +144,9 @@ func TestForTable(t *testing.T) {
 			hasNot: []string{"live:streams.stop", "live:users.ban"}, noOther: true},
 		{name: "live admin holds the console permissions", role: roles.Admin, app: AppLive,
 			has: []string{"live:streams.read", "live:streams.stop", "live:reports.read", "live:reports.act", "live:chat.moderate", "live:users.ban"}, noOther: true},
+		// Media: the sound library is a licensing decision, admin only.
+		{name: "media admin holds the sound library", role: roles.Admin, app: AppMedia,
+			has: []string{"media:sounds.read", "media:sounds.manage"}, noOther: true},
 		// Admin console Wave 2 — the Mopedu dashboard.
 		{name: "rider moderator triages, sees no money or suspensions", role: roles.Moderator, app: AppRider,
 			has: []string{"rider:partners.read", "rider:rides.read", "rider:incidents.read", "rider:incidents.act", "rider:ratings.moderate", "rider:complaints.act"},
@@ -319,6 +322,9 @@ var consolePermissionHolders = map[string][]string{
 	"live:reports.act":   {roles.Moderator},
 	"live:chat.moderate": {roles.Moderator},
 	"live:users.ban":     nil,
+	// Media: the admin sound library (media-service), admin only.
+	"media:sounds.read":   nil,
+	"media:sounds.manage": nil,
 	// Mopedu dashboard: rider-service AdminPermissions, the whole list.
 	"rider:stats.read":       {roles.Finance, roles.Support},
 	"rider:partners.read":    {roles.Moderator, roles.Support},
@@ -918,4 +924,45 @@ func TestResolve(t *testing.T) {
 			t.Fatal("nil maps serialise as null")
 		}
 	})
+}
+
+// TestMediaSoundLibraryIsAdminOnly: the sound library decides what every
+// creator can put on a reel, so only superadmin, a platform-wide admin and an
+// admin scoped to media hold it. No other role holds it at any scope, and no
+// other role can even be granted into media (a grant would do nothing).
+func TestMediaSoundLibraryIsAdminOnly(t *testing.T) {
+	got := map[string]bool{}
+	for _, e := range catalogue[AppMedia] {
+		got[e.action] = true
+		if e.superOnly || len(e.roles) != 0 {
+			t.Errorf("media:%s: superOnly=%v roles=%v, want admin only", e.action, e.superOnly, e.roles)
+		}
+	}
+	if len(got) != 2 || !got["sounds.read"] || !got["sounds.manage"] {
+		t.Fatalf("media permissions = %v", got)
+	}
+	for _, role := range roles.AdminRoles() {
+		platform := mustFor(t, role, "")
+		wantHeld := role == roles.Admin || role == roles.Superadmin
+		for _, p := range []string{"media:sounds.read", "media:sounds.manage"} {
+			if contains(platform, p) != wantHeld {
+				t.Errorf("platform-wide %s holds %s = %v", role, p, !wantHeld)
+			}
+		}
+		if role == roles.Superadmin || role == roles.Admin {
+			continue
+		}
+		if _, err := For(role, AppMedia); !errors.Is(err, ErrNoPermissionsInApp) {
+			t.Errorf("%s can be granted into media: %v", role, err)
+		}
+	}
+	scoped := Resolve([]Grant{{Role: roles.Admin, App: AppMedia}}, time.Now())
+	if !scoped.Has("media:sounds.read") || !scoped.Has("media:sounds.manage") || len(scoped.Apps) != 1 || len(scoped.Platform) != 0 {
+		t.Fatalf("media admin resolved to %+v", scoped)
+	}
+	for _, other := range []string{"tube:videos.remove", "social:reels.remove", "live:streams.stop", "platform:users.read"} {
+		if scoped.Has(other) {
+			t.Errorf("media admin holds %q", other)
+		}
+	}
 }

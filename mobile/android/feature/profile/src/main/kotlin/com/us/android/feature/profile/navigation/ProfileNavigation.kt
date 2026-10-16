@@ -5,9 +5,13 @@
 
 package com.us.android.feature.profile.navigation
 
+import androidx.compose.runtime.getValue
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import com.us.android.feature.profile.ui.AppearanceViewModel
 import com.us.android.feature.profile.ui.DirectMessagesScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.FollowRequestsScreen
@@ -88,6 +92,7 @@ fun NavGraphBuilder.profileScreen(
  * No `onBack`: this is a tab root, and the top bar renders no back control
  * when none is supplied.
  */
+@Suppress("LongParameterList") // one callback per door out of the Me tab, all owned by :app
 fun NavGraphBuilder.ownProfileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
@@ -104,6 +109,8 @@ fun NavGraphBuilder.ownProfileScreen(
      * it — nobody watches a stranger's upload.
      */
     onPublished: (contentType: String) -> Unit,
+    /** The More menu's "Creator Hub" (T-31): `:app` pushes the read-only hub, which lives in Tube. */
+    onOpenCreatorHub: () -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -121,6 +128,9 @@ fun NavGraphBuilder.ownProfileScreen(
                 header = header,
                 onOpenPost = onOpenPost,
                 onPublished = onPublished,
+                // OWN-profile only, like onEditProfile: the hub shows the
+                // signed-in creator's own numbers and comments.
+                onOpenCreatorHub = onOpenCreatorHub,
             ),
         )
     }
@@ -209,11 +219,15 @@ fun NavGraphBuilder.settingsScreens(
     destinations: SettingsDestinations,
 ) {
     composable<SettingsRoute> {
+        val appearance: AppearanceViewModel = hiltViewModel()
+        val mode by appearance.mode.collectAsStateWithLifecycle()
         SettingsHubScreen(
             destinations.onBack,
             destinations.onEditProfile,
             destinations.onProfileDetails,
             destinations.sections,
+            appearance = mode,
+            onAppearance = appearance::select,
         )
     }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }

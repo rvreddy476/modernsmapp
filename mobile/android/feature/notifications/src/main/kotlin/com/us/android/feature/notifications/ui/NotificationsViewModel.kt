@@ -72,9 +72,15 @@ class NotificationsViewModel @Inject constructor(
     fun refresh() {
         if (pageJob?.isActive == true) return
         _state.value = NotificationsReducer.onLoadStarted(_state.value)
+        val filter = _state.value.filter
 
         pageJob = viewModelScope.launch {
-            when (val result = repository.page()) {
+            val result = InboxPaging.fill(cursor = null) { cursor ->
+                repository.page(cursor = cursor, category = filter.category)
+            }
+            // A chip changed meanwhile: that chip's load owns the list now.
+            if (_state.value.filter != filter) return@launch
+            when (result) {
                 is AppResult.Success -> {
                     _state.value = NotificationsReducer.onFirstPage(
                         _state.value,
@@ -94,7 +100,25 @@ class NotificationsViewModel @Inject constructor(
     }
 
     /**
+     * A chip (T-11): the list starts over on that filter's first page. A page
+     * still loading for the previous chip is cancelled — its rows belong to a
+     * list no longer on screen.
+     */
+    fun selectFilter(filter: ActivityFilter) {
+        val before = _state.value
+        if (before.filter == filter) return
+        pageJob?.cancel()
+        pageJob = null
+        _state.value = NotificationsReducer.onFilterSelected(before, filter)
+        refresh()
+    }
+
+    /**
      * Fetches the next page.
+     *
+     * A filtered page can be empty and still carry a cursor; [InboxPaging]
+     * walks a few of those per call, so one "reached the bottom" or one
+     * "Show more" costs at most [InboxPaging.MAX_REQUESTS] requests.
      *
      * Guarded by the reducer rather than here: "there is no next page" and "one
      * is already loading" are both facts about state, and deciding them in two
@@ -106,8 +130,13 @@ class NotificationsViewModel @Inject constructor(
         if (current.isLoadingMore || pageJob?.isActive == true) return
 
         _state.value = NotificationsReducer.onLoadMoreStarted(current)
+        val filter = current.filter
         pageJob = viewModelScope.launch {
-            when (val result = repository.page(cursor = cursor)) {
+            val result = InboxPaging.fill(cursor = cursor) { next ->
+                repository.page(cursor = next, category = filter.category)
+            }
+            if (_state.value.filter != filter) return@launch
+            when (result) {
                 is AppResult.Success -> {
                     _state.value = NotificationsReducer.onNextPage(
                         _state.value,

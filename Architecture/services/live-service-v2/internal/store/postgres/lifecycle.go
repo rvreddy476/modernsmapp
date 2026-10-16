@@ -518,23 +518,36 @@ type AdminStream struct {
 // host — and viewer_peak = max(peak, count), in one transaction. A
 // duplicated webhook is idempotent (one presence row per identity). Ended
 // and failed streams keep their final numbers.
-func (s *Store) ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, present bool) (st *LiveStream, changed bool, err error) {
+//
+// joined is true only when this call moved the user from absent (no row, or
+// present=false) to present. A repeated join — a redelivered webhook, or a
+// reconnect LiveKit reports as a fresh participant_joined — is not one.
+// Every presence write locks the stream row first, so reading the previous
+// row and the upsert cannot interleave with another presence write.
+func (s *Store) ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, present bool) (st *LiveStream, changed, joined bool, err error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	cur, err := scanStream(tx.QueryRow(ctx,
 		`SELECT `+selectColumns+` FROM live_streams WHERE id = $1 FOR UPDATE`, streamID))
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
+	var wasPresent bool
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE((SELECT present FROM live_stream_presence WHERE stream_id = $1 AND user_id = $2), false)`,
+		streamID, userID).Scan(&wasPresent); err != nil {
+		return nil, false, false, err
+	}
+	joined = present && !wasPresent
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO live_stream_presence (stream_id, user_id, present, updated_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (stream_id, user_id) DO UPDATE SET present = EXCLUDED.present, updated_at = NOW()`,
 		streamID, userID, present); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if userID != cur.CreatorUserID {
 		evt := "leave"
@@ -544,14 +557,14 @@ func (s *Store) ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, p
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO live_viewer_events (stream_id, user_id, event_type) VALUES ($1, $2, $3)`,
 			streamID, userID, evt); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 	}
 	if IsTerminal(cur.Status) {
 		if err := tx.Commit(ctx); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
-		return cur, false, nil
+		return cur, false, joined, nil
 	}
 	next, err := scanStream(tx.QueryRow(ctx, `
 		WITH c AS (
@@ -566,12 +579,12 @@ func (s *Store) ApplyPresence(ctx context.Context, streamID, userID uuid.UUID, p
 		WHERE id = $1
 		RETURNING `+selectColumns, streamID, cur.CreatorUserID))
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
-	return next, next.ViewerCount != cur.ViewerCount, nil
+	return next, next.ViewerCount != cur.ViewerCount, joined, nil
 }
 
 // WebhookSeen reports whether a LiveKit event id was already applied.

@@ -186,6 +186,9 @@ module "media" {
   environment = var.environment
   cors_allowed_origins = [
     "https://${local.public_hostnames[0]}", # https://qa.cleestudio.com
+    # Admin console (sound library presigned PUT to audio-library/; S3 CORS
+    # rules are bucket-wide, the signature still names the one key).
+    "https://${local.public_hostnames[3]}", # https://admin-qa.cleestudio.com
   ]
   cloudfront_price_class = "PriceClass_200" # incl. India + Asia POPs
 

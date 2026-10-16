@@ -394,8 +394,11 @@ class UsPostMoreRowsTest {
     }
 
     @Test
-    fun `copy link puts the post's canonical address on the clipboard`() {
-        assertThat(postShareLink("abc-123")).isEqualTo("https://momentum.app/p/abc-123")
+    fun `copy link puts the post's public web permalink on the clipboard`() {
+        val id = "b2f7d0c1-5c1e-4a0e-9d1a-0c7f6f1e2a33"
+        assertThat(postShareLink(id)).isEqualTo("https://cleestudio.com/post/$id")
+        // The old /p/ route was served by nothing: every copied link 404'd (T-07).
+        assertThat(postShareLink(id)).doesNotContain("/p/")
     }
 
     // ── A video's rows: a reel and a long video, ONE list (2026-10-02) ──

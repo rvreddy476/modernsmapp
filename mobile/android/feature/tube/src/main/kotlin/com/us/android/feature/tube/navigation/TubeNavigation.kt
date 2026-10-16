@@ -12,6 +12,7 @@ import com.us.android.feature.tube.ui.channel.ChannelScreen
 import com.us.android.feature.tube.ui.collections.CollectionScreen
 import com.us.android.feature.tube.ui.collections.CollectionsScreen
 import com.us.android.feature.tube.ui.home.TubeHomeScreen
+import com.us.android.feature.tube.ui.hub.CreatorHubScreen
 import com.us.android.feature.tube.ui.offline.OfflineScreen
 import com.us.android.feature.tube.ui.saved.SavedVideosScreen
 import com.us.android.feature.tube.ui.scheduled.ScheduledPostsScreen
@@ -74,6 +75,14 @@ data class TubeCollectionRoute(val collectionId: String) {
 @Serializable
 data object TubeOfflineRoute
 
+/**
+ * The read-only Creator Hub (T-31, 2026-10-15): overview, library and
+ * conversations — the web's Creator Hub, without its editors. Opened from
+ * the Me tab's More menu and from this app's own More sheet.
+ */
+@Serializable
+data object TubeCreatorHubRoute
+
 /** One video, playing. Pushed over a Tube page; [postId] is the post to open on. */
 @Serializable
 data class WatchRoute(val postId: String)
@@ -133,6 +142,19 @@ data class TubeDestinations(
      * `:app` pushes [TubeOfflineRoute].
      */
     val onOpenOffline: () -> Unit,
+    /** The More sheet's "Creator Hub" (T-31): `:app` pushes [TubeCreatorHubRoute]. */
+    val onOpenCreatorHub: () -> Unit,
+    /**
+     * A Creator Hub comment on an ordinary post (not a reel, not a long
+     * video): `:app` opens post detail.
+     */
+    val onOpenPost: (postId: String) -> Unit,
+    /**
+     * The Creator Hub's Sounds tab, "Use this sound" (library sounds,
+     * 2026-10-15): the sound is already waiting in `SoundEntry`; `:app` opens
+     * the reel create flow, which takes it.
+     */
+    val onCreateWithSound: () -> Unit = {},
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {
@@ -154,6 +176,7 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeCollectionsRoute> { CollectionsScreen(destinations = destinations) }
     composable<TubeCollectionRoute> { CollectionScreen(destinations = destinations) }
     composable<TubeOfflineRoute> { OfflineScreen(destinations = destinations) }
+    composable<TubeCreatorHubRoute> { CreatorHubScreen(destinations = destinations) }
     composable<WatchRoute> {
         WatchScreen(
             onBack = destinations.onBack,
@@ -184,6 +207,9 @@ fun NavController.navigateToTubeCollection(collectionId: String) =
 
 /** The offline copies, pushed the same way. */
 fun NavController.navigateToTubeOffline() = navigate(TubeOfflineRoute) { launchSingleTop = true }
+
+/** The Creator Hub, pushed over whatever opened it (the Me tab, Tube's More sheet). */
+fun NavController.navigateToCreatorHub() = navigate(TubeCreatorHubRoute) { launchSingleTop = true }
 
 /** The saved videos, pushed the same way. */
 fun NavController.navigateToTubeSaved() = navigate(TubeSavedRoute) { launchSingleTop = true }

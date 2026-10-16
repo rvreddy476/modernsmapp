@@ -171,6 +171,10 @@ func TestDeploymentQueryTokenPathsAreNarrow(t *testing.T) {
 				// and Referer headers. The caption BYTES are fetched from the
 				// track's own delivery URL, not from here.
 				"/v1/subtitles", "/v1/subtitles/44444444-4444-4444-8444-444444444444",
+				// Permission checks and the sound library are ordinary JSON
+				// reads too.
+				"/v1/permissions/check", "/v1/permissions/check-batch",
+				"/v1/audio-library", "/v1/audio-library/44444444-4444-4444-8444-444444444444",
 			} {
 				if policy.QueryTokenAllowed(path) {
 					t.Errorf("%s: %s accepts a token in the query string", env.gateway, path)

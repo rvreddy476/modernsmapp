@@ -7,8 +7,13 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import com.us.android.core.datastore.AppearanceStore
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.notifications.NotificationPresenter
@@ -82,7 +87,18 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
     @Inject
     lateinit var doorstepPaymentOpener: DoorstepPaymentOpener
 
+    /** The Appearance setting (T-32): what `UsTheme(darkTheme =)` is handed at the root. */
+    @Inject
+    lateinit var appearanceStore: AppearanceStore
+
     private val viewModel: MainViewModel by viewModels()
+
+    /** Transparent bars whose glyphs suit the app's theme: light over dark, dark over light. */
+    private fun applySystemBars(dark: Boolean) {
+        val clear = android.graphics.Color.TRANSPARENT
+        val style = if (dark) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear)
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -100,7 +116,21 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
         pushDestinations.offerLink(intent?.data)
 
         setContent {
-            UsTheme {
+            // The Appearance setting (T-32, 2026-10-15): System follows the
+            // device, Light and Dark force the theme. Nothing is drawn until
+            // the stored choice is read — a local file, a frame at most — so
+            // a forced theme never flashes the device's first.
+            val appearance by appearanceStore.mode.collectAsStateWithLifecycle(initialValue = null)
+            val mode = appearance ?: return@setContent
+            val dark = mode.isDark(systemDark = isSystemInDarkTheme())
+            // The bars follow the APP's theme, not the device's: dark glyphs
+            // over a forced Light on a dark device. Registered before the
+            // screens' own effects, so a dark stage (Reels) still wins.
+            DisposableEffect(dark) {
+                applySystemBars(dark)
+                onDispose {}
+            }
+            UsTheme(darkTheme = dark) {
                 UsApp(
                     viewModel = viewModel,
                     pool = playerPool,

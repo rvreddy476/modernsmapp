@@ -45,18 +45,22 @@ import kotlinx.coroutines.launch
  * has no place for) and Settings (still beside "Edit profile" as well).
  */
 enum class MeMenuRow(val label: String, val icon: ImageVector) {
+    /** The read-only Creator Hub: the owner's numbers, library and comments (T-31, 2026-10-15). */
+    CREATOR_HUB("Creator Hub", UsIcons.Gauge),
     MESSAGES("Messages", UsIcons.Comment),
     SETTINGS("Settings", UsIcons.Settings),
 }
 
 /**
  * The menu, in ascending alphabetical order by label: the rule for every
- * menu. Settings is offered only when the page was given somewhere to send
- * it; a row that does nothing is never drawn. Pure, so it is a table test.
+ * menu. Settings and Creator Hub are offered only when the page was given
+ * somewhere to send them; a row that does nothing is never drawn. Pure, so
+ * it is a table test.
  */
-fun meMenuRows(hasSettings: Boolean): List<MeMenuRow> =
+fun meMenuRows(hasSettings: Boolean, hasCreatorHub: Boolean = false): List<MeMenuRow> =
     MeMenuRow.entries
         .filter { it != MeMenuRow.SETTINGS || hasSettings }
+        .filter { it != MeMenuRow.CREATOR_HUB || hasCreatorHub }
         .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
 
 /**

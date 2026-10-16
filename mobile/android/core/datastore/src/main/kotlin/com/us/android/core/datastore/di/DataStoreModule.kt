@@ -1,9 +1,13 @@
 package com.us.android.core.datastore.di
 
+import com.us.android.core.datastore.AppearanceStore
+import com.us.android.core.datastore.DataStoreAppearanceStore
 import com.us.android.core.datastore.DataStoreOfflinePrefs
+import com.us.android.core.datastore.DataStoreReelsAutoScrollStore
 import com.us.android.core.datastore.DataStoreReelsSoundStore
 import com.us.android.core.datastore.DataStoreUsageStore
 import com.us.android.core.datastore.OfflinePrefs
+import com.us.android.core.datastore.ReelsAutoScrollStore
 import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.datastore.UsageStore
 import dagger.Binds
@@ -19,6 +23,12 @@ abstract class DataStoreModule {
 
     @Binds
     abstract fun bindReelsSoundStore(store: DataStoreReelsSoundStore): ReelsSoundStore
+
+    @Binds
+    abstract fun bindReelsAutoScrollStore(store: DataStoreReelsAutoScrollStore): ReelsAutoScrollStore
+
+    @Binds
+    abstract fun bindAppearanceStore(store: DataStoreAppearanceStore): AppearanceStore
 
     @Binds
     abstract fun bindOfflinePrefs(store: DataStoreOfflinePrefs): OfflinePrefs

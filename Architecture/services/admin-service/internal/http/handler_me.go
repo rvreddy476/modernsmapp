@@ -25,6 +25,7 @@ var navigationOrder = []struct{ app, label string }{
 	{"qa", "Q&A"},
 	{"chat", "Chat"},
 	{"live", "Live"},
+	{"media", "Sound library"},
 	{"rider", "Mopedu"},
 	{"doorstep", "Doorstep"},
 	{"trust_safety", "Trust & safety"},

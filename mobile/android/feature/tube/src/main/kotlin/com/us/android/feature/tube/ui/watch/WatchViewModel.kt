@@ -39,6 +39,8 @@ import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackCaption
 import com.us.android.core.media.PlayerFactory
+import com.us.android.core.media.applyCaption
+import com.us.android.core.media.captionChoice
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus

@@ -46,7 +46,7 @@ func (f *datingFixture) landFirstMessage() {
 
 func TestFirstMove_OnlyTheFirstMoverMaySendFirst(t *testing.T) {
 	f := firstMoveFixture(t)
-	if _, err := f.svc.SendMessage(context.Background(), f.userB, f.convID, "text", "hi", nil, nil, "m5-b-early"); !errors.Is(err, ErrFirstMovePending) {
+	if _, err := f.svc.SendMessage(context.Background(), f.userB, f.convID, "text", "hi", nil, nil, nil, "m5-b-early"); !errors.Is(err, ErrFirstMovePending) {
 		t.Fatalf("the waiting member sent first: err=%v, want ErrFirstMovePending", err)
 	}
 	f.send(t, f.userA, "m5-a-first")

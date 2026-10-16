@@ -38,6 +38,15 @@ type AudioTrack struct {
 	// private track requires CreatorUserID == actor.
 	IsPublic      bool       `json:"is_public"`
 	CreatorUserID *uuid.UUID `json:"creator_user_id,omitempty"`
+	// LibraryID is the curated library row (media-service audio_library)
+	// this sound is, materialised on its first use (2026-10-15). Such a
+	// sound has no media: it is the platform's, public, heard by everyone.
+	LibraryID *uuid.UUID `json:"library_id,omitempty"`
+}
+
+// IsLibrarySound reports whether the sound is a platform library sound.
+func (t *AudioTrack) IsLibrarySound() bool {
+	return t != nil && t.LibraryID != nil && *t.LibraryID != uuid.Nil
 }
 
 // audioTrackCols is the one projection of a sound. COALESCE throughout: a
@@ -46,14 +55,14 @@ type AudioTrack struct {
 const audioTrackCols = `id, COALESCE(title, ''), COALESCE(artist, ''), COALESCE(duration_ms, 0),
 		       COALESCE(source_media_id, media_id), source_reel_id, COALESCE(status, ''),
 		       GREATEST(COALESCE(use_count, 0), COALESCE(usage_count, 0)),
-		       COALESCE(is_public, TRUE), creator_user_id`
+		       COALESCE(is_public, TRUE), creator_user_id, library_id`
 
 func audioTrackDestinations(t *AudioTrack) []any {
 	return []any{
 		&t.ID, &t.Title, &t.Artist, &t.DurationMs,
 		&t.MediaID, &t.SourcePostID, &t.Status,
 		&t.UseCount,
-		&t.IsPublic, &t.CreatorUserID,
+		&t.IsPublic, &t.CreatorUserID, &t.LibraryID,
 	}
 }
 

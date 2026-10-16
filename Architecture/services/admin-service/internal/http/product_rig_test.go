@@ -178,6 +178,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	liveURL := stub("live", liveAll)
 	identityURL := stub("identity", identityAll)
 	evidenceURL := stub("media", []string{"media:partner-evidence.read"})
+	soundsURL := stub("media", soundsAll)
 
 	var signer *servicetoken.Signer
 	if withKey {
@@ -192,6 +193,7 @@ func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	rg.gate = NewGate(rg.perms, rg.rec, true)
 	h := New(&stubAdminService{}, rg.gate, approvals.NewService(rg.store, rg.holders))
 	h.WithEvidence(service.NewEvidenceClient(evidenceURL, signer))
+	h.WithSounds(service.NewMediaSoundsClient(soundsURL, signer))
 	h.WithFood(service.NewFoodClient(foodURL, signer)).
 		WithCommerce(service.NewCommerceClient(commerceURL, signer)).
 		WithTrustSafety(service.NewTrustSafetyClient(trustURL, signer)).

@@ -123,6 +123,7 @@ import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.live.navigation.LiveWatchRoute
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
+import com.us.android.feature.live.navigation.navigateToLiveCreatorCentre
 import com.us.android.feature.live.navigation.navigateToLiveHub
 import com.us.android.feature.live.navigation.navigateToLiveWatch
 import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreens
@@ -180,6 +181,7 @@ import com.us.android.feature.settings.navigation.onboardingScreen
 import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
+import com.us.android.feature.tube.navigation.navigateToCreatorHub
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeCollection
@@ -540,6 +542,10 @@ private fun NavHostController.openPushDestination(
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
         // destination so it waits through the login like a notification tap.
         CHAT_JOIN_LINK -> if (destination.entityId.isNotBlank()) navigateToJoinByLink(destination.entityId)
+        // A post's public permalink, `cleestudio.com/post/{id}` (2026-10-14): the
+        // post detail, which reads the post (and its visibility) from the
+        // server. The id was already checked to be a UUID by the parser.
+        PushDestinations.TYPE_POST_LINK -> if (destination.entityId.isNotBlank()) navigateToPost(destination.entityId)
         // Call pushes: the ring tap attaches to the live call state; a
         // missed-call tap opens the history.
         "incoming_call", "incoming_video_call" -> navigateToCallSurface()
@@ -729,6 +735,8 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         onGoLive = { navController.navigateToGoLive() },
         onWatch = { streamId -> navController.navigateToLiveWatch(streamId) },
+        // T-30: the creator's own upcoming, past and recorded streams, read-only.
+        onCreatorCentre = { navController.navigateToLiveCreatorCentre() },
         // Go live's "not yet" screen (2026-10-02). "Create a post" opens the
         // Create hub on Text; Back from it (or from the new post) returns to
         // the screen, which asks the server again. "Verify email" (and "Verify
@@ -1053,14 +1061,23 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenCollections = { navController.navigateToTubeCollections() },
             onOpenCollection = { id -> navController.navigateToTubeCollection(id) },
             onOpenOffline = { navController.navigateToTubeOffline() },
+            // T-31: the read-only Creator Hub. A comment on an ordinary post
+            // opens post detail; reels and long videos go through
+            // onOpenReels / onOpenVideo like every other Tube row.
+            onOpenCreatorHub = { navController.navigateToCreatorHub() },
+            onOpenPost = { postId -> navController.navigateToPost(postId) },
+            // The hub's Sounds tab (library sounds, 2026-10-15): the same
+            // door as Reels' "Use this sound" — the sound is in SoundEntry.
+            onCreateWithSound = onCreateWithSound,
         ),
     )
 
-    // Search (founder, 2026-09-05): one page, scoped by the header that
-    // opened it. Every row hands back an id and this is where it resolves: a
-    // user opens a profile, a post the post, a reel the Reels tab (the page
-    // has left the id in ReelsEntry, as the Home feed does), a video the
-    // watch screen, a channel its page inside Tube.
+    // Search (founder, 2026-09-05; T-16): one page, its tabs set by the
+    // header that opened it. Every row hands back an id and this is where it
+    // resolves: a user opens a profile, a post the post, a reel the Reels tab
+    // (the page has left the id in ReelsEntry, as the Home feed does), a
+    // video the watch screen, a channel its page inside Tube, a tag its posts
+    // and a sound its page.
     searchScreen(
         SearchDestinations(
             onBack = { navController.popBackStack() },
@@ -1069,6 +1086,8 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenReels = onOpenReels,
             onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
+            onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
+            onOpenSound = { soundId -> navController.navigateToSound(soundId) },
         ),
     )
 
@@ -1163,6 +1182,9 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 else -> Unit
             }
         },
+        // T-31: the Me tab's More menu opens the read-only Creator Hub,
+        // which lives in Tube's graph (pushed, so Back returns to Me).
+        onOpenCreatorHub = { navController.navigateToCreatorHub() },
     )
     profileScreen(
         onOpenFollowers = {},

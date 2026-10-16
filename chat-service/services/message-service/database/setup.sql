@@ -477,3 +477,10 @@ ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS dating_receipts_gated BO
 ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS dating_call_after_exchange BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE chat.conversation_members ADD COLUMN IF NOT EXISTS first_sent_at TIMESTAMPTZ;
 ALTER TABLE chat.conversation_members ADD COLUMN IF NOT EXISTS dating_receipts_until TIMESTAMPTZ;
+
+-- ===== 010: post cards (TikTok parity T-25 "Send to friends", 2026-10-14) =====
+-- message_type is unconstrained TEXT, so a "post" message needs no CHECK
+-- change. The durable intent carries the shared post id so repair replays it
+-- into Scylla. Only the id is stored; clients hydrate it as the viewer. See
+-- migrations/010_post_message_cards.sql.
+ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS post_id UUID;

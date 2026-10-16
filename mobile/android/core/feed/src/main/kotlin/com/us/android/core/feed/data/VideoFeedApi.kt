@@ -51,9 +51,17 @@ interface VideoFeedApi {
     suspend fun continueWatching(@Query("limit") limit: Int): ApiEnvelope<List<ContinueWatchingDto>>
 
     /**
-     * One author's posts, newest first — post-service `GetPostsByAuthor`.
-     * [type] is the `content_type` filter (`long_video` for Tube); the rows
-     * are bare `PostDetail`, hydrated the way a hashtag page is.
+     * One author's posts — post-service `GetPostsByAuthor`. [type] is the
+     * `content_type` filter (`long_video` for Tube); the rows are bare
+     * `PostDetail`, hydrated the way a hashtag page is.
+     *
+     * [sort] is `latest` (pinned first, then newest — the server's default),
+     * `popular` (most liked first) or `oldest`; see [AuthorPostSort] (T-21).
+     * Null leaves it off, so Tube's reads stay byte-identical to before the
+     * sort existed. The cursor is opaque and minted for ONE sort: replayed
+     * under another it answers 400 `INVALID_CURSOR`, and an unknown sort
+     * answers 400 `INVALID_SORT` — so a sort change always starts a fresh
+     * pager with no cursor.
      */
     @GET("v1/posts/by-author/{authorId}")
     suspend fun postsByAuthor(
@@ -61,6 +69,7 @@ interface VideoFeedApi {
         @Query("type") type: String,
         @Query("limit") limit: Int,
         @Query("cursor") cursor: String? = null,
+        @Query("sort") sort: String? = null,
     ): ApiEnvelope<List<FeedItemDto>>
 
     /** The viewer's bookmarks, every kind of post — post-service `GetBookmarks`. Bare rows again. */

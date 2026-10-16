@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +66,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -75,6 +78,7 @@ import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.data.AuthorPostSort
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.media.publish.PublishRing
@@ -120,9 +124,11 @@ internal fun ProfileMediaGrid(
     val pending by viewModel.pending.collectAsStateWithLifecycle()
     val scheduled by viewModel.scheduled.collectAsStateWithLifecycle()
     val reloads by viewModel.reloads.collectAsStateWithLifecycle()
+    val sorts by viewModel.sorts.collectAsStateWithLifecycle()
     val posts = viewModel.posts.collectAsLazyPagingItems()
     val reels = viewModel.reels.collectAsLazyPagingItems()
     val longVideos = viewModel.longVideos.collectAsLazyPagingItems()
+    val saved = viewModel.saved.collectAsLazyPagingItems()
     var failureKey by rememberSaveable { mutableStateOf<String?>(null) }
     var createChannelKey by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -142,12 +148,14 @@ internal fun ProfileMediaGrid(
     }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-        GridTabs(selected = tab, onSelect = viewModel::select)
-        val items = when (tab) {
-            ProfileGridTab.POSTS -> posts
-            ProfileGridTab.REELS -> reels
-            ProfileGridTab.VIDEOS -> longVideos
-        }
+        GridControls(
+            tabs = viewModel.tabs,
+            tab = tab,
+            sorts = sorts,
+            onSelectTab = viewModel::select,
+            onSelectSort = viewModel::selectSort,
+        )
+        val items = TabLists(posts, reels, longVideos, saved).forTab(tab)
         val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
             scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
         GridRows(
@@ -258,50 +266,139 @@ private sealed interface GridHead {
     data class Scheduled(val tile: ScheduledTile) : GridHead
 }
 
-/** Three glass pills; the selected one is white with navy text — the app's selection rule. */
+/** The four paged lists, so the one on screen is picked in one place. */
+private class TabLists(
+    val posts: LazyPagingItems<FeedItem>,
+    val reels: LazyPagingItems<FeedItem>,
+    val longVideos: LazyPagingItems<FeedItem>,
+    val saved: LazyPagingItems<FeedItem>,
+) {
+    fun forTab(tab: ProfileGridTab): LazyPagingItems<FeedItem> = when (tab) {
+        ProfileGridTab.POSTS -> posts
+        ProfileGridTab.REELS -> reels
+        ProfileGridTab.VIDEOS -> longVideos
+        ProfileGridTab.SAVED -> saved
+    }
+}
+
+/** The tab pills, and under them the sort pills when the tab on screen sorts. */
 @Composable
-private fun GridTabs(selected: ProfileGridTab, onSelect: (ProfileGridTab) -> Unit) {
+private fun GridControls(
+    tabs: List<ProfileGridTab>,
+    tab: ProfileGridTab,
+    sorts: Map<ProfileGridTab, AuthorPostSort>,
+    onSelectTab: (ProfileGridTab) -> Unit,
+    onSelectSort: (ProfileGridTab, AuthorPostSort) -> Unit,
+) {
+    GridTabs(tabs = tabs, selected = tab, onSelect = onSelectTab)
+    if (tab.sortable) {
+        SortRow(
+            selected = sorts[tab] ?: AuthorPostSort.LATEST,
+            onSelect = { sort -> onSelectSort(tab, sort) },
+        )
+    }
+}
+
+/**
+ * Glass pills, one per tab this viewer gets ([gridTabsFor]); the selected
+ * one is white with navy text — the app's selection rule. The row scrolls
+ * sideways rather than squeezing a fourth pill (Saved) on a narrow phone.
+ */
+@Composable
+private fun GridTabs(tabs: List<ProfileGridTab>, selected: ProfileGridTab, onSelect: (ProfileGridTab) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
             .testTag("profile_grid_tabs"),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
-        ProfileGridTab.entries.forEach { tab ->
-            val active = tab == selected
-            val shape = RoundedCornerShape(UsTheme.radii.full)
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .height(TAB_HEIGHT)
-                    .clip(shape)
-                    .background(if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBg)
-                    .border(
-                        HAIRLINE,
-                        if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder,
-                        shape,
-                    )
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { onSelect(tab) },
-                    )
-                    .semantics {
-                        role = Role.Tab
-                        this.selected = active
-                    }
-                    .padding(horizontal = TAB_HORIZONTAL)
-                    .testTag("profile_grid_tab:${tab.name.lowercase()}"),
-            ) {
-                Text(
-                    text = tab.label,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (active) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
-                    maxLines = 1,
-                )
-            }
+        tabs.forEach { tab ->
+            GridPill(
+                label = tab.label,
+                active = tab == selected,
+                role = Role.Tab,
+                height = TAB_HEIGHT,
+                onClick = { onSelect(tab) },
+                tag = "profile_grid_tab:${tab.name.lowercase()}",
+            )
         }
+    }
+}
+
+/**
+ * Latest / Popular / Oldest for the tab on screen (T-21): smaller pills
+ * under the tabs, one of them always selected. A pick re-reads the tab from
+ * its first page in that order.
+ */
+@Composable
+private fun SortRow(selected: AuthorPostSort, onSelect: (AuthorPostSort) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("profile_grid_sort"),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AuthorPostSort.entries.forEach { sort ->
+            GridPill(
+                label = sort.label,
+                active = sort == selected,
+                role = Role.RadioButton,
+                height = SORT_HEIGHT,
+                onClick = { onSelect(sort) },
+                tag = "profile_grid_sort:${sort.wire}",
+                compact = true,
+            )
+        }
+    }
+}
+
+/** One glass pill of the grid's controls; white with navy text when [active]. */
+@Composable
+// The pill is a value carrier for both rows; a wrapper type would add
+// indirection without removing a single argument.
+@Suppress("LongParameterList")
+private fun GridPill(
+    label: String,
+    active: Boolean,
+    role: Role,
+    height: Dp,
+    onClick: () -> Unit,
+    tag: String,
+    compact: Boolean = false,
+) {
+    val shape = RoundedCornerShape(UsTheme.radii.full)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .height(height)
+            .clip(shape)
+            .background(if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBg)
+            .border(
+                HAIRLINE,
+                if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder,
+                shape,
+            )
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics {
+                this.role = role
+                this.selected = active
+            }
+            .padding(horizontal = if (compact) SORT_HORIZONTAL else TAB_HORIZONTAL)
+            .testTag(tag),
+    ) {
+        Text(
+            text = label,
+            style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = if (active) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
+            maxLines = 1,
+        )
     }
 }
 
@@ -392,7 +489,7 @@ private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, has
                     .height(STATE_HEIGHT),
             )
             refresh is LoadState.NotLoading && count == 0 && !hasHead -> UsEmptyState(
-                title = "No ${tab.label.lowercase()} yet",
+                title = emptyTitle(tab),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(STATE_HEIGHT)
@@ -413,11 +510,17 @@ private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, has
     }
 }
 
+/** What an empty tab says: "No reels yet", and "Nothing saved yet" for Saved. */
+internal fun emptyTitle(tab: ProfileGridTab): String =
+    if (tab == ProfileGridTab.SAVED) "Nothing saved yet" else "No ${tab.label.lowercase()} yet"
+
 /** Square for posts, 3:4 for reels, 16:9 for videos — the shape the content has. */
 internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
     ProfileGridTab.POSTS -> SQUARE
     ProfileGridTab.REELS -> PORTRAIT_TILE
     ProfileGridTab.VIDEOS -> LANDSCAPE
+    // Saved mixes every kind, so no one shape is right; square is the neutral one.
+    ProfileGridTab.SAVED -> SQUARE
 }
 
 /** One post as a tile: its still (the cover for a video), a film glyph for the video kinds. */
@@ -774,6 +877,8 @@ private val HAIRLINE = 1.dp
 private val GRID_GAP = 3.dp
 private val TAB_HEIGHT = 34.dp
 private val TAB_HORIZONTAL = 14.dp
+private val SORT_HEIGHT = 28.dp
+private val SORT_HORIZONTAL = 12.dp
 private val STATE_HEIGHT = 180.dp
 private val APPEND_HEIGHT = 64.dp
 private val KIND_GLYPH = 16.dp

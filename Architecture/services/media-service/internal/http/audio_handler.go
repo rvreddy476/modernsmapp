@@ -35,6 +35,13 @@ func (h *Handler) RegisterAudioRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 	{
 		lib.GET("", h.GetAudioLibrary)
 		lib.GET("/:audioId", h.GetAudioLibraryTrack)
+		// The library row's audio, for a preview before it is used: the
+		// same redirect as /v1/audio/:id/serve (library_sound_handler.go).
+		lib.GET("/:audioId/serve", h.ServeAudioLibraryTrack)
+		lib.HEAD("/:audioId/serve", h.HeadAudioLibraryTrack)
+		// Use a library sound: its audio_tracks row, made on first use. The
+		// answer's audio_track_id is what a post's audio_track_id takes.
+		lib.POST("/:audioId/use", authMW, h.UseAudioLibraryTrack)
 	}
 }
 
@@ -225,11 +232,12 @@ func (h *Handler) GetAudioLibrary(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	if tracks == nil {
-		tracks = []postgres.AudioLibraryTrack{}
+	out := make([]postgres.AudioLibraryTrack, 0, len(tracks))
+	for _, t := range tracks {
+		out = append(out, service.PresentLibraryTrack(t))
 	}
 
-	api.JSON(c.Writer, http.StatusOK, gin.H{"tracks": tracks, "total": len(tracks)}, nil)
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tracks": out, "total": len(out)}, nil)
 }
 
 func (h *Handler) GetAudioLibraryTrack(c *gin.Context) {
@@ -245,5 +253,5 @@ func (h *Handler) GetAudioLibraryTrack(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, track, nil)
+	api.JSON(c.Writer, http.StatusOK, service.PresentLibraryTrack(*track), nil)
 }

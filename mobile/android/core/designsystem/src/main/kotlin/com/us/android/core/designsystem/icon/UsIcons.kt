@@ -745,6 +745,15 @@ object UsIcons {
         "M4 22v-7",
     )
 
+    /** Lucide `pin` — a creator's pinned comment (2026-10-14, audit T-17). */
+    val Pin: ImageVector = lucideStroked(
+        "Pin",
+        "M12 17v5",
+        "M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76" +
+            "a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 " +
+            "1 1 0 0 1 1 1z",
+    )
+
     /** Lucide `chevron-down` — an inline expander, rotated when open. */
     val ChevronDown: ImageVector = lucideStroked("ChevronDown", "m6 9 6 6 6-6")
 

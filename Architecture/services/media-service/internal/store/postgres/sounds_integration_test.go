@@ -119,14 +119,22 @@ func soundSchema(t *testing.T, shape string) *pgxpool.Pool {
 	return pool
 }
 
-// applySoundMigration runs 024 the way the runner does: the whole file, in
-// one transaction.
+// applySoundMigration runs 024, then 028 (library_id, which every sound
+// read now selects), the way the runner does: each whole file in one
+// transaction.
 func applySoundMigration(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	for _, file := range []string{"024_sound_per_source.sql", "028_library_sounds.sql"} {
+		applyMediaMigration(t, pool, file)
+	}
+}
+
+func applyMediaMigration(t *testing.T, pool *pgxpool.Pool, file string) {
+	t.Helper()
 	ctx := context.Background()
-	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "database", "migrations", "024_sound_per_source.sql"))
+	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "database", "migrations", file))
 	if err != nil {
-		t.Fatalf("read migration 024: %v", err)
+		t.Fatalf("read migration %s: %v", file, err)
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -134,10 +142,10 @@ func applySoundMigration(t *testing.T, pool *pgxpool.Pool) {
 	}
 	if _, err := tx.Exec(ctx, string(sql)); err != nil {
 		_ = tx.Rollback(ctx)
-		t.Fatalf("apply migration 024: %v", err)
+		t.Fatalf("apply migration %s: %v", file, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit migration 024: %v", err)
+		t.Fatalf("commit migration %s: %v", file, err)
 	}
 }
 

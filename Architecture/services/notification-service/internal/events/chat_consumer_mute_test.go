@@ -17,14 +17,26 @@ import (
 // message and only the chat list looked muted.
 
 type recordedNotification struct {
-	userID  uuid.UUID
-	pushed  bool
-	deepLnk string
+	userID      uuid.UUID
+	pushed      bool
+	deepLnk     string
+	notifType   string
+	messageType string
 }
 
 type recordingNotifier struct {
 	created []recordedNotification
 	failOn  uuid.UUID
+}
+
+func (r *recordingNotifier) CreateMessageNotification(_ context.Context, userID, _, _ uuid.UUID, deepLink string, _ time.Time, messageType string, muted bool) error {
+	r.created = append(r.created, recordedNotification{
+		userID: userID, pushed: !muted, deepLnk: deepLink, notifType: "dm", messageType: messageType,
+	})
+	if userID == r.failOn {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func (r *recordingNotifier) CreateNotification(_ context.Context, userID, _ uuid.UUID, _, _ string, _ uuid.UUID, deepLink string, _ time.Time) error {

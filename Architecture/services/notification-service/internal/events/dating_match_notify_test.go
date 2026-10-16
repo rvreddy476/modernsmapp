@@ -33,6 +33,11 @@ func (f *notifyCapture) CreateNotificationWithoutPush(ctx context.Context, recip
 	return f.CreateNotification(ctx, recipient, sender, notifType, entityType, entityID, deepLink, createdAt)
 }
 
+func (f *notifyCapture) CreateMessageNotification(ctx context.Context, recipient, sender, conversationID uuid.UUID,
+	deepLink string, createdAt time.Time, _ string, _ bool) error {
+	return f.CreateNotification(ctx, recipient, sender, "dm", "conversation", conversationID, deepLink, createdAt)
+}
+
 func TestDatingNewMessageNotificationNamesTheMatch(t *testing.T) {
 	match, conversation, sender, recipient := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	payload := chatDatingMessageNewPayload{
