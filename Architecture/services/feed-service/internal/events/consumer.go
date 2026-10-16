@@ -10,76 +10,88 @@ import (
 	"github.com/atpost/feed-service/internal/service"
 	"github.com/atpost/feed-service/internal/store/scylla"
 	"github.com/atpost/shared/events"
+	sharedkafka "github.com/atpost/shared/kafka"
+	"github.com/atpost/shared/o11y/metrics"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
+// DefaultDLQTopic is where a feed event lands once its retries are spent.
+// It already exists in every environment (infra/terraform/modules/msk/
+// topics-job/variables.tf) and is shared with the other social.events.v1
+// consumers; the x-dlq-consumer-group / x-dlq-original-topic headers the
+// shared consumer stamps say whose message it is.
+const DefaultDLQTopic = "social.events.v1.dlq"
+
+// Consumer applies social events to the feed's timelines and caches.
+//
+// Delivery is the shared at-least-once consumer (shared/kafka): the offset
+// is committed only after the handler succeeded or the message was durably
+// written to the DLQ, a failed handler is retried with backoff first, and a
+// processed event leaves a receipt so a redelivery of the same event_id is
+// skipped. It replaced a kafka-go ReadMessage loop that committed every
+// offset BEFORE the handler ran and only logged what came back — so any
+// transient Scylla, graph or Postgres error lost the fan-out, delete or
+// unfollow purge for good — and that exited on its first read error, after
+// which the pod stayed Ready and never consumed again.
+//
+// The shared reader uses MinBytes 1, so a quiet topic is still delivered at
+// once (the ten-second fan-out lag came from MinBytes 10 KB, not from here).
+//
+// Every handler must tolerate running twice for one event.
 type Consumer struct {
-	reader        *kafka.Reader
+	inner         *sharedkafka.Consumer
 	service       *service.Service
 	rdb           *redis.Client
 	timelineStore *scylla.TimelineStore
 }
 
-func NewConsumer(brokers []string, groupID string, topic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore) *Consumer {
-	return NewConsumerWithDialer(brokers, groupID, topic, svc, rdb, ts, nil)
+// NewConsumer builds the consumer for one topic. An empty dlqTopic disables
+// the DLQ: a message whose retries are spent then blocks its partition until
+// it succeeds (shared/kafka retryDurable) instead of being skipped.
+func NewConsumer(brokers []string, groupID, topic, dlqTopic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore, m *metrics.KafkaConsumerMetrics) *Consumer {
+	c := &Consumer{service: svc, rdb: rdb, timelineStore: ts}
+	c.inner = sharedkafka.NewConsumer(sharedkafka.ConsumerConfig{
+		Brokers:  brokers,
+		GroupID:  groupID,
+		Topic:    topic,
+		DLQTopic: dlqTopic,
+	}, rdb, m, c.handle)
+	return c
 }
 
-func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore, dialer *kafka.Dialer) *Consumer {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: brokers,
-		GroupID: groupID,
-		Topic:   topic,
-		/*
-			MinBytes asks the broker to hold a fetch open until it has this much
-			to return; MaxWait is how long it may hold it. kafka-go defaults
-			MaxWait to TEN SECONDS, and a PostCreated envelope is a few hundred
-			bytes — so on a quiet topic the broker sat waiting for a 10 KB batch
-			that would never fill, and every post reached its author's own feed
-			about ten seconds after it was written. Measured on dev: posts
-			created at 10:17:48.6 and 10:19:25.5 were fanned out at 10:17:57.5
-			and 10:19:36.5.
-
-			MinBytes 1 asks for whatever is there. MaxWait is still set
-			explicitly rather than left to the default, because the default is
-			exactly what caused this and a future reader should not have to know
-			it. MaxBytes keeps the per-fetch ceiling.
-		*/
-		MinBytes: 1,
-		MaxBytes: 10e6, // 10MB
-		MaxWait:  500 * time.Millisecond,
-		Dialer:   dialer,
-	})
-	return &Consumer{reader: reader, service: svc, rdb: rdb, timelineStore: ts}
-}
-
+// Start blocks until ctx is cancelled. A fetch error is logged and retried
+// by the shared consumer; it no longer ends consumption.
 func (c *Consumer) Start(ctx context.Context) {
-	for {
-		m, err := c.reader.ReadMessage(ctx)
-		if err != nil {
-			log.Printf("Consumer error: %v\n", err)
-			break
-		}
-
-		if err := c.processMessage(ctx, m); err != nil {
-			log.Printf("Failed to process message: %v\n", err)
-		}
-	}
+	c.inner.Start(ctx)
 }
 
+// handle is the shared consumer's handler; the envelope is already decoded.
+func (c *Consumer) handle(ctx context.Context, envelope *events.EventEnvelope) error {
+	return c.dispatch(ctx, *envelope)
+}
+
+// processMessage decodes a raw message and dispatches it. Production goes
+// through handle; tests feed raw messages here.
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
 		return err
 	}
+	return c.dispatch(ctx, envelope)
+}
 
+func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) error {
 	switch envelope.EventType {
 	case events.PostCreated:
 		return c.handlePostCreated(ctx, envelope)
 
 	case events.PostReacted:
 		return c.handlePostReacted(ctx, envelope)
+
+	case events.PostUnreacted:
+		return c.handlePostUnreacted(ctx, envelope)
 
 	case events.CommentCreated:
 		return c.handleCommentCreated(ctx, envelope)
@@ -108,6 +120,9 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 
 	case events.PostRestored:
 		return c.handlePostRestored(ctx, envelope)
+
+	case events.EventPostVisibilityChanged:
+		return c.handlePostVisibilityChanged(ctx, envelope)
 
 	case events.HandleChanged:
 		return c.handleHandleChanged(ctx, envelope)
@@ -156,16 +171,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 // across the last bucketLookback months and write each into
 // home_timeline_by_user.
 //
-// NOT idempotent, contrary to what this comment claimed until
-// 2026-09-09. It said "AddToHomeTimeline upserts on (user_id, bucket,
-// ts, post_id) so an unfollow → refollow cycle is safe" — but the row's
-// key is (user_id, bucket) / ts, and ts is generated afresh from
-// gocql.UUIDFromTime on every write, so a second backfill of the same
-// post lands on a NEW ts and becomes a SECOND row. Each follow → unfollow
-// → refollow cycle therefore duplicates the followee's backlog in the
-// follower's timeline; the SSO test account was carrying seven copies of
-// each post on 2026-09-09. Not fixed here (this handler needs a real
-// dedupe key, which is a schema question), but no longer claimed.
+// Idempotent: AddToHomeTimeline keys each row by scylla.TimelineTS, a pure
+// function of (post, created_at), so a follow → unfollow → refollow cycle
+// or a redelivery rewrites the same rows. Until that key existed every
+// backfill added a fresh copy of the backlog (seven per post on the SSO
+// test account on 2026-09-09).
 func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil
@@ -187,6 +197,11 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 	followeeID, err := uuid.Parse(p.FolloweeID)
 	if err != nil {
 		return fmt.Errorf("parse followee_id: %w", err)
+	}
+
+	// The follower's cached followed-celeb set (celeb pull) is stale now.
+	if c.rdb != nil {
+		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID), service.FollowingKey(followerID))
 	}
 
 	// Audit HF6: celebs use the pull model (FanoutPost short-circuits
@@ -236,9 +251,9 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 // established leaves everything in place — see unfollow_purge.go, FAILING
 // CLOSED. TestUnfollowPurgeIsGuardedByTheClaimCheck pins the gate.
 //
-// No retry exists: Start auto-commits the offset and only logs what comes
-// back from here, so everything this returns is a permanent outcome, not a
-// deferred one.
+// An error returned from here is retried by the shared consumer and then
+// parked on the DLQ, so a relationship that could not be established is
+// revisited rather than abandoned. The purge itself is idempotent.
 func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil
@@ -259,6 +274,11 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.Eve
 	followeeID, err := uuid.Parse(p.FolloweeID)
 	if err != nil {
 		return fmt.Errorf("parse followee_id: %w", err)
+	}
+
+	// A celeb the follower no longer follows must stop being pulled now.
+	if c.rdb != nil {
+		c.rdb.Del(ctx, service.FollowedCelebsKey(followerID), service.FollowingKey(followerID))
 	}
 
 	if c.service == nil {
@@ -405,8 +425,8 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 		rev = 1
 	}
 	if err := c.service.RecordDistribution(ctx, postID, mainFeed, rev); err != nil {
-		// Fail the message so Kafka redelivers: losing this row would
-		// leak a PostTube-only video into social home.
+		// Fail the message so the consumer retries (then DLQs) it: losing
+		// this row would leak a PostTube-only video into social home.
 		return fmt.Errorf("record distribution for %s: %w", event.PostID, err)
 	}
 
@@ -512,6 +532,40 @@ func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventE
 	return nil
 }
 
+// unreactScript decrements a velocity counter without taking it below zero
+// (a PostUnreacted for a reaction this service never counted — one made
+// before the counter existed, or whose key already expired — must not make
+// the post look less popular than nothing).
+var unreactScript = redis.NewScript(`
+local n = tonumber(redis.call('GET', KEYS[1]) or '0')
+if n > 0 then return redis.call('DECR', KEYS[1]) end
+return 0`)
+
+// handlePostUnreacted is handlePostReacted's inverse: the velocity counter
+// comes back down and the reactor leaves the likers set. Before PostUnreacted
+// existed the counter only ever went up, so a like taken back still counted
+// toward a post's trending velocity for a week.
+func (c *Consumer) handlePostUnreacted(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.PostReactedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	if c.rdb == nil || event.PostID == "" {
+		return nil
+	}
+	counterKey := fmt.Sprintf("post:counters:%s:likes", event.PostID)
+	if err := unreactScript.Run(ctx, c.rdb, []string{counterKey}).Err(); err != nil {
+		return fmt.Errorf("PostUnreacted: decrement %s: %w", counterKey, err)
+	}
+	if event.ReactorID != "" {
+		if err := c.rdb.SRem(ctx, fmt.Sprintf("post:likers:%s", event.PostID), event.ReactorID).Err(); err != nil {
+			return fmt.Errorf("PostUnreacted: likers %s: %w", event.PostID, err)
+		}
+	}
+	return nil
+}
+
 func (c *Consumer) handleCommentCreated(ctx context.Context, envelope events.EventEnvelope) error {
 	var event events.CommentCreatedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
@@ -591,20 +645,19 @@ func (c *Consumer) handleUploadDeleted(ctx context.Context, envelope events.Even
 	c.rdb.Del(ctx, fmt.Sprintf("post:counters:%s:comments", event.PostID))
 	c.rdb.Del(ctx, fmt.Sprintf("post:likers:%s", event.PostID))
 
-	// If author provided, delete from author timeline
-	if event.AuthorID != "" {
-		authorID, parseErr := uuid.Parse(event.AuthorID)
-		if parseErr == nil && c.timelineStore != nil {
-			// Delete the specific post entry from author timeline (current month)
-			now := time.Now().UTC()
-			b := now.Year()*100 + int(now.Month())
-			if delErr := c.timelineStore.DeleteAuthorTimelineEntry(ctx, authorID, postID, b); delErr != nil {
-				log.Printf("Failed to delete author timeline entry for %s: %v", event.PostID, delErr)
-			}
-		}
+	// Remove the post from every timeline that holds it, as PostDeleted
+	// does. This used to delete only the author's own row, and only from
+	// the CURRENT month's bucket — a post uploaded last month kept its
+	// author row, and every follower kept theirs (masked only by the
+	// tombstone and post-service's batch gate, but still counted by the
+	// new-posts pill and still taking slots in each page's window).
+	removed, err := c.removePostFromTimelines(ctx, postID, event.AuthorID)
+	if err != nil {
+		return fmt.Errorf("UploadDeleted: %w", err)
 	}
 
-	log.Printf("Processing UploadDeleted: post=%s author=%s type=%s", event.PostID, event.AuthorID, event.ContentType)
+	log.Printf("Processing UploadDeleted: post=%s author=%s type=%s timeline_rows_removed=%d",
+		event.PostID, event.AuthorID, event.ContentType, removed)
 	return nil
 }
 
@@ -677,5 +730,8 @@ func (c *Consumer) handlePostRepostUndone(ctx context.Context, envelope events.E
 }
 
 func (c *Consumer) Close() error {
-	return c.reader.Close()
+	if c.inner == nil {
+		return nil
+	}
+	return c.inner.Close()
 }

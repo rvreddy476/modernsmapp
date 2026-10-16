@@ -1,0 +1,58 @@
+# One-off Job: repair the feed's Scylla timelines (feed-service
+# cmd/timeline-maintenance). Collapses duplicate rows of a post onto its
+# deterministic key, deletes rows of posts older than 360 days, gives rows
+# written before the TTL existed what is left of it, and indexes every kept
+# row in timeline_index_by_post_v2.
+#
+# Do not `kubectl apply` this file directly: run.sh <qa|prod> <image> fills in
+# the environment's client Service, the feed-service image (the one deployed,
+# which carries /timeline-maintenance) and the mode. DRY RUN unless run.sh is
+# given --apply; the dry run's log is the count of what --apply would do.
+#
+# Runs in the scylla namespace, next to the scylla-schema Job, so it reaches
+# the CQL port under the same network rules. Safe to re-run; a stopped run
+# prints the -start to resume from.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: timeline-maintenance
+  namespace: scylla
+  labels:
+    app.kubernetes.io/name: timeline-maintenance
+    app.kubernetes.io/part-of: atpost
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: timeline-maintenance
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        workload: general
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: maintenance
+          image: FEED_SERVICE_IMAGE
+          command: ["/timeline-maintenance"]
+          args: ["-tables", "home,author", "-ranges", "4096", "-workers", "4"]
+          env:
+            - name: SCYLLA_HOSTS
+              value: atpost-prod-client.scylla.svc.cluster.local
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

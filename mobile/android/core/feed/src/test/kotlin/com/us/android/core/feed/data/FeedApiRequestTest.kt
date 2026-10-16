@@ -61,36 +61,45 @@ class FeedApiRequestTest {
                 cursor = null,
                 followingOnly = query.followingOnly.takeIf { it },
                 circleOnly = query.circleOnly.takeIf { it },
+                feedMode = query.feedModeParam(),
             )
         }
         return server.takeRequest().target
     }
 
+    /**
+     * For You asks for the RANKED home feed. Without feed_mode the server
+     * used the saved preference, chronological by default, so Android's
+     * For You was never ranked.
+     */
     @Test
-    fun `for you asks for the plain home feed`() {
+    fun `for you asks for the ranked home feed`() {
         val target = feedRequest(FeedQuery.ForYou)
 
         assertThat(target).startsWith("/v1/feed/home?")
         assertThat(target).contains("limit=15")
+        assertThat(target).contains("feed_mode=ranked")
         assertThat(target).doesNotContain("following_only")
         assertThat(target).doesNotContain("circle_only")
     }
 
     @Test
-    fun `following sends following_only=true and nothing else`() {
+    fun `following sends following_only=true, chronological`() {
         val target = feedRequest(FeedQuery.Following)
 
         assertThat(target).startsWith("/v1/feed/home?")
         assertThat(target).contains("following_only=true")
+        assertThat(target).contains("feed_mode=chronological")
         assertThat(target).doesNotContain("circle_only")
     }
 
     @Test
-    fun `friends sends circle_only=true and nothing else`() {
+    fun `friends sends circle_only=true, chronological`() {
         val target = feedRequest(FeedQuery.Friends)
 
         assertThat(target).startsWith("/v1/feed/home?")
         assertThat(target).contains("circle_only=true")
+        assertThat(target).contains("feed_mode=chronological")
         assertThat(target).doesNotContain("following_only")
     }
 
@@ -103,6 +112,30 @@ class FeedApiRequestTest {
         assertThat(target).contains("limit=15")
         assertThat(target).doesNotContain("following_only")
         assertThat(target).doesNotContain("circle_only")
+        assertThat(target).doesNotContain("feed_mode")
+    }
+
+    /** The "new posts" pill: each home tab asks for its own delta, Friends for none. */
+    @Test
+    fun `the home tabs map to their delta feed types`() {
+        assertThat(FeedQuery.ForYou.deltaFeedType()).isEqualTo("home")
+        assertThat(FeedQuery.Following.deltaFeedType()).isEqualTo("following")
+        assertThat(FeedQuery.Friends.deltaFeedType()).isNull()
+        assertThat(FeedQuery.Videos.deltaFeedType()).isNull()
+    }
+
+    @Test
+    fun `the delta request carries the feed type and the anchor verbatim`() {
+        enqueue("""{"data":{"new_count":4,"newest_anchor":"2026-10-13T10:00:00Z","has_more":false}}""")
+
+        val delta = runBlocking { api.getDelta(feedType = "home", anchor = "2026-10-13T09:00:00Z", limit = 50) }
+
+        val target = server.takeRequest().target
+        assertThat(target).startsWith("/v1/feed/delta?")
+        assertThat(target).contains("feed_type=home")
+        // The colons may or may not be percent-encoded; the date and hour may not.
+        assertThat(target).contains("anchor=2026-10-13T09")
+        assertThat(delta.data!!.newCount).isEqualTo(4)
     }
 
     private fun feedbackBody(request: FeedFeedbackRequest): String {

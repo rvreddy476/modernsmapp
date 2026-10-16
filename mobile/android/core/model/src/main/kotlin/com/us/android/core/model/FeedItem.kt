@@ -315,9 +315,9 @@ data class FeedViewerState(
 /**
  * Which feed surface to load.
  *
- * All four now paginate. Home returns an RFC3339 timestamp cursor; the ranked
- * surfaces return an opaque base64 timeuuid token. Both are replayed verbatim
- * and never parsed or constructed.
+ * All four paginate with an opaque base64 timeuuid token (home's used to be
+ * an RFC3339 timestamp, which the server still accepts). Cursors are replayed
+ * verbatim and never parsed or constructed.
  */
 enum class FeedSurface(val path: String) {
     Home("home"),
@@ -343,10 +343,15 @@ data class FeedQuery(
     val followingOnly: Boolean = false,
     /** Only mutual follows (the viewer's circle) — the Friends tab. */
     val circleOnly: Boolean = false,
+    /**
+     * Ask for the ranked ordering of the home surface (`feed_mode=ranked`).
+     * Only "For You" sets it; the narrowed tabs are chronological.
+     */
+    val ranked: Boolean = false,
 ) {
     companion object {
         /** The home timeline as the server ranks it — "For You". */
-        val ForYou = FeedQuery(FeedSurface.Home)
+        val ForYou = FeedQuery(FeedSurface.Home, ranked = true)
         val Following = FeedQuery(FeedSurface.Home, followingOnly = true)
         val Friends = FeedQuery(FeedSurface.Home, circleOnly = true)
 

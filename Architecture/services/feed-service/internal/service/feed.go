@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atpost/feed-service/internal/ranking"
@@ -61,6 +63,11 @@ type Service struct {
 	// lvTiers is the long-video frequency configuration (P0-4), loaded
 	// once at construction from defaults + env overrides.
 	lvTiers map[string]lvTier
+	// celeb is the pull-model switch and the auto-flag threshold
+	// (FEED_CELEB_PULL / FEED_CELEB_FOLLOWER_THRESHOLD) — see celebpull.go.
+	celeb celebConfig
+	// discovery is For You's out-of-network share (discovery.go).
+	discovery discoveryConfig
 	// feedback is the per-viewer Interested / Not-interested store — the
 	// Postgres MetaStore in production, swapped by tests. See feedback.go.
 	feedback feedbackStore
@@ -144,6 +151,8 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		trustClient:         httpclient.NewWithBreaker(5*time.Second, "feed->trust-safety"),
 		kwCache:             make(map[uuid.UUID]keywordCacheEntry),
 		lvTiers:             loadLVTiers(),
+		celeb:               loadCelebConfig(),
+		discovery:           loadDiscoveryConfig(),
 	}
 	// A typed-nil *MetaStore must not become a non-nil interface, or every
 	// hydration would fail closed on a nil pool instead of on a real error.
@@ -220,7 +229,23 @@ type HomeFeedResult struct {
 	// is additive for every existing client and invisible to one that
 	// does not read it.
 	EmptyReason string
+	// NextCursor is the exact timeline key (a timeuuid) the next page
+	// starts below, or "" when the timeline is exhausted. See homeWindow.
+	NextCursor string
 }
+
+// HomeCursor is where a home-feed page starts. Token is the exact timeline
+// key a previous page ended on (HomeFeedResult.NextCursor); Time is the
+// legacy RFC3339 cursor, still accepted so a client that loaded a page
+// before the keyset cursor shipped can keep scrolling. Both empty is the
+// first page.
+type HomeCursor struct {
+	Token string
+	Time  *time.Time
+}
+
+// FirstPage reports whether this is the first page of the feed.
+func (c HomeCursor) FirstPage() bool { return c.Token == "" && c.Time == nil }
 
 // The values of HomeFeedResult.EmptyReason.
 const (
@@ -247,11 +272,60 @@ const (
 // follows would otherwise land on an empty front door, and the web client
 // asks for `ranked` for exactly that reason. It is only forbidden when the
 // caller narrowed the request, where an empty page is the honest answer.
-func coldStartAllowed(before *time.Time, feedMode string, candidateCount int, circleOnly, followingOnly bool) bool {
+func coldStartAllowed(firstPage bool, feedMode string, candidateCount int, circleOnly, followingOnly bool) bool {
 	if circleOnly || followingOnly {
 		return false // an explicit narrowing is never backfilled
 	}
-	return before == nil && candidateCount == 0 && feedMode == "ranked"
+	return firstPage && candidateCount == 0 && feedMode == "ranked"
+}
+
+// homeWindow cuts one home-feed page out of the filtered candidates and
+// says where the next page starts.
+//
+// candidates are in timeline order (newest first), with any cold-start
+// items — which did not come from the timeline and carry no CursorToken —
+// appended after them. raw is everything the timeline read returned before
+// filtering, also newest first, and fetchLimit is how many rows that read
+// asked for.
+//
+// The page is the first `limit` candidates; ranking may then only reorder
+// it. The cursor is the oldest timeline row the page reached, so every
+// candidate not on this page is older than it and is read again by the next
+// one. This is the keyset rule the reels and Tube pages already follow
+// (keysetWindow). Home used to rank a 2.5x window, keep the best `limit`
+// and continue below the created_at of the LAST RANKED item: the window
+// rows that ranked below the cut but were newer than that item were never
+// served, and older ones already served came back on the next page.
+//
+// When the page holds every timeline candidate there is, the next page
+// starts below the oldest row the read returned — filtered rows included,
+// so they are not read again — provided the read came back full (the
+// timeline may hold more). A short read means the timeline is exhausted.
+func homeWindow(candidates []FeedItem, raw []scylla.FeedItem, fetchLimit, limit int) ([]FeedItem, string) {
+	n := len(candidates)
+	if n > limit {
+		n = limit
+	}
+	window := candidates[:n]
+
+	moreFromTimeline := false
+	for _, c := range candidates[n:] {
+		if c.CursorToken != "" {
+			moreFromTimeline = true
+			break
+		}
+	}
+	if moreFromTimeline {
+		for i := len(window) - 1; i >= 0; i-- {
+			if window[i].CursorToken != "" {
+				return window, window[i].CursorToken
+			}
+		}
+	}
+	if fetchLimit > 0 && len(raw) >= fetchLimit {
+		return window, raw[len(raw)-1].CursorToken
+	}
+	return window, ""
 }
 
 // countFromOthers reports how many of these candidates somebody OTHER than the
@@ -277,7 +351,7 @@ func countFromOthers(items []FeedItem, viewer uuid.UUID) int {
 	return n
 }
 
-func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) (HomeFeedResult, error) {
+func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, cursor HomeCursor) (HomeFeedResult, error) {
 	// Why this page might come back empty, filled in by the narrowing
 	// filters below and reported only if it actually is.
 	emptyReason := ""
@@ -287,32 +361,45 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// already there. See mutuals.go.
 	s.warmViewerSignals(ctx, userID)
 
-	// Audit HF1: ranking over-fetch was 5x with a 500-row ceiling — each
-	// feed request hit Scylla for up to 500 timeline rows and then the
-	// ranker did per-post Redis reads on every one (audit HF2). 2.5x is
-	// plenty of headroom for blocks/mutes/dedup churn while halving the
-	// per-request cost. 200 is the hard ceiling because beyond that the
-	// ranker's signal noise dominates the ordering anyway.
-	fetchLimit := limit
-	if feedMode == "ranked" || feedMode == "shadow" {
-		fetchLimit = (limit * 5) / 2
-		if fetchLimit > 200 {
-			fetchLimit = 200
-		}
-	} else if excludeSelf {
-		fetchLimit = limit + 10 // extra headroom for own posts removed
+	// Headroom over the page size for what the filters below remove
+	// (blocks, mutes, own posts, reels, PostTube-only videos). Ranking no
+	// longer needs a wider window — it reorders the page, see homeWindow —
+	// so every mode reads the same amount. Rows read but not served are
+	// read again by the next page; 200 is the hard ceiling (audit HF1).
+	fetchLimit := limit + limit/2
+	if fetchLimit < limit+10 {
+		fetchLimit = limit + 10
+	}
+	if fetchLimit > 200 {
+		fetchLimit = 200
 	}
 
 	// 1. Get Home Timeline candidates
 	var items []scylla.FeedItem
 	var err error
-	if before != nil {
-		items, err = s.scyllaStore.GetHomeTimelineBefore(ctx, userID, *before, fetchLimit)
-	} else {
+	switch {
+	case cursor.Token != "":
+		items, err = s.scyllaStore.GetHomeTimelineBeforeToken(ctx, userID, cursor.Token, fetchLimit)
+	case cursor.Time != nil:
+		items, err = s.scyllaStore.GetHomeTimelineBefore(ctx, userID, *cursor.Time, fetchLimit)
+	default:
 		items, err = s.scyllaStore.GetHomeTimeline(ctx, userID, fetchLimit)
 	}
 	if err != nil {
 		return HomeFeedResult{}, err
+	}
+
+	// Celeb pull (celebpull.go): followed celebs' own timelines join the
+	// read before any filter, merged by timeline key. Not on a legacy
+	// timestamp cursor — that page was cut before pull rows existed.
+	if s.celeb.pull && cursor.Time == nil {
+		pulled, pullErr := s.pullCelebRows(ctx, userID, cursor.Token, fetchLimit)
+		if pullErr != nil {
+			log.Printf("celeb pull unavailable for %s, page served from the pushed timeline only: %v", userID, pullErr)
+		}
+		if len(pulled) > 0 {
+			items = mergeTimelineRows(items, pulled, fetchLimit)
+		}
 	}
 
 	// Convert to FeedItems, optionally filtering out viewer's own original posts.
@@ -347,7 +434,9 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		return HomeFeedResult{}, err
 	}
 	candidates = applyBlockFilter(candidates, blockedSet)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
+	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
+		return HomeFeedResult{}, err
+	}
 
 	// Filter to circle-only (friends) if requested.
 	//
@@ -405,7 +494,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// has no way to detect.
 	// len(candidates) would count the viewer's own posts as a populated feed;
 	// see countFromOthers for what that did to accounts that posted early.
-	if coldStartAllowed(before, feedMode, countFromOthers(candidates, userID), circleOnly, followingOnly) {
+	if coldStartAllowed(cursor.FirstPage(), feedMode, countFromOthers(candidates, userID), circleOnly, followingOnly) {
 		log.Printf("Cold-start fallback triggered for user %s (nothing from others in timeline), fetching from %s", userID, s.postServiceURL)
 		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
 		if err != nil {
@@ -419,7 +508,11 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			// candidates — this is the path most likely to surface a
 			// stranger who blocked the viewer, because it is precisely the
 			// path used for viewers with no graph of their own.
-			for _, item := range s.applyHiddenAuthorFilter(ctx, applyBlockFilter(coldItems, blockedSet)) {
+			visible, hideErr := s.applyHiddenAuthorFilter(ctx, applyBlockFilter(coldItems, blockedSet))
+			if hideErr != nil {
+				return HomeFeedResult{}, hideErr
+			}
+			for _, item := range visible {
 				if excludeSelf && item.AuthorID == userID {
 					continue
 				}
@@ -445,15 +538,36 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		candidates = s.applyLongVideoFrequency(candidates, lvFreq, false)
 	}
 
-	// 2. Apply ranking if enabled
+	// Out-of-network discovery (discovery.go): a share of a ranked For You
+	// page goes to people the viewer does not follow. Not when the
+	// cold-start fill already ran — that page is all discovery.
+	var discovery []FeedItem
+	pageLimit := limit
+	if discoveryAllowed(feedMode, circleOnly, followingOnly) && !hasColdStart(candidates) {
+		if slots := discoverySlots(limit, s.discovery.share); slots > 0 {
+			discovery = s.discoveryFor(ctx, userID, candidates, slots, blockedSet, lvFreq == "hidden")
+			pageLimit = limit - len(discovery)
+		}
+	}
+
+	// 2. Cut the page and its cursor BEFORE ranking: ranking and the
+	// long-video composition below only reorder this window, so nothing
+	// the window holds is lost and nothing below it is skipped. See
+	// homeWindow. Discovery items join after the cut, in the slots it
+	// left them, and carry no cursor.
+	candidates, next := homeWindow(candidates, items, fetchLimit, pageLimit)
+	candidates = append(candidates, discovery...)
+
+	// 3. Apply ranking if enabled
 	if (feedMode == "ranked" || feedMode == "shadow") && s.ranker != nil && len(candidates) > 0 {
 		rc := feedItemsToCandidates(candidates)
-		rankedCandidates, err := s.ranker.Rank(ctx, userID, rc, limit)
+		rankedCandidates, err := s.ranker.Rank(ctx, userID, rc, len(candidates))
 		if err != nil {
 			// Circuit breaker or error: fallback to chronological
 			log.Printf("Ranking failed, falling back to chronological: %v", err)
+			rankFallbacks.WithLabelValues("home").Inc()
 		} else if feedMode == "ranked" {
-			candidates = candidatesToFeedItems(rankedCandidates)
+			candidates = wholeWindow(candidates, candidatesToFeedItems(rankedCandidates))
 		}
 		// In shadow mode: log ranked order but return chronological
 		if feedMode == "shadow" {
@@ -463,21 +577,43 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 
 	// P0-4: apply the viewer's long-video tier (cold-start candidates
 	// included). The hidden tier re-applies harmlessly; reduced/balanced/
-	// preferred get the multiplier (ranked mode) + composition target.
+	// preferred get the multiplier (ranked mode) + composition target,
+	// which reorders and never drops.
 	candidates = s.applyLongVideoFrequency(candidates, lvFreq, feedMode == "ranked")
 
-	// 3. Trim to requested limit
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
+	homePageItems.Observe(float64(len(candidates)))
 
-	if len(candidates) == 0 {
+	// A page the filters emptied while the timeline goes on is not an empty
+	// feed: it carries a cursor and no reason, and the client reads on.
+	if len(candidates) == 0 && next == "" {
 		if emptyReason == "" {
 			emptyReason = EmptyNoRecentPosts
 		}
 		return HomeFeedResult{Items: candidates, EmptyReason: emptyReason}, nil
 	}
-	return HomeFeedResult{Items: candidates}, nil
+	return HomeFeedResult{Items: candidates, NextCursor: next}, nil
+}
+
+// wholeWindow returns the ranked order of a page, followed by any window
+// item the ranker did not return in their original order. The ranker is
+// asked for the whole window and places all of it today (its last pass
+// relaxes every rule), but the page's cursor was cut on the assumption that
+// every window item is served, so a dropped one must not silently vanish.
+func wholeWindow(window, ranked []FeedItem) []FeedItem {
+	if len(ranked) >= len(window) {
+		return ranked
+	}
+	placed := make(map[uuid.UUID]struct{}, len(ranked))
+	for _, r := range ranked {
+		placed[r.PostID] = struct{}{}
+	}
+	out := append(make([]FeedItem, 0, len(window)), ranked...)
+	for _, w := range window {
+		if _, ok := placed[w.PostID]; !ok {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // GetFlickFeed returns the first flick page for backward-compatible callers.
@@ -519,7 +655,9 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 		return nil, "", err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
+	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
+		return nil, "", err
+	}
 
 	// Reels "Following" tab. Fail CLOSED, unlike the home feed's older
 	// version of this filter: an unresolved follow graph is an error, never
@@ -564,7 +702,7 @@ func (s *Service) shortFormDiscoveryFill(ctx context.Context, userID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked)), nil
+	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked))
 }
 
 // isShortFormFillType is the belt-and-braces type check on reels fill rows,
@@ -710,7 +848,9 @@ func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, lim
 		return nil, "", nil, err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
+	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
+		return nil, "", nil, err
+	}
 
 	// Watch "Following" tab: authors the viewer follows, the social graph
 	// (graph-service) — the same set and the same fail-closed rule as the
@@ -764,7 +904,7 @@ func (s *Service) longVideoDiscoveryFill(ctx context.Context, userID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked)), nil
+	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked))
 }
 
 // rankVideoWindow runs the main ranker over one fixed window (full
@@ -776,6 +916,7 @@ func (s *Service) rankVideoWindow(ctx context.Context, userID uuid.UUID, candida
 	ranked, err := s.ranker.Rank(ctx, userID, feedItemsToCandidates(candidates), limit)
 	if err != nil {
 		log.Printf("%s ranking failed, fallback to chronological: %v", surface, err)
+		rankFallbacks.WithLabelValues(surface).Inc()
 		return candidates
 	}
 	return candidatesToFeedItems(ranked)
@@ -942,7 +1083,15 @@ func (s *Service) DebugFeed(ctx context.Context, userID uuid.UUID) (interface{},
 // a subscriber's row carries no provenance either, and post-service makes
 // a subscribe a follow edge as well, so an unsubscribe reaches this
 // service as an unfollow.
-func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType, visibility string, channelID uuid.UUID) error {
+func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType, visibility string, channelID uuid.UUID) (err error) {
+	start := time.Now()
+	defer func() {
+		fanoutDuration.Observe(time.Since(start).Seconds())
+		if err != nil {
+			fanoutIncomplete.Inc()
+		}
+	}()
+
 	// 1. Always add to Author Timeline
 	if err := s.timelines.AddToAuthorTimeline(ctx, authorID, postID, createdAt, contentType); err != nil {
 		return err
@@ -951,6 +1100,14 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	// 2. Also add to Author's own Home Timeline (so they see their own posts)
 	if err := s.timelines.AddToHomeTimeline(ctx, authorID, postID, authorID, createdAt, contentType); err != nil {
 		log.Printf("Failed to push to author's own home timeline: %v", err)
+	}
+
+	// 2a. Unlisted and private posts go no further: unlisted is link-only
+	// and private is the author's own (a share list is served by the
+	// single-post gate, never by a listing). Only the author's rows above
+	// are written. listingvisibility.go is the read-side half.
+	if !fansOutToAudience(visibility) {
+		return nil
 	}
 
 	// 2b. Trusted ("close friends") audience: fan out only to the author's
@@ -996,6 +1153,13 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	//
 	// Skipped entirely for a celeb (pull model): the set stays empty and
 	// only the subscriber leg below can add anyone.
+	//
+	// A failed fetch no longer just logs and carries on with whoever was
+	// reached: everyone who WAS resolved still gets the row now, and the
+	// error is returned at the end so the consumer retries the event and
+	// the rest arrive. That is safe because every write here upserts
+	// (scylla.TimelineTS); a retry rewrites the rows that landed.
+	var incomplete []error
 	recipientSet := make(map[uuid.UUID]struct{})
 	if !isCeleb {
 		type fetchResult struct {
@@ -1012,14 +1176,35 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			ids, err := s.fetchCircleMembers(ctx, authorID)
 			results <- fetchResult{ids: ids, err: err, tag: "circle"}
 		}()
+		followerCount := 0
 		for i := 0; i < 2; i++ {
 			r := <-results
 			if r.err != nil {
 				log.Printf("Failed to fetch %s for fanout: %v", r.tag, r.err)
+				incomplete = append(incomplete, fmt.Errorf("fetch %s: %w", r.tag, r.err))
 				continue
+			}
+			if r.tag == "followers" {
+				followerCount = len(r.ids)
 			}
 			for _, id := range r.ids {
 				recipientSet[id] = struct{}{}
+			}
+		}
+
+		// Celeb threshold (celebpull.go): an author this large switches to
+		// the pull model now — flagged, and this post is not pushed to
+		// followers; GetHomeFeed pulls it. Only with pull enabled, or the
+		// post would reach nobody.
+		if s.celeb.pull && s.celeb.threshold > 0 && followerCount >= s.celeb.threshold {
+			if marker, ok := s.celebs.(celebMarker); ok {
+				if err := marker.SetCelebStatus(ctx, authorID, true); err != nil {
+					log.Printf("celeb flag for %s (%d followers) failed; pushing as before: %v", authorID, followerCount, err)
+				} else {
+					log.Printf("author %s reached %d followers: flagged celeb, pull model from now on", authorID, followerCount)
+					isCeleb = true
+					recipientSet = make(map[uuid.UUID]struct{})
+				}
 			}
 		}
 	}
@@ -1036,6 +1221,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	const fanoutWorkers = 16
 	recipientCh := make(chan uuid.UUID, fanoutWorkers*4)
 	var fanoutWG sync.WaitGroup
+	var failedWrites atomic.Int64
 	for w := 0; w < fanoutWorkers; w++ {
 		fanoutWG.Add(1)
 		go func() {
@@ -1043,7 +1229,11 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			for recipientID := range recipientCh {
 				if err := s.timelines.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
 					log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
+					failedWrites.Add(1)
+					fanoutWrites.WithLabelValues("failed").Inc()
+					continue
 				}
+				fanoutWrites.WithLabelValues("ok").Inc()
 			}
 		}()
 	}
@@ -1059,11 +1249,9 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	// follower/circle set already covered. The pages stream straight into
 	// the pool rather than being collected first, so a channel with many
 	// subscribers costs memory proportional to one page, not to the
-	// channel. A post-service failure here is logged, not returned: the
-	// follower rows are already in flight and Kafka redelivery would
-	// duplicate them (AddToHomeTimeline is not idempotent; see
-	// scylla/timelines.go), which is worse than a subscriber missing
-	// one upload from the tab.
+	// channel. A post-service failure here is returned with the others
+	// below: the rows already written are upserts, so the retry it causes
+	// rewrites them rather than duplicating them.
 	if channelID != uuid.Nil && isLongVideoContentType(contentType) {
 		err := s.eachChannelSubscriber(ctx, channelID, func(subscriberID uuid.UUID) {
 			if subscriberID == authorID {
@@ -1077,11 +1265,18 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 		})
 		if err != nil {
 			log.Printf("Subscriber fanout for channel %s (post %s) incomplete: %v", channelID, postID, err)
+			incomplete = append(incomplete, fmt.Errorf("fetch channel subscribers: %w", err))
 		}
 	}
 
 	close(recipientCh)
 	fanoutWG.Wait()
+	if n := failedWrites.Load(); n > 0 {
+		incomplete = append(incomplete, fmt.Errorf("%d timeline write(s) failed", n))
+	}
+	if len(incomplete) > 0 {
+		return fmt.Errorf("fanout of post %s incomplete, will be retried: %w", postID, errors.Join(incomplete...))
+	}
 	return nil
 }
 

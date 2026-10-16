@@ -53,8 +53,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 	// MF5: per-user feed rate limit. 120 req/min per user (sustained
 	// 2/sec) — generous for legitimate tab-switching + pull-to-refresh,
-	// blocks scrape bursts. Internal callers (X-Internal-Service-Key)
-	// bypass; the gateway is trusted not to abuse.
+	// blocks scrape bursts. Keyed on X-User-Id; requests without one
+	// (none reach here through the gateway) are not limited.
 	if h.rdb != nil {
 		r.Use(h.feedRateLimit())
 	}
@@ -126,19 +126,15 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
 	platform := c.DefaultQuery("platform", "") // "postbook" | "posttube" | ""
 
-	var cursor *time.Time
-	if rawCursor := c.Query("cursor"); rawCursor != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, rawCursor)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil)
-			return
-		}
-		cursor = &parsed
+	cursor, err := parseHomeCursor(c.Query("cursor"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil)
+		return
 	}
 
 	result, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, followingOnly, cursor)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	feedItems := result.Items
@@ -184,11 +180,39 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	if result.EmptyReason != "" {
 		c.Writer.Header().Set("X-Feed-Empty-Reason", result.EmptyReason)
 	}
-	var meta *api.Meta
-	if len(feedItems) >= limit {
-		meta = &api.Meta{NextCursor: feedItems[len(feedItems)-1].CreatedAt.UTC().Format(time.RFC3339Nano)}
+	// The same opaque keyset token as the reels and Tube pages: the exact
+	// timeline key the page ended on (service.homeWindow). It used to be the
+	// created_at of the last item AFTER ranking, which is not the page's
+	// boundary in ranked mode, so pages skipped and repeated posts.
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(result.NextCursor))
+}
+
+// internalError logs a server-side failure in full and answers the client
+// with a generic 500. The error text used to go into the response body,
+// and it carries upstream URLs and statuses ("graph-service returned 502:
+// …", "home following filter: …") that are nobody's business outside the
+// cluster.
+func internalError(c *gin.Context, err error) {
+	slog.ErrorContext(c.Request.Context(), "feed request failed", "path", c.FullPath(), "error", err)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR",
+		"Something went wrong loading this feed — try again", nil)
+}
+
+// parseHomeCursor reads the home feed's cursor: the opaque v1 keyset token
+// this handler now issues, or — for a client still holding a page served
+// before it did — the legacy RFC3339 timestamp.
+func parseHomeCursor(raw string) (service.HomeCursor, error) {
+	if raw == "" {
+		return service.HomeCursor{}, nil
 	}
-	api.JSON(c.Writer, http.StatusOK, hydrated, meta)
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return service.HomeCursor{Time: &t}, nil
+	}
+	token, err := decodeRankedCursor(raw)
+	if err != nil {
+		return service.HomeCursor{}, err
+	}
+	return service.HomeCursor{Token: token}, nil
 }
 
 func (h *Handler) GetReelFeed(c *gin.Context) {
@@ -209,7 +233,7 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
 	feedItems, next, err := h.svc.GetReelFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -247,7 +271,7 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
 	feedItems, next, err := h.svc.GetFlickFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -321,7 +345,7 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 
 	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -380,7 +404,7 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 
 	feedItems, next, err := h.svc.GetVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -458,19 +482,29 @@ func rankedPageParams(c *gin.Context) (limit int, before string, err error) {
 	if raw == "" {
 		return limit, "", nil
 	}
+	token, err := decodeRankedCursor(raw)
+	if err != nil {
+		return 0, "", err
+	}
+	return limit, token, nil
+}
+
+// decodeRankedCursor turns an opaque cursor back into the timeuuid it
+// carries; see rankedPageMeta.
+func decodeRankedCursor(raw string) (string, error) {
 	decoded, decodeErr := base64.RawURLEncoding.DecodeString(raw)
 	if decodeErr != nil {
-		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+		return "", fmt.Errorf("invalid ranked feed cursor")
 	}
 	version, token, ok := strings.Cut(string(decoded), ":")
 	if !ok || version != "v1" {
-		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+		return "", fmt.Errorf("invalid ranked feed cursor")
 	}
 	parsed, parseErr := uuid.Parse(token)
 	if parseErr != nil || parsed.Version() != 1 {
-		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+		return "", fmt.Errorf("invalid ranked feed cursor")
 	}
-	return limit, parsed.String(), nil
+	return parsed.String(), nil
 }
 
 func rankedPageMeta(next string) *api.Meta {
@@ -516,13 +550,13 @@ func (h *Handler) SetPreference(c *gin.Context) {
 
 	if req.FeedMode != "" {
 		if err := h.svc.SetUserFeedMode(c.Request.Context(), userID, req.FeedMode); err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			internalError(c, err)
 			return
 		}
 	}
 	if req.LongVideoFrequency != "" {
 		if err := h.svc.SetLongVideoFrequency(c.Request.Context(), userID, req.LongVideoFrequency); err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			internalError(c, err)
 			return
 		}
 	}
@@ -577,7 +611,7 @@ func (h *Handler) PostSignal(c *gin.Context) {
 	}
 
 	if err := h.svc.RecordSignal(c.Request.Context(), userID, postID, req.Signal); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -723,19 +757,15 @@ func (h *Handler) feedRateLimit() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// Skip if the request is from an internal caller.
-		if h.internalKey != "" && c.GetHeader("X-Internal-Service-Key") == h.internalKey {
-			// Trusted callsite — let it through.
-			c.Next()
-			return
-		}
+		// No exemption for X-Internal-Service-Key: the gateway stamps it on
+		// EVERY /v1/feed request it proxies (internalroutes StampPolicy), so
+		// exempting it exempted every user and this limiter never limited
+		// anyone. The gateway is the only caller; it forwards the user's id.
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 200*time.Millisecond)
 		defer cancel()
 		key := fmt.Sprintf("feed_rl:%s", userID)
-		pipe := h.rdb.Pipeline()
-		incr := pipe.Incr(ctx, key)
-		pipe.Expire(ctx, key, window)
-		if _, err := pipe.Exec(ctx); err != nil {
+		n, err := h.rdb.Incr(ctx, key).Result()
+		if err != nil {
 			// Fail-OPEN on Redis blip: feed is not security-critical
 			// (no money, no auth), and dropping every request during a
 			// Redis hiccup is worse than serving a few extra.
@@ -743,7 +773,16 @@ func (h *Handler) feedRateLimit() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if incr.Val() > limit {
+		// The window opens on the first request and is NOT pushed back by
+		// later ones. Re-arming EXPIRE on every request (as before) meant a
+		// client that never paused for a full minute never got its count
+		// reset.
+		if n == 1 {
+			if err := h.rdb.Expire(ctx, key, window).Err(); err != nil {
+				slog.Warn("feed rate limit: could not arm window", "err", err)
+			}
+		}
+		if n > limit {
 			c.Header("Retry-After", "60")
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED",
 				"feed request rate exceeded", nil)
@@ -774,7 +813,7 @@ func (h *Handler) DebugFeed(c *gin.Context) {
 
 	debug, err := h.svc.DebugFeed(c.Request.Context(), userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 
@@ -793,7 +832,7 @@ func (h *Handler) HidePost(c *gin.Context) {
 		return
 	}
 	if err := h.svc.HidePost(c.Request.Context(), userID, postID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -811,7 +850,7 @@ func (h *Handler) UnhidePost(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UnhidePost(c.Request.Context(), userID, postID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -854,7 +893,7 @@ func (h *Handler) UnmuteTarget(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UnmuteTarget(c.Request.Context(), userID, req.TargetType, req.TargetID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -868,7 +907,7 @@ func (h *Handler) GetMutedTargets(c *gin.Context) {
 	}
 	mutes, err := h.svc.GetMutedTargets(c.Request.Context(), userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		internalError(c, err)
 		return
 	}
 	if mutes == nil {

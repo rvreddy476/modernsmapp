@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,90 +13,108 @@ import (
 
 // DeltaResult holds the feed delta computation result.
 type DeltaResult struct {
-	NewCount     int    `json:"new_count"`
+	NewCount int `json:"new_count"`
+	// NewestAnchor is the created_at (RFC3339Nano) of the newest counted
+	// item: a valid `anchor` for the next call. It used to be a post id,
+	// which the anchor parser rejects.
 	NewestAnchor string `json:"newest_anchor,omitempty"`
 	HasMore      bool   `json:"has_more"`
 }
 
 const deltaMaxCount = 200 // cap displayed count; HasMore=true beyond this
 
-// ComputeFeedDelta computes the number of new items in a feed since the given anchor.
-func (s *Service) ComputeFeedDelta(ctx context.Context, userID uuid.UUID, feedType, anchor, groupID, channelID, communityID, spaceID string) (*DeltaResult, error) {
-	// Parse anchor as a timestamp (ISO 8601 / RFC3339)
-	anchorTime, err := time.Parse(time.RFC3339, anchor)
-	if err != nil {
-		// Try parsing as just a date
-		anchorTime, err = time.Parse("2006-01-02", anchor)
-		if err != nil {
-			return nil, fmt.Errorf("invalid anchor format: expected RFC3339 timestamp, got %q", anchor)
-		}
+// deltaColdStartLimit is the cold-start read for the pill. post-service's
+// /v1/posts/recent clamps anything above 50 down to 20, so asking for the
+// pill's 201 used to count against twenty posts.
+const deltaColdStartLimit = 50
+
+// ErrInvalidDeltaAnchor is a client error: the anchor is not a timestamp.
+var ErrInvalidDeltaAnchor = errors.New("invalid anchor format: expected an RFC3339 timestamp")
+
+// ErrUnsupportedDeltaFeed is a client error: no such feed_type.
+var ErrUnsupportedDeltaFeed = errors.New("unsupported feed_type")
+
+// ParseDeltaAnchor reads a delta anchor: RFC3339 (fractional seconds
+// allowed), or a bare date.
+func ParseDeltaAnchor(anchor string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, anchor); err == nil {
+		return t, nil
 	}
-
-	var count int
-	var newestAnchor string
-
-	switch feedType {
-	case "home":
-		count, newestAnchor, err = s.deltaHome(ctx, userID, anchorTime)
-	case "following":
-		count, newestAnchor, err = s.deltaFollowing(ctx, userID, anchorTime)
-	case "group":
-		count, newestAnchor, err = s.deltaGroup(ctx, groupID, anchorTime)
-	case "group_channel":
-		count, newestAnchor, err = s.deltaGroupChannel(ctx, groupID, channelID, anchorTime)
-	case "channel":
-		count, newestAnchor, err = s.deltaChannel(ctx, channelID, anchorTime)
-	case "community":
-		count, newestAnchor, err = s.deltaCommunity(ctx, communityID, anchorTime)
-	case "community_space":
-		count, newestAnchor, err = s.deltaCommunitySpace(ctx, spaceID, anchorTime)
-	case "flicks":
-		count, newestAnchor, err = s.deltaContentType(ctx, userID, "flick", anchorTime)
-	case "posttube":
-		count, newestAnchor, err = s.deltaContentType(ctx, userID, "long_video", anchorTime)
-	default:
-		return nil, fmt.Errorf("unsupported feed_type: %s", feedType)
+	if t, err := time.Parse("2006-01-02", anchor); err == nil {
+		return t, nil
 	}
+	return time.Time{}, fmt.Errorf("%w, got %q", ErrInvalidDeltaAnchor, anchor)
+}
 
+// ComputeFeedDelta computes the number of new items in a feed since the
+// given anchor.
+//
+// Only the viewer's own feeds are served: home, following, flicks and
+// posttube. Group, group-channel, channel, community and space counts used
+// to be answered here too, straight from those services' tables with no
+// membership check — so anyone could learn how active a private group was
+// and the id of its newest post — and from tables feed-service's own
+// database does not hold. No client asks for them; they are refused.
+func (s *Service) ComputeFeedDelta(ctx context.Context, userID uuid.UUID, feedType, anchor string) (*DeltaResult, error) {
+	anchorTime, err := ParseDeltaAnchor(anchor)
 	if err != nil {
 		return nil, err
 	}
 
-	hasMore := count > deltaMaxCount
-	if hasMore {
-		count = deltaMaxCount
+	var fresh []FeedItem
+	switch feedType {
+	case "home":
+		fresh, err = s.deltaHome(ctx, userID, anchorTime, false)
+	case "following":
+		fresh, err = s.deltaHome(ctx, userID, anchorTime, true)
+	case "flicks":
+		fresh, err = s.deltaContentType(ctx, userID, []string{"flick", "reel"}, anchorTime)
+	case "posttube":
+		fresh, err = s.deltaContentType(ctx, userID, []string{"long_video", "video"}, anchorTime)
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedDeltaFeed, feedType)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	return &DeltaResult{
-		NewCount:     count,
-		NewestAnchor: newestAnchor,
-		HasMore:      hasMore,
-	}, nil
+	result := &DeltaResult{NewCount: len(fresh)}
+	if len(fresh) > 0 {
+		newest := fresh[0].CreatedAt
+		for _, f := range fresh[1:] {
+			if f.CreatedAt.After(newest) {
+				newest = f.CreatedAt
+			}
+		}
+		result.NewestAnchor = newest.UTC().Format(time.RFC3339Nano)
+	}
+	if result.NewCount > deltaMaxCount {
+		result.NewCount = deltaMaxCount
+		result.HasMore = true
+	}
+	return result, nil
 }
 
-// deltaHome counts new items in the user's home timeline since anchor.
-// Applies the social-home distribution exclusion (P0-1) and the viewer's
-// hidden long-video tier (P0-4) so the "N new posts" pill never counts
-// posts the page itself would not show.
-func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Time) (int, string, error) {
+// deltaHome returns the new items the home feed (followingOnly=false) or
+// the Following tab (true) would show since `since`.
+//
+// The count has to be measured against the SAME feed the reader will get,
+// so this runs GetHomeFeed's filters, in GetHomeFeed's order: the block /
+// mute / "don't recommend" set (failing closed, like the page), hidden
+// authors, the following narrowing, reels, the main-feed exclusion and the
+// hidden long-video tier — then drops posts deleted since they were written.
+// It used to count the raw timeline: blocked and muted authors' posts made
+// the pill say "3 new posts" and the refresh showed none, and Following
+// counted exactly what Home counted.
+//
+// GetHomeFeed backfills recommended public posts when the timeline holds
+// nothing from anybody else (coldStartAllowed, countFromOthers), so the
+// home count does too; Following is never backfilled.
+func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Time, followingOnly bool) ([]FeedItem, error) {
 	items, err := s.scyllaStore.GetHomeTimeline(ctx, userID, deltaMaxCount+1)
 	if err != nil {
-		return 0, "", err
+		return nil, err
 	}
-
-	/*
-		The count has to be measured against the SAME feed the reader will get.
-
-		GetHomeFeed backfills recommended public posts when the timeline holds
-		nothing from anybody else (see coldStartAllowed and countFromOthers).
-		This counted the raw timeline only, so for exactly those readers — the
-		ones whose feed is entirely backfilled — the answer was always zero and
-		the "N new posts" banner could never appear, however much was published.
-		Two surfaces disagreeing about what a feed contains is worse than either
-		of them being wrong on its own.
-	*/
-	// The timeline is []scylla.FeedItem and the cold-start source is
-	// []FeedItem; normalise to the service type before either is counted.
 	candidates := make([]FeedItem, 0, len(items))
 	for _, item := range items {
 		candidates = append(candidates, FeedItem{
@@ -106,8 +125,19 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 		})
 	}
 
-	if countFromOthers(candidates, userID) == 0 {
-		cold, coldErr := s.getRecentPublicPosts(ctx, deltaMaxCount+1)
+	blocked, err := s.resolveBlockedSet(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	var following []uuid.UUID
+	if followingOnly {
+		if following, err = s.fetchFollowing(ctx, userID); err != nil {
+			return nil, fmt.Errorf("delta following filter: %w", err)
+		}
+	}
+
+	if !followingOnly && countFromOthers(candidates, userID) == 0 {
+		cold, coldErr := s.getRecentPublicPosts(ctx, deltaColdStartLimit)
 		if coldErr != nil {
 			// Non-fatal: a delta is an invitation to refresh, not the feed.
 			slog.WarnContext(ctx, "feed delta: cold-start count unavailable", "user_id", userID, "err", coldErr)
@@ -116,17 +146,11 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 		}
 	}
 
-	fresh := make([]FeedItem, 0, len(candidates))
-	for _, item := range candidates {
-		// Your own post is never news to you: you just wrote it, and the
-		// composer has already put it at the top of the feed.
-		if item.AuthorID == userID {
-			continue
-		}
-		if item.CreatedAt.After(since) {
-			fresh = append(fresh, item)
-		}
+	fresh := freshForPill(candidates, userID, since, blocked, followingOnly, following)
+	if fresh, err = s.applyHiddenAuthorFilter(ctx, fresh); err != nil {
+		return nil, err
 	}
+
 	// The main feed does not show reels (dropShortForm), so the pill must
 	// not count them either — same position relative to
 	// filterMainFeedExcluded as in GetHomeFeed.
@@ -135,140 +159,82 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 	if s.GetLongVideoFrequency(ctx, userID) == "hidden" {
 		fresh = s.applyLongVideoFrequency(fresh, "hidden", false)
 	}
-
-	count := len(fresh)
-	newest := ""
-	if count > 0 {
-		newest = fresh[0].PostID.String()
-	}
-	return count, newest, nil
+	return s.dropTombstoned(ctx, fresh), nil
 }
 
-// deltaFollowing counts new items from followed users since anchor.
-// Uses the same home timeline but scoped to followed sources.
-func (s *Service) deltaFollowing(ctx context.Context, userID uuid.UUID, since time.Time) (int, string, error) {
-	// For following feed, we use the home timeline (which is populated by fanout from followed users)
-	return s.deltaHome(ctx, userID, since)
-}
-
-// deltaGroup counts new posts in a group since anchor (Postgres query).
-func (s *Service) deltaGroup(ctx context.Context, groupID string, since time.Time) (int, string, error) {
-	var count int
-	var newestID *string
-	err := s.pgStore.DB().QueryRow(ctx, `
-		SELECT COUNT(*), (SELECT id::text FROM group_posts WHERE group_id = $1 AND status = 'published' AND created_at > $2 ORDER BY created_at DESC LIMIT 1)
-		FROM group_posts
-		WHERE group_id = $1 AND status = 'published' AND created_at > $2
-	`, groupID, since).Scan(&count, &newestID)
-	if err != nil {
-		slog.Warn("delta group query failed", "group_id", groupID, "error", err)
-		return 0, "", err
+// freshForPill is deltaHome's pure step: items newer than `since`, not the
+// viewer's own (the composer already put those at the top), not by anyone
+// in the blocked set, and — for the Following tab — only by authors the
+// viewer follows.
+func freshForPill(candidates []FeedItem, viewer uuid.UUID, since time.Time, blocked map[uuid.UUID]struct{}, followingOnly bool, following []uuid.UUID) []FeedItem {
+	candidates = applyBlockFilter(candidates, blocked)
+	if followingOnly {
+		candidates = filterByAuthorSet(candidates, following)
 	}
-	newest := ""
-	if newestID != nil {
-		newest = *newestID
-	}
-	return count, newest, nil
-}
-
-// deltaGroupChannel counts new posts in a specific group channel since anchor.
-func (s *Service) deltaGroupChannel(ctx context.Context, groupID, channelID string, since time.Time) (int, string, error) {
-	var count int
-	var newestID *string
-	err := s.pgStore.DB().QueryRow(ctx, `
-		SELECT COUNT(*), (SELECT id::text FROM group_posts WHERE group_id = $1 AND channel_id = $2 AND status = 'published' AND created_at > $3 ORDER BY created_at DESC LIMIT 1)
-		FROM group_posts
-		WHERE group_id = $1 AND channel_id = $2 AND status = 'published' AND created_at > $3
-	`, groupID, channelID, since).Scan(&count, &newestID)
-	if err != nil {
-		slog.Warn("delta group_channel query failed", "group_id", groupID, "channel_id", channelID, "error", err)
-		return 0, "", err
-	}
-	newest := ""
-	if newestID != nil {
-		newest = *newestID
-	}
-	return count, newest, nil
-}
-
-// deltaChannel counts new updates in a channel since anchor.
-func (s *Service) deltaChannel(ctx context.Context, channelID string, since time.Time) (int, string, error) {
-	var count int
-	var newestID *string
-	err := s.pgStore.DB().QueryRow(ctx, `
-		SELECT COUNT(*), (SELECT id::text FROM channel_updates WHERE channel_id = $1 AND status = 'published' AND published_at > $2 ORDER BY published_at DESC LIMIT 1)
-		FROM channel_updates
-		WHERE channel_id = $1 AND status = 'published' AND published_at > $2
-	`, channelID, since).Scan(&count, &newestID)
-	if err != nil {
-		slog.Warn("delta channel query failed", "channel_id", channelID, "error", err)
-		return 0, "", err
-	}
-	newest := ""
-	if newestID != nil {
-		newest = *newestID
-	}
-	return count, newest, nil
-}
-
-// deltaCommunity counts new posts in a community since anchor.
-func (s *Service) deltaCommunity(ctx context.Context, communityID string, since time.Time) (int, string, error) {
-	var count int
-	var newestID *string
-	err := s.pgStore.DB().QueryRow(ctx, `
-		SELECT COUNT(*), (SELECT id::text FROM community_posts WHERE community_id = $1 AND status = 'published' AND created_at > $2 ORDER BY created_at DESC LIMIT 1)
-		FROM community_posts
-		WHERE community_id = $1 AND status = 'published' AND created_at > $2
-	`, communityID, since).Scan(&count, &newestID)
-	if err != nil {
-		slog.Warn("delta community query failed", "community_id", communityID, "error", err)
-		return 0, "", err
-	}
-	newest := ""
-	if newestID != nil {
-		newest = *newestID
-	}
-	return count, newest, nil
-}
-
-// deltaCommunitySpace counts new posts in a community space since anchor.
-func (s *Service) deltaCommunitySpace(ctx context.Context, spaceID string, since time.Time) (int, string, error) {
-	var count int
-	var newestID *string
-	err := s.pgStore.DB().QueryRow(ctx, `
-		SELECT COUNT(*), (SELECT id::text FROM community_posts WHERE space_id = $1 AND status = 'published' AND created_at > $2 ORDER BY created_at DESC LIMIT 1)
-		FROM community_posts
-		WHERE space_id = $1 AND status = 'published' AND created_at > $2
-	`, spaceID, since).Scan(&count, &newestID)
-	if err != nil {
-		slog.Warn("delta community_space query failed", "space_id", spaceID, "error", err)
-		return 0, "", err
-	}
-	newest := ""
-	if newestID != nil {
-		newest = *newestID
-	}
-	return count, newest, nil
-}
-
-// deltaContentType counts new items of a specific content type in the user's timeline.
-func (s *Service) deltaContentType(ctx context.Context, userID uuid.UUID, contentType string, since time.Time) (int, string, error) {
-	items, err := s.scyllaStore.GetHomeTimelineByContentType(ctx, userID, contentType, deltaMaxCount+1)
-	if err != nil {
-		return 0, "", err
-	}
-
-	count := 0
-	var newest string
-	for _, item := range items {
-		if item.CreatedAt.After(since) {
-			count++
-			if newest == "" {
-				newest = item.PostID.String()
-			}
+	out := make([]FeedItem, 0, len(candidates))
+	for _, item := range candidates {
+		if item.AuthorID == viewer || !item.CreatedAt.After(since) {
+			continue
 		}
+		out = append(out, item)
 	}
-	return count, newest, nil
+	return out
+}
+
+// deltaContentType returns the new items of the given content types in the
+// viewer's timeline (the reels and Tube pills), minus blocked and hidden
+// authors, the viewer's own posts and deleted posts.
+func (s *Service) deltaContentType(ctx context.Context, userID uuid.UUID, contentTypes []string, since time.Time) ([]FeedItem, error) {
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, contentTypes, deltaMaxCount+1)
+	if err != nil {
+		return nil, err
+	}
+	blocked, err := s.resolveBlockedSet(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+		})
+	}
+	fresh := freshForPill(candidates, userID, since, blocked, false, nil)
+	if fresh, err = s.applyHiddenAuthorFilter(ctx, fresh); err != nil {
+		return nil, err
+	}
+	return s.dropTombstoned(ctx, fresh), nil
+}
+
+// dropTombstoned removes posts soft-deleted since their timeline rows were
+// written (post_lifecycle.go writes the tombstone). Best effort: on a Redis
+// error the items are returned as they are — an over-count by a deleted
+// post is the pill's worst case, and the page itself is gated by
+// post-service's batch endpoint.
+func (s *Service) dropTombstoned(ctx context.Context, items []FeedItem) []FeedItem {
+	if len(items) == 0 || s.rdb == nil {
+		return items
+	}
+	keys := make([]string, len(items))
+	for i, it := range items {
+		keys[i] = DeletedTombstoneKey(it.PostID)
+	}
+	vals, err := s.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		slog.WarnContext(ctx, "feed delta: tombstone check unavailable", "err", err)
+		return items
+	}
+	out := items[:0]
+	for i, it := range items {
+		if vals[i] != nil {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // GetCachedDelta retrieves a cached delta result from Redis.

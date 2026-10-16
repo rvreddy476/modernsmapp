@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,8 +49,17 @@ type relatedFixture struct {
 	byAuthor []map[string]any
 	recent   []map[string]any
 	// calls records which post-service paths were hit, so a test can
-	// assert that a needless call was NOT made.
+	// assert that a needless call was NOT made. The stub serves requests
+	// concurrently (hydration fans out), so every access goes through mu.
+	mu    sync.Mutex
 	calls []string
+}
+
+// callLog returns a snapshot of the recorded calls.
+func (f *relatedFixture) callLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
 }
 
 func newRelatedFixture(t *testing.T, seedContentType, seedCategory string) *relatedFixture {
@@ -73,7 +83,9 @@ func newRelatedFixture(t *testing.T, seedContentType, seedCategory string) *rela
 	// which is the correct behaviour, and the reason they all have to be
 	// here.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+		f.mu.Unlock()
 		switch {
 		case r.URL.Path == "/v1/internal/graph/blocked-and-muted":
 			_ = json.NewEncoder(w).Encode(map[string]any{"user_ids": []string{}})
@@ -269,7 +281,7 @@ func TestRelated_SkipsTheAuthorCatalogueWhenTheViewerIsTheCreator(t *testing.T) 
 	if _, _, err := f.svc.GetRelatedVideos(context.Background(), f.viewer, f.seed.ID, 10, 0); err != nil {
 		t.Fatalf("GetRelatedVideos: %v", err)
 	}
-	for _, c := range f.calls {
+	for _, c := range f.callLog() {
 		if strings.Contains(c, "/v1/posts/by-author/") {
 			t.Fatal("fetched the creator's own catalogue for a viewer who IS the creator; every row would have been dropped")
 		}

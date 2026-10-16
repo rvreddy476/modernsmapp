@@ -12,13 +12,16 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -26,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.paging.LoadState
@@ -33,6 +37,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
@@ -42,6 +47,7 @@ import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.engagement.data.repostCountOr
 import com.us.android.core.engagement.data.repostedOr
+import com.us.android.core.feed.data.NewPostCount
 import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
@@ -62,6 +68,7 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberPostSharer
+import kotlinx.coroutines.launch
 
 /**
  * The Home tab.
@@ -224,6 +231,16 @@ internal fun FeedContent(
 
     ReconcileHydration(items = items, viewModel = viewModel)
 
+    // "N new posts": asked while the screen is resumed (watchNewPosts is a
+    // no-op off the home timeline). Tapping it loads the new posts and goes
+    // to the top, where they are.
+    val newPosts by viewModel.newPosts.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    LifecycleResumeEffect(viewModel) {
+        val watch = scope.launch { viewModel.watchNewPosts() }
+        onPauseOrDispose { watch.cancel() }
+    }
+
     val callbacks = remember(viewModel, onOpenAuthor, share) {
         FeedRowCallbacks(
             onOpenAuthor = onOpenAuthor,
@@ -265,6 +282,19 @@ internal fun FeedContent(
                 listState = listState,
                 empty = empty,
                 autoplay = autoplay,
+            )
+        }
+        newPosts?.let { count ->
+            NewPostsPill(
+                count = count,
+                onClick = {
+                    viewModel.onNewPostsShown()
+                    items.refresh()
+                    scope.launch { listState.animateScrollToItem(0) }
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = UsTheme.spacing.m),
             )
         }
         MoreSheetMessage(more)
@@ -408,6 +438,18 @@ private fun ReconcileHydration(items: LazyPagingItems<FeedItem>, viewModel: Feed
     }
 }
 
+/** "3 new posts" floating over the top of the timeline. */
+@Composable
+private fun NewPostsPill(count: NewPostCount, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    UsPillButton(text = newPostsLabel(count), onClick = onClick, modifier = modifier)
+}
+
+/** "1 new post", "12 new posts", "50+ new posts" when the server stopped counting. */
+internal fun newPostsLabel(count: NewPostCount): String {
+    val number = if (count.more) "${count.count}+" else count.count.toString()
+    return if (count.count == 1 && !count.more) "↑ 1 new post" else "↑ $number new posts"
+}
+
 /** The post the viewer opened on: its id, and the index it was tapped at. */
 private data class ViewerTarget(val postId: String, val index: Int)
 
@@ -451,6 +493,7 @@ internal fun viewerStartPage(ids: List<String>, tappedId: String, tappedIndex: I
 // Flat callbacks rather than a bundled object: a data class of lambdas gets a
 // new identity on every recomposition, which would recompose every visible row.
 @Suppress("LongParameterList", "LongMethod")
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FeedList(
     items: LazyPagingItems<FeedItem>,
@@ -502,70 +545,81 @@ private fun FeedList(
         // pager. The immersive one-post-per-screen presentation belongs to
         // Reels, where every item is video; on a mixed feed it turns a
         // two-line text post into a full screen of empty space.
-        else -> LazyColumn(
-            state = listState,
+        //
+        // Pull down to refresh, as on Tube home. Until this the home feed
+        // had no way to load new posts short of leaving and coming back.
+        // The indicator shows only for a refresh over loaded rows; the
+        // first load keeps the full-screen state above.
+        else -> PullToRefreshBox(
+            isRefreshing = refresh is LoadState.Loading && items.itemCount > 0,
+            onRefresh = items::refresh,
             modifier = modifier.fillMaxSize(),
-            // No side gutter, no top inset (founder, 2026-09-04): the posts run
-            // edge to edge like Instagram's, and the tabs row above is already
-            // an edge. 12dp between neighbours is the only separation.
-            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
-            // `key` is what lets Compose keep an item's state across a page
-            // append. Without it every append re-keys by index and the whole
-            // visible list recomposes, which is the classic feed jank.
-            // The post the viewer has just published, above everything the
-            // server ranked (founder, 2026-09-06). It is filtered out of the
-            // paged rows by the ViewModel, so it appears here and nowhere
-            // else. Never autoplayed: the autoplay target is computed over the
-            // paging snapshot, which this row is deliberately not in.
-            head?.let { pinned ->
-                // The key carries the id so the dwell rule can read it back
-                // ([dwellPostId]); prefixed so it cannot collide with the
-                // paged row for the same post during the moment both exist.
-                item(key = "$HEAD_KEY_PREFIX${pinned.id}") {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                // No side gutter, no top inset (founder, 2026-09-04): the posts run
+                // edge to edge like Instagram's, and the tabs row above is already
+                // an edge. 12dp between neighbours is the only separation.
+                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+            ) {
+                // `key` is what lets Compose keep an item's state across a page
+                // append. Without it every append re-keys by index and the whole
+                // visible list recomposes, which is the classic feed jank.
+                // The post the viewer has just published, above everything the
+                // server ranked (founder, 2026-09-06). It is filtered out of the
+                // paged rows by the ViewModel, so it appears here and nowhere
+                // else. Never autoplayed: the autoplay target is computed over the
+                // paging snapshot, which this row is deliberately not in.
+                head?.let { pinned ->
+                    // The key carries the id so the dwell rule can read it back
+                    // ([dwellPostId]); prefixed so it cannot collide with the
+                    // paged row for the same post during the moment both exist.
+                    item(key = "$HEAD_KEY_PREFIX${pinned.id}") {
+                        FeedRow(
+                            item = pinned,
+                            overlay = overlays[pinned.id] ?: EngagementOverlay(),
+                            poster = posterUrl(pinned),
+                            pages = mediaPages(pinned),
+                            votes = pollVotes[pinned.id].orEmpty(),
+                            followEdge = followEdges[pinned.author.id],
+                            ownUserId = ownUserId,
+                            callbacks = callbacks,
+                            video = null,
+                            onClick = { onOpenMedia(0, pinned) },
+                        )
+                    }
+                }
+
+                items(
+                    count = items.itemCount,
+                    key = { index -> items.peek(index)?.id ?: index },
+                ) { index ->
+                    val item = items[index] ?: return@items
+                    val poster = posterUrl(item)
                     FeedRow(
-                        item = pinned,
-                        overlay = overlays[pinned.id] ?: EngagementOverlay(),
-                        poster = posterUrl(pinned),
-                        pages = mediaPages(pinned),
-                        votes = pollVotes[pinned.id].orEmpty(),
-                        followEdge = followEdges[pinned.author.id],
+                        item = item,
+                        overlay = overlays[item.id] ?: EngagementOverlay(),
+                        poster = poster,
+                        pages = mediaPages(item),
+                        votes = pollVotes[item.id].orEmpty(),
+                        followEdge = followEdges[item.author.id],
                         ownUserId = ownUserId,
                         callbacks = callbacks,
-                        video = null,
-                        onClick = { onOpenMedia(0, pinned) },
+                        video = autoplaySlot(
+                            item = item,
+                            playing = item.id == playingId,
+                            player = autoplay.player,
+                            posterUrl = poster,
+                            onClick = { onOpenMedia(index, item) },
+                        ),
+                        onClick = { onOpenMedia(index, item) },
                     )
                 }
-            }
 
-            items(
-                count = items.itemCount,
-                key = { index -> items.peek(index)?.id ?: index },
-            ) { index ->
-                val item = items[index] ?: return@items
-                val poster = posterUrl(item)
-                FeedRow(
-                    item = item,
-                    overlay = overlays[item.id] ?: EngagementOverlay(),
-                    poster = poster,
-                    pages = mediaPages(item),
-                    votes = pollVotes[item.id].orEmpty(),
-                    followEdge = followEdges[item.author.id],
-                    ownUserId = ownUserId,
-                    callbacks = callbacks,
-                    video = autoplaySlot(
-                        item = item,
-                        playing = item.id == playingId,
-                        player = autoplay.player,
-                        posterUrl = poster,
-                        onClick = { onOpenMedia(index, item) },
-                    ),
-                    onClick = { onOpenMedia(index, item) },
-                )
-            }
-
-            item(key = APPEND_KEY) {
-                AppendState(state = items.loadState.append, onRetry = items::retry)
+                item(key = APPEND_KEY) {
+                    AppendState(state = items.loadState.append, onRetry = items::retry)
+                }
             }
         }
     }

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS social_feed.home_timeline_by_user (
     created_at timestamp,
     content_type text,
     PRIMARY KEY ((user_id, bucket), ts)
-) WITH CLUSTERING ORDER BY (ts DESC);
+) WITH CLUSTERING ORDER BY (ts DESC) AND default_time_to_live = 31104000;
 
 CREATE TABLE IF NOT EXISTS social_feed.author_timeline_by_author (
     author_id uuid,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS social_feed.author_timeline_by_author (
     created_at timestamp,
     content_type text,
     PRIMARY KEY ((author_id, bucket), ts)
-) WITH CLUSTERING ORDER BY (ts DESC);
+) WITH CLUSTERING ORDER BY (ts DESC) AND default_time_to_live = 31104000;
 
 -- HF4: reverse index for UpdatePostContentType. The fan-out tables
 -- partition on (user_id, bucket) and (author_id, bucket); finding all
@@ -41,7 +41,37 @@ CREATE TABLE IF NOT EXISTS social_feed.timeline_index_by_post (
     bucket        int,
     ts            timeuuid,
     PRIMARY KEY ((post_id), timeline_kind, owner_id, bucket, ts)
-);
+) WITH default_time_to_live = 31104000;
+
+-- F-28: the same index, sharded. A post's legacy index partition holds one
+-- row per follower who received it, so a celebrity's post is one partition
+-- of millions of rows on one replica set. Here the partition is
+-- (post_id, shard) with shard = FNV-1a(owner_id) mod 16 (scylla.IndexShard;
+-- the count is fixed forever — changing it orphans every row), so the same
+-- post spreads over 16 partitions. Live writes go here only; the legacy
+-- table above is still read and deleted from until
+-- `timeline-maintenance -mode reindex` has copied it over.
+CREATE TABLE IF NOT EXISTS social_feed.timeline_index_by_post_v2 (
+    post_id       uuid,
+    shard         int,
+    timeline_kind text,
+    owner_id      uuid,
+    bucket        int,
+    ts            timeuuid,
+    PRIMARY KEY ((post_id, shard), timeline_kind, owner_id, bucket, ts)
+) WITH default_time_to_live = 31104000;
+
+-- F-27: timelines keep a post for 360 days (31104000 s). CREATE ... IF NOT
+-- EXISTS does not touch a table that already exists, so these ALTERs carry
+-- the TTL to existing clusters; re-running them is a no-op. A default TTL
+-- applies to rows written AFTER it is set: rows already in a cluster are
+-- given their remaining lifetime (or deleted when past it) by
+-- `timeline-maintenance -mode ttl`. The writers also set USING TTL from the
+-- post's created_at, so a post backfilled late still leaves 360 days after
+-- it was posted, not after it was copied.
+ALTER TABLE social_feed.home_timeline_by_user WITH default_time_to_live = 31104000;
+ALTER TABLE social_feed.author_timeline_by_author WITH default_time_to_live = 31104000;
+ALTER TABLE social_feed.timeline_index_by_post WITH default_time_to_live = 31104000;
 
 -- User-post interactions for ranking penalty (source of truth behind Redis cache)
 -- 7-day TTL matches the interaction penalty relevance window.

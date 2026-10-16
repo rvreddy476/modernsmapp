@@ -133,6 +133,13 @@ serviceMonitor:
   path: /metrics
   interval: 30s
 
+# Optional PrometheusRule with service-specific alerts. Off unless a
+# service's values enable it and list rules (standard Prometheus rule
+# objects: alert, expr, for, labels, annotations).
+prometheusRule:
+  enabled: false
+  rules: []
+
 # Liveness + readiness probes. The shared/health package's defaults
 # expose /livez and /readyz on the same port as the HTTP service.
 livenessProbe:

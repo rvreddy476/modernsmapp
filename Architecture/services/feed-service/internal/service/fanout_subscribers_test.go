@@ -165,18 +165,37 @@ func TestFanoutPost_SubscriberLegOnlyForLongVideosWithAChannel(t *testing.T) {
 	}
 }
 
-// A post-service failure on the subscriber leg is logged, not returned:
-// the follower rows are already written and a Kafka redelivery would
-// duplicate them.
-func TestFanoutPost_SubscriberLegFailureDoesNotFailTheMessage(t *testing.T) {
+// A post-service failure on the subscriber leg no longer goes unreported:
+// the followers still get their rows at once, and the error comes back so
+// the consumer retries the event and the subscribers get theirs. (It used
+// to be swallowed because a retry duplicated the follower rows; writes now
+// upsert, scylla.TimelineTS.)
+func TestFanoutPost_SubscriberLegFailureDeliversFollowersAndAsksForARetry(t *testing.T) {
 	author, follower, channel := uuid.New(), uuid.New(), uuid.New()
 	s, tl := fanoutStubs(t, []uuid.UUID{follower}, nil, nil, false)
 	s.postServiceURL = "http://127.0.0.1:1"
 
-	if err := s.FanoutPost(context.Background(), uuid.New(), author, time.Now(), "long_video", "public", channel); err != nil {
-		t.Fatalf("an unreachable post-service must not fail the fan-out: %v", err)
+	err := s.FanoutPost(context.Background(), uuid.New(), author, time.Now(), "long_video", "public", channel)
+	if err == nil {
+		t.Fatal("an unreachable post-service was swallowed; the subscribers would never get the upload")
 	}
 	if got := tl.rows(follower); got != 1 {
-		t.Fatalf("follower got %d rows, want 1", got)
+		t.Fatalf("follower got %d rows, want 1 even though the subscriber leg failed", got)
+	}
+}
+
+// Same for the follower leg: an unreachable graph-service must fail the
+// message (so it is retried) rather than leave the post on the author's
+// timeline alone with nothing but a log line.
+func TestFanoutPost_FollowerFetchFailureAsksForARetry(t *testing.T) {
+	author := uuid.New()
+	s, tl := fanoutStubs(t, nil, nil, nil, false)
+	s.graphURL = "http://127.0.0.1:1"
+
+	if err := s.FanoutPost(context.Background(), uuid.New(), author, time.Now(), "post", "public", uuid.Nil); err == nil {
+		t.Fatal("an unreachable graph-service was swallowed; followers would never get the post")
+	}
+	if got := tl.rows(author); got != 1 {
+		t.Fatalf("author got %d own rows, want 1", got)
 	}
 }

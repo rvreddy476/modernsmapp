@@ -55,6 +55,7 @@ class FeedPagingDeduplicationTest {
             cursor: String?,
             followingOnly: Boolean?,
             circleOnly: Boolean?,
+            feedMode: String?,
         ): ApiEnvelope<List<FeedItemDto>> {
             val index = calls++
             val isLast = index == pages.lastIndex

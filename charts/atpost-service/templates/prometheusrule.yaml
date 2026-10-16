@@ -1,0 +1,16 @@
+{{- if and .Values.prometheusRule .Values.prometheusRule.enabled .Values.prometheusRule.rules -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "atpost-service.name" . }}
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+    # Same selector label as the ServiceMonitor: kube-prometheus-stack's
+    # default ruleSelector matches its own release.
+    release: prometheus
+spec:
+  groups:
+    - name: {{ include "atpost-service.name" . }}
+      rules:
+        {{- toYaml .Values.prometheusRule.rules | nindent 8 }}
+{{- end }}

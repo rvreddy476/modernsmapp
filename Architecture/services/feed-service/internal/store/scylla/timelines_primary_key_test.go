@@ -45,6 +45,7 @@ import (
 //	home_timeline_by_user      PRIMARY KEY ((user_id, bucket), ts)
 //	author_timeline_by_author  PRIMARY KEY ((author_id, bucket), ts)
 //	timeline_index_by_post     PRIMARY KEY ((post_id), timeline_kind, owner_id, bucket, ts)
+//	timeline_index_by_post_v2  PRIMARY KEY ((post_id, shard), timeline_kind, owner_id, bucket, ts)
 //	user_post_interactions     PRIMARY KEY (user_id, post_id)
 //
 // Note what is NOT a key column: post_id and author_id on
@@ -55,6 +56,7 @@ var primaryKeys = map[string]map[string]bool{
 	"home_timeline_by_user":     {"user_id": true, "bucket": true, "ts": true},
 	"author_timeline_by_author": {"author_id": true, "bucket": true, "ts": true},
 	"timeline_index_by_post":    {"post_id": true, "timeline_kind": true, "owner_id": true, "bucket": true, "ts": true},
+	"timeline_index_by_post_v2": {"post_id": true, "shard": true, "timeline_kind": true, "owner_id": true, "bucket": true, "ts": true},
 	"user_post_interactions":    {"user_id": true, "post_id": true},
 }
 
@@ -143,16 +145,24 @@ func TestUnfollowPurgeDeletesByClusteringKeyOnly(t *testing.T) {
 // UPDATE in Scylla creates the row when it is missing — so a left-behind
 // index row resurrects a purged timeline entry as a ghost (content_type set,
 // post_id/author_id/created_at null) on the next reclassification.
+//
+// Both index tables: the sharded v2 every live write goes to, and the legacy
+// one reads still consult until the migration is done.
 func TestUnfollowPurgeAlsoRetiresTheReverseIndex(t *testing.T) {
 	stmts := parseStatementsInFunc(t, "timelines.go", "DeleteHomeTimelineEntriesByAuthorForUser")
-	for _, s := range stmts {
-		if s.verb == "DELETE" && s.table == "timeline_index_by_post" {
-			return
+	for _, table := range []string{"timeline_index_by_post", "timeline_index_by_post_v2"} {
+		found := false
+		for _, s := range stmts {
+			if s.verb == "DELETE" && s.table == table {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the unfollow purge deletes home_timeline_by_user rows but leaves their "+
+				"%s entries behind; a later PostContentTypeChanged will "+
+				"resurrect them as ghost rows via UPDATE-creates-row", table)
 		}
 	}
-	t.Fatal("the unfollow purge deletes home_timeline_by_user rows but leaves their " +
-		"timeline_index_by_post entries behind; a later PostContentTypeChanged will " +
-		"resurrect them as ghost rows via UPDATE-creates-row")
 }
 
 // The pinned keys above are a copy of the schema, and a copy can drift. This

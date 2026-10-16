@@ -175,7 +175,9 @@ func (s *Service) GetRelatedVideosWithChip(ctx context.Context, viewerID, postID
 		return nil, 0, err
 	}
 	pool = applyBlockFilter(pool, blocked)
-	pool = s.applyHiddenAuthorFilter(ctx, pool)
+	if pool, err = s.applyHiddenAuthorFilter(ctx, pool); err != nil {
+		return nil, 0, err
+	}
 	// fresh / seen are decided from the candidate row alone; see above.
 	pool = filterItemsByChip(pool, chip.Kind, scope)
 

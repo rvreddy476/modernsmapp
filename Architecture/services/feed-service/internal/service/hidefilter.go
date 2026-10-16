@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/google/uuid"
@@ -20,12 +21,12 @@ import (
 // there is nowhere a hidden author's posts can leak back in that a blocked
 // author could not.
 //
-// Unlike the block/mute lookup (a remote graph-service call that FAILS
-// CLOSED — M2-P0-3), this is a local Postgres read against a store this
-// service already owns. A lookup failure here logs and serves the feed
-// filtered by block/mute alone rather than making the whole surface
-// unavailable — consistent with how this service already treats its own
-// Postgres reads (GetFeedMode, IsCeleb: default and continue on error).
+// Like the block/mute lookup (M2-P0-3), this FAILS CLOSED: a lookup error is
+// returned and the surface answers with an error, never a page that may
+// carry a deactivated or deletion-scheduled account's posts. It used to log
+// and serve the page filtered by block/mute alone, so a Postgres blip put a
+// person who had just deactivated their account back in everyone's feed —
+// the one outcome the account-control flow exists to prevent.
 
 // applyHiddenAuthorFilter drops every item authored by a currently-hidden
 // account. Extracted so every applyBlockFilter call site can pair with it
@@ -33,20 +34,20 @@ import (
 // fallback are made to provably run the same block filter. The pure step
 // (filterHiddenAuthors) is what the tests exercise directly; this wrapper
 // just resolves the hidden set from Postgres first.
-func (s *Service) applyHiddenAuthorFilter(ctx context.Context, items []FeedItem) []FeedItem {
+func (s *Service) applyHiddenAuthorFilter(ctx context.Context, items []FeedItem) ([]FeedItem, error) {
 	if len(items) == 0 || s.pgStore == nil {
-		return items
+		return items, nil
 	}
 	authors := uniqueAuthorIDs(items)
 	if len(authors) == 0 {
-		return items
+		return items, nil
 	}
 	hidden, err := s.pgStore.GetHiddenAuthorIDs(ctx, authors)
 	if err != nil {
-		log.Printf("hidden-author lookup failed, feed served with block/mute filtering only: %v", err)
-		return items
+		log.Printf("hidden-author lookup failed; refusing the page rather than serving it unfiltered: %v", err)
+		return nil, fmt.Errorf("feed unavailable: hidden-author state could not be resolved: %w", err)
 	}
-	return filterHiddenAuthors(items, hidden)
+	return filterHiddenAuthors(items, hidden), nil
 }
 
 func uniqueAuthorIDs(items []FeedItem) []uuid.UUID {

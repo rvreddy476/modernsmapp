@@ -2,11 +2,13 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/atpost/feed-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,12 +21,17 @@ type DeltaResponse struct {
 	HasMore      bool   `json:"has_more"`
 }
 
+// deltaFeedTypes are the feeds the delta answers for: the viewer's own.
+// group / group_channel / channel / community / community_space were
+// dropped — see service.ComputeFeedDelta.
+var deltaFeedTypes = map[string]bool{"home": true, "following": true, "flicks": true, "posttube": true}
+
 // FeedDelta handles GET /v1/feed/delta — lightweight new-content check.
 //
 // Query params:
-//   - feed_type: home|following|group|group_channel|channel|community|community_space|flicks|posttube
-//   - anchor: last-seen post/item ID or timestamp (ISO 8601)
-//   - group_id, channel_id, community_id, space_id: context IDs depending on feed_type
+//   - feed_type: home|following|flicks|posttube
+//   - anchor: RFC3339 timestamp of the newest item the client has shown
+//     (newest_anchor from a previous response is also a valid anchor)
 func (h *Handler) FeedDelta(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
@@ -44,94 +51,37 @@ func (h *Handler) FeedDelta(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "anchor is required", nil)
 		return
 	}
-
-	validTypes := map[string]bool{
-		"home": true, "following": true, "group": true, "group_channel": true,
-		"channel": true, "community": true, "community_space": true,
-		"flicks": true, "posttube": true,
-	}
-	if !validTypes[feedType] {
+	if !deltaFeedTypes[feedType] {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
-			"feed_type must be one of: home, following, group, group_channel, channel, community, community_space, flicks, posttube", nil)
+			"feed_type must be one of: home, following, flicks, posttube", nil)
+		return
+	}
+	if _, err := service.ParseDeltaAnchor(anchor); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"anchor must be an RFC3339 timestamp", nil)
 		return
 	}
 
-	// Extract context IDs
-	groupID := c.Query("group_id")
-	channelID := c.Query("channel_id")
-	communityID := c.Query("community_id")
-	spaceID := c.Query("space_id")
+	// Short-lived Redis cache (10s TTL), per viewer, feed and anchor.
+	cacheKey := fmt.Sprintf("feed_delta:%s:%s:%s", feedType, userID.String(), anchor)
 
-	// Validate required context IDs per feed type
-	switch feedType {
-	case "group":
-		if groupID == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "group_id is required for group feed", nil)
-			return
-		}
-	case "group_channel":
-		if groupID == "" || channelID == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "group_id and channel_id are required for group_channel feed", nil)
-			return
-		}
-	case "channel":
-		if channelID == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "channel_id is required for channel feed", nil)
-			return
-		}
-	case "community":
-		if communityID == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "community_id is required for community feed", nil)
-			return
-		}
-	case "community_space":
-		if spaceID == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "space_id is required for community_space feed", nil)
-			return
-		}
-	}
-
-	// Build a cache key for short-lived Redis caching (10s TTL)
-	contextID := buildContextID(feedType, userID.String(), groupID, channelID, communityID, spaceID)
-	cacheKey := fmt.Sprintf("feed_delta:%s:%s:%s", feedType, contextID, anchor)
-
-	// Check Redis cache
 	cached, err := h.svc.GetCachedDelta(c.Request.Context(), cacheKey)
 	if err == nil && cached != nil {
 		api.JSON(c.Writer, http.StatusOK, cached, nil)
 		return
 	}
 
-	// Compute delta
-	delta, err := h.svc.ComputeFeedDelta(c.Request.Context(), userID, feedType, anchor, groupID, channelID, communityID, spaceID)
+	delta, err := h.svc.ComputeFeedDelta(c.Request.Context(), userID, feedType, anchor)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidDeltaAnchor) || errors.Is(err, service.ErrUnsupportedDeltaFeed) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+			return
+		}
 		slog.Error("feed delta computation failed", "feed_type", feedType, "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute feed delta", nil)
 		return
 	}
 
-	// Cache the result for 10 seconds
 	h.svc.CacheDelta(context.Background(), cacheKey, delta, 10*time.Second)
-
 	api.JSON(c.Writer, http.StatusOK, delta, nil)
-}
-
-// buildContextID creates a unique context identifier for cache keying.
-func buildContextID(feedType, userID, groupID, channelID, communityID, spaceID string) string {
-	switch feedType {
-	case "home", "following", "flicks", "posttube":
-		return userID
-	case "group":
-		return groupID
-	case "group_channel":
-		return groupID + ":" + channelID
-	case "channel":
-		return channelID
-	case "community":
-		return communityID
-	case "community_space":
-		return spaceID
-	default:
-		return userID
-	}
 }

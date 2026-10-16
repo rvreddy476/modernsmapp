@@ -27,47 +27,67 @@ func New(session *gocql.Session) *InteractionStore {
 	return &InteractionStore{session: session}
 }
 
-// React (idempotent upsert)
-func (s *InteractionStore) React(ctx context.Context, postID, userID uuid.UUID, reaction string) error {
+// React records the viewer's reaction and keeps post_counters.like_count in
+// step with the reactions_by_post rows. It reports whether a NEW reaction
+// was recorded (false: the viewer had already reacted; a different type
+// rewrites the row and leaves the count alone).
+//
+// Both the row write and the decision to count are one lightweight
+// transaction (INSERT … IF NOT EXISTS). This used to read the row, then
+// write it, then increment: two concurrent taps both read "no reaction"
+// and both incremented, so the visible like count drifted above the number
+// of people who liked the post, and never came back down. Every write to
+// reactions_by_post goes through this file and is conditional, as Scylla
+// requires for rows LWTs touch.
+func (s *InteractionStore) React(ctx context.Context, postID, userID uuid.UUID, reaction string) (bool, error) {
 	pid, uid := postID.String(), userID.String()
 
-	// Read-before-write for counter correctness
-	var existing string
-	if err := s.session.Query(`SELECT reaction FROM reactions_by_post WHERE post_id = ? AND user_id = ?`, pid, uid).Scan(&existing); err != nil && err != gocql.ErrNotFound {
-		return err
-	}
-
-	if existing != "" {
-		return nil // Already reacted
-	}
-
-	if err := s.session.Query(`
+	inserted, err := s.session.Query(`
 		INSERT INTO reactions_by_post (post_id, user_id, reaction, created_at)
 		VALUES (?, ?, ?, toTimestamp(now()))
-	`, pid, uid, reaction).Exec(); err != nil {
-		return err
+		IF NOT EXISTS
+	`, pid, uid, reaction).WithContext(ctx).MapScanCAS(map[string]interface{}{})
+	if err != nil {
+		return false, err
 	}
-
-	return s.session.Query(`UPDATE post_counters SET like_count = like_count + 1 WHERE post_id = ?`, pid).Exec()
+	if !inserted {
+		// Already reacted: keep the viewer's current type on the row (the
+		// feed reads it back as viewer_reaction). The count does not move.
+		if _, err := s.session.Query(`
+			UPDATE reactions_by_post SET reaction = ?
+			WHERE post_id = ? AND user_id = ?
+			IF EXISTS
+		`, reaction, pid, uid).WithContext(ctx).MapScanCAS(map[string]interface{}{}); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if err := s.session.Query(`UPDATE post_counters SET like_count = like_count + 1 WHERE post_id = ?`, pid).WithContext(ctx).Exec(); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
-// Unreact removes a reaction.
-func (s *InteractionStore) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
+// Unreact removes the viewer's reaction and reports whether there was one.
+// The decrement happens only when this call's conditional delete removed
+// the row, so two concurrent un-taps cannot both decrement.
+func (s *InteractionStore) Unreact(ctx context.Context, postID, userID uuid.UUID) (bool, error) {
 	pid, uid := postID.String(), userID.String()
 
-	var existing string
-	if err := s.session.Query(`SELECT reaction FROM reactions_by_post WHERE post_id = ? AND user_id = ?`, pid, uid).Scan(&existing); err != nil {
-		if err == gocql.ErrNotFound {
-			return nil
-		}
-		return err
+	deleted, err := s.session.Query(`
+		DELETE FROM reactions_by_post WHERE post_id = ? AND user_id = ?
+		IF EXISTS
+	`, pid, uid).WithContext(ctx).MapScanCAS(map[string]interface{}{})
+	if err != nil {
+		return false, err
 	}
-
-	if err := s.session.Query(`DELETE FROM reactions_by_post WHERE post_id = ? AND user_id = ?`, pid, uid).Exec(); err != nil {
-		return err
+	if !deleted {
+		return false, nil
 	}
-
-	return s.session.Query(`UPDATE post_counters SET like_count = like_count - 1 WHERE post_id = ?`, pid).Exec()
+	if err := s.session.Query(`UPDATE post_counters SET like_count = like_count - 1 WHERE post_id = ?`, pid).WithContext(ctx).Exec(); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // GetReaction returns the viewer's reaction type for a post, or empty string if none.

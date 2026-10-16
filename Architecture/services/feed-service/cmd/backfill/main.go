@@ -8,10 +8,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/atpost/feed-service/internal/store/scylla"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,19 +21,21 @@ import (
 
 // post represents a row from the Postgres posts table.
 type post struct {
-	ID        uuid.UUID
-	AuthorID  uuid.UUID
-	CreatedAt time.Time
+	ID          uuid.UUID
+	AuthorID    uuid.UUID
+	CreatedAt   time.Time
+	ContentType string
+	Visibility  string
 }
 
-// toGocql converts google/uuid to gocql UUID.
-func toGocql(id uuid.UUID) gocql.UUID {
-	return gocql.UUID(id)
-}
-
-// bucket returns YYYYMM int from a time.
-func bucket(t time.Time) int {
-	return t.Year()*100 + int(t.Month())
+// listedToFollowers mirrors the feed's listing rule (service.listableVisibility):
+// only these reach anyone's home timeline but the author's.
+func listedToFollowers(visibility string) bool {
+	switch strings.ToLower(strings.TrimSpace(visibility)) {
+	case "", "public", "followers":
+		return true
+	}
+	return false
 }
 
 // fetchFollowers calls graph-service to get all followers for a user,
@@ -129,12 +133,18 @@ func main() {
 	}
 	defer scyllaSession.Close()
 	log.Println("Connected to ScyllaDB")
+	timelines := scylla.New(scyllaSession)
 
 	// ── Query all non-deleted posts from Postgres ─────────────────────
 	log.Println("Querying all non-deleted posts from Postgres...")
 
+	// Only posts a timeline still keeps: the store writes nothing older
+	// than scylla.TimelineRetention anyway.
+	since := time.Now().Add(-scylla.TimelineRetention)
 	rows, err := dbPool.Query(ctx,
-		`SELECT id, author_id, created_at FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC`,
+		`SELECT id, author_id, created_at, COALESCE(content_type, ''), COALESCE(visibility, '')
+		   FROM posts WHERE deleted_at IS NULL AND created_at > $1 ORDER BY created_at DESC`,
+		since,
 	)
 	if err != nil {
 		log.Fatalf("Failed to query posts: %v", err)
@@ -143,7 +153,7 @@ func main() {
 	var posts []post
 	for rows.Next() {
 		var p post
-		if err := rows.Scan(&p.ID, &p.AuthorID, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.AuthorID, &p.CreatedAt, &p.ContentType, &p.Visibility); err != nil {
 			log.Fatalf("Failed to scan post row: %v", err)
 		}
 		posts = append(posts, p)
@@ -183,19 +193,21 @@ func main() {
 			defer wg.Done()
 
 			for p := range postCh {
-				b := bucket(p.CreatedAt)
-				ts := gocql.UUIDFromTime(p.CreatedAt)
+				// The live writers: same key (scylla.TimelineTS), so a re-run
+				// or a post the consumer already fanned out upserts instead of
+				// duplicating; same TTL and post index.
 
-				// 1. Insert into author_timeline_by_author for the author.
-				if err := scyllaSession.Query(`
-					INSERT INTO author_timeline_by_author (author_id, bucket, ts, post_id, created_at)
-					VALUES (?, ?, ?, ?, ?)`,
-					toGocql(p.AuthorID), b, ts, toGocql(p.ID), p.CreatedAt,
-				).Exec(); err != nil {
+				// 1. The author's own timeline.
+				if err := timelines.AddToAuthorTimeline(ctx, p.AuthorID, p.ID, p.CreatedAt, p.ContentType); err != nil {
 					log.Printf("[worker %d] Failed to insert author timeline for post %s: %v", workerID, p.ID, err)
 					atomic.AddInt64(&errorCount, 1)
 				} else {
 					atomic.AddInt64(&timelineWrites, 1)
+				}
+
+				if !listedToFollowers(p.Visibility) {
+					atomic.AddInt64(&processedCount, 1)
+					continue
 				}
 
 				// 2. Fetch followers from graph-service.
@@ -209,11 +221,7 @@ func main() {
 
 				// 3. Insert into home_timeline_by_user for each follower.
 				for _, followerID := range followers {
-					if err := scyllaSession.Query(`
-						INSERT INTO home_timeline_by_user (user_id, bucket, ts, post_id, author_id, created_at)
-						VALUES (?, ?, ?, ?, ?, ?)`,
-						toGocql(followerID), b, ts, toGocql(p.ID), toGocql(p.AuthorID), p.CreatedAt,
-					).Exec(); err != nil {
+					if err := timelines.AddToHomeTimeline(ctx, followerID, p.ID, p.AuthorID, p.CreatedAt, p.ContentType); err != nil {
 						log.Printf("[worker %d] Failed to insert home timeline for follower %s, post %s: %v", workerID, followerID, p.ID, err)
 						atomic.AddInt64(&errorCount, 1)
 					} else {
