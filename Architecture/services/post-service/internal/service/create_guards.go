@@ -47,6 +47,11 @@ var (
 	// post keeps the title optional. The ceiling applies to all of them.
 	ErrTitleRequired = errors.New("a long video needs a title")
 	ErrTitleTooLong  = errors.New("title is longer than the maximum")
+
+	// ErrInvalidContentType is a content_type this service does not create
+	// ("text", a typo, a retired kind). A statement about the request, so a
+	// 400, never the 500 it used to fall through to.
+	ErrInvalidContentType = errors.New("invalid content_type")
 )
 
 // MaxTitleRunes is the title ceiling in Unicode code points, counted the same

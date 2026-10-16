@@ -30,6 +30,10 @@ import (
 // caller's — the two are deliberately indistinguishable).
 var ErrPostNotDeleted = errors.New("post is not deleted")
 
+// ErrPurgeHeld: PurgePost refused because a case holds the post (an active
+// post_restrictions row). The worker skips it; it is not a failure.
+var ErrPurgeHeld = errors.New("post is held by an active restriction")
+
 // ErrRestoreWindowExpired: the post is past its purge_at. The purge worker
 // may not have run yet, but the contract is the window, not the worker.
 var ErrRestoreWindowExpired = errors.New("restore window expired")
@@ -210,14 +214,20 @@ type PurgeCandidate struct {
 
 // ListPurgeablePosts returns posts whose deleted_at is at or before
 // `before`, oldest first, bounded by limit. Index: idx_posts_deleted_at
-// (migration 039).
+// (migration 039). Two kinds of overdue post are left out (migration 065):
+// one under an active restriction (never purged while held; see
+// CountHeldPurgeablePosts) and one whose last purge failed and is backing
+// off in post_purge_failures.
 func (s *Store) ListPurgeablePosts(ctx context.Context, before time.Time, limit int) ([]PurgeCandidate, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, deleted_at FROM posts
+		SELECT id, author_id, deleted_at FROM posts p
 		WHERE deleted_at IS NOT NULL AND deleted_at <= $1
+		  AND active_restriction_count = 0
+		  AND NOT EXISTS (SELECT 1 FROM post_purge_failures f
+		                  WHERE f.post_id = p.id AND f.next_attempt_at > NOW())
 		ORDER BY deleted_at ASC
 		LIMIT $2`, before, limit)
 	if err != nil {
@@ -233,6 +243,37 @@ func (s *Store) ListPurgeablePosts(ctx context.Context, before time.Time, limit 
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// CountHeldPurgeablePosts counts the posts past the purge window that are
+// skipped because a case holds them. Not an error: the worker reports the
+// number so a hold that is never released stays visible.
+func (s *Store) CountHeldPurgeablePosts(ctx context.Context, before time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM posts
+		WHERE deleted_at IS NOT NULL AND deleted_at <= $1 AND active_restriction_count > 0`, before).Scan(&n)
+	return n, err
+}
+
+// DeferPurgePost records a failed purge of one post and backs it off
+// (2^attempts minutes, capped at a day) so ListPurgeablePosts skips it
+// until then. Returns the attempt count and the next attempt time.
+func (s *Store) DeferPurgePost(ctx context.Context, postID uuid.UUID, reason string) (int, time.Time, error) {
+	var attempts int
+	var next time.Time
+	err := s.db.QueryRow(ctx, `
+		INSERT INTO post_purge_failures (post_id, attempts, last_error, next_attempt_at)
+		VALUES ($1, 1, LEFT($2, 500), NOW() + interval '2 minutes')
+		ON CONFLICT (post_id) DO UPDATE
+		SET attempts = post_purge_failures.attempts + 1,
+		    last_error = EXCLUDED.last_error,
+		    last_failed_at = NOW(),
+		    next_attempt_at = NOW() + LEAST(
+		        make_interval(mins => power(2, LEAST(post_purge_failures.attempts + 1, 11))::int),
+		        interval '1 day')
+		RETURNING attempts, next_attempt_at`, postID, reason).Scan(&attempts, &next)
+	return attempts, next, err
 }
 
 // PurgeMediaItem is one media asset queued for deletion at media-service
@@ -255,7 +296,11 @@ type PurgeMediaItem struct {
 // afterwards must still be retryable, so the intent is durable first.
 //
 // Idempotent: a post that is already gone (or is live — never purge a
-// restored post) returns (nil, nil).
+// restored post) returns (nil, nil). A post under an active restriction
+// returns ErrPurgeHeld and nothing changes: a case's hold is evidence, and
+// the post is purged on the first tick after the case releases it. Its
+// restriction rows (released by then) and their events are kept as the
+// hold's audit; migration 065 dropped their FK to posts for this.
 //
 // Ordering follows the live FK shape (verified with pg_constraint on
 // 2026-09-04): polls, comments, post_engagement_counts carry plain FKs and
@@ -287,6 +332,17 @@ func (s *Store) PurgePost(ctx context.Context, postID uuid.UUID) ([]PurgeMediaIt
 	}
 	if deletedAt == nil {
 		return nil, nil // restored between the scan and the lock — leave it alone
+	}
+	// The rows, not the counter. ApplyPostRestriction takes this same row
+	// lock, so no hold can be placed between this check and the commit.
+	var held bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM post_restrictions WHERE post_id = $1 AND state = 'active')`, postID).
+		Scan(&held); err != nil {
+		return nil, fmt.Errorf("purge post: restriction check: %w", err)
+	}
+	if held {
+		return nil, ErrPurgeHeld
 	}
 
 	// Media the post referenced that no OTHER post (live or deleted) still
@@ -360,6 +416,7 @@ func (s *Store) PurgePost(ctx context.Context, postID uuid.UUID) ([]PurgeMediaIt
 		`DELETE FROM post_reposts WHERE original_post_id = $1`,
 		`DELETE FROM post_moderation_decisions WHERE post_id = $1`,
 		`UPDATE video_series SET trailer_post_id = NULL WHERE trailer_post_id = $1`,
+		`DELETE FROM post_purge_failures WHERE post_id = $1`,
 		`DELETE FROM posts WHERE id = $1`,
 	}
 	for _, stmt := range stmts {

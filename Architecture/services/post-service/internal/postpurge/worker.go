@@ -16,23 +16,52 @@
 // backoff and the next tick retries it. Both steps are idempotent and safe
 // to run in every replica (PurgePost locks the row; a post that is already
 // gone or was restored is skipped).
+//
+// Two kinds of overdue post are not purged (migration 065):
+//
+//   - a post under an active case restriction (a copyright hold) is
+//     evidence. The scan skips it and PurgePost refuses it with
+//     postgres.ErrPurgeHeld; the worker counts them every tick (gauge
+//     post_purge_held_posts, a log line when the number changes). The tick
+//     after the case releases its hold purges the post as usual;
+//   - a post whose purge transaction failed backs off in
+//     post_purge_failures (2^attempts minutes, capped at a day) instead of
+//     failing again on every tick.
 package postpurge
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	heldGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "atpost", Subsystem: "post_service",
+		Name: "post_purge_held_posts",
+		Help: "Soft-deleted posts past the purge window that are not purged because a case holds them.",
+	})
+	failedCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "atpost", Subsystem: "post_service",
+		Name: "post_purge_failures_total",
+		Help: "Post purge transactions that failed and were backed off.",
+	})
 )
 
 // Store is what the worker needs from Postgres. *postgres.Store implements
 // it; tests substitute a fake.
 type Store interface {
 	ListPurgeablePosts(ctx context.Context, before time.Time, limit int) ([]postgres.PurgeCandidate, error)
+	CountHeldPurgeablePosts(ctx context.Context, before time.Time) (int, error)
 	PurgePost(ctx context.Context, postID uuid.UUID) ([]postgres.PurgeMediaItem, error)
+	DeferPurgePost(ctx context.Context, postID uuid.UUID, reason string) (int, time.Time, error)
 	PendingPurgeMedia(ctx context.Context, limit int) ([]postgres.PurgeMediaItem, error)
 	ResolvePurgeMedia(ctx context.Context, mediaID, postID uuid.UUID) error
 	DeferPurgeMedia(ctx context.Context, mediaID, postID uuid.UUID, reason string) error
@@ -80,6 +109,9 @@ type Worker struct {
 	cfg   Config
 	now   func() time.Time
 	log   *slog.Logger
+	// lastHeld is the held count last logged (-1: never), so the log line
+	// fires when the number changes, not on every tick.
+	lastHeld int
 }
 
 // NewWorker builds a worker. log may be nil.
@@ -96,7 +128,28 @@ func NewWorker(store Store, media MediaDeleter, cfg Config, log *slog.Logger) *W
 	if cfg.After <= 0 {
 		cfg.After = 720 * time.Hour
 	}
-	return &Worker{store: store, media: media, cfg: cfg, now: func() time.Time { return time.Now().UTC() }, log: log}
+	return &Worker{store: store, media: media, cfg: cfg, now: func() time.Time { return time.Now().UTC() }, log: log, lastHeld: -1}
+}
+
+// reportHeld counts the overdue posts a case holds, sets the gauge, and logs
+// when the number changes.
+func (w *Worker) reportHeld(ctx context.Context, cutoff time.Time, rep *TickReport) {
+	held, err := w.store.CountHeldPurgeablePosts(ctx, cutoff)
+	if err != nil {
+		w.log.Error("post purge: held count failed", "err", err)
+		return
+	}
+	rep.Held = held
+	heldGauge.Set(float64(held))
+	switch {
+	case held == w.lastHeld:
+	case held > 0:
+		w.log.Warn("post purge: overdue posts held by a case are not purged", "event", "post_purge_held",
+			"held", held)
+	case w.lastHeld > 0:
+		w.log.Info("post purge: no overdue post is held any more", "event", "post_purge_held", "held", 0)
+	}
+	w.lastHeld = held
 }
 
 // WithClock overrides the time source (tests).
@@ -121,7 +174,11 @@ func (w *Worker) Start(ctx context.Context) {
 
 // TickReport is what one Tick did (tests, logs).
 type TickReport struct {
-	Purged        int
+	Purged int
+	// Held is the number of overdue posts a case holds (skipped, not failed).
+	Held int
+	// Failed is the number of purges that failed this tick and were backed off.
+	Failed        int
 	MediaQueued   int
 	MediaDeleted  int
 	MediaDeferred int
@@ -131,6 +188,7 @@ type TickReport struct {
 func (w *Worker) Tick(ctx context.Context) TickReport {
 	var rep TickReport
 	cutoff := w.now().Add(-w.cfg.After)
+	w.reportHeld(ctx, cutoff, &rep)
 	cands, err := w.store.ListPurgeablePosts(ctx, cutoff, w.cfg.Batch)
 	if err != nil {
 		w.log.Error("post purge: list failed", "err", err)
@@ -140,8 +198,23 @@ func (w *Worker) Tick(ctx context.Context) TickReport {
 			return rep
 		}
 		queued, err := w.store.PurgePost(ctx, c.PostID)
+		if errors.Is(err, postgres.ErrPurgeHeld) {
+			// A hold placed after the scan. Skipped like the ones the scan
+			// left out; the next tick's count includes it.
+			w.log.Info("post purge: skipped, held by a case", "post_id", c.PostID)
+			continue
+		}
 		if err != nil {
-			w.log.Error("post purge: purge failed", "post_id", c.PostID, "err", err)
+			rep.Failed++
+			failedCounter.Inc()
+			attempts, next, derr := w.store.DeferPurgePost(ctx, c.PostID, err.Error())
+			if derr != nil {
+				w.log.Error("post purge: purge failed, and recording the failure failed too",
+					"post_id", c.PostID, "err", err, "defer_err", derr)
+				continue
+			}
+			w.log.Error("post purge: purge failed, backing off", "post_id", c.PostID,
+				"attempt", attempts, "next_attempt_at", next, "err", err)
 			continue
 		}
 		rep.Purged++

@@ -541,6 +541,8 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TITLE_REQUIRED", err.Error(), nil)
 	case errors.Is(err, service.ErrTitleTooLong):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TITLE_TOO_LONG", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidContentType):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE", err.Error(), nil)
 	case errors.Is(err, service.ErrChannelRequired):
 		// Tube: a long video needs a channel first (founder rule, 2026-09-05).
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "CHANNEL_REQUIRED", "Create your channel before posting a video", nil)
@@ -672,6 +674,16 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
+	}
+
+	// An unknown content_type is refused before any lookup; the service
+	// refuses it too (ErrInvalidContentType) for every other caller.
+	if req.ContentType != "" {
+		if _, ok := service.CanonicalContentType(req.ContentType); !ok {
+			writeCreateGuardError(c, fmt.Errorf("%w %q: must be post, poll, flick, or long_video",
+				service.ErrInvalidContentType, req.ContentType))
+			return
+		}
 	}
 
 	// Validate media IDs

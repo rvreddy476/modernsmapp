@@ -982,7 +982,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 
 	// Validate content_type
 	if !validContentTypes[contentType] {
-		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, flick, or long_video", contentType)
+		return nil, fmt.Errorf("%w %q: must be post, poll, flick, or long_video", ErrInvalidContentType, contentType)
 	}
 
 	// Tube: a long video is listed under a channel, so the account must have
