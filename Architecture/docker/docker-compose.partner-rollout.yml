@@ -22,4 +22,4 @@ services:
     environment:
       NOTIFICATION_SERVICE_URL: http://notification-service:8088
   admin-web:
-    image: atpost/qa-partner-admin:20261011
+    image: atpost/qa-partner-admin:20261016-sounds
