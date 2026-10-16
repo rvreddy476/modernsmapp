@@ -44,6 +44,7 @@ const (
 	AppQA           = "qa"
 	AppChat         = "chat"
 	AppLive         = "live"
+	AppMedia        = "media"
 	AppRider        = "rider"
 	AppDoorstep     = "doorstep"
 	AppTrustSafety  = "trust_safety"
@@ -56,7 +57,7 @@ const AllAppsAuditRead = "*:audit.read"
 // apps is the canonical order. The auth.user_roles app CHECK lists exactly these.
 var apps = []string{
 	AppDating, AppFood, AppCommerce, AppMonetization, AppPayments, AppWallet,
-	AppSocial, AppTube, AppQA, AppChat, AppLive, AppRider, AppDoorstep, AppTrustSafety,
+	AppSocial, AppTube, AppQA, AppChat, AppLive, AppMedia, AppRider, AppDoorstep, AppTrustSafety,
 	AppPlatform,
 }
 
@@ -312,6 +313,18 @@ var catalogue = map[string][]entry{
 		p("reports.act", mod),
 		p("chat.moderate", mod),
 		p("users.ban"),
+	},
+	// Media (media-service): the platform sound library creators pick from.
+	// What reaches every creator's reels is a licensing decision, so both
+	// permissions are admin only: superadmin, a platform-wide admin, or an
+	// admin scoped to media. No moderator, finance or support seat. Mirrors
+	// admin-service adminauth.catalogue AppMedia.
+	AppMedia: {
+		// sounds.read: list, read and preview every library sound (drafts
+		// and withdrawn ones included).
+		p("sounds.read"),
+		// sounds.manage: upload, create, edit, enable/disable, withdraw.
+		p("sounds.manage"),
 	},
 	// Mopedu dashboard (rider-service admin_token.go AdminPermissions).
 	// Moderator holds the partner and ride queues and safety triage, never

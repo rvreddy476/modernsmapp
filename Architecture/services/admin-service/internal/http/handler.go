@@ -97,6 +97,8 @@ type Handler struct {
 	doorstep *service.ProductClient
 	// Live moderation: live-service-v2.
 	live *service.ProductClient
+	// Sound library: media-service's admin sound routes.
+	sounds *service.ProductClient
 	// Access page: identity's admin console family (roles, users, sessions).
 	identity      *service.ProductClient
 	notifications *service.ProductClient
@@ -209,6 +211,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterQARoutes(r)
 	h.RegisterChatRoutes(r)
 	h.RegisterLiveRoutes(r)
+	h.RegisterSoundRoutes(r)
 	h.RegisterRiderRoutes(r)
 	h.RegisterDoorstepRoutes(r)
 	h.RegisterAccessRoutes(r)

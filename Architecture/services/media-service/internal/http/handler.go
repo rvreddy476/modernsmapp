@@ -76,6 +76,9 @@ type Handler struct {
 	recordings          recordingImportService
 	recordingsVerifier  serviceTokenVerifier
 	recordingsLegacyKey bool
+	// adminSounds backs the admin sound library routes
+	// (admin_sounds_handler.go); nil means the service.
+	adminSounds adminSoundService
 }
 
 func New(svc *service.Service) *Handler {

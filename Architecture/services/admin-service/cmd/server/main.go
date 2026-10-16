@@ -155,6 +155,9 @@ func main() {
 		// registers ADMIN_SERVICE_TOKEN_PUBKEY / _KID for admin-service).
 		WithDoorstep(service.NewDoorstepClient(env("DOORSTEP_SERVICE_URL", "http://doorstep-service:8122"), tokenSigner)).
 		WithEvidence(service.NewEvidenceClient(env("MEDIA_SERVICE_URL", "http://media-service:8087"), tokenSigner)).
+		// Sound library: media-service's admin sound routes (audience
+		// "media", the same ADMIN_SERVICE_TOKEN_PUBKEY as partner evidence).
+		WithSounds(service.NewMediaSoundsClient(env("MEDIA_SERVICE_URL", "http://media-service:8087"), tokenSigner)).
 		// Live moderation: live-service-v2 (audience "live"; it registers
 		// ADMIN_SERVICE_TOKEN_PUBKEY / _KID for admin-service).
 		WithLive(service.NewLiveClient(env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117"), tokenSigner)).

@@ -430,6 +430,12 @@ func main() {
 		slog.Error("invalid partner evidence verifier")
 		os.Exit(1)
 	}
+	// Admin sound library: admin-service only, under the same key as
+	// partner evidence (audience "media", scopes media:sounds.*).
+	if err := mediaHandler.RegisterAdminSoundLibrary(r, env("ADMIN_SERVICE_TOKEN_KID", "a1"), os.Getenv("ADMIN_SERVICE_TOKEN_PUBKEY")); err != nil {
+		slog.Error("invalid admin sound library verifier")
+		os.Exit(1)
+	}
 
 	// 10. Graceful shutdown
 	if err := server.Run(r, server.Config{
