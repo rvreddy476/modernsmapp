@@ -85,6 +85,10 @@ data class NotificationDto(
     @SerialName("created_at") val createdAt: String = "",
     /** Read-time hydration from identity-profile; null when it failed. */
     val actor: NotificationActorDto? = null,
+    /** The server's complete sentence for the row (2026-10-18); absent on older servers. */
+    val title: String? = null,
+    /** The row's category glyph, e.g. `order` or `ride` (2026-10-18); absent on older servers. */
+    val icon: String? = null,
 )
 
 /** The embedded actor block — notification-service's read-time hydration. */

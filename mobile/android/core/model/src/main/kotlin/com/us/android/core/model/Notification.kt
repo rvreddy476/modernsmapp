@@ -25,9 +25,59 @@ data class Notification(
     val target: NotificationTarget,
     val isRead: Boolean,
     val createdAt: String,
+    /**
+     * The server's own sentence for the row (2026-10-18 contract): complete,
+     * with the actor's name where one applies. Null from a server that does
+     * not send it yet, so older backends keep the client's wording.
+     */
+    val title: String? = null,
+    /** The server's category for the row's glyph; null when absent or unrecognised. */
+    val icon: NotificationIcon? = null,
 ) {
     /** The address `POST /v1/notifications/read` requires. */
     val address: NotificationAddress get() = NotificationAddress(bucket, ts)
+
+    /**
+     * Whether a person stands behind this row. System notices (an order, a
+     * ride, an invoice) carry no actor, or the nil UUID; a row whose actor
+     * could not be hydrated has no name to draw either. Such rows show a
+     * category glyph rather than a "?" avatar.
+     */
+    val hasActor: Boolean
+        get() = actorUserId.isNotBlank() && actorUserId != NIL_UUID && actorName.isNotBlank()
+
+    private companion object {
+        const val NIL_UUID = "00000000-0000-0000-0000-000000000000"
+    }
+}
+
+/**
+ * The `icon` category notification-service attaches to every inbox row
+ * (2026-10-18). A closed set; a value this build does not know reads as null
+ * and the row falls back to its own inference.
+ */
+enum class NotificationIcon(val wire: String) {
+    Social("social"),
+    Message("message"),
+    Call("call"),
+    Live("live"),
+    Order("order"),
+    Food("food"),
+    HomeService("home_service"),
+    Ride("ride"),
+    Dating("dating"),
+    Community("community"),
+    Qa("qa"),
+    Account("account"),
+    System("system"),
+    ;
+
+    companion object {
+        fun fromWire(raw: String?): NotificationIcon? {
+            val value = raw?.trim()?.lowercase().orEmpty()
+            return entries.firstOrNull { it.wire == value }
+        }
+    }
 }
 
 /** The `(bucket, ts)` pair the read endpoint takes. */
@@ -80,6 +130,22 @@ sealed interface NotificationKind {
     data object MissedCall : NotificationKind
 
     /**
+     * An invitation to a voice call, as the call consumer stores it for the
+     * callee (`incoming_call`). By the time the inbox shows it the ringing is
+     * over, so it reads like [MissedCall].
+     */
+    data object IncomingCall : NotificationKind
+
+    /** The video twin of [IncomingCall] (`incoming_video_call`). */
+    data object IncomingVideoCall : NotificationKind
+
+    /**
+     * A dating match lapsed without a message (`dating.match.expired`). The
+     * server stores the other participant as the actor so the row can name them.
+     */
+    data object MatchExpired : NotificationKind
+
+    /**
      * A stranger's first message landed as a request. The row carries the
      * conversation id in `entityId`; Accept / Decline / Block act on it.
      */
@@ -130,6 +196,9 @@ sealed interface NotificationKind {
             "friend_accepted" -> ConnectionAccepted
             "new_subscriber" -> NewSubscriber
             "missed_call" -> MissedCall
+            "incoming_call" -> IncomingCall
+            "incoming_video_call" -> IncomingVideoCall
+            "dating.match.expired" -> MatchExpired
             "message_request" -> MessageRequest
             "dm" -> DirectMessage
             "follow_request" -> FollowRequest

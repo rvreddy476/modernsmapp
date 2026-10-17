@@ -5,6 +5,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.model.Notification
 import com.us.android.core.model.NotificationAddress
+import com.us.android.core.model.NotificationIcon
 import com.us.android.core.model.NotificationKind
 import com.us.android.core.model.NotificationTarget
 import com.us.android.core.network.ErrorMapper
@@ -145,6 +146,8 @@ internal fun NotificationDto.toDomain(): Notification = Notification(
     },
     isRead = isRead,
     createdAt = createdAt,
+    title = title?.trim()?.takeIf { it.isNotEmpty() },
+    icon = NotificationIcon.fromWire(icon),
 )
 
 /** `entity_type` the chat consumer writes for message-request notifications. */

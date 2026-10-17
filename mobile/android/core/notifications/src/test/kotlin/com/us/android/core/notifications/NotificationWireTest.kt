@@ -1,6 +1,7 @@
 package com.us.android.core.notifications
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.model.NotificationIcon
 import com.us.android.core.model.NotificationKind
 import com.us.android.core.model.NotificationTarget
 import com.us.android.core.network.ApiEnvelope
@@ -273,6 +274,35 @@ class NotificationWireTest {
 
         assertThat(item.kind).isEqualTo(NotificationKind.Unknown("commerce.order.shipped"))
         assertThat(item.target).isEqualTo(NotificationTarget.None)
+    }
+
+    /** The 2026-10-18 `title` and `icon` reach the domain row. */
+    @Test
+    fun `a row with a server title and icon carries both`() = runBlocking {
+        enqueue(
+            """{"data":[{"notification_id":"n1","bucket":1,"ts":"t1","type":"ride.assigned",
+               "title":" Your ride has a captain ","icon":"ride","is_read":false}]}""",
+        )
+
+        val item = (repository().page() as com.us.android.core.common.result.AppResult.Success).data.items.single()
+
+        assertThat(item.title).isEqualTo("Your ride has a captain")
+        assertThat(item.icon).isEqualTo(NotificationIcon.Ride)
+    }
+
+    /** An older server sends neither, and an unknown icon or blank title reads as absent. */
+    @Test
+    fun `a row without title and icon, or with junk in them, carries nulls`() = runBlocking {
+        enqueue(
+            """{"data":[$liveRow,{"notification_id":"n2","bucket":1,"ts":"t2","type":"comment",
+               "title":"   ","icon":"sparkles","is_read":false}]}""",
+        )
+
+        val items = (repository().page() as com.us.android.core.common.result.AppResult.Success).data.items
+
+        assertThat(items.map { it.title }).containsExactly(null, null)
+        assertThat(items.map { it.icon }).containsExactly(null, null)
+        Unit
     }
 
     /**

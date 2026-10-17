@@ -209,9 +209,21 @@ class ChatStore @Inject constructor(
         val requests = repository.requests()
         val now = System.currentTimeMillis()
         var ok = false
+        // Pulse match chats belong to the dating feature (founder,
+        // 2026-10-18), so they never enter the Messages cache — and a row an
+        // older build cached is removed here. The cache has no source column;
+        // keeping them out at the door is what lets every list and unread
+        // dot built on it stay dating-free without one.
+        val datingIds = listOfNotNull(
+            (conversations as? com.us.android.core.common.result.AppResult.Success)?.data,
+            (requests as? com.us.android.core.common.result.AppResult.Success)?.data,
+        ).flatten().filter { it.isDatingChat }.map { it.id }.distinct()
         if (conversations is com.us.android.core.common.result.AppResult.Success) {
             val written = guardedWrite(generation) {
-                dao.upsertConversations(conversations.data.map { it.toEntity(isRequestList = false, now) })
+                dao.upsertConversations(
+                    conversations.data.withoutDatingChats().map { it.toEntity(isRequestList = false, now) },
+                )
+                datingIds.forEach { dao.deleteConversation(it) }
             }
             ok = written != null
             _groupAvatarUrls.value = conversations.data
@@ -220,7 +232,8 @@ class ChatStore @Inject constructor(
         }
         if (requests is com.us.android.core.common.result.AppResult.Success) {
             guardedWrite(generation) {
-                dao.upsertConversations(requests.data.map { it.toEntity(isRequestList = true, now) })
+                dao.upsertConversations(requests.data.withoutDatingChats().map { it.toEntity(isRequestList = true, now) })
+                datingIds.forEach { dao.deleteConversation(it) }
             }
         }
         if (ok) _reconnectPending.value = false

@@ -16,6 +16,7 @@ import com.us.android.core.chat.data.StartDirectController
 import com.us.android.core.chat.data.StartDirectResult
 import com.us.android.core.chat.data.SuggestionAction
 import com.us.android.core.chat.data.SuggestionsRepository
+import com.us.android.core.chat.data.withoutDatingChats
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
@@ -66,8 +67,17 @@ data class ChatHomeUiState(
     val message: UsMessage? = null,
     val pendingOpen: PendingOpen? = null,
 ) {
-    val visibleChats: List<Conversation> get() = ChatHomeFilters.directChats(conversations, query, viewerId)
-    val visibleGroups: List<Conversation> get() = ChatHomeFilters.groups(conversations, query)
+    /**
+     * The rows Messages may show. A Pulse match's chat lives in the dating
+     * feature (founder, 2026-10-18); [com.us.android.core.chat.data.ChatStore]
+     * already keeps it out of the cache, and every list and dot here reads
+     * through this as well, whatever fed the state.
+     */
+    private val inbox: List<Conversation> get() = conversations.withoutDatingChats()
+    private val inboxRequests: List<Conversation> get() = requests.withoutDatingChats()
+
+    val visibleChats: List<Conversation> get() = ChatHomeFilters.directChats(inbox, query, viewerId)
+    val visibleGroups: List<Conversation> get() = ChatHomeFilters.groups(inbox, query)
     val visibleMyCommunities: List<Community> get() = ChatHomeFilters.communities(myCommunities, query)
     val visibleDiscover: List<Community>
         get() = ChatHomeFilters.communities(discover, query).filter { row -> myCommunities.none { it.id == row.id } }
@@ -78,14 +88,14 @@ data class ChatHomeUiState(
     /** The tabs wearing an unread dot: Chats for direct, Groups for groups. */
     val unreadTabs: Set<ChatHomeTab>
         get() = buildSet {
-            if (conversations.any { it.type != ChatHomeFilters.GROUP_TYPE && it.hasUnread } || requests.isNotEmpty()) {
+            if (inbox.any { it.type != ChatHomeFilters.GROUP_TYPE && it.hasUnread } || inboxRequests.isNotEmpty()) {
                 add(ChatHomeTab.Chats)
             }
-            if (conversations.any { it.type == ChatHomeFilters.GROUP_TYPE && it.hasUnread } || invitationCount > 0) {
+            if (inbox.any { it.type == ChatHomeFilters.GROUP_TYPE && it.hasUnread } || invitationCount > 0) {
                 add(ChatHomeTab.Groups)
             }
         }
-    val requestCount: Int get() = requests.size
+    val requestCount: Int get() = inboxRequests.size
 }
 
 /**

@@ -25,6 +25,12 @@ class CustomerNotificationTest {
         }
         assertThat(CustomerNotification.resolve("seller_new_order", "one", "/shop/orders/one")).isEqualTo(NotificationTarget.None)
     }
+    @Test fun invoiceAndFailedPaymentHaveTheirOwnWords() {
+        assertThat(CustomerNotification.description("commerce_invoice_issued")).isEqualTo("Shopping order: invoice ready")
+        assertThat(CustomerNotification.description("order_payment_failed")).isEqualTo("Shopping order: payment failed")
+        assertThat(CustomerNotification.resolve("commerce_invoice_issued", "", "/shop/orders/order-1"))
+            .isEqualTo(NotificationTarget.Customer(CustomerNotification.Service.COMMERCE, "order-1"))
+    }
     @Test fun mobileSchemeAndDuesSupported() {
         assertThat(NotificationTarget.parse("momentum://doorstep/bookings/one/chat")).isEqualTo(NotificationTarget.Customer(CustomerNotification.Service.HOME,"one"))
         assertThat(CustomerNotification.resolve("doorstep.outstanding.due", "", "")).isEqualTo(NotificationTarget.CustomerDues)

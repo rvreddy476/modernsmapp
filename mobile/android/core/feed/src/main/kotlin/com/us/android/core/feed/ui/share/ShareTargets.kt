@@ -28,7 +28,7 @@ fun shareTargets(conversations: List<Conversation>, viewerId: String, query: Str
     val needle = query.trim()
     val targets = conversations
         .asSequence()
-        .filter { it.id.isNotBlank() && !it.isRequest && it.sourceApp != DATING_SOURCE_APP }
+        .filter { it.id.isNotBlank() && !it.isRequest && !it.isDatingChat }
         .filter { it.type == DIRECT || it.type == GROUP }
         .distinctBy { it.id }
         .sortedByDescending { it.lastMessageAt?.takeIf { at -> at.isNotBlank() } ?: it.updatedAt }
@@ -68,9 +68,6 @@ fun sendPostErrorText(error: AppError): String {
         else -> "Couldn't send the post. Try again."
     }
 }
-
-/** `source_app` on a Pulse match's conversation. */
-const val DATING_SOURCE_APP = "dating"
 
 /** How many conversations the picker lists before the viewer searches. */
 const val RECENT_TARGETS = 50

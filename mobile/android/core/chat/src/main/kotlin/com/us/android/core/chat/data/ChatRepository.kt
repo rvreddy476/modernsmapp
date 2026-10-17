@@ -355,6 +355,15 @@ data class Conversation(
     val matchId: String? = null,
 ) {
     /**
+     * A Pulse match's chat. It belongs to the dating feature (founder,
+     * 2026-10-18): never listed in Messages, never counted in its unread
+     * dots, never offered by the share picker. The one predicate every one
+     * of those surfaces asks, so they cannot drift apart.
+     */
+    val isDatingChat: Boolean
+        get() = sourceApp?.trim().equals(DATING_SOURCE_APP, ignoreCase = true)
+
+    /**
      * What to show as the thread's name.
      *
      * The title when there is one. Otherwise — a direct chat, or a group
@@ -375,6 +384,12 @@ data class Conversation(
         return if (names.isEmpty()) UNNAMED_CONVERSATION else names.joinToString(", ")
     }
 }
+
+/** `source_app` on a Pulse match's conversation. */
+const val DATING_SOURCE_APP = "dating"
+
+/** The conversations Messages may show: everything but Pulse match chats. */
+fun List<Conversation>.withoutDatingChats(): List<Conversation> = filterNot { it.isDatingChat }
 
 data class ConversationMember(
     val userId: String,

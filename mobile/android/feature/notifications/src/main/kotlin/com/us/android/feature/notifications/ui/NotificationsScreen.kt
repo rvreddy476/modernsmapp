@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -62,7 +63,9 @@ import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.model.CustomerNotification
 import com.us.android.core.model.Notification
+import com.us.android.core.model.NotificationIcon
 import com.us.android.core.model.NotificationKind
 import com.us.android.core.model.NotificationTarget
 import com.us.android.core.ui.UsEmptyState
@@ -529,7 +532,7 @@ private fun NotificationRow(
     callbacks: RowCallbacks,
 ) {
     val sentence = notification.describe()
-    val missedCall = notification.kind == NotificationKind.MissedCall
+    val missedCall = notification.kind in CALL_KINDS
     // A pending request opens the decision screen; anything else opens what
     // the row points at. The inbox knows which because the server told it.
     val target = if (requestPending) {
@@ -551,10 +554,11 @@ private fun NotificationRow(
         // A fixed slot the ring grows INTO, so read and unread rows keep the
         // same text column rather than shifting by the ring's width.
         Box(modifier = Modifier.size(AVATAR_SLOT), contentAlignment = Alignment.Center) {
-            if (missedCall) {
-                MissedCallBadge()
-            } else {
-                UsAvatar(
+            val avatar = notification.rowAvatar()
+            when {
+                missedCall -> MissedCallBadge(video = notification.kind == NotificationKind.IncomingVideoCall)
+                avatar is RowAvatar.Glyph -> CategoryBadge(avatar.category)
+                else -> UsAvatar(
                     name = notification.actorName,
                     size = UsAvatarSize.Post,
                     seed = notification.actorUserId,
@@ -691,7 +695,7 @@ private fun FollowAction(
 }
 
 @Composable
-private fun MissedCallBadge() {
+private fun MissedCallBadge(video: Boolean = false) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -700,9 +704,32 @@ private fun MissedCallBadge() {
             .background(UsTheme.extended.statusDanger.copy(alpha = MISSED_CALL_BAND_ALPHA)),
     ) {
         Icon(
-            imageVector = UsIcons.Phone,
+            imageVector = if (video) UsIcons.Video else UsIcons.Phone,
             contentDescription = null,
             tint = UsTheme.extended.liveRed,
+            modifier = Modifier.size(ROW_BADGE_GLYPH),
+        )
+    }
+}
+
+/**
+ * A system notice's avatar: the category glyph on a tinted circle, in the
+ * accent family so it reads as the app speaking rather than a person.
+ */
+@Composable
+private fun CategoryBadge(category: NotificationIcon) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(UsAvatarSize.Post.diameter)
+            .clip(CircleShape)
+            .background(UsTheme.extended.accent.copy(alpha = CATEGORY_BADGE_ALPHA))
+            .testTag("activity_category:${category.wire}"),
+    ) {
+        Icon(
+            imageVector = category.glyph(),
+            contentDescription = null,
+            tint = UsTheme.extended.accentSolid,
             modifier = Modifier.size(ROW_BADGE_GLYPH),
         )
     }
@@ -783,8 +810,84 @@ internal fun Notification.describe(): String {
         NotificationKind.CreatorWentLive -> "$who is live"
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
-        is NotificationKind.Unknown -> com.us.android.core.model.CustomerNotification.description((kind as NotificationKind.Unknown).raw) ?: "You have a new notification"
+        // The server writes incoming_* rows on every call invite, answered or
+        // not, so they say "Call from", as the server's own title does (18 Oct).
+        NotificationKind.IncomingCall ->
+            if (actorName.isBlank()) "Call" else "Call from $who"
+        NotificationKind.IncomingVideoCall ->
+            if (actorName.isBlank()) "Video call" else "Video call from $who"
+        NotificationKind.MatchExpired ->
+            if (actorName.isBlank()) "A match expired" else "Your match with $who expired"
+        // The server's own sentence first (2026-10-18): it knows the vertical
+        // this build has no screen for. Then the customer families this build
+        // can name, then the generic line an old server leaves us with.
+        is NotificationKind.Unknown -> title
+            ?: CustomerNotification.description((kind as NotificationKind.Unknown).raw)
+            ?: "You have a new notification"
     }
+}
+
+/**
+ * Only a real missed call gets the red phone badge and red text; an
+ * incoming_* row may have been answered, so it draws the call category glyph.
+ */
+private val CALL_KINDS: Set<NotificationKind> = setOf(
+    NotificationKind.MissedCall,
+)
+
+/**
+ * What a row draws in its avatar slot: the actor, or — for a system notice
+ * with nobody behind it — a category glyph instead of a "?" initial.
+ */
+internal sealed interface RowAvatar {
+    data object Actor : RowAvatar
+    data class Glyph(val category: NotificationIcon) : RowAvatar
+}
+
+internal fun Notification.rowAvatar(): RowAvatar =
+    if (hasActor) RowAvatar.Actor else RowAvatar.Glyph(category())
+
+/** The server's category, or — from an older server — one inferred from the type. */
+internal fun Notification.category(): NotificationIcon = icon ?: when (val k = kind) {
+    NotificationKind.MissedCall, NotificationKind.IncomingCall, NotificationKind.IncomingVideoCall ->
+        NotificationIcon.Call
+    NotificationKind.DirectMessage, NotificationKind.MessageRequest -> NotificationIcon.Message
+    NotificationKind.CreatorWentLive -> NotificationIcon.Live
+    NotificationKind.MatchExpired -> NotificationIcon.Dating
+    is NotificationKind.Unknown -> unknownCategory(k.raw)
+    else -> NotificationIcon.Social
+}
+
+private fun unknownCategory(raw: String): NotificationIcon = when (CustomerNotification.service(raw)) {
+    CustomerNotification.Service.HOME -> NotificationIcon.HomeService
+    CustomerNotification.Service.FOOD -> NotificationIcon.Food
+    CustomerNotification.Service.COMMERCE -> NotificationIcon.Order
+    CustomerNotification.Service.MOPED -> NotificationIcon.Ride
+    null -> when {
+        raw.startsWith("commerce") || raw.startsWith("order_") -> NotificationIcon.Order
+        raw.startsWith("dating") -> NotificationIcon.Dating
+        raw.startsWith("qa.") -> NotificationIcon.Qa
+        raw.startsWith("ride") -> NotificationIcon.Ride
+        raw.startsWith("doorstep") -> NotificationIcon.HomeService
+        raw.startsWith("food") -> NotificationIcon.Food
+        else -> NotificationIcon.System
+    }
+}
+
+/** The Lucide glyph for a category. Social and system share the inbox bell. */
+internal fun NotificationIcon.glyph(): ImageVector = when (this) {
+    NotificationIcon.Social, NotificationIcon.System -> UsIcons.Notifications
+    NotificationIcon.Message -> UsIcons.Comment
+    NotificationIcon.Call -> UsIcons.Phone
+    NotificationIcon.Live -> UsIcons.Radio
+    NotificationIcon.Order -> UsIcons.ShoppingBag
+    NotificationIcon.Food -> UsIcons.Utensils
+    NotificationIcon.HomeService -> UsIcons.Wrench
+    NotificationIcon.Ride -> UsIcons.Bike
+    NotificationIcon.Dating -> UsIcons.HeartOutline
+    NotificationIcon.Community -> UsIcons.Friends
+    NotificationIcon.Qa -> UsIcons.CircleHelp
+    NotificationIcon.Account -> UsIcons.Profile
 }
 
 /** How many rows from the end to start fetching the next page. */
@@ -809,3 +912,6 @@ private val CHIP_TEXT = 13.sp
 
 /** How much of the danger colour the badge fill behind a missed call is. */
 private const val MISSED_CALL_BAND_ALPHA = 0.12f
+
+/** How much of the accent the circle behind a category glyph is. */
+private const val CATEGORY_BADGE_ALPHA = 0.14f

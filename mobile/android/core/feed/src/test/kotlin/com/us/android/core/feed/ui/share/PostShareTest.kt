@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.ConversationMember
+import com.us.android.core.chat.data.DATING_SOURCE_APP
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PostShareChats
 import com.us.android.core.common.error.AppError

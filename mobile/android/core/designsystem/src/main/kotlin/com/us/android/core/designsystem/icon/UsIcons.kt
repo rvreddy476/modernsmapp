@@ -988,6 +988,15 @@ object UsIcons {
         "M21 12H9",
         "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4",
     )
+
+    /** Lucide `bike` — a ride (Mopedu) notice in the Activity inbox. */
+    val Bike: ImageVector = lucideStroked(
+        "Bike",
+        "M18.5,17.5 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0",
+        "M5.5,17.5 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0",
+        "M15,5 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0",
+        "M12 17.5V14l-3-3 4-3 2 3h2",
+    )
 }
 
 /** Lucide `shield`, shared by [UsIcons.Shield] and [UsIcons.ShieldCheck]. */

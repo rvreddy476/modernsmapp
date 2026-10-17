@@ -8,6 +8,7 @@ import com.us.android.core.chat.data.ChatSessionManager
 import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.GroupInvitation
+import com.us.android.core.chat.data.withoutDatingChats
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.model.SessionState
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -186,12 +187,12 @@ class ChatInboxViewModel @Inject constructor(
     private fun observeCache() {
         viewModelScope.launch {
             store.conversationsFlow().collect { rows ->
-                _state.update { it.copy(conversations = rows) }
+                _state.update { it.copy(conversations = rows.withoutDatingChats()) }
             }
         }
         viewModelScope.launch {
             store.requestsFlow().collect { rows ->
-                _state.update { it.copy(requests = rows) }
+                _state.update { it.copy(requests = rows.withoutDatingChats()) }
             }
         }
     }

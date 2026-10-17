@@ -34,7 +34,7 @@ object CustomerNotification {
     fun service(type: String): Service? = when {
         type.startsWith("doorstep.booking.") || type in setOf("doorstep.message.new", "doorstep.rework.updated", "doorstep.outstanding.due") -> Service.HOME
         type == "food_order_status" -> Service.FOOD
-        type in setOf("order_confirmed", "order_shipped", "order_delivered", "order_cancelled", "order_refunded", "order_payment_failed") -> Service.COMMERCE
+        type in setOf("order_confirmed", "order_shipped", "order_delivered", "order_cancelled", "order_refunded", "order_payment_failed", "commerce_invoice_issued") -> Service.COMMERCE
         type in setOf("ride.assigned", "ride.arriving", "ride.arrived", "ride.started", "ride.completed", "ride.cancelled", "ride.payment.paid") -> Service.MOPED
         else -> null
     }
@@ -57,6 +57,8 @@ object CustomerNotification {
             "cancelled" -> "cancelled"
             "refunded" -> "refund updated"
             "paid" -> "payment confirmed"
+            "failed" -> "payment failed"
+            "issued" -> "invoice ready"
             else -> "updated — open for the latest details"
         }
         return "$category: $action"

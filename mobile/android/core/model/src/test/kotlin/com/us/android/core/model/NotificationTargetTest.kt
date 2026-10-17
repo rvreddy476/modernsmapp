@@ -253,11 +253,42 @@ class NotificationTargetTest {
             "missed_call" to NotificationKind.MissedCall,
             "follow_request" to NotificationKind.FollowRequest,
             "follow_request_accepted" to NotificationKind.FollowRequestAccepted,
+            "incoming_call" to NotificationKind.IncomingCall,
+            "incoming_video_call" to NotificationKind.IncomingVideoCall,
+            "dating.match.expired" to NotificationKind.MatchExpired,
         )
 
         for ((wire, kind) in expected) {
             assertThat(NotificationKind.fromWire(wire)).isEqualTo(kind)
         }
+    }
+
+    // ── Icon category and actor presence (2026-10-18) ───────────────────
+
+    @Test
+    fun `every icon category on the contract parses, anything else is null`() {
+        val wire = listOf(
+            "social", "message", "call", "live", "order", "food", "home_service",
+            "ride", "dating", "community", "qa", "account", "system",
+        )
+        assertThat(wire.map { NotificationIcon.fromWire(it)?.wire }).isEqualTo(wire)
+        assertThat(NotificationIcon.fromWire(" Order ")).isEqualTo(NotificationIcon.Order)
+        assertThat(NotificationIcon.fromWire("sparkles")).isNull()
+        assertThat(NotificationIcon.fromWire("")).isNull()
+        assertThat(NotificationIcon.fromWire(null)).isNull()
+    }
+
+    @Test
+    fun `a row has an actor only with a real id and a name`() {
+        fun row(id: String, name: String) = Notification(
+            id = "n", bucket = 1, ts = "t", kind = NotificationKind.Reaction,
+            actorUserId = id, actorName = name, entityType = "", entityId = "",
+            target = NotificationTarget.None, isRead = true, createdAt = "",
+        )
+        assertThat(row("u1", "Asha").hasActor).isTrue()
+        assertThat(row("", "Asha").hasActor).isFalse()
+        assertThat(row("00000000-0000-0000-0000-000000000000", "Asha").hasActor).isFalse()
+        assertThat(row("u1", "").hasActor).isFalse()
     }
 
     /**
