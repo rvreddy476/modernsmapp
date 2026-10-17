@@ -127,13 +127,17 @@ object UsIcons {
     @Suppress("SpreadOperator")
     val Send: ImageVector = lucideStroked("Send", *SEND_PATHS)
 
-    /** Upload. The same tray, arrow reversed into it. */
+    /**
+     * Upload. The same tray, the arrow rising out of it. (It pointed down
+     * into the tray, which reads as download — beside "Offline videos" in
+     * the Me drawer the two were the same glyph, 17 Oct.)
+     */
     val Upload: ImageVector = stroked("Upload") {
-        moveTo(12f, 3f)
-        verticalLineTo(15.2f)
-        moveTo(7.8f, 11f)
-        lineTo(12f, 15.2f)
-        lineTo(16.2f, 11f)
+        moveTo(12f, 15.2f)
+        verticalLineTo(3f)
+        moveTo(7.8f, 7.2f)
+        lineTo(12f, 3f)
+        lineTo(16.2f, 7.2f)
         tray()
     }
 
