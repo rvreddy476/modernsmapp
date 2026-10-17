@@ -33,6 +33,11 @@ type Notification struct {
 	// never stored in Scylla. Nil when hydration was skipped or failed;
 	// clients must render a fallback from ActorUserID.
 	Actor *NotificationActor `json:"actor,omitempty"`
+	// Title and Icon are the row's user-facing copy (a full sentence and one
+	// of a closed set of icon names), computed at read/publish time by
+	// service.InboxCopy from Type and Actor — never stored in Scylla.
+	Title string `json:"title"`
+	Icon  string `json:"icon"`
 }
 
 // NotificationActor is the small public identity an inbox row renders with —

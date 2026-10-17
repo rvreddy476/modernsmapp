@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,10 +117,7 @@ func (s *Service) ensureCallRow(ctx context.Context, n *scylla.Notification) err
 }
 
 func (s *Service) publishCallRealtime(ctx context.Context, userID uuid.UUID, n *scylla.Notification) error {
-	payload, err := json.Marshal(map[string]interface{}{
-		"type":    "notification",
-		"payload": n,
-	})
+	payload, err := notificationFrame(n)
 	if err != nil {
 		return err
 	}

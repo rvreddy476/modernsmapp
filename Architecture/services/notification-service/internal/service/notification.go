@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -357,10 +356,7 @@ func (s *Service) deliverWithDecision(ctx context.Context, decision DeliveryDeci
 	// Channel: notify:{user_id}
 	if decision.SendWebSocket {
 		channel := fmt.Sprintf("notify:%s", userID.String())
-		payload, _ := json.Marshal(map[string]interface{}{
-			"type":    "notification",
-			"payload": n,
-		})
+		payload, _ := notificationFrame(n)
 		if err := s.rdb.Publish(ctx, channel, payload).Err(); err != nil {
 			// Log error but don't fail the operation
 			fmt.Printf("failed to publish to redis: %v\n", err)

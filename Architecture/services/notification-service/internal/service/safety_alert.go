@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -69,7 +68,7 @@ func (s *Service) CreateSafetyAlertNotification(ctx context.Context, a SafetyAle
 		return nil
 	}
 	if s.rdb != nil {
-		payload, _ := json.Marshal(map[string]any{"type": "notification", "payload": n})
+		payload, _ := notificationFrame(n)
 		if err := s.rdb.Publish(ctx, fmt.Sprintf("notify:%s", a.Recipient), payload).Err(); err != nil {
 			slog.Warn("safety alert realtime publish failed", "type", a.NotifType, "error", err)
 		}

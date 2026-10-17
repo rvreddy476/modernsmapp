@@ -121,6 +121,10 @@ func (s *Service) ProcessNotificationEvent(ctx context.Context, event Notificati
 	// the cursor in Scylla deterministically.
 	bucket := ts.Year()*100 + int(ts.Month())
 	tsUUID := gocql.UUIDFromTime(ts).String()
+	// The frame's icon is the inbox's category (InboxCopy), the same enum
+	// the list rows carry; the template's own icon names ("channel",
+	// "spark") are not in it.
+	_, frameIcon := InboxCopy(event.EventType, event.ActorName)
 	payload, _ := json.Marshal(map[string]interface{}{
 		"type": "notification",
 		"payload": map[string]interface{}{
@@ -128,7 +132,7 @@ func (s *Service) ProcessNotificationEvent(ctx context.Context, event Notificati
 			"event_type":      event.EventType,
 			"title":           title,
 			"body":            body,
-			"icon":            tmpl.Icon,
+			"icon":            frameIcon,
 			"priority":        tmpl.Priority,
 			"deep_link":       event.DeepLink,
 			"actor_id":        event.ActorID,

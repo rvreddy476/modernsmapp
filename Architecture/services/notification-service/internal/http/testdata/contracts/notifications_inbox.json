@@ -1,0 +1,74 @@
+{
+  "data": [
+    {
+      "actor": {
+        "display_name": "Call UserB",
+        "id": "00000000-0000-4000-8000-0000000000b2",
+        "username": "call_b"
+      },
+      "actor_user_id": "00000000-0000-4000-8000-0000000000b2",
+      "bucket": 202610,
+      "created_at": "2026-10-17T09:30:00Z",
+      "deep_link": "/post/00000000-0000-4000-8000-000000000100?comment=00000000-0000-4000-8000-000000000101",
+      "entity_id": "00000000-0000-4000-8000-000000000101",
+      "entity_type": "comment",
+      "icon": "social",
+      "is_read": false,
+      "notification_id": "d967fb14-80e6-57bd-aff9-d27e0ee5cfce",
+      "title": "Call UserB reacted to your comment",
+      "ts": "52ef5c00-ca0d-11f1-8000-000000000001",
+      "type": "comment_reaction",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor_user_id": "00000000-0000-0000-0000-000000000000",
+      "bucket": 202610,
+      "created_at": "2026-10-17T09:29:00Z",
+      "deep_link": "/shop/orders/00000000-0000-4000-8000-000000000201",
+      "entity_id": "00000000-0000-4000-8000-000000000201",
+      "entity_type": "order",
+      "icon": "order",
+      "is_read": false,
+      "notification_id": "e7c1a25d-cec2-5ab4-a198-fb7c7b66452a",
+      "title": "Your order was delivered",
+      "ts": "2f2c1600-ca0d-11f1-8000-000000000002",
+      "type": "order_delivered",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor": {
+        "display_name": "Call UserB",
+        "id": "00000000-0000-4000-8000-0000000000b2",
+        "username": "call_b"
+      },
+      "actor_user_id": "00000000-0000-4000-8000-0000000000b2",
+      "bucket": 202610,
+      "created_at": "2026-10-17T09:28:00Z",
+      "deep_link": "/call/00000000-0000-4000-8000-000000000301",
+      "entity_id": "00000000-0000-4000-8000-000000000301",
+      "entity_type": "call",
+      "icon": "call",
+      "is_read": false,
+      "notification_id": "b6ab8481-57b3-581c-9a28-14e6e631ff5a",
+      "title": "Video call from Call UserB",
+      "ts": "0b68d000-ca0d-11f1-8000-000000000003",
+      "type": "incoming_video_call",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor_user_id": "00000000-0000-4000-8000-0000000000c3",
+      "bucket": 202610,
+      "created_at": "2026-10-17T09:27:00Z",
+      "deep_link": "/profile/00000000-0000-4000-8000-0000000000c3",
+      "entity_id": "00000000-0000-4000-8000-0000000000c3",
+      "entity_type": "user",
+      "icon": "social",
+      "is_read": false,
+      "notification_id": "3ffd3f04-58e0-5cd2-ad73-eac68c4fdef2",
+      "title": "Someone followed you",
+      "ts": "e7a58a00-ca0c-11f1-8000-000000000004",
+      "type": "follow",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    }
+  ]
+}

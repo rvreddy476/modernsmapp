@@ -101,6 +101,9 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 		return
 	}
 	h.svc.HydrateActors(c.Request.Context(), page.Items)
+	// Every row carries its sentence and icon; computed after hydration so
+	// the title can name the actor.
+	service.ApplyInboxCopyAll(page.Items)
 
 	var meta *api.Meta
 	if page.NextCursor != "" {
@@ -711,6 +714,8 @@ func (h *Handler) StreamNotifications(c *gin.Context) {
 			if err != nil {
 				log.Printf("[notify-stream] replay query failed user=%s err=%v", userIDStr, err)
 			} else {
+				h.svc.HydrateActors(ctx, missed)
+				service.ApplyInboxCopyAll(missed)
 				for _, n := range missed {
 					body, eerr := encodeReplayPayload(n)
 					if eerr != nil {
@@ -795,6 +800,9 @@ func extractEventID(raw string) string {
 // JSON envelope shape that live pub/sub messages use, so clients can
 // reuse one parser for replay + live.
 func encodeReplayPayload(n scylla.Notification) ([]byte, error) {
+	if n.Title == "" || n.Icon == "" {
+		service.ApplyInboxCopy(&n)
+	}
 	return json.Marshal(map[string]interface{}{
 		"type": "notification",
 		"payload": map[string]interface{}{
@@ -807,10 +815,10 @@ func encodeReplayPayload(n scylla.Notification) ([]byte, error) {
 			"created_at":      n.CreatedAt,
 			"bucket":          n.Bucket,
 			"ts":              n.TS.String(),
-			// title/body are NOT in the Scylla row — the client should
-			// re-render from the notification center API if needed.
-			// Most clients only use replay to update unread state +
-			// keep the badge in sync, not to re-show toasts.
+			// title/icon are the inbox copy (service.InboxCopy), filled
+			// by the caller at replay time; there is no stored body.
+			"title":  n.Title,
+			"icon":   n.Icon,
 			"replay": true,
 		},
 	})
