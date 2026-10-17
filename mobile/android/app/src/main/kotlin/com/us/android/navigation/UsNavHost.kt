@@ -9,7 +9,10 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.plus
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -120,6 +123,9 @@ import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.feed.navigation.soundScreen
 import com.us.android.feature.feed.ui.HomeMenuRow
+import com.us.android.feature.live.navigation.GoLiveRoute
+import com.us.android.feature.live.navigation.LiveCreatorCentreRoute
+import com.us.android.feature.live.navigation.LiveHubRoute
 import com.us.android.feature.live.navigation.LiveWatchRoute
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
@@ -363,10 +369,11 @@ fun UsNavHost(
         // hands that tab no inset at all; every other screen's own scaffold
         // reserves the system bars as before, because the NavHost below
         // consumes only what it was given.
-        contentWindowInsets = if (currentTab?.drawsUnderStatusBar == true) {
-            WindowInsets(0)
-        } else {
-            ScaffoldDefaults.contentWindowInsets
+        contentWindowInsets = when (shellInsetsFor(currentTab, darkStage = backStackEntry?.destination.isLiveStage())) {
+            ShellInsets.NONE -> WindowInsets(0)
+            ShellInsets.NO_TOP -> ScaffoldDefaults.contentWindowInsets
+                .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+            ShellInsets.ALL -> ScaffoldDefaults.contentWindowInsets
         },
         bottomBar = {
             // Null tab means the current screen is not a top-level root — an
@@ -431,6 +438,7 @@ fun UsNavHost(
                     onAbandonMopeduPayment,
                     onOpenDoorstepPayment,
                     onAbandonDoorstepPayment,
+                    exploreShowsBack(tabs),
                     onOpenReel,
                 ) {
                     createScope = it
@@ -655,6 +663,8 @@ private fun NavGraphBuilder.tabDestinations(
     onAbandonMopeduPayment: (MopeduPaymentRequest) -> Unit,
     onOpenDoorstepPayment: (DoorstepPaymentRequest) -> Unit,
     onAbandonDoorstepPayment: (DoorstepPaymentRequest) -> Unit,
+    /** Explore wears a back arrow only when it is not a root of the bar ([exploreShowsBack]). */
+    exploreHasBack: Boolean,
     /** A reel notification was tapped: the shell parks the id for Reels before the tab switch. */
     onOpenReel: (postId: String) -> Unit,
     /** A mini-app's "+" was pressed: the shell opens the Create sheet in that scope. */
@@ -950,6 +960,8 @@ private fun NavGraphBuilder.tabDestinations(
         onReportSender = { senderId, messageId, name ->
             navController.navigateToDatingReport(senderId, messageId, name)
         },
+        // A shared post's card opens where the profile grid opens the same post.
+        onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
     )
     callScreen(onBack = { navController.popBackStack() })
     callHistoryScreen(onBack = { navController.popBackStack() })
@@ -1014,7 +1026,7 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenSound = { soundId -> navController.navigateToSound(soundId) },
         onCreateWithSound = onCreateWithSound,
-        // The Offline page lives in Tube's graph; a reel's More sheet opens the same one.
+        // The Offline page lives in Tube's graph; Reels' header More opens it when there is no reel.
         onOpenOffline = { navController.navigateToTubeOffline() },
         onOpenNotifications = { navController.navigateToNotifications() },
     )
@@ -1025,7 +1037,7 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenReels = onOpenReels,
         onCreateWithSound = onCreateWithSound,
     )
-    exploreDestinations(navController, launcher)
+    exploreDestinations(navController, launcher, exploreHasBack)
 
     // Tube — the long-video mini-app (redesign, 2026-09-05): home, pushed
     // from the Explore launcher, with You beside it under Tube's own bar
@@ -1116,11 +1128,13 @@ private fun NavGraphBuilder.tabDestinations(
 private fun NavGraphBuilder.exploreDestinations(
     navController: NavHostController,
     launcher: List<LauncherTile>,
+    hasBack: Boolean,
 ) {
     composable<ExploreRoute> {
         ExploreScreen(
             tiles = launcher,
-            onBack = { navController.popBackStack() },
+            // A bar root has nowhere "back" to go; opened from a header it does.
+            onBack = if (hasBack) ({ navController.popBackStack() }) else null,
             onSearch = { query -> navController.navigateToSearch(SearchOrigin.EXPLORE, query) },
             onOpenApp = { app ->
                 when (app) {
@@ -1372,6 +1386,15 @@ private fun NavHostController.openLiveStream(streamId: String) {
  * Tube's watch screen, the surface built for it; anything else opens as
  * a post.
  */
+/** The LIVE screens: dark edge to edge, so the shell leaves the status bar to them ([ShellInsets.NO_TOP]). */
+private fun androidx.navigation.NavDestination?.isLiveStage(): Boolean {
+    val destination = this ?: return false
+    return destination.hasRoute(LiveHubRoute::class) ||
+        destination.hasRoute(GoLiveRoute::class) ||
+        destination.hasRoute(LiveWatchRoute::class) ||
+        destination.hasRoute(LiveCreatorCentreRoute::class)
+}
+
 private fun NavHostController.openProfilePost(postId: String, contentType: String) {
     if (contentType == LONG_VIDEO_CONTENT_TYPE) navigateToWatch(postId) else navigateToPost(postId)
 }

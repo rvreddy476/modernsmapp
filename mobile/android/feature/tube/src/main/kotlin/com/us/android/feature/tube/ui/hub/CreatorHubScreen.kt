@@ -1,7 +1,20 @@
 package com.us.android.feature.tube.ui.hub
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
+import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsMessageType
+import com.us.android.core.designsystem.icon.UsIcons
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +63,7 @@ import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.sound.LibrarySoundsList
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
+import com.us.android.core.ui.UsFitOrScrollRow
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.tube.data.hub.CreatorInsights
 import com.us.android.feature.tube.data.hub.HubDayPoint
@@ -114,6 +128,10 @@ fun CreatorHubScreen(
                 },
                 onOpenComments = { row -> commentsFor = row.postId },
                 onOpenCommentPost = { row -> open(row.postId, row.postContentType, HubOpenKind.POST) },
+                onToggleHeart = { row -> viewModel.toggleHeart(row.commentId) },
+                onTogglePin = { row -> viewModel.togglePin(row.commentId) },
+                thumbnailFor = viewModel::thumbnailUrl,
+                onDismissNotice = viewModel::dismissNotice,
             ),
             bottomPadding = padding,
             // Sounds (library sounds, 2026-10-15), the web hub's tab: "Use
@@ -147,6 +165,11 @@ data class CreatorHubCallbacks(
     val onOpenRow: (HubLibraryRow, HubLibraryTab) -> Unit,
     val onOpenComments: (HubInboxRow) -> Unit,
     val onOpenCommentPost: (HubInboxRow) -> Unit,
+    val onToggleHeart: (HubInboxRow) -> Unit = {},
+    val onTogglePin: (HubInboxRow) -> Unit = {},
+    /** A library row's still, resolved to a URL; null draws the plain tile. */
+    val thumbnailFor: (HubLibraryRow) -> String? = { null },
+    val onDismissNotice: () -> Unit = {},
 )
 
 @Composable
@@ -178,9 +201,12 @@ internal fun CreatorHubBody(
             when (state.section) {
                 HubSection.OVERVIEW -> OverviewSection(state, callbacks, bottomPadding)
                 HubSection.LIBRARY -> LibrarySection(state, callbacks, bottomPadding)
-                HubSection.CONVERSATIONS -> ConversationsSection(state.inbox, callbacks, bottomPadding)
+                HubSection.CONVERSATIONS -> ConversationsSection(state.inbox, state.commentBusy, callbacks, bottomPadding)
                 HubSection.SOUNDS -> sounds(bottomPadding)
             }
+            // A Heart or Pin the server refused, after the row was put back.
+            val notice = remember(state.notice) { state.notice?.let { UsMessage(it, UsMessageType.Error) } }
+            UsMessageHost(message = notice, onDismiss = callbacks.onDismissNotice)
         }
     }
 }
@@ -359,7 +385,14 @@ private fun LibrarySection(state: CreatorHubUiState, callbacks: CreatorHubCallba
                     onMore = { callbacks.onLoadLibrary(tab, true) },
                     bottomPadding = bottomPadding,
                     key = { it.id },
-                ) { row -> LibraryRowCard(row, onClick = { callbacks.onOpenRow(row, tab) }) }
+                ) { row ->
+                    LibraryRowCard(
+                        row = row,
+                        thumbnailUrl = callbacks.thumbnailFor(row),
+                        portrait = tab == HubLibraryTab.REELS,
+                        onClick = { callbacks.onOpenRow(row, tab) },
+                    )
+                }
             }
             HubLibraryTab.DRAFTS -> PagedList(
                 page = state.drafts,
@@ -382,25 +415,53 @@ internal fun libraryMeta(row: HubLibraryRow): String =
 internal fun libraryCounts(row: HubLibraryRow): String =
     "${hubCount(row.viewCount)} views · ${hubCount(row.likeCount)} likes · ${hubCount(row.commentCount)} comments"
 
+/** A library row: its still at the left (2026-10-17 — the rows had none), the title and the numbers beside it. */
 @Composable
-private fun LibraryRowCard(row: HubLibraryRow, onClick: () -> Unit) {
+private fun LibraryRowCard(row: HubLibraryRow, thumbnailUrl: String?, portrait: Boolean, onClick: () -> Unit) {
     UsSurfaceCard(modifier = Modifier.fillMaxWidth().testTag("creator_hub_row:${row.id}"), onClick = onClick) {
-        Text(
-            row.title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = UsTheme.extended.textPrimary,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(libraryMeta(row), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textSecondary)
-        Text(libraryCounts(row), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
-        if (row.processingStatus == PROCESSING_FAILED) {
-            Text(
-                "Processing failed",
-                style = MaterialTheme.typography.labelSmall,
-                color = UsTheme.extended.statusDanger,
-            )
+        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .width(THUMB_WIDTH)
+                    .aspectRatio(if (portrait) PORTRAIT_THUMB else LANDSCAPE_THUMB)
+                    .clip(RoundedCornerShape(UsTheme.radii.small))
+                    .background(UsTheme.extended.bgCard)
+                    .testTag("creator_hub_thumb:${row.id}"),
+            ) {
+                if (thumbnailUrl != null) {
+                    AsyncImage(
+                        model = thumbnailUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Icon(UsIcons.Film, contentDescription = null, tint = UsTheme.extended.textMuted)
+                }
+            }
+            Column(
+                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    row.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = UsTheme.extended.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(libraryMeta(row), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textSecondary)
+                Text(libraryCounts(row), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                if (row.processingStatus == PROCESSING_FAILED) {
+                    Text(
+                        "Processing failed",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = UsTheme.extended.statusDanger,
+                    )
+                }
+            }
         }
     }
 }
@@ -434,6 +495,7 @@ private fun DraftCard(draft: HubDraft) {
 @Composable
 private fun ConversationsSection(
     page: HubPage<HubInboxRow>,
+    busy: Set<String>,
     callbacks: CreatorHubCallbacks,
     bottomPadding: PaddingValues,
 ) {
@@ -448,11 +510,24 @@ private fun ConversationsSection(
     ) { row ->
         InboxCard(
             row = row,
-            onReply = { callbacks.onOpenComments(row) },
-            onViewPost = { callbacks.onOpenCommentPost(row) },
+            busy = row.commentId in busy,
+            actions = InboxActions(
+                onReply = { callbacks.onOpenComments(row) },
+                onViewPost = { callbacks.onOpenCommentPost(row) },
+                onToggleHeart = { callbacks.onToggleHeart(row) },
+                onTogglePin = { callbacks.onTogglePin(row) },
+            ),
         )
     }
 }
+
+/** What one Conversations row can do. */
+private class InboxActions(
+    val onReply: () -> Unit,
+    val onViewPost: () -> Unit,
+    val onToggleHeart: () -> Unit,
+    val onTogglePin: () -> Unit,
+)
 
 /** "Asha · My first video · 2h", the comment's second line (the web overview's). */
 internal fun inboxMeta(row: HubInboxRow): String =
@@ -460,11 +535,16 @@ internal fun inboxMeta(row: HubInboxRow): String =
         .filter { it.isNotEmpty() }
         .joinToString(" · ")
 
+/**
+ * One comment: its words, who and where, and the creator's tools — Heart
+ * and Pin (2026-10-17; Pin is not offered on a reply, which the server
+ * refuses to pin), View post and Reply.
+ */
 @Composable
-private fun InboxCard(row: HubInboxRow, onReply: () -> Unit, onViewPost: () -> Unit) {
+private fun InboxCard(row: HubInboxRow, busy: Boolean, actions: InboxActions) {
     UsSurfaceCard(
         modifier = Modifier.fillMaxWidth().testTag("creator_hub_comment:${row.commentId}"),
-        onClick = onReply,
+        onClick = actions.onReply,
     ) {
         Text(
             row.body.ifEmpty { "—" },
@@ -485,12 +565,44 @@ private fun InboxCard(row: HubInboxRow, onReply: () -> Unit, onViewPost: () -> U
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
             modifier = Modifier.fillMaxWidth(),
         ) {
+            IconButton(
+                onClick = actions.onToggleHeart,
+                enabled = !busy,
+                modifier = Modifier.testTag("creator_hub_heart:${row.commentId}"),
+            ) {
+                Icon(
+                    imageVector = if (row.hearted) UsIcons.HeartFilled else UsIcons.HeartOutline,
+                    contentDescription = if (row.hearted) "Remove heart" else "Heart",
+                    tint = if (row.hearted) UsTheme.extended.liveRed else UsTheme.extended.textSecondary,
+                )
+            }
+            if (!row.isReply) {
+                IconButton(
+                    onClick = actions.onTogglePin,
+                    enabled = !busy,
+                    modifier = Modifier.testTag("creator_hub_pin:${row.commentId}"),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.Pin,
+                        contentDescription = if (row.pinned) "Unpin" else "Pin",
+                        tint = if (row.pinned) UsTheme.extended.accent else UsTheme.extended.textSecondary,
+                    )
+                }
+            }
             if (row.authorReplied) {
                 Text("Replied", style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.statusSuccess)
             }
             Spacer(Modifier.weight(1f))
-            UsPillButton(text = "View post", onClick = onViewPost, filled = false)
-            UsPillButton(text = "Reply", onClick = onReply)
+            UsPillButton(text = "View post", onClick = actions.onViewPost, filled = false)
+            UsPillButton(text = "Reply", onClick = actions.onReply)
+        }
+        if (row.pinned) {
+            Text(
+                "Pinned",
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier.testTag("creator_hub_pinned:${row.commentId}"),
+            )
         }
     }
 }
@@ -505,12 +617,14 @@ private fun <T> PillRow(
     onSelect: (T) -> Unit,
     tag: String,
 ) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+    // Fits the width when the labels allow, scrolls when they do not: a
+    // fixed scroll row cut "Sounds" at the screen's edge on a phone.
+    UsFitOrScrollRow(
+        gap = UsTheme.spacing.s,
+        edge = UsTheme.spacing.pageHorizontal,
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.xs),
+            .padding(vertical = UsTheme.spacing.xs),
     ) {
         options.forEach { option ->
             UsPillButton(
@@ -570,6 +684,9 @@ private fun <T> LazyListScope.pageFooter(page: HubPage<T>, onMore: () -> Unit) {
 }
 
 private const val PROCESSING_FAILED = "failed"
+private val THUMB_WIDTH = 96.dp
+private const val LANDSCAPE_THUMB = 16f / 9f
+private const val PORTRAIT_THUMB = 3f / 4f
 private val CHART_HEIGHT = 120.dp
 private val LINE_STROKE = 2.dp
 private val BASE_STROKE = 1.dp

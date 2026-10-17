@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -96,13 +97,20 @@ fun UsButton(
     }
 }
 
-/** Secondary action. Outlined, no gradient — it must not compete with [UsButton]. */
+/**
+ * Secondary action. Outlined, no gradient — it must not compete with [UsButton].
+ *
+ * [compact] is for buttons sharing a row (the own profile's Edit profile /
+ * Share profile, 2026-10-17): the label stays on ONE line at its own size,
+ * with a narrower side inset so two of them fit a phone without wrapping.
+ */
 @Composable
 fun UsSecondaryButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    compact: Boolean = false,
 ) {
     OutlinedButton(
         onClick = onClick,
@@ -110,11 +118,19 @@ fun UsSecondaryButton(
         enabled = enabled,
         shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.large),
         border = androidx.compose.foundation.BorderStroke(1.dp, UsTheme.extended.borderMedium),
+        contentPadding = if (compact) {
+            PaddingValues(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s)
+        } else {
+            ButtonDefaults.ContentPadding
+        },
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelLarge,
             color = UsTheme.extended.textSecondary,
+            maxLines = if (compact) 1 else Int.MAX_VALUE,
+            softWrap = !compact,
+            overflow = if (compact) TextOverflow.Ellipsis else TextOverflow.Clip,
         )
     }
 }

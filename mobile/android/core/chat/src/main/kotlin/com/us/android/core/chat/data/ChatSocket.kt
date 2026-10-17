@@ -297,6 +297,10 @@ private fun parseMessageFrame(type: String, payload: JsonObject): ChatSocketEven
             replyToId = payload.str("reply_to_id")?.takeIf { it.isNotBlank() },
             replyToPreview = payload.str("reply_to_preview")?.takeIf { it.isNotBlank() },
             replyToSenderId = payload.str("reply_to_sender_id")?.takeIf { it.isNotBlank() },
+            // A shared post's card rides the frame as `post_id` (message.go,
+            // messageFrameBody); without it the recipient saw an empty bubble
+            // until the thread was reopened.
+            postId = payload.str("post_id")?.takeIf { it.isNotBlank() },
             createdAt = payload.str("created_at").orEmpty(),
         ),
     )

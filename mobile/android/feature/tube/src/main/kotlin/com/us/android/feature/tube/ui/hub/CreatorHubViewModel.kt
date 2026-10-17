@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.network.Paged
+import com.us.android.feature.tube.data.hub.CreatorCommentTools
 import com.us.android.feature.tube.data.hub.CreatorHubRepository
 import com.us.android.feature.tube.data.hub.CreatorInsights
 import com.us.android.feature.tube.data.hub.HubDraft
@@ -15,6 +17,8 @@ import com.us.android.feature.tube.data.hub.HubLibraryRow
 import com.us.android.feature.tube.data.hub.HubOpenKind
 import com.us.android.feature.tube.data.hub.HubPeriod
 import com.us.android.feature.tube.data.hub.hubOpenKind
+import com.us.android.feature.tube.data.hub.withHeart
+import com.us.android.feature.tube.data.hub.withPin
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,12 +78,17 @@ data class CreatorHubUiState(
     val reels: HubPage<HubLibraryRow> = HubPage(),
     val drafts: HubPage<HubDraft> = HubPage(),
     val inbox: HubPage<HubInboxRow> = HubPage(),
+    /** Comments with a Heart or Pin on the wire; their buttons wait. */
+    val commentBusy: Set<String> = emptySet(),
+    /** Why the last Heart or Pin did not go through; the screen shows it, then [CreatorHubViewModel.dismissNotice]. */
+    val notice: String? = null,
 )
 
 /**
- * The read-only Creator Hub (T-31, 2026-10-15): the channel's numbers for a
- * period, the creator's videos, reels and drafts, and the newest comments on
- * their posts. Nothing here edits, deletes or publishes — bulk edit and the
+ * The Creator Hub (T-31, 2026-10-15): the channel's numbers for a period,
+ * the creator's videos, reels and drafts, and the newest comments on their
+ * posts, which the creator can heart and pin from the row (2026-10-17).
+ * Nothing else here edits, deletes or publishes — bulk edit and the
  * end-screen editor stay on the web, and payouts are off. Each list loads
  * when its tab is first shown and pages on "Load more".
  */
@@ -88,6 +97,8 @@ class CreatorHubViewModel @Inject constructor(
     private val repository: CreatorHubRepository,
     private val reelsEntry: ReelsEntry,
     private val follows: FollowGraph,
+    private val commentTools: CreatorCommentTools,
+    private val urls: MediaUrlResolver,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(CreatorHubUiState())
@@ -147,6 +158,64 @@ class CreatorHubViewModel @Inject constructor(
         val kind = hubOpenKind(contentType, fallback)
         if (kind == HubOpenKind.REEL) reelsEntry.open(postId)
         return kind
+    }
+
+    /** A library row's still as a URL the image loader can fetch; null draws the plain tile. */
+    fun thumbnailUrl(row: HubLibraryRow): String? = urls.hlsUrl(row.thumbnailPath)
+
+    /** Heart or un-heart a comment: shown at once, put back if the server says no. */
+    fun toggleHeart(commentId: String) {
+        val row = _state.value.inbox.items.firstOrNull { it.commentId == commentId } ?: return
+        val hearted = !row.hearted
+        flipComment(commentId, { it.withHeart(commentId, hearted) }, HEART_FAILED) {
+            commentTools.setHearted(commentId, hearted)
+        }
+    }
+
+    /**
+     * Pin or unpin a comment. A pin replaces the post's other pin on the
+     * server, so the row of that post that had it loses it here too; a
+     * failure puts every row back as it was.
+     */
+    fun togglePin(commentId: String) {
+        val row = _state.value.inbox.items.firstOrNull { it.commentId == commentId } ?: return
+        if (row.isReply) return
+        val pinned = !row.pinned
+        flipComment(commentId, { it.withPin(commentId, pinned) }, PIN_FAILED) {
+            commentTools.setPinned(commentId, pinned)
+        }
+    }
+
+    fun dismissNotice() = _state.update { it.copy(notice = null) }
+
+    private fun flipComment(
+        commentId: String,
+        flip: (List<HubInboxRow>) -> List<HubInboxRow>,
+        failedCopy: String,
+        write: suspend () -> AppResult<Unit>,
+    ) {
+        if (commentId in _state.value.commentBusy) return
+        val postId = _state.value.inbox.items.firstOrNull { it.commentId == commentId }?.postId ?: return
+        // What the flip can touch — this post's rows — as they were, for the rollback.
+        val before = _state.value.inbox.items.filter { it.postId == postId }.associateBy { it.commentId }
+        _state.update {
+            it.copy(inbox = it.inbox.copy(items = flip(it.inbox.items)), commentBusy = it.commentBusy + commentId)
+        }
+        viewModelScope.launch {
+            val result = write()
+            _state.update { state ->
+                val items = if (result is AppResult.Failure) {
+                    state.inbox.items.map { before[it.commentId] ?: it }
+                } else {
+                    state.inbox.items
+                }
+                state.copy(
+                    inbox = state.inbox.copy(items = items),
+                    commentBusy = state.commentBusy - commentId,
+                    notice = if (result is AppResult.Failure) failedCopy else state.notice,
+                )
+            }
+        }
     }
 
     private fun ensureLoaded(tab: HubLibraryTab) {
@@ -231,5 +300,7 @@ class CreatorHubViewModel @Inject constructor(
         const val REELS_FAILED = "Your reels couldn't load."
         const val DRAFTS_FAILED = "Your drafts couldn't load."
         const val INBOX_FAILED = "Latest comments couldn't load."
+        const val HEART_FAILED = "Couldn't update the heart. Try again."
+        const val PIN_FAILED = "Couldn't update the pin. Try again."
     }
 }

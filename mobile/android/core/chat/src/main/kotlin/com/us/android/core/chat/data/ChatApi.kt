@@ -324,6 +324,14 @@ data class SendMessageRequest(
     @SerialName("reply_to_id") val replyToId: String? = null,
     @SerialName("reply_to_preview") val replyToPreview: String? = null,
     @SerialName("reply_to_sender_id") val replyToSenderId: String? = null,
+    /**
+     * Set for `type = "post"` (2026-10-17): the shared post, which is the
+     * card's whole content — message-service copies nothing of the post.
+     * [text] is then an optional caption (the handler binds `text`; a
+     * `content` key is not a field and is dropped). Null and omitted for
+     * every other kind, so text and media sends stay byte-identical.
+     */
+    @SerialName("post_id") val postId: String? = null,
 )
 
 /** Field is `message_id`, not `last_read_message_id`. */
@@ -466,6 +474,8 @@ data class MessageDto(
     @SerialName("reply_to_id") val replyToId: String? = null,
     @SerialName("reply_to_preview") val replyToPreview: String? = null,
     @SerialName("reply_to_sender_id") val replyToSenderId: String? = null,
+    /** Present on a `post` card: the shared post's id. */
+    @SerialName("post_id") val postId: String? = null,
     /** Reaction summaries, present on the LIST response when any exist. */
     val reactions: List<ReactionSummaryDto> = emptyList(),
     /**
@@ -480,6 +490,9 @@ data class MessageDto(
 
 const val TEXT_MESSAGE = "text"
 const val MEDIA_MESSAGE = "media"
+
+/** A shared post ("Send in Messages", 2026-10-17): `post_id` is the card. */
+const val POST_MESSAGE = "post"
 
 /** The server's page cap for `GET /v1/chat/conversations`. */
 const val CONVERSATION_PAGE_LIMIT = 100

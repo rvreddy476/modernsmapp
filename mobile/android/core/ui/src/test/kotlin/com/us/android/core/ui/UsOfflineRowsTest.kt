@@ -4,17 +4,17 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * A video's offline rows on the More sheet (2026-10-02).
+ * A video's offline row on the More sheet (2026-10-02).
  *
  * founder, 2026-10-02: "Keep a copy is not direct download. It should be
- * like to see offline in the app only." What this protects: the rows a
+ * like to see offline in the app only." What this protects: the ONE row a
  * viewer gets for each state of a copy (Save offline, Cancel offline save,
- * Remove offline copy, and never two of them); "Offline", the way to the
- * list, on every video whose host keeps copies; the SAME rows on a reel and
- * a long video, for the owner and for everyone else; the rows sitting in
- * the sheet's alphabetical order; no row that says "download"; and a host
- * that keeps no copies (a feed card, or a video host that passed nothing)
- * showing exactly the list it showed before.
+ * Remove offline copy, never two of them, and since 2026-10-17 never an
+ * "Offline" list row beside it); the SAME rows on a reel and a long video,
+ * for the owner and for everyone else; the rows sitting in the sheet's
+ * alphabetical order; no row that says "download"; and a host that keeps no
+ * copies (a feed card, or a video host that passed nothing) showing exactly
+ * the list it showed before.
  */
 class UsOfflineRowsTest {
 
@@ -45,37 +45,51 @@ class UsOfflineRowsTest {
         UsPostMoreRow.SAVE_OFFLINE,
         UsPostMoreRow.CANCEL_OFFLINE,
         UsPostMoreRow.REMOVE_OFFLINE,
-        UsPostMoreRow.OFFLINE_PAGE,
     )
 
     private fun UsPostMoreState.offlineOnly(): List<UsPostMoreRow> = rows().filter { it in offlineRowSet }
 
     @Test
-    fun `a video that may be saved offers save offline and the way to the list`() {
+    fun `a video that may be saved offers save offline alone`() {
         val rows = state(UsOfflineMoreState(UsOfflineAction.SAVE)).offlineOnly()
 
-        assertThat(rows).containsExactly(UsPostMoreRow.OFFLINE_PAGE, UsPostMoreRow.SAVE_OFFLINE)
+        assertThat(rows).containsExactly(UsPostMoreRow.SAVE_OFFLINE)
     }
 
     @Test
-    fun `a video the creator has not allowed offers the list and no save`() {
+    fun `a video the creator has not allowed offers no offline row`() {
         val rows = state(UsOfflineMoreState(UsOfflineAction.NONE)).offlineOnly()
 
-        assertThat(rows).containsExactly(UsPostMoreRow.OFFLINE_PAGE)
+        assertThat(rows).isEmpty()
     }
 
     @Test
     fun `a save in flight offers cancel in save's place`() {
         val rows = state(UsOfflineMoreState(UsOfflineAction.CANCEL, progress = 0.4f)).offlineOnly()
 
-        assertThat(rows).containsExactly(UsPostMoreRow.CANCEL_OFFLINE, UsPostMoreRow.OFFLINE_PAGE)
+        assertThat(rows).containsExactly(UsPostMoreRow.CANCEL_OFFLINE)
     }
 
     @Test
     fun `a stored copy offers remove in save's place`() {
         val rows = state(UsOfflineMoreState(UsOfflineAction.REMOVE)).offlineOnly()
 
-        assertThat(rows).containsExactly(UsPostMoreRow.OFFLINE_PAGE, UsPostMoreRow.REMOVE_OFFLINE)
+        assertThat(rows).containsExactly(UsPostMoreRow.REMOVE_OFFLINE)
+    }
+
+    /**
+     * The duplicate the 2026-10-17 walk found: "Offline" and "Save offline"
+     * side by side with the same download glyph. The list of copies is not
+     * on a video's sheet at all now.
+     */
+    @Test
+    fun `no state ever shows two offline rows or a row named Offline`() {
+        for (action in UsOfflineAction.entries) {
+            val sheet = state(UsOfflineMoreState(action))
+
+            assertThat(sheet.offlineOnly().size).isAtMost(1)
+            assertThat(sheet.labels()).doesNotContain("Offline")
+        }
     }
 
     @Test
@@ -97,7 +111,7 @@ class UsOfflineRowsTest {
     }
 
     @Test
-    fun `the offline rows sit in the sheet's alphabetical order`() {
+    fun `the offline row sits in the sheet's alphabetical order`() {
         val labels = state(UsOfflineMoreState(UsOfflineAction.SAVE)).labels()
 
         assertThat(labels).containsExactly(
@@ -106,7 +120,6 @@ class UsOfflineRowsTest {
             "Description",
             "Don't recommend this channel",
             "Not interested",
-            "Offline",
             "Quality",
             "Report",
             "Save offline",
@@ -124,7 +137,7 @@ class UsOfflineRowsTest {
             assertThat(row.label.lowercase()).doesNotContain("file")
         }
         assertThat(offlineRowSet.map { it.label })
-            .containsExactly("Save offline", "Cancel offline save", "Remove offline copy", "Offline")
+            .containsExactly("Save offline", "Cancel offline save", "Remove offline copy")
     }
 
     @Test

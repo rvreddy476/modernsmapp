@@ -144,8 +144,9 @@ fun NavGraphBuilder.reelsScreen(
      */
     onCreateWithSound: () -> Unit,
     /**
-     * "Offline", from a reel's More sheet (2026-10-02): `:app` pushes the page
-     * of what this device keeps. Required for the same reason.
+     * The header's More when there is no reel to describe (2026-10-02):
+     * `:app` pushes the page of what this device keeps. Required for the
+     * same reason.
      */
     onOpenOffline: () -> Unit,
     /** The header's bell (2026-10-02): `:app` pushes the notification list, as Home's bell does. */

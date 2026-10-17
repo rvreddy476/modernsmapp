@@ -112,6 +112,7 @@ fun SearchScreen(
         SearchRowActions(
             onOpenUser = { hit -> destinations.onOpenProfile(hit.id) },
             onFollow = { hit -> viewModel.follow(hit.id) },
+            onUnfollow = { hit -> viewModel.unfollow(hit.id) },
             onOpenPost = { hit -> destinations.onOpenPost(hit.id) },
             onOpenVideo = { hit ->
                 if (hit.isReel) {
@@ -358,7 +359,7 @@ private fun ScopeTab(scope: SearchScope, active: Boolean, onClick: () -> Unit) {
 
 // ── The empty box ───────────────────────────────────────────────────────
 
-/** Recent searches (signed in only), then popular searches; the hint when there is neither. */
+/** Recent searches (signed in only), then Trending searches; the hint when there is neither. */
 @Composable
 private fun StartBody(
     signedIn: Boolean,
@@ -394,7 +395,8 @@ private fun StartBody(
             }
         }
         if (popular.isNotEmpty()) {
-            item(key = "popular_header") { SectionHeader(title = "Popular searches") }
+            // "Trending searches" (2026-10-17): GET /v1/search/popular, under Recent.
+            item(key = "popular_header") { SectionHeader(title = TRENDING_SEARCHES) }
             items(popular, key = { "popular:$it" }) { text ->
                 QueryRow(
                     icon = UsIcons.Search,
@@ -694,6 +696,9 @@ private fun HitList(hits: List<SearchHit>, follow: FollowFacts, actions: SearchR
         }
     }
 }
+
+/** The empty box's second list, the platform's popular searches. */
+internal const val TRENDING_SEARCHES = "Trending searches"
 
 private const val SCRIM_ALPHA = 0.55f
 private val SHEET_RADIUS = 28.dp

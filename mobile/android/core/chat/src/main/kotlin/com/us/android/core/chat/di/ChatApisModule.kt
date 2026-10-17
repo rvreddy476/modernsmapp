@@ -1,10 +1,12 @@
 package com.us.android.core.chat.di
 
+import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.CommunityApi
 import com.us.android.core.chat.data.CommunityMembershipApi
 import com.us.android.core.chat.data.CommunityUpdatesApi
 import com.us.android.core.chat.data.GroupInviteApi
 import com.us.android.core.chat.data.PeopleLookupApi
+import com.us.android.core.chat.data.PostShareChats
 import com.us.android.core.chat.data.SuggestionsApi
 import dagger.Module
 import dagger.Provides
@@ -48,4 +50,8 @@ object ChatApisModule {
     @Provides
     @Singleton
     fun providePeopleLookupApi(retrofit: Retrofit): PeopleLookupApi = retrofit.create(PeopleLookupApi::class.java)
+
+    /** A post's share sheet (2026-10-17) reads the inbox and sends the card through the one repository. */
+    @Provides
+    fun providePostShareChats(repository: ChatRepository): PostShareChats = repository
 }

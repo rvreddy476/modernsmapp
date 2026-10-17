@@ -22,6 +22,8 @@ import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedFeedbackRequest
 import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.feed.data.LibrarySoundUseDto
+import com.us.android.core.feed.data.LibraryTracksDto
 import com.us.android.core.feed.data.PollVoteRequest
 import com.us.android.core.feed.data.SoundReelsDto
 import com.us.android.core.feed.data.SoundRowDto
@@ -257,6 +259,11 @@ class ReelsViewModelTest {
             error("unused")
 
         override suspend fun sound(soundId: String): ApiEnvelope<SoundRowDto> = error("unused")
+
+        override suspend fun audioLibrary(genre: String?, limit: Int, offset: Int): ApiEnvelope<LibraryTracksDto> =
+            error("unused")
+
+        override suspend fun useLibrarySound(libraryId: String): ApiEnvelope<LibrarySoundUseDto> = error("unused")
     }
 
     private class RecordingRecorder : AnalyticsRecorder {

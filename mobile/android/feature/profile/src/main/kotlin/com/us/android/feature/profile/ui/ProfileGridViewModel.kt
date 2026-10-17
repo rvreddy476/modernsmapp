@@ -45,22 +45,21 @@ import javax.inject.Inject
  *
  * The first three are the AUTHOR's posts by content type, read from
  * `GET /v1/posts/by-author/:id` and sortable ([sortable]). [SAVED] is the
- * VIEWER's bookmarks (`GET /v1/posts/bookmarks`), so it exists on the
- * viewer's own profile only ([gridTabsFor]); it carries no content type of
- * its own and has no server sort.
- *
- * There is no Liked tab: `GET /v1/reels/liked` reads `user_reel_likes`,
- * which nothing in post-service writes, so it would always be empty.
+ * VIEWER's bookmarks (`GET /v1/posts/bookmarks`) and [LIKED] the reels they
+ * liked (`GET /v1/reels/liked`, 2026-10-17), so both exist on the viewer's
+ * own profile only ([gridTabsFor]); neither carries a content type of its
+ * own nor has a server sort.
  */
 enum class ProfileGridTab(val label: String, val contentType: String) {
     POSTS("Posts", "post"),
     REELS("Reels", "flick"),
     VIDEOS("Videos", "long_video"),
     SAVED("Saved", ""),
+    LIKED("Liked", ""),
     ;
 
     /** An author tab — one content type of the profile's own posts. */
-    val authored: Boolean get() = this != SAVED
+    val authored: Boolean get() = this != SAVED && this != LIKED
 
     /** Whether the Latest / Popular / Oldest control applies (the by-author sort, T-21). */
     val sortable: Boolean get() = authored
@@ -68,9 +67,9 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
 
 /**
  * The grid's tabs for a viewer: the three author tabs for everyone, and
- * Saved after them on the viewer's OWN profile — bookmarks are private to
- * the viewer, so nobody else's profile could show them. Pure, so the two
- * sets are a table test.
+ * Saved and Liked after them on the viewer's OWN profile — bookmarks and
+ * likes are private to the viewer, so nobody else's profile could show
+ * them. Pure, so the two sets are a table test.
  */
 fun gridTabsFor(isOwn: Boolean): List<ProfileGridTab> =
     ProfileGridTab.entries.filter { it.authored || isOwn }
@@ -210,7 +209,7 @@ class ProfileGridViewModel @Inject constructor(
      */
     val success: StateFlow<PublishSuccess?> = _success
 
-    /** The tabs this viewer gets — Saved only on their own profile. */
+    /** The tabs this viewer gets — Saved and Liked only on their own profile. */
     val tabs: List<ProfileGridTab> = gridTabsFor(isOwn)
 
     private val _sorts = MutableStateFlow<Map<ProfileGridTab, AuthorPostSort>>(emptyMap())
@@ -229,6 +228,10 @@ class ProfileGridViewModel @Inject constructor(
     /** The viewer's own bookmarks; never requested on anyone else's profile. */
     val saved: Flow<PagingData<FeedItem>> =
         if (isOwn) videos.savedPosts().cachedIn(viewModelScope) else flowOf(PagingData.empty())
+
+    /** The reels the viewer liked, newest like first; never requested on anyone else's profile. */
+    val liked: Flow<PagingData<FeedItem>> =
+        if (isOwn) videos.likedReels().cachedIn(viewModelScope) else flowOf(PagingData.empty())
 
     /** The viewer's own pending videos, oldest first, each on its tab; empty on anyone else's profile. */
     val pending: StateFlow<List<PendingVideoTile>> = tracker.items
@@ -327,8 +330,8 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.POSTS -> feedEntry.showFirst(postId)
             ProfileGridTab.REELS -> reelsEntry.open(postId)
             ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
-            // Nothing is ever published INTO Saved; pendingTabFor never answers it.
-            ProfileGridTab.SAVED -> return
+            // Nothing is ever published INTO Saved or Liked; pendingTabFor never answers them.
+            ProfileGridTab.SAVED, ProfileGridTab.LIKED -> return
         }
         _published.tryEmit(tab)
     }

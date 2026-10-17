@@ -127,8 +127,8 @@ data class ProfileCounts(
  * `GET /v1/profiles/:id/stats` read `profile_stats`, which only the retired
  * profile-service follow route ever incremented, so once the graph took over
  * follows those copies stopped moving (audit R-1). Where both exist these
- * win for the three counts they carry; the post count still comes from the
- * profile side.
+ * win for the three counts they carry. The post count has its own live
+ * source, post-service ([withPostCount]).
  */
 data class FollowCounts(
     val followers: Int,
@@ -143,6 +143,15 @@ fun ProfileCounts.withGraph(graph: FollowCounts?): ProfileCounts =
     } else {
         copy(followers = graph.followers, following = graph.following, friends = graph.friends)
     }
+
+/**
+ * These counts with post-service's live post total laid over them —
+ * `GET /v1/posts/by-author/:id/counts`, its `total` (2026-10-17). The
+ * profile payload's `post_count` is never written by anything, so it read 0
+ * on every profile; the web header already reads this route. Null (the read
+ * failed) keeps the profile side's number.
+ */
+fun ProfileCounts.withPostCount(total: Int?): ProfileCounts = if (total == null) this else copy(posts = total)
 
 /** The extra fields only the stats endpoint returns. */
 data class ProfileStats(

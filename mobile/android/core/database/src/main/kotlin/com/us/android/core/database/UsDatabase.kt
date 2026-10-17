@@ -60,7 +60,7 @@ interface RemoteKeyDao {
  * database from version 7 to 6" — points at the test, not at the bump that
  * caused it.
  */
-const val US_DATABASE_VERSION = 7
+const val US_DATABASE_VERSION = 8
 
 /**
  * Phase 1 ships the database skeleton only — one table, so that the schema is

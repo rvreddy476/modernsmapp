@@ -11,6 +11,18 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * The creator's tools on a comment in Conversations (2026-10-17): heart and
+ * pin, the post author's alone (`comment_creator.go`). The shared
+ * [com.us.android.core.engagement.data.CommentActionsRepository] is the
+ * implementation; an interface so the hub's optimistic flips are tested
+ * with a fake.
+ */
+interface CreatorCommentTools {
+    suspend fun setHearted(commentId: String, hearted: Boolean): AppResult<Unit>
+    suspend fun setPinned(commentId: String, pinned: Boolean): AppResult<Unit>
+}
+
+/**
  * The Creator Hub's reads, normalised (T-31). Read-only: nothing here edits,
  * deletes or replies — Reply happens in the shared comments sheet, through
  * the comments seam it already owns.

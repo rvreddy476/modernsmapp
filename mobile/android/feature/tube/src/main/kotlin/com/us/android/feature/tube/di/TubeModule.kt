@@ -1,7 +1,10 @@
 package com.us.android.feature.tube.di
 
+import com.us.android.core.common.result.AppResult
+import com.us.android.core.engagement.data.CommentActionsRepository
 import com.us.android.feature.tube.data.VideoSeriesApi
 import com.us.android.feature.tube.data.WatchProgressApi
+import com.us.android.feature.tube.data.hub.CreatorCommentTools
 import com.us.android.feature.tube.data.hub.CreatorHubApi
 import dagger.Module
 import dagger.Provides
@@ -27,4 +30,15 @@ object TubeModule {
     @Provides
     @Singleton
     fun provideCreatorHubApi(retrofit: Retrofit): CreatorHubApi = retrofit.create(CreatorHubApi::class.java)
+
+    /** The hub's Heart and Pin (2026-10-17) go through the comments sheet's own repository. */
+    @Provides
+    fun provideCreatorCommentTools(comments: CommentActionsRepository): CreatorCommentTools =
+        object : CreatorCommentTools {
+            override suspend fun setHearted(commentId: String, hearted: Boolean): AppResult<Unit> =
+                comments.setHearted(commentId, hearted)
+
+            override suspend fun setPinned(commentId: String, pinned: Boolean): AppResult<Unit> =
+                comments.setPinned(commentId, pinned)
+        }
 }

@@ -68,6 +68,8 @@ data class ChatMessageEntity(
     val replyToPreview: String? = null,
     val replyToSenderId: String? = null,
     val createdAt: String,
+    // A shared post's card (schema v8): renders the card offline.
+    val postId: String? = null,
 )
 
 @Entity(tableName = "chat_pending_send")

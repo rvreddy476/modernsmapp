@@ -503,15 +503,19 @@ private fun OwnProfileActions(
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Compact: one line each at the label's own size. The default inset
+        // left half a phone too narrow for "Share profile", which wrapped.
         UsSecondaryButton(
             text = "Edit profile",
             onClick = onEditProfile,
+            compact = true,
             modifier = Modifier.weight(1f),
         )
         if (onShareProfile != null) {
             UsSecondaryButton(
                 text = "Share profile",
                 onClick = onShareProfile,
+                compact = true,
                 modifier = Modifier
                     .weight(1f)
                     .testTag("profile_share"),

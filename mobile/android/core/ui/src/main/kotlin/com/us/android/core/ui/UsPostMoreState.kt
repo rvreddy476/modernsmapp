@@ -56,9 +56,9 @@ data class UsPostMoreState(
     val longVideo: UsLongVideoMoreState? = null,
     /**
      * Offline copies (2026-10-02), on a VIDEO's sheet whose host keeps them:
-     * which of Save offline / Cancel / Remove this video offers, and the
-     * "Offline" row that opens the list. Null where the host has no offline
-     * copies to offer (a feed card), and the sheet is then exactly what it was.
+     * which of Save offline / Cancel / Remove this video offers. Null where
+     * the host has no offline copies to offer (a feed card), and the sheet is
+     * then exactly what it was.
      */
     val offline: UsOfflineMoreState? = null,
 ) {
@@ -281,9 +281,6 @@ enum class UsPostMoreRow(val label: String) {
 
     /** Videos: a copy is stored on this device. */
     REMOVE_OFFLINE("Remove offline copy"),
-
-    /** Videos: the list of what is kept on this device. */
-    OFFLINE_PAGE("Offline"),
     SAVE("Save"),
     UNSAVE("Unsave"),
     COPY_LINK("Copy link"),
@@ -422,29 +419,26 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
 }
 
 /**
- * A video's offline rows (2026-10-02), the same on a reel and a long video,
- * for the owner and for everyone else:
+ * A video's offline row (2026-10-02), the same on a reel and a long video,
+ * for the owner and for everyone else: ONE of "Save offline", "Cancel
+ * offline save" or "Remove offline copy", by what the host says of this
+ * video ([UsOfflineAction]); none when the creator has not allowed it.
  *
- *  - "Offline", the list of what this device keeps, whenever the host keeps
- *    offline copies at all: it is how a copy is found again, and it must be
- *    reachable from a video that cannot itself be saved;
- *  - ONE of "Save offline", "Cancel offline save" or "Remove offline copy",
- *    by what the host says of this video ([UsOfflineAction]); none when the
- *    creator has not allowed it.
+ * There is no row for the list of what the device keeps (2026-10-17): an
+ * "Offline" row beside "Save offline", with the same download glyph, read
+ * as the same action twice. The list belongs to the viewer, not to a video;
+ * it is reached from Tube's More menu (and the profile menu is to carry it).
  *
  * Nothing when the host passed no offline state: the list is then the
  * eight rows it was.
  */
 internal fun UsPostMoreState.offlineRows(): List<UsPostMoreRow> {
     val state = offline ?: return emptyList()
-    return buildList {
-        add(UsPostMoreRow.OFFLINE_PAGE)
-        when (state.action) {
-            UsOfflineAction.SAVE -> add(UsPostMoreRow.SAVE_OFFLINE)
-            UsOfflineAction.CANCEL -> add(UsPostMoreRow.CANCEL_OFFLINE)
-            UsOfflineAction.REMOVE -> add(UsPostMoreRow.REMOVE_OFFLINE)
-            UsOfflineAction.NONE -> Unit
-        }
+    return when (state.action) {
+        UsOfflineAction.SAVE -> listOf(UsPostMoreRow.SAVE_OFFLINE)
+        UsOfflineAction.CANCEL -> listOf(UsPostMoreRow.CANCEL_OFFLINE)
+        UsOfflineAction.REMOVE -> listOf(UsPostMoreRow.REMOVE_OFFLINE)
+        UsOfflineAction.NONE -> emptyList()
     }
 }
 

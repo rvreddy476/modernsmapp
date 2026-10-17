@@ -68,58 +68,64 @@ internal fun UsCommentActionsSheet(
         }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = {
-            callbacks.onReportClosed()
-            onDismiss()
-        },
-        sheetState = sheetState,
-        containerColor = UsTheme.extended.bgSheet,
-        contentColor = UsTheme.extended.textPrimary,
-        shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
-        scrimColor = UsTheme.extended.scrim,
-        dragHandle = null,
-        modifier = Modifier.testTag("comment_menu_sheet:${row.id}"),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(bottom = CONTENT_BOTTOM),
+    // Delete takes the sheet away FIRST, then asks (2026-10-17): the sheet
+    // stayed up under "Delete this comment?", two surfaces at once.
+    fun onAction(action: CommentMenuAction) {
+        when (action) {
+            CommentMenuAction.REPORT -> reporting = true
+            CommentMenuAction.DELETE -> scope.launch { sheetState.hide() }.invokeOnCompletion { confirmDelete = true }
+            CommentMenuAction.PIN, CommentMenuAction.UNPIN -> {
+                callbacks.onTogglePin(row.id)
+                leave()
+            }
+            CommentMenuAction.HEART, CommentMenuAction.UNHEART -> {
+                callbacks.onToggleHeart(row.id)
+                leave()
+            }
+        }
+    }
+
+    if (!confirmDelete) {
+        ModalBottomSheet(
+            onDismissRequest = {
+                callbacks.onReportClosed()
+                onDismiss()
+            },
+            sheetState = sheetState,
+            containerColor = UsTheme.extended.bgSheet,
+            contentColor = UsTheme.extended.textPrimary,
+            shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
+            scrimColor = UsTheme.extended.scrim,
+            dragHandle = null,
+            modifier = Modifier.testTag("comment_menu_sheet:${row.id}"),
         ) {
-            SheetGrabHandle()
-            if (reporting) {
-                UsPostReportStep(
-                    report = report.asReportState(),
-                    onBack = {
-                        callbacks.onReportClosed()
-                        reporting = false
-                    },
-                    onSubmit = { reason, details -> callbacks.onReport(row.id, reason.wire, details) },
-                    subject = "comment",
-                )
-            } else {
-                actions.forEach { action ->
-                    SheetRow(
-                        icon = action.icon(),
-                        label = action.label,
-                        tint = if (action.destructive) UsTheme.extended.liveRed else UsTheme.extended.textPrimary,
-                        testTag = "comment_menu_row:${action.name.lowercase()}",
-                        onClick = {
-                            when (action) {
-                                CommentMenuAction.REPORT -> reporting = true
-                                CommentMenuAction.DELETE -> confirmDelete = true
-                                CommentMenuAction.PIN, CommentMenuAction.UNPIN -> {
-                                    callbacks.onTogglePin(row.id)
-                                    leave()
-                                }
-                                CommentMenuAction.HEART, CommentMenuAction.UNHEART -> {
-                                    callbacks.onToggleHeart(row.id)
-                                    leave()
-                                }
-                            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(bottom = CONTENT_BOTTOM),
+            ) {
+                SheetGrabHandle()
+                if (reporting) {
+                    UsPostReportStep(
+                        report = report.asReportState(),
+                        onBack = {
+                            callbacks.onReportClosed()
+                            reporting = false
                         },
+                        onSubmit = { reason, details -> callbacks.onReport(row.id, reason.wire, details) },
+                        subject = "comment",
                     )
+                } else {
+                    actions.forEach { action ->
+                        SheetRow(
+                            icon = action.icon(),
+                            label = action.label,
+                            tint = if (action.destructive) UsTheme.extended.liveRed else UsTheme.extended.textPrimary,
+                            testTag = "comment_menu_row:${action.name.lowercase()}",
+                            onClick = { onAction(action) },
+                        )
+                    }
                 }
             }
         }
@@ -132,12 +138,16 @@ internal fun UsCommentActionsSheet(
             confirmLabel = "Delete",
             testTag = "comment_delete_dialog",
             confirmTestTag = "comment_delete_confirm",
+            // The sheet has already gone, so either answer closes the menu.
             onConfirm = {
-                confirmDelete = false
                 callbacks.onDelete(row.id)
-                leave()
+                callbacks.onReportClosed()
+                onDismiss()
             },
-            onDismiss = { confirmDelete = false },
+            onDismiss = {
+                callbacks.onReportClosed()
+                onDismiss()
+            },
         )
     }
 }

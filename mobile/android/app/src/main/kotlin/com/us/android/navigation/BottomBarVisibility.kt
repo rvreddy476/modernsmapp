@@ -33,3 +33,39 @@ fun routeShowsBottomBar(currentTab: TopLevelDestination?, tabs: List<TopLevelDes
  */
 val TopLevelDestination.drawsUnderStatusBar: Boolean
     get() = this == TopLevelDestination.REELS
+
+/**
+ * Whether the Explore launcher wears a back arrow (2026-10-17): not when it
+ * is a root of the bar — a tab root has nowhere back to go, and the arrow
+ * read as a pushed screen — but yes when it is not in the bar and was
+ * opened from a header, where Back is the way out.
+ */
+fun exploreShowsBack(tabs: List<TopLevelDestination>): Boolean = TopLevelDestination.EXPLORE !in tabs
+
+/** How much of the system bars the shell reserves above and below the current screen. */
+enum class ShellInsets {
+    /** Every other screen: the shell keeps the status and navigation bars clear. */
+    ALL,
+
+    /** Reels: no inset at all; the video fills the frame and the header pads itself. */
+    NONE,
+
+    /**
+     * A dark stage pushed over the shell (LIVE, 2026-10-17): no TOP inset,
+     * so the screen's own dark ground runs under the status bar and its top
+     * bar pads itself below it. The bottom stays reserved as before.
+     */
+    NO_TOP,
+}
+
+/**
+ * The shell's insets for a screen. Pure, so the table is a test. [darkStage]
+ * is a pushed route that is dark edge to edge — the LIVE screens — where a
+ * reserved status-bar band would show the app's LIGHT ground behind the
+ * light glyphs those screens ask for, a white bar over a black room.
+ */
+fun shellInsetsFor(currentTab: TopLevelDestination?, darkStage: Boolean): ShellInsets = when {
+    currentTab?.drawsUnderStatusBar == true -> ShellInsets.NONE
+    darkStage -> ShellInsets.NO_TOP
+    else -> ShellInsets.ALL
+}

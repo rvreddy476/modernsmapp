@@ -147,6 +147,8 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.UsReelMoreState
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
+import com.us.android.core.feed.ui.share.PostShareSheetHost
+import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.ui.watchProbe
 import java.io.File
@@ -237,7 +239,7 @@ fun ReelsScreen(
     onOpenSound: (soundId: String) -> Unit,
     /** "Use this sound": the sound is already in `SoundEntry`; `:app` opens the reel create flow. */
     onCreateWithSound: () -> Unit,
-    /** "Offline", from the More sheet: `:app` pushes the page of what this device keeps. */
+    /** The header's More with no reel to describe (the feed did not load): `:app` pushes what this device keeps. */
     onOpenOffline: () -> Unit,
     /** The header's bell. Required for the reason [onOpenSearch] is. */
     onOpenNotifications: () -> Unit,
@@ -246,6 +248,8 @@ fun ReelsScreen(
     sound: ReelSoundViewModel = hiltViewModel(),
     // The same count Home's bell shows: one singleton behind both, refreshed when the page appears.
     badge: UnreadBadgeViewModel = hiltViewModel(),
+    // The Share sheet's (2026-10-17): the screen's, so "Sent" is read over the reel after the sheet has gone.
+    sharing: PostShareViewModel = hiltViewModel(),
 ) {
     val unread by badge.count.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { badge.refresh() }
@@ -269,9 +273,14 @@ fun ReelsScreen(
     var settledPlayer by remember { mutableStateOf<Player?>(null) }
     val trackHeights = rememberVideoHeights(settledPlayer)
     val share = rememberPostSharer()
-    // Recorded only AFTER the chooser was launched, and shared by the rail's
-    // glyph and the more sheet's row so the count cannot be taken twice.
-    val onShare: (FeedItem) -> Unit = { item ->
+    // The rail's glyph and the More sheet's Share row open Momentum's own
+    // Share sheet (2026-10-17); its "More…" is the system chooser they used
+    // to open directly.
+    var shareFor by remember { mutableStateOf<FeedItem?>(null) }
+    val onShare: (FeedItem) -> Unit = { item -> shareFor = item }
+    // Recorded only AFTER the chooser was launched, so the count cannot be
+    // taken by a viewer who opened the sheet and backed out.
+    val onSystemShare: (FeedItem) -> Unit = { item ->
         share(item.id, item.text, item.author.nameForDisplay)
         viewModel.onExternalShared(item.id)
     }
@@ -339,7 +348,7 @@ fun ReelsScreen(
             unreadCount = unread,
             onOpenNotifications = onOpenNotifications,
         )
-        ReelsMessages(viewModel = viewModel, more = more)
+        ReelsMessages(viewModel = viewModel, more = more, sharing = sharing)
     }
 
     // Comments open over the reel rather than navigating away: the reel keeps
@@ -360,7 +369,15 @@ fun ReelsScreen(
             trackHeights = trackHeights,
             onShare = onShare,
             onDismiss = { moreFor = null },
-            onOpenOffline = onOpenOffline,
+        )
+    }
+
+    shareFor?.let { item ->
+        PostShareSheetHost(
+            item = item,
+            viewModel = sharing,
+            onMore = onSystemShare,
+            onDismiss = { shareFor = null },
         )
     }
 }
@@ -380,7 +397,6 @@ private fun ReelMoreSheet(
     trackHeights: List<Int>,
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
-    onOpenOffline: () -> Unit,
 ) {
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
@@ -416,7 +432,7 @@ private fun ReelMoreSheet(
         onClearScreen = viewModel::toggleMode,
         onSelectQuality = viewModel::selectQuality,
         onUseSound = { reel -> viewModel.onUseSound(reel, SoundIntent.CREATE) },
-        onOpenOffline = onOpenOffline,
+        offlineCopies = true,
         onSelectSpeed = viewModel::selectSpeed,
         onSelectCaption = viewModel::selectCaption,
         onToggleAutoScroll = viewModel::toggleAutoScroll,
@@ -449,18 +465,23 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
     )
 }
 
-/** One line at a time over the reel: why "use this sound" was refused, else what the More sheet left behind. */
+/**
+ * One line at a time over the reel: why "use this sound" was refused, else
+ * what the More sheet or the Share sheet left behind ("Sent", "Link copied").
+ */
 @Composable
-private fun BoxScope.ReelsMessages(viewModel: ReelsViewModel, more: PostMoreViewModel) {
+private fun BoxScope.ReelsMessages(viewModel: ReelsViewModel, more: PostMoreViewModel, sharing: PostShareViewModel) {
     val soundMessage by viewModel.soundMessage.collectAsStateWithLifecycle()
     val engagementMessage by viewModel.engagementMessage.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
+    val shareMessage by sharing.message.collectAsStateWithLifecycle()
     UsMessageHost(
-        message = soundMessage ?: engagementMessage ?: moreMessage,
+        message = soundMessage ?: engagementMessage ?: moreMessage ?: shareMessage,
         onDismiss = {
             viewModel.dismissSoundMessage()
             viewModel.dismissEngagementMessage()
             more.dismissMessage()
+            sharing.dismissMessage()
         },
     )
 }

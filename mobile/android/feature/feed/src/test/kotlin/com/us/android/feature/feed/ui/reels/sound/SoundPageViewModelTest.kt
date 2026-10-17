@@ -3,6 +3,8 @@ package com.us.android.feature.feed.ui.reels.sound
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
+import com.us.android.core.feed.data.LibrarySoundUseDto
+import com.us.android.core.feed.data.LibraryTracksDto
 import com.us.android.core.feed.data.SoundReelsDto
 import com.us.android.core.feed.data.SoundReelsPage
 import com.us.android.core.feed.data.SoundRowDto
@@ -85,6 +87,9 @@ class SoundPageViewModelTest {
 
         override suspend fun useSound(postId: String): ApiEnvelope<UseSoundDto> = error("unused")
         override suspend fun sound(soundId: String): ApiEnvelope<SoundRowDto> = error("unused")
+        override suspend fun audioLibrary(genre: String?, limit: Int, offset: Int): ApiEnvelope<LibraryTracksDto> =
+            error("unused")
+        override suspend fun useLibrarySound(libraryId: String): ApiEnvelope<LibrarySoundUseDto> = error("unused")
     }
 
     private fun page(

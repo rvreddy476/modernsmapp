@@ -3,6 +3,7 @@ package com.us.android.core.chat
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.chat.data.CreateDirectRequest
 import com.us.android.core.chat.data.MarkReadRequest
+import com.us.android.core.chat.data.POST_MESSAGE
 import com.us.android.core.chat.data.SendMessageRequest
 import com.us.android.core.chat.data.TypingRequest
 import kotlinx.serialization.json.Json
@@ -71,6 +72,23 @@ class ChatRequestEncodingTest {
     fun `typing sends its flag`() {
         assertThat(json.encodeToString(TypingRequest(typing = true)))
             .isEqualTo("""{"typing":true}""")
+    }
+
+    /**
+     * A shared post (2026-10-17): message-service binds `type`, `text` and
+     * `post_id` (handler.go SendMessageRequest); `text` is the empty caption.
+     */
+    @Test
+    fun `a post card sends type post, an empty text and the post id`() {
+        val body = json.encodeToString(SendMessageRequest(type = POST_MESSAGE, text = "", postId = "p-1"))
+
+        assertThat(body).isEqualTo("""{"type":"post","text":"","post_id":"p-1"}""")
+    }
+
+    /** Text and media sends stay byte-identical: no `post_id` key unless there is a post. */
+    @Test
+    fun `a text message carries no post_id`() {
+        assertThat(json.encodeToString(SendMessageRequest(text = "hi"))).doesNotContain("post_id")
     }
 }
 

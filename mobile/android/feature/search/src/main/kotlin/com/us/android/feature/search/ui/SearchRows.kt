@@ -45,9 +45,9 @@ import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.formatCount
 import com.us.android.feature.search.data.SearchAuthor
@@ -58,6 +58,7 @@ import java.time.Instant
 internal class SearchRowActions(
     val onOpenUser: (SearchHit.User) -> Unit,
     val onFollow: (SearchHit.User) -> Unit,
+    val onUnfollow: (SearchHit.User) -> Unit,
     val onOpenPost: (SearchHit.Post) -> Unit,
     val onOpenVideo: (SearchHit.Video) -> Unit,
     val onOpenChannel: (SearchHit.Channel) -> Unit,
@@ -78,10 +79,11 @@ internal fun SearchHitRow(hit: SearchHit, follow: FollowFacts, actions: SearchRo
     when (hit) {
         is SearchHit.User -> UserRow(
             hit = hit,
-            offersFollow = offersFollow(follow.ownUserId, hit.id, follow.edges[hit.id]),
+            button = SearchQueries.followButton(follow.ownUserId, hit.id, follow.edges[hit.id]),
             busy = hit.id in follow.busy,
             onOpen = { actions.onOpenUser(hit) },
             onFollow = { actions.onFollow(hit) },
+            onUnfollow = { actions.onUnfollow(hit) },
         )
         is SearchHit.Post -> PostRow(hit = hit, now = now, onOpen = { actions.onOpenPost(hit) })
         is SearchHit.Video -> VideoRow(hit = hit, now = now, onOpen = { actions.onOpenVideo(hit) })
@@ -145,20 +147,31 @@ internal fun GlyphDisc(icon: ImageVector) {
     }
 }
 
-/** Avatar, name over `@username`, and Follow at the right end when the viewer is not already following. */
+/**
+ * Avatar, name over `@username`, and at the right end Follow — or
+ * Following (a tap unfollows) and Requested once the viewer has asked.
+ */
+@Suppress("LongParameterList") // the row's facts and its three taps
 @Composable
 private fun UserRow(
     hit: SearchHit.User,
-    offersFollow: Boolean,
+    button: UserFollowButton,
     busy: Boolean,
     onOpen: () -> Unit,
     onFollow: () -> Unit,
+    onUnfollow: () -> Unit,
 ) {
     RowFrame(onClick = onOpen, description = hit.nameForDisplay, testTag = "search_user:${hit.id}") {
         UsAvatar(name = hit.nameForDisplay, seed = hit.id, size = UsAvatarSize.Medium, imageUrl = hit.avatarUrl)
         TwoLines(primary = hit.nameForDisplay, secondary = hit.handle, modifier = Modifier.weight(1f))
-        if (offersFollow) {
-            UsFollowButton(onClick = onFollow, busy = busy, modifier = Modifier.testTag("search_follow:${hit.id}"))
+        val tag = Modifier.testTag("search_follow:${hit.id}")
+        when (button) {
+            UserFollowButton.HIDDEN -> Unit
+            UserFollowButton.FOLLOW -> UsFollowButton(onClick = onFollow, busy = busy, modifier = tag)
+            UserFollowButton.FOLLOWING ->
+                UsPillButton(text = "Following", onClick = onUnfollow, filled = false, busy = busy, modifier = tag)
+            UserFollowButton.REQUESTED ->
+                UsPillButton(text = "Requested", onClick = {}, filled = false, enabled = false, modifier = tag)
         }
     }
 }

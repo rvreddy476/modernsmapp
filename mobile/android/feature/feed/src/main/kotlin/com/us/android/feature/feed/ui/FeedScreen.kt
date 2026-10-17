@@ -52,6 +52,8 @@ import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
+import com.us.android.core.feed.ui.share.PostShareSheetHost
+import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.media.Playback
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
@@ -190,6 +192,7 @@ internal fun FeedContent(
     listState: LazyListState = rememberLazyListState(),
     more: PostMoreViewModel = hiltViewModel(),
     playback: FeedPlaybackViewModel = hiltViewModel(),
+    sharing: PostShareViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
     val head by viewModel.head.collectAsStateWithLifecycle()
@@ -202,6 +205,8 @@ internal fun FeedContent(
     // that reopened itself after a process death would be about a row the
     // reader may no longer be looking at.
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
+    // The post the Share sheet is open for; plain remember for the same reason.
+    var shareFor by remember { mutableStateOf<FeedItem?>(null) }
     // The row whose media is open in the viewer, by id AND index. Plain
     // remember, not saveable: a viewer that reopened itself after a process
     // death over a feed that has since refreshed would show a row the reader
@@ -250,16 +255,17 @@ internal fun FeedContent(
             onRepost = viewModel::onRepost,
             onVotePoll = viewModel::onVotePoll,
             onFollow = viewModel::onFollow,
-            onShare = { item ->
-                share(item.id, item.text, item.author.nameForDisplay)
-                // Recorded only after the chooser was actually launched, and
-                // only here — the repost endpoint already records repost and
-                // quote shares, so counting this one through both would
-                // double it.
-                viewModel.onExternalShared(item.id)
-            },
+            // Momentum's Share sheet (2026-10-17); its "More…" is the system chooser below.
+            onShare = { item -> shareFor = item },
             onMore = { moreFor = it },
         )
+    }
+    val onSystemShare: (FeedItem) -> Unit = { item ->
+        share(item.id, item.text, item.author.nameForDisplay)
+        // Recorded only after the chooser was actually launched, and only
+        // here — the repost endpoint already records repost and quote
+        // shares, so counting this one through both would double it.
+        viewModel.onExternalShared(item.id)
     }
 
     Box(modifier = modifier) {
@@ -297,7 +303,16 @@ internal fun FeedContent(
                     .padding(top = UsTheme.spacing.m),
             )
         }
-        MoreSheetMessage(more)
+        MoreSheetMessage(more, sharing)
+    }
+
+    shareFor?.let { item ->
+        PostShareSheetHost(
+            item = item,
+            viewModel = sharing,
+            onMore = onSystemShare,
+            onDismiss = { shareFor = null },
+        )
     }
 
     // Comments open over the feed rather than navigating away, so the reader
@@ -387,9 +402,16 @@ internal data class FeedAutoplay(
  * posts like this", "Blocked @x", or the server's refusal.
  */
 @Composable
-private fun BoxScope.MoreSheetMessage(more: PostMoreViewModel) {
+private fun BoxScope.MoreSheetMessage(more: PostMoreViewModel, sharing: PostShareViewModel) {
     val message by more.message.collectAsStateWithLifecycle()
-    UsMessageHost(message = message, onDismiss = more::dismissMessage)
+    val shareMessage by sharing.message.collectAsStateWithLifecycle()
+    UsMessageHost(
+        message = message ?: shareMessage,
+        onDismiss = {
+            more.dismissMessage()
+            sharing.dismissMessage()
+        },
+    )
 }
 
 /**

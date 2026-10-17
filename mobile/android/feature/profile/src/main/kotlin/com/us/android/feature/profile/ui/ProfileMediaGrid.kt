@@ -129,6 +129,7 @@ internal fun ProfileMediaGrid(
     val reels = viewModel.reels.collectAsLazyPagingItems()
     val longVideos = viewModel.longVideos.collectAsLazyPagingItems()
     val saved = viewModel.saved.collectAsLazyPagingItems()
+    val liked = viewModel.liked.collectAsLazyPagingItems()
     var failureKey by rememberSaveable { mutableStateOf<String?>(null) }
     var createChannelKey by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -155,7 +156,7 @@ internal fun ProfileMediaGrid(
             onSelectTab = viewModel::select,
             onSelectSort = viewModel::selectSort,
         )
-        val items = TabLists(posts, reels, longVideos, saved).forTab(tab)
+        val items = TabLists(posts, reels, longVideos, saved, liked).forTab(tab)
         val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
             scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
         GridRows(
@@ -266,18 +267,20 @@ private sealed interface GridHead {
     data class Scheduled(val tile: ScheduledTile) : GridHead
 }
 
-/** The four paged lists, so the one on screen is picked in one place. */
+/** The five paged lists, so the one on screen is picked in one place. */
 private class TabLists(
     val posts: LazyPagingItems<FeedItem>,
     val reels: LazyPagingItems<FeedItem>,
     val longVideos: LazyPagingItems<FeedItem>,
     val saved: LazyPagingItems<FeedItem>,
+    val liked: LazyPagingItems<FeedItem>,
 ) {
     fun forTab(tab: ProfileGridTab): LazyPagingItems<FeedItem> = when (tab) {
         ProfileGridTab.POSTS -> posts
         ProfileGridTab.REELS -> reels
         ProfileGridTab.VIDEOS -> longVideos
         ProfileGridTab.SAVED -> saved
+        ProfileGridTab.LIKED -> liked
     }
 }
 
@@ -476,13 +479,13 @@ private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, has
     Column {
         when {
             refresh is LoadState.Loading && count == 0 -> UsLoadingState(
-                label = "Loading ${tab.label.lowercase()}",
+                label = "Loading ${tabNoun(tab)}",
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(STATE_HEIGHT),
             )
             refresh is LoadState.Error && count == 0 -> UsErrorState(
-                message = "We couldn't load ${tab.label.lowercase()}.",
+                message = "We couldn't load ${tabNoun(tab)}.",
                 onRetry = items::retry,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -510,14 +513,20 @@ private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, has
     }
 }
 
-/** What an empty tab says: "No reels yet", and "Nothing saved yet" for Saved. */
-internal fun emptyTitle(tab: ProfileGridTab): String =
-    if (tab == ProfileGridTab.SAVED) "Nothing saved yet" else "No ${tab.label.lowercase()} yet"
+/** What an empty tab says: "No reels yet", "Nothing saved yet" for Saved, "No liked reels yet" for Liked. */
+internal fun emptyTitle(tab: ProfileGridTab): String = when (tab) {
+    ProfileGridTab.SAVED -> "Nothing saved yet"
+    else -> "No ${tabNoun(tab)} yet"
+}
 
-/** Square for posts, 3:4 for reels, 16:9 for videos — the shape the content has. */
+/** What a tab holds, in a sentence: "reels", "saved", "liked reels". */
+internal fun tabNoun(tab: ProfileGridTab): String =
+    if (tab == ProfileGridTab.LIKED) "liked reels" else tab.label.lowercase()
+
+/** Square for posts, 3:4 for reels (liked ones too), 16:9 for videos — the shape the content has. */
 internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
     ProfileGridTab.POSTS -> SQUARE
-    ProfileGridTab.REELS -> PORTRAIT_TILE
+    ProfileGridTab.REELS, ProfileGridTab.LIKED -> PORTRAIT_TILE
     ProfileGridTab.VIDEOS -> LANDSCAPE
     // Saved mixes every kind, so no one shape is right; square is the neutral one.
     ProfileGridTab.SAVED -> SQUARE

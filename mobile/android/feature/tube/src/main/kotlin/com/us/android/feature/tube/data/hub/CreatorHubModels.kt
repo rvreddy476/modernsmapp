@@ -178,6 +178,13 @@ data class HubLibraryRow(
     val likeCount: Long,
     val commentCount: Long,
     val processingStatus: String,
+    /**
+     * The row's still (2026-10-17), as the web's `normalizeLibraryRow` finds
+     * it: `video_metadata.thumbnail_url`, else the chosen cover served at
+     * `/v1/media/<cover_media_id>/serve`. A gateway path or an absolute URL;
+     * null when the row has neither.
+     */
+    val thumbnailPath: String? = null,
 ) {
     /** The row's date: published, else scheduled, else created (web `rowDate`). */
     val date: String get() = publishedAt ?: scheduledAt ?: createdAt
@@ -215,6 +222,7 @@ fun normalizeLibraryRow(raw: JsonElement?): HubLibraryRow? {
         likeCount = num(r["like_count"]).orElse(num(counts["likes"])).toLong(),
         commentCount = num(r["comment_count"]).orElse(num(counts["comments"])).toLong(),
         processingStatus = str(r["processing_status"]).ifEmpty { str(vm["upload_status"]) },
+        thumbnailPath = strOrNull(vm["thumbnail_url"]) ?: strOrNull(r["cover_media_id"])?.let { "/v1/media/$it/serve" },
     )
 }
 
@@ -299,7 +307,33 @@ data class HubInboxRow(
     val postContentType: String,
     /** The post's author (the creator) has replied to this comment. */
     val authorReplied: Boolean,
+    /** The creator pinned it (`comment.pinned`; at most one per post, the server's rule). */
+    val pinned: Boolean = false,
+    /** The creator hearted it (`comment.hearted_by_author`). */
+    val hearted: Boolean = false,
+    /** A reply: the server refuses a pin on one (422 `CANNOT_PIN_REPLY`), so it offers none. */
+    val isReply: Boolean = false,
 )
+
+/** [rows] with [commentId]'s heart set to [hearted]. */
+fun List<HubInboxRow>.withHeart(commentId: String, hearted: Boolean): List<HubInboxRow> =
+    map { if (it.commentId == commentId) it.copy(hearted = hearted) else it }
+
+/**
+ * [rows] with [commentId]'s pin set to [pinned]. A pin REPLACES any other
+ * pin on the same post — post-service keeps one per post — so the rows of
+ * that post lose theirs at the same moment.
+ */
+fun List<HubInboxRow>.withPin(commentId: String, pinned: Boolean): List<HubInboxRow> {
+    val postId = firstOrNull { it.commentId == commentId }?.postId ?: return this
+    return map { row ->
+        when {
+            row.commentId == commentId -> row.copy(pinned = pinned)
+            pinned && row.postId == postId -> row.copy(pinned = false)
+            else -> row
+        }
+    }
+}
 
 fun normalizeInboxRow(raw: JsonElement?): HubInboxRow? {
     val r = raw as? JsonObject ?: return null
@@ -319,6 +353,9 @@ fun normalizeInboxRow(raw: JsonElement?): HubInboxRow? {
         postTitle = str(p["title"]).trim().ifEmpty { "Untitled" },
         postContentType = str(p["content_type"]),
         authorReplied = bool(r["author_replied"]),
+        pinned = bool(c["pinned"]),
+        hearted = bool(c["hearted_by_author"]),
+        isReply = bool(c["is_reply"]),
     )
 }
 

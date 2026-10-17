@@ -102,9 +102,13 @@ fun ChatThreadScreen(
     // Kind messages: the conversation's owner offered its report flow for the
     // sender of a message that bothered the viewer. :app routes it.
     onReportSender: (senderId: String, messageId: String, name: String) -> Unit = { _, _, _ -> },
+    // A shared post's card (2026-10-17): :app opens the post where it plays.
+    onOpenPost: (postId: String, contentType: String) -> Unit = { _, _ -> },
     viewModel: ChatThreadViewModel = hiltViewModel(),
+    postCards: PostCardsViewModel = hiltViewModel(),
 ) {
     val render by viewModel.state.collectAsStateWithLifecycle()
+    val cards by postCards.cards.collectAsStateWithLifecycle()
     val state = render.thread
     val listState = rememberLazyListState()
 
@@ -225,6 +229,11 @@ fun ChatThreadScreen(
                                 onReply = { viewModel.startReply(message) },
                                 onDelete = { viewModel.deleteMessage(message.id) },
                                 cover = render.covers[message.id],
+                                postCard = PostCardSlot(
+                                    state = message.postId?.let { cards[it] },
+                                    onEnsure = postCards::ensure,
+                                    onOpen = { card -> onOpenPost(card.postId, card.contentType) },
+                                ),
                                 onReveal = { viewModel.revealCovered(message.id) },
                                 onBothered = { viewModel.answerBothered(message.id, it) },
                                 onReport = {
@@ -248,7 +257,11 @@ fun ChatThreadScreen(
                 ReplyBanner(
                     author = viewModel.quoteAuthorName(original.senderId),
                     preview = original.text.ifBlank {
-                        if (original.mediaId != null) "Photo" else ""
+                        when {
+                            original.mediaId != null -> "Photo"
+                            original.postId != null -> "Post"
+                            else -> ""
+                        }
                     },
                     onCancel = viewModel::cancelReply,
                 )
@@ -877,6 +890,7 @@ private fun MessageRow(
     onReply: () -> Unit,
     onDelete: () -> Unit,
     cover: KindCover? = null,
+    postCard: PostCardSlot? = null,
     onReveal: () -> Unit = {},
     onBothered: (Boolean) -> Unit = {},
     onReport: () -> Unit = {},
@@ -922,6 +936,7 @@ private fun MessageRow(
                 quoteAuthor = quoteAuthor,
                 covered = cover != null && !cover.revealed,
                 onReveal = onReveal,
+                postCard = postCard,
             )
             cover?.let { KindCoverActions(cover = it, onBothered = onBothered, onReport = onReport) }
             if (message.reactions.isNotEmpty()) {
@@ -1012,6 +1027,7 @@ private fun MessageBubble(
     quoteAuthor: String = "",
     covered: Boolean = false,
     onReveal: () -> Unit = {},
+    postCard: PostCardSlot? = null,
 ) {
     val shape = if (isOwn) {
         RoundedCornerShape(
@@ -1071,6 +1087,17 @@ private fun MessageBubble(
         }
         message.mediaId?.let { mediaId ->
             AttachmentImage(mediaId = mediaId)
+        }
+        // A shared post is its card; any caption follows under it.
+        val postId = message.postId
+        if (postId != null && postCard != null) {
+            PostCardContent(
+                postId = postId,
+                state = postCard.state,
+                lightGround = isOwn,
+                onEnsure = postCard.onEnsure,
+                onOpen = postCard.onOpen,
+            )
         }
         if (message.text.isNotBlank() && covered) {
             // Kind messages: the text is not drawn at all until tapped, so

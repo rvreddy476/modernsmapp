@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.ui.UsFitOrScrollRow
 
 /** The four surfaces of the one chat screen (founder, 2026-09-05). */
 enum class ChatHomeTab(val label: String) {
@@ -40,7 +41,8 @@ enum class ChatHomeTab(val label: String) {
 
 /**
  * "Chats | Groups | Communities | Suggestions" — the home feed's tab row
- * (FeedTabsRow) worn by Messages: four equal columns at 44dp, the label
+ * (FeedTabsRow) worn by Messages: four equal columns at 44dp where the
+ * labels fit them, scrolling sideways where they do not, the label
  * 13sp bold, the active one in white over a 2dp WHITE underline the width
  * of the label, the others muted; a 1dp `borderMedium` rule closes the row.
  * Chats and Groups carry an unread dot beside the label while anything in
@@ -57,7 +59,10 @@ internal fun ChatHomeTabsRow(
     modifier: Modifier = Modifier,
 ) {
     val rule = UsTheme.extended.borderMedium
-    Row(
+    // Equal columns when the four labels fit them, else each tab at its own
+    // width and the row scrolls (2026-10-17): four fixed quarters drew
+    // "Communities" over "Suggestions" on a phone.
+    UsFitOrScrollRow(
         modifier = modifier
             .fillMaxWidth()
             .height(TABS_ROW_HEIGHT)
@@ -79,7 +84,6 @@ internal fun ChatHomeTabsRow(
                 active = tab == selected,
                 unread = tab in unread,
                 onClick = { onSelect(tab) },
-                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -97,6 +101,9 @@ private fun ChatHomeTabItem(
         modifier = modifier
             .fillMaxHeight()
             .selectable(selected = active, role = Role.Tab, onClick = onClick)
+            // Room either side of the label, inside the touch target, so a
+            // tab laid out at its own width never butts against the next.
+            .padding(horizontal = UsTheme.spacing.m)
             .testTag("chat_home_tab:${tab.name.lowercase()}"),
         contentAlignment = Alignment.Center,
     ) {

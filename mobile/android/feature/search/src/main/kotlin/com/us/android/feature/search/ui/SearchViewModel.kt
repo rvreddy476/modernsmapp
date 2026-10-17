@@ -80,6 +80,7 @@ class SearchViewModel @Inject constructor(
         },
         load = { request -> repository.search(request.scope, request.query) },
     )
+        .map { state -> SearchQueries.withoutSelf(state, follows.ownId) }
         .onEach { state -> if (state is SearchResults.Loaded) onLoaded(state.hits) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), SearchResults.Idle)
 
@@ -207,11 +208,16 @@ class SearchViewModel @Inject constructor(
     /** A reel row: leave the id for Reels, then the page asks `:app` for the tab. */
     fun openReel(postId: String) = reelsEntry.open(postId)
 
-    fun follow(userId: String) {
+    fun follow(userId: String) = writeFollow(userId) { follows.follow(userId) }
+
+    /** "Following" tapped (2026-10-17): the same shared graph, the other way. */
+    fun unfollow(userId: String) = writeFollow(userId) { follows.unfollow(userId) }
+
+    private fun writeFollow(userId: String, write: suspend () -> AppResult<Unit>) {
         if (userId in _followBusy.value) return
         _followBusy.update { it + userId }
         viewModelScope.launch {
-            follows.follow(userId)
+            if (write() is AppResult.Failure) _notice.value = "Couldn't update that follow. Try again."
             _followBusy.update { it - userId }
         }
     }

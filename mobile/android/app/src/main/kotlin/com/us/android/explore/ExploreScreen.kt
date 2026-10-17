@@ -65,7 +65,8 @@ fun ExploreScreen(
     tiles: List<LauncherTile>,
     onSearch: (String) -> Unit,
     onOpenApp: (LauncherApp) -> Unit,
-    onBack: () -> Unit,
+    /** Null on the bar's Explore root, which has no back arrow; set when Explore was pushed. */
+    onBack: (() -> Unit)?,
     badge: UnreadBadgeViewModel = hiltViewModel(),
 ) {
     val unread by badge.count.collectAsStateWithLifecycle()

@@ -8,6 +8,8 @@ import com.us.android.core.model.SessionState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
+import com.us.android.core.profile.data.AuthorPostCountsApi
+import com.us.android.core.profile.data.AuthorPostCountsRepository
 import com.us.android.core.profile.data.GraphCountsApi
 import com.us.android.core.profile.data.GraphCountsRepository
 import com.us.android.core.profile.data.ProfileApi
@@ -122,13 +124,30 @@ class ProfileViewModelTest {
         }
     }
 
+    /**
+     * post-service's per-author counts. Fails by default, like the graph's,
+     * so the older tests keep the profile-side post count they were written
+     * against.
+     */
+    private class FakePostCountsApi : AuthorPostCountsApi {
+        var answer: ApiEnvelope<Map<String, Long>> = ApiEnvelope(error = ApiErrorBody(code = "INTERNAL_ERROR"))
+        val calls = mutableListOf<String>()
+
+        override suspend fun counts(authorId: String): ApiEnvelope<Map<String, Long>> {
+            calls += authorId
+            return answer
+        }
+    }
+
     private fun viewModel(
         api: FakeApi,
         userId: String? = "other-user",
         counts: FakeCountsApi = FakeCountsApi(),
+        postCounts: FakePostCountsApi = FakePostCountsApi(),
     ) = ProfileViewModel(
         repository = ProfileRepository(api, ErrorMapper(json)),
         graphCounts = GraphCountsRepository(counts, ErrorMapper(json)),
+        postCounts = AuthorPostCountsRepository(postCounts, ErrorMapper(json)),
         sessionStateProvider = FakeSessionProvider(),
         savedStateHandle = SavedStateHandle(
             if (userId == null) emptyMap() else mapOf("userId" to userId),
@@ -472,6 +491,44 @@ class ProfileViewModelTest {
 
     private fun graph(followers: Long, following: Long, friends: Long = 0) =
         ApiEnvelope(GraphCountsDto(followerCount = followers, followingCount = following, friendCount = friends))
+
+    /** The payload's post_count is never written (always 0); post-service's total replaces it. */
+    @Test
+    fun `post-service's post total replaces the profile-side post count`() = runTest {
+        val api = FakeApi().apply {
+            stats = ApiEnvelope(ProfileStatsDto(followerCount = 9, followingCount = 4, postCount = 0))
+        }
+        val posts = FakePostCountsApi().apply {
+            answer = ApiEnvelope(mapOf("post" to 5L, "long_video" to 2L, "total" to 7L))
+        }
+
+        val content = viewModel(api, postCounts = posts).state.value as ProfileUiState.Content
+
+        assertThat(posts.calls).containsExactly("other-user")
+        assertThat(content.counts.posts).isEqualTo(7)
+        assertThat(content.counts.followers).isEqualTo(9)
+        assertThat(content.counts.following).isEqualTo(4)
+    }
+
+    @Test
+    fun `the owner's post total is read for the id the own profile names`() = runTest {
+        val posts = FakePostCountsApi().apply { answer = ApiEnvelope(mapOf("total" to 3L)) }
+
+        val content = viewModel(FakeApi(), userId = null, postCounts = posts).state.value as ProfileUiState.Content
+
+        assertThat(posts.calls).containsExactly("me")
+        assertThat(content.counts.posts).isEqualTo(3)
+    }
+
+    @Test
+    fun `a post counts failure keeps the profile-side post count`() = runTest {
+        val api = FakeApi().apply { stats = ApiEnvelope(ProfileStatsDto(followerCount = 9, postCount = 6)) }
+
+        val content = viewModel(api).state.value as ProfileUiState.Content
+
+        assertThat(content.postTotal).isNull()
+        assertThat(content.counts.posts).isEqualTo(6)
+    }
 
     /** profile_stats stopped moving when follows moved to the graph; the graph's numbers win. */
     @Test

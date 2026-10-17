@@ -301,7 +301,7 @@ class ChatStore @Inject constructor(
             dao.insertMessages(listOf(message.toEntity()))
             dao.markUnread(
                 conversationId = message.conversationId,
-                preview = message.text.take(PREVIEW_LENGTH),
+                preview = inboxPreview(message).take(PREVIEW_LENGTH),
                 at = message.createdAt,
             )
         }
@@ -578,6 +578,7 @@ class ChatStore @Inject constructor(
         replyToPreview = replyToPreview,
         replyToSenderId = replyToSenderId,
         createdAt = createdAt,
+        postId = postId,
     )
 
     private fun ChatMessageEntity.toDomainMessage() = Message(
@@ -591,6 +592,7 @@ class ChatStore @Inject constructor(
         replyToPreview = replyToPreview,
         replyToSenderId = replyToSenderId,
         createdAt = createdAt,
+        postId = postId,
     )
 
     companion object {
@@ -599,6 +601,17 @@ class ChatStore @Inject constructor(
         private const val PREVIEW_LENGTH = 140
     }
 }
+
+/**
+ * The inbox line for a message that just arrived: its text, or — for a
+ * shared post with no caption, which has none — "Shared a post", so the
+ * row does not go blank.
+ */
+fun inboxPreview(message: Message): String =
+    if (message.postId != null && message.text.isBlank()) SHARED_POST_PREVIEW else message.text
+
+/** What a captionless post card says in the inbox. */
+const val SHARED_POST_PREVIEW = "Shared a post"
 
 @Serializable
 internal data class CachedMember(

@@ -80,11 +80,11 @@ fun PostMoreSheetHost(
      */
     onBlocked: () -> Unit = {},
     /**
-     * Set by the two VIDEO hosts (2026-10-02): opens the Offline page. Its
-     * presence is also what turns the offline rows on: a host that cannot
-     * open the list of copies does not offer to make one.
+     * Set by the two VIDEO hosts (2026-10-02): this host keeps offline
+     * copies, so the sheet offers Save offline / Cancel / Remove. The list
+     * of copies is not a row of this sheet (2026-10-17).
      */
-    onOpenOffline: (() -> Unit)? = null,
+    offlineCopies: Boolean = false,
     /** The video hosts (T-32): a speed was picked from Playback speed; the host applies it to its player. */
     onSelectSpeed: (Float) -> Unit = {},
     /** The video hosts (T-32): a caption track was picked by language, or null for Off. */
@@ -110,7 +110,6 @@ fun PostMoreSheetHost(
         onSelectQuality,
         onUseSound,
         onBlocked,
-        onOpenOffline,
         onSelectSpeed,
         onSelectCaption,
         onToggleAutoScroll,
@@ -134,7 +133,6 @@ fun PostMoreSheetHost(
             onUseSound = { onUseSound(item) },
             onSaveOffline = { viewModel.saveOffline(item) },
             onRemoveOffline = { viewModel.removeOffline(item) },
-            onOpenOffline = { onOpenOffline?.invoke() },
             onSelectSpeed = onSelectSpeed,
             onSelectCaption = onSelectCaption,
             onToggleAutoScroll = onToggleAutoScroll,
@@ -151,8 +149,8 @@ fun PostMoreSheetHost(
             dontRecommend = dontRecommend,
             suggested = suggested,
             longVideo = longVideo,
-            // A video, on a host that can open the Offline page: the offline rows.
-            offline = if (reel != null && onOpenOffline != null) {
+            // A video, on a host that keeps offline copies: the offline row.
+            offline = if (reel != null && offlineCopies) {
                 offlineMoreState(
                     item = item,
                     isOwn = ownUserId.isNotBlank() && item.author.id == ownUserId,

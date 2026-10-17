@@ -147,6 +147,24 @@ class UsCommentActionsTest {
         assertThat(recorder.events).contains("delete:c1")
     }
 
+    /** The walk (2026-10-17) found the menu still up under the confirmation; it goes first now. */
+    @Test
+    fun `delete takes the menu away before it asks, and cancel closes both`() {
+        val recorder = render(CommentsUiState(rows = listOf(comment("c1", author = "me")), viewer = viewer))
+
+        composeRule.onNodeWithContentDescription("Comment options").performClick()
+        composeRule.onNodeWithTag("comment_menu_row:delete").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("comment_delete_dialog").assertIsDisplayed()
+        composeRule.onNodeWithTag("comment_menu_sheet:c1").assertDoesNotExist()
+        composeRule.onNodeWithText("Cancel").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("comment_delete_dialog").assertDoesNotExist()
+        assertThat(recorder.events).doesNotContain("delete:c1")
+    }
+
     @Test
     fun `the creator's menu offers Heart and Pin on another person's comment`() {
         val recorder = render(

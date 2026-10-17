@@ -14,6 +14,7 @@ import com.us.android.core.model.ProfileRelationship
 import com.us.android.core.model.ProfileStats
 import com.us.android.core.model.SessionState
 import com.us.android.core.network.Paged
+import com.us.android.core.profile.data.AuthorPostCountsRepository
 import com.us.android.core.profile.data.GraphCountsRepository
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,6 +32,8 @@ class ProfileViewModel @Inject constructor(
     private val repository: ProfileRepository,
     /** The live follow counts (graph-service, T-20); see [refreshCounts]. */
     private val graphCounts: GraphCountsRepository,
+    /** The live post total (post-service, 2026-10-17): the profile payload's is never written. */
+    private val postCounts: AuthorPostCountsRepository,
     sessionStateProvider: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -68,7 +71,7 @@ class ProfileViewModel @Inject constructor(
     }
 
     /**
-     * All four first requests, out together. Serialising them would put
+     * All five first requests, out together. Serialising them would put
      * extra round trips in front of first paint for data the header can
      * already render from the profile payload.
      */
@@ -87,7 +90,9 @@ class ProfileViewModel @Inject constructor(
         // The graph's live follow counts (T-20). Like stats, the owner's are
         // read once the profile names the id.
         val counts = async { userId?.let { graphCounts.counts(it) } }
-        LoadBatch(profile.await(), stats.await(), requests.await(), counts.await())
+        // post-service's post total, read the same way.
+        val posts = async { userId?.let { postCounts.total(it) } }
+        LoadBatch(profile.await(), stats.await(), requests.await(), counts.await(), posts.await())
     }
 
     private suspend fun contentFor(profile: Profile, batch: LoadBatch): ProfileUiState.Content {
@@ -98,6 +103,8 @@ class ProfileViewModel @Inject constructor(
         // Best-effort, like stats: a failed read leaves the profile-side
         // follow counts on the header.
         val liveCounts = (batch.counts ?: graphCounts.counts(profile.userId)).getOrNull()
+        // The same for the post total: a failed read keeps the profile side's number.
+        val postTotal = (batch.posts ?: postCounts.total(profile.userId)).getOrNull()
         // The REAL relationship, not a guess. This used to be hardcoded
         // empty, so Follow reset to "Follow" on every visit no matter what
         // the server knew. Best-effort: a graph blip degrades to what the
@@ -116,6 +123,7 @@ class ProfileViewModel @Inject constructor(
             // pill absent rather than claiming zero.
             incomingFollowRequestCount = batch.requests?.getOrNull()?.items?.size,
             graphCounts = liveCounts,
+            postTotal = postTotal,
         )
     }
 
@@ -352,4 +360,5 @@ private data class LoadBatch(
     val stats: AppResult<ProfileStats>?,
     val requests: AppResult<Paged<FollowRequest>>?,
     val counts: AppResult<FollowCounts>?,
+    val posts: AppResult<Int>?,
 )

@@ -379,3 +379,30 @@ more", "status": "draft",
         assertThat(normalizeInboxRow(json("\"c1\""))).isNull()
     }
 }
+
+/**
+ * A library row's still (2026-10-17): the web's `normalizeLibraryRow` rule —
+ * `video_metadata.thumbnail_url`, else the chosen cover's serve route.
+ */
+class LibraryThumbnailTest {
+
+    private fun row(text: String) = normalizeLibraryRow(Json.parseToJsonElement(text))
+
+    @Test
+    fun `the metadata thumbnail wins over the cover`() {
+        val r = row("""{"id":"v1","cover_media_id":"m1","video_metadata":{"thumbnail_url":"https://cdn.test/t.jpg"}}""")
+
+        assertThat(r?.thumbnailPath).isEqualTo("https://cdn.test/t.jpg")
+    }
+
+    @Test
+    fun `without one the chosen cover is served by id`() {
+        assertThat(row("""{"id":"v1","cover_media_id":"m1","video_metadata":{"thumbnail_url":""}}""")?.thumbnailPath)
+            .isEqualTo("/v1/media/m1/serve")
+    }
+
+    @Test
+    fun `a row with neither has no still`() {
+        assertThat(row("""{"id":"v1"}""")?.thumbnailPath).isNull()
+    }
+}

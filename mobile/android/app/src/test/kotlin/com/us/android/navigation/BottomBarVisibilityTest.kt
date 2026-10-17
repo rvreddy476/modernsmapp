@@ -62,4 +62,20 @@ class BottomBarVisibilityTest {
         assertThat(TopLevelDestination.entries.filter { it.drawsUnderStatusBar })
             .containsExactly(TopLevelDestination.REELS)
     }
+
+    /** Explore in the bar is a root: no back arrow. Out of the bar it was opened from a header and keeps one. */
+    @Test
+    fun `explore shows back only when it is not a bar root`() {
+        assertThat(exploreShowsBack(tabs)).isFalse()
+        assertThat(exploreShowsBack(tabs - TopLevelDestination.EXPLORE)).isTrue()
+    }
+
+    /** LIVE (2026-10-17): the dark stage gets the status bar to itself; Reels gets no inset; the rest get both. */
+    @Test
+    fun `the shell's insets follow the screen`() {
+        assertThat(shellInsetsFor(TopLevelDestination.REELS, darkStage = false)).isEqualTo(ShellInsets.NONE)
+        assertThat(shellInsetsFor(null, darkStage = true)).isEqualTo(ShellInsets.NO_TOP)
+        assertThat(shellInsetsFor(null, darkStage = false)).isEqualTo(ShellInsets.ALL)
+        assertThat(shellInsetsFor(TopLevelDestination.HOME, darkStage = false)).isEqualTo(ShellInsets.ALL)
+    }
 }

@@ -155,6 +155,39 @@ class VideoFeedRepository @Inject constructor(
     }
 
     /**
+     * The reels the viewer liked, newest like first (2026-10-17) — the
+     * owner's Liked tab on the profile grid. `GET /v1/reels/liked` answers
+     * ids; each page is turned into posts by one `POST /v1/posts/batch` and
+     * hydrated like the other tabs.
+     *
+     * The server drops rows the viewer may no longer open, so a page can be
+     * short or empty and still carry a cursor; an empty page is walked past
+     * (up to [MAX_PAGE_HOPS] in one load) rather than ending the list there.
+     */
+    fun likedReels(): Flow<PagingData<FeedItem>> = feedPager(errorMapper) { request -> likedReelsPage(request) }
+
+    private suspend fun likedReelsPage(request: FeedPageRequest): FeedPage {
+        var cursor = request.cursor
+        repeat(MAX_PAGE_HOPS) {
+            val envelope = api.likedReels(request.limit.coerceAtMost(LIKED_MAX_LIMIT), cursor)
+            envelope.error?.let { return FeedPage(items = emptyList(), nextCursor = null, errorCode = it.code) }
+            val ids = envelope.data.orEmpty().filter { it.isNotBlank() }.distinct()
+            val next = envelope.meta?.nextCursor?.takeIf { it.isNotBlank() }
+            val items = if (ids.isEmpty()) emptyList() else likedPosts(ids)
+            if (items.isNotEmpty() || next == null) return FeedPage(items = items, nextCursor = next)
+            cursor = next
+        }
+        // Hops exhausted on empty pages: hand Paging the cursor to keep going from.
+        return FeedPage(items = emptyList(), nextCursor = cursor)
+    }
+
+    /** One batch read for a page of liked ids, in liked order, short-form only, hydrated. */
+    private suspend fun likedPosts(ids: List<String>): List<FeedItem> {
+        val rows = api.batchPosts(BatchPostsRequest(ids)).data.orEmpty()
+        return hydrator.hydrate(likedInOrder(ids, rows))
+    }
+
+    /**
      * One author's posts of one kind in one [sort] — bare post-service rows,
      * hydrated per page. The profile grid's three tabs (posts, reels, videos)
      * are three of these; [ownVideos] is the long-video one with the extra
@@ -305,8 +338,22 @@ class VideoFeedRepository @Inject constructor(
 
         /** Pages of non-video bookmarks skipped in one load before giving Paging the cursor back. */
         private const val MAX_PAGE_HOPS = 4
+
+        /** `GET /v1/reels/liked` caps `limit` at 100; `POST /v1/posts/batch` takes at most 100 ids. */
+        private const val LIKED_MAX_LIMIT = 100
     }
 }
+
+/**
+ * A liked page's posts: the batch's rows (keyed by id) put back in the
+ * liked order, each id once, with anything the batch did not return, any
+ * deleted row and anything that is not a reel left out — the web's
+ * `likedReelsToItems`. Pure, so the ordering is a table test.
+ */
+internal fun likedInOrder(ids: List<String>, rows: Map<String, FeedItemDto?>): List<FeedItem> =
+    ids.distinct().mapNotNull { id ->
+        rows[id]?.takeIf { it.deletedAt.isBlank() }?.toDomain()?.takeIf { savedKind(it.feedContentType) == SavedKind.REEL }
+    }
 
 /** What a saved post is to the Saved page: a long video (the watch screen plays it) or a reel (the Reels tab does). */
 enum class SavedKind { VIDEO, REEL }

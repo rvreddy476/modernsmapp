@@ -58,8 +58,6 @@ class UsPostMoreCallbacks(
     val onSaveOffline: () -> Unit = {},
     /** Videos: "Cancel offline save" and "Remove offline copy": the copy, whole or partial, leaves the device. */
     val onRemoveOffline: () -> Unit = {},
-    /** Videos: "Offline". The sheet has already left when this fires; the host opens the list. */
-    val onOpenOffline: () -> Unit = {},
     /** Videos (T-32): a speed was picked; the host applies it to its player and keeps it. The sheet stays. */
     val onSelectSpeed: (Float) -> Unit = {},
     /** Videos with caption tracks (T-32): a track was picked by language, or null for Off. The sheet stays. */

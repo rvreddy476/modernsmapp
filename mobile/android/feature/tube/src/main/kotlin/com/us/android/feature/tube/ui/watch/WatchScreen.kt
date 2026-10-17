@@ -44,6 +44,8 @@ import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
+import com.us.android.core.feed.ui.share.PostShareSheetHost
+import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.ui.CaptionsOverlay
 import com.us.android.core.model.ChannelSubscription
@@ -83,10 +85,10 @@ import com.us.android.feature.tube.ui.collections.CollectionPickerSheet
 fun WatchScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
-    /** The More sheet's "Offline": the list of what this device keeps. */
-    onOpenOffline: () -> Unit,
     viewModel: WatchViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
+    // The Share sheet's (2026-10-17): the screen's, so "Sent" is read here after the sheet has gone.
+    sharing: PostShareViewModel = hiltViewModel(),
 ) {
     val content by viewModel.content.collectAsStateWithLifecycle()
     val upNext by viewModel.upNext.collectAsStateWithLifecycle()
@@ -105,8 +107,12 @@ fun WatchScreen(
     val sheets = remember { WatchSheets() }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val playhead = rememberPlayhead(viewModel.player, polling = true)
+    val shareMessage by sharing.message.collectAsStateWithLifecycle()
     val share = rememberPostSharer()
-    val onShare: (FeedItem) -> Unit = { item ->
+    // The More sheet's Share opens Momentum's Share sheet (2026-10-17), as
+    // Reels' does; its "More…" is the system chooser, counted once launched.
+    val onShare: (FeedItem) -> Unit = { item -> sheets.shareFor = item }
+    val onSystemShare: (FeedItem) -> Unit = { item ->
         share(item.id, item.title.ifBlank { item.text }, item.author.nameForDisplay)
         viewModel.onExternalShared(item.id)
     }
@@ -167,12 +173,13 @@ fun WatchScreen(
             viewModel = viewModel,
             actions = actions,
         )
-        // A refused Like, Dislike, Watch later or Save first; else what the More sheet left behind.
+        // A refused Like, Dislike, Watch later or Save first; else what the More or Share sheet left behind.
         UsMessageHost(
-            message = actionMessage ?: moreMessage,
+            message = actionMessage ?: moreMessage ?: shareMessage,
             onDismiss = {
                 viewModel.dismissActionMessage()
                 more.dismissMessage()
+                sharing.dismissMessage()
             },
         )
     }
@@ -185,9 +192,16 @@ fun WatchScreen(
         overlays = overlays,
         followEdges = followEdges,
         onShare = onShare,
-        onOpenOffline = onOpenOffline,
         onBack = onBack,
     )
+    sheets.shareFor?.let { item ->
+        PostShareSheetHost(
+            item = item,
+            viewModel = sharing,
+            onMore = onSystemShare,
+            onDismiss = { sheets.shareFor = null },
+        )
+    }
 }
 
 /**
@@ -205,6 +219,9 @@ private class WatchSheets {
 
     /** The post the "Add to collection" sheet is open for. */
     var collectionFor by mutableStateOf<String?>(null)
+
+    /** The post the Share sheet is open for. */
+    var shareFor by mutableStateOf<FeedItem?>(null)
 }
 
 /** The four sheets, mounted over the screen when asked for. */
@@ -218,7 +235,6 @@ private fun WatchSheetsHost(
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
     onShare: (FeedItem) -> Unit,
-    onOpenOffline: () -> Unit,
     onBack: () -> Unit,
 ) {
     val quality by viewModel.quality.collectAsStateWithLifecycle()
@@ -294,7 +310,7 @@ private fun WatchSheetsHost(
             ),
             // A blocked channel's video is left, as the web leaves it.
             onBlocked = onBack,
-            onOpenOffline = onOpenOffline,
+            offlineCopies = true,
         )
     }
     sheets.collectionFor?.let { postId ->

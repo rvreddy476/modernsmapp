@@ -11,6 +11,17 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * What a post's share sheet needs from chat (2026-10-17): the inbox to pick
+ * a conversation from, and a post card to send into it. An interface so the
+ * sheet's ViewModel is tested against a fake rather than the whole route
+ * surface.
+ */
+interface PostShareChats {
+    suspend fun conversations(): AppResult<List<Conversation>>
+    suspend fun sendPost(conversationId: String, postId: String, idempotencyKey: String): AppResult<Message>
+}
+
+/**
  * Chat reads and writes, wrapped in [AppResult].
  *
  * Thin on purpose: ordering, retry and draft handling belong to the
@@ -22,14 +33,14 @@ import javax.inject.Singleton
 class ChatRepository @Inject constructor(
     private val api: ChatApi,
     private val errorMapper: ErrorMapper,
-) {
+) : PostShareChats {
 
     /**
      * The FULL inbox, paged to the server cap and followed to exhaustion
      * (bounded). The previous single unparameterised call silently truncated
      * the inbox to the server's default page of 20.
      */
-    suspend fun conversations(): AppResult<List<Conversation>> {
+    override suspend fun conversations(): AppResult<List<Conversation>> {
         val all = mutableListOf<Conversation>()
         var cursor: String? = null
         repeat(MAX_CONVERSATION_PAGES) {
@@ -152,6 +163,25 @@ class ChatRepository @Inject constructor(
                     replyToPreview = replyTo?.preview,
                     replyToSenderId = replyTo?.senderId,
                 ),
+            )
+        }.mapValue { it.toDomain() }
+
+    /**
+     * Shares a post into a conversation as a card (2026-10-17):
+     * `{"type":"post","text":"","post_id":"<id>"}`. The server refuses one as
+     * the first message of a message request and checks the viewer may see
+     * the post; both come back as a failure the share sheet words.
+     */
+    override suspend fun sendPost(
+        conversationId: String,
+        postId: String,
+        idempotencyKey: String,
+    ): AppResult<Message> =
+        apiCall(errorMapper) {
+            api.send(
+                conversationId,
+                idempotencyKey,
+                SendMessageRequest(type = POST_MESSAGE, text = "", postId = postId),
             )
         }.mapValue { it.toDomain() }
 
@@ -286,6 +316,9 @@ private inline fun <T, R> AppResult<T>.mapValue(block: (T) -> R): AppResult<R> =
 private inline fun <T, R> AppResult<List<T>>.mapList(block: (T) -> R): AppResult<List<R>> =
     mapValue { list -> list.map(block) }
 
+/** A conversation's name when neither a title nor any member's name is known. */
+const val UNNAMED_CONVERSATION = "Conversation"
+
 /** How the server handled one group add. */
 data class AddOutcome(val userId: String, val outcome: String, val reason: String)
 
@@ -324,14 +357,22 @@ data class Conversation(
     /**
      * What to show as the thread's name.
      *
-     * A direct conversation has no title, so it is named after the OTHER
-     * participant. Falls back to a generic label rather than showing a raw id,
-     * which is never a name a person recognises.
+     * The title when there is one. Otherwise — a direct chat, or a group
+     * nobody named — the OTHER members' names, "Ana, Ben", as many as the
+     * server named (2026-10-17: it used to take only the first other member,
+     * so a group whose first member had no display name read "Conversation"
+     * even when the rest were named). "Conversation" only when no name is
+     * known at all, rather than a raw id, which is never a name a person
+     * recognises.
      */
     fun displayTitle(viewerId: String): String {
         title?.takeIf { it.isNotBlank() }?.let { return it }
-        val other = members.firstOrNull { it.userId != viewerId }
-        return other?.displayName?.takeIf { it.isNotBlank() } ?: "Conversation"
+        val names = members
+            .filter { it.userId != viewerId }
+            .map { it.displayName.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        return if (names.isEmpty()) UNNAMED_CONVERSATION else names.joinToString(", ")
     }
 }
 
@@ -369,6 +410,8 @@ data class Message(
     val replyToId: String? = null,
     val replyToPreview: String? = null,
     val replyToSenderId: String? = null,
+    /** Set on a shared post's card: the post it opens. The thread draws it from the post itself. */
+    val postId: String? = null,
     /** True while the message is shown optimistically, before the server ack. */
     val pending: Boolean = false,
     /** Set when the send failed and the row is offered for retry. */
@@ -406,6 +449,7 @@ private fun MessageDto.toDomain() = Message(
     replyToId = replyToId,
     replyToPreview = replyToPreview,
     replyToSenderId = replyToSenderId,
+    postId = postId?.takeIf { it.isNotBlank() },
     createdAt = createdAt.ifBlank { ts },
     bucket = bucket,
     ts = ts,

@@ -35,6 +35,9 @@ dependencies {
     // Offline copies (2026-10-02): the Wi-Fi-only switch and this install's
     // device id.
     implementation(projects.core.datastore)
+    // The post share sheet's "Send in Messages" (2026-10-17): the inbox to
+    // pick from and the post card to send. A core module, no feature edge.
+    implementation(projects.core.chat)
 
     // Offline copies: the background check of which copies may still be
     // kept. The same three lines :core:analytics has for its upload worker.

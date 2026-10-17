@@ -137,10 +137,7 @@ data class TubeDestinations(
      * [TubeCollectionRoute].
      */
     val onOpenCollection: (collectionId: String) -> Unit,
-    /**
-     * The More sheet's "Offline", and the same row on a video's More sheet:
-     * `:app` pushes [TubeOfflineRoute].
-     */
+    /** The More sheet's "Offline": `:app` pushes [TubeOfflineRoute]. */
     val onOpenOffline: () -> Unit,
     /** The More sheet's "Creator Hub" (T-31): `:app` pushes [TubeCreatorHubRoute]. */
     val onOpenCreatorHub: () -> Unit,
@@ -181,7 +178,6 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
         WatchScreen(
             onBack = destinations.onBack,
             onOpenAuthor = destinations.onOpenAuthor,
-            onOpenOffline = destinations.onOpenOffline,
         )
     }
 }

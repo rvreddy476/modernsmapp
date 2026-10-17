@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -110,7 +111,9 @@ fun LiveHubScreen(
                 IconButton(onClick = onCreatorCentre, modifier = Modifier.testTag("live-creator-centre")) {
                     Icon(UsIcons.Radio, contentDescription = "Your live streams", tint = UsTheme.extended.onMedia)
                 }
-                UsButton(
+                // A pill, sized to its label: the full-width primary button
+                // stretched across most of the bar (2026-10-17).
+                UsPillButton(
                     text = "Go live",
                     onClick = onGoLive,
                     modifier = Modifier.testTag("live-go-live"),
@@ -369,6 +372,9 @@ private fun LiveTopBar(
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         modifier = Modifier
             .fillMaxWidth()
+            // The shell leaves the status bar to the LIVE screens (2026-10-17)
+            // so their dark ground runs under it; the bar's row sits below it.
+            .statusBarsPadding()
             .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s),
     ) {
         IconButton(onClick = onClose, modifier = Modifier.testTag("live-close")) {

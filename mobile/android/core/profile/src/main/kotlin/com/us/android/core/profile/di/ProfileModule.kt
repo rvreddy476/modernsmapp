@@ -1,6 +1,7 @@
 package com.us.android.core.profile.di
 
 import com.us.android.core.profile.data.AccountSecurityApi
+import com.us.android.core.profile.data.AuthorPostCountsApi
 import com.us.android.core.profile.data.DataStoreKeywordFiltersCache
 import com.us.android.core.profile.data.DataStoreModulePreferencesCache
 import com.us.android.core.profile.data.DataStoreWellbeingGuardCache
@@ -118,4 +119,19 @@ object LaunchSafetySettingsModule {
     @Provides
     @Singleton
     fun provideWellbeingGuardCache(cache: DataStoreWellbeingGuardCache): WellbeingGuardCache = cache
+}
+
+/**
+ * post-service's per-author post counts (2026-10-17), the profile header's
+ * post number. Its own module for the reason [LaunchSafetySettingsModule]
+ * is one: detekt's per-object function ceiling.
+ */
+@Module
+@InstallIn(SingletonComponent::class)
+object ProfileCountsModule {
+
+    @Provides
+    @Singleton
+    fun provideAuthorPostCountsApi(retrofit: Retrofit): AuthorPostCountsApi =
+        retrofit.create(AuthorPostCountsApi::class.java)
 }

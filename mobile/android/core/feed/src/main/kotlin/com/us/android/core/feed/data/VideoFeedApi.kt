@@ -7,6 +7,7 @@ import kotlinx.serialization.Serializable
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.PATCH
+import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -79,6 +80,28 @@ interface VideoFeedApi {
         @Query("cursor") cursor: String? = null,
     ): ApiEnvelope<List<FeedItemDto>>
 
+    /**
+     * The viewer's liked reels — post-service `GetUserReelLikes`
+     * (2026-10-15): `{"data":["<post id>",…],"meta":{"next_cursor"}}`, ids
+     * only, newest like first, already narrowed to short-form posts the
+     * viewer may open. A page can be short — even empty — and still carry a
+     * cursor; `meta` is absent on the last page. [limit] is capped at 100.
+     */
+    @GET("v1/reels/liked")
+    suspend fun likedReels(
+        @Query("limit") limit: Int,
+        @Query("cursor") cursor: String? = null,
+    ): ApiEnvelope<List<String>>
+
+    /**
+     * Posts by id — post-service `BatchGetPosts`: `{"ids":[…]}` (at most
+     * 100) in, `{"data":{"<id>":<PostDetail>,…}}` out, keyed by id, with
+     * anything the viewer may not see left out. Bare rows, hydrated like any
+     * other post-service row.
+     */
+    @POST("v1/posts/batch")
+    suspend fun batchPosts(@Body body: BatchPostsRequest): ApiEnvelope<Map<String, FeedItemDto?>>
+
     /** The category taxonomy — `{"data":[{"id":"comedy","label":"Comedy"},…]}`. */
     @GET("v1/posts/categories")
     suspend fun categories(): ApiEnvelope<List<FeedCategoryDto>>
@@ -109,6 +132,10 @@ interface VideoFeedApi {
         @Body body: ScheduleRequest,
     ): ApiEnvelope<FeedItemDto>
 }
+
+/** `POST /v1/posts/batch`'s body. */
+@Serializable
+data class BatchPostsRequest(val ids: List<String>)
 
 /** The PATCH body: the new RFC 3339 instant, or nothing at all for "publish now". */
 @Serializable

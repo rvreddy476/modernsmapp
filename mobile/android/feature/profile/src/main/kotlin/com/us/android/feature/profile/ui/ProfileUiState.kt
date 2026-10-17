@@ -7,6 +7,7 @@ import com.us.android.core.model.ProfileCounts
 import com.us.android.core.model.ProfileRelationship
 import com.us.android.core.model.ProfileStats
 import com.us.android.core.model.withGraph
+import com.us.android.core.model.withPostCount
 
 /**
  * Everything the profile screen renders, as one immutable value.
@@ -79,16 +80,22 @@ sealed interface ProfileUiState {
          * the header moves with the action.
          */
         val graphCounts: FollowCounts? = null,
+        /**
+         * post-service's live post total (`GET /v1/posts/by-author/:id/counts`,
+         * 2026-10-17). Null until it arrives or when the read failed.
+         */
+        val postTotal: Int? = null,
     ) : ProfileUiState {
 
         /**
          * Stats when available, profile counts otherwise — never both — with
-         * the graph's follow counts laid over them when those arrived. The
-         * profile-side follow counts read `profile_stats`, which stopped
-         * moving when follows moved to the graph (audit R-1), so they are
-         * only the fallback; the post count still comes from that side.
+         * the graph's follow counts and post-service's post total laid over
+         * them when those arrived. The profile side's counts are only the
+         * fallback: its follow counts stopped moving when follows moved to the
+         * graph (audit R-1), and its post count is never written at all.
          */
-        val counts: ProfileCounts get() = (stats?.counts ?: profile.counts).withGraph(graphCounts)
+        val counts: ProfileCounts
+            get() = (stats?.counts ?: profile.counts).withGraph(graphCounts).withPostCount(postTotal)
 
         /**
          * This profile blocked the viewer: the screen draws a neutral

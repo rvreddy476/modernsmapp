@@ -117,6 +117,25 @@ class ChatSocketTest {
         assertThat(message.text).isEmpty()
     }
 
+    /** A shared post (2026-10-17) arrives as its card: `post_id` rides the frame and is kept. */
+    @Test
+    fun `a post frame carries its post_id`() {
+        val frame = """
+        {"type":"message","payload":{
+          "conversation_id":"c1","message_id":"m1","sender_id":"u2",
+          "type":"post","text":"","media_id":null,
+          "post_id":"7d1f0b6c-2b1e-4c55-9b3e-0f2a6c1d9e88",
+          "created_at":"2026-10-17T09:09:19.084Z"}}
+        """
+
+        val message = (parseChatFrame(json, frame) as ChatSocketEvent.MessageReceived).message
+
+        assertThat(message.postId).isEqualTo("7d1f0b6c-2b1e-4c55-9b3e-0f2a6c1d9e88")
+        assertThat(message.mediaId).isNull()
+        assertThat(parseChatFrame(json, MEDIA_MESSAGE_FRAME).let { (it as ChatSocketEvent.MessageReceived).message.postId })
+            .isNull()
+    }
+
     /** Blank is not an attachment: it normalises to null, same as absent. */
     @Test
     fun `a blank media_id decodes as no attachment`() {

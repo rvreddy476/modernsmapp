@@ -1,6 +1,7 @@
 package com.us.android.feature.search.ui
 
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.model.FollowStatus
 import com.us.android.feature.search.data.RecentSearch
 import com.us.android.feature.search.data.SearchHit
 import com.us.android.feature.search.data.SearchRepository
@@ -19,6 +20,9 @@ import kotlinx.coroutines.flow.transformLatest
  * that failed is never swallowed as a duplicate of itself.
  */
 data class SearchRequest(val query: String, val scope: SearchScope, val attempt: Int = 0)
+
+/** The control at the end of a people row. */
+enum class UserFollowButton { HIDDEN, FOLLOW, FOLLOWING, REQUESTED }
 
 /** What the results area shows. */
 sealed interface SearchResults {
@@ -53,6 +57,33 @@ enum class SearchBody {
 object SearchQueries {
     const val MIN_SUGGEST_CHARS = 2
     const val SUGGEST_DEBOUNCE_MILLIS = 300L
+
+    /**
+     * [results] without the signed-in viewer's own account (2026-10-17):
+     * search-service returns everyone matching the words, the viewer
+     * included, and a row offering to follow yourself is noise.
+     */
+    fun withoutSelf(results: SearchResults, ownUserId: String): SearchResults =
+        if (results !is SearchResults.Loaded || ownUserId.isBlank()) {
+            results
+        } else {
+            results.copy(hits = results.hits.filterNot { it is SearchHit.User && it.id == ownUserId })
+        }
+
+    /**
+     * The control at the end of a people row (2026-10-17): Follow, or
+     * Following / Requested once the viewer has, so the row says what is
+     * true rather than dropping the button. Nothing on the viewer's own row.
+     * A person whose edge is not known yet shows Follow: tapping it on
+     * someone already followed lands on Following, and the button never
+     * vanishes from under a reader the way a hidden-until-known one did.
+     */
+    fun followButton(ownUserId: String, userId: String, edge: FollowStatus?): UserFollowButton = when {
+        userId.isBlank() || userId == ownUserId -> UserFollowButton.HIDDEN
+        edge == FollowStatus.FOLLOWING -> UserFollowButton.FOLLOWING
+        edge == FollowStatus.REQUESTED -> UserFollowButton.REQUESTED
+        else -> UserFollowButton.FOLLOW
+    }
 
     /** The body for what is [typed] in the box, given the words last [submitted]. */
     fun body(typed: String, submitted: String): SearchBody = when {

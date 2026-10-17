@@ -192,8 +192,22 @@ val MIGRATION_6_7 = object : Migration(SCHEMA_V6, SCHEMA_V7) {
     }
 }
 
+private const val SCHEMA_V8 = 8
+
+/**
+ * 7 → 8: a shared post's card in the cached thread (2026-10-17). One
+ * nullable column on `chat_message`, so a card read before going offline
+ * still draws as a card. Purely additive; the outbox does not carry posts
+ * (a share is sent at once from the share sheet, never queued).
+ */
+val MIGRATION_7_8 = object : Migration(SCHEMA_V7, SCHEMA_V8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `chat_message` ADD COLUMN `postId` TEXT")
+    }
+}
+
 val UsDatabaseMigrations: List<Migration> =
-    listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+    listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
 
 /**
  * Callbacks the production database builder installs.

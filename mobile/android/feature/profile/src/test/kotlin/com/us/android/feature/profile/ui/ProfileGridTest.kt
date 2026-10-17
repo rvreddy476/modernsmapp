@@ -72,33 +72,49 @@ class ProfileGridTest {
     // ── Owner / visitor tab sets (T-21) ──────────────────────────────────
 
     @Test
-    fun `a visitor gets the three author tabs and never Saved`() {
+    fun `a visitor gets the three author tabs and never Saved or Liked`() {
         assertThat(gridTabsFor(isOwn = false))
             .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS)
             .inOrder()
     }
 
+    /** Liked (2026-10-17): `GET /v1/reels/liked` is written and backfilled now, and it is the viewer's own. */
     @Test
-    fun `the owner gets Saved after the author tabs`() {
+    fun `the owner gets Saved and then Liked after the author tabs`() {
         assertThat(gridTabsFor(isOwn = true))
-            .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS, ProfileGridTab.SAVED)
+            .containsExactly(
+                ProfileGridTab.POSTS,
+                ProfileGridTab.REELS,
+                ProfileGridTab.VIDEOS,
+                ProfileGridTab.SAVED,
+                ProfileGridTab.LIKED,
+            )
             .inOrder()
     }
 
-    /** No Liked tab: `GET /v1/reels/liked` reads a table nothing writes. */
     @Test
-    fun `there is no Liked tab for anyone`() {
-        assertThat((gridTabsFor(isOwn = true) + gridTabsFor(isOwn = false)).map { it.label })
-            .doesNotContain("Liked")
-    }
-
-    @Test
-    fun `only the author tabs sort, and Saved claims no content type`() {
+    fun `only the author tabs sort, and Saved and Liked claim no content type`() {
         assertThat(ProfileGridTab.entries.filter { it.sortable })
             .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS)
+        assertThat(ProfileGridTab.LIKED.authored).isFalse()
         assertThat(scheduledTabFor("")).isNull()
         assertThat(emptyTitle(ProfileGridTab.SAVED)).isEqualTo("Nothing saved yet")
         assertThat(emptyTitle(ProfileGridTab.REELS)).isEqualTo("No reels yet")
+    }
+
+    @Test
+    fun `an empty Liked tab says so in its own words, and its tiles are reel-shaped`() {
+        assertThat(emptyTitle(ProfileGridTab.LIKED)).isEqualTo("No liked reels yet")
+        assertThat(tabNoun(ProfileGridTab.LIKED)).isEqualTo("liked reels")
+        assertThat(tileAspect(ProfileGridTab.LIKED)).isEqualTo(tileAspect(ProfileGridTab.REELS))
+    }
+
+    /** Nothing is published into Liked, so no pending or scheduled tile can land there. */
+    @Test
+    fun `no publish or schedule lands on the Liked tab`() {
+        assertThat(PublishKind.entries.map { pendingTabFor(it) }).doesNotContain(ProfileGridTab.LIKED)
+        assertThat(listOf("post", "flick", "long_video", "").map { scheduledTabFor(it) })
+            .doesNotContain(ProfileGridTab.LIKED)
     }
 
     // ── Sort (T-21) ──────────────────────────────────────────────────────

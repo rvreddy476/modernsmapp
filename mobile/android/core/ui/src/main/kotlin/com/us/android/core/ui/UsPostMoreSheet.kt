@@ -301,7 +301,6 @@ private class MorePresentation {
             UsPostMoreRow.SAVE_OFFLINE,
             UsPostMoreRow.CANCEL_OFFLINE,
             UsPostMoreRow.REMOVE_OFFLINE,
-            UsPostMoreRow.OFFLINE_PAGE,
             -> onReelRow(row, callbacks, leaveThen)
             UsPostMoreRow.SAVE, UsPostMoreRow.UNSAVE -> callbacks.onToggleSave()
             UsPostMoreRow.COPY_LINK -> {
@@ -328,7 +327,7 @@ private class MorePresentation {
      *
      * And a video's offline rows (2026-10-02): Save offline, Cancel and
      * Remove STAY on the sheet, where the row turns into the save's progress
-     * or a refusal is read; Offline leaves and then opens the list.
+     * or a refusal is read.
      *
      * And the player's rows (T-32, 2026-10-15): Playback speed and Captions
      * unfold their pickers in place, like Quality; Auto scroll flips where it
@@ -345,7 +344,6 @@ private class MorePresentation {
             UsPostMoreRow.USE_SOUND -> leaveThen(callbacks.onUseSound)
             UsPostMoreRow.SAVE_OFFLINE -> callbacks.onSaveOffline()
             UsPostMoreRow.CANCEL_OFFLINE, UsPostMoreRow.REMOVE_OFFLINE -> callbacks.onRemoveOffline()
-            UsPostMoreRow.OFFLINE_PAGE -> leaveThen(callbacks.onOpenOffline)
             else -> error("not a reel row: $row")
         }
     }
@@ -704,7 +702,6 @@ private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.SAVE_OFFLINE -> UsIcons.Download
     UsPostMoreRow.CANCEL_OFFLINE -> UsIcons.Close
     UsPostMoreRow.REMOVE_OFFLINE -> UsIcons.Trash
-    UsPostMoreRow.OFFLINE_PAGE -> UsIcons.ArrowDownToLine
     else -> null
 }
 
@@ -730,7 +727,6 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.SAVE_OFFLINE,
     UsPostMoreRow.CANCEL_OFFLINE,
     UsPostMoreRow.REMOVE_OFFLINE,
-    UsPostMoreRow.OFFLINE_PAGE,
     -> error("a reel row: $this")
     UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK ->
         error("a row about the author: $this")

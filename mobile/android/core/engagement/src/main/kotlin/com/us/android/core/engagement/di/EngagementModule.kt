@@ -7,6 +7,9 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
 import com.us.android.core.engagement.data.PostLifecycleApi
 import com.us.android.core.engagement.data.ReportApi
+import com.us.android.core.engagement.data.RepostReads
+import com.us.android.core.engagement.data.RepostStateApi
+import com.us.android.core.engagement.data.RepostStateRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -57,4 +60,12 @@ object EngagementModule {
     @Provides
     @Singleton
     fun provideEngagementWrites(repository: EngagementRepository): EngagementWrites = repository
+
+    /** The viewer's repost of one post, for the share sheet's Repost row (2026-10-17). */
+    @Provides
+    @Singleton
+    fun provideRepostStateApi(retrofit: Retrofit): RepostStateApi = retrofit.create(RepostStateApi::class.java)
+
+    @Provides
+    fun provideRepostReads(repository: RepostStateRepository): RepostReads = repository
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
@@ -88,8 +89,11 @@ class TransformerReelExporter @Inject constructor(
                             exportResult: ExportResult,
                             exportException: ExportException,
                         ) {
+                            // The viewer reads the friendly line; the log keeps what Media3
+                            // said, so a failed export on a device can be told apart.
+                            Log.w(TAG, exportFailureLog(exportException.errorCodeName, exportException.cause))
                             if (continuation.isActive) {
-                                continuation.resume(ExportOutcome.Failed(message(exportException)))
+                                continuation.resume(ExportOutcome.Failed(exportFailureMessage(exportException.errorCode)))
                             }
                         }
                     },
@@ -144,24 +148,46 @@ class TransformerReelExporter @Inject constructor(
             .build()
     }
 
-    private fun message(error: ExportException): String = when (error.errorCode) {
-        ExportException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-        ExportException.ERROR_CODE_DECODER_INIT_FAILED,
-        -> "This video's format can't be edited on this phone."
-        ExportException.ERROR_CODE_ENCODER_INIT_FAILED,
-        ExportException.ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED,
-        -> "This phone can't encode the reel. Try a shorter clip."
-        ExportException.ERROR_CODE_IO_FILE_NOT_FOUND,
-        ExportException.ERROR_CODE_IO_NO_PERMISSION,
-        -> "That video can't be read. Pick it again."
-        else -> "Couldn't prepare the reel. Try again."
-    }
-
     private companion object {
+        const val TAG = "ReelExporter"
         const val POLL_MILLIS = 250L
         const val PERCENT = 100
     }
 }
+
+/** What the viewer is told when an export fails, by Media3's error code. */
+@OptIn(UnstableApi::class)
+internal fun exportFailureMessage(errorCode: Int): String = when (errorCode) {
+    ExportException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+    ExportException.ERROR_CODE_DECODER_INIT_FAILED,
+    -> "This video's format can't be edited on this phone."
+    ExportException.ERROR_CODE_ENCODER_INIT_FAILED,
+    ExportException.ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED,
+    -> "This phone can't encode the reel. Try a shorter clip."
+    ExportException.ERROR_CODE_IO_FILE_NOT_FOUND,
+    ExportException.ERROR_CODE_IO_NO_PERMISSION,
+    -> "That video can't be read. Pick it again."
+    else -> "Couldn't prepare the reel. Try again."
+}
+
+/**
+ * The log line for a failed export (2026-10-17): Media3's error code name and
+ * the cause's class and message — nothing else. A cause's message often
+ * names the file it could not open, so every path and URI in it is replaced
+ * with `<path>` ([redactPaths]); the edit itself, the caption and the
+ * account are never written.
+ */
+internal fun exportFailureLog(errorCodeName: String, cause: Throwable?): String {
+    val what = cause?.let { "${it.javaClass.name}: ${redactPaths(it.message.orEmpty())}" } ?: "no cause"
+    return "export failed: $errorCodeName ($what)"
+}
+
+/** [text] with every URI and absolute file path replaced by `<path>`. */
+internal fun redactPaths(text: String): String = PATH_LIKE.replace(text, PATH_MARK)
+
+/** A scheme URI (content://, file://, https://…) or an absolute path, up to the next space or quote. */
+private val PATH_LIKE = Regex("""[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'"]+|/[^\s'"]*""")
+private const val PATH_MARK = "<path>"
 
 @Module
 @InstallIn(SingletonComponent::class)

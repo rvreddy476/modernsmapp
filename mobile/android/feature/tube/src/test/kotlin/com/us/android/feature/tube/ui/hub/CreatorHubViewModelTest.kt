@@ -8,8 +8,15 @@ import com.us.android.core.network.ApiMeta
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.core.common.error.AppError
+import com.us.android.core.common.result.AppResult
+import com.us.android.core.media.MediaUrlResolver
+import com.us.android.core.network.ApiConfig
+import com.us.android.feature.tube.data.hub.CreatorCommentTools
 import com.us.android.feature.tube.data.hub.CreatorHubApi
 import com.us.android.feature.tube.data.hub.CreatorHubRepository
+import com.us.android.feature.tube.data.hub.HubLibraryRow
+import com.us.android.feature.tube.data.hub.HubVisibility
 import com.us.android.feature.tube.data.hub.HubDayPoint
 import com.us.android.feature.tube.data.hub.HubOpenKind
 import com.us.android.feature.tube.data.hub.HubPeriod
@@ -73,7 +80,35 @@ class CreatorHubViewModelTest {
     private val reelsEntry = ReelsEntry()
     private val follows = mockk<FollowGraph> { every { ownId } returns "me" }
 
-    private fun viewModel() = CreatorHubViewModel(CreatorHubRepository(api, ErrorMapper(json)), reelsEntry, follows)
+    /** Heart and Pin as the server answers them: each write recorded, and refused while [fails]. */
+    private class FakeCommentTools : CreatorCommentTools {
+        val writes = mutableListOf<String>()
+        var fails = false
+
+        override suspend fun setHearted(commentId: String, hearted: Boolean): AppResult<Unit> {
+            writes += "heart:$commentId:$hearted"
+            return if (fails) AppResult.Failure(AppError.NoNetwork()) else AppResult.Success(Unit)
+        }
+
+        override suspend fun setPinned(commentId: String, pinned: Boolean): AppResult<Unit> {
+            writes += "pin:$commentId:$pinned"
+            return if (fails) AppResult.Failure(AppError.NoNetwork()) else AppResult.Success(Unit)
+        }
+    }
+
+    private val tools = FakeCommentTools()
+    private val urls = MediaUrlResolver(
+        ApiConfig(
+            baseUrl = "https://api.test",
+            wsBaseUrl = "wss://api.test",
+            clientVersion = "test",
+            environment = "test",
+            isDebug = true,
+        ),
+    )
+
+    private fun viewModel() =
+        CreatorHubViewModel(CreatorHubRepository(api, ErrorMapper(json)), reelsEntry, follows, tools, urls)
 
     private fun page(vararg rows: String, next: String? = null) =
         ApiEnvelope(data = rows.map(::el), meta = next?.let { ApiMeta(nextCursor = it) })
@@ -248,6 +283,104 @@ class CreatorHubViewModelTest {
         vm.loadInbox(more = false)
 
         assertThat(vm.state.value.inbox.items.single().body).isEqualTo("Nice")
+    }
+
+    // ── creator tools (2026-10-17) ─────────────────────────────────────
+
+    private fun inboxRow(id: String, post: String, pinned: Boolean = false, hearted: Boolean = false, reply: Boolean = false) =
+        """{"comment": {"id": "$id", "post_id": "$post", "body": "b", "pinned": $pinned, """ +
+            """"hearted_by_author": $hearted, "is_reply": $reply}, "post": {"id": "$post", "title": "T"}}"""
+
+    private fun conversations(vararg rows: String): CreatorHubViewModel {
+        api.insights += el("{}")
+        api.inbox += page(*rows)
+        return viewModel().also { it.onSection(HubSection.CONVERSATIONS) }
+    }
+
+    @Test
+    fun `the inbox reads each comment's heart and pin`() {
+        val vm = conversations(inboxRow("c1", "p1", pinned = true), inboxRow("c2", "p1", hearted = true, reply = true))
+
+        val rows = vm.state.value.inbox.items
+        assertThat(rows.map { it.pinned }).containsExactly(true, false).inOrder()
+        assertThat(rows.map { it.hearted }).containsExactly(false, true).inOrder()
+        assertThat(rows.map { it.isReply }).containsExactly(false, true).inOrder()
+    }
+
+    @Test
+    fun `heart flips at once and is written`() {
+        val vm = conversations(inboxRow("c1", "p1"))
+
+        vm.toggleHeart("c1")
+
+        assertThat(vm.state.value.inbox.items.single().hearted).isTrue()
+        assertThat(tools.writes).containsExactly("heart:c1:true")
+        vm.toggleHeart("c1")
+        assertThat(vm.state.value.inbox.items.single().hearted).isFalse()
+        assertThat(tools.writes.last()).isEqualTo("heart:c1:false")
+    }
+
+    @Test
+    fun `a refused heart is put back and said`() {
+        val vm = conversations(inboxRow("c1", "p1"))
+        tools.fails = true
+
+        vm.toggleHeart("c1")
+
+        assertThat(vm.state.value.inbox.items.single().hearted).isFalse()
+        assertThat(vm.state.value.notice).isEqualTo(CreatorHubViewModel.HEART_FAILED)
+        assertThat(vm.state.value.commentBusy).isEmpty()
+        vm.dismissNotice()
+        assertThat(vm.state.value.notice).isNull()
+    }
+
+    /** One pin per post: pinning another comment on the same post takes the first one's away. */
+    @Test
+    fun `a pin replaces the post's other pin, and leaves other posts alone`() {
+        val vm = conversations(inboxRow("c1", "p1", pinned = true), inboxRow("c2", "p1"), inboxRow("c3", "p2", pinned = true))
+
+        vm.togglePin("c2")
+
+        val pinned = vm.state.value.inbox.items.associate { it.commentId to it.pinned }
+        assertThat(pinned).containsExactly("c1", false, "c2", true, "c3", true)
+        assertThat(tools.writes).containsExactly("pin:c2:true")
+    }
+
+    @Test
+    fun `a refused pin puts every row of the post back`() {
+        val vm = conversations(inboxRow("c1", "p1", pinned = true), inboxRow("c2", "p1"))
+        tools.fails = true
+
+        vm.togglePin("c2")
+
+        assertThat(vm.state.value.inbox.items.map { it.pinned }).containsExactly(true, false).inOrder()
+        assertThat(vm.state.value.notice).isEqualTo(CreatorHubViewModel.PIN_FAILED)
+    }
+
+    @Test
+    fun `a reply is never pinned`() {
+        val vm = conversations(inboxRow("c1", "p1", reply = true))
+
+        vm.togglePin("c1")
+
+        assertThat(tools.writes).isEmpty()
+        assertThat(vm.state.value.inbox.items.single().pinned).isFalse()
+    }
+
+    @Test
+    fun `a library row's still resolves against the API host`() {
+        api.insights += el("{}")
+        val vm = viewModel()
+
+        val cover = HubLibraryRow(
+            id = "v1", title = "t", contentType = "long_video", visibility = HubVisibility.PUBLIC,
+            scheduledAt = null, publishedAt = null, createdAt = "", viewCount = 0, likeCount = 0, commentCount = 0,
+            processingStatus = "ready", thumbnailPath = "/v1/media/m1/serve",
+        )
+
+        assertThat(vm.thumbnailUrl(cover)).isEqualTo("https://api.test/v1/media/m1/serve")
+        assertThat(vm.thumbnailUrl(cover.copy(thumbnailPath = "https://cdn.test/t.jpg"))).isEqualTo("https://cdn.test/t.jpg")
+        assertThat(vm.thumbnailUrl(cover.copy(thumbnailPath = null))).isNull()
     }
 
     // ── opening rows ───────────────────────────────────────────────────
