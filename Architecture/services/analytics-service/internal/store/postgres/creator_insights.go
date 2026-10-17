@@ -51,14 +51,14 @@ func (s *AggregateStore) GetCreatorPeriodTotals(ctx context.Context, creatorID u
 			       COALESCE(SUM(watch_time_total_ms), 0) AS watch_ms,
 			       COALESCE(SUM(unique_viewers), 0) AS uniques
 			  FROM analytics.content_daily_summary
-			 WHERE creator_id = $1 AND day_bucket >= $2::date AND day_bucket < $3::date
+			 WHERE creator_id = $1 AND day_bucket >= $2::date AND day_bucket < $3::date`+creatorLiveContent+`
 		),
 		open_hours AS (
 			SELECT COALESCE(SUM(views_display), 0) AS views,
 			       COALESCE(SUM(watch_time_total_ms), 0) AS watch_ms,
 			       COALESCE(SUM(unique_viewers), 0) AS uniques
 			  FROM analytics.content_hourly_agg
-			 WHERE creator_id = $1 AND hour_bucket >= $3
+			 WHERE creator_id = $1 AND hour_bucket >= $3`+creatorLiveContent+`
 		)
 		SELECT d.views + h.views, d.watch_ms + h.watch_ms, d.uniques + h.uniques
 		  FROM daily d, open_hours h`,
@@ -87,11 +87,11 @@ func (s *AggregateStore) GetCreatorTopContent(ctx context.Context, creatorID uui
 		WITH per_content AS (
 			SELECT content_id, views_display AS views, watch_time_total_ms AS watch_ms
 			  FROM analytics.content_daily_summary
-			 WHERE creator_id = $1 AND day_bucket >= $2::date AND day_bucket < $3::date
+			 WHERE creator_id = $1 AND day_bucket >= $2::date AND day_bucket < $3::date`+creatorLiveContent+`
 			UNION ALL
 			SELECT content_id, views_display, watch_time_total_ms
 			  FROM analytics.content_hourly_agg
-			 WHERE creator_id = $1 AND hour_bucket >= $3
+			 WHERE creator_id = $1 AND hour_bucket >= $3`+creatorLiveContent+`
 		)
 		SELECT content_id, SUM(views), SUM(watch_ms)
 		  FROM per_content
@@ -129,7 +129,7 @@ func (s *AggregateStore) GetCreatorHourlyViews(ctx context.Context, creatorID uu
 	rows, err := s.db.Query(ctx, `
 		SELECT hour_bucket, SUM(views_display)
 		  FROM analytics.content_hourly_agg
-		 WHERE creator_id = $1 AND hour_bucket >= $2 AND hour_bucket <= $3
+		 WHERE creator_id = $1 AND hour_bucket >= $2 AND hour_bucket <= $3`+creatorLiveContent+`
 		 GROUP BY hour_bucket`,
 		creatorID, start, end)
 	if err != nil {

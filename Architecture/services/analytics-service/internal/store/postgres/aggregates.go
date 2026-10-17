@@ -16,6 +16,18 @@ func NewAggregateStore(db *pgxpool.Pool) *AggregateStore {
 	return &AggregateStore{db: db}
 }
 
+// creatorLiveContent keeps a creator's dashboard to content that still
+// exists. The aggregates keep a deleted post's rows (they are the record
+// money was computed from), so without it the Overview showed engagement
+// on posts the creator can no longer see anywhere: 5 comments on two
+// purged videos beside an inbox with none of them (17 Oct 2026). Appended
+// to a WHERE clause over a table with a content_id column. Read paths
+// only; settlement never uses these queries.
+const creatorLiveContent = `
+	AND content_id NOT IN (
+		SELECT o.content_id FROM analytics.content_ownership o
+		 WHERE o.eligibility_state = 'deleted')`
+
 func (s *AggregateStore) OwnsContent(ctx context.Context, creatorID, contentID uuid.UUID) (bool, error) {
 	var owns bool
 	err := s.db.QueryRow(ctx, `
@@ -70,7 +82,7 @@ func (s *AggregateStore) GetCreatorOverview(ctx context.Context, creatorID uuid.
 			COALESCE(SUM(likes), 0),
 			COALESCE(SUM(shares), 0)
 		FROM analytics.content_hourly_agg
-		WHERE creator_id = $1 AND hour_bucket >= $2`,
+		WHERE creator_id = $1 AND hour_bucket >= $2`+creatorLiveContent,
 		creatorID, since,
 	).Scan(&overview.TotalViews, &overview.TotalWatchTimeMS, &overview.AvgCQS,
 		&overview.TotalLikes, &overview.TotalShares)
@@ -86,7 +98,7 @@ func (s *AggregateStore) GetCreatorDailyTrend(ctx context.Context, creatorID uui
 		       SUM(views_display), SUM(watch_time_total_ms),
 		       AVG(content_quality_score)
 		FROM analytics.content_hourly_agg
-		WHERE creator_id = $1 AND hour_bucket >= $2
+		WHERE creator_id = $1 AND hour_bucket >= $2`+creatorLiveContent+`
 		GROUP BY date_trunc('day', hour_bucket)
 		ORDER BY day_bucket ASC`,
 		creatorID, since,
@@ -122,7 +134,7 @@ func (s *AggregateStore) GetContentList(ctx context.Context, creatorID uuid.UUID
 		       AVG(avg_percent_viewed), AVG(content_quality_score),
 		       SUM(likes), SUM(shares), MIN(created_at)
 		FROM analytics.content_hourly_agg
-		WHERE creator_id = $1 AND created_at < $2
+		WHERE creator_id = $1 AND created_at < $2`+creatorLiveContent+`
 		GROUP BY content_id, content_type
 		ORDER BY `+orderCol+` DESC
 		LIMIT $3`,
@@ -261,7 +273,7 @@ func (s *AggregateStore) GetCreatorAggStats(ctx context.Context, creatorID uuid.
 			COALESCE(SUM(saves), 0),
 			COALESCE(SUM(watch_time_total_ms), 0)
 		FROM analytics.content_hourly_agg
-		WHERE creator_id = $1 AND hour_bucket >= $2
+		WHERE creator_id = $1 AND hour_bucket >= $2`+creatorLiveContent+`
 	`, creatorID, since).Scan(
 		&stats.TotalViews, &stats.TotalLikes, &stats.TotalComments, &stats.TotalShares,
 		&stats.TotalFollows, &stats.TotalSaves, &stats.TotalWatchTimeMS,
