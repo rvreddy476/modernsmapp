@@ -965,7 +965,31 @@ object UsIcons {
         curveTo(14.2f, 3.5f, 16f, 5.3f, 16f, 7.5f)
         verticalLineTo(10.5f)
     }
+
+    // ── Settings & privacy (2026-10-17) ─────────────────────────────────
+
+    /** Lucide `shield` — Settings › Support & about › Privacy policy. */
+    val Shield: ImageVector = lucideStroked("Shield", SHIELD_PATH)
+
+    /** Lucide `shield-check` — Settings › Account › Account and security. */
+    val ShieldCheck: ImageVector = lucideStroked("ShieldCheck", SHIELD_PATH, "m9 12 2 2 4-4")
+
+    /** Lucide `moon` — Settings › Content & display › Appearance. */
+    val Moon: ImageVector = lucideStroked("Moon", "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z")
+
+    /** Lucide `log-out` — Settings' Log out row. */
+    val LogOut: ImageVector = lucideStroked(
+        "LogOut",
+        "m16 17 5-5-5-5",
+        "M21 12H9",
+        "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4",
+    )
 }
+
+/** Lucide `shield`, shared by [UsIcons.Shield] and [UsIcons.ShieldCheck]. */
+private const val SHIELD_PATH =
+    "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 " +
+        "6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
 
 // ---------------------------------------------------------------------------
 // Shapes shared between variants.

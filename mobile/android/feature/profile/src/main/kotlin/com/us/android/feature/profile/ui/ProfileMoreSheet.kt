@@ -59,7 +59,7 @@ enum class ProfileMenuRow(val label: String, val icon: ImageVector, val destruct
 
 /**
  * The menu for a profile: empty on the viewer's OWN profile — nobody reports
- * themselves, the Me tab has its own menu ([meMenuRows]), and the owner's
+ * themselves, the Me tab has its own drawer ([meDrawerSections]), and the owner's
  * Share profile is a button beside Edit profile — and on anyone else's,
  * Report plus Share profile when the profile has a handle to link to
  * ([canShare]). Ascending alphabetical order by label, the rule for every
@@ -76,7 +76,7 @@ fun profileMenuRows(isOwnProfile: Boolean, canShare: Boolean = false): List<Prof
     }
 
 /**
- * The profile's More sheet: the Momentum sheet idiom [MeMoreSheet] and the
+ * The profile's More sheet: the Momentum sheet idiom Home's More sheet and the
  * post sheet use (sheet surface, 28dp corners, an inner grab handle, 52dp
  * rows). Report steps INSIDE the sheet into the post sheet's own reason list
  * ([UsPostReportStep], subject "account"), so a profile is reported with

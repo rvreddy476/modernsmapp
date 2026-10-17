@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -118,6 +120,12 @@ internal fun ProfileMediaGrid(
      */
     onPublished: ((contentType: String) -> Unit)?,
     modifier: Modifier = Modifier,
+    /**
+     * The Me tab's drawer asked for a tab (Liked, Saved): it is selected and
+     * the grid scrolled into view, its tabs at the top when it is taller
+     * than the screen.
+     */
+    tabRequest: GridTabRequest? = null,
     viewModel: ProfileGridViewModel = hiltViewModel(),
 ) {
     val tab by viewModel.tab.collectAsStateWithLifecycle()
@@ -148,7 +156,14 @@ internal fun ProfileMediaGrid(
         }
     }
 
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+    val gridInView = rememberTabRequestScroll(tabRequest, onSelect = viewModel::select)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .bringIntoViewRequester(gridInView),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
         GridControls(
             tabs = viewModel.tabs,
             tab = tab,
@@ -198,6 +213,26 @@ internal fun ProfileMediaGrid(
             onDismiss = { createChannelKey = null },
         )
     }
+}
+
+/**
+ * Answers the Me tab drawer's "show this tab": [onSelect] picks it, then the
+ * grid the returned requester is attached to is scrolled into view (its tabs
+ * at the top when it is taller than the screen). A new [GridTabRequest] each
+ * tap, so a second tap on the same row scrolls again.
+ */
+@Composable
+private fun rememberTabRequestScroll(
+    tabRequest: GridTabRequest?,
+    onSelect: (ProfileGridTab) -> Unit,
+): BringIntoViewRequester {
+    val requester = remember { BringIntoViewRequester() }
+    LaunchedEffect(tabRequest) {
+        val request = tabRequest ?: return@LaunchedEffect
+        onSelect(request.tab)
+        requester.bringIntoView()
+    }
+    return requester
 }
 
 /**

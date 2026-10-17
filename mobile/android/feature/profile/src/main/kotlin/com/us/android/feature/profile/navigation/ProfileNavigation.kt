@@ -5,6 +5,7 @@
 
 package com.us.android.feature.profile.navigation
 
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -22,6 +23,7 @@ import com.us.android.feature.profile.ui.ProfileDetailsScreen
 import com.us.android.feature.profile.ui.ProfileScreen
 import com.us.android.feature.profile.ui.SecuritySettingsScreen
 import com.us.android.feature.profile.ui.SettingsHubScreen
+import com.us.android.feature.profile.ui.SettingsLogoutViewModel
 import kotlinx.serialization.Serializable
 
 /**
@@ -109,8 +111,12 @@ fun NavGraphBuilder.ownProfileScreen(
      * it — nobody watches a stranger's upload.
      */
     onPublished: (contentType: String) -> Unit,
-    /** The More menu's "Creator Hub" (T-31): `:app` pushes the read-only hub, which lives in Tube. */
+    /** The drawer's "Creator Hub" (T-31): `:app` pushes the read-only hub, which lives in Tube. */
     onOpenCreatorHub: () -> Unit,
+    /** The drawer's "Offline videos": `:app` pushes the Offline page, which lives in Tube. */
+    onOpenOffline: () -> Unit,
+    /** The drawer's "Upload": `:app` opens the Create sheet. */
+    onOpenUpload: () -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -131,6 +137,8 @@ fun NavGraphBuilder.ownProfileScreen(
                 // OWN-profile only, like onEditProfile: the hub shows the
                 // signed-in creator's own numbers and comments.
                 onOpenCreatorHub = onOpenCreatorHub,
+                onOpenOffline = onOpenOffline,
+                onOpenUpload = onOpenUpload,
             ),
         )
     }
@@ -221,6 +229,13 @@ fun NavGraphBuilder.settingsScreens(
     composable<SettingsRoute> {
         val appearance: AppearanceViewModel = hiltViewModel()
         val mode by appearance.mode.collectAsStateWithLifecycle()
+        val logout: SettingsLogoutViewModel = hiltViewModel()
+        val logoutState by logout.state.collectAsStateWithLifecycle()
+        // Signed out: the same destination sign-out everywhere, deactivation
+        // and deletion land on (Login, with the stack cleared behind it).
+        LaunchedEffect(logoutState.signedOut) {
+            if (logoutState.signedOut) destinations.onSignedOut()
+        }
         SettingsHubScreen(
             destinations.onBack,
             destinations.onEditProfile,
@@ -228,6 +243,11 @@ fun NavGraphBuilder.settingsScreens(
             destinations.sections,
             appearance = mode,
             onAppearance = appearance::select,
+            versionName = destinations.versionName,
+            logout = logoutState,
+            onLogout = logout::requestLogout,
+            onConfirmLogout = logout::confirmLogout,
+            onCancelLogout = logout::cancelLogout,
         )
     }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
@@ -248,6 +268,8 @@ data class SettingsDestinations(
     val onDirectMessages: () -> Unit,
     val onSignedOut: () -> Unit,
     val sections: SettingsSections,
+    /** The app's version name for the line at the foot of Settings; `:app` owns BuildConfig. */
+    val versionName: String = "",
 )
 
 /**
@@ -270,6 +292,8 @@ data class SettingsSections(
      * destination that is, so this feature never imports it.
      */
     val onModules: () -> Unit,
+    /** Data & storage › Offline videos: the Offline page, which lives in Tube's graph. */
+    val onOfflineVideos: () -> Unit,
 )
 
 /** Type-safe navigation to another user's profile. */

@@ -221,6 +221,10 @@ fun UsHomeTopBar(
  * Search, More. A glyph whose callback is null is not drawn: [onMessages]
  * is Home's only, and [onMore] is the page's own menu, absent on a page
  * that has nothing to put in one.
+ *
+ * [onMenu] (the Me tab, 2026-10-17) puts the hamburger in More's slot: the
+ * corner glyph then opens a side drawer rather than a sheet, and reads
+ * "Menu". It wins over [onMore] when both are given.
  */
 @Composable
 fun UsMomentumHeader(
@@ -234,6 +238,7 @@ fun UsMomentumHeader(
     translucent: Boolean = false,
     showWordmark: Boolean = true,
     onMore: (() -> Unit)? = null,
+    onMenu: (() -> Unit)? = null,
 ) {
     // Over video the glyphs are plain white; the text ramp is tuned for the
     // navy ground, not for an arbitrary frame.
@@ -249,10 +254,16 @@ fun UsMomentumHeader(
                     UsHeaderCornerAction.MESSAGES -> onMessages
                     UsHeaderCornerAction.NOTIFICATIONS -> onNotifications
                     UsHeaderCornerAction.SEARCH -> onSearch
-                    UsHeaderCornerAction.MORE -> onMore
+                    UsHeaderCornerAction.MORE -> onMenu ?: onMore
                 } ?: return@forEach
-                val tag = Modifier.testTag("momentum_header:${action.name.lowercase()}")
-                if (action == UsHeaderCornerAction.NOTIFICATIONS) {
+                val drawer = action == UsHeaderCornerAction.MORE && onMenu != null
+                val name = if (drawer) "menu" else action.name.lowercase()
+                val tag = Modifier.testTag("momentum_header:$name")
+                if (drawer) {
+                    IconButton(onClick = onClick, modifier = tag) {
+                        Icon(imageVector = UsIcons.Menu, contentDescription = MENU_DESCRIPTION, tint = tint)
+                    }
+                } else if (action == UsHeaderCornerAction.NOTIFICATIONS) {
                     IconButton(
                         onClick = onClick,
                         modifier = tag.semantics { contentDescription = usNotificationsDescription(unreadCount) },
@@ -268,6 +279,9 @@ fun UsMomentumHeader(
         },
     )
 }
+
+/** What the hamburger in More's slot says to a screen reader ([UsMomentumHeader]'s `onMenu`). */
+private const val MENU_DESCRIPTION = "Menu"
 
 /** Black at half strength on the top edge, gone by the bar's bottom. */
 private val TranslucentHeaderScrim: Brush = Brush.verticalGradient(

@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -168,12 +169,23 @@ data class ProfileDestinations(
      */
     val onPublished: ((contentType: String) -> Unit)? = null,
     /**
-     * The Me tab's More menu "Creator Hub" (T-31): `:app` pushes the
+     * The Me tab's drawer "Creator Hub" (T-31): `:app` pushes the
      * read-only hub. OWN-profile only, like [onEditProfile]: a creator's
      * numbers are theirs alone.
      */
     val onOpenCreatorHub: (() -> Unit)? = null,
+    /** The Me tab's drawer "Offline videos": `:app` pushes the Offline page (Tube's graph). */
+    val onOpenOffline: (() -> Unit)? = null,
+    /** The Me tab's drawer "Upload": `:app` opens the Create sheet the bar's centre button opens. */
+    val onOpenUpload: (() -> Unit)? = null,
 )
+
+/**
+ * "Show this grid tab": the Me tab's drawer opened Liked or Saved. [seq]
+ * makes a second tap on the same row a new request, so the page scrolls to
+ * the grid again even when the tab is already the one selected.
+ */
+internal data class GridTabRequest(val tab: ProfileGridTab, val seq: Int)
 
 internal data class ProfileActions(
     val onRetry: () -> Unit,
@@ -215,48 +227,24 @@ internal fun ProfileContent(
         ?.let { profileMenuRows(isOwnProfile = it.profile.isOwnProfile, canShare = canShareProfile(it.profile)) }
         .orEmpty()
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    // The Me tab's ☰ drawer (2026-10-17), and the grid tab it last asked for.
+    var drawerOpen by rememberSaveable { mutableStateOf(false) }
+    var tabRequest by remember { mutableStateOf<GridTabRequest?>(null) }
+    val drawerSections = meDrawerFor(state, destinations)
 
     UsScaffold(
         modifier = modifier,
         topBar = {
-            val header = destinations.header
-            if (header != null) {
-                // The Me tab: the Momentum header, with the standard corner
-                // (Search, the bell, More). Messages left the bar for the
-                // More menu on 2026-10-02; Settings is there too, and still
-                // beside "Edit profile".
-                OwnProfileHeader(
-                    header,
-                    onOpenSettings = destinations.onOpenSettings,
-                    onOpenCreatorHub = destinations.onOpenCreatorHub,
-                )
-            } else {
-                // A pushed profile. The title tracks the loaded profile; while
-                // loading it stays generic rather than flashing a placeholder
-                // name that then changes.
-                UsTopBar(
-                    title = state.title(),
-                    onBack = destinations.onBack,
-                    actions = {
-                        if (destinations.onOpenSettings != null) {
-                            IconButton(onClick = destinations.onOpenSettings) {
-                                Icon(UsIcons.Settings, contentDescription = "Settings")
-                            }
-                        }
-                        if (menuRows.isNotEmpty()) {
-                            IconButton(
-                                onClick = {
-                                    actions.onOpenMenu()
-                                    menuOpen = true
-                                },
-                                modifier = Modifier.testTag("profile_more"),
-                            ) {
-                                Icon(UsIcons.More, contentDescription = "More options")
-                            }
-                        }
-                    },
-                )
-            }
+            ProfileTopBar(
+                state = state,
+                destinations = destinations,
+                hasMenu = menuRows.isNotEmpty(),
+                onOpenMenu = {
+                    actions.onOpenMenu()
+                    menuOpen = true
+                },
+                onOpenDrawer = { drawerOpen = true }.takeIf { drawerSections.isNotEmpty() },
+            )
         },
         applyPageGutter = false,
     ) { padding ->
@@ -278,6 +266,7 @@ internal fun ProfileContent(
                 destinations = destinations,
                 chatState = chatState,
                 media = media,
+                tabRequest = tabRequest,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -292,6 +281,96 @@ internal fun ProfileContent(
             onShare = actions.onShareProfile,
         )
     }
+
+    if (drawerOpen && drawerSections.isNotEmpty()) {
+        MeDrawer(
+            sections = drawerSections,
+            onRow = { row ->
+                val tab = row.gridTab()
+                if (tab != null) {
+                    tabRequest = GridTabRequest(tab, (tabRequest?.seq ?: 0) + 1)
+                } else {
+                    destinations.openDrawerRow(row)
+                }
+            },
+            onDismiss = { drawerOpen = false },
+        )
+    }
+}
+
+/**
+ * The top of a profile. The Me tab wears the Momentum header with the
+ * standard corner (Search, the bell) and the ☰ in More's slot, which opens
+ * its drawer: Messages, Creator Hub and Settings & privacy live there
+ * (Settings is still beside "Edit profile" too). A pushed profile gets a
+ * titled bar whose title tracks the loaded profile; while loading it stays
+ * generic rather than flashing a placeholder name that then changes.
+ */
+@Composable
+private fun ProfileTopBar(
+    state: ProfileUiState,
+    destinations: ProfileDestinations,
+    hasMenu: Boolean,
+    onOpenMenu: () -> Unit,
+    onOpenDrawer: (() -> Unit)?,
+) {
+    val header = destinations.header
+    if (header != null) {
+        OwnProfileHeader(header, onMenu = onOpenDrawer)
+        return
+    }
+    UsTopBar(
+        title = state.title(),
+        onBack = destinations.onBack,
+        actions = {
+            if (destinations.onOpenSettings != null) {
+                IconButton(onClick = destinations.onOpenSettings) {
+                    Icon(UsIcons.Settings, contentDescription = "Settings")
+                }
+            }
+            if (hasMenu) {
+                IconButton(onClick = onOpenMenu, modifier = Modifier.testTag("profile_more")) {
+                    Icon(UsIcons.More, contentDescription = "More options")
+                }
+            }
+        },
+    )
+}
+
+/**
+ * The drawer this page offers. Before the profile loads, the Me tab (the one
+ * page with the header) is the viewer's own; after, the loaded profile says.
+ */
+internal fun meDrawerFor(state: ProfileUiState, destinations: ProfileDestinations): List<MeDrawerSection> =
+    meDrawerSections(
+        isOwnProfile = (state as? ProfileUiState.Content)?.profile?.isOwnProfile ?: (destinations.header != null),
+        doors = meDrawerDoors(state, destinations),
+    )
+
+/** Which of the drawer's doors this page was given; Liked and Saved need the own grid on screen. */
+internal fun meDrawerDoors(state: ProfileUiState, destinations: ProfileDestinations): MeDrawerDoors {
+    val content = state as? ProfileUiState.Content
+    return MeDrawerDoors(
+        grid = content != null && content.profile.isOwnProfile && !content.unavailable,
+        offline = destinations.onOpenOffline != null,
+        messages = destinations.header != null,
+        creatorHub = destinations.onOpenCreatorHub != null,
+        upload = destinations.onOpenUpload != null,
+        settings = destinations.onOpenSettings != null,
+    )
+}
+
+/** A drawer row that leaves the profile, to the destination `:app` gave for it. */
+private fun ProfileDestinations.openDrawerRow(row: MeDrawerRow) {
+    when (row) {
+        MeDrawerRow.OFFLINE -> onOpenOffline?.invoke()
+        MeDrawerRow.MESSAGES -> header?.onOpenMessages?.invoke()
+        MeDrawerRow.CREATOR_HUB -> onOpenCreatorHub?.invoke()
+        MeDrawerRow.UPLOAD -> onOpenUpload?.invoke()
+        MeDrawerRow.SETTINGS -> onOpenSettings?.invoke()
+        // Opened in place, by a grid tab request.
+        MeDrawerRow.LIKED, MeDrawerRow.SAVED -> Unit
+    }
 }
 
 /**
@@ -300,7 +379,11 @@ internal fun ProfileContent(
  * The viewer's own profile is never hidden from them, however private.
  */
 @Composable
-private fun ProfileMedia(state: ProfileUiState.Content, destinations: ProfileDestinations) {
+private fun ProfileMedia(
+    state: ProfileUiState.Content,
+    destinations: ProfileDestinations,
+    tabRequest: GridTabRequest?,
+) {
     val profile = state.profile
     val hidden = !profile.isOwnProfile && profile.isPrivate &&
         state.relationship.followStatus != FollowStatus.FOLLOWING
@@ -310,6 +393,7 @@ private fun ProfileMedia(state: ProfileUiState.Content, destinations: ProfileDes
         ProfileMediaGrid(
             onOpenPost = destinations.onOpenPost,
             onPublished = destinations.onPublished,
+            tabRequest = tabRequest,
         )
     }
 }
@@ -327,6 +411,7 @@ private fun LoadedProfile(
     chatState: StartChatUiState,
     media: ProfileMediaUrls,
     modifier: Modifier = Modifier,
+    tabRequest: GridTabRequest? = null,
 ) {
     val profile = state.profile
     Box(modifier = modifier.fillMaxSize()) {
@@ -399,7 +484,7 @@ private fun LoadedProfile(
             }
 
             if (!state.unavailable) {
-                ProfileMedia(state = state, destinations = destinations)
+                ProfileMedia(state = state, destinations = destinations, tabRequest = tabRequest)
             }
         }
 
@@ -914,21 +999,19 @@ private fun ProfileErrorTerminalPreview() =
 /**
  * The Me tab's Momentum header with its live unread count. The pure layout
  * is [UsMomentumHeader]; this only binds the badge, refreshed when the tab
- * appears rather than polled — the same contract Home uses — and owns the
- * More sheet ([MeMoreSheet]).
+ * appears rather than polled — the same contract Home uses.
  *
  * founder, 2026-10-02: every page but Home reads Search, the bell, More.
- * Messages was a glyph here; it is now a row of the menu, beside Settings.
+ * 2026-10-17: on the Me tab More's slot is the ☰, which opens the drawer
+ * ([MeDrawer], hosted by the page so it knows which grid tabs are there).
  */
 @Composable
 private fun OwnProfileHeader(
     header: MomentumHeaderDestinations,
-    onOpenSettings: (() -> Unit)?,
-    onOpenCreatorHub: (() -> Unit)?,
+    onMenu: (() -> Unit)?,
     viewModel: UnreadBadgeViewModel = hiltViewModel(),
 ) {
     val count by viewModel.count.collectAsStateWithLifecycle()
-    var menuOpen by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
 
@@ -937,19 +1020,6 @@ private fun OwnProfileHeader(
         onSearch = header.onOpenSearch,
         onNotifications = header.onOpenNotifications,
         modifier = Modifier.testTag("me_header"),
-        onMore = { menuOpen = true },
+        onMenu = onMenu,
     )
-    if (menuOpen) {
-        MeMoreSheet(
-            rows = meMenuRows(hasSettings = onOpenSettings != null, hasCreatorHub = onOpenCreatorHub != null),
-            onRow = { row ->
-                when (row) {
-                    MeMenuRow.CREATOR_HUB -> onOpenCreatorHub?.invoke()
-                    MeMenuRow.MESSAGES -> header.onOpenMessages()
-                    MeMenuRow.SETTINGS -> onOpenSettings?.invoke()
-                }
-            },
-            onDismiss = { menuOpen = false },
-        )
-    }
 }

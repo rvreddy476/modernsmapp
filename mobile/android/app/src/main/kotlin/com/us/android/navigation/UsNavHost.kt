@@ -38,6 +38,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.us.android.BuildConfig
 import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.designsystem.component.UsNavigationBar
 import com.us.android.core.designsystem.component.UsScaffold
@@ -361,15 +362,19 @@ fun UsNavHost(
     // when the screen leaves, so the bar is back on every other tab.
     val chrome = remember { ChromeVisibility() }
 
+    val liveStage = backStackEntry?.destination.isLiveStage()
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
+        // On a LIVE screen the shell still reserves the gesture-bar band; it
+        // is painted the stage colour the LIVE room uses, not the app's light
+        // ground (a white strip under a dark room, 17 Oct emulator walk).
+        containerColor = if (liveStage) MaterialTheme.colorScheme.scrim else MaterialTheme.colorScheme.background,
         // Reels fills the frame from the very top: the video under the status
         // bar, its translucent header padding itself beneath it. The shell
         // hands that tab no inset at all; every other screen's own scaffold
         // reserves the system bars as before, because the NavHost below
         // consumes only what it was given.
-        contentWindowInsets = when (shellInsetsFor(currentTab, darkStage = backStackEntry?.destination.isLiveStage())) {
+        contentWindowInsets = when (shellInsetsFor(currentTab, darkStage = liveStage)) {
             ShellInsets.NONE -> WindowInsets(0)
             ShellInsets.NO_TOP -> ScaffoldDefaults.contentWindowInsets
                 .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
@@ -1103,7 +1108,8 @@ private fun NavGraphBuilder.tabDestinations(
         ),
     )
 
-    profileDestinations(navController)
+    // The Me tab's drawer "Upload" opens the same Create sheet as the bar's centre button.
+    profileDestinations(navController, onOpenUpload = { onOpenCreate(CreateScope.App) })
 
     // Post detail. Cross-feature navigation is resolved here: :feature:post
     // hands back an author id and :app decides that opens a profile. Neither
@@ -1160,7 +1166,7 @@ private fun NavGraphBuilder.exploreDestinations(
 }
 
 /** Profile, edit-profile and settings destinations registered by the feature. */
-private fun NavGraphBuilder.profileDestinations(navController: NavHostController) {
+private fun NavGraphBuilder.profileDestinations(navController: NavHostController, onOpenUpload: () -> Unit) {
     // Two registrations, one screen: the Me tab is a root with no back
     // control; a pushed profile has one.
     ownProfileScreen(
@@ -1196,9 +1202,12 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 else -> Unit
             }
         },
-        // T-31: the Me tab's More menu opens the read-only Creator Hub,
+        // T-31: the Me tab's drawer opens the read-only Creator Hub,
         // which lives in Tube's graph (pushed, so Back returns to Me).
         onOpenCreatorHub = { navController.navigateToCreatorHub() },
+        // The drawer's Offline videos: the Offline page Reels and Tube open.
+        onOpenOffline = { navController.navigateToTubeOffline() },
+        onOpenUpload = onOpenUpload,
     )
     profileScreen(
         onOpenFollowers = {},
@@ -1247,7 +1256,10 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 // The module picker is `:feature:settings`; the hub only
                 // asks for "modules" and this is where that resolves.
                 onModules = { navController.navigateToModulesSettings() },
+                // Data & storage: the Offline page lives in Tube's graph.
+                onOfflineVideos = { navController.navigateToTubeOffline() },
             ),
+            versionName = BuildConfig.VERSION_NAME,
         ),
     )
     // The same picker as onboarding, pushed with a back arrow. Saving pops:

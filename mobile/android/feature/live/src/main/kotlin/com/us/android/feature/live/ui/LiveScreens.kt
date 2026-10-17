@@ -375,7 +375,8 @@ private fun LiveTopBar(
             // The shell leaves the status bar to the LIVE screens (2026-10-17)
             // so their dark ground runs under it; the bar's row sits below it.
             .statusBarsPadding()
-            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s),
+            // The trailing pill keeps a full gutter from the screen edge.
+            .padding(start = UsTheme.spacing.m, end = UsTheme.spacing.xxl, top = UsTheme.spacing.s, bottom = UsTheme.spacing.s),
     ) {
         IconButton(onClick = onClose, modifier = Modifier.testTag("live-close")) {
             Icon(UsIcons.Close, contentDescription = "Close", tint = UsTheme.extended.onMedia)

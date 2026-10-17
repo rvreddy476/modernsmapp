@@ -142,15 +142,36 @@ class UsHeaderCornerTest {
         }
     }
 
+    /**
+     * 2026-10-17: the Me tab keeps the standard corner, but More's slot is the
+     * hamburger, which opens its side drawer (Your activity, Creator tools,
+     * Settings & privacy) instead of the three-dots sheet.
+     */
     @Test
-    fun `the Me tab wears the standard corner with a menu behind More`() {
+    fun `the Me tab wears the standard corner with the drawer's hamburger in More's slot`() {
         val me = source("feature/profile/src/main/kotlin/com/us/android/feature/profile/ui/ProfileScreen.kt")
         val header = me.substringAfter("private fun OwnProfileHeader(").substringBefore("\n}")
 
         assertThat(header).contains("UsMomentumHeader(")
         assertThat(header).doesNotContain("corner =")
         assertThat(header).doesNotContain("onMessages =")
-        assertThat(header).contains("onMore = { menuOpen = true }")
+        assertThat(header).doesNotContain("onMore =")
+        assertThat(header).contains("onMenu = onMenu")
+    }
+
+    @Test
+    fun `the hamburger takes More's slot only when a page asks for a drawer`() {
+        val header = source(spec + "UsTopBar.kt")
+
+        assertThat(header).contains("UsHeaderCornerAction.MORE -> onMenu ?: onMore")
+        assertThat(header).contains("imageVector = UsIcons.Menu, contentDescription = MENU_DESCRIPTION")
+        // Reels and Tube keep the three dots: neither passes a drawer.
+        for (path in listOf(
+            "feature/feed/src/main/kotlin/com/us/android/feature/feed/ui/reels/ReelsScreen.kt",
+            "feature/tube/src/main/kotlin/com/us/android/feature/tube/ui/TubeChrome.kt",
+        )) {
+            assertThat(source(path)).doesNotContain("onMenu =")
+        }
     }
 
     @Test

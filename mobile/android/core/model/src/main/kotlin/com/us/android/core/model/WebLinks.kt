@@ -30,6 +30,15 @@ object WebLinks {
     private const val ORIGIN = "https://$WEB_HOST"
     private const val POST_SEGMENT = "post"
 
+    /**
+     * Settings › Support & about (2026-10-17): the web app's public pages for
+     * reporting a problem, the terms and the privacy policy, the same three
+     * the web settings hub links to.
+     */
+    const val GRIEVANCE_URL = "$ORIGIN/grievance"
+    const val TERMS_URL = "$ORIGIN/terms"
+    const val PRIVACY_POLICY_URL = "$ORIGIN/privacy"
+
     /** `https://cleestudio.com/post/<postId>` — a post's public permalink. */
     fun postPermalink(postId: String): String = "$ORIGIN/$POST_SEGMENT/$postId"
 
