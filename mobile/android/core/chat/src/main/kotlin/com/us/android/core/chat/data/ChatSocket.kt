@@ -300,6 +300,7 @@ private fun parseMessageFrame(type: String, payload: JsonObject): ChatSocketEven
     if (missing.isNotEmpty()) {
         return ChatSocketEvent.Malformed(type, "missing or blank: " + missing.joinToString(", "))
     }
+    val address = frameAddress(payload)
     return ChatSocketEvent.MessageReceived(
         Message(
             id = id,
@@ -328,9 +329,25 @@ private fun parseMessageFrame(type: String, payload: JsonObject): ChatSocketEven
             // messageFrameBody); without it the recipient saw an empty bubble
             // until the thread was reopened.
             postId = payload.str("post_id")?.takeIf { it.isNotBlank() },
-            createdAt = payload.str("created_at").orEmpty(),
+            // The Scylla address, when the frame carries it (added to
+            // message-service's frame on 2026-10-18; older servers omit it).
+            // With it, an echo of the viewer's own send is editable and
+            // unsendable at once; without it the thread waits for the HTTP
+            // copy to supply the address, as before. Both or neither: half
+            // an address addresses nothing.
+            bucket = address?.first.orEmpty(),
+            ts = address?.second.orEmpty(),
+            createdAt = payload.str("created_at")?.takeIf { it.isNotBlank() }
+                ?: address?.second.orEmpty(),
         ).withParityFields(payload),
     )
+}
+
+/** `bucket` + `ts` from a message frame, or null unless BOTH are present and non-blank. */
+private fun frameAddress(payload: JsonObject): Pair<String, String>? {
+    val bucket = payload.str("bucket")?.takeIf { it.isNotBlank() } ?: return null
+    val ts = payload.str("ts")?.takeIf { it.isNotBlank() } ?: return null
+    return bucket to ts
 }
 
 /**

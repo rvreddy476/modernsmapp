@@ -113,8 +113,20 @@ internal data class CachedMessageExtras(
     val media: CachedMedia? = null,
     val deleted: Boolean = false,
     val edited: Boolean = false,
+    /**
+     * The server's Scylla address (bucket, ts). Cached so a row read back
+     * from Room — the confirmed copy of a send the outbox just delivered, or
+     * the offline tail — can still be edited, unsent, deleted or reacted to.
+     * Without it the bubble the user had just sent offered none of those
+     * until the thread was reopened over HTTP. Blank on rows first cached
+     * from a socket frame, which does not carry the address.
+     */
+    val bucket: String = "",
+    val ts: String = "",
 ) {
     fun applyTo(message: Message): Message = message.copy(
+        bucket = bucket.ifBlank { message.bucket },
+        ts = ts.ifBlank { message.ts },
         forwarded = forwarded,
         voice = voice?.let { VoiceInfo(it.durationMs, it.waveform) },
         sticker = sticker?.let { StickerInfo(it.id, it.url, it.width, it.height) },
@@ -142,6 +154,8 @@ internal data class CachedMessageExtras(
                 media = message.media?.let { CachedMedia(it.kind, it.width, it.height, it.durationMs, it.sensitive) },
                 deleted = message.deleted,
                 edited = message.edited,
+                bucket = message.bucket,
+                ts = message.ts,
             )
             return extras.takeIf { it != CachedMessageExtras() }
         }

@@ -33,6 +33,10 @@ dependencies {
     // cache, message cache and the send outbox live in :core:database; this
     // module owns the store/worker logic over them.
     implementation(projects.core.database)
+    // The signed-in user, so the store can tell the viewer's own realtime
+    // echoes from incoming messages (an own echo never marks a chat unread).
+    // Injected as Provider<…> — chat's teardown task feeds AuthRepository.
+    implementation(projects.core.auth)
     implementation(libs.work.runtime)
     implementation(libs.hilt.work)
     ksp(libs.hilt.work.compiler)

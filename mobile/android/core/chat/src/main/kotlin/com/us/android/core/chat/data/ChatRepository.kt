@@ -487,7 +487,8 @@ data class Message(
     val failed: Boolean = false,
     /**
      * The Scylla address half of the id: reactions and deletion address a
-     * message by (bucket, ts, msg_id). Blank on cached/socket rows — those
+     * message by (bucket, ts, msg_id). Blank on socket rows (the frame does
+     * not carry it); HTTP rows carry it and the Room cache keeps it. Those
      * operations are offered only on rows that carry the address.
      */
     val bucket: String = "",

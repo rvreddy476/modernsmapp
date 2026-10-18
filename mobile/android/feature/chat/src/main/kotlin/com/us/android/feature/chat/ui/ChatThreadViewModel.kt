@@ -138,6 +138,22 @@ data class ThreadRenderState(
 }
 
 /**
+ * True when [message] could be the server's copy of this still-sending
+ * outbox row: same kind and the same content. A parked (failed) row never
+ * matches — it is not on its way, so nothing is waiting for its echo.
+ */
+internal fun PendingSend.couldBe(message: Message): Boolean {
+    if (failed) return false
+    val kind = typed?.type
+    val media = mediaId
+    return when {
+        kind != null -> kind == message.type
+        media != null -> media == message.mediaId
+        else -> message.mediaId == null && text.trim() == message.text.trim()
+    }
+}
+
+/**
  * A received message the conversation's owner asked to cover (kind messages).
  * [revealed]: tapped to read. [answered]: "Did this bother you?" was answered
  * Yes. [offerReport]: the owner then offered the report flow for the sender.
@@ -197,6 +213,19 @@ class ChatThreadViewModel @Inject constructor(
 
     private val typingTimers = mutableMapOf<String, Job>()
     private var attachmentJob: Job? = null
+
+    /**
+     * The viewer's own messages echoed by the socket while the outbox row
+     * that sent them is still on screen, by message id. Declared before
+     * init, whose collectors use it.
+     *
+     * The server echoes every send to the sender, often before the HTTP
+     * response. Applied at once, the echo drew a second bubble beside the
+     * still-sending one, and it is the copy WITHOUT the server address. Held
+     * here instead, it is released when its row leaves the outbox — after the
+     * confirmed copy is merged.
+     */
+    private val heldEchoes = linkedMapOf<String, Message>()
 
     /** True once the conversation's owner said it checks this conversation's messages. Declared before init, which sets it. */
     private var kindChecks = false
@@ -925,30 +954,40 @@ class ChatThreadViewModel @Inject constructor(
                 }
                 is ChatSocketEvent.Disconnected ->
                     _state.value = _state.value.copy(offline = true)
-                else -> {
-                    controller.onSocketEvent(event)?.let {
-                        _state.value = _state.value.copy(thread = it)
-                    }
-                    if (event is ChatSocketEvent.Typing && event.isTyping &&
-                        event.conversationId == conversationId
-                    ) {
-                        restartTypingTimer(event.userId)
-                    }
-                    // Chat parity: the header's "Active now" follows the peer live.
-                    if (event is ChatSocketEvent.PresenceUpdate && event.userId == _state.value.peerUserId) {
-                        _state.update {
-                            it.copy(peerOnline = event.isOnline, peerLastActiveAt = event.lastActiveAt ?: it.peerLastActiveAt)
-                        }
-                    }
-                    if (event is ChatSocketEvent.MessageReceived &&
-                        event.message.conversationId == conversationId
-                    ) {
-                        // Reading an open thread marks it read.
-                        controller.markRead()
-                        store.clearUnread(conversationId)
-                    }
+                is ChatSocketEvent.MessageReceived -> if (isEchoOfInFlightSend(event.message)) {
+                    // Our own send coming back before its outbox row cleared:
+                    // held, so it never draws a second bubble (see heldEchoes).
+                    heldEchoes[event.message.id] = event.message
+                    store.clearUnread(conversationId)
+                } else {
+                    applySocketEvent(event)
                 }
+                else -> applySocketEvent(event)
             }
+        }
+    }
+
+    private suspend fun applySocketEvent(event: ChatSocketEvent) {
+        controller.onSocketEvent(event)?.let {
+            _state.value = _state.value.copy(thread = it)
+        }
+        if (event is ChatSocketEvent.Typing && event.isTyping &&
+            event.conversationId == conversationId
+        ) {
+            restartTypingTimer(event.userId)
+        }
+        // Chat parity: the header's "Active now" follows the peer live.
+        if (event is ChatSocketEvent.PresenceUpdate && event.userId == _state.value.peerUserId) {
+            _state.update {
+                it.copy(peerOnline = event.isOnline, peerLastActiveAt = event.lastActiveAt ?: it.peerLastActiveAt)
+            }
+        }
+        if (event is ChatSocketEvent.MessageReceived &&
+            event.message.conversationId == conversationId
+        ) {
+            // Reading an open thread marks it read.
+            controller.markRead()
+            store.clearUnread(conversationId)
         }
     }
 
@@ -966,15 +1005,45 @@ class ChatThreadViewModel @Inject constructor(
                 mergeConfirmed()
             }
             previous = current
-            _state.value = _state.value.copy(pendingSends = rows)
+            // Echoes held back while their send was in flight go in AFTER the
+            // confirmed copy, so they are duplicates by id and add nothing.
+            releaseHeldEchoes(rows)
+            // ONE emission: the outbox row leaves in the same frame the
+            // confirmed bubble arrives — no gap, no double.
+            _state.value = _state.value.copy(thread = controller.snapshot(), pendingSends = rows)
         }
     }
 
+    /**
+     * Merges the confirmed server copies the outbox wrote to Room. They carry
+     * the server address (bucket, ts), so the bubble offers Edit, Delete for
+     * me and Unsend at once; a row the socket echo already put on screen
+     * adopts that address in place ([ThreadController.onRealtimeMessage]).
+     *
+     * Oldest first: each unknown row is prepended, so walking the newest-first
+     * cache read in order would turn a burst of deliveries upside down.
+     */
     private suspend fun mergeConfirmed() {
-        store.recentCachedMessages(conversationId, limit = MERGE_WINDOW).forEach { cached: Message ->
+        store.recentCachedMessages(conversationId, limit = MERGE_WINDOW).asReversed().forEach { cached: Message ->
             controller.onRealtimeMessage(cached)
         }
-        _state.value = _state.value.copy(thread = controller.snapshot())
+    }
+
+    /** True when [message] is the socket echo of a send this thread still shows as sending. */
+    private fun isEchoOfInFlightSend(message: Message): Boolean =
+        message.conversationId == conversationId &&
+            viewerId.isNotBlank() &&
+            message.senderId == viewerId &&
+            controller.snapshot().messages.none { it.id == message.id } &&
+            _state.value.pendingSends.any { it.couldBe(message) }
+
+    private fun releaseHeldEchoes(rows: List<PendingSend>) {
+        if (heldEchoes.isEmpty()) return
+        val released = heldEchoes.values.filter { held -> rows.none { it.couldBe(held) } }
+        released.forEach { held ->
+            heldEchoes.remove(held.id)
+            controller.onRealtimeMessage(held)
+        }
     }
 
     private fun restartTypingTimer(userId: String) {

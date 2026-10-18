@@ -26,6 +26,35 @@ class ThreadParityTest {
 
     private fun msg(id: String, text: String = "hi") = Message(id, "c1", "u2", null, text, "2026-10-18T10:00:00Z")
 
+    // ── a send's echo and its confirmed copy are one bubble ──────────────
+
+    private fun echo(id: String) = Message(id, "c1", "me", null, "sent", "2026-10-18T10:00:00Z")
+
+    private fun confirmed(id: String) = echo(id).copy(bucket = "202610", ts = "2026-10-18T10:00:00.123Z")
+
+    @Test
+    fun `the confirmed copy gives an echoed row its address in place`() {
+        val thread = controller(msg("m0"))
+        thread.onRealtimeMessage(echo("s1"))
+        assertThat(thread.snapshot().messages.first { it.id == "s1" }.addressable).isFalse()
+
+        val next = thread.onRealtimeMessage(confirmed("s1"))
+        val rows = next!!.messages.filter { it.id == "s1" }
+        assertThat(rows).hasSize(1)
+        assertThat(rows.single().bucket).isEqualTo("202610")
+        assertThat(rows.single().ts).isEqualTo("2026-10-18T10:00:00.123Z")
+        // Same place in the thread: still the newest, above m0.
+        assertThat(next.messages.map { it.id }).containsExactly("s1", "m0").inOrder()
+    }
+
+    @Test
+    fun `an echo after the confirmed copy changes nothing`() {
+        val thread = controller()
+        thread.onRealtimeMessage(confirmed("s1"))
+        assertThat(thread.onRealtimeMessage(echo("s1"))).isNull()
+        assertThat(thread.snapshot().messages.single().addressable).isTrue()
+    }
+
     @Test
     fun `a reaction frame applies once and its echo is a no-op`() {
         val thread = controller(msg("m1"))

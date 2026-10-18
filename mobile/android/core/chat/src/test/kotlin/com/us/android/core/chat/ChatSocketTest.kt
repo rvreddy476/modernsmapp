@@ -108,6 +108,42 @@ class ChatSocketTest {
      * survives. The bug was invisible to the SENDER, whose own outbox row
      * rendered locally.
      */
+    // ── the Scylla address on a message frame (server, 2026-10-18) ──────
+
+    private fun addressFrame(extra: String) = """
+        {"type":"message","payload":{
+          "conversation_id":"c1","message_id":"m1","sender_id":"u2",
+          "type":"text","text":"hi"$extra}}
+    """.trimIndent()
+
+    private fun frameMessage(extra: String) =
+        (parseChatFrame(json, addressFrame(extra)) as ChatSocketEvent.MessageReceived).message
+
+    @Test
+    fun `a frame with bucket and ts is addressable at once`() {
+        val message = frameMessage(
+            ""","bucket":"202610","ts":"2026-10-18T10:00:00.123Z","created_at":"2026-10-18T10:00:00.123Z"""",
+        )
+        assertThat(message.bucket).isEqualTo("202610")
+        assertThat(message.ts).isEqualTo("2026-10-18T10:00:00.123Z")
+        assertThat(message.addressable).isTrue()
+    }
+
+    @Test
+    fun `a frame without the address, or with half of it, is not addressable`() {
+        assertThat(frameMessage(""","created_at":"2026-10-18T10:00:00Z"""").addressable).isFalse()
+        val half = frameMessage(""","bucket":"202610","created_at":"2026-10-18T10:00:00Z"""")
+        assertThat(half.bucket).isEmpty()
+        assertThat(half.ts).isEmpty()
+        assertThat(frameMessage(""","bucket":"","ts":"2026-10-18T10:00:00Z"""").addressable).isFalse()
+    }
+
+    @Test
+    fun `a frame with ts but no created_at dates the message by ts`() {
+        val message = frameMessage(""","bucket":"202610","ts":"2026-10-18T10:00:00.123Z"""")
+        assertThat(message.createdAt).isEqualTo("2026-10-18T10:00:00.123Z")
+    }
+
     @Test
     fun `a media frame carries its media_id`() {
         val event = parseChatFrame(json, MEDIA_MESSAGE_FRAME)

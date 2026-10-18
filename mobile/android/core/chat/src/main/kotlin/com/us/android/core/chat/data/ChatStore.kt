@@ -17,7 +17,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.model.SessionState
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
@@ -102,7 +105,19 @@ class ChatStore @Inject constructor(
     // constructions (tests) keep compiling; production injects both.
     private val parityDao: ChatParityDao? = null,
     private val parity: ChatParityRepository? = null,
+    /**
+     * The signed-in user, read at the moment a realtime message lands. A
+     * Provider, not the instance: [ChatTeardown] is one of AuthRepository's
+     * teardown tasks and needs this store, so a direct dependency would be a
+     * cycle. Null in tests that predate it — every message then counts as
+     * someone else's, which is the old behaviour.
+     */
+    private val sessionState: Provider<SessionStateProvider>? = null,
 ) {
+
+    /** The signed-in user's id, or blank when signed out (or unknown). */
+    private fun viewerId(): String =
+        (sessionState?.get()?.sessionState?.value as? SessionState.Authenticated)?.userId.orEmpty()
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -353,14 +368,21 @@ class ChatStore @Inject constructor(
      */
     suspend fun applyRealtimeMessage(message: Message) {
         if (message.id.isBlank() || message.conversationId.isBlank()) return
+        val viewer = viewerId()
+        // The server echoes every message to its sender too — the viewer's
+        // other devices included. Their own message moves the row's preview
+        // and time like any other, but never marks the chat unread: a message
+        // sent from the laptop must not light this phone's inbox dot.
+        val own = viewer.isNotBlank() && message.senderId == viewer
+        val preview = inboxPreview(message).take(PREVIEW_LENGTH)
         guardedWrite {
             dao.insertMessages(listOf(message.toEntity()))
-            dao.markUnread(
-                conversationId = message.conversationId,
-                preview = inboxPreview(message).take(PREVIEW_LENGTH),
-                at = message.createdAt,
-            )
-            parityDao?.incrementUnread(message.conversationId)
+            if (own) {
+                parityDao?.updatePreview(message.conversationId, preview, message.createdAt)
+            } else {
+                dao.markUnread(conversationId = message.conversationId, preview = preview, at = message.createdAt)
+                parityDao?.incrementUnread(message.conversationId)
+            }
         }
     }
 
@@ -674,7 +696,7 @@ class ChatStore @Inject constructor(
                 // network call was in flight, the server copy stands (it is
                 // durable server-side) and NOTHING lands in the local cache.
                 guardedWrite(generation) {
-                    dao.insertMessages(listOf(result.data).filter { it.id.isNotBlank() }.map { it.toEntity() })
+                    cacheConfirmedSend(result.data)
                     dao.completeSend(row.idempotencyKey)
                 } ?: return SendAttempt.Halted
                 SendAttempt.Delivered
@@ -692,6 +714,39 @@ class ChatStore @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Caches the server's copy of a delivered send WITH its address
+     * (bucket, ts) — the copy the open thread merges in place of the
+     * outbox row, so the bubble can be edited, unsent and reacted to at once.
+     *
+     * The insert is IGNORE (first copy wins), and the server echoes every
+     * send back to the sender over the socket — often BEFORE the HTTP
+     * response lands. The echo carries no address, so when it won the insert
+     * the cached row is upgraded here: only the address is written, the
+     * row's type, reactions and other extras stay as they are.
+     *
+     * Runs inside the caller's guarded write.
+     */
+    private suspend fun cacheConfirmedSend(message: Message) {
+        if (message.id.isBlank()) return
+        val entity = message.toEntity()
+        dao.insertMessages(listOf(entity))
+        if (!message.addressable) return
+        val extras = parityDao ?: return
+        val row = extras.message(message.id) ?: return
+        val cached = row.extrasJson?.let { raw ->
+            runCatching { json.decodeFromString(CachedMessageExtras.serializer(), raw) }.getOrNull()
+        }
+        if (cached != null && cached.bucket.isNotBlank() && cached.ts.isNotBlank()) return
+        val merged = (cached ?: CachedMessageExtras()).copy(bucket = message.bucket, ts = message.ts)
+        extras.refreshMessage(
+            messageId = message.id,
+            type = row.type ?: entity.type,
+            reactionsJson = row.reactionsJson,
+            extrasJson = json.encodeToString(CachedMessageExtras.serializer(), merged),
+        )
     }
 
     /**

@@ -43,6 +43,16 @@ interface ChatParityDao {
     @Query("UPDATE chat_conversation SET unreadCount = unreadCount + 1 WHERE id = :conversationId")
     suspend fun incrementUnread(conversationId: String)
 
+    /**
+     * The row's last-message preview and time WITHOUT touching its unread
+     * state — for the viewer's own message echoed back from another device.
+     */
+    @Query(
+        "UPDATE chat_conversation SET lastMessagePreview = :preview, lastMessageAt = :at, updatedAt = :at " +
+            "WHERE id = :conversationId",
+    )
+    suspend fun updatePreview(conversationId: String, preview: String, at: String)
+
     @Query(
         "UPDATE chat_conversation SET isPinned = :pinned, isMuted = :muted, muteCalls = :muteCalls, " +
             "alertTone = :alertTone WHERE id = :conversationId",

@@ -331,9 +331,9 @@ class ThreadController(
      *  - a message missing an id or a sender is dropped. A blank id collides
      *    with every other blank id, which turns de-duplication into silent
      *    message loss and hands a keyed list duplicate keys;
-     *  - a message already present is dropped. The server does not echo to the
-     *    sender today, so this guards the reconnect case where history and a
-     *    live frame overlap.
+     *  - a message already present is dropped (see [adoptAddress] for the one
+     *    thing a second copy may still add). The server echoes every send to
+     *    the sender, and history and a live frame overlap on reconnect.
      *
      * ## WHY THE FIRST CHECK IS `!=` AND NOT `isNotBlank() && !=`
      *
@@ -354,11 +354,32 @@ class ThreadController(
     fun onRealtimeMessage(message: Message): ThreadUiState? {
         if (message.conversationId != conversationId) return null
         if (message.id.isBlank() || message.senderId.isBlank()) return null
-        if (state.messages.any { it.id == message.id }) return null
+        val existing = state.messages.firstOrNull { it.id == message.id }
+        if (existing != null) return adoptAddress(existing, message)
         return state.copy(
             messages = listOf(message.named()) + state.messages,
             // Whatever they were typing, they have now sent it.
             typingUserIds = state.typingUserIds - message.senderId,
+        ).also { state = it }
+    }
+
+    /**
+     * A second copy of a message already in the thread. Ignored — EXCEPT
+     * that a copy carrying the server address (bucket, ts) gives it to a row
+     * that lacks one.
+     *
+     * The server echoes every send back to the sender, and that frame has no
+     * address. When it lands before the send's HTTP response, the echo is the
+     * row on screen, and dropping the confirmed copy as "already present" left
+     * the user's own bubble without Edit, Delete for me or Unsend until the
+     * thread was reopened. The row keeps its place and everything else it
+     * had; only the address is adopted.
+     */
+    private fun adoptAddress(existing: Message, incoming: Message): ThreadUiState? {
+        if (existing.addressable || !incoming.addressable) return null
+        val upgraded = existing.copy(bucket = incoming.bucket, ts = incoming.ts)
+        return state.copy(
+            messages = state.messages.map { if (it.id == existing.id) upgraded else it },
         ).also { state = it }
     }
 

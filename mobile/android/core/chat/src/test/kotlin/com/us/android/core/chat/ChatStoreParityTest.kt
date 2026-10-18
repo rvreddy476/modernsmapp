@@ -41,7 +41,10 @@ class ChatStoreParityTest {
         override fun requests(): Flow<List<ChatConversationEntity>> = MutableStateFlow(emptyList())
         override fun unreadConversationCount(): Flow<Int> = MutableStateFlow(0)
         override suspend fun clearUnread(conversationId: String) = Unit
-        override suspend fun markUnread(conversationId: String, preview: String, at: String) = Unit
+        val unreadMarks = mutableListOf<Triple<String, String, String>>()
+        override suspend fun markUnread(conversationId: String, preview: String, at: String) {
+            unreadMarks += Triple(conversationId, preview, at)
+        }
         override suspend fun updateSettingsFlags(conversationId: String, pinned: Boolean, muted: Boolean) = Unit
         override suspend fun rawCheckpoint(query: SupportSQLiteQuery): Int = 0
         override suspend fun deleteMessage(messageId: String) {
@@ -76,7 +79,11 @@ class ChatStoreParityTest {
         val prunes = mutableListOf<List<String>>()
         val marks = mutableListOf<String>()
         override suspend fun message(messageId: String) = messages[messageId]
-        override suspend fun refreshMessage(messageId: String, type: String?, reactionsJson: String?, extrasJson: String?) = Unit
+        override suspend fun refreshMessage(messageId: String, type: String?, reactionsJson: String?, extrasJson: String?) {
+            messages[messageId]?.let {
+                messages[messageId] = it.copy(type = type, reactionsJson = reactionsJson, extrasJson = extrasJson)
+            }
+        }
         override suspend fun updateReactions(messageId: String, reactionsJson: String?) {
             messages[messageId]?.let { messages[messageId] = it.copy(reactionsJson = reactionsJson) }
         }
@@ -87,7 +94,14 @@ class ChatStoreParityTest {
         override suspend fun markUnreadOnly(conversationId: String) {
             marks += "unread:$conversationId"
         }
-        override suspend fun incrementUnread(conversationId: String) = Unit
+        val increments = mutableListOf<String>()
+        val previews = mutableListOf<Triple<String, String, String>>()
+        override suspend fun incrementUnread(conversationId: String) {
+            increments += conversationId
+        }
+        override suspend fun updatePreview(conversationId: String, preview: String, at: String) {
+            previews += Triple(conversationId, preview, at)
+        }
         override suspend fun updatePrefs(conversationId: String, pinned: Boolean, muted: Boolean, muteCalls: Boolean, alertTone: String?) = Unit
         override suspend fun alertTone(conversationId: String): String? = null
         override suspend fun pruneInbox(keep: List<String>) {
@@ -166,6 +180,73 @@ class ChatStoreParityTest {
         assertThat(body.waveform).containsExactly(1, 2, 3).inOrder()
         assertThat(dao.pending).isEmpty()
         assertThat(dao.messages.keys).containsExactly("srv-1")
+    }
+
+    // ── a delivered send is cached WITH its server address ─────────────
+
+    /** The text send endpoint, answering with the full server address. */
+    private class AddressedSendApi : ChatApi by unscriptedChat() {
+        override suspend fun send(conversationId: String, idempotencyKey: String, body: SendMessageRequest) =
+            ApiEnvelope(
+                data = MessageDto(
+                    msgId = "srv-1",
+                    conversationId = conversationId,
+                    senderId = "me",
+                    text = body.text,
+                    bucket = "202610",
+                    ts = "2026-10-18T10:00:00.123Z",
+                    createdAt = "2026-10-18T10:00:00.123Z",
+                ),
+            )
+    }
+
+    @Test
+    fun `a delivered text send is cached with its bucket and ts`() = runTest {
+        val dao = FakeDao()
+        val store = store(dao, FakeParityDao(dao.messages), AddressedSendApi())
+        store.enqueueSend("c1", "hello")
+        assertThat(store.drainOutbox()).isTrue()
+
+        val cached = store.recentCachedMessages("c1").single()
+        assertThat(cached.id).isEqualTo("srv-1")
+        assertThat(cached.bucket).isEqualTo("202610")
+        assertThat(cached.ts).isEqualTo("2026-10-18T10:00:00.123Z")
+        assertThat(cached.addressable).isTrue()
+    }
+
+    @Test
+    fun `a cached history page keeps each row's address for the offline tail`() = runTest {
+        val dao = FakeDao()
+        val store = store(dao, FakeParityDao(dao.messages), FakeApi(emptyList()))
+        store.cacheMessages(
+            listOf(
+                com.us.android.core.chat.data.Message(
+                    "m1", "c1", "u2", null, "hi", "2026-10-18T10:00:00Z",
+                    bucket = "202610", ts = "2026-10-18T10:00:00Z",
+                ),
+            ),
+        )
+        val cached = store.recentCachedMessages("c1").single()
+        assertThat(cached.bucket).isEqualTo("202610")
+        assertThat(cached.ts).isEqualTo("2026-10-18T10:00:00Z")
+    }
+
+    @Test
+    fun `a socket echo cached first is given the address when the send lands`() = runTest {
+        val dao = FakeDao()
+        val store = store(dao, FakeParityDao(dao.messages), AddressedSendApi())
+        store.enqueueSend("c1", "hello")
+        // The server's echo of the send beats the HTTP response; its frame has no address.
+        store.applyRealtimeMessage(
+            com.us.android.core.chat.data.Message("srv-1", "c1", "me", null, "hello", "2026-10-18T10:00:00.123Z"),
+        )
+        assertThat(store.recentCachedMessages("c1").single().addressable).isFalse()
+
+        assertThat(store.drainOutbox()).isTrue()
+        val cached = store.recentCachedMessages("c1")
+        assertThat(cached).hasSize(1)
+        assertThat(cached.single().addressable).isTrue()
+        assertThat(cached.single().text).isEqualTo("hello")
     }
 
     @Test
@@ -254,6 +335,50 @@ class ChatStoreParityTest {
             .markConversationRead(conversation("c2"))
         assertThat(result).isInstanceOf(com.us.android.core.common.result.AppResult.Failure::class.java)
         assertThat(failing.marks).containsExactly("read:c2", "unread:c2").inOrder()
+    }
+
+    // ── my own echo never marks a chat unread ──────────────────────────
+
+    private fun signedInAs(userId: String) = javax.inject.Provider<com.us.android.core.auth.SessionStateProvider> {
+        object : com.us.android.core.auth.SessionStateProvider {
+            override val sessionState: kotlinx.coroutines.flow.StateFlow<com.us.android.core.model.SessionState> =
+                MutableStateFlow(com.us.android.core.model.SessionState.Authenticated(userId = userId, sessionId = "s"))
+        }
+    }
+
+    private fun sessionStore(dao: FakeDao, parityDao: FakeParityDao) = ChatStore(
+        repository = ChatRepository(FakeApi(emptyList()), ErrorMapper(json)),
+        dao = dao,
+        scheduler = NoScheduler,
+        scrubRecovery = NoScrubOwed,
+        parityDao = parityDao,
+        sessionState = signedInAs("me"),
+    )
+
+    private fun realtime(id: String, sender: String) =
+        com.us.android.core.chat.data.Message(id, "c1", sender, null, "on my way", "2026-10-18T10:00:00Z")
+
+    @Test
+    fun `my own message echoed from another device moves the preview but never marks unread`() = runTest {
+        val dao = FakeDao()
+        val parityDao = FakeParityDao(dao.messages)
+        sessionStore(dao, parityDao).applyRealtimeMessage(realtime("m1", sender = "me"))
+
+        assertThat(dao.unreadMarks).isEmpty()
+        assertThat(parityDao.increments).isEmpty()
+        assertThat(parityDao.previews).containsExactly(Triple("c1", "on my way", "2026-10-18T10:00:00Z"))
+        assertThat(dao.messages.keys).containsExactly("m1")
+    }
+
+    @Test
+    fun `a message from someone else marks the chat unread and counts it`() = runTest {
+        val dao = FakeDao()
+        val parityDao = FakeParityDao(dao.messages)
+        sessionStore(dao, parityDao).applyRealtimeMessage(realtime("m2", sender = "u2"))
+
+        assertThat(dao.unreadMarks).containsExactly(Triple("c1", "on my way", "2026-10-18T10:00:00Z"))
+        assertThat(parityDao.increments).containsExactly("c1")
+        assertThat(parityDao.previews).isEmpty()
     }
 
     @Test
