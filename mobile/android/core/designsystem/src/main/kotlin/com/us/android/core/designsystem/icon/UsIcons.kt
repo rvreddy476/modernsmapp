@@ -365,6 +365,21 @@ object UsIcons {
         "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21",
     )
 
+    /** Lucide `zap` — the capture screen's flash, on (2026-10-18). */
+    val Zap: ImageVector = lucideStroked(
+        "Zap",
+        "M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z",
+    )
+
+    /** Lucide `zap-off` — the capture screen's flash, off. */
+    val ZapOff: ImageVector = lucideStroked(
+        "ZapOff",
+        "M10.513 4.856 13.12 2.17a.5.5 0 0 1 .86.46l-1.377 4.317",
+        "M15.656 10H20a1 1 0 0 1 .78 1.63l-1.72 1.773",
+        "M16.273 16.273 10.88 21.83a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14H4a1 1 0 0 1-.78-1.63l4.507-4.643",
+        "m2 2 20 20",
+    )
+
     /** Lucide `folder` — the gallery's Browse tile: any file, through the system picker. */
     val Folder: ImageVector = lucideStroked(
         "Folder",

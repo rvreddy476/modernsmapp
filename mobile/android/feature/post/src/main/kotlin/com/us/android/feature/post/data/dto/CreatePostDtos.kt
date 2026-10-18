@@ -198,6 +198,30 @@ data class CreatePostRequest(
 
     /** The creator's level for the sound, 0..1. Sent with the id. */
     @SerialName("overlay_audio_volume") val overlayAudioVolume: Double? = null,
+
+    // ── The post details screen (post-screens parity, 2026-10-18) ──────
+    //
+    // Nullable with a null default like every optional field above: a post
+    // that sets none of them is byte-identical to the request before they
+    // existed, so Studio's frozen replay bytes still decode and replay.
+
+    /** Who may comment: [COMMENT_ACCESS_EVERYONE], `followers` or [COMMENT_ACCESS_NOBODY]. */
+    @SerialName("comment_access") val commentAccess: String? = null,
+
+    /** The "Paid partnership" disclosure. */
+    @SerialName("paid_promotion") val paidPromotion: Boolean? = null,
+
+    /** The "Your own brand" disclosure. */
+    @SerialName("is_branded") val isBranded: Boolean? = null,
+
+    /** The "AI-generated content" label. */
+    @SerialName("ai_generated") val aiGenerated: Boolean? = null,
+
+    /** An https link the author attached; the server refuses anything else. */
+    @SerialName("link_url") val linkUrl: String? = null,
+
+    /** The place provider's id for [locationName], when it came from search. */
+    @SerialName("location_place_id") val locationPlaceId: String? = null,
 )
 
 /**
@@ -251,6 +275,13 @@ data class DistributionRequest(
 const val VISIBILITY_PUBLIC = "public"
 const val VISIBILITY_FOLLOWERS = "followers"
 const val VISIBILITY_PRIVATE = "private"
+
+/** Mutual follows — "followers you follow back" (2026-10-18). */
+const val VISIBILITY_FRIENDS = "friends"
+
+/** `comment_access` values the details screen sends. */
+const val COMMENT_ACCESS_EVERYONE = "everyone"
+const val COMMENT_ACCESS_NOBODY = "nobody"
 const val CONTENT_TYPE_POST = "post"
 const val CONTENT_TYPE_POLL = "poll"
 const val CONTENT_TYPE_FLICK = "flick"
@@ -294,4 +325,4 @@ const val DISTRIBUTION_VERSION = 1
  * `unlisted` stays out: no surface explains it.
  */
 val SupportedAudience: Set<String> =
-    setOf(VISIBILITY_PUBLIC, VISIBILITY_FOLLOWERS, VISIBILITY_PRIVATE)
+    setOf(VISIBILITY_PUBLIC, VISIBILITY_FOLLOWERS, VISIBILITY_FRIENDS, VISIBILITY_PRIVATE)

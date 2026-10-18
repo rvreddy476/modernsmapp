@@ -1,6 +1,9 @@
 package com.us.android.feature.post.navigation
 
 import com.us.android.core.common.session.SessionTeardownTask
+import com.us.android.core.creator.model.AndroidCreatorProject
+import com.us.android.core.creator.model.RenderExporter
+import com.us.android.core.creator.model.RenderResult
 import com.us.android.core.engagement.data.CommentMentionSource
 import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.network.ApiConfig
@@ -82,6 +85,25 @@ object ComposerTestGraph {
     @Provides
     @Singleton
     fun provideCommentMentionSource(): CommentMentionSource = CommentMentionSource.None
+
+    /**
+     * The studio's details step saves drafts through `CreatorPublisher`
+     * (2026-10-18), which renders with the `:core:media` exporter `:app`
+     * binds. Nothing is rendered on this journey; an exporter that refuses
+     * is enough for the graph to exist.
+     */
+    @Provides
+    @Singleton
+    fun provideRenderExporter(): RenderExporter = object : RenderExporter {
+        override suspend fun renderPage(
+            project: AndroidCreatorProject,
+            pageId: String,
+            sourceBytes: Map<String, ByteArray>,
+        ): RenderResult = RenderResult.Failure("no renderer in this graph", recoverable = false)
+
+        override suspend fun buildProxy(sourceBytes: ByteArray, maxEdgePx: Int): RenderResult =
+            RenderResult.Failure("no renderer in this graph", recoverable = false)
+    }
 }
 
 /**

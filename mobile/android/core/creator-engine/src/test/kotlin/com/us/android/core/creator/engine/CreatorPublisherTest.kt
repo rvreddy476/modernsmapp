@@ -99,6 +99,7 @@ class CreatorPublisherTest {
         val uploadCount = mutableMapOf<String, Int>()
         val createCalls = mutableListOf<Pair<String, String>>()
         var freezeCount = 0
+        val frozenDetails = mutableListOf<com.us.android.core.creator.model.PostDetails>()
         var failUploadOfAlt: String? = null
         var createOutcome: (Int) -> CreateOutcome = { CreateOutcome.Created("post-1") }
         private var nextMedia = 0
@@ -108,8 +109,10 @@ class CreatorPublisherTest {
             language: String,
             postType: String,
             mediaIds: List<String>,
+            details: com.us.android.core.creator.model.PostDetails,
         ): ByteArray {
             freezeCount++
+            frozenDetails += details
             return """{"post_type":"$postType","media_ids":[${
                 mediaIds.joinToString(",") { "\"$it\"" }
             }],"text":"$text"}""".toByteArray()
@@ -186,6 +189,57 @@ class CreatorPublisherTest {
     }
 
     // ------------------------------------------------------------------
+
+    /** The details screen's choices (2026-10-18) are frozen with the request, once. */
+    @Test
+    fun `the post details reach the frozen request`() = runBlocking {
+        val id = projectWithPages("one" to false, "two" to false)
+        val details = com.us.android.core.creator.model.PostDetails(title = "Monsoon", coverIndex = 1, aiGenerated = true)
+
+        publisher.publish(id, details)
+
+        assertThat(transport.frozenDetails).containsExactly(details)
+        Unit
+    }
+
+    /**
+     * A server draft (2026-10-18) needs the photos uploaded and NO post made:
+     * every page is confirmed and checkpointed, in order, and nothing is
+     * frozen or created — and a publish afterwards re-uploads nothing.
+     */
+    @Test
+    fun `uploading pages for a draft confirms them in order and creates no post`() = runBlocking {
+        val id = projectWithPages("first" to false, "" to true)
+
+        val uploaded = publisher.uploadPages(id)
+
+        assertThat(uploaded).isInstanceOf(CreatorPublisher.PagesUpload.Ready::class.java)
+        val ready = uploaded as CreatorPublisher.PagesUpload.Ready
+        assertThat(ready.mediaIds).hasSize(2)
+        // Only a page with words carries alt text into the draft.
+        assertThat(ready.altTexts).containsExactly(ready.mediaIds[0], "first")
+        assertThat(transport.freezeCount).isEqualTo(0)
+        assertThat(transport.createCalls).isEmpty()
+
+        publisher.publish(id)
+        assertThat(transport.uploadCount["page0"]).isEqualTo(1)
+        assertThat(transport.uploadCount["page1"]).isEqualTo(1)
+    }
+
+    /** Saved as a draft, the project is finished here — but only once its pages really are on the server. */
+    @Test
+    fun `a project is marked done as a draft only after its pages are confirmed`() = runBlocking {
+        val id = projectWithPages("one" to false)
+
+        publisher.markSavedAsDraft(id)
+        assertThat((store.load(id) as ProjectStore.LoadResult.Loaded).project.status)
+            .isEqualTo(AndroidCreatorProject.STATUS_EDITING)
+
+        publisher.uploadPages(id)
+        publisher.markSavedAsDraft(id)
+        assertThat((store.load(id) as ProjectStore.LoadResult.Loaded).project.status)
+            .isEqualTo(AndroidCreatorProject.STATUS_PUBLISHED)
+    }
 
     /** The happy path: page order becomes media order; everything resolves. */
     @Test

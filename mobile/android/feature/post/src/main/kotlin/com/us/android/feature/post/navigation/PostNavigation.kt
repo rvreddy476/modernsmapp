@@ -105,14 +105,50 @@ fun NavGraphBuilder.studioScreen(
      * once the post exists.
      */
     onOpenOwnProfile: () -> Unit,
+    /** Drafts was pressed and the draft is saved: close the studio onto the Drafts list. */
+    onDraftSaved: () -> Unit,
 ) {
     composable<StudioRoute> {
         com.us.android.feature.post.studio.StudioScreen(
             onClose = onClose,
             onOpenOwnProfile = onOpenOwnProfile,
+            onDraftSaved = onDraftSaved,
         )
     }
 }
+
+/** The saved photo and text drafts (2026-10-18). */
+@Serializable
+data object DraftsRoute
+
+/** One saved draft, open in the details form. [draftId] is read by the ViewModel under this name. */
+@Serializable
+data class DraftEditorRoute(val draftId: String)
+
+/**
+ * Registers the Drafts list and the draft editor. A published draft hands
+ * `:app` the post id; where that lands is `:app`'s to decide.
+ */
+fun NavGraphBuilder.draftScreens(
+    onBack: () -> Unit,
+    onOpenDraft: (draftId: String) -> Unit,
+    onDraftPublished: (postId: String) -> Unit,
+) {
+    composable<DraftsRoute> {
+        com.us.android.feature.post.drafts.DraftsScreen(onBack = onBack, onOpenDraft = onOpenDraft)
+    }
+    composable<DraftEditorRoute> {
+        com.us.android.feature.post.drafts.DraftEditorScreen(
+            onBack = onBack,
+            onSaved = onBack,
+            onPublished = onDraftPublished,
+        )
+    }
+}
+
+fun NavController.navigateToDrafts() = navigate(DraftsRoute)
+
+fun NavController.navigateToDraft(draftId: String) = navigate(DraftEditorRoute(draftId))
 
 /** Type-safe navigation to the Post Studio. */
 fun NavController.navigateToStudio(
@@ -133,10 +169,14 @@ fun NavController.navigateToStudio(
  * to Text for anything it does not recognise.
  */
 @Serializable
-data class CreateRoute(val surface: String = CreateSurface.Text.routeKey) {
+data class CreateRoute(
+    val surface: String = CreateSurface.Text.routeKey,
+    /** A video picked on the capture screen's picker (2026-10-18), for the reel flow to start from. */
+    val initialVideo: String? = null,
+) {
     companion object {
         /** The route for a sheet tile — the ONLY way a tile becomes a destination. */
-        fun of(surface: CreateSurface): CreateRoute = CreateRoute(surface.routeKey)
+        fun of(surface: CreateSurface, initialVideo: String? = null): CreateRoute = CreateRoute(surface.routeKey, initialVideo)
     }
 }
 
@@ -155,9 +195,41 @@ fun NavGraphBuilder.createHubScreen(
             onPublished = onPublished,
             onOpenStudio = onOpenStudio,
             onOpenOwnProfile = onOpenOwnProfile,
+            initialVideo = route.initialVideo,
         )
     }
 }
 
 /** Type-safe navigation to one create surface. */
-fun NavController.navigateToCreate(surface: CreateSurface) = navigate(CreateRoute.of(surface))
+fun NavController.navigateToCreate(surface: CreateSurface, initialVideo: String? = null) =
+    navigate(CreateRoute.of(surface, initialVideo))
+
+/** Create, camera first (2026-10-18): what the bar's "+" opens. */
+@Serializable
+data object CaptureRoute
+
+/**
+ * Registers the capture screen. Every way out is `:app`'s: a composer for a
+ * mode or a sheet tile, the photo studio with what was shot or picked, Go
+ * Live, the Drafts list.
+ */
+@Suppress("LongParameterList")
+fun NavGraphBuilder.captureScreen(
+    onClose: () -> Unit,
+    onOpenSurface: (surface: CreateSurface, initialVideo: String?) -> Unit,
+    onOpenStudio: (uris: List<String>) -> Unit,
+    onOpenLive: () -> Unit,
+    onOpenDrafts: () -> Unit,
+) {
+    composable<CaptureRoute> {
+        com.us.android.feature.post.createhub.capture.CaptureScreen(
+            onClose = onClose,
+            onOpenSurface = onOpenSurface,
+            onOpenStudio = onOpenStudio,
+            onOpenLive = onOpenLive,
+            onOpenDrafts = onOpenDrafts,
+        )
+    }
+}
+
+fun NavController.navigateToCapture() = navigate(CaptureRoute)

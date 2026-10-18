@@ -15,10 +15,12 @@ import androidx.work.workDataOf
 import com.us.android.core.creator.engine.CreatorPublisher
 import com.us.android.core.creator.engine.ProjectStore
 import com.us.android.core.creator.engine.SourceVault
+import com.us.android.core.creator.model.PostDetails
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.serialization.json.Json
 import java.util.concurrent.TimeUnit
 
 /**
@@ -72,7 +74,13 @@ class PublishWorker @AssistedInject constructor(
         // restored from the durable document.
         restorePreview(projectId)
 
-        return when (val outcome = publisher.publish(projectId) { report(it) }) {
+        // What the details screen set, frozen into the request with the rest.
+        // A job enqueued before details existed carries none: the same request.
+        val details = inputData.getString(KEY_DETAILS)
+            ?.let { runCatching { DETAILS_JSON.decodeFromString(PostDetails.serializer(), it) }.getOrNull() }
+            ?: PostDetails()
+
+        return when (val outcome = publisher.publish(projectId, details) { report(it) }) {
             is CreatorPublisher.PublishResult.Published -> {
                 tracker.update(projectId, ReelPublishState.Published(outcome.postId))
                 Result.success(workDataOf(KEY_POST_ID to outcome.postId))
@@ -151,6 +159,8 @@ class PublishWorker @AssistedInject constructor(
 
     companion object {
         const val KEY_PROJECT_ID = "projectId"
+        const val KEY_DETAILS = "details"
+        private val DETAILS_JSON = Json { ignoreUnknownKeys = true }
         const val KEY_POST_ID = "postId"
         const val KEY_FAILURE_REASON = "reason"
         private const val MAX_ATTEMPTS = 5
@@ -168,9 +178,14 @@ class PublishWorker @AssistedInject constructor(
          * cancel and restart mid-upload — the running work already owns the
          * live slot and the checkpoints.
          */
-        fun enqueue(context: Context, projectId: String) {
+        fun enqueue(context: Context, projectId: String, details: PostDetails = PostDetails()) {
             val request = OneTimeWorkRequestBuilder<PublishWorker>()
-                .setInputData(workDataOf(KEY_PROJECT_ID to projectId))
+                .setInputData(
+                    workDataOf(
+                        KEY_PROJECT_ID to projectId,
+                        KEY_DETAILS to DETAILS_JSON.encodeToString(PostDetails.serializer(), details),
+                    ),
+                )
                 .setConstraints(
                     Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
                 )

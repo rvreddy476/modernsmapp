@@ -16,7 +16,8 @@ import org.junit.Test
  *  - `hide_share` removes Share, `no_comments` removes Comment, and nothing
  *    the author sets touches Like or Save;
  *  - there is no More on the rail: it moved to the header's hamburger
- *    (founder, 2026-09-05), so the rail is Like, Comment, Share, Save;
+ *    (founder, 2026-09-05), so the rail is Like, Comment, Save, Share — the
+ *    shared full-screen rail's order since 2026-10-18;
  *  - "@handle" only where there is a handle; a display name gets no "@";
  *  - the playhead fraction is 0..1 whatever the player reports.
  */
@@ -32,12 +33,12 @@ class ReelRailTest {
     ) = railControls(controls, likes, comments, saved, shares, saves)
 
     @Test
-    fun `the rail is like, comment, share, save with their names when there is nothing to count`() {
+    fun `the rail is like, comment, save, share with their names when there is nothing to count`() {
         assertThat(rail().map { it.kind to it.label }).containsExactly(
             RailKind.LIKE to "Like",
             RailKind.COMMENT to "Comment",
-            RailKind.SHARE to "Share",
             RailKind.SAVE to "Save",
+            RailKind.SHARE to "Share",
         ).inOrder()
     }
 
@@ -104,7 +105,7 @@ class ReelRailTest {
     fun `no_comments drops comment and nothing else`() {
         val kinds = rail(controls = FeedPostControls(noComments = true)).map { it.kind }
 
-        assertThat(kinds).containsExactly(RailKind.LIKE, RailKind.SHARE, RailKind.SAVE).inOrder()
+        assertThat(kinds).containsExactly(RailKind.LIKE, RailKind.SAVE, RailKind.SHARE).inOrder()
     }
 
     @Test
@@ -113,7 +114,7 @@ class ReelRailTest {
 
         assertThat(every).containsExactly(RailKind.LIKE, RailKind.SAVE).inOrder()
         assertThat(RailKind.entries)
-            .containsExactly(RailKind.LIKE, RailKind.COMMENT, RailKind.SHARE, RailKind.SAVE)
+            .containsExactly(RailKind.LIKE, RailKind.COMMENT, RailKind.SAVE, RailKind.SHARE)
             .inOrder()
     }
 

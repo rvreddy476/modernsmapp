@@ -100,6 +100,8 @@ fun CreateHubScreen(
     onOpenStudio: (uris: List<String>, alreadyEdited: Boolean) -> Unit,
     /** A long video was handed to the worker: `:app` opens the viewer's own profile, where its pending tile is. */
     onOpenOwnProfile: () -> Unit,
+    /** A video picked in the create picker, for the reel or long-video flow to start from. */
+    initialVideo: String? = null,
 ) {
     Box(
         modifier = Modifier
@@ -125,10 +127,10 @@ fun CreateHubScreen(
             // Reel posts in the background: the surface closes on hand-off and
             // the Reels tab's pending item reports the rest, so there is no published id
             // to navigate to from here.
-            CreateSurface.Reel -> ReelSurface(onClose = onClose, onOpenOwnProfile = onOpenOwnProfile)
+            CreateSurface.Reel -> ReelSurface(onClose = onClose, onOpenOwnProfile = onOpenOwnProfile, initialVideo = initialVideo)
             // The same form opened as a long video (Tube, 2026-09-05): a title,
             // a 16:9 cover, no remix. Its hand-off routes to Tube home.
-            CreateSurface.Video -> ReelSurface(onClose = onClose, onOpenOwnProfile = onOpenOwnProfile)
+            CreateSurface.Video -> ReelSurface(onClose = onClose, onOpenOwnProfile = onOpenOwnProfile, initialVideo = initialVideo)
             CreateSurface.Audio -> VoiceSurface(onClose = onClose, onPublished = onPublished)
             CreateSurface.Poll -> PollSurface(onClose = onClose, onPublished = onPublished)
         }

@@ -41,6 +41,12 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.hilt.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
+    // The capture-first create screen's camera (2026-10-18): the same CameraX
+    // stack and version ref as chat's camera, never a lone newer artifact.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
     // Accessible drag-and-drop for the Studio's thumbnail strip ONLY — the
     // binding library decision for P1-A. It reorders a LazyRow; every actual
     // move is still a MovePage command through the reducer.

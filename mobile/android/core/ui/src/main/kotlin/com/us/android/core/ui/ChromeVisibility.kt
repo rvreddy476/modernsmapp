@@ -10,6 +10,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 
 /**
  * What a screen asks of the app shell's chrome — today, only whether the
@@ -35,6 +38,21 @@ class ChromeVisibility {
 
     fun hideBottomBar(hidden: Boolean) {
         bottomBarHidden = hidden
+    }
+
+    private val _reselected = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /**
+     * The bar item of the tab ALREADY on screen was tapped again (2026-10-18:
+     * on Home that is "refresh and go to the top"). An event, not state: no
+     * replay, so a screen composed later never sees an old tap; the shell
+     * sends it only while that tab is the current one, so whoever collects
+     * it is that tab.
+     */
+    val reselected: SharedFlow<Unit> = _reselected.asSharedFlow()
+
+    fun onTabReselected() {
+        _reselected.tryEmit(Unit)
     }
 }
 

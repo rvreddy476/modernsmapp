@@ -76,10 +76,11 @@ import kotlinx.coroutines.launch
  *
  * ## WHAT IS NOT HERE
  *
- * No "Drafts" link. The server keeps `post_drafts`, but this app has no drafts
- * screen or route to open — the composer restores its ONE durable draft on
- * its own (`ComposerDraftStore`). A link to a list that does not exist would
- * be dead UI, so it is omitted rather than stubbed.
+ * The text composer still restores its ONE durable local draft on its own
+ * (`ComposerDraftStore`). Since 2026-10-18 photo and text posts can also be
+ * saved as SERVER drafts from the details screen, and [onOpenDrafts] opens
+ * their list from a row under the tiles; a host that has no list passes null
+ * and the row is not drawn.
  *
  * ## WHAT IT OFFERS IS THE SCOPE'S, NOT THE SHEET'S (2026-09-06)
  *
@@ -98,6 +99,8 @@ fun CreateSheet(
     onOpenLive: () -> Unit,
     onDismiss: () -> Unit,
     scope: CreateScope = CreateScope.App,
+    /** The saved drafts list (2026-10-18); null draws no Drafts row. */
+    onOpenDrafts: (() -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val sheetScope = rememberCoroutineScope()
@@ -149,6 +152,10 @@ fun CreateSheet(
             if (scope.offersLive) {
                 Spacer(Modifier.height(GAP))
                 GoLiveRow(onClick = { leaveThen(onOpenLive) })
+            }
+            onOpenDrafts?.let { open ->
+                Spacer(Modifier.height(GAP))
+                DraftsRow(onClick = { leaveThen(open) })
             }
         }
     }
@@ -331,6 +338,49 @@ private fun GoLiveRow(onClick: () -> Unit) {
             }
             Text(
                 text = "Broadcast to your community",
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+        Icon(
+            imageVector = UsIcons.ChevronRight,
+            contentDescription = null,
+            tint = UsTheme.extended.textMuted,
+            modifier = Modifier.size(CHEVRON),
+        )
+    }
+}
+
+/** "Drafts": the posts saved for later, in the Go Live row's shape. */
+@Composable
+private fun DraftsRow(onClick: () -> Unit) {
+    val shape = RoundedCornerShape(TILE_RADIUS)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(UsTheme.extended.bgCard)
+            .border(HAIRLINE, UsTheme.extended.borderSubtle, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = LIVE_PADDING_H, vertical = LIVE_PADDING_V)
+            .semantics {
+                contentDescription = "Drafts. Posts you saved for later"
+                role = Role.Button
+            }
+            .testTag("create-drafts"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        UsIconSquare(
+            swatch = UsTheme.extended.create.article,
+            icon = UsIcons.FileText,
+            size = LIVE_ICON,
+            glyph = LIVE_GLYPH,
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "Drafts", style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
+            Text(
+                text = "Posts you saved for later",
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textMuted,
             )

@@ -4,6 +4,7 @@ import com.us.android.core.creator.model.AndroidCreatorProject
 import com.us.android.core.creator.model.Canonical
 import com.us.android.core.creator.model.ConfirmedMedia
 import com.us.android.core.creator.model.CreateOutcome
+import com.us.android.core.creator.model.PostDetails
 import com.us.android.core.creator.model.PublishTransport
 import com.us.android.core.creator.model.RenderExporter
 import com.us.android.core.creator.model.RenderResult
@@ -80,6 +81,8 @@ class CreatorPublisher @Inject constructor(
      */
     suspend fun publish(
         projectId: String,
+        /** What the details screen set; frozen into the request with everything else. */
+        details: PostDetails = PostDetails(),
         onProgress: suspend (PublishProgress) -> Unit = {},
     ): PublishResult {
         var project = when (val gated = loadPublishable(projectId)) {
@@ -105,7 +108,7 @@ class CreatorPublisher @Inject constructor(
         }
 
         // ---- The operation: freeze once, replay forever ----
-        val operation = existingLiveOperation(projectId) ?: freezeOperation(project)
+        val operation = existingLiveOperation(projectId) ?: freezeOperation(project, details)
 
         onProgress(PublishProgress.CreatingPost)
         val frozenBytes = Base64.getDecoder().decode(operation.frozenRequestBase64)
@@ -121,6 +124,55 @@ class CreatorPublisher @Inject constructor(
                 PublishResult.Failed(created.reason)
             }
         }
+    }
+
+    /** The pages of a project rendered and uploaded for a server draft. */
+    sealed interface PagesUpload {
+        /** Every page confirmed, in order, with each page's alt text by media id. */
+        data class Ready(val mediaIds: List<String>, val altTexts: Map<String, String>) : PagesUpload
+        data class Retryable(val reason: String) : PagesUpload
+        data class Failed(val reason: String) : PagesUpload
+    }
+
+    /**
+     * Render and upload every page of [projectId] — the same pipeline and the
+     * same per-page checkpoints as [publish] — WITHOUT creating the post: the
+     * server draft (2026-10-18) needs media ids before it can be saved. A
+     * later publish of the same project re-uploads nothing.
+     */
+    suspend fun uploadPages(
+        projectId: String,
+        onProgress: suspend (PublishProgress) -> Unit = {},
+    ): PagesUpload {
+        val project = when (val gated = loadPublishable(projectId)) {
+            is Gated.Ready -> gated.project
+            is Gated.Blocked -> return PagesUpload.Failed(gated.reason)
+        }
+        val done = when (val pages = publishPages(project, onProgress)) {
+            is PagesOutcome.Done -> pages.project
+            is PagesOutcome.Retry -> return PagesUpload.Retryable(pages.reason)
+            is PagesOutcome.Fatal -> return PagesUpload.Failed(pages.reason)
+        }
+        val mediaIds = done.pages.map { it.confirmedMedia!!.mediaId }
+        val altTexts = done.pages
+            .filter { it.accessibility.altText.isNotBlank() }
+            .associate { it.confirmedMedia!!.mediaId to it.accessibility.altText }
+        return PagesUpload.Ready(mediaIds, altTexts)
+    }
+
+    /**
+     * The project left the studio as a server draft: it is finished here, so
+     * the studio does not reopen it as work in progress. Marked published —
+     * its pages are on the server — rather than given a status the frozen
+     * document does not define.
+     */
+    suspend fun markSavedAsDraft(projectId: String) {
+        val project = (store.load(projectId) as? ProjectStore.LoadResult.Loaded)?.project ?: return
+        if (project.pages.isEmpty() || project.pages.any { it.confirmedMedia == null || it.renderedOutput == null }) return
+        store.save(
+            project.copy(revision = project.revision + 1, status = AndroidCreatorProject.STATUS_PUBLISHED),
+            now = System.currentTimeMillis(),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -298,6 +350,7 @@ class CreatorPublisher @Inject constructor(
      */
     private suspend fun freezeOperation(
         project: AndroidCreatorProject,
+        details: PostDetails,
     ): CreatorPublishOperationEntity {
         val mediaIds = project.pages.map { it.confirmedMedia!!.mediaId }
         val bytes = transport.freezeCreateRequest(
@@ -305,6 +358,7 @@ class CreatorPublisher @Inject constructor(
             language = project.postText.language,
             postType = if (mediaIds.isEmpty()) "text" else "image",
             mediaIds = mediaIds,
+            details = details,
         )
         val operation = CreatorPublishOperationEntity(
             operationId = newUlid(),

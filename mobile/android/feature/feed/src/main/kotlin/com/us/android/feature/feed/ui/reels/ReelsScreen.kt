@@ -3,9 +3,6 @@ package com.us.android.feature.feed.ui.reels
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,36 +12,26 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -60,20 +47,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -81,7 +58,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -98,10 +74,8 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
 import com.us.android.core.analytics.WatchProbe
-import com.us.android.core.designsystem.component.UsAvatar
-import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsBadgedIcon
-import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsHeaderCorner
 import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsHomeTopBar
@@ -110,9 +84,6 @@ import com.us.android.core.designsystem.component.usNotificationsDescription
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
-import com.us.android.core.engagement.data.bookmarkedOr
-import com.us.android.core.engagement.data.likeCountOr
-import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.feed.offline.OfflineEntry
 import com.us.android.core.feed.offline.OfflinePhase
 import com.us.android.core.feed.offline.OfflineState
@@ -120,6 +91,8 @@ import com.us.android.core.feed.offline.WAITING_FOR_NETWORK
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
+import com.us.android.core.feed.ui.share.PostShareSheetHost
+import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.feed.ui.sound.ReelSoundViewModel
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
@@ -138,18 +111,27 @@ import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.canUseSound
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.HideShellBottomBar
-import com.us.android.core.ui.LightStatusBarGlyphs
+import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.PLAYBACK_SPEEDS
 import com.us.android.core.ui.SPEED_NORMAL
+import com.us.android.core.ui.StageBottomScrim
+import com.us.android.core.ui.StageCaption
+import com.us.android.core.ui.StageCaptionState
+import com.us.android.core.ui.StagePausedGlyph
+import com.us.android.core.ui.StageRail
+import com.us.android.core.ui.StageRailAuthor
+import com.us.android.core.ui.StageRailBadge
+import com.us.android.core.ui.StageRailButton
+import com.us.android.core.ui.StageRailSound
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.UsReelMoreState
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
-import com.us.android.core.feed.ui.share.PostShareSheetHost
-import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.ui.rememberPostSharer
+import com.us.android.core.ui.stagePressScale
+import com.us.android.feature.feed.ui.stageRailControls
 import com.us.android.feature.feed.ui.watchProbe
 import java.io.File
 import kotlinx.coroutines.delay
@@ -298,9 +280,10 @@ fun ReelsScreen(
     // mode lands on a Home with its bar, and the next visit to Reels opens
     // in normal mode with a moving reel.
     HideShellBottomBar(hidden = !chrome.showBottomBar)
-    // The reel runs under the status bar and is a dark stage on either theme,
-    // so the bar's glyphs stay light here whatever the device's setting.
-    LightStatusBarGlyphs()
+    // The reel runs under the status bar and over the shell's dark bar
+    // (2026-10-18): a dark stage on either theme, so both system bars' glyphs
+    // stay light here whatever the device's setting.
+    LightSystemBarGlyphs()
     // Back in full mode brings the controls back; it never leaves the tab.
     // Without this the system Back reached the root and closed the app
     // from a screen that had hidden every other way out (founder, 2026-09-04).
@@ -708,7 +691,7 @@ private fun BoxScope.ScreenChrome(
             scaleIn(tween(CHROME_ANIM_MILLIS), initialScale = PAUSE_GLYPH_FROM),
         exit = fadeOut(tween(CHROME_ANIM_MILLIS)),
     ) {
-        PausedGlyph()
+        StagePausedGlyph()
     }
     AnimatedVisibility(
         visible = showHeader,
@@ -1110,7 +1093,7 @@ private fun PendingReelPage(
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        BottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
+        StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
         if (head.failure == null) {
             CircularProgressIndicator(
                 color = UsTheme.extended.onMedia,
@@ -1194,7 +1177,7 @@ private fun StripAction(label: String, onClick: () -> Unit) {
         fontWeight = FontWeight.Bold,
         color = UsTheme.extended.accentSolid,
         modifier = Modifier
-            .pressScale(onClick)
+            .stagePressScale(onClick)
             .padding(vertical = UsTheme.spacing.xs)
             .semantics { role = Role.Button },
     )
@@ -1270,7 +1253,7 @@ private fun ReelPage(
             enter = fadeIn(tween(CHROME_ANIM_MILLIS)),
             exit = fadeOut(tween(CHROME_ANIM_MILLIS)),
         ) {
-            BottomScrim()
+            StageBottomScrim()
         }
 
         // Each block leaves towards its own edge — the author block down,
@@ -1284,18 +1267,9 @@ private fun ReelPage(
         ) {
             ReelOverlay(
                 item = item,
-                relationship = relationship,
-                offersRelationship = offersRelationship,
                 soundLine = soundLine,
-                progress = progress,
                 actions = ReelOverlayActions(
                     onOpenAuthor = actions.onOpenAuthor,
-                    onRelationship = {
-                        when (relationship) {
-                            is ReelRelationship.Follow -> actions.onFollow(relationship.ref)
-                            is ReelRelationship.Subscribe -> actions.onSubscribe(relationship.ref)
-                        }
-                    },
                     onOpenHashtag = actions.onOpenHashtag,
                     onSoundLine = { actions.onSoundLine(item) },
                 ),
@@ -1312,9 +1286,14 @@ private fun ReelPage(
             enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInHorizontally(tween(CHROME_ANIM_MILLIS)) { it / 2 },
             exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutHorizontally(tween(CHROME_ANIM_MILLIS)) { it / 2 },
         ) {
-            ReelActionRail(
+            ReelRail(
                 item = item,
                 overlay = overlay,
+                relationship = relationship,
+                offersRelationship = offersRelationship,
+                soundLine = soundLine,
+                progress = progress,
+                spinning = settled && !view.paused,
                 muted = view.muted,
                 actions = actions,
             )
@@ -1422,486 +1401,137 @@ private fun TrackProgress(player: Player, polling: Boolean, onProgress: (Float) 
 }
 
 /**
- * The playhead as a ring around the author's avatar: a faint white track,
- * and the ember arc starting at twelve o'clock and sweeping clockwise as
- * the reel plays — the avatar reads as a tiny player (founder, 2026-09-05,
- * in place of the line along the bottom of the frame).
+ * The rail over a reel — the SAME rail Home draws (2026-10-18, one rail for
+ * both): the author's avatar at the top with the playhead as a ring round it
+ * and a "+" under it while the viewer can still make the edge (Follow, or
+ * Subscribe toward the channel a long video carries); like, comment, save
+ * and share, each with its count, or its name when there is nothing to count
+ * ([railControls]); then the mute switch, a setting rather than an action on
+ * the reel, unlabelled; and at the foot the sound disc, turning while the
+ * reel plays, which opens the sound's page ([soundLine]).
  */
+@Suppress("LongParameterList")
 @Composable
-private fun ProgressRing(progress: Float, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val track = UsTheme.extended.onMedia.copy(alpha = PROGRESS_TRACK_ALPHA)
-    val played = UsTheme.extended.ctaGradient
-    Box(
-        modifier = modifier
-            .drawBehind {
-                val stroke = RING_STROKE.toPx()
-                val inset = stroke / 2
-                val arcSize = Size(size.width - stroke, size.height - stroke)
-                drawArc(
-                    color = track,
-                    startAngle = RING_START_ANGLE,
-                    sweepAngle = FULL_SWEEP,
-                    useCenter = false,
-                    topLeft = Offset(inset, inset),
-                    size = arcSize,
-                    style = Stroke(width = stroke),
-                )
-                if (progress > 0f) {
-                    drawArc(
-                        brush = played,
-                        startAngle = RING_START_ANGLE,
-                        sweepAngle = FULL_SWEEP * progress.coerceIn(0f, 1f),
-                        useCenter = false,
-                        topLeft = Offset(inset, inset),
-                        size = arcSize,
-                        style = Stroke(width = stroke, cap = StrokeCap.Round),
-                    )
-                }
-            }
-            .padding(RING_STROKE + RING_GAP)
-            .testTag("reel_progress"),
-        contentAlignment = Alignment.Center,
-    ) {
-        content()
-    }
-}
-
-/** The paused mark: a white play triangle on a soft dark disc, centred over the held frame. */
-@Composable
-private fun PausedGlyph() {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(PAUSE_DISC)
-            .clip(CircleShape)
-            .background(UsTheme.extended.stage.copy(alpha = PAUSE_DISC_ALPHA))
-            .semantics { contentDescription = "Paused" }
-            .testTag("reel_paused"),
-    ) {
-        Icon(
-            imageVector = UsIcons.Play,
-            contentDescription = null,
-            tint = UsTheme.extended.onMedia,
-            modifier = Modifier.size(PAUSE_GLYPH),
-        )
-    }
-}
-
-/** Transparent at 60% of the height, black at 70% by the bottom edge. */
-@Composable
-private fun BottomScrim(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .fillMaxHeight(SCRIM_FRACTION)
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color.Transparent, UsTheme.extended.stage.copy(alpha = SCRIM_ALPHA)),
-                ),
-            ),
-    )
-}
-
-/**
- * The vertical control strip over a reel, YouTube Shorts' idiom on
- * Instagram's order (founder, 2026-09-04, "combine both"): like, comment,
- * share, save — each glyph with a one-line label under it, the count
- * where there is one (share and save too, when the row carries theirs,
- * 2026-09-30) — then mute on its own, unlabelled. The ⋮ left the
- * rail for the header's More (founder, 2026-09-05). 56dp from the
- * bottom, 20dp between controls. Plain white glyphs on the bottom scrim —
- * no discs; the scrim carries the contrast for the whole strip.
- *
- * Which controls, in what order, saying what, is [railControls]'s rule;
- * this only draws it. Comment and share follow the author's switches.
- */
-@Composable
-private fun ReelActionRail(
+private fun ReelRail(
     item: FeedItem,
     overlay: EngagementOverlay,
+    relationship: ReelRelationship,
+    offersRelationship: Boolean,
+    soundLine: SoundLine?,
+    progress: Float,
+    spinning: Boolean,
     muted: Boolean,
     actions: ReelActions,
     modifier: Modifier = Modifier,
 ) {
-    val reacted = overlay.reactedOr(item.viewer.hasReacted)
-    val bookmarked = overlay.bookmarkedOr(item.viewer.isBookmarked)
-    val controls = railControls(
-        controls = item.controls,
-        likes = overlay.likeCountOr(item.counts.likes, item.viewer.hasReacted),
-        comments = item.counts.comments,
-        saved = bookmarked,
-        shares = item.counts.shares,
-        saves = layeredSaves(item.counts.saves, serverSaved = item.viewer.isBookmarked, saved = bookmarked),
-    )
-    Column(
-        modifier = modifier
-            .padding(end = UsTheme.spacing.m, bottom = RAIL_BOTTOM_INSET)
-            .testTag("reel_rail"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(RAIL_GAP),
-    ) {
-        controls.forEach { control ->
-            RailControlButton(
-                control = control,
-                item = item,
-                reacted = reacted,
-                bookmarked = bookmarked,
-                actions = actions,
+    StageRail(
+        author = StageRailAuthor(
+            name = item.creatorName,
+            seed = item.author.id,
+            onOpen = { actions.onOpenAuthor(item.author.id) },
+            badge = if (offersRelationship) {
+                StageRailBadge(relationship.label) {
+                    when (relationship) {
+                        is ReelRelationship.Follow -> actions.onFollow(relationship.ref)
+                        is ReelRelationship.Subscribe -> actions.onSubscribe(relationship.ref)
+                    }
+                }
+            } else {
+                null
+            },
+            progress = progress,
+        ),
+        controls = stageRailControls(
+            item = item,
+            overlay = overlay,
+            onReact = actions.onReact,
+            onComment = actions.onComment,
+            onBookmark = actions.onBookmark,
+            onShare = actions.onShare,
+        ),
+        sound = soundLine?.let { line ->
+            StageRailSound(
+                name = item.creatorName,
+                seed = item.author.id,
+                description = "Sound: ${line.label}",
+                onClick = { actions.onSoundLine(item) },
             )
-        }
-        RailButton(
+        },
+        spinning = spinning,
+        tagPrefix = "reel_rail",
+        modifier = modifier.padding(end = UsTheme.spacing.m, bottom = RAIL_BOTTOM_INSET),
+    ) {
+        StageRailButton(
             icon = if (muted) UsIcons.SoundOff else UsIcons.SoundOn,
             description = if (muted) "Unmute" else "Mute",
             label = null,
             onClick = actions.onToggleMute,
-        )
-    }
-}
-
-/** One rail control drawn from its [RailControl]: the glyph and tint by kind and state, the label as given. */
-@Composable
-private fun RailControlButton(
-    control: RailControl,
-    item: FeedItem,
-    reacted: Boolean,
-    bookmarked: Boolean,
-    actions: ReelActions,
-) {
-    when (control.kind) {
-        RailKind.LIKE -> RailButton(
-            icon = if (reacted) UsIcons.HeartFilled else UsIcons.HeartOutline,
-            description = if (reacted) "Liked" else "Like",
-            label = control.label,
-            tint = if (reacted) UsTheme.extended.liveRed else UsTheme.extended.onMedia,
-            onClick = { actions.onReact(item.id, item.viewer.hasReacted) },
-        )
-        RailKind.COMMENT -> RailButton(
-            icon = UsIcons.Comment,
-            description = "Comments",
-            label = control.label,
-            onClick = { actions.onComment(item.id) },
-        )
-        RailKind.SHARE -> RailButton(
-            icon = UsIcons.Share,
-            description = "Share",
-            label = control.label,
-            onClick = { actions.onShare(item) },
-        )
-        RailKind.SAVE -> RailButton(
-            icon = if (bookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
-            description = if (bookmarked) "Saved" else "Save",
-            label = control.label,
-            tint = if (bookmarked) UsTheme.extended.accent else UsTheme.extended.onMedia,
-            onClick = { actions.onBookmark(item.id, item.viewer.isBookmarked) },
+            modifier = Modifier.testTag("reel_rail:mute"),
         )
     }
 }
 
 /**
- * A 28dp glyph over an 11sp Figtree label, one line. The label is what the
- * control says about itself — the count, or its name — and the description
- * is what a screen reader says, which folds the two into one phrase.
- */
-@Composable
-private fun RailButton(
-    icon: ImageVector,
-    description: String,
-    label: String?,
-    onClick: () -> Unit,
-    tint: Color = UsTheme.extended.onMedia,
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .pressScale(onClick)
-            .sizeIn(minWidth = RAIL_TARGET, minHeight = RAIL_TARGET)
-            .clearAndSetSemantics {
-                contentDescription = when (label) {
-                    null, description -> description
-                    else -> "$description, $label"
-                }
-                role = Role.Button
-            }
-            .testTag("reel_rail:${description.lowercase()}"),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier.size(RAIL_ICON),
-        )
-        if (label != null) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                fontSize = RAIL_LABEL_SIZE,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.onMedia,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-/**
- * No ripple. Over video the default indication lit a box around each glyph;
- * the press is shown instead by the control dipping to 85% on a spring and
- * springing back — the same gesture as the feed card's action row.
- */
-@Composable
-private fun Modifier.pressScale(onClick: () -> Unit): Modifier {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) PRESS_SCALE else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS),
-        label = "railPress",
-    )
-    return this
-        .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-        .graphicsLayer {
-            scaleX = scale
-            scaleY = scale
-        }
-}
-
-/**
- * Bottom-left, YouTube Shorts' row (founder, 2026-09-04): a 36dp avatar,
- * "@username" at 15sp, the WHITE relationship pill (Follow, or Subscribe
- * when the reel carries its author's channel; only when the viewer is
- * known not to have the edge, never on the viewer's own reel, which is
- * [offersReelRelationship]'s rule), then the reel's title, the caption
- * clamped to two lines with "more" that opens it in place, the hashtags as
- * chips that open that tag's posts, and the sound line (2026-09-30).
- *
- * The sound line is a note and a name, and it is drawn only when it can be
- * followed ([soundLine]): an added sound opens its page; "Original sound -
- * <creator>" makes the reel's own audio a sound and then opens its page.
- *
- * Holds no rail controls. Text and targets interleaved in one column made
- * the caption look tappable and the buttons look like part of the sentence.
+ * Bottom-left, the shared caption block (2026-10-18): "@handle · age", the
+ * reel's title, the caption clamped to two lines with "more" that opens it
+ * in place, the tags (each opens that tag's posts), and the sound line —
+ * drawn only when it can be followed ([soundLine]). The Follow pill that
+ * sat beside the name moved onto the rail's avatar.
  */
 @Composable
 private fun ReelOverlay(
     item: FeedItem,
-    relationship: ReelRelationship,
-    offersRelationship: Boolean,
     soundLine: SoundLine?,
-    /** 0..1 of the reel played; drawn as the ring around the avatar. */
-    progress: Float,
     actions: ReelOverlayActions,
     modifier: Modifier = Modifier,
 ) {
-    val username = reelAuthorLabel(item.author.username, item.author.nameForDisplay)
-    val onOpenAuthor = actions.onOpenAuthor
-    val onRelationship = actions.onRelationship
-    val title = reelTitle(item)
-    val hashtags = reelHashtags(item)
-    Column(
+    StageCaption(
+        state = StageCaptionState(
+            postId = item.id,
+            handle = reelAuthorLabel(item.author.username, item.author.nameForDisplay),
+            date = formatRelativeTime(item.createdAt).takeIf { it.isNotBlank() },
+            title = reelTitle(item),
+            text = item.text,
+            hashtags = reelHashtags(item),
+            soundLabel = soundLine?.label,
+        ),
+        onOpenAuthor = { actions.onOpenAuthor(item.author.id) },
+        onOpenHashtag = actions.onOpenHashtag,
+        onSound = actions.onSoundLine,
+        tagPrefix = "reel_overlay",
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = OVERLAY_SIDE, end = OVERLAY_RAIL_CLEARANCE, bottom = OVERLAY_BOTTOM)
-            .testTag("reel_overlay"),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-        ) {
-            // The avatar and the name are the way to the author's profile;
-            // the ring around the avatar is the playhead.
-            ProgressRing(progress = progress) {
-                UsAvatar(
-                    name = item.author.nameForDisplay,
-                    seed = item.author.id,
-                    size = UsAvatarSize.Post,
-                    modifier = Modifier.clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { onOpenAuthor(item.author.id) },
-                )
-            }
-            Text(
-                text = username,
-                style = MaterialTheme.typography.bodyMedium,
-                fontSize = NAME_SIZE,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.onMedia,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { onOpenAuthor(item.author.id) }
-                    .semantics { role = Role.Button },
-            )
-            if (offersRelationship) {
-                FollowPill(label = relationship.label, onClick = onRelationship)
-            }
-        }
-        if (title != null) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.onMedia,
-                maxLines = TITLE_LINES,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.testTag("reel_title"),
-            )
-        }
-        if (item.text.isNotBlank()) ReelCaption(item = item)
-        if (hashtags.isNotEmpty()) ReelHashtags(tags = hashtags, onOpenHashtag = actions.onOpenHashtag)
-        if (soundLine != null) ReelSoundLine(line = soundLine, onClick = actions.onSoundLine)
-    }
-}
-
-/** The caption, clamped to two lines with "more" that opens it in place and "less" that folds it. */
-@Composable
-private fun ReelCaption(item: FeedItem) {
-    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
-    var overflowed by remember(item.id) { mutableStateOf(false) }
-    Text(
-        text = item.text,
-        style = MaterialTheme.typography.bodyMedium,
-        fontSize = CAPTION_SIZE,
-        color = UsTheme.extended.onMedia,
-        maxLines = if (expanded) Int.MAX_VALUE else CAPTION_LINES,
-        overflow = TextOverflow.Ellipsis,
-        onTextLayout = { if (!expanded) overflowed = it.hasVisualOverflow },
+            .padding(start = OVERLAY_SIDE, end = OVERLAY_RAIL_CLEARANCE, bottom = OVERLAY_BOTTOM),
     )
-    if (overflowed || expanded) {
-        Text(
-            text = if (expanded) "less" else "more",
-            style = MaterialTheme.typography.labelLarge,
-            color = UsTheme.extended.onMedia.copy(alpha = DIM_ALPHA),
-            modifier = Modifier
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { expanded = !expanded }
-                .semantics { role = Role.Button }
-                .testTag("reel_caption_toggle"),
-        )
-    }
 }
 
-/** What the author block can ask for: the author, the relationship, a tag's posts, the sound. */
+/** What the caption block can ask for: the author, a tag's posts, the sound. */
 internal class ReelOverlayActions(
     val onOpenAuthor: (String) -> Unit,
-    val onRelationship: () -> Unit,
     val onOpenHashtag: (tag: String) -> Unit,
     val onSoundLine: () -> Unit,
 )
-
-/**
- * The reel's hashtags, one line of chips that scrolls sideways; a chip opens
- * that tag's posts. Material's chip, coloured from the over-media tokens: a
- * faint white plate and white type, because what is under it is the video
- * and its scrim, never the theme's surface.
- */
-@Composable
-private fun ReelHashtags(tags: List<String>, onOpenHashtag: (tag: String) -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier
-            .horizontalScroll(rememberScrollState())
-            .testTag("reel_hashtags"),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        tags.forEach { tag ->
-            SuggestionChip(
-                onClick = { onOpenHashtag(tag) },
-                label = {
-                    Text(
-                        text = hashtagLabel(tag),
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                    )
-                },
-                shape = RoundedCornerShape(UsTheme.radii.full),
-                colors = SuggestionChipDefaults.suggestionChipColors(
-                    containerColor = UsTheme.extended.onMedia.copy(alpha = CHIP_PLATE_ALPHA),
-                    labelColor = UsTheme.extended.onMedia,
-                ),
-                border = null,
-                modifier = Modifier
-                    .height(CHIP_HEIGHT)
-                    .testTag("reel_hashtag:$tag"),
-            )
-        }
-    }
-}
-
-/**
- * A note and the sound's name, small, on one line. The whole line is the
- * target: it opens the sound's page, making the sound first when the reel
- * plays only its own audio.
- */
-@Composable
-private fun ReelSoundLine(line: SoundLine, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                role = Role.Button,
-                onClickLabel = if (line.added) "Open sound" else "Use this sound",
-                onClick = onClick,
-            )
-            .sizeIn(minHeight = SOUND_LINE_TARGET)
-            .semantics(mergeDescendants = true) { contentDescription = "Sound: ${line.label}" }
-            .testTag(if (line.added) "reel_sound_line:added" else "reel_sound_line:original"),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-    ) {
-        Icon(
-            imageVector = UsIcons.Music,
-            contentDescription = null,
-            tint = UsTheme.extended.onMedia,
-            modifier = Modifier.size(SOUND_LINE_ICON),
-        )
-        Text(
-            text = line.label,
-            style = MaterialTheme.typography.labelLarge,
-            color = UsTheme.extended.onMedia,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
 
 @Preview
 @Composable
 private fun ReelOverlayWithSoundPreview() {
     UsTheme {
         Box(modifier = Modifier.background(UsTheme.extended.stage)) {
-            Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-                ReelHashtags(tags = listOf("reels", "monsoon", "walk"), onOpenHashtag = {})
-                ReelSoundLine(line = SoundLine(label = "Original sound - Asha", added = true), onClick = {})
-                ReelSoundLine(line = SoundLine(label = "Original sound - Ravi", added = false), onClick = {})
-            }
+            StageCaption(
+                state = StageCaptionState(
+                    postId = "preview",
+                    handle = "@asha",
+                    date = "2h",
+                    text = "Monsoon walk",
+                    hashtags = listOf("reels", "monsoon", "walk"),
+                    soundLabel = "Original sound - Asha",
+                ),
+                onOpenAuthor = {},
+                onOpenHashtag = {},
+                onSound = {},
+            )
         }
     }
-}
-
-/**
- * Shorts' solid Follow: a white pill, 32dp tall, the label in Momentum's
- * navy — the canvas token, which is the navy the whole design sits on — at
- * 14sp semibold. Solid rather than outlined because over video a hairline
- * disappears into a bright frame and the one control that grows the
- * viewer's feed must never do that.
- */
-@Composable
-private fun FollowPill(label: String, onClick: () -> Unit) {
-    // The design system's one follow button — ember here as on the post
-    // header, so the same action never wears two colours (founder,
-    // 2026-09-04). Solid, so it never sinks into a bright frame. The label
-    // is the relationship's: Follow, or Subscribe toward a channel.
-    UsFollowButton(text = label, onClick = onClick, modifier = Modifier.testTag("reel_follow"))
 }
 
 /**
@@ -1936,39 +1566,27 @@ private fun ReleaseOnLifecycle(pool: PlayerPool, sound: ReelSoundPlayer) {
 private const val CAPTION_LINES = 2
 
 /** The title is a line, not a paragraph: the caption under it is where the words go. */
-private const val TITLE_LINES = 1
 
 /** The level of a page that plays no added sound: the viewer's, in full. */
 private const val PLAIN_LEVEL = 1.0
 
 /** A hashtag chip: 32dp tall on a white plate at 16%. */
-private val CHIP_HEIGHT = 32.dp
-private const val CHIP_PLATE_ALPHA = 0.16f
 
 /** The sound line: a 14dp note, and a row tall enough to be tapped on purpose. */
-private val SOUND_LINE_ICON = 14.dp
-private val SOUND_LINE_TARGET = 32.dp
 
 /** Chrome in and out — the rail, the author block, the scrim — matched to the shell's bar. */
 private const val CHROME_ANIM_MILLIS = 200
 
 /** The bottom scrim covers the lowest 40% of the page. */
-private const val SCRIM_FRACTION = 0.4f
-private const val SCRIM_ALPHA = 0.7f
 
 /** The rail's bottom edge: 56dp up from the page's bottom. */
 private val RAIL_BOTTOM_INSET = 56.dp
 
 /** 20dp between rail controls. */
-private val RAIL_GAP = 20.dp
 
 /** Comfortably past the 48dp minimum — this is a one-thumb surface. */
-private val RAIL_TARGET = 48.dp
-
-private val RAIL_ICON = 28.dp
 
 /** The label under each rail glyph: Figtree 11sp semibold, one line. */
-private val RAIL_LABEL_SIZE = 11.sp
 
 private val OVERLAY_SIDE = 16.dp
 private val OVERLAY_BOTTOM = 56.dp
@@ -1978,15 +1596,8 @@ private val CAPTIONS_LIFT = 160.dp
 
 /** The overlay stops short of the rail so a long name never runs under it. */
 private val OVERLAY_RAIL_CLEARANCE = 72.dp
-private val NAME_SIZE = 15.sp
-private val CAPTION_SIZE = 14.sp
 
 /** The playhead line: 2dp, the track at 25% white, read four times a second. */
-private val RING_STROKE = 3.dp
-private val RING_GAP = 2.dp
-private const val RING_START_ANGLE = -90f
-private const val FULL_SWEEP = 360f
-private const val PROGRESS_TRACK_ALPHA = 0.25f
 private const val PROGRESS_POLL_MILLIS = 250L
 
 /**
@@ -1998,16 +1609,10 @@ private const val PROGRESS_POLL_MILLIS = 250L
  */
 private const val STRIP_PLATE_ALPHA = 0.55f
 
-private const val PRESS_SCALE = 0.85f
-private const val PRESS_STIFFNESS = 1200f
-
 /** Secondary text over video: legible, clearly quieter than the caption. */
 private const val DIM_ALPHA = 0.7f
 
 /** The paused mark: a 72dp disc at 45% black under a 36dp play triangle, arriving from 80%. */
-private val PAUSE_DISC = 72.dp
-private val PAUSE_GLYPH = 36.dp
-private const val PAUSE_DISC_ALPHA = 0.45f
 private const val PAUSE_GLYPH_FROM = 0.8f
 
 /** The pending item's round loader: a 48dp ring, no number in it. */

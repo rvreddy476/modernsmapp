@@ -8,6 +8,7 @@ import com.us.android.core.feed.data.dto.FeedSoundDto
 import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedChannel
 import com.us.android.core.model.FeedCounts
+import com.us.android.core.model.FeedDisclosure
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPoll
 import com.us.android.core.model.FeedPollOption
@@ -246,6 +247,13 @@ internal fun FeedItemDto.toDomain() = FeedItem(
         taggedUserIds = taggedUserIds,
         locationName = locationName,
         coverMediaId = coverMediaId,
+        commentAccess = commentAccess,
+    ),
+    disclosure = FeedDisclosure(
+        paidPromotion = paidPromotion,
+        isBranded = isBranded,
+        aiGenerated = aiGenerated,
+        linkUrl = linkUrl?.takeIf { it.isNotBlank() },
     ),
     reason = reason,
     reasonText = reasonText,

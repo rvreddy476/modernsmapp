@@ -54,18 +54,31 @@ class FeedRepository @Inject constructor(
      * placeholder slots would be invented. A feed that renders grey rows for
      * items that may not exist is worse than one that simply ends.
      */
-    fun feed(query: FeedQuery): Flow<PagingData<FeedItem>> = pager {
-        api.getFeed(
-            surface = query.surface.path,
-            limit = it.limit,
-            cursor = it.cursor,
-            // Null, not false: the parameter is omitted for the plain feed,
-            // so the request the server has served since day one is unchanged.
-            followingOnly = query.followingOnly.takeIf { on -> on },
-            circleOnly = query.circleOnly.takeIf { on -> on },
-            feedMode = query.feedModeParam(),
-        ).toFeedPage().withCovers()
+    fun feed(query: FeedQuery): Flow<PagingData<FeedItem>> = pager { page(query, it.limit, it.cursor) }
+
+    /**
+     * [primary] that never ends: past its last page it carries on with
+     * [fallback]'s pages ([endlessPage]). The full-screen Home feed's For
+     * You and Following (2026-10-18).
+     */
+    fun endlessFeed(primary: FeedQuery, fallback: FeedQuery): Flow<PagingData<FeedItem>> = pager { request ->
+        endlessPage(
+            cursor = request.cursor,
+            primary = { cursor -> page(primary, request.limit, cursor) },
+            fallback = { cursor -> page(fallback, request.limit, cursor) },
+        )
     }
+
+    private suspend fun page(query: FeedQuery, limit: Int, cursor: String?): FeedPage = api.getFeed(
+        surface = query.surface.path,
+        limit = limit,
+        cursor = cursor,
+        // Null, not false: the parameter is omitted for the plain feed,
+        // so the request the server has served since day one is unchanged.
+        followingOnly = query.followingOnly.takeIf { on -> on },
+        circleOnly = query.circleOnly.takeIf { on -> on },
+        feedMode = query.feedModeParam(),
+    ).toFeedPage().withCovers()
 
     /**
      * A paged stream of the posts carrying [tag], newest first.

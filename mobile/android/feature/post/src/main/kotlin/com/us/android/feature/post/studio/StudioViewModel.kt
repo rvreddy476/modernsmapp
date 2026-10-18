@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.us.android.core.common.result.AppResult
+import com.us.android.core.creator.engine.CreatorPublisher
 import com.us.android.core.creator.engine.LegacyRecoveryRetrier
 import com.us.android.core.creator.engine.ProjectStore
 import com.us.android.core.creator.engine.SourceVault
@@ -31,6 +33,10 @@ import com.us.android.core.media.creator.CreatorFonts
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.ui.photoeditor.PhotoEditor
+import com.us.android.feature.post.createhub.ReelLookups
+import com.us.android.feature.post.createhub.TaggedUser
+import com.us.android.feature.post.data.DraftContent
+import com.us.android.feature.post.data.PostDraftsRepository
 import com.us.android.feature.post.navigation.StudioRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -41,6 +47,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.SecureRandom
 import javax.inject.Inject
@@ -70,12 +77,16 @@ import javax.inject.Inject
 @HiltViewModel
 class StudioViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
-    savedStateHandle: SavedStateHandle,
+    private val savedStateHandle: SavedStateHandle,
     private val vault: SourceVault,
     private val store: ProjectStore,
     private val recoveryRetrier: LegacyRecoveryRetrier,
     private val photoEditor: PhotoEditor,
     private val tracker: ReelPublishTracker,
+    private val publisher: CreatorPublisher,
+    private val drafts: PostDraftsRepository,
+    private val lookups: ReelLookups,
+    private val recentLocations: RecentLocations,
 ) : ViewModel() {
 
     /**
@@ -165,6 +176,20 @@ class StudioViewModel @Inject constructor(
         val recoveries: List<RecoveryUi> = emptyList(),
         /** A rejected command or import, surfaced once. */
         val notice: String? = null,
+        /** The details screen's choices beside the caption (2026-10-18). */
+        val details: PostDetailsUi = PostDetailsUi(),
+        /** Places tagged recently on this device, newest first. */
+        val recentLocations: List<String> = emptyList(),
+        /** The "@" picker: what is typed, and who matches. */
+        val mentionQuery: String = "",
+        val mentionResults: List<TaggedUser> = emptyList(),
+        /** The Drafts button's upload and save is running. */
+        val savingDraft: Boolean = false,
+        /**
+         * The post is a server draft now and this screen is done: the host
+         * opens the Drafts list once. Like [handedOff], it never goes back.
+         */
+        val draftSaved: Boolean = false,
     ) {
         val selectedPage: PageUi? get() = pages.firstOrNull { it.pageId == selectedPageId }
         val decidedCount: Int get() = pages.count { it.altDecided }
@@ -175,7 +200,9 @@ class StudioViewModel @Inject constructor(
         // description was killing the whole flow).
         val canPublish: Boolean
             get() = pages.isNotEmpty() &&
-                publish !is PublishUi.Publishing
+                publish !is PublishUi.Publishing &&
+                !savingDraft &&
+                details.valid
     }
 
     private val _state = MutableStateFlow(StudioUiState())
@@ -186,7 +213,104 @@ class StudioViewModel @Inject constructor(
     private var publishWatch: Job? = null
 
     init {
+        // The form survives process death the way the document does.
+        savedStateHandle.get<String>(KEY_DETAILS)
+            ?.let { runCatching { DETAILS_JSON.decodeFromString(PostDetailsUi.serializer(), it) }.getOrNull() }
+            ?.let { restored -> _state.update { it.copy(details = restored) } }
         viewModelScope.launch { loadOrCreate() }
+        viewModelScope.launch {
+            val recent = recentLocations.load()
+            _state.update { it.copy(recentLocations = recent) }
+        }
+    }
+
+    // ── The details screen (2026-10-18) ─────────────────────────────────
+
+    /** Every change to the form goes through here, so it is saved for process death in one place. */
+    fun onDetailsChanged(change: (PostDetailsUi) -> PostDetailsUi) {
+        _state.update { state -> state.copy(details = change(state.details).withPageCount(state.pages.size)) }
+        savedStateHandle[KEY_DETAILS] = DETAILS_JSON.encodeToString(PostDetailsUi.serializer(), _state.value.details)
+    }
+
+    /** The "#" chip: a `#` at the end of the description, ready for a tag. */
+    fun onInsertHashtag() = onPostTextChanged(insertHashMark(_state.value.postText))
+
+    /** A person picked in the "@" picker goes into the description as `@username`. */
+    fun onMentionPicked(user: TaggedUser) {
+        onPostTextChanged(insertMention(_state.value.postText, user.username))
+        _state.update { it.copy(mentionQuery = "", mentionResults = emptyList()) }
+    }
+
+    private var mentionSearch: Job? = null
+
+    fun onMentionQueryChanged(query: String) {
+        _state.update { it.copy(mentionQuery = query) }
+        mentionSearch?.cancel()
+        val trimmed = query.trim().removePrefix("@")
+        if (trimmed.isEmpty()) {
+            _state.update { it.copy(mentionResults = emptyList()) }
+            return
+        }
+        mentionSearch = viewModelScope.launch {
+            delay(MENTION_DEBOUNCE_MILLIS)
+            val found = lookups.searchPeople(trimmed)
+            _state.update { it.copy(mentionResults = found) }
+        }
+    }
+
+    /** A place typed in the Location sheet, or picked from the recent chips. */
+    fun onLocationChosen(name: String) {
+        onDetailsChanged { it.copy(locationName = name.trim(), locationPlaceId = null) }
+        if (name.isNotBlank()) {
+            viewModelScope.launch {
+                val recent = recentLocations.remember(name)
+                _state.update { it.copy(recentLocations = recent) }
+            }
+        }
+    }
+
+    /** The per-photo description from the details screen's "Add alternative text". */
+    fun onAccessibilityFor(pageId: String, altText: String, decorative: Boolean) {
+        apply(CreatorCommand.SetAccessibility(pageId, Accessibility(altText.trim(), decorative)))
+        refresh()
+    }
+
+    /**
+     * The Drafts button: the photos are uploaded through the publish
+     * pipeline (checkpointed, so a later publish re-uploads nothing), then
+     * the post is saved as a server draft with every detail, and the studio
+     * hands over to the Drafts list. A failure leaves everything here.
+     */
+    fun onSaveDraft() {
+        val current = _state.value
+        if (current.pages.isEmpty() || current.savingDraft || !current.details.valid) return
+        _state.update { it.copy(savingDraft = true) }
+        viewModelScope.launch {
+            store.save(session.current, System.currentTimeMillis())
+            val projectId = session.current.projectId
+            val notice = when (val pages = publisher.uploadPages(projectId)) {
+                is CreatorPublisher.PagesUpload.Ready -> {
+                    val content = DraftContent(
+                        text = current.postText,
+                        language = current.postLanguage,
+                        mediaIds = pages.mediaIds,
+                        altTexts = pages.altTexts,
+                        details = current.details.toDetails(current.postText, pages.mediaIds.size),
+                    )
+                    when (drafts.create(content)) {
+                        is AppResult.Success -> {
+                            publisher.markSavedAsDraft(projectId)
+                            _state.update { it.copy(savingDraft = false, draftSaved = true) }
+                            return@launch
+                        }
+                        is AppResult.Failure -> "The draft couldn't be saved. Try again."
+                    }
+                }
+                is CreatorPublisher.PagesUpload.Retryable -> "The photos didn't finish uploading. Try again."
+                is CreatorPublisher.PagesUpload.Failed -> "These photos can't be saved as a draft."
+            }
+            _state.update { it.copy(savingDraft = false, notice = notice) }
+        }
     }
 
     // ── Loading ─────────────────────────────────────────────────────────
@@ -480,7 +604,11 @@ class StudioViewModel @Inject constructor(
             store.save(session.current, System.currentTimeMillis())
             tracker.setPreview(studioPublishPreview(session.current, vault))
             tracker.update(session.current.projectId, ReelPublishState.Preparing)
-            PublishWorker.enqueue(appContext, session.current.projectId)
+            PublishWorker.enqueue(
+                appContext,
+                session.current.projectId,
+                current.details.toDetails(current.postText, current.pages.size),
+            )
             _state.update { it.copy(publish = PublishUi.Publishing, handedOff = true) }
         }
     }
@@ -570,7 +698,9 @@ class StudioViewModel @Inject constructor(
             }
         }
 
-    private fun refresh() = _state.update { fromSession().copy(loaded = true) }
+    private fun refresh() = _state.update { state ->
+        fromSession().copy(loaded = true).let { it.copy(details = state.details.withPageCount(it.pages.size)) }
+    }
 
     private fun fromSession(): StudioUiState {
         val project = session.current
@@ -651,6 +781,9 @@ class StudioViewModel @Inject constructor(
 
     private companion object {
         const val KEY_URIS_IMPORTED = "studioInitialUrisImported"
+        const val KEY_DETAILS = "studioPostDetails"
+        const val MENTION_DEBOUNCE_MILLIS = 250L
+        val DETAILS_JSON = Json { ignoreUnknownKeys = true }
         const val MAX_PAGES = 10
         const val MICROS_I = 1_000_000
         const val MICROS_D = 1_000_000.0

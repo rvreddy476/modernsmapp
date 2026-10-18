@@ -60,9 +60,9 @@ class SoundsContractFixtureTest {
             assertThat(dto.originalAudioVolume).isEqualTo(0.2)
             assertThat(dto.overlayAudioVolume).isEqualTo(1.0)
             assertThat(dto.remixSetting).isEqualTo("allow")
-            // post-service's listing counts likes and comments, and nothing else.
-            assertThat(dto.counts.shares).isNull()
-            assertThat(dto.counts.saves).isNull()
+            // The post read carries shares and saves since 2026-10-18 (lane BP, 795058cf).
+            assertThat(dto.counts.shares).isEqualTo(0)
+            assertThat(dto.counts.saves).isEqualTo(0)
             assertThat(dto.counts.bookmarks).isNull()
 
             val item = dto.toDomain()
@@ -83,8 +83,8 @@ class SoundsContractFixtureTest {
             assertThat(item.soundReuseAllowed).isTrue()
             assertThat(item.title).isEqualTo("Monsoon walk, my take")
             assertThat(item.hashtags).containsExactly("reels")
-            assertThat(item.counts.shares).isNull()
-            assertThat(item.counts.saves).isNull()
+            assertThat(item.counts.shares).isEqualTo(0)
+            assertThat(item.counts.saves).isEqualTo(0)
         },
         // POST /v1/posts/{id}/sound 200 — the `data` of contract 2.2: `{sound}`, start 0.
         "use_sound.json" to { raw ->

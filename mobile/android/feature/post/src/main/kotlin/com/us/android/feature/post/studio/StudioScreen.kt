@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -113,6 +115,8 @@ fun StudioScreen(
      * while this screen exists — the same shape the reel surface uses.
      */
     onOpenOwnProfile: () -> Unit,
+    /** The post was saved as a server draft (2026-10-18): the host opens the Drafts list. */
+    onDraftSaved: () -> Unit,
     viewModel: StudioViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -146,6 +150,9 @@ fun StudioScreen(
     LaunchedEffect(state.handedOff) {
         if (state.handedOff) onOpenOwnProfile()
     }
+    LaunchedEffect(state.draftSaved) {
+        if (state.draftSaved) onDraftSaved()
+    }
 
     // System Back walks the flow backwards before it leaves it.
     BackHandler(enabled = state.step == StudioViewModel.Step.Share) {
@@ -165,7 +172,7 @@ fun StudioScreen(
                 onEditPhoto = editPhoto,
             )
         }
-        StudioViewModel.Step.Share -> ShareStep(state = state, viewModel = viewModel)
+        StudioViewModel.Step.Share -> ShareStep(state = state, viewModel = viewModel, onAddPhotos = launchPicker)
     }
     SnackbarHost(hostState = snackbar)
 }
@@ -999,231 +1006,139 @@ private fun EmptyStudio(onAddPhotos: () -> Unit) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// STEP 2 — SHARE
+// STEP 2 — THE POST DETAILS (2026-10-18)
 // ════════════════════════════════════════════════════════════════════════
 
-// LongMethod/complexity: one screen, one composable — the trade PostCard
-// documents; the branches are the publish state machine rendered honestly.
-@Suppress("LongMethod", "CyclomaticComplexMethod")
+/**
+ * The details screen: [PostDetailsForm] over the studio's pages — the strip
+ * shows them as edited, a tap makes one the cover, "+" adds more (ten at
+ * most) — with the recovery and failed-publish cards above it, Preview over
+ * it, and Drafts and Post at its foot.
+ */
 @Composable
 private fun ShareStep(
     state: StudioViewModel.StudioUiState,
     viewModel: StudioViewModel,
+    onAddPhotos: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            // Full-screen step with no scaffold of its own, so the keyboard
-            // inset is applied here — before verticalScroll, so the scroll
-            // viewport shrinks rather than the caption field hiding under it.
-            .imePadding()
-            .verticalScroll(rememberScrollState())
-            .testTag("studio-share"),
+    var previewing by remember { mutableStateOf(false) }
+    val tiles = state.pages.map { page ->
+        DetailsTile(
+            key = page.pageId,
+            model = File(page.sourcePath),
+            altText = page.altText,
+            decorative = page.decorative,
+            colorMatrix = adjustmentsMatrix(page.adjustments),
+        )
+    }
+    PostDetailsForm(
+        state = PostDetailsFormState(
+            tiles = tiles,
+            description = state.postText,
+            details = state.details,
+            recentLocations = state.recentLocations,
+            mentionQuery = state.mentionQuery,
+            mentionResults = state.mentionResults,
+            posting = state.publish is StudioViewModel.PublishUi.Publishing,
+            savingDraft = state.savingDraft,
+            canPost = state.canPublish,
+            language = state.postLanguage,
+        ),
+        actions = PostDetailsFormActions(
+            onBack = viewModel::onBackToEdit,
+            onPreview = { previewing = true },
+            onDescriptionChanged = viewModel::onPostTextChanged,
+            onInsertHashtag = viewModel::onInsertHashtag,
+            onMentionQueryChanged = viewModel::onMentionQueryChanged,
+            onMentionPicked = viewModel::onMentionPicked,
+            onDetails = viewModel::onDetailsChanged,
+            onLocationChosen = viewModel::onLocationChosen,
+            onAltText = { index, alt, decorative ->
+                state.pages.getOrNull(index)?.let { viewModel.onAccessibilityFor(it.pageId, alt, decorative) }
+            },
+            onAddPhotos = onAddPhotos,
+            onDrafts = viewModel::onSaveDraft,
+            onPost = viewModel::onPublish,
+            onLanguageChanged = viewModel::onLanguageChanged,
+        ),
+        modifier = Modifier.testTag("studio-share"),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = UsTheme.spacing.s, vertical = UsTheme.spacing.xs),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = viewModel::onBackToEdit) {
-                Icon(
-                    UsIcons.Back,
-                    contentDescription = "Back to editing",
-                    tint = UsTheme.extended.textPrimary,
-                )
-            }
-            Text(
-                "New post",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = UsTheme.extended.textPrimary,
-            )
-        }
-
         state.recoveries.forEach { recovery ->
             RecoveryCard(recovery, onRetry = { viewModel.onRetryRecovery(recovery.recoveryId) })
         }
-        when (val publish = state.publish) {
-            is StudioViewModel.PublishUi.PermanentFailure ->
-                PublishFailureCard(publish.reason, onRetry = viewModel::onRetryPublish)
-            else -> Unit
+        (state.publish as? StudioViewModel.PublishUi.PermanentFailure)?.let { publish ->
+            PublishFailureCard(publish.reason, onRetry = viewModel::onRetryPublish)
         }
+    }
+    if (previewing) {
+        StudioPreview(state = state, onClose = { previewing = false })
+    }
+}
 
-        // The edited result, tap to return to it.
-        state.pages.firstOrNull()?.let { first ->
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = UsTheme.spacing.m),
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(SHARE_THUMB_W)
-                        .aspectRatio(CANVAS_ASPECT)
-                        .clip(RoundedCornerShape(UsTheme.radii.medium))
-                        .clickable(onClick = viewModel::onBackToEdit)
-                        .semantics { contentDescription = "Edited photo. Tap to keep editing." },
-                ) {
-                    AsyncImage(
-                        model = File(first.sourcePath),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        colorFilter = ColorFilter.colorMatrix(adjustmentsMatrix(first.adjustments)),
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    if (state.pages.size > 1) {
-                        Text(
-                            "${state.pages.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = UsTheme.extended.onMedia,
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(UsTheme.spacing.xs)
-                                .clip(CircleShape)
-                                .background(UsTheme.extended.mediaPlate)
-                                .padding(
-                                    horizontal = UsTheme.spacing.s,
-                                    vertical = UsTheme.spacing.xs,
-                                ),
-                        )
-                    }
-                }
+/**
+ * Preview: the post as the full-screen feed will show it — the photos as a
+ * sideways carousel on the stage, the dots and the caption block — before
+ * it goes. Pictures are the edited sources with their colour look; the
+ * exported pixels are the render exporter's, as everywhere in the studio.
+ */
+@Composable
+private fun StudioPreview(state: StudioViewModel.StudioUiState, onClose: () -> Unit) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        val pages = state.pages
+        val pager = androidx.compose.foundation.pager.rememberPagerState(
+            initialPage = state.details.coverIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0)),
+            pageCount = { pages.size },
+        )
+        Box(modifier = Modifier.fillMaxSize().background(UsTheme.extended.stage).testTag("studio-preview")) {
+            androidx.compose.foundation.pager.HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { index ->
+                val page = pages[index]
+                AsyncImage(
+                    model = File(page.sourcePath),
+                    contentDescription = page.altText.ifBlank { null },
+                    contentScale = ContentScale.Fit,
+                    colorFilter = ColorFilter.colorMatrix(adjustmentsMatrix(page.adjustments)),
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
-        }
-
-        OutlinedTextField(
-            value = state.postText,
-            onValueChange = viewModel::onPostTextChanged,
-            placeholder = { Text("Add a caption…") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = UsTheme.spacing.pageHorizontal)
-                .testTag("studio-caption"),
-            minLines = 2,
-        )
-
-        Spacer(Modifier.height(UsTheme.spacing.m))
-
-        // Alt text is a nudge, not a gate: the row says what is still
-        // undescribed and a tap lands on the first such page, but Share never
-        // waits for it.
-        val pending = state.pages.size - state.decidedCount
-        ShareRow(
-            title = "Alt text",
-            value = altStatusText(pending),
-            emphasis = false,
-            onClick = if (pending > 0) viewModel::onJumpToUndecided else null,
-            testTag = "studio-alt-status",
-        )
-        ShareLanguageRow(language = state.postLanguage, onChange = viewModel::onLanguageChanged)
-
-        Spacer(Modifier.height(UsTheme.spacing.l))
-
-        val publishing = state.publish is StudioViewModel.PublishUi.Publishing
-        Button(
-            onClick = viewModel::onPublish,
-            enabled = state.canPublish,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = UsTheme.spacing.pageHorizontal)
-                .testTag("studio-publish")
-                .semantics {
-                    contentDescription = when {
-                        publishing -> "Post. In progress."
-                        state.canPublish -> "Post"
-                        else -> "Post. Unavailable: add photos first."
-                    }
+            com.us.android.core.ui.StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
+            com.us.android.core.ui.StageCaption(
+                state = com.us.android.core.ui.StageCaptionState(
+                    postId = state.projectId,
+                    handle = "You",
+                    date = "now",
+                    title = state.details.title.ifBlank { null },
+                    text = state.postText,
+                    hashtags = descriptionTags(state.postText).first,
+                    labels = previewLabels(state.details),
+                ),
+                onOpenAuthor = {},
+                above = {
+                    if (pages.size > 1) com.us.android.core.ui.StagePageDots(pageCount = pages.size, currentPage = pager.currentPage)
                 },
-        ) {
-            if (publishing) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-            } else {
-                Text("Post")
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(UsTheme.spacing.xxl),
+            )
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(UsTheme.spacing.s),
+            ) {
+                Icon(UsIcons.Close, contentDescription = "Close preview", tint = UsTheme.extended.onMedia)
             }
         }
-        Spacer(Modifier.height(UsTheme.spacing.xl))
     }
 }
 
-private fun altStatusText(pending: Int): String = when (pending) {
-    0 -> "Added"
-    1 -> "1 photo undescribed — optional"
-    else -> "$pending photos undescribed — optional"
-}
-
-@Composable
-private fun ShareRow(
-    title: String,
-    value: String,
-    emphasis: Boolean,
-    onClick: (() -> Unit)?,
-    testTag: String,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(
-                horizontal = UsTheme.spacing.pageHorizontal,
-                vertical = UsTheme.spacing.m,
-            )
-            .testTag(testTag),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.bodyLarge,
-            color = UsTheme.extended.textPrimary,
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (emphasis) MaterialTheme.colorScheme.error else UsTheme.extended.textMuted,
-        )
-    }
-}
-
-/** Language at rest is two characters; tap to edit, exactly like the composer. */
-@Composable
-private fun ShareLanguageRow(language: String, onChange: (String) -> Unit) {
-    var editing by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { editing = !editing }
-            .padding(
-                horizontal = UsTheme.spacing.pageHorizontal,
-                vertical = UsTheme.spacing.m,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            "Language",
-            style = MaterialTheme.typography.bodyLarge,
-            color = UsTheme.extended.textPrimary,
-        )
-        Spacer(Modifier.weight(1f))
-        if (editing) {
-            OutlinedTextField(
-                value = language,
-                onValueChange = onChange,
-                singleLine = true,
-                modifier = Modifier
-                    .width(LANGUAGE_FIELD)
-                    .semantics { contentDescription = "Post language" },
-            )
-        } else {
-            Text(
-                language.uppercase().ifEmpty { "EN" },
-                style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textMuted,
-            )
-        }
-    }
+/** The labels the post will wear, as the feed words them. */
+private fun previewLabels(details: PostDetailsUi): List<String> = buildList {
+    if (details.paidPromotion) add("Paid partnership")
+    if (details.isBranded) add("Brand")
+    if (details.aiGenerated) add("AI-generated")
 }
 
 // ── Recovery and failure cards ──────────────────────────────────────────
@@ -1293,8 +1208,6 @@ private val FILTER_THUMB_H = 90.dp
 private val REMOVE_BADGE = 18.dp
 private val REMOVE_ICON = 12.dp
 private val COLOR_SWATCH = 32.dp
-private val SHARE_THUMB_W = 180.dp
-private val LANGUAGE_FIELD = 96.dp
 
 // The edit canvas is the STAGE in both themes (media first): EditStep runs inside the dark theme.
 private const val TEXT_EDITOR_SCRIM_ALPHA = 0.88f

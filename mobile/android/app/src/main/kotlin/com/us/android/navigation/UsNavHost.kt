@@ -148,13 +148,19 @@ import com.us.android.feature.notifications.navigation.notificationsScreen
 import com.us.android.feature.post.createhub.CreateScope
 import com.us.android.feature.post.createhub.CreateSheet
 import com.us.android.feature.post.createhub.CreateSurface
+import com.us.android.feature.post.navigation.CaptureRoute
 import com.us.android.feature.post.navigation.ComposerRoute
+import com.us.android.feature.post.navigation.captureScreen
+import com.us.android.feature.post.navigation.navigateToCapture
 import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
 import com.us.android.feature.post.navigation.StudioRoute
 import com.us.android.feature.post.navigation.composerScreen
 import com.us.android.feature.post.navigation.createHubScreen
+import com.us.android.feature.post.navigation.draftScreens
 import com.us.android.feature.post.navigation.navigateToCreate
+import com.us.android.feature.post.navigation.navigateToDraft
+import com.us.android.feature.post.navigation.navigateToDrafts
 import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.navigateToStudio
 import com.us.android.feature.post.navigation.postScreen
@@ -409,12 +415,24 @@ fun UsNavHost(
                     UsNavigationBar(
                         items = tabs.map { it.item },
                         selectedIndex = tabs.indexOf(currentTab),
-                        onSelect = { index -> navController.navigateToTopLevel(tabs[index]) },
+                        onSelect = { index ->
+                            val target = tabs[index]
+                            // The tab already on screen: tell it rather than
+                            // navigate to itself (Home refreshes, 2026-10-18).
+                            if (target == currentTab) chrome.onTabReselected() else navController.navigateToTopLevel(target)
+                        },
                         // Momentum's raised centre button is always Create, not a
                         // tab. It opens the Create SHEET over the current screen;
                         // while the sheet is up the "+" reads as "×" and closes it.
-                        centerAction = { createScope = createScope?.let { null } ?: CreateScope.App },
+                        // Create is camera first (2026-10-18): the "+" opens the
+                        // capture screen, whose More chip holds the Create sheet.
+                        centerAction = {
+                            if (createScope != null) createScope = null else navController.navigateToCapture()
+                        },
                         centerActive = createScope != null,
+                        // Home and Reels are full-screen video stages: the bar
+                        // goes dark with them (post-screens parity, 2026-10-18).
+                        stage = currentTab?.isStage == true,
                     )
                 }
             }
@@ -488,6 +506,7 @@ private fun CreateSheetHost(scope: CreateScope?, navController: NavHostControlle
         onOpenLive = { navController.navigateToLiveHub() },
         onDismiss = onDismiss,
         scope = scope,
+        onOpenDrafts = { navController.navigateToDrafts() },
     )
 }
 
@@ -703,10 +722,12 @@ private fun NavGraphBuilder.tabDestinations(
         // bar's centre button.
         onOpenSearch = { navController.navigateToSearch(SearchOrigin.HOME) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
-        onOpenReels = onOpenReels,
-        // Home's More menu (2026-10-02): three screens that already exist.
+        onOpenSound = { soundId -> navController.navigateToSound(soundId) },
+        // Home's More menu (2026-10-02): screens that already exist; Messages
+        // joined it when the full-screen header lost its glyph (2026-10-18).
         onOpenMenuRow = { row ->
             when (row) {
+                HomeMenuRow.MESSAGES -> navController.navigateToTopLevel(TopLevelDestination.MESSAGES)
                 HomeMenuRow.FRIENDS -> navController.navigate(FriendsFeedRoute)
                 HomeMenuRow.LIVE -> navController.navigateToLiveHub()
                 HomeMenuRow.SETTINGS -> navController.navigateToSettings()
@@ -720,20 +741,32 @@ private fun NavGraphBuilder.tabDestinations(
     friendsFeedScreen(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenReels = onOpenReels,
     )
 
     // A trending tag's posts, pushed over Home from the HashTag tab.
     hashtagPostsScreen(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenReels = onOpenReels,
     )
 
     // The Create hub — one composer, opened on the surface the Create sheet
     // chose (Text, Photo, Reel, Audio, Poll, Article). On success the created
     // post REPLACES the hub in the back stack: Back from the new post returns
     // to the feed, not to a creator whose content is already published.
+    // Create, camera first (2026-10-18). Every hand-over replaces the capture
+    // screen, so Back from a composer returns to where "+" was pressed.
+    captureScreen(
+        onClose = { navController.popBackStack() },
+        onOpenSurface = { surface, video ->
+            navController.navigate(CreateRoute.of(surface, video)) { popUpTo<CaptureRoute> { inclusive = true } }
+        },
+        onOpenStudio = { uris ->
+            navController.navigate(StudioRoute(uris)) { popUpTo<CaptureRoute> { inclusive = true } }
+        },
+        onOpenLive = { navController.navigateToLiveHub() },
+        onOpenDrafts = { navController.navigateToDrafts() },
+    )
+
     createHubScreen(
         onClose = { navController.popBackStack() },
         onPublished = { postId ->
@@ -869,6 +902,24 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenOwnProfile = {
             navController.popBackStack<StudioRoute>(inclusive = true)
             navController.navigateToTopLevel(TopLevelDestination.ME)
+        },
+        // Saved for later (2026-10-18): the studio gives way to the Drafts list.
+        onDraftSaved = {
+            navController.navigate(com.us.android.feature.post.navigation.DraftsRoute) {
+                popUpTo<StudioRoute> { inclusive = true }
+            }
+        },
+    )
+
+    // The saved drafts and the draft editor (2026-10-18). A published draft
+    // opens its post, with the list and the editor gone from under it.
+    draftScreens(
+        onBack = { navController.popBackStack() },
+        onOpenDraft = { draftId -> navController.navigateToDraft(draftId) },
+        onDraftPublished = { postId ->
+            navController.navigate(PostRoute(postId)) {
+                popUpTo<com.us.android.feature.post.navigation.DraftsRoute> { inclusive = true }
+            }
         },
     )
 

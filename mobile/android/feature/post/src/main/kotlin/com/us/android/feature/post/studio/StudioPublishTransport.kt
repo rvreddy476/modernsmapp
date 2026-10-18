@@ -2,6 +2,7 @@ package com.us.android.feature.post.studio
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.creator.model.CreateOutcome
+import com.us.android.core.creator.model.PostDetails
 import com.us.android.core.creator.model.PublishTransport
 import com.us.android.core.creator.model.UploadOutcome
 import com.us.android.core.media.upload.MediaUploader
@@ -49,14 +50,9 @@ class StudioPublishTransport @Inject constructor(
         language: String,
         postType: String,
         mediaIds: List<String>,
+        details: PostDetails,
     ): ByteArray {
-        val request = CreatePostRequest(
-            text = text,
-            postType = postType,
-            mediaIds = mediaIds,
-            language = language,
-            distribution = DistributionRequest(),
-        )
+        val request = studioCreateRequest(text, language, postType, mediaIds, details)
         return json.encodeToString(CreatePostRequest.serializer(), request)
             .toByteArray(Charsets.UTF_8)
     }

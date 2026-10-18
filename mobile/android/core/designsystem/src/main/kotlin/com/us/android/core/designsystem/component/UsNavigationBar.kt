@@ -89,12 +89,20 @@ fun UsNavigationBar(
      * the same tile reads as the way to close what it opened.
      */
     centerActive: Boolean = false,
+    /**
+     * The dark variant for a screen that is a video stage (Home and Reels,
+     * 2026-10-18): the stage ground in both themes, white glyphs, the lit
+     * tab in full white and the rest dimmed — the light bar under a
+     * full-screen video read as a second screen stuck to the first.
+     */
+    stage: Boolean = false,
 ) {
-    val border = UsTheme.extended.borderMedium
+    val colors = if (stage) stageBarColors() else plainBarColors()
+    val border = colors.border
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(UsTheme.extended.bgCardSolid)
+            .background(colors.ground)
             // Top edge only: the bar is flush with the screen's sides and
             // bottom, so a full border would draw a visible box.
             .drawBehind {
@@ -126,7 +134,7 @@ fun UsNavigationBar(
                 val split = items.size / 2
                 items.forEachIndexed { index, item ->
                     if (centerAction != null && index == split) {
-                        CenterSlot(onClick = centerAction, active = centerActive, modifier = Modifier.weight(1f))
+                        CenterSlot(onClick = centerAction, active = centerActive, colors = colors, modifier = Modifier.weight(1f))
                     }
                     FlatTab(
                         item = item,
@@ -134,10 +142,11 @@ fun UsNavigationBar(
                         onClick = { onSelect(index) },
                         modifier = Modifier.weight(1f),
                         showLabel = showLabels,
+                        colors = colors,
                     )
                 }
                 if (centerAction != null && items.size <= split) {
-                    CenterSlot(onClick = centerAction, active = centerActive, modifier = Modifier.weight(1f))
+                    CenterSlot(onClick = centerAction, active = centerActive, colors = colors, modifier = Modifier.weight(1f))
                 }
             }
         }
@@ -146,12 +155,12 @@ fun UsNavigationBar(
 
 /** The create button in a tab-width slot so the row spaces it like a tab. */
 @Composable
-private fun CenterSlot(onClick: () -> Unit, active: Boolean, modifier: Modifier) {
+private fun CenterSlot(onClick: () -> Unit, active: Boolean, colors: BarColors, modifier: Modifier) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier.heightIn(min = TAB_MIN_HEIGHT).padding(vertical = BAR_VERTICAL),
     ) {
-        CenterCreateButton(onClick = onClick, active = active)
+        CenterCreateButton(onClick = onClick, active = active, colors = colors)
     }
 }
 
@@ -163,8 +172,9 @@ private fun FlatTab(
     onClick: () -> Unit,
     modifier: Modifier,
     showLabel: Boolean,
+    colors: BarColors,
 ) {
-    val tint = if (selected) UsTheme.extended.accentSolid else UsTheme.extended.textMuted
+    val tint = if (selected) colors.selected else colors.idle
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
@@ -182,7 +192,7 @@ private fun FlatTab(
             modifier = Modifier
                 .size(width = TAB_PLATE_WIDTH, height = TAB_PLATE_HEIGHT)
                 .background(
-                    if (selected) UsTheme.extended.unreadRow else androidx.compose.ui.graphics.Color.Transparent,
+                    if (selected) colors.plate else androidx.compose.ui.graphics.Color.Transparent,
                     RoundedCornerShape(UsTheme.radii.full),
                 ),
             contentAlignment = Alignment.Center,
@@ -218,6 +228,7 @@ private fun FlatTab(
 @Composable
 private fun CenterCreateButton(
     onClick: () -> Unit,
+    colors: BarColors,
     modifier: Modifier = Modifier,
     active: Boolean = false,
 ) {
@@ -232,13 +243,13 @@ private fun CenterCreateButton(
         targetValue = if (active) 1f else 0f,
         label = "createFill",
     )
-    val muted = UsTheme.extended.textMuted
+    val muted = colors.idle
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .size(CENTER_BUTTON)
             .rotate(rotation)
-            .background(UsTheme.extended.textPrimary.copy(alpha = fill), shape)
+            .background(colors.createFill.copy(alpha = fill), shape)
             .border(CENTER_OUTLINE, muted.copy(alpha = 1f - fill), shape)
             .clickable(onClick = onClick)
             .semantics {
@@ -249,11 +260,42 @@ private fun CenterCreateButton(
         Icon(
             imageVector = UsIcons.Create,
             contentDescription = null,
-            tint = lerp(muted, UsTheme.extended.bgCardSolid, fill),
+            tint = lerp(muted, colors.ground, fill),
             modifier = Modifier.size(CENTER_GLYPH),
         )
     }
 }
+
+/** What the bar is painted with: the theme's surface, or the stage. */
+@Immutable
+private data class BarColors(
+    val ground: androidx.compose.ui.graphics.Color,
+    val border: androidx.compose.ui.graphics.Color,
+    val selected: androidx.compose.ui.graphics.Color,
+    val idle: androidx.compose.ui.graphics.Color,
+    val plate: androidx.compose.ui.graphics.Color,
+    val createFill: androidx.compose.ui.graphics.Color,
+)
+
+@Composable
+private fun plainBarColors() = BarColors(
+    ground = UsTheme.extended.bgCardSolid,
+    border = UsTheme.extended.borderMedium,
+    selected = UsTheme.extended.accentSolid,
+    idle = UsTheme.extended.textMuted,
+    plate = UsTheme.extended.unreadRow,
+    createFill = UsTheme.extended.textPrimary,
+)
+
+@Composable
+private fun stageBarColors() = BarColors(
+    ground = UsTheme.extended.stage,
+    border = UsTheme.extended.mediaRim,
+    selected = UsTheme.extended.onMedia,
+    idle = UsTheme.extended.onMediaDim,
+    plate = UsTheme.extended.mediaPlate,
+    createFill = UsTheme.extended.onMedia,
+)
 
 /** A quarter-turn less a bit: "+" read as "×". */
 private const val CENTER_ACTIVE_ROTATION = 45f
@@ -292,6 +334,14 @@ private val CENTER_GLYPH = 22.dp
 private fun UsNavigationBarPreview() {
     UsTheme {
         UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 0, onSelect = {}, centerAction = {})
+    }
+}
+
+@Preview(name = "Navigation bar — stage", showBackground = true)
+@Composable
+private fun UsNavigationBarStagePreview() {
+    UsTheme {
+        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 0, onSelect = {}, centerAction = {}, stage = true)
     }
 }
 

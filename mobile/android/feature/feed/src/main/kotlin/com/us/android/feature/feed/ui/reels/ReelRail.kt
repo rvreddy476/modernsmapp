@@ -18,8 +18,13 @@ import com.us.android.core.ui.formatCount
  * There is no More here any more (founder, 2026-09-05): the reel's More
  * sheet opens from the hamburger in the header, so the rail is the four
  * actions on the reel itself and nothing that is about the app.
+ *
+ * Since the shared full-screen rail (2026-10-18) the order is Like,
+ * Comment, Save, Share — Home and Reels draw the same rail, in the
+ * reference feed's order, with the author's avatar above and the sound disc
+ * below.
  */
-enum class RailKind { LIKE, COMMENT, SHARE, SAVE }
+enum class RailKind { LIKE, COMMENT, SAVE, SHARE }
 
 data class RailControl(val kind: RailKind, val label: String)
 
@@ -43,8 +48,8 @@ fun railControls(
     return buildList {
         add(RailControl(RailKind.LIKE, railCountLabel(likes, "Like")))
         if (visible.showComment) add(RailControl(RailKind.COMMENT, railCountLabel(comments, "Comment")))
-        if (visible.showShare) add(RailControl(RailKind.SHARE, railCountLabel(shares ?: 0, "Share")))
         add(RailControl(RailKind.SAVE, railCountLabel(saves ?: 0, if (saved) "Saved" else "Save")))
+        if (visible.showShare) add(RailControl(RailKind.SHARE, railCountLabel(shares ?: 0, "Share")))
     }
 }
 

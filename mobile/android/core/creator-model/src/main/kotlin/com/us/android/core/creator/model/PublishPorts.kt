@@ -29,13 +29,15 @@ interface PublishTransport {
      *
      * Called exactly once per operation, at freeze time. The returned bytes
      * are stored and replayed verbatim; the engine never re-invokes this for
-     * a retry.
+     * a retry. [details] is what the details screen set (2026-10-18); the
+     * empty default freezes exactly the request this froze before it existed.
      */
     fun freezeCreateRequest(
         text: String,
         language: String,
         postType: String,
         mediaIds: List<String>,
+        details: PostDetails = PostDetails(),
     ): ByteArray
 
     /**

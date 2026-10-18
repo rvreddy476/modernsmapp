@@ -56,11 +56,18 @@ class BottomBarVisibilityTest {
         assertThat(bottomBarVisible(null, tabs, chromeHidden = false)).isEqualTo(routeShowsBottomBar(null, tabs))
     }
 
-    /** Only Reels fills the frame from the top; every other tab keeps its status-bar inset. */
+    /** Reels and the full-screen Home feed fill the frame from the top; every other tab keeps its inset. */
     @Test
-    fun `reels is the only tab that draws under the status bar`() {
+    fun `reels and home are the tabs that draw under the status bar`() {
         assertThat(TopLevelDestination.entries.filter { it.drawsUnderStatusBar })
-            .containsExactly(TopLevelDestination.REELS)
+            .containsExactly(TopLevelDestination.REELS, TopLevelDestination.HOME)
+    }
+
+    /** The dark bar is for the two video stages only (2026-10-18). */
+    @Test
+    fun `only home and reels get the stage bar`() {
+        assertThat(TopLevelDestination.entries.filter { it.isStage })
+            .containsExactly(TopLevelDestination.REELS, TopLevelDestination.HOME)
     }
 
     /** Explore in the bar is a root: no back arrow. Out of the bar it was opened from a header and keeps one. */
@@ -76,6 +83,7 @@ class BottomBarVisibilityTest {
         assertThat(shellInsetsFor(TopLevelDestination.REELS, darkStage = false)).isEqualTo(ShellInsets.NONE)
         assertThat(shellInsetsFor(null, darkStage = true)).isEqualTo(ShellInsets.NO_TOP)
         assertThat(shellInsetsFor(null, darkStage = false)).isEqualTo(ShellInsets.ALL)
-        assertThat(shellInsetsFor(TopLevelDestination.HOME, darkStage = false)).isEqualTo(ShellInsets.ALL)
+        assertThat(shellInsetsFor(TopLevelDestination.HOME, darkStage = false)).isEqualTo(ShellInsets.NONE)
+        assertThat(shellInsetsFor(TopLevelDestination.ME, darkStage = false)).isEqualTo(ShellInsets.ALL)
     }
 }

@@ -225,11 +225,14 @@ class CreatePostWireTest {
      * already existed. `unlisted` stays out: no surface explains it, and an
      * audience the author cannot reason about is not a choice.
      */
+    // `friends` (mutual follows) joined 2026-10-18 with post-service's
+    // enforcement in every read path (post-screens parity, lane BP).
     @Test
     fun `the audience allowlist is exactly the enforced set`() {
         assertThat(SupportedAudience).containsExactly(
             VISIBILITY_PUBLIC,
             com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS,
+            com.us.android.feature.post.data.dto.VISIBILITY_FRIENDS,
             com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE,
         )
     }

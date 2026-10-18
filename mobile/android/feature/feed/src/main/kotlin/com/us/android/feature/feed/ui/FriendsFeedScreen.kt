@@ -16,14 +16,13 @@ import com.us.android.core.designsystem.component.UsTopBar
  * whole timeline and this page is already one. It left the bottom bar for
  * the Explore launcher (founder, 2026-09-05), so it wears a titled bar with
  * a back arrow rather than the Momentum header: it is a page you open, and
- * [onBack] is the way out of it.
+ * [onBack] is the way out of it. The body is Home's full-screen pager
+ * (2026-10-18), below the titled bar.
  */
 @Composable
 fun FriendsFeedScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
-    /** A video was tapped; :app switches to the Reels tab, which opens on it. */
-    onOpenReels: () -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Friends) },
     ),
@@ -35,7 +34,6 @@ fun FriendsFeedScreen(
         FeedContent(
             viewModel = viewModel,
             onOpenAuthor = onOpenAuthor,
-            onOpenReels = onOpenReels,
             empty = FRIENDS_EMPTY,
             modifier = Modifier.padding(padding),
         )

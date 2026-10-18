@@ -38,6 +38,12 @@ object PostModule {
     fun providePeopleSearchApi(retrofit: Retrofit): PeopleSearchApi =
         retrofit.create(PeopleSearchApi::class.java)
 
+    /** The photo and text details screen's drafts (2026-10-18) — post-service through the gateway. */
+    @Provides
+    @Singleton
+    fun providePostDraftsApi(retrofit: Retrofit): com.us.android.feature.post.data.PostDraftsApi =
+        retrofit.create(com.us.android.feature.post.data.PostDraftsApi::class.java)
+
     /** The details step's hashtag suggestions — post-service through the gateway. */
     @Provides
     @Singleton

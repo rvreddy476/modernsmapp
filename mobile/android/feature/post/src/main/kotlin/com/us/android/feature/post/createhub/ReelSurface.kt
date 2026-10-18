@@ -149,6 +149,8 @@ import kotlin.math.roundToInt
 internal fun ReelSurface(
     onClose: () -> Unit,
     onOpenOwnProfile: () -> Unit,
+    /** A video already picked in the create picker (2026-10-18): the flow starts from it, once. */
+    initialVideo: String? = null,
     viewModel: ReelPublishViewModel = hiltViewModel(),
     studio: ReelStudioViewModel = hiltViewModel(),
     banuba: BanubaGateViewModel = hiltViewModel(),
@@ -162,6 +164,13 @@ internal fun ReelSurface(
     // A reel goes through an editor first; a long video is picked as is.
     val editing = rememberReelEditing(long = long, viewModel = viewModel, studio = studio, banuba = banuba)
     val sources = rememberVideoSources(onSource = editing.onSource)
+    var startedWithPick by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(initialVideo) {
+        if (initialVideo != null && !startedWithPick) {
+            startedWithPick = true
+            editing.onSource(initialVideo)
+        }
+    }
 
     // The studio rendered: the details step takes the file, and the studio forgets it.
     studioState.exportedPath?.let { path ->

@@ -11,7 +11,6 @@ import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedFeedbackRequest
 import com.us.android.core.feed.data.FeedRepository
-import com.us.android.core.feed.data.NewPostCount
 import com.us.android.core.feed.data.PollVoteRequest
 import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.media.FeedEntry
@@ -26,19 +25,18 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.feed.data.followGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Rule
 import org.junit.Test
 
+private const val OPENED_AT = "2026-10-13T07:00Z"
+
 /**
- * The "N new posts" pill above the home timeline.
- *
- * The anchor is the newest `created_at` the last refresh loaded, per tab; the
- * delta endpoint counts from it; a refresh (which tapping the pill causes)
- * moves the anchor and clears the pill.
+ * The Following tab's dot (2026-10-18; it replaced For You's "N new posts"
+ * pill). The anchor is the newest `created_at` Following's last refresh
+ * loaded, or the moment Home opened until it has loaded; the delta endpoint
+ * counts from it; the dot is never lit while Following is on screen.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class NewPostsTest {
@@ -119,7 +117,7 @@ class NewPostsTest {
             watchTracker = VideoWatchTracker.disabled(),
             analytics = NoOpAnalyticsRecorder,
             hidden = HiddenPosts(),
-        )
+        ).also { it.openedAt = OPENED_AT }
     }
 
     private val loaded = listOf(
@@ -136,85 +134,90 @@ class NewPostsTest {
     }
 
     @Test
-    fun `for you counts the home timeline from the newest loaded post`() = runTest {
+    fun `the dot asks for the following delta from the moment home opened, until following loads`() = runTest {
         val api = DeltaApi(FeedDeltaDto(newCount = 3))
         val vm = viewModel(api)
-        backgroundScope.launch { vm.newPosts.collect {} }
-        runCurrent()
 
-        vm.onRefreshHydrated(loaded)
-        vm.checkNewPosts()
+        vm.checkFollowing()
 
-        assertThat(api.asked).containsExactly(FeedApi.DELTA_HOME to "2026-10-13T09:00:00Z")
-        assertThat(vm.newPosts.value).isEqualTo(NewPostCount(3, more = false))
+        assertThat(api.asked).containsExactly(FeedApi.DELTA_FOLLOWING to OPENED_AT)
+        assertThat(vm.followingDot.value).isTrue()
     }
 
     @Test
-    fun `following asks for the following delta, and each tab keeps its own pill`() = runTest {
-        val api = DeltaApi(FeedDeltaDto(newCount = 2))
+    fun `once following has loaded, its newest post is the anchor`() = runTest {
+        val api = DeltaApi(FeedDeltaDto(newCount = 0))
         val tabs = FeedTabState()
         val vm = viewModel(api, tabs = tabs)
-        backgroundScope.launch { vm.newPosts.collect {} }
-        runCurrent()
 
         tabs.select(FeedTab.FOLLOWING)
         vm.onRefreshHydrated(loaded)
-        vm.checkNewPosts()
-        assertThat(api.asked.last().first).isEqualTo(FeedApi.DELTA_FOLLOWING)
-        assertThat(vm.newPosts.value?.count).isEqualTo(2)
-
-        // For You has loaded nothing yet: no anchor, no request, no pill.
         tabs.select(FeedTab.FOR_YOU)
-        vm.checkNewPosts()
-        assertThat(api.asked).hasSize(1)
-        assertThat(vm.newPosts.value).isNull()
+        vm.checkFollowing()
+
+        assertThat(api.asked).containsExactly(FeedApi.DELTA_FOLLOWING to "2026-10-13T09:00:00Z")
+        assertThat(vm.followingDot.value).isFalse()
     }
 
     @Test
-    fun `nothing new shows no pill, and a refresh clears one`() = runTest {
-        val api = DeltaApi(FeedDeltaDto(newCount = 0))
+    fun `a for you refresh does not move the following anchor`() = runTest {
+        val api = DeltaApi(FeedDeltaDto(newCount = 1))
         val vm = viewModel(api)
-        backgroundScope.launch { vm.newPosts.collect {} }
-        runCurrent()
-        vm.onRefreshHydrated(loaded)
 
-        vm.checkNewPosts()
-        assertThat(vm.newPosts.value).isNull()
+        vm.onRefreshHydrated(listOf(item("fresh", "2026-10-13T10:00:00Z")))
+        vm.checkFollowing()
 
-        api.answer = FeedDeltaDto(newCount = 50, hasMore = true)
-        vm.checkNewPosts()
-        assertThat(vm.newPosts.value).isEqualTo(NewPostCount(50, more = true))
-
-        vm.onNewPostsShown()
-        assertThat(vm.newPosts.value).isNull()
-
-        // The refresh the tap caused moves the anchor to what it loaded.
-        api.answer = FeedDeltaDto(newCount = 0)
-        vm.onRefreshHydrated(listOf(item("fresh", "2026-10-13T10:00:00Z")) + loaded)
-        vm.checkNewPosts()
-        assertThat(api.asked.last().second).isEqualTo("2026-10-13T10:00:00Z")
+        assertThat(api.asked.single().second).isEqualTo(OPENED_AT)
     }
 
     @Test
-    fun `friends has no delta and never asks`() = runTest {
+    fun `the dot never lights while following is on screen, and picking following puts it out`() = runTest {
+        val api = DeltaApi(FeedDeltaDto(newCount = 4))
+        val vm = viewModel(api)
+
+        vm.checkFollowing()
+        assertThat(vm.followingDot.value).isTrue()
+
+        // Picking Following with the dot lit starts it over, and says so.
+        assertThat(vm.selectTab(FeedTab.FOLLOWING)).isTrue()
+        assertThat(vm.followingDot.value).isFalse()
+
+        vm.checkFollowing()
+        assertThat(api.asked).hasSize(1)
+        assertThat(vm.followingDot.value).isFalse()
+
+        // Without a dot, picking Following is only a tab switch.
+        vm.selectTab(FeedTab.FOR_YOU)
+        assertThat(vm.selectTab(FeedTab.FOLLOWING)).isFalse()
+    }
+
+    @Test
+    fun `nothing new puts the dot out`() = runTest {
+        val api = DeltaApi(FeedDeltaDto(newCount = 2))
+        val vm = viewModel(api)
+        vm.checkFollowing()
+        assertThat(vm.followingDot.value).isTrue()
+
+        api.answer = FeedDeltaDto(newCount = 0)
+        vm.checkFollowing()
+        assertThat(vm.followingDot.value).isFalse()
+    }
+
+    @Test
+    fun `friends has no dot and never asks`() = runTest {
         val api = DeltaApi(FeedDeltaDto(newCount = 9))
         val vm = viewModel(api, mode = FeedMode.Friends)
-        backgroundScope.launch { vm.newPosts.collect {} }
-        runCurrent()
-        vm.onRefreshHydrated(loaded)
 
-        vm.watchNewPosts() // returns at once off the home timeline
-        vm.checkNewPosts()
+        vm.watchFollowing() // returns at once off the home timeline
+        vm.checkFollowing()
 
         assertThat(api.asked).isEmpty()
-        assertThat(vm.newPosts.value).isNull()
+        assertThat(vm.followingDot.value).isFalse()
     }
 
     @Test
-    fun `the pill says how many`() {
-        assertThat(newPostsLabel(NewPostCount(1, more = false))).isEqualTo("↑ 1 new post")
-        assertThat(newPostsLabel(NewPostCount(12, more = false))).isEqualTo("↑ 12 new posts")
-        assertThat(newPostsLabel(NewPostCount(50, more = true))).isEqualTo("↑ 50+ new posts")
+    fun `the dot polls every minute`() {
+        assertThat(FOLLOWING_POLL_MILLIS).isEqualTo(60_000L)
     }
 
     private class NoEngagementApi : com.us.android.core.engagement.data.EngagementApi {

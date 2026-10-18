@@ -42,11 +42,8 @@ data class HashtagPostsRoute(val tag: String)
  * once rendered here with an empty handler and shipped inert; a required
  * parameter is what makes that impossible to repeat by omission.
  *
- * [onOpenReels] is the tab switch a tapped video asks for. The feed has
- * already left the post id in `ReelsEntry` (`:core:media`) by the time it
- * calls this; `:app` only switches to the Reels root, which reads the
- * entry when it starts. No argument travels through the route, because a
- * tab root is restored, not pushed.
+ * A video post plays in place since the full-screen feed (2026-10-18), so
+ * nothing here leaves for the Reels tab; [onOpenSound] is a post's sound.
  */
 fun NavGraphBuilder.feedScreen(
     onOpenAuthor: (userId: String) -> Unit,
@@ -55,10 +52,10 @@ fun NavGraphBuilder.feedScreen(
     onOpenNotifications: () -> Unit,
     /** Momentum's header search glyph. `:app` decides where search lives. */
     onOpenSearch: () -> Unit,
-    /** A trending tag was tapped. `:app` pushes [HashtagPostsRoute] for it. */
+    /** A trending tag, or a tag under a post, was tapped. `:app` pushes [HashtagPostsRoute] for it. */
     onOpenHashtag: (tag: String) -> Unit,
-    /** A video was tapped. `:app` switches to the Reels tab. */
-    onOpenReels: () -> Unit,
+    /** A post's sound disc or sound line. `:app` pushes [SoundRoute] for it. */
+    onOpenSound: (soundId: String) -> Unit,
     /** A row of Home's More menu (Friends, Live, Settings); `:app` opens that screen. */
     onOpenMenuRow: (HomeMenuRow) -> Unit,
 ) {
@@ -69,7 +66,7 @@ fun NavGraphBuilder.feedScreen(
             onOpenNotifications = onOpenNotifications,
             onOpenSearch = onOpenSearch,
             onOpenHashtag = onOpenHashtag,
-            onOpenReels = onOpenReels,
+            onOpenSound = onOpenSound,
             onOpenMenuRow = onOpenMenuRow,
         )
     }
@@ -84,13 +81,11 @@ fun NavGraphBuilder.feedScreen(
 fun NavGraphBuilder.friendsFeedScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
-    onOpenReels: () -> Unit,
 ) {
     composable<FriendsFeedRoute> {
         FriendsFeedScreen(
             onBack = onBack,
             onOpenAuthor = onOpenAuthor,
-            onOpenReels = onOpenReels,
         )
     }
 }
@@ -99,7 +94,6 @@ fun NavGraphBuilder.friendsFeedScreen(
 fun NavGraphBuilder.hashtagPostsScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
-    onOpenReels: () -> Unit,
 ) {
     composable<HashtagPostsRoute> { entry ->
         val route = entry.toRoute<HashtagPostsRoute>()
@@ -107,7 +101,6 @@ fun NavGraphBuilder.hashtagPostsScreen(
             tag = route.tag,
             onBack = onBack,
             onOpenAuthor = onOpenAuthor,
-            onOpenReels = onOpenReels,
         )
     }
 }

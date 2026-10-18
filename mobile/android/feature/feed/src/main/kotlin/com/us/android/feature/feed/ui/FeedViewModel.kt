@@ -27,13 +27,13 @@ import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.KeywordFilter
-import com.us.android.core.feed.data.NewPostCount
 import com.us.android.core.feed.data.hides
 import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedQuery
+import com.us.android.core.model.FeedSurface
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.ui.PostCardMediaPage
@@ -45,16 +45,15 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.OffsetDateTime
+import java.time.ZoneOffset
 
 /**
  * What one [FeedViewModel] serves. Decided by the destination, not by a
@@ -158,7 +157,19 @@ class FeedViewModel @AssistedInject constructor(
     /** The home header's tab. Meaningful only in [FeedMode.Home]. */
     val tab: StateFlow<FeedTab> = tabState.selected
 
-    fun selectTab(tab: FeedTab) = tabState.select(tab)
+    /**
+     * Picks a home tab. Following with its dot lit starts over on a fresh
+     * generation — the dot said there is something new there, and the cached
+     * pages are from before it — and the dot goes out. Returns whether that
+     * happened, so the screen can put the tab's pager back at the top.
+     */
+    fun selectTab(tab: FeedTab): Boolean {
+        val fresh = tab == FeedTab.FOLLOWING && _followingDot.value
+        if (tab == FeedTab.FOLLOWING) _followingDot.value = false
+        if (fresh) followingGeneration.update { it + 1 }
+        tabState.select(tab)
+        return fresh
+    }
 
     /**
      * `cachedIn(viewModelScope)` is not optional here.
@@ -188,12 +199,24 @@ class FeedViewModel @AssistedInject constructor(
     private val _head = MutableStateFlow<FeedItem?>(null)
     val head: StateFlow<FeedItem?> = _head.asStateFlow()
 
+    /**
+     * Bumped to start the Following tab over on a FRESH generation: picking
+     * the tab while its dot is lit ([selectTab]). A new pager rather than a
+     * refresh of the old one, because a refresh is asked of whatever list the
+     * screen holds at that moment — For You's, mid-switch.
+     */
+    private val followingGeneration = MutableStateFlow(0)
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val items: Flow<PagingData<FeedItem>> = when (mode) {
         FeedMode.Home -> {
+            // Both never end (2026-10-18): past the last page Following carries
+            // on into For You, and For You into the plain newest-first timeline.
             val pages = mapOf(
-                FeedTab.FOR_YOU to cached(FeedQuery.ForYou),
-                FeedTab.FOLLOWING to cached(FeedQuery.Following),
+                FeedTab.FOR_YOU to repository.endlessFeed(FeedQuery.ForYou, NEWEST_FIRST).cachedIn(viewModelScope),
+                FeedTab.FOLLOWING to followingGeneration
+                    .flatMapLatest { repository.endlessFeed(FeedQuery.Following, FeedQuery.ForYou) }
+                    .cachedIn(viewModelScope),
             )
             // The HashTag tab has no timeline: the screen shows the trending
             // list instead, and this stream simply goes quiet.
@@ -326,17 +349,18 @@ class FeedViewModel @AssistedInject constructor(
      * track outright — which is a real dimension for the ranking model, so it
      * is reported rather than assumed.
      */
-    fun onAutoplayChanged(item: FeedItem?, probe: suspend () -> WatchProbe) {
+    fun onAutoplayChanged(item: FeedItem?, probe: (suspend () -> WatchProbe)?, muted: Boolean = false) {
         if (item?.id == watchSession?.contentId) return
         endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
-        if (item == null) return
+        if (item == null || probe == null) return
         watchSession = watchTracker.startView(
             contentId = item.id,
             creatorId = item.author.id,
             surface = AnalyticsSurface.FEED,
             contentDurationMs = item.media.maxOfOrNull { it.durationMs } ?: 0L,
             startMethod = PlayStartMethod.AUTOPLAY,
-            isMuted = true,
+            // The full-screen feed plays with sound (2026-10-18); reported, not assumed.
+            isMuted = muted,
             isAutoplay = true,
             probe = probe,
         )
@@ -522,70 +546,60 @@ class FeedViewModel @AssistedInject constructor(
      */
     fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
 
-    // ── "N new posts" ───────────────────────────────────────────────────
+    // ── The Following dot ───────────────────────────────────────────────
 
     /**
-     * Per home tab, the `created_at` of the newest post its last refresh
-     * loaded — the anchor the delta endpoint counts from. Set on refresh only:
-     * an appended page is older, and anything newer arrived by refreshing.
+     * The `created_at` of the newest post the Following tab's last refresh
+     * loaded — what the delta endpoint counts from. Until Following has been
+     * loaded at all, the moment this timeline was opened stands in: "new
+     * since you opened the app" is what a dot on an unopened tab can mean.
+     * Set on refresh only: an appended page is older.
      */
-    private val newPostAnchors = mutableMapOf<FeedTab, String>()
-    private val newPostCounts = MutableStateFlow<Map<FeedTab, NewPostCount>>(emptyMap())
+    private var followingAnchor: String? = null
+
+    /** When this timeline was opened, as the delta endpoint takes it; a test fixes it. */
+    internal var openedAt: String = OffsetDateTime.now(ZoneOffset.UTC).toString()
+
+    private val _followingDot = MutableStateFlow(false)
 
     /**
-     * What the pill above the timeline says for the tab on screen, or null
-     * for no pill. Only For You and Following have one: the server keeps no
-     * delta for Friends or a hashtag.
+     * A dot on the Following tab: people the viewer follows have posted since
+     * the tab was last loaded (2026-10-18; it replaced For You's "N new posts"
+     * pill, which drew itself over a post being watched). Never lit while
+     * Following is the tab on screen — the reader is already there.
      */
-    val newPosts: StateFlow<NewPostCount?> = combine(tab, newPostCounts) { current, counts ->
-        counts[current]?.takeIf { mode == FeedMode.Home && it.count > 0 }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), null)
+    val followingDot: StateFlow<Boolean> = _followingDot.asStateFlow()
 
     /**
-     * Asks for the count now, then every [NEW_POSTS_POLL_MILLIS], until the
-     * caller's scope ends — the screen runs it while resumed, so coming back
-     * to the app shows what arrived meanwhile at once, and a backgrounded app
-     * asks nothing. Ten minutes, like the web client: the count covers
-     * everything since the anchor, so a longer interval only means a later
-     * pill, never a missed post.
+     * Asks now, then every [FOLLOWING_POLL_MILLIS], until the caller's scope
+     * ends — the screen runs it while resumed, so a backgrounded app asks
+     * nothing and coming back asks at once.
      */
-    suspend fun watchNewPosts() {
+    suspend fun watchFollowing() {
         if (mode != FeedMode.Home) return
         while (true) {
-            checkNewPosts()
-            delay(NEW_POSTS_POLL_MILLIS)
+            checkFollowing()
+            delay(FOLLOWING_POLL_MILLIS)
         }
     }
 
-    /** One delta request for the tab on screen. Failures leave the pill as it was. */
-    internal suspend fun checkNewPosts() {
-        val current = tab.value
-        val query = current.query() ?: return
-        val anchor = newPostAnchors[current] ?: return
-        val result = repository.newPostCount(query, anchor) ?: return
-        // A refresh since the request was sent has moved the anchor: this
-        // count is about posts the reader may already have.
-        if (result is AppResult.Success && newPostAnchors[current] == anchor) {
-            newPostCounts.update { it + (current to result.data) }
+    /** One delta request for Following. A failure leaves the dot as it was. */
+    internal suspend fun checkFollowing() {
+        if (mode != FeedMode.Home || tab.value == FeedTab.FOLLOWING) return
+        val anchor = followingAnchor ?: openedAt
+        val result = repository.newPostCount(FeedQuery.Following, anchor) ?: return
+        // A refresh since the request was sent moved the anchor, or the reader
+        // moved to Following meanwhile: this answer is about posts they have.
+        val stillAsked = (followingAnchor ?: openedAt) == anchor && tab.value != FeedTab.FOLLOWING
+        if (result is AppResult.Success && stillAsked) {
+            _followingDot.value = result.data.count > 0
         }
-    }
-
-    /** The pill was tapped: the screen refreshes and scrolls to the top. */
-    fun onNewPostsShown() {
-        newPostCounts.update { it - tab.value }
     }
 
     private fun resetNewPosts(items: List<FeedItem>) {
-        if (mode != FeedMode.Home) return
-        val current = tab.value
-        newestCreatedAt(items)?.let { newPostAnchors[current] = it }
-        newPostCounts.update { it - current }
-    }
-
-    private fun FeedTab.query(): FeedQuery? = when (this) {
-        FeedTab.FOR_YOU -> FeedQuery.ForYou
-        FeedTab.FOLLOWING -> FeedQuery.Following
-        FeedTab.HASHTAG -> null
+        if (mode != FeedMode.Home || tab.value != FeedTab.FOLLOWING) return
+        newestCreatedAt(items)?.let { followingAnchor = it }
+        _followingDot.value = false
     }
 
     /** One relationship lookup per author never seen before, off the hydration path. */
@@ -595,11 +609,11 @@ class FeedViewModel @AssistedInject constructor(
 }
 
 /**
- * Feed rows are at most screen-width, so a 720p rung is already more pixels
- * than a phone can show. Asking for 1080p would triple the bytes for a row
- * that gets scrolled past in under a second.
+ * A photo fills the screen since the full-screen feed (2026-10-18), so the
+ * rung is the screen's height class: 1080p. The original stays excluded —
+ * it can be arbitrarily large.
  */
-private const val FEED_IMAGE_MAX_HEIGHT = 720
+private const val FEED_IMAGE_MAX_HEIGHT = 1080
 
 /** `kind` on a feed media entry; `image` is the other value in use. */
 private const val VIDEO_KIND = "video"
@@ -617,11 +631,11 @@ internal fun newestCreatedAt(items: List<FeedItem>): String? = items
     .maxByOrNull { it.second }
     ?.first
 
-/** How often the home timeline asks whether anything new has arrived. */
-private const val NEW_POSTS_POLL_MILLIS = 10 * 60 * 1000L
+/** How often Home asks whether people the viewer follows have posted (2026-10-18). */
+internal const val FOLLOWING_POLL_MILLIS = 60 * 1000L
 
-/** Keeps [FeedViewModel.newPosts] alive across a configuration change. */
-private const val STOP_TIMEOUT_MILLIS = 5_000L
+/** For You's fallback once it runs out: the plain newest-first home timeline. */
+private val NEWEST_FIRST = FeedQuery(FeedSurface.Home)
 
 /** How many times the pinned post is asked for before the feed lets it go. */
 private const val PIN_FETCH_ATTEMPTS = 3

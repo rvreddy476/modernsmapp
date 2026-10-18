@@ -44,10 +44,12 @@ import kotlinx.coroutines.launch
  * had none, so this is a NEW, deliberately short one, and every row is a
  * screen that already exists: the Friends feed and Live (until now reached
  * only through the Explore launcher) and Settings (until now only through
- * the Me tab). Messages and Notifications are NOT here: they stay on the
- * bar, where the unread count is read at a glance.
+ * the Me tab). Messages joined it with the full-screen feed (2026-10-18):
+ * the header over the media keeps only the bell (with its unread count) and
+ * Search beside the tabs, and Messages moved behind the menu glyph.
  */
 enum class HomeMenuRow(val label: String, val icon: ImageVector) {
+    MESSAGES("Messages", UsIcons.Comment),
     FRIENDS("Friends", UsIcons.Friends),
     LIVE("Live", UsIcons.Live),
     SETTINGS("Settings", UsIcons.Settings),

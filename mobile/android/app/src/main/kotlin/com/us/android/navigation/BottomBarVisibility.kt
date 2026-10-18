@@ -26,13 +26,22 @@ fun routeShowsBottomBar(currentTab: TopLevelDestination?, tabs: List<TopLevelDes
 /**
  * Tabs whose content draws under the status bar rather than below it.
  *
- * Reels is the one (founder, 2026-09-04): the video fills the frame from
- * the very top and the translucent Momentum header floats over it, padding
- * itself under the status bar. The shell hands such a tab no top inset;
- * every other tab's own scaffold reserves the status bar as before.
+ * Reels (founder, 2026-09-04) and, since the full-screen feed (2026-10-18),
+ * Home: the post fills the frame from the very top and the translucent
+ * header floats over it, padding itself under the status bar. The shell
+ * hands such a tab no top inset; every other tab's own scaffold reserves
+ * the status bar as before.
  */
 val TopLevelDestination.drawsUnderStatusBar: Boolean
-    get() = this == TopLevelDestination.REELS
+    get() = isStage
+
+/**
+ * Tabs that are a dark video stage whatever the theme: Home's full-screen
+ * feed and Reels (2026-10-18). The shell paints its bottom bar dark under
+ * them (UsNavigationBar's stage variant).
+ */
+val TopLevelDestination.isStage: Boolean
+    get() = this == TopLevelDestination.REELS || this == TopLevelDestination.HOME
 
 /**
  * Whether the Explore launcher wears a back arrow (2026-10-17): not when it

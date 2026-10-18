@@ -35,6 +35,8 @@
     "remix_setting": "allow",
     "original_audio_volume": 1,
     "overlay_audio_volume": 1,
+    "is_branded": false,
+    "ai_generated": false,
     "hide_share": false,
     "allow_download": true,
     "age_restricted": false,
@@ -64,7 +66,9 @@
     "is_processing": false,
     "counts": {
       "likes": 12,
-      "comments": 3
+      "comments": 3,
+      "shares": 0,
+      "saves": 0
     },
     "view_count": 0,
     "has_reacted": false,
@@ -103,6 +107,8 @@
       "remix_setting": "allow",
       "original_audio_volume": 0.2,
       "overlay_audio_volume": 1,
+      "is_branded": false,
+      "ai_generated": false,
       "audio_track_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       "audio_start_ms": 1500,
       "hide_share": false,
@@ -134,7 +140,9 @@
       "is_processing": false,
       "counts": {
         "likes": 12,
-        "comments": 3
+        "comments": 3,
+        "shares": 0,
+        "saves": 0
       },
       "view_count": 0,
       "has_reacted": false,
@@ -182,6 +190,8 @@
       "remix_setting": "allow",
       "original_audio_volume": 0.2,
       "overlay_audio_volume": 1,
+      "is_branded": false,
+      "ai_generated": false,
       "audio_track_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       "audio_start_ms": 0,
       "hide_share": false,
@@ -213,7 +223,9 @@
       "is_processing": false,
       "counts": {
         "likes": 12,
-        "comments": 3
+        "comments": 3,
+        "shares": 0,
+        "saves": 0
       },
       "view_count": 0,
       "has_reacted": false,

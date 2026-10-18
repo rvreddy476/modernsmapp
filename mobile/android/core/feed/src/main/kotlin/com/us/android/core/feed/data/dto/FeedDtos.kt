@@ -106,6 +106,17 @@ data class FeedItemDto(
      */
     @SerialName("original_audio_volume") val originalAudioVolume: Double? = null,
     @SerialName("overlay_audio_volume") val overlayAudioVolume: Double? = null,
+    /**
+     * What the author declared about the post (post-screens parity,
+     * 2026-10-18; feed-service passes them through). Every one defaulted, so
+     * a row from a server that predates them reads as "nothing declared".
+     */
+    @SerialName("paid_promotion") val paidPromotion: Boolean = false,
+    @SerialName("is_branded") val isBranded: Boolean = false,
+    @SerialName("ai_generated") val aiGenerated: Boolean = false,
+    @SerialName("link_url") val linkUrl: String? = null,
+    /** `everyone`, `followers` or `nobody`; blank on an older row. */
+    @SerialName("comment_access") val commentAccess: String = "",
 )
 
 /**

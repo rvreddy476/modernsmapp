@@ -13,15 +13,14 @@ import com.us.android.core.designsystem.component.UsTopBar
  *
  * The rows come from post-service rather than feed-service and are hydrated
  * on the way in (see `HashtagPostHydrator`), so this is the same card list as
- * the feed — the reader cannot tell which service answered.
+ * the feed — the reader cannot tell which service answered. The body is
+ * Home's full-screen pager (2026-10-18), below the titled bar.
  */
 @Composable
 fun HashtagPostsScreen(
     tag: String,
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
-    /** A video was tapped; :app switches to the Reels tab, which opens on it. */
-    onOpenReels: () -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Hashtag(tag)) },
     ),
@@ -34,7 +33,6 @@ fun HashtagPostsScreen(
         FeedContent(
             viewModel = viewModel,
             onOpenAuthor = onOpenAuthor,
-            onOpenReels = onOpenReels,
             empty = FeedEmptyCopy(
                 title = "No posts with $label yet",
                 detail = "Be the first to post with this tag.",

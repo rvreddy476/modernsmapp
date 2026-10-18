@@ -109,6 +109,8 @@ data class FeedItem(
     val overlayVolume: Double = 1.0,
     /** The creator lets others reuse this reel's audio. See [allowsSoundReuse] and [canUseSound]. */
     val soundReuseAllowed: Boolean = true,
+    /** What the author declared: a paid partnership, a brand, AI-made, a link. See [FeedDisclosure]. */
+    val disclosure: FeedDisclosure = FeedDisclosure(),
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay
@@ -137,6 +139,20 @@ data class FeedPostControls(
     val taggedUserIds: List<String> = emptyList(),
     val locationName: String = "",
     val coverMediaId: String? = null,
+    /** Who may comment: `everyone`, `followers`, `nobody`; blank when the row does not say. */
+    val commentAccess: String = "",
+)
+
+/**
+ * What the author declared about a post (2026-10-18). Defaults are "nothing
+ * declared", which is what a row from an older server means.
+ */
+data class FeedDisclosure(
+    val paidPromotion: Boolean = false,
+    val isBranded: Boolean = false,
+    val aiGenerated: Boolean = false,
+    /** An https link the author attached, or null. */
+    val linkUrl: String? = null,
 )
 
 /**

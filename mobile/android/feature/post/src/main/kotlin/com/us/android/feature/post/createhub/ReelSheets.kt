@@ -241,7 +241,7 @@ internal fun ReelInputField(
 /** The Create sheet's shell: solid card colour, 28dp top corners, a grab handle. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReelSheet(
+internal fun ReelSheet(
     onDismiss: () -> Unit,
     testTag: String,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
@@ -283,7 +283,7 @@ private fun ReelSheet(
 }
 
 @Composable
-private fun SheetTitle(text: String) {
+internal fun SheetTitle(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.titleLarge.copy(fontSize = SHEET_TITLE_SIZE),
