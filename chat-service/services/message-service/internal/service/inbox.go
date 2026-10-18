@@ -203,6 +203,10 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 		if r.LastMessageAt != nil && !visibleLast {
 			r.LastMessagePreview = ""
 			r.LastMessageSender = nil
+			// Its time is part of the hidden history too (rows showed
+			// "Message · 6w" for a chat cleared today). Ordering and the page
+			// cursor come from the store rows, not this field.
+			r.LastMessageAt = nil
 		}
 		hasUnread := false
 		if visibleLast && (r.LastMessageSender == nil || *r.LastMessageSender != viewerID) {
