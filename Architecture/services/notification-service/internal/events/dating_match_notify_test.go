@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/notification-service/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -33,8 +34,8 @@ func (f *notifyCapture) CreateNotificationWithoutPush(ctx context.Context, recip
 	return f.CreateNotification(ctx, recipient, sender, notifType, entityType, entityID, deepLink, createdAt)
 }
 
-func (f *notifyCapture) CreateMessageNotification(ctx context.Context, recipient, sender, conversationID uuid.UUID,
-	deepLink string, createdAt time.Time, _ string, _ bool) error {
+func (f *notifyCapture) CreateChatMessageNotification(ctx context.Context, recipient, sender, conversationID uuid.UUID,
+	deepLink string, createdAt time.Time, _ service.ChatMessagePush, _ bool) error {
 	return f.CreateNotification(ctx, recipient, sender, "dm", "conversation", conversationID, deepLink, createdAt)
 }
 

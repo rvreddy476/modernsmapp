@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -31,6 +32,34 @@ type Report struct {
 	ResolutionNotes string     `json:"resolution_notes,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// Evidence is the snapshot of what was reported (message reports,
+	// migration 015): {text, media_id, sender_id, conversation_id,
+	// message_type, source, captured_at}. Absent for older reports.
+	Evidence json.RawMessage `json:"evidence,omitempty"`
+	// SourceEventID is the idempotency key of an event-driven or
+	// service-filed report. Internal only.
+	SourceEventID string `json:"-"`
+}
+
+// ErrDuplicateSourceEvent: a report was already filed for this source event
+// (or idempotency key). Callers treat it as success.
+var ErrDuplicateSourceEvent = errors.New("a report was already filed for this source event")
+
+// evidenceScan reads the nullable evidence::text column into a RawMessage.
+type evidenceScan struct{ dst *json.RawMessage }
+
+func (e evidenceScan) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*e.dst = nil
+	case string:
+		*e.dst = json.RawMessage(v)
+	case []byte:
+		*e.dst = append(json.RawMessage(nil), v...)
+	default:
+		return fmt.Errorf("evidence: unexpected column type %T", src)
+	}
+	return nil
 }
 
 type ReportStore struct {
@@ -43,9 +72,14 @@ func New(db *pgxpool.Pool) *ReportStore {
 
 func (s *ReportStore) CreateReport(ctx context.Context, report *Report) error {
 	query := `
-		INSERT INTO trust.reports (id, reporter_id, entity_type, entity_id, entity_key, reason, details, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, NULLIF($10, ''), $5, $6, $7, $8, $9)
+		INSERT INTO trust.reports (id, reporter_id, entity_type, entity_id, entity_key, reason, details, status, created_at, updated_at,
+		                           evidence, source_event_id)
+		VALUES ($1, $2, $3, $4, NULLIF($10, ''), $5, $6, $7, $8, $9, NULLIF($11, '')::jsonb, NULLIF($12, ''))
 	`
+	evidence := ""
+	if len(report.Evidence) > 0 {
+		evidence = string(report.Evidence)
+	}
 	_, err := s.db.Exec(ctx, query,
 		report.ID,
 		report.ReporterID,
@@ -57,10 +91,15 @@ func (s *ReportStore) CreateReport(ctx context.Context, report *Report) error {
 		report.CreatedAt,
 		report.UpdatedAt,
 		report.EntityKey,
+		evidence,
+		report.SourceEventID,
 	)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_reports_one_active_per_reporter_entity" {
 		return ErrActiveReportExists
+	}
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_reports_source_event" {
+		return ErrDuplicateSourceEvent
 	}
 	return err
 }
@@ -80,7 +119,7 @@ func (s *ReportStore) CheckDuplicate(ctx context.Context, reporterID, entityID u
 func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]Report, error) {
 	query := `
 		SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
-		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
+		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text
 		FROM trust.reports
 		ORDER BY
 			CASE reason
@@ -104,7 +143,7 @@ func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]
 		var r Report
 		if err := rows.Scan(
 			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
-			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
+			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt, evidenceScan{&r.Evidence},
 		); err != nil {
 			return nil, err
 		}
@@ -119,7 +158,7 @@ func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]
 func (s *ReportStore) GetReportsByReporter(ctx context.Context, reporterID uuid.UUID, limit, offset int) ([]Report, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
-		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
+		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text
 		FROM trust.reports
 		WHERE reporter_id = $1
 		ORDER BY created_at DESC, id DESC
@@ -135,7 +174,7 @@ func (s *ReportStore) GetReportsByReporter(ctx context.Context, reporterID uuid.
 		var r Report
 		if err := rows.Scan(
 			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
-			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
+			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt, evidenceScan{&r.Evidence},
 		); err != nil {
 			return nil, err
 		}
@@ -147,13 +186,13 @@ func (s *ReportStore) GetReportsByReporter(ctx context.Context, reporterID uuid.
 func (s *ReportStore) GetReport(ctx context.Context, reportID uuid.UUID) (*Report, error) {
 	query := `
         SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
-               assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
+               assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text
         FROM trust.reports WHERE id = $1
     `
 	var r Report
 	err := s.db.QueryRow(ctx, query, reportID).Scan(
 		&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
-		&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
+		&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt, evidenceScan{&r.Evidence},
 	)
 	if err != nil {
 		return nil, err
@@ -190,10 +229,10 @@ func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, allo
 			    updated_at = NOW()
 			WHERE id = $1
 			RETURNING id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
-			          assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
+			          assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text
 		`, reportID, status, assignedTo, resolutionNotes).Scan(
 			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
-			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
+			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt, evidenceScan{&r.Evidence},
 		); err != nil {
 			return err
 		}

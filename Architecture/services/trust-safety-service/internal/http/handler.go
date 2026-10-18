@@ -37,6 +37,9 @@ type Handler struct {
 	// appeals answers the appeal routes (appeals_handler.go); svc by
 	// default, a fake in tests.
 	appeals appealsAPI
+	// messageReports files service-side message reports
+	// (message_reports_internal.go); svc by default, a fake in tests.
+	messageReports messageReportFiler
 }
 
 func New(svc *service.Service) *Handler {
@@ -54,6 +57,8 @@ func (h *Handler) RegisterRoutes(r gin.IRouter) {
 	// Dating plan lane D8: dating-service opens a grievance per dating
 	// report. Service callers only (user identity headers are refused).
 	r.POST(DatingReportGrievancePath, h.LinkDatingReportGrievance)
+	// Chat parity: message-service files a user's message report here.
+	r.POST(MessageReportPath, h.FileMessageReportInternal)
 
 	v1 := r.Group("/v1/reports")
 	{
@@ -131,12 +136,47 @@ func (h *Handler) RegisterRoutes(r gin.IRouter) {
 type FileReportRequest struct {
 	// reel and video remain accepted only as wire-compatibility aliases. The
 	// service normalizes both to post before validation or persistence.
-	EntityType string `json:"entity_type" binding:"required,oneof=user post comment hashtag sound reel video"`
+	EntityType string `json:"entity_type" binding:"required,oneof=user post comment hashtag sound message reel video"`
 	// EntityID is a UUID for user, post, comment and sound (a media-service
-	// audio id), and the tag text (with or without '#') for hashtag.
+	// audio id), the tag text (with or without '#') for hashtag, and
+	// "<conversation_id>:<message_id>" for message.
 	EntityID string `json:"entity_id" binding:"required"`
 	Reason   string `json:"reason" binding:"required"`
 	Details  string `json:"details"`
+	// Evidence is an optional snapshot for a message report. On this public
+	// route it is the reporter's own claim and is stored as such
+	// (source "reporter").
+	Evidence *EvidenceRequest `json:"evidence"`
+}
+
+// EvidenceRequest is the wire snapshot of a reported message.
+type EvidenceRequest struct {
+	Text        string `json:"text"`
+	MediaID     string `json:"media_id"`
+	SenderID    string `json:"sender_id"`
+	MessageType string `json:"message_type"`
+}
+
+func (e *EvidenceRequest) toService(source, conversationID string) *service.ReportEvidence {
+	if e == nil {
+		return nil
+	}
+	return &service.ReportEvidence{
+		Text: e.Text, MediaID: e.MediaID, SenderID: e.SenderID, MessageType: e.MessageType,
+		ConversationID: conversationID, Source: source,
+	}
+}
+
+// conversationOf is the conversation half of a message entity ref ("" for
+// anything else); it rides the evidence so moderators see the thread.
+func conversationOf(entityType, ref string) string {
+	if strings.ToLower(strings.TrimSpace(entityType)) != service.ReportEntityMessage {
+		return ""
+	}
+	if conv, _, ok := service.ParseMessageEntityRef(ref); ok {
+		return conv.String()
+	}
+	return ""
 }
 
 func (h *Handler) FileReport(c *gin.Context) {
@@ -153,7 +193,10 @@ func (h *Handler) FileReport(c *gin.Context) {
 		return
 	}
 
-	report, err := h.svc.FileReportRef(c.Request.Context(), userID, req.EntityType, req.EntityID, req.Reason, req.Details)
+	report, err := h.svc.FileReportWith(c.Request.Context(), service.FileReportInput{
+		ReporterID: userID, EntityType: req.EntityType, EntityRef: req.EntityID, Reason: req.Reason, Details: req.Details,
+		Evidence: req.Evidence.toService(service.EvidenceSourceReporter, conversationOf(req.EntityType, req.EntityID)),
+	})
 	if err != nil {
 		if errors.Is(err, postgres.ErrActiveReportExists) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ACTIVE_REPORT_EXISTS", "You already have an active report for this content", nil)

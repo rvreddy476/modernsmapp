@@ -137,6 +137,11 @@ func main() {
 	// Inbox actor hydration — the same identity-profile batch contract the
 	// feed and comment lists use.
 	notifSvc.SetProfileServiceURL(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"))
+	// Chat push previews: the recipient's show_message_preview is read from
+	// identity user-service (GET /v1/users/:id/settings, internal key) —
+	// the same authority message-service's policy path reads. Empty keeps
+	// every chat push generic.
+	notifSvc.SetIdentityUserServiceURL(env("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110"))
 	notifSvc.SetPGStore(pgStore)
 
 	// Transactional email transport. Uses SMTP when configured, otherwise logs.
@@ -311,6 +316,18 @@ func main() {
 	)
 	go chatConsumer.Start(ctx)
 	slog.Info("kafka chat consumer started", "topic", chatTopic)
+
+	// user.settings_changed → drop the cached show_message_preview so a
+	// preview switched off is honoured on the next chat push.
+	settingsConsumer := events.NewIdentitySettingsConsumer(
+		strings.Split(kafkaBrokers, ","),
+		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
+		env("IDENTITY_SETTINGS_GROUP_ID", "notification-service-settings"),
+		kafkaDialer,
+		notifSvc,
+	)
+	defer settingsConsumer.Close()
+	go settingsConsumer.Start(ctx)
 
 	// Community (broadcast channel) updates: channel-service's fan-out
 	// worker emits one message per subscriber; this is the only consumer.

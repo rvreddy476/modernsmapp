@@ -52,6 +52,47 @@ type messageCreatedPayload struct {
 	// Recipients who muted this conversation. Chat owns that setting, so it
 	// arrives on the event; absent means nobody muted it.
 	MutedRecipientIDs []string `json:"muted_recipient_ids,omitempty"`
+
+	// Push-preview fields (chat-parity CONTRACT §8). All optional and
+	// additive: an older publisher sends none and every push stays generic.
+	//
+	// Text is the message text (type "text"); Preview is chat's denormalised
+	// preview, read only as a fallback for a text message.
+	Text    string `json:"text,omitempty"`
+	Preview string `json:"preview,omitempty"`
+	// MediaKind (image|video|audio) picks "sent a photo/video/voice
+	// message" for type "media"; Media.Kind is accepted as the same thing.
+	MediaKind string `json:"media_kind,omitempty"`
+	Media     *struct {
+		Kind string `json:"kind"`
+	} `json:"media,omitempty"`
+	// AlertTones is each recipient's per-conversation tone
+	// (default|chime|pop|bell|silent), keyed by recipient id. AlertTone is a
+	// single tone for every recipient, used when a recipient has no entry.
+	AlertTones map[string]string `json:"alert_tones,omitempty"`
+	AlertTone  string            `json:"alert_tone,omitempty"`
+}
+
+// pushFor is the push-relevant content of this message for one recipient.
+func (e messageCreatedPayload) pushFor(recipientID string) service.ChatMessagePush {
+	msg := service.ChatMessagePush{MessageType: e.Type, MediaKind: e.MediaKind}
+	if id, err := uuid.Parse(e.MessageID); err == nil {
+		msg.MessageID = id
+	}
+	if msg.MediaKind == "" && e.Media != nil {
+		msg.MediaKind = e.Media.Kind
+	}
+	if e.Type == service.ChatMessageTypeText || e.Type == "" {
+		msg.Text = e.Text
+		if msg.Text == "" {
+			msg.Text = e.Preview
+		}
+	}
+	msg.AlertTone = e.AlertTone
+	if tone, ok := e.AlertTones[recipientID]; ok {
+		msg.AlertTone = tone
+	}
+	return msg
 }
 
 // messageRequestCreatedPayload is the payload of a MessageRequestCreated
@@ -75,10 +116,11 @@ type messageRequestCreatedPayload struct {
 type chatNotifier interface {
 	CreateNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
 	CreateNotificationWithoutPush(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
-	// CreateMessageNotification is the "dm" row for one chat message: the
-	// message type picks the push copy ("Sent you a post" for a post card)
-	// and muted sends no device push.
-	CreateMessageNotification(ctx context.Context, userID, actorID, conversationID uuid.UUID, deepLink string, createdAt time.Time, messageType string, muted bool) error
+	// CreateChatMessageNotification is the "dm" row for one chat message: the
+	// recipient's show_message_preview and the message content pick the push
+	// copy, the data map gains conversation_id/message_id/alert_tone, and
+	// muted sends no device push.
+	CreateChatMessageNotification(ctx context.Context, userID, actorID, conversationID uuid.UUID, deepLink string, createdAt time.Time, msg service.ChatMessagePush, muted bool) error
 }
 
 type ChatConsumer struct {
@@ -211,8 +253,8 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 			continue
 		}
 		_, isMuted := muted[ridStr]
-		if err := c.service.CreateMessageNotification(
-			ctx, recipientID, senderID, conversationID, deepLink, createdAt, e.Type, isMuted,
+		if err := c.service.CreateChatMessageNotification(
+			ctx, recipientID, senderID, conversationID, deepLink, createdAt, e.pushFor(ridStr), isMuted,
 		); err != nil {
 			log.Printf("chat: failed to create dm notification for %s: %v\n", ridStr, err)
 			if firstErr == nil {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/notification-service/internal/service"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
@@ -22,6 +23,7 @@ type recordedNotification struct {
 	deepLnk     string
 	notifType   string
 	messageType string
+	msg         service.ChatMessagePush
 }
 
 type recordingNotifier struct {
@@ -29,9 +31,9 @@ type recordingNotifier struct {
 	failOn  uuid.UUID
 }
 
-func (r *recordingNotifier) CreateMessageNotification(_ context.Context, userID, _, _ uuid.UUID, deepLink string, _ time.Time, messageType string, muted bool) error {
+func (r *recordingNotifier) CreateChatMessageNotification(_ context.Context, userID, _, _ uuid.UUID, deepLink string, _ time.Time, msg service.ChatMessagePush, muted bool) error {
 	r.created = append(r.created, recordedNotification{
-		userID: userID, pushed: !muted, deepLnk: deepLink, notifType: "dm", messageType: messageType,
+		userID: userID, pushed: !muted, deepLnk: deepLink, notifType: "dm", messageType: msg.MessageType, msg: msg,
 	})
 	if userID == r.failOn {
 		return context.DeadlineExceeded

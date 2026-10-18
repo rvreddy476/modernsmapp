@@ -53,6 +53,7 @@ env:
   # name the responder owner and fill this in).
   DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
   IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
   DATING_SAFETY_RESPONDER_USER_IDS: ""
   DATING_SAFETY_OPS_EMAIL: ""
   # Add per-service inter-service URLs here. Common ones:

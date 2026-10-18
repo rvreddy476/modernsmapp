@@ -44,6 +44,32 @@ var keyAddressedEntityTypes = map[string]bool{
 	"hashtag": true,
 }
 
+// ReportEntityMessage is a chat message (chat-parity CONTRACT §2.6). Its wire
+// entity_id is "<conversation_id>:<message_id>"; the message id is stored as
+// entity_id (so the one-active-report index applies per message) and the
+// canonical pair as entity_key (migration 015).
+const ReportEntityMessage = "message"
+
+// ParseMessageEntityRef splits "<conversation_id>:<message_id>". Both parts
+// must be non-nil UUIDs.
+func ParseMessageEntityRef(ref string) (conversationID, messageID uuid.UUID, ok bool) {
+	parts := strings.Split(strings.TrimSpace(ref), ":")
+	if len(parts) != 2 {
+		return uuid.Nil, uuid.Nil, false
+	}
+	conv, err1 := uuid.Parse(strings.TrimSpace(parts[0]))
+	msg, err2 := uuid.Parse(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil || conv == uuid.Nil || msg == uuid.Nil {
+		return uuid.Nil, uuid.Nil, false
+	}
+	return conv, msg, true
+}
+
+// MessageEntityKey is the canonical stored key of a message report.
+func MessageEntityKey(conversationID, messageID uuid.UUID) string {
+	return conversationID.String() + ":" + messageID.String()
+}
+
 // NormalizeReportHashtag canonicalises a reported tag. ok is false for
 // anything post-service would never have indexed as a tag.
 func NormalizeReportHashtag(raw string) (string, bool) {
@@ -65,6 +91,13 @@ func ReportEntityID(entityType, key string) uuid.UUID {
 func ResolveReportEntity(entityType, ref string) (uuid.UUID, string, error) {
 	if !validEntityTypes[entityType] {
 		return uuid.Nil, "", fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, or sound)", ErrInvalidReport, entityType)
+	}
+	if entityType == ReportEntityMessage {
+		conv, msg, ok := ParseMessageEntityRef(ref)
+		if !ok {
+			return uuid.Nil, "", fmt.Errorf("%w: invalid entity ID: a message is \"<conversation_id>:<message_id>\"", ErrInvalidReport)
+		}
+		return msg, MessageEntityKey(conv, msg), nil
 	}
 	if keyAddressedEntityTypes[entityType] {
 		key, ok := NormalizeReportHashtag(ref)

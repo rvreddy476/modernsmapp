@@ -25,6 +25,8 @@ var validEntityTypes = map[string]bool{
 	// media-service audio id (report_entities.go).
 	"hashtag": true,
 	"sound":   true,
+	// Chat-parity: a chat message, "<conversation_id>:<message_id>".
+	ReportEntityMessage: true,
 }
 
 var legacyEntityTypeAliases = map[string]string{
@@ -40,6 +42,9 @@ var legacyReportReasonAliases = map[string]string{
 	// "hate" and "false_info"; the stored category stays the §10.5 value.
 	"hate":       "hate_abuse",
 	"false_info": "misinformation",
+	// Chat message report sheet (chat-parity CONTRACT §2.6) short forms.
+	"sexual": "sexual_content",
+	"scam":   "scam_fraud",
 }
 
 // validReportCategories is the report category/reason allowlist from
@@ -105,10 +110,31 @@ type reportFiledWire struct {
 // the same event, so duplicate and rate rules cannot differ by type.
 // Validation failures wrap ErrInvalidReport.
 func (s *Service) FileReportRef(ctx context.Context, reporterID uuid.UUID, entityType, entityRef, reason, details string) (*postgres.Report, error) {
-	entityType, reason = NormalizeReportInput(entityType, reason)
+	return s.FileReportWith(ctx, FileReportInput{
+		ReporterID: reporterID, EntityType: entityType, EntityRef: entityRef, Reason: reason, Details: details,
+	})
+}
+
+// FileReportWith is FileReportRef plus an optional evidence snapshot and an
+// optional idempotency key (message reports, migration 015). Evidence and
+// key are validated and stored; everything else is FileReportRef exactly.
+func (s *Service) FileReportWith(ctx context.Context, in FileReportInput) (*postgres.Report, error) {
+	reporterID, details := in.ReporterID, in.Details
+	if reporterID == uuid.Nil {
+		return nil, fmt.Errorf("%w: reporter is required", ErrInvalidReport)
+	}
+	entityType, reason := NormalizeReportInput(in.EntityType, in.Reason)
+	entityRef := in.EntityRef
 	// 1. Validate entityType
 	if !validEntityTypes[entityType] {
-		return nil, fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, or sound)", ErrInvalidReport, entityType)
+		return nil, fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, sound, or message)", ErrInvalidReport, entityType)
+	}
+	evidence, err := encodeEvidence(entityType, in.Evidence)
+	if err != nil {
+		return nil, err
+	}
+	if len(in.SourceEventID) > MaxSourceEventIDLength {
+		return nil, fmt.Errorf("%w: idempotency key longer than %d characters", ErrInvalidReport, MaxSourceEventIDLength)
 	}
 
 	// 1b. Validate report category against the spec §10.5 allowlist.
@@ -135,6 +161,9 @@ func (s *Service) FileReportRef(ctx context.Context, reporterID uuid.UUID, entit
 		Status:     "open",
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
+
+		Evidence:      evidence,
+		SourceEventID: in.SourceEventID,
 	}
 
 	if err := s.store.CreateReport(ctx, report); err != nil {

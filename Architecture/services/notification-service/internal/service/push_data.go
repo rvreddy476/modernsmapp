@@ -9,9 +9,9 @@ import "github.com/google/uuid"
 // can open the exact destination from a tap — including background taps,
 // where FCM hands these keys to the launch intent as extras. title and body
 // ride it too, so a client that renders its own notification (a data-only
-// delivery) shows the same words the system tray would. No message content is
-// ever included: chat pushes stay generic by construction, which is what
-// keeps previews and lock screens privacy-safe regardless of client settings.
+// delivery) shows the same words the system tray would. Message content
+// appears only when the RECIPIENT's show_message_preview is on and the caller
+// rendered it (chat_preview.go); every other path stays generic.
 //
 // `render` overrides the generic per-type copy and the collapse key when the
 // caller rendered them (uploads, orders). It used to be accepted by
@@ -32,6 +32,13 @@ func buildPushData(userID uuid.UUID, notifType, entityType string, entityID uuid
 		"deep_link":   deepLink,
 		"title":       title,
 		"body":        body,
+	}
+	// Caller extras (chat: conversation_id, message_id, alert_tone) are added
+	// but never replace a key above — the routing contract stays fixed.
+	for k, v := range render.Data {
+		if _, taken := data[k]; !taken && k != "collapse_key" && v != "" {
+			data[k] = v
+		}
 	}
 	// Collapse key so repeated notifications (e.g. many likes) replace each
 	// other on the device instead of flooding.

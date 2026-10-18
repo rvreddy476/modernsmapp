@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/atpost/notification-service/internal/push"
@@ -34,6 +35,14 @@ type Service struct {
 	// disables it; nil client falls back to http.DefaultClient.
 	profileServiceURL string
 	profileClient     *http.Client
+
+	// Chat push previews (chat_preview.go): the settings authority for
+	// show_message_preview, optional test readers, and the lookup caches.
+	identityUserURL string
+	previewReader   PreviewSettingReader
+	nameReader      SenderNameReader
+	chatOnce        sync.Once
+	chatLookups     *chatLookups
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
@@ -99,16 +108,12 @@ func (s *Service) CreateNotificationWithoutPush(ctx context.Context, userID, act
 // push copy chosen by the chat message type, so a shared post reads "Sent you
 // a post" instead of the generic "You have a new message". Text, media and
 // unknown types keep the generic copy and collapse key.
+//
+// Kept for callers that know only the type; it is
+// CreateChatMessageNotification without text, so a text message stays
+// generic even when the recipient shows previews.
 func (s *Service) CreateMessageNotification(ctx context.Context, userID, actorID, conversationID uuid.UUID, deepLink string, createdAt time.Time, messageType string, muted bool) error {
-	if s.recipientSuppressed(ctx, userID, "dm") {
-		return nil
-	}
-	decision := s.resolveGeneralDelivery(ctx, userID, "dm")
-	if muted {
-		decision.SendPush = false
-		decision.DeferPush = false
-	}
-	return s.deliverWithDecision(ctx, decision, userID, actorID, "dm", "conversation", conversationID, deepLink, createdAt, "", DMRender(messageType))
+	return s.CreateChatMessageNotification(ctx, userID, actorID, conversationID, deepLink, createdAt, ChatMessagePush{MessageType: messageType}, muted)
 }
 
 // Chat message types as chat message-service publishes them on
@@ -170,6 +175,9 @@ type RenderOverride struct {
 	Title       string
 	Body        string
 	CollapseKey string
+	// Data adds keys to the push data map (chat: conversation_id,
+	// message_id, alert_tone). It never replaces a key buildPushData sets.
+	Data map[string]string
 }
 
 // UploadNotification is one subscriber's copy of a creator upload, as

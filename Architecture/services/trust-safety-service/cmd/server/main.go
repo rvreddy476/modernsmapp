@@ -240,6 +240,20 @@ func main() {
 	go storyConsumer.Start(ctx)
 	slog.Info("story moderation evaluator consumer started", "topic", "social.events.v1")
 
+	// Chat parity §8: a reported message request becomes a report in the
+	// existing queue. Own consumer group on the chat topic.
+	chatReportTopic := env("CHAT_KAFKA_TOPIC", "chat.events.v1")
+	chatReportConsumer := tsevents.NewChatReportConsumer(
+		strings.Split(kafkaBrokers, ","),
+		chatReportTopic,
+		env("CHAT_REPORTS_GROUP_ID", "trust-safety-chat-reports"),
+		kafkaDialer,
+		svc,
+	)
+	defer chatReportConsumer.Close()
+	go chatReportConsumer.Start(ctx)
+	slog.Info("chat message-request report consumer started", "topic", chatReportTopic)
+
 	// Account control (auth-service 30-day deletion): on
 	// user.purge_requested erase the user's trust slice (filters, appeals,
 	// teen row, trust state, strikes, grievances, verifications; reports
