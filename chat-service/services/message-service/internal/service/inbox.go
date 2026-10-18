@@ -224,6 +224,15 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 		default:
 			r.UnreadCount = m.UnreadCount
 		}
+		// Fix pass 2: the viewer's own "mark as unread" keeps the row unread
+		// (at least 1) until they next read it.
+		r.MarkedUnread = m.MarkedUnread
+		if m.MarkedUnread {
+			r.HasUnread = true
+			if r.UnreadCount < 1 {
+				r.UnreadCount = 1
+			}
+		}
 
 		if visibleLast {
 			typ := m.LastMessageType
@@ -254,6 +263,8 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 			}
 		}
 	}
+	// Fix pass 2: request rows carry who sent the request.
+	s.attachRequestSenders(ctx, viewerID, rows)
 }
 
 // receiptDisclosed applies the reader's own read-receipt privacy (the same

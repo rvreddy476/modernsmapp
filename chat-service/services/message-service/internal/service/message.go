@@ -195,6 +195,13 @@ type ConversationResponse struct {
 	Streak      *StreakInfo      `json:"streak"`
 	Peer        *PeerInfo        `json:"peer"`
 	LastMessage *LastMessageInfo `json:"last_message"`
+
+	// Fix pass 2 (additive). marked_unread is the viewer's own "mark as
+	// unread" (PUT .../unread); while set, has_unread is true and
+	// unread_count is at least 1. sender is who sent a message request —
+	// present only on request conversations.
+	MarkedUnread bool           `json:"marked_unread"`
+	Sender       *RequestSender `json:"sender,omitempty"`
 }
 
 type ReactionSummary struct {
@@ -1101,17 +1108,17 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 		ReplyToID      *uuid.UUID `json:"reply_to_id,omitempty"`
 		// Chat parity rich fields — all omitempty, so the hash of every
 		// pre-existing text / media / post request is unchanged.
-		ReplyNoteID   *uuid.UUID `json:"reply_note_id,omitempty"`
-		DurationMs    int        `json:"duration_ms,omitempty"`
-		Waveform      []int      `json:"waveform,omitempty"`
-		StickerID     *uuid.UUID `json:"sticker_id,omitempty"`
-		GIF           *GIFRef    `json:"gif,omitempty"`
-		ProfileUserID *uuid.UUID `json:"profile_user_id,omitempty"`
-		SoundID       *uuid.UUID `json:"sound_id,omitempty"`
-		StreamID      *uuid.UUID `json:"stream_id,omitempty"`
-		Forwarded     bool       `json:"forwarded,omitempty"`
+		ReplyNoteID   *uuid.UUID  `json:"reply_note_id,omitempty"`
+		DurationMs    int         `json:"duration_ms,omitempty"`
+		Waveform      []int       `json:"waveform,omitempty"`
+		StickerID     *uuid.UUID  `json:"sticker_id,omitempty"`
+		GIF           *gifHashRef `json:"gif,omitempty"`
+		ProfileUserID *uuid.UUID  `json:"profile_user_id,omitempty"`
+		SoundID       *uuid.UUID  `json:"sound_id,omitempty"`
+		StreamID      *uuid.UUID  `json:"stream_id,omitempty"`
+		Forwarded     bool        `json:"forwarded,omitempty"`
 	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID, PostID: postID,
-		ReplyNoteID: in.ReplyNoteID, DurationMs: in.DurationMs, Waveform: in.Waveform, StickerID: in.StickerID, GIF: in.GIF,
+		ReplyNoteID: in.ReplyNoteID, DurationMs: in.DurationMs, Waveform: in.Waveform, StickerID: in.StickerID, GIF: gifHashOf(in.GIF),
 		ProfileUserID: in.ProfileUserID, SoundID: in.SoundID, StreamID: in.StreamID, Forwarded: in.Forwarded}
 	if replyTo != nil {
 		req.ReplyToID = &replyTo.ID
@@ -1497,6 +1504,9 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 		out = append(out, resp)
 	}
 	s.resolveStickerURLs(ctx, userID, out)
+	// Fix pass 2: moderation usually lands after the send; complete
+	// media.sensitive from media-service (cached, bounded).
+	s.fillMediaSensitivity(ctx, out)
 
 	return out, nextCursor, nil
 }

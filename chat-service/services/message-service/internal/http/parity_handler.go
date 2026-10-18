@@ -69,6 +69,8 @@ func (h *Handler) registerParityRoutes(v1 *gin.RouterGroup, internal *gin.Router
 	v1.DELETE("/notes/me", h.DeleteMyNote)
 	v1.GET("/notes", h.NotesFeed)
 	v1.GET("/search", h.SearchChat)
+	v1.PUT("/conversations/:id/unread", h.SetConversationUnread)
+	v1.POST("/conversations/:id/report", h.ReportConversation)
 
 	internal.POST("/stickers/packs", h.AdminUpsertStickerPack)
 	internal.POST("/stickers", h.AdminUpsertSticker)

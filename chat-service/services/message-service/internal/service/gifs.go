@@ -57,3 +57,23 @@ func validateGIFRef(g *GIFRef) error {
 	}
 	return nil
 }
+
+// gifHashRef is the gif card as the idempotency request hash sees it:
+// is_sticker is omitted when false, so the hash of every gif send made
+// before stickers existed is unchanged (a retried key still matches).
+type gifHashRef struct {
+	Provider  string `json:"provider"`
+	ID        string `json:"id"`
+	URL       string `json:"url"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	StillURL  string `json:"still_url,omitempty"`
+	IsSticker bool   `json:"is_sticker,omitempty"`
+}
+
+func gifHashOf(g *GIFRef) *gifHashRef {
+	if g == nil {
+		return nil
+	}
+	return &gifHashRef{Provider: g.Provider, ID: g.ID, URL: g.URL, Width: g.Width, Height: g.Height, StillURL: g.StillURL, IsSticker: g.IsSticker}
+}

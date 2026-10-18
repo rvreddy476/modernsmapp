@@ -17,9 +17,11 @@ import (
 // --- Media metadata (§2.1) ---
 
 // fetchMediaInfo reads the media-service record as a keyed service caller
-// (GET /v1/media/:id) for kind, size and duration. Moderation labels are
-// never serialised by media-service, so Sensitive stays null. Best-effort:
-// nil when the record cannot be read.
+// (GET /v1/media/:id) for kind, size, duration and — fix pass 2 — the
+// moderation verdict: media-service answers keyed callers with
+// data.sensitive (true|false, or null when no real scan is on record). It is
+// read defensively: an absent or null field stays null, never false.
+// Best-effort: nil when the record cannot be read.
 func (s *Service) fetchMediaInfo(ctx context.Context, mediaID uuid.UUID) *MediaInfo {
 	if s.mediaServiceURL == "" || s.internalServiceKey == "" || s.httpClient == nil {
 		return nil
@@ -50,6 +52,7 @@ func (s *Service) fetchMediaInfo(ctx context.Context, mediaID uuid.UUID) *MediaI
 			Height          *int   `json:"height"`
 			DurationMs      *int   `json:"duration_ms"`
 			DurationSeconds *int   `json:"duration_seconds"`
+			Sensitive       *bool  `json:"sensitive"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -60,7 +63,7 @@ func (s *Service) fetchMediaInfo(ctx context.Context, mediaID uuid.UUID) *MediaI
 	if kind != "image" && kind != "video" && kind != "audio" {
 		return nil
 	}
-	info := &MediaInfo{Kind: kind, Width: d.Width, Height: d.Height, DurationMs: d.DurationMs}
+	info := &MediaInfo{Kind: kind, Width: d.Width, Height: d.Height, DurationMs: d.DurationMs, Sensitive: d.Sensitive}
 	if info.DurationMs == nil && d.DurationSeconds != nil {
 		ms := *d.DurationSeconds * 1000
 		info.DurationMs = &ms

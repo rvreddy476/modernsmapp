@@ -16,9 +16,14 @@ const (
 	// MessageReported is a member reporting one message (chat parity §2.6);
 	// trust-safety files the report.
 	MessageReported = "MessageReported"
-	MemberAdded     = "MemberAdded"
-	MemberRemoved   = "MemberRemoved"
-	ReactionToggled = "ReactionToggled"
+	// ConversationReported is a member reporting a whole conversation from its
+	// chat settings (chat parity fix pass 2): a DM reports the other person,
+	// a group reports the group, with the newest visible message ids as
+	// evidence.
+	ConversationReported = "ConversationReported"
+	MemberAdded          = "MemberAdded"
+	MemberRemoved        = "MemberRemoved"
+	ReactionToggled      = "ReactionToggled"
 
 	// Message-request lifecycle (messaging/privacy spec v2 §7.2).
 	MessageRequestCreated  = "MessageRequestCreated"
@@ -205,6 +210,24 @@ type MessageReportedPayload struct {
 	MediaID        string    `json:"media_id,omitempty"`
 	MessageType    string    `json:"message_type"`
 	ReportedAt     time.Time `json:"reported_at"`
+}
+
+// ConversationReportedPayload is one member's report of a conversation.
+// EntityType is "user" for a DM (EntityID = the other person) and
+// "conversation" for a group (EntityID = the conversation id). MessageIDs
+// are the newest (at most 20) messages the reporter could still see,
+// newest first.
+type ConversationReportedPayload struct {
+	EntityType       string    `json:"entity_type"`
+	EntityID         string    `json:"entity_id"`
+	ConversationID   string    `json:"conversation_id"`
+	ConversationType string    `json:"conversation_type"`
+	ReporterID       string    `json:"reporter_id"`
+	ReportedUserID   string    `json:"reported_user_id,omitempty"`
+	Reason           string    `json:"reason"`
+	Note             string    `json:"note,omitempty"`
+	MessageIDs       []string  `json:"message_ids"`
+	ReportedAt       time.Time `json:"reported_at"`
 }
 
 type MemberAddedPayload struct {

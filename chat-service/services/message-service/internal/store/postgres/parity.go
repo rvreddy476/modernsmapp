@@ -152,6 +152,8 @@ type InboxMeta struct {
 	MuteCalls       bool
 	AlertTone       string
 	Label           *string
+	// MarkedUnread is the member's own "mark as unread" (fix pass 2).
+	MarkedUnread bool
 }
 
 // GetInboxMeta loads the viewer's member + settings state for a page in one
@@ -164,7 +166,7 @@ func (s *ConversationStore) GetInboxMeta(ctx context.Context, userID uuid.UUID, 
 	rows, err := s.db.Query(ctx, `
 		SELECT m.conversation_id, m.unread_count, m.cleared_before, m.hidden, c.last_message_type,
 		       COALESCE(s.is_pinned, false), s.pinned_at, COALESCE(s.is_muted, false), s.mute_until,
-		       COALESCE(s.mute_calls, false), COALESCE(s.alert_tone, 'default'), s.label
+		       COALESCE(s.mute_calls, false), COALESCE(s.alert_tone, 'default'), s.label, m.marked_unread
 		FROM chat.conversation_members m
 		JOIN chat.conversations c ON c.id = m.conversation_id
 		LEFT JOIN chat.conversation_settings s ON s.conversation_id = m.conversation_id AND s.user_id = m.user_id
@@ -177,7 +179,7 @@ func (s *ConversationStore) GetInboxMeta(ctx context.Context, userID uuid.UUID, 
 	for rows.Next() {
 		var im InboxMeta
 		if err := rows.Scan(&im.ConversationID, &im.UnreadCount, &im.ClearedBefore, &im.Hidden, &im.LastMessageType,
-			&im.IsPinned, &im.PinnedAt, &im.IsMuted, &im.MuteUntil, &im.MuteCalls, &im.AlertTone, &im.Label); err != nil {
+			&im.IsPinned, &im.PinnedAt, &im.IsMuted, &im.MuteUntil, &im.MuteCalls, &im.AlertTone, &im.Label, &im.MarkedUnread); err != nil {
 			return nil, err
 		}
 		out[im.ConversationID] = im
@@ -226,6 +228,7 @@ func (s *ConversationStore) ClearForMe(ctx context.Context, conversationID, user
 		UPDATE chat.conversation_members
 		SET cleared_before = GREATEST(COALESCE(cleared_before, $3), $3),
 		    unread_count = 0,
+		    marked_unread = FALSE,
 		    hidden = CASE WHEN $4 THEN TRUE ELSE hidden END
 		WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
 	`, conversationID, userID, at, hide)
@@ -251,13 +254,31 @@ func (s *ConversationStore) GetMemberCutoff(ctx context.Context, conversationID,
 	return cut, err
 }
 
-// ResetUnread zeroes the member's unread counter (MarkRead).
+// ResetUnread zeroes the member's unread counter and clears their own
+// "mark as unread" (MarkRead): reading a conversation is what ends a mark.
 func (s *ConversationStore) ResetUnread(ctx context.Context, conversationID, userID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE chat.conversation_members SET unread_count = 0
-		WHERE conversation_id = $1 AND user_id = $2 AND unread_count <> 0
+		UPDATE chat.conversation_members SET unread_count = 0, marked_unread = FALSE
+		WHERE conversation_id = $1 AND user_id = $2 AND (unread_count <> 0 OR marked_unread)
 	`, conversationID, userID)
 	return err
+}
+
+// SetMarkedUnread sets or clears the member's own "mark as unread" (fix
+// pass 2, PUT .../unread). Only an active member may: ErrNotActiveMember
+// otherwise. Idempotent.
+func (s *ConversationStore) SetMarkedUnread(ctx context.Context, conversationID, userID uuid.UUID, unread bool) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE chat.conversation_members SET marked_unread = $3
+		WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
+	`, conversationID, userID, unread)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotActiveMember
+	}
+	return nil
 }
 
 // --- Delete for me (§2.3) ---

@@ -68,10 +68,14 @@ type GIFInfo struct {
 	Width    int    `json:"width"`
 	Height   int    `json:"height"`
 	StillURL string `json:"still_url,omitempty"`
+	// IsSticker marks a Giphy sticker (transparent art, drawn without a
+	// bubble) sent through the gif type (fix pass 2). Always on the wire.
+	IsSticker bool `json:"is_sticker"`
 }
 
 // MediaInfo is the attachment metadata from the media-service record.
-// Sensitive is null: media-service does not expose moderation labels.
+// Sensitive is media-service's moderation verdict (null while unknown: no
+// real scan on record yet, or the record could not be read).
 type MediaInfo struct {
 	Kind       string `json:"kind"`
 	Width      *int   `json:"width"`

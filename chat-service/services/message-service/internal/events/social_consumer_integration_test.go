@@ -29,7 +29,9 @@ func (s *retrySocialStore) PromoteRequestConversationByPair(context.Context, uui
 	return false, nil
 }
 
-func (s *retrySocialStore) SeverDirectConversation(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+// SeverDirectConversationOnBlock makes the fake the consumer's severer as
+// well: the durable effect under test is the sever.
+func (s *retrySocialStore) SeverDirectConversationOnBlock(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
 	s.attempts.Add(1)
 	if s.failBlock {
 		return false, errors.New("injected durable-store failure")
@@ -39,6 +41,16 @@ func (s *retrySocialStore) SeverDirectConversation(context.Context, uuid.UUID, u
 	default:
 	}
 	return true, nil
+}
+
+// storeSeverer runs the canonical Postgres sever without the service's Redis
+// revocation markers: this suite pins the durable Postgres effect only (the
+// marker protocol has its own service tests).
+type storeSeverer struct{ store *pgstore.ConversationStore }
+
+func (s storeSeverer) SeverDirectConversationOnBlock(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error) {
+	convID, severed, err := s.store.SeverDirectConversation(ctx, blockerID, blockedID)
+	return convID != uuid.Nil && len(severed) > 0, err
 }
 
 func TestFetchedOffsetSurvivesCrashBeforeDurableEffect(t *testing.T) {
@@ -57,7 +69,7 @@ func TestFetchedOffsetSurvivesCrashBeforeDurableEffect(t *testing.T) {
 	defer writer.Close()
 
 	failing := &retrySocialStore{failBlock: true, applied: make(chan struct{}, 1)}
-	first := NewSocialConsumer([]string{broker}, topic, group, failing, nil)
+	first := NewSocialConsumer([]string{broker}, topic, group, failing, failing, nil)
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	firstDone := make(chan struct{})
 	go func() { first.Start(firstCtx); close(firstDone) }()
@@ -77,7 +89,7 @@ func TestFetchedOffsetSurvivesCrashBeforeDurableEffect(t *testing.T) {
 	}
 
 	succeeding := &retrySocialStore{applied: make(chan struct{}, 1)}
-	second := NewSocialConsumer([]string{broker}, topic, group, succeeding, nil)
+	second := NewSocialConsumer([]string{broker}, topic, group, succeeding, succeeding, nil)
 	secondCtx, cancelSecond := context.WithCancel(context.Background())
 	defer cancelSecond()
 	go second.Start(secondCtx)
@@ -113,7 +125,7 @@ func TestLiveConsumersApplyCanonicalPostgresEffects(t *testing.T) {
 		}
 		topic, group := uniqueKafkaNames("social-postgres")
 		publishEnvelope(t, broker, topic, socialEnvelope{EventType: socialUserBlocked, Payload: mustJSON(t, userBlockedPayload{BlockerID: blocker.String(), BlockedID: blocked.String()})})
-		consumer := NewSocialConsumer([]string{broker}, topic, group, store, nil)
+		consumer := NewSocialConsumer([]string{broker}, topic, group, store, storeSeverer{store}, nil)
 		cancel := startLiveConsumer(t, consumer.Start)
 		defer cancel()
 		waitForPostgres(t, func() bool {

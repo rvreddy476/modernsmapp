@@ -41,6 +41,8 @@ var parityRoutes = map[string]bool{
 	"GET /v1/chat/notes":                                           true,
 	"GET /v1/chat/search":                                          true,
 	"GET /v1/chat/requests":                                        true,
+	"PUT /v1/chat/conversations/:id/unread":                        true,
+	"POST /v1/chat/conversations/:id/report":                       true,
 	"POST /internal/v1/chat/stickers/packs":                        true,
 	"POST /internal/v1/chat/stickers":                              true,
 }
@@ -272,7 +274,9 @@ func TestContractFixturesExist(t *testing.T) {
 	names := []string{"conversations_list", "conversation_detail", "message_voice", "message_sticker", "message_gif",
 		"message_profile", "message_sound", "message_live", "message_media", "message_note_reply", "forward_result",
 		"reactions_list", "read_summary", "notes_feed", "stickers", "search_result", "shared_posts", "shared_media",
-		"requests_filtered"}
+		"requests_filtered",
+		// fix pass 2
+		"message_gif_sticker", "requests_list", "request_detail", "conversation_marked_unread", "message_media_sensitive"}
 	for _, n := range names {
 		raw, err := os.ReadFile(filepath.Join("testdata", "contracts", "chat", n+".json"))
 		if err != nil {

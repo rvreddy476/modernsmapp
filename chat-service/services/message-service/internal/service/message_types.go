@@ -97,3 +97,15 @@ func messagePreview(msgType, text string) string {
 		return text
 	}
 }
+
+// messagePreviewWithExtra is messagePreview that also reads the stored rich
+// payload: a Giphy sticker (a gif with is_sticker, fix pass 2) previews as
+// "Sticker", like a catalogue sticker, not "GIF".
+func messagePreviewWithExtra(msgType, text, extraRaw string) string {
+	if msgType == MessageTypeGIF {
+		if e := decodeExtra(extraRaw); e != nil && e.GIF != nil && e.GIF.IsSticker {
+			return StickerPreview
+		}
+	}
+	return messagePreview(msgType, text)
+}

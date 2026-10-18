@@ -603,3 +603,9 @@ ALTER TABLE chat.user_profiles
 -- Scylla: chatservice.messages gains `extra text` (JSON). message-service
 -- adds it at boot (EnsureMessageColumns); for a manual apply:
 --   ALTER TABLE chatservice.messages ADD extra text;
+
+-- Chat parity fix pass 2 (migration 012): mark a conversation unread for
+-- yourself. Cleared by POST /read (with the unread counter) or by
+-- PUT /unread {"unread": false}.
+ALTER TABLE chat.conversation_members
+    ADD COLUMN IF NOT EXISTS marked_unread BOOLEAN NOT NULL DEFAULT FALSE;

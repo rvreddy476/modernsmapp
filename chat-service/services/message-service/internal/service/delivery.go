@@ -99,7 +99,7 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 	}
 	// One preview for every denormalised copy: a post card reads "Sent a
 	// post" (or its caption), never anything taken from the post.
-	preview := messagePreview(intent.MessageType, intent.MessageText)
+	preview := messagePreviewWithExtra(intent.MessageType, intent.MessageText, string(intent.Extra))
 	for _, memberID := range intent.MemberIDs {
 		if err := s.msgStore.UpsertInbox(ctx, memberID, intent.ConversationID, intent.SenderID, preview, intent.MessageTS); err != nil {
 			return fmt.Errorf("project inbox for %s: %w", memberID, err)

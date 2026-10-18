@@ -220,6 +220,9 @@ func (s *Service) searchMessageIndex(ctx context.Context, userID uuid.UUID, q, c
 type RequestRow struct {
 	postgres.Conversation
 	Filtered bool `json:"filtered"`
+	// Sender is who sent the request (fix pass 2): clients show "Deleted
+	// account" when deleted, else display_name, else @username.
+	Sender *RequestSender `json:"sender"`
 }
 
 // newAccountAge is the "new account" request signal (CONTRACT §7).
@@ -286,10 +289,17 @@ func (s *Service) ListRequestsFiltered(ctx context.Context, userID uuid.UUID, fi
 	ages := s.profileExtras(ctx, senders)
 	now := s.clock()
 	rows := make([]RequestRow, 0, len(envs))
+	senderOf := map[uuid.UUID]uuid.UUID{}
 	for _, e := range envs {
 		filtered := e.ReceiverID == userID && requestFiltered(e.Preview, policy, ages[e.SenderID].AccountCreatedAt, now)
 		if filtered == (filter == "filtered") {
 			rows = append(rows, RequestRow{Conversation: e.Conversation, Filtered: filtered})
+			// A purged sender's request row is gone: the creator is the sender.
+			sender := e.SenderID
+			if sender == uuid.Nil && e.Conversation.CreatedBy != nil {
+				sender = *e.Conversation.CreatedBy
+			}
+			senderOf[e.Conversation.ID] = sender
 		}
 	}
 	if offset >= len(rows) {
@@ -298,6 +308,15 @@ func (s *Service) ListRequestsFiltered(ctx context.Context, userID uuid.UUID, fi
 	rows = rows[offset:]
 	if limit > 0 && len(rows) > limit {
 		rows = rows[:limit]
+	}
+	// Fix pass 2: the sender block, resolved for the page only.
+	page := make(map[uuid.UUID]uuid.UUID, len(rows))
+	for _, r := range rows {
+		page[r.ID] = senderOf[r.ID]
+	}
+	blocks := s.requestSenders(ctx, userID, page)
+	for i := range rows {
+		rows[i].Sender = blocks[rows[i].ID]
 	}
 	return rows, nil
 }

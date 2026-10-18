@@ -66,10 +66,18 @@ type parityFakes struct {
 	reports   []map[string]string
 	mediaKind map[string]string
 	keywords  map[uuid.UUID][]string
+	// Fix pass 2: media-service moderation verdicts (absent key: the field
+	// is not sent), accounts the user directory no longer knows, and the
+	// trust-safety conversation-report route (404 until switched on).
+	mediaSensitive map[string]*bool
+	goneUsers      map[uuid.UUID]bool
+	convRouteOn    bool
+	convReports    []map[string]any
 }
 
 func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
-	f := &parityFakes{mediaKind: map[string]string{}, keywords: map[uuid.UUID][]string{}}
+	f := &parityFakes{mediaKind: map[string]string{}, keywords: map[uuid.UUID][]string{},
+		mediaSensitive: map[string]*bool{}, goneUsers: map[uuid.UUID]bool{}}
 	mux := http.NewServeMux()
 	writeJSON := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -93,6 +101,11 @@ func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
 	mux.HandleFunc("/users/v1/users/", func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/users/v1/users/"))
 		p, ok := people[id]
+		f.mu.Lock()
+		if f.goneUsers[id] {
+			ok = false
+		}
+		f.mu.Unlock()
 		if err != nil || !ok {
 			http.NotFound(w, r)
 			return
@@ -156,6 +169,7 @@ func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
 		id := strings.TrimPrefix(r.URL.Path, "/media/v1/media/")
 		f.mu.Lock()
 		kind := f.mediaKind[id]
+		sensitive, hasVerdict := f.mediaSensitive[id]
 		f.mu.Unlock()
 		if kind == "" {
 			http.NotFound(w, r)
@@ -167,6 +181,9 @@ func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
 			rec["width"], rec["height"] = 1080, 1350
 		case "audio":
 			rec["duration_ms"] = 4200
+		}
+		if hasVerdict {
+			rec["sensitive"] = sensitive
 		}
 		writeJSON(w, map[string]any{"data": rec})
 	})
@@ -183,6 +200,26 @@ func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
 		writeJSON(w, map[string]any{"data": hits, "next_cursor": ""})
 	})
 	// trust-safety
+	mux.HandleFunc("/ts/v1/internal/reports/conversations", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		on := f.convRouteOn
+		f.mu.Unlock()
+		if !on {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("X-Internal-Service-Key") != parityKey || r.Header.Get("X-User-Id") != "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.convReports = append(f.convReports, body)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, map[string]any{"data": map[string]any{"created": true}})
+	})
 	mux.HandleFunc("/ts/v1/internal/reports/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Internal-Service-Key") != parityKey || r.Header.Get("X-User-Id") != "" {
 			w.WriteHeader(http.StatusForbidden)

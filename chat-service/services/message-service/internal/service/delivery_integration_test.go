@@ -137,6 +137,9 @@ func (*deliveryMessageStore) GetMessages(context.Context, uuid.UUID, *scylla.Mes
 func (*deliveryMessageStore) SoftDeleteMessage(context.Context, uuid.UUID, string, time.Time, uuid.UUID) error {
 	return nil
 }
+func (*deliveryMessageStore) UpdateMessageText(context.Context, uuid.UUID, string, time.Time, uuid.UUID, string, time.Time) error {
+	return nil
+}
 func (*deliveryMessageStore) AddReaction(context.Context, uuid.UUID, string, time.Time, uuid.UUID, string, uuid.UUID) error {
 	return nil
 }

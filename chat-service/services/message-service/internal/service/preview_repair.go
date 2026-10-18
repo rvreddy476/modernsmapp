@@ -106,7 +106,7 @@ func (s *Service) resolvePreviewRepair(ctx context.Context, o postgres.PreviewRe
 	var ts *time.Time
 	if len(msgs) > 0 {
 		newest := msgs[0]
-		preview = messagePreview(newest.Type, newest.Text)
+		preview = messagePreviewWithExtra(newest.Type, newest.Text, newest.Extra)
 		sender := newest.SenderID
 		newestTs := newest.Ts
 		senderID = &sender
