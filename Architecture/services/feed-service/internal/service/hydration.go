@@ -91,6 +91,23 @@ type HydratedPost struct {
 	LocationLat   *float64    `json:"location_lat,omitempty"`
 	LocationLng   *float64    `json:"location_lng,omitempty"`
 
+	// Post screens parity (2026-10-18). Declared so they survive the
+	// by-name decode, like the block above: the full-screen feed page shows
+	// a "Paid partnership" / "Brand" / "AI-generated" label, a link chip
+	// and the comment box's state from the row alone. The disclosure bools
+	// are never omitempty (post-service emits them on every post and the
+	// label must not confuse false with missing); the strings and the
+	// nullable link / place id are omitempty, so a post without them gains
+	// no key. Counts.shares / counts.saves ride inside `counts` untouched.
+	Language        string  `json:"language,omitempty"`
+	PaidPromotion   bool    `json:"paid_promotion"`
+	IsBranded       bool    `json:"is_branded"`
+	AlteredContent  bool    `json:"altered_content"`
+	AIGenerated     bool    `json:"ai_generated"`
+	CommentAccess   string  `json:"comment_access,omitempty"`
+	LinkURL         *string `json:"link_url,omitempty"`
+	LocationPlaceID *string `json:"location_place_id,omitempty"`
+
 	// Original sounds on reels (2026-09-29). A reel can play another
 	// creator's reel audio next to its own video; the player keeps the two
 	// in sync and nothing is mixed on the server. All of it is decided by

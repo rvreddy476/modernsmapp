@@ -21,6 +21,8 @@
     "publish_to_feed": true,
     "original_audio_volume": 0,
     "overlay_audio_volume": 0,
+    "is_branded": false,
+    "ai_generated": false,
     "hide_share": false,
     "allow_download": true,
     "age_restricted": false,
@@ -51,7 +53,9 @@
     "is_processing": false,
     "counts": {
       "likes": 4,
-      "comments": 1
+      "comments": 1,
+      "shares": 0,
+      "saves": 0
     },
     "view_count": 96,
     "has_reacted": false,

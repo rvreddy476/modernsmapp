@@ -56,6 +56,9 @@ func (h *Handler) writePostDraftError(c *gin.Context, err error) {
 	case writeStandingError(c, err):
 	case writeDistributionError(c, err):
 	case writeCoverMediaError(c, err):
+	// A draft publishes through CreatePost, so its refusals of the request
+	// (cover, link, enums, media authority...) are the create route's 4xx.
+	case writeCreateGuardError(c, err):
 	case errors.Is(err, service.ErrInvalidDraft):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DRAFT", err.Error(), nil)
 	case errors.Is(err, service.ErrDraftNotFound):

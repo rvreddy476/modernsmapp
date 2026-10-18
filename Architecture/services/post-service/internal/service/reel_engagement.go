@@ -43,6 +43,9 @@ func (s *Service) AddReelComment(ctx context.Context, reelID, userID uuid.UUID, 
 	if post.NoComments {
 		return uuid.Nil, ErrCommentsDisabled
 	}
+	if err := s.commentAccessAllows(ctx, post, userID); err != nil {
+		return uuid.Nil, err
+	}
 	if !s.canComment(ctx, userID, post.AuthorID) {
 		return uuid.Nil, ErrCommentsRestricted
 	}

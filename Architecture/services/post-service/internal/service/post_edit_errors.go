@@ -57,6 +57,8 @@ func PostEditErrorStatus(err error) (int, string) {
 		return http.StatusUnprocessableEntity, "INVALID_RECORDING_DATE"
 	case errors.Is(err, ErrInvalidRecordingLocation):
 		return http.StatusUnprocessableEntity, "INVALID_RECORDING_LOCATION"
+	case errors.Is(err, ErrInvalidLinkURL):
+		return http.StatusUnprocessableEntity, "INVALID_LINK_URL"
 	case errors.Is(err, ErrInvalidRemixSetting):
 		return http.StatusUnprocessableEntity, "INVALID_REMIX_SETTING"
 	case errors.Is(err, ErrInvalidCommentModeration):

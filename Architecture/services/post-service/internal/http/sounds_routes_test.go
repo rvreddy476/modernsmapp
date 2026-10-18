@@ -480,7 +480,9 @@ var postKeys = []string{"id", "author_id", "text", "visibility", "content_type",
 	"overlay_audio_volume", "hide_share", "allow_download", "age_restricted", "hide_like_count", "default_comment_sort",
 	"related_post_id", "content_type_explicit", "source", "distribution_rev", "created_at", "updated_at", "published_at",
 	"is_scheduled", "media", "is_processing", "counts", "view_count", "has_reacted", "is_bookmarked", "repost_count",
-	"has_reposted", "is_repostable", "viewer_disliked", "viewer_queued", "chapters"}
+	"has_reposted", "is_repostable", "viewer_disliked", "viewer_queued", "chapters",
+	// Post screens parity (2026-10-18): the two disclosure switches, never omitempty.
+	"is_branded", "ai_generated"}
 
 var postWithSoundKeys = append(append([]string(nil), postKeys...), "audio_track_id", "audio_start_ms", "sound")
 

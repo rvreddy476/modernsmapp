@@ -42,7 +42,7 @@ const (
 // (migration 019). Kept here so an invalid value is a 400 at the service
 // boundary rather than a 500 from the database.
 var validPostVisibility = map[string]bool{
-	"public": true, "followers": true, "private": true,
+	"public": true, "followers": true, "friends": true, "private": true,
 	"unlisted": true, "trusted": true, "close_friends": true,
 }
 
@@ -310,6 +310,8 @@ func (s *Service) canViewThread(ctx context.Context, root *postgres.Post, viewer
 	switch root.Visibility {
 	case "followers":
 		return rel.Follows
+	case PostVisibilityFriends:
+		return rel.Follows && rel.FollowedBy
 	case "private":
 		// Private sharing (2026-09-28): a user on the root's share list,
 		// after the block check above.
@@ -326,10 +328,11 @@ func (s *Service) canViewThread(ctx context.Context, root *postgres.Post, viewer
 }
 
 type threadRelationship struct {
-	Follows       bool `json:"follows"`
-	Blocked       bool `json:"blocked"`
-	BlockedBy     bool `json:"blocked_by"`
-	IsConnection  bool `json:"is_connection"`
+	Follows      bool `json:"follows"`
+	FollowedBy   bool `json:"followed_by"`
+	Blocked      bool `json:"blocked"`
+	BlockedBy    bool `json:"blocked_by"`
+	IsConnection bool `json:"is_connection"`
 }
 
 func (s *Service) fetchRelationship(ctx context.Context, viewerID, authorID uuid.UUID) (*threadRelationship, error) {

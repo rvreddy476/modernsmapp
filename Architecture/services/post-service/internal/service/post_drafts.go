@@ -83,7 +83,27 @@ type PostDraftPayload struct {
 	HideShare     bool     `json:"hide_share,omitempty"`
 	AllowDownload *bool    `json:"allow_download,omitempty"`
 	TaggedUserIDs []string `json:"tagged_user_ids,omitempty"`
+
+	// ── Post details screen (2026-10-18, post_screen_fields.go) ─────────
+	// Everything the photo/text details screen sets, so a draft reopens in
+	// the composer exactly as it was left and publishes the same post.
+	// PostType is the post's post_type (text | image), not the draft row's
+	// kind; empty keeps the old "text" (or "video" for reel/video drafts).
+	// Validated on save and again at publish by CreatePost.
+	PostType        string   `json:"post_type,omitempty"`
+	Hashtags        []string `json:"hashtags,omitempty"`
+	Mentions        []string `json:"mentions,omitempty"`
+	RemixSetting    string   `json:"remix_setting,omitempty"`
+	CommentAccess   string   `json:"comment_access,omitempty"`
+	LinkURL         *string  `json:"link_url,omitempty"`
+	AIGenerated     bool     `json:"ai_generated,omitempty"`
+	IsBranded       bool     `json:"is_branded,omitempty"`
+	CoverIndex      *int     `json:"cover_index,omitempty"`
+	LocationPlaceID *string  `json:"location_place_id,omitempty"`
 }
+
+// draftPayloadPostTypes is what a draft payload's post_type may say.
+var draftPayloadPostTypes = map[string]bool{"": true, postTypeText: true, postTypeImage: true}
 
 // DraftPoll matches CreatePollInput but with JSON tags for storage.
 type DraftPoll struct {
@@ -127,7 +147,65 @@ func validateDraft(postType string, payload *PostDraftPayload) error {
 	if _, err := ParseDistributionPolicy(payload.Distribution); err != nil {
 		return err
 	}
+	return validateDraftDetails(postType, payload)
+}
+
+// validateDraftDetails applies the details screen's rules
+// (post_screen_fields.go) to a draft, on save and at publish. Each refusal
+// wraps ErrInvalidDraft AND the create route's own error, so the client
+// gets the field's code (INVALID_LINK_URL, INVALID_COVER, ...) from either
+// route.
+func validateDraftDetails(postType string, payload *PostDraftPayload) error {
+	bad := func(err error) error { return fmt.Errorf("%w: %w", ErrInvalidDraft, err) }
+	if payload.Visibility != "" && !createVisibilityAllowed(payload.Visibility) {
+		return bad(ErrInvalidVisibility)
+	}
+	kindIsVideo := postType == "reel" || postType == "video"
+	pt := strings.ToLower(strings.TrimSpace(payload.PostType))
+	if !(draftPayloadPostTypes[pt] || (kindIsVideo && pt == "video")) {
+		return fmt.Errorf("%w: payload post_type must be text or image", ErrInvalidDraft)
+	}
+	if _, err := normalizeCreateEnum(payload.RemixSetting, PostRemixSettings, "allow", ErrInvalidRemixSetting); err != nil {
+		return bad(err)
+	}
+	if _, err := normalizeCreateEnum(payload.CommentAccess, PostCommentAccesses, "everyone", ErrInvalidCommentAccess); err != nil {
+		return bad(err)
+	}
+	if payload.LinkURL != nil {
+		if _, err := NormalizeLinkURL(*payload.LinkURL); err != nil {
+			return bad(err)
+		}
+	}
+	if _, err := NormalizeLocationPlaceID(payload.LocationPlaceID); err != nil {
+		return bad(err)
+	}
+	if _, err := NormalizeExplicitHashtags(payload.Hashtags); err != nil {
+		return bad(err)
+	}
+	if _, err := NormalizeExplicitMentions(payload.Mentions); err != nil {
+		return bad(err)
+	}
+	cover, ok := draftCoverID(payload)
+	if !ok && pt == postTypeImage {
+		return bad(ErrInvalidCover)
+	}
+	if _, err := ResolvePostCover(pt, payload.MediaIDs, cover, payload.CoverIndex); err != nil {
+		return bad(err)
+	}
 	return nil
+}
+
+// draftCoverID parses the payload's cover_media_id. ok is false only for a
+// value that is present, non-empty and not a UUID.
+func draftCoverID(payload *PostDraftPayload) (*uuid.UUID, bool) {
+	if payload.CoverMediaID == nil || strings.TrimSpace(*payload.CoverMediaID) == "" {
+		return nil, true
+	}
+	id, err := uuid.Parse(strings.TrimSpace(*payload.CoverMediaID))
+	if err != nil {
+		return nil, false
+	}
+	return &id, true
 }
 
 func parseDraftPayload(raw json.RawMessage) (*PostDraftPayload, error) {
@@ -315,71 +393,11 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 		return nil, err
 	}
 
-	contentType := payload.ContentType
-	if d.PostType == "poll" {
-		contentType = "poll"
-	}
-	// P1-5: a reel draft publishes as a flick, not a text post.
-	postType := "text"
-	if d.PostType == "reel" || d.PostType == "video" ||
-		contentType == "flick" || contentType == "long_video" {
-		postType = "video"
-	}
+	// Alt text chosen in the composer is applied to the author's media
+	// before the post exists, so the publish response already carries it.
+	s.applyDraftAltTexts(ctx, d.AuthorID, payload)
 	postID := d.ID
-	input := &CreatePostInput{
-		PostID:         &postID,
-		AuthorID:       d.AuthorID,
-		Text:           payload.Text,
-		Visibility:     payload.Visibility,
-		ContentType:    contentType,
-		MediaIDs:       payload.MediaIDs,
-		RichText:       payload.RichText,
-		NoComments:     payload.NoComments,
-		NoLikes:        payload.NoLikes,
-		LocationName:   payload.LocationName,
-		LocationLat:    payload.LocationLat,
-		LocationLng:    payload.LocationLng,
-		Feeling:        payload.Feeling,
-		Activity:       payload.Activity,
-		ActivityDetail: payload.ActivityDetail,
-		Language:       payload.Language,
-		Title:          payload.Title,
-		PostType:       postType,
-		Distribution:   payload.Distribution,
-		// P1-5: every reel-specific field is carried through, so nothing
-		// the composer set is lost by scheduling instead of posting now.
-		Tags:           payload.Tags,
-		Category:       payload.Category,
-		PaidPromotion:  payload.PaidPromotion,
-		IsMadeForKids:  payload.IsMadeForKids,
-		AlteredContent: payload.AlteredContent,
-		HideShare:      payload.HideShare,
-		AllowDownload:  payload.AllowDownload == nil || *payload.AllowDownload,
-	}
-	// Unparseable ids were accepted at save time before this field existed
-	// on the payload; dropping one is better than failing a scheduled post
-	// the author is no longer looking at.
-	for _, raw := range payload.TaggedUserIDs {
-		if id, err := uuid.Parse(raw); err == nil {
-			input.TaggedUserIDs = append(input.TaggedUserIDs, id)
-		}
-	}
-	if payload.CoverMediaID != nil {
-		if id, err := uuid.Parse(*payload.CoverMediaID); err == nil {
-			input.CoverMediaID = &id
-		}
-	}
-	if payload.Poll != nil {
-		// Poll duration starts at actual publication time: CreatePost
-		// computes ends_at = now + duration at this moment, not at the
-		// time the draft was written (Codex P0-5 acceptance).
-		input.Poll = &CreatePollInput{
-			Question:       payload.Poll.Question,
-			Options:        payload.Poll.Options,
-			AllowsMultiple: payload.Poll.AllowsMultiple,
-			DurationHours:  payload.Poll.DurationHours,
-		}
-	}
+	input := buildDraftCreateInput(d, payload)
 
 	post, err := s.CreatePost(ctx, input)
 	if err != nil {
@@ -547,4 +565,116 @@ func (s *Service) deleteMediaAsset(ctx context.Context, mediaID uuid.UUID) error
 		return fmt.Errorf("media-service returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// buildDraftCreateInput maps a claimed draft onto the CreatePost input it
+// publishes as — every field the composer set, the draft id as the post id.
+// Pure, so the mapping is pinned without a database.
+func buildDraftCreateInput(d *postgres.PostDraft, payload *PostDraftPayload) *CreatePostInput {
+	contentType := payload.ContentType
+	if d.PostType == "poll" {
+		contentType = "poll"
+	}
+	// P1-5: a reel draft publishes as a flick, not a text post. A photo
+	// draft says so in its payload (post_type image, 2026-10-18); it used
+	// to publish as "text" whatever the composer had chosen.
+	postType := "text"
+	if d.PostType == "reel" || d.PostType == "video" ||
+		contentType == "flick" || contentType == "long_video" {
+		postType = "video"
+	} else if strings.EqualFold(strings.TrimSpace(payload.PostType), postTypeImage) {
+		postType = postTypeImage
+	}
+	// A draft saved without an audience publishes to the composer's
+	// default (Everyone). It used to reach the visibility CHECK as "" and
+	// fail the publish with a 500.
+	visibility := strings.ToLower(strings.TrimSpace(payload.Visibility))
+	if visibility == "" {
+		visibility = "public"
+	}
+	postID := d.ID
+	input := &CreatePostInput{
+		PostID:         &postID,
+		AuthorID:       d.AuthorID,
+		Text:           payload.Text,
+		Visibility:     visibility,
+		ContentType:    contentType,
+		MediaIDs:       payload.MediaIDs,
+		RichText:       payload.RichText,
+		NoComments:     payload.NoComments,
+		NoLikes:        payload.NoLikes,
+		LocationName:   payload.LocationName,
+		LocationLat:    payload.LocationLat,
+		LocationLng:    payload.LocationLng,
+		Feeling:        payload.Feeling,
+		Activity:       payload.Activity,
+		ActivityDetail: payload.ActivityDetail,
+		Language:       payload.Language,
+		Title:          payload.Title,
+		PostType:       postType,
+		Distribution:   payload.Distribution,
+		// P1-5: every reel-specific field is carried through, so nothing
+		// the composer set is lost by scheduling instead of posting now.
+		Tags:           payload.Tags,
+		Category:       payload.Category,
+		PaidPromotion:  payload.PaidPromotion,
+		IsMadeForKids:  payload.IsMadeForKids,
+		AlteredContent: payload.AlteredContent,
+		HideShare:      payload.HideShare,
+		AllowDownload:  payload.AllowDownload == nil || *payload.AllowDownload,
+		// The details screen (2026-10-18): CreatePost validates each again.
+		Hashtags:        payload.Hashtags,
+		Mentions:        payload.Mentions,
+		RemixSetting:    payload.RemixSetting,
+		CommentAccess:   payload.CommentAccess,
+		IsBranded:       payload.IsBranded,
+		AIGenerated:     payload.AIGenerated,
+		CoverIndex:      payload.CoverIndex,
+		LocationPlaceID: payload.LocationPlaceID,
+	}
+	if payload.LinkURL != nil {
+		input.LinkURL = *payload.LinkURL
+	}
+	// Unparseable ids were accepted at save time before this field existed
+	// on the payload; dropping one is better than failing a scheduled post
+	// the author is no longer looking at.
+	for _, raw := range payload.TaggedUserIDs {
+		if id, err := uuid.Parse(raw); err == nil {
+			input.TaggedUserIDs = append(input.TaggedUserIDs, id)
+		}
+	}
+	if payload.CoverMediaID != nil {
+		if id, err := uuid.Parse(*payload.CoverMediaID); err == nil {
+			input.CoverMediaID = &id
+		}
+	}
+	if payload.Poll != nil {
+		// Poll duration starts at actual publication time: CreatePost
+		// computes ends_at = now + duration at this moment, not at the
+		// time the draft was written (Codex P0-5 acceptance).
+		input.Poll = &CreatePollInput{
+			Question:       payload.Poll.Question,
+			Options:        payload.Poll.Options,
+			AllowsMultiple: payload.Poll.AllowsMultiple,
+			DurationHours:  payload.Poll.DurationHours,
+		}
+	}
+	return input
+}
+
+// ValidateDraftPayload parses and validates a draft body exactly as
+// CreatePostDraft does on save (strict keys, then every rule), without
+// storing it. An empty postType is the "post" kind.
+func ValidateDraftPayload(postType string, raw json.RawMessage) (*PostDraftPayload, error) {
+	payload, err := parseDraftPayload(raw)
+	if err != nil {
+		return nil, err
+	}
+	if postType == "" {
+		postType = "post"
+	}
+	if err := validateDraft(postType, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }

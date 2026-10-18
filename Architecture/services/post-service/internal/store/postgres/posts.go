@@ -67,6 +67,19 @@ type Post struct {
 	CoverMediaID           *uuid.UUID `json:"cover_media_id,omitempty"`
 	OriginalAudioVol       float32    `json:"original_audio_volume"`
 	OverlayAudioVol        float32    `json:"overlay_audio_volume"`
+	// Post screens parity (2026-10-18). IsBranded is the brand-content half
+	// of the content disclosure (column since migration 007, read and
+	// written only now): the author promotes their own brand or business,
+	// where PaidPromotion is a paid partnership. AIGenerated is the "made
+	// with AI" label (migration 066), separate from AlteredContent. Both
+	// never omitempty: the feed labels on true and must not confuse false
+	// with missing. LinkURL is the one https link the post carries and
+	// LocationPlaceID the place provider's id for LocationName (both
+	// migration 066), absent when unset.
+	IsBranded       bool    `json:"is_branded"`
+	AIGenerated     bool    `json:"ai_generated"`
+	LinkURL         *string `json:"link_url,omitempty"`
+	LocationPlaceID *string `json:"location_place_id,omitempty"`
 	// AudioTrackID is the added sound the post plays over its own video
 	// (service/audio.go), nil when it plays none. AudioStartMs is where in
 	// that sound playback starts; deriveAudio keeps the pair together, so
@@ -268,7 +281,8 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
 	created_at, updated_at, review_status, deleted_at,
-	publish_at, published_at, mention_usernames, active_restriction_count`
+	publish_at, published_at, mention_usernames, active_restriction_count,
+	is_branded, ai_generated, link_url, location_place_id`
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
@@ -327,6 +341,7 @@ func postScanDestinations(p *Post) []any {
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
 		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus, &p.DeletedAt,
 		&p.PublishAt, &p.PublishedAt, &p.MentionUsernames, &p.ActiveRestrictionCount,
+		&p.IsBranded, &p.AIGenerated, &p.LinkURL, &p.LocationPlaceID,
 	}
 }
 
@@ -765,7 +780,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			thread_root_id, thread_reply_to_id, thread_seq,
 			hide_share, allow_download, tagged_user_ids, content_type_explicit,
 			created_at, updated_at,
-			publish_at, mention_usernames)
+			publish_at, mention_usernames,
+			is_branded, ai_generated, link_url, location_place_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
 			$21, $22, $23, $24, $25,
@@ -779,7 +795,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			$43, $44, $45,
 			$46, $47, $48, $49,
 			$50, $50,
-			$51, $52)
+			$51, $52,
+			$53, $54, $55, $56)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -796,7 +813,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		p.ThreadRootID, p.ThreadReplyToID, p.ThreadSeq,
 		p.HideShare, p.AllowDownload, p.TaggedUserIDs, p.ContentTypeExplicit,
 		p.CreatedAt,
-		p.PublishAt, p.MentionUsernames)
+		p.PublishAt, p.MentionUsernames,
+		p.IsBranded, p.AIGenerated, p.LinkURL, p.LocationPlaceID)
 	if err != nil {
 		return err
 	}

@@ -79,6 +79,9 @@ type Handler struct {
 	// adminSounds backs the admin sound library routes
 	// (admin_sounds_handler.go); nil means the service.
 	adminSounds adminSoundService
+	// internalAltText backs PATCH /v1/media/internal/:mediaId/alt-text
+	// (internal_alt_text_handler.go); nil means the service.
+	internalAltText internalAltTextService
 }
 
 func New(svc *service.Service) *Handler {
@@ -168,6 +171,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// group-service, before it writes an anonymous post: the
 			// attachment's record and bytes stop naming the uploader.
 			internal.POST("/:mediaId/anonymize", h.AnonymizeMedia)
+			// post-service, publishing a composer draft (2026-10-18): the alt
+			// text the author wrote, onto the author's own asset only.
+			internal.PATCH("/:mediaId/alt-text", refuseGatewayIdentity(), h.UpdateAltTextInternal)
 			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
 			internal.GET("/:mediaId/profile-authority", h.GetProfileMediaAuthority)
 			// Re-run the transcode pipeline for a video (Tube thumbnail

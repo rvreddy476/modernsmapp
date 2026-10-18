@@ -34,7 +34,10 @@ import (
 // listed in a feed to someone other than its author.
 func listableVisibility(visibility string) bool {
 	switch strings.ToLower(strings.TrimSpace(visibility)) {
-	case "", "public", "followers":
+	// friends (2026-10-18): mutual follows. Like followers it fans out to
+	// the author's followers and post-service's batch decides per viewer —
+	// it drops a friends post for anyone the author does not follow back.
+	case "", "public", "followers", "friends":
 		return true
 	}
 	return false

@@ -64,6 +64,13 @@ type PostEditPatch struct {
 	RelatedPostID      *uuid.UUID
 	ClearRelatedPost   bool
 
+	// Post screens parity (migration 066 + the 007 is_branded column).
+	// ClearLinkURL writes NULL ("" on the wire) and wins over LinkURL.
+	IsBranded    *bool
+	AIGenerated  *bool
+	LinkURL      *string
+	ClearLinkURL bool
+
 	// Distribution replaces posts.distribution (the service built it from
 	// the stored policy plus notify_subscribers). When set, the same
 	// transaction bumps distribution_rev and writes DistributionEvent(rev)
@@ -147,6 +154,9 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 			related_post_id      = CASE WHEN $28::boolean THEN NULL ELSE COALESCE($27::uuid, related_post_id) END,
 			distribution         = COALESCE($29::jsonb, distribution),
 			distribution_rev     = distribution_rev + CASE WHEN $29::jsonb IS NULL THEN 0 ELSE 1 END,
+			is_branded           = COALESCE($30, is_branded),
+			ai_generated         = COALESCE($31, ai_generated),
+			link_url             = CASE WHEN $33::boolean THEN NULL ELSE COALESCE($32::text, link_url) END,
 			updated_at       = NOW()
 		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
 		RETURNING `+postCols,
@@ -158,7 +168,8 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 		patch.RecordingDate, patch.ClearRecordingDate, patch.RecordingLocation,
 		patch.RemixSetting, patch.CommentModeration, patch.CommentAccess,
 		patch.AgeRestricted, patch.HideLikeCount, patch.DefaultCommentSort,
-		patch.RelatedPostID, patch.ClearRelatedPost, jsonArg(patch.Distribution)))
+		patch.RelatedPostID, patch.ClearRelatedPost, jsonArg(patch.Distribution),
+		patch.IsBranded, patch.AIGenerated, patch.LinkURL, patch.ClearLinkURL))
 	if err != nil {
 		return nil, fmt.Errorf("update post fields: %w", err)
 	}
@@ -295,6 +306,11 @@ func postEditChanges(before *Post, patch PostEditPatch) map[string]PostEditChang
 	}
 	if patch.Distribution != nil && patch.DistributionChange != nil {
 		changes["notify_subscribers"] = *patch.DistributionChange
+	}
+	boolean("is_branded", before.IsBranded, patch.IsBranded)
+	boolean("ai_generated", before.AIGenerated, patch.AIGenerated)
+	if from, to := optString(before.LinkURL), nextLinkURL(before.LinkURL, patch); from != to {
+		changes["link_url"] = PostEditChange{From: from, To: to}
 	}
 	return changes
 }
@@ -440,4 +456,23 @@ func (s *Store) UpdatePostCategory(ctx context.Context, postID uuid.UUID, catego
 		`UPDATE posts SET category = $2, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL`,
 		postID, category)
 	return err
+}
+
+// optString renders a nullable TEXT column the way the diff compares it
+// ("" for NULL).
+func optString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func nextLinkURL(cur *string, patch PostEditPatch) string {
+	switch {
+	case patch.ClearLinkURL:
+		return ""
+	case patch.LinkURL != nil:
+		return *patch.LinkURL
+	}
+	return optString(cur)
 }

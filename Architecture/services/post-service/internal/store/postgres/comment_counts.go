@@ -114,3 +114,38 @@ func (s *Store) RecountCommentCounts(ctx context.Context) (int64, error) {
 	}
 	return up.RowsAffected() + down.RowsAffected(), nil
 }
+
+// EngagementCountRow is one post's PostgreSQL-held engagement figures: the
+// authoritative comment count and the share / bookmark counters as the
+// sharded-counter flush worker last materialized them.
+type EngagementCountRow struct {
+	Comments int64
+	Shares   int64
+	Saves    int64
+}
+
+// GetEngagementCountRows reads comment, share and bookmark counts for a page
+// in one query (2026-10-18: counts.shares / counts.saves on the post read
+// and feed rows). A post with no row is absent: all zero.
+func (s *Store) GetEngagementCountRows(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]EngagementCountRow, error) {
+	out := make(map[uuid.UUID]EngagementCountRow, len(postIDs))
+	if len(postIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT post_id, comment_count, share_count, bookmark_count
+		   FROM post_engagement_counts WHERE post_id = ANY($1)`, postIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read engagement counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var r EngagementCountRow
+		if err := rows.Scan(&id, &r.Comments, &r.Shares, &r.Saves); err != nil {
+			return nil, err
+		}
+		out[id] = r
+	}
+	return out, rows.Err()
+}

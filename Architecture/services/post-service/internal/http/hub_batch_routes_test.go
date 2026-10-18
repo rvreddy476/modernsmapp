@@ -27,6 +27,8 @@ type hubEditStore struct {
 	posts     map[uuid.UUID]*postgres.Post
 	failWrite map[uuid.UUID]bool
 	writes    []uuid.UUID
+	// lastPatch is the most recent write's patch (post screens parity).
+	lastPatch postgres.PostEditPatch
 }
 
 func newHubEditStore() *hubEditStore {
@@ -54,6 +56,7 @@ func (f *hubEditStore) UpdatePostFields(_ context.Context, postID, actorID uuid.
 		return nil, errors.New("connection reset")
 	}
 	f.writes = append(f.writes, postID)
+	f.lastPatch = patch
 	if patch.AgeRestricted != nil {
 		p.AgeRestricted = *patch.AgeRestricted
 	}

@@ -126,6 +126,8 @@ func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, in postMe
 		return true
 	case "followers":
 		return in.rel.Follows
+	case PostVisibilityFriends:
+		return in.rel.Follows && in.rel.FollowedBy
 	case "private":
 		return in.shared
 	default:

@@ -208,13 +208,19 @@ func (s *InteractionStore) ListComments(ctx context.Context, postID uuid.UUID, l
 type Counts struct {
 	Likes    int64 `json:"likes"`
 	Comments int64 `json:"comments"`
+	// Shares and Saves (2026-10-18) are post_engagement_counts.share_count
+	// and bookmark_count - the sharded share / bookmark counters as last
+	// flushed - overlaid by the service next to the comment figure. Never
+	// omitempty: 0 is a count, not a missing field.
+	Shares int64 `json:"shares"`
+	Saves  int64 `json:"saves"`
 }
 
 func (s *InteractionStore) GetCounts(ctx context.Context, postID uuid.UUID) (*Counts, error) {
 	var c Counts
 	if err := s.session.Query(`SELECT like_count, comment_count FROM post_counters WHERE post_id = ?`, postID.String()).Scan(&c.Likes, &c.Comments); err != nil {
 		if err == gocql.ErrNotFound {
-			return &Counts{0, 0}, nil
+			return &Counts{}, nil
 		}
 		return nil, err
 	}

@@ -29,6 +29,8 @@
   "cover_media_id": "55555555-5555-4555-8555-555555555555",
   "original_audio_volume": 0,
   "overlay_audio_volume": 0,
+  "is_branded": false,
+  "ai_generated": false,
   "hide_share": false,
   "allow_download": true,
   "age_restricted": false,

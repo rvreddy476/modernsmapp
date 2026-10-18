@@ -47,7 +47,7 @@ import (
 
 // PostVisibilities is the enum the create path accepts and the only one an
 // edit may set ('staged' is the moderation pipeline's, never the owner's).
-var PostVisibilities = []string{"public", "followers", "private", "unlisted"}
+var PostVisibilities = []string{"public", "followers", "friends", "private", "unlisted"}
 
 var (
 	// ErrInvalidVisibility: a visibility outside PostVisibilities.
@@ -111,6 +111,12 @@ type PostEditInput struct {
 	HideLikeCount      *bool
 	DefaultCommentSort *string
 	RelatedPostID      *string
+
+	// Post screens parity (2026-10-18, post_screen_fields.go). LinkURL takes
+	// "" to clear.
+	IsBranded   *bool
+	AIGenerated *bool
+	LinkURL     *string
 }
 
 // UpdatePost validates and applies an owner edit, then returns the post
@@ -335,6 +341,21 @@ func (s *Service) buildHubSettingsPatch(ctx context.Context, current *postgres.P
 	}
 	if in.NotifySubscribers != nil {
 		s.buildNotifySubscribersPatch(current, *in.NotifySubscribers, patch)
+	}
+	// Post screens parity (post_screen_fields.go): the details screen's
+	// disclosure switches and the link, under the create rules.
+	patch.IsBranded = in.IsBranded
+	patch.AIGenerated = in.AIGenerated
+	if in.LinkURL != nil {
+		link, err := NormalizeLinkURL(*in.LinkURL)
+		if err != nil {
+			return err
+		}
+		if link == nil {
+			patch.ClearLinkURL = true
+		} else {
+			patch.LinkURL = link
+		}
 	}
 	return nil
 }

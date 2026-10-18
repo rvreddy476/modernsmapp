@@ -31,6 +31,9 @@ import (
 // Relationship is the viewer→target relationship as the graph reports it.
 type Relationship struct {
 	Follows bool `json:"follows"`
+	// FollowedBy: the target follows the viewer (graph-service batch
+	// `followed_by`), for the mutual-follows `friends` audience.
+	FollowedBy bool `json:"followed_by"`
 	// Blocked and BlockedBy are BOTH required: every block rule on this
 	// platform is symmetric, and a contract carrying one direction cannot
 	// express it.

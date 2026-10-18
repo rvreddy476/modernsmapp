@@ -165,6 +165,8 @@ func (h *Handler) AddReelComment(c *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrCommentsRestricted):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
+		case errors.Is(err, service.ErrCommentsFollowersOnly):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_FOLLOWERS_ONLY", "Only followers can comment on this post", nil)
 		case errors.Is(err, service.ErrCommentsDisabled):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
 		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):

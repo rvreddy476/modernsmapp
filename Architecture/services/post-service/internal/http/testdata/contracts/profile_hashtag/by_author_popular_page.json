@@ -31,6 +31,8 @@
       "cover_media_id": "55555555-5555-4555-8555-555555555555",
       "original_audio_volume": 0,
       "overlay_audio_volume": 0,
+      "is_branded": false,
+      "ai_generated": false,
       "hide_share": false,
       "allow_download": true,
       "age_restricted": false,
@@ -60,7 +62,9 @@
       "is_processing": false,
       "counts": {
         "likes": 128,
-        "comments": 9
+        "comments": 9,
+        "shares": 0,
+        "saves": 0
       },
       "view_count": 0,
       "has_reacted": false,

@@ -71,18 +71,21 @@ type Service struct {
 	// outboxNudge asks the outbox worker to drain immediately instead of
 	// waiting out its 5s tick. Buffered at one: a pending drain makes a second
 	// signal redundant. See NudgeOutbox in outbox.go.
-	outboxNudge            chan struct{}
-	pgStore                *postgres.Store
-	scyllaStore            *scylla.InteractionStore
-	scyllaSession          *gocql.Session
-	rdb                    *redis.Client
-	producer               *postEvents.Producer // legacy producer, optional
-	engProducer            *engagement.Producer // new engagement event producer
-	rateLimiter            *engagement.RateLimiter
-	spam                   *spam.Detector
-	userServiceURL         string
-	profileServiceURL      string
-	mediaServiceURL        string
+	outboxNudge       chan struct{}
+	pgStore           *postgres.Store
+	scyllaStore       *scylla.InteractionStore
+	scyllaSession     *gocql.Session
+	rdb               *redis.Client
+	producer          *postEvents.Producer // legacy producer, optional
+	engProducer       *engagement.Producer // new engagement event producer
+	rateLimiter       *engagement.RateLimiter
+	spam              *spam.Detector
+	userServiceURL    string
+	profileServiceURL string
+	mediaServiceURL   string
+	// draftAltTexts writes a draft's alt_texts onto its media at publish
+	// (draft_alt_texts.go); nil = media-service over HTTP.
+	draftAltTexts          draftAltTextWriter
 	graphServiceURL        string
 	monetizationServiceURL string
 	reviewerServiceURL     string
@@ -653,6 +656,15 @@ type CreatePostInput struct {
 	// exactly-once mechanism through PostID.
 	CreateKey         string
 	CreateFingerprint string
+
+	// Post screens parity (2026-10-18, post_screen_fields.go). CoverIndex
+	// picks the cover of a photo post by position in MediaIDs; LinkURL and
+	// LocationPlaceID are raw ("" = none) and normalized by CreatePost.
+	CoverIndex      *int
+	IsBranded       bool
+	AIGenerated     bool
+	LinkURL         string
+	LocationPlaceID *string
 }
 
 // CreatePollInput holds poll creation data.
@@ -931,6 +943,28 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if err := ValidatePublishAt(input.PublishAt, time.Now()); err != nil {
 		return nil, err
 	}
+	// The details screen's fields, before anything is written
+	// (post_screen_fields.go): every one is a statement about the request.
+	coverMediaID, err := ResolvePostCover(input.PostType, input.MediaIDs, input.CoverMediaID, input.CoverIndex)
+	if err != nil {
+		return nil, err
+	}
+	remixSetting, err := normalizeCreateEnum(input.RemixSetting, PostRemixSettings, "allow", ErrInvalidRemixSetting)
+	if err != nil {
+		return nil, err
+	}
+	commentAcc, err := normalizeCreateEnum(input.CommentAccess, PostCommentAccesses, "everyone", ErrInvalidCommentAccess)
+	if err != nil {
+		return nil, err
+	}
+	linkURL, err := NormalizeLinkURL(input.LinkURL)
+	if err != nil {
+		return nil, err
+	}
+	locationPlaceID, err := NormalizeLocationPlaceID(input.LocationPlaceID)
+	if err != nil {
+		return nil, err
+	}
 	// Author standing, before anything is written (publish_standing.go):
 	// a suspended author gets 403 AUTHOR_SUSPENDED, an unanswerable
 	// trust-safety 503 — never a post.
@@ -1064,17 +1098,11 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if license == "" {
 		license = "standard"
 	}
-	remixSetting := input.RemixSetting
-	if remixSetting == "" {
-		remixSetting = "allow"
-	}
+	// remix_setting and comment_access were validated and defaulted at the
+	// top (normalizeCreateEnum): they used to be stored as sent.
 	commentMod := input.CommentModeration
 	if commentMod == "" {
 		commentMod = "none"
-	}
-	commentAcc := input.CommentAccess
-	if commentAcc == "" {
-		commentAcc = "everyone"
 	}
 	origVol := input.OriginalAudioVol
 	if origVol == 0 {
@@ -1124,7 +1152,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		CommentAccess:     commentAcc,
 		RecordingDate:     input.RecordingDate,
 		RecordingLocation: input.RecordingLocation,
-		CoverMediaID:      input.CoverMediaID,
+		CoverMediaID:      coverMediaID,
 		OriginalAudioVol:  origVol,
 		OverlayAudioVol:   overlayVol,
 		HideShare:         input.HideShare,
@@ -1133,6 +1161,10 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		MentionUsernames:  mentions,
 		PublishAt:         input.PublishAt,
 		CreatedAt:         time.Now(),
+		IsBranded:         input.IsBranded,
+		AIGenerated:       input.AIGenerated,
+		LinkURL:           linkURL,
+		LocationPlaceID:   locationPlaceID,
 	}
 
 	// Persist the validated policy verbatim; rev 1 marks "has a policy",
@@ -1177,8 +1209,8 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 	// The cover answers the same questions as an attachment (cover_guard.go):
 	// it used to be stored as sent, a stranger's asset included.
-	if input.CoverMediaID != nil {
-		if err := s.verifyCoverOnWrite(ctx, input.AuthorID, *input.CoverMediaID); err != nil {
+	if coverMediaID != nil {
+		if err := s.verifyCoverOnWrite(ctx, input.AuthorID, *coverMediaID); err != nil {
 			return nil, err
 		}
 	}
@@ -1638,7 +1670,7 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	detail.RepostCount = repostCount
 
 	// A post is repostable if it's public (non-private)
-	detail.IsRepostable = p.Visibility != "private"
+	detail.IsRepostable = repostableVisibility(p.Visibility)
 
 	// Enrich with viewer-specific state
 	if viewerID != nil {
@@ -1728,22 +1760,32 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 			return follows
 		}
 	}()
+	// The friends audience needs the other edge too: one more lookup, made
+	// only when a friends-only post is on the page. Fail closed.
+	viewerMutual := func() func() bool {
+		checked, mutual := false, false
+		return func() bool {
+			if !checked {
+				checked = true
+				if viewerID != nil {
+					m, err := s.checkViewerMutualWithAuthor(ctx, *viewerID, authorID)
+					if err != nil {
+						log.Printf("Warning: profile friends visibility graph lookup failed; hiding friends posts: %v", err)
+					} else {
+						mutual = m
+					}
+				}
+			}
+			return mutual
+		}
+	}()
 
 	// Merge counts from Scylla for each visible post
 	details := make([]PostDetail, 0, len(posts))
 	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
-		if !isAuthor {
-			switch strings.ToLower(post.Visibility) {
-			case "", "public", "unlisted":
-			case "followers":
-				if !viewerFollows() {
-					continue
-				}
-			default: // private, the retired "circle" (author-only, see
-				// viewerMayViewPost), or an unknown value — fail closed
-				continue
-			}
+		if !isAuthor && !profileGridAllows(post.Visibility, viewerFollows, viewerMutual) {
+			continue
 		}
 		counts, _ := s.countsForPost(ctx, p.ID)
 		if post.ContentType == "poll" {
@@ -1895,7 +1937,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 	}
 	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
 	ageOK := s.ageAllowance(ctx, viewerID)
-	followed := s.followedAuthorsOfFollowersPosts(ctx, posts, viewerID)
+	edges := s.followEdgesOfRestrictedPosts(ctx, posts, viewerID)
 
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
@@ -1912,7 +1954,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 			// by any signed-in user with a post id, and a timeline row
 			// outlives an unfollow whose purge failed. Private sharing
 			// stays a single-post gate: a share list is never listed.
-			if !batchVisibilityAllows(post.Visibility, followed[post.AuthorID]) {
+			if !batchVisibilityAllowsEdges(post.Visibility, edges[post.AuthorID]) {
 				continue
 			}
 		}
@@ -1949,7 +1991,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 			Post:         &post,
 			Counts:       counts,
 			RepostCount:  repostCounts[post.ID],
-			IsRepostable: post.Visibility != "private",
+			IsRepostable: repostableVisibility(post.Visibility),
 		}
 
 		// Enrich with viewer-specific state
@@ -2542,7 +2584,7 @@ func (s *Service) SharePost(ctx context.Context, postID, userID uuid.UUID, share
 	if err != nil || post == nil {
 		return nil, fmt.Errorf("POST_NOT_FOUND")
 	}
-	if post.Visibility == "private" || (post.Visibility == "followers" && shareType != "external") {
+	if shareRestricted(post.Visibility, shareType) {
 		return nil, fmt.Errorf("CIRCLE_SHARE_RESTRICTED")
 	}
 
@@ -2640,6 +2682,9 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 	}
 	if post.NoComments {
 		return nil, ErrCommentsDisabled
+	}
+	if err := s.commentAccessAllows(ctx, post, authorID); err != nil {
+		return nil, err
 	}
 	// Comments audience (allow_comments_from: everyone | friends). Resolved
 	// by graph-service against the post author's CURRENT setting and the
@@ -2755,6 +2800,9 @@ func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, 
 	}
 	if post.NoComments {
 		return nil, ErrCommentsDisabled
+	}
+	if err := s.commentAccessAllows(ctx, post, userID); err != nil {
+		return nil, err
 	}
 	if !s.canComment(ctx, userID, post.AuthorID) {
 		return nil, ErrCommentsRestricted
@@ -3008,6 +3056,18 @@ func (s *Service) viewerMayViewPost(ctx context.Context, post *postgres.Post, vi
 			return false
 		}
 		return follows
+	case PostVisibilityFriends:
+		// Friends (2026-10-18): mutual follows only. Same fail-closed
+		// answer as followers on a graph outage or an anonymous viewer.
+		if viewerID == nil {
+			return false
+		}
+		mutual, err := s.checkViewerMutualWithAuthor(ctx, *viewerID, post.AuthorID)
+		if err != nil {
+			log.Printf("Warning: friends visibility graph lookup failed; rejecting: %v", err)
+			return false
+		}
+		return mutual
 	default:
 		// "circle" (and "trusted" / "close_friends") is author-only here as
 		// on the media gate (evaluatePostMediaVisibility) since 2026-09-29:
@@ -3026,8 +3086,27 @@ func (s *Service) viewerMayViewPost(ctx context.Context, post *postgres.Post, vi
 // existing fetchFollowing helper — so unit tests + dev rigs without
 // graph-service skip the gate cleanly.
 func (s *Service) checkViewerFollowsAuthor(ctx context.Context, viewerID, authorID uuid.UUID) (bool, error) {
+	follows, _, err := s.fetchFollowEdges(ctx, viewerID, authorID)
+	return follows, err
+}
+
+// checkViewerMutualWithAuthor answers the `friends` audience: the viewer
+// follows the author AND the author follows the viewer, from the same one
+// graph lookup checkViewerFollowsAuthor makes. Empty graphServiceURL is
+// "no policy" exactly as there (unit tests and dev rigs).
+func (s *Service) checkViewerMutualWithAuthor(ctx context.Context, viewerID, authorID uuid.UUID) (bool, error) {
+	follows, followedBy, err := s.fetchFollowEdges(ctx, viewerID, authorID)
+	if err != nil {
+		return false, err
+	}
+	return follows && followedBy, nil
+}
+
+// fetchFollowEdges is the one GET /v1/graph/relationship call behind both
+// audience checks: follows = viewer→author, followedBy = author→viewer.
+func (s *Service) fetchFollowEdges(ctx context.Context, viewerID, authorID uuid.UUID) (follows, followedBy bool, err error) {
 	if s.graphServiceURL == "" {
-		return true, nil
+		return true, true, nil
 	}
 	client := s.httpClient
 	if client == nil {
@@ -3039,7 +3118,7 @@ func (s *Service) checkViewerFollowsAuthor(ctx context.Context, viewerID, author
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false, fmt.Errorf("build relationship request: %w", err)
+		return false, false, fmt.Errorf("build relationship request: %w", err)
 	}
 	// graph-service gates /v1/graph/* behind the internal service key.
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
@@ -3047,25 +3126,24 @@ func (s *Service) checkViewerFollowsAuthor(ctx context.Context, viewerID, author
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("relationship request: %w", err)
+		return false, false, fmt.Errorf("relationship request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("graph-service status %d", resp.StatusCode)
+		return false, false, fmt.Errorf("graph-service status %d", resp.StatusCode)
 	}
 	var envelope struct {
 		Data struct {
-			Follows bool `json:"follows"`
+			Follows    bool `json:"follows"`
+			FollowedBy bool `json:"followed_by"`
 		} `json:"data"`
-		Follows bool `json:"follows"` // legacy un-wrapped shape tolerated
+		Follows    bool `json:"follows"`     // legacy un-wrapped shape tolerated
+		FollowedBy bool `json:"followed_by"` // legacy un-wrapped shape tolerated
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return false, fmt.Errorf("decode relationship: %w", err)
+		return false, false, fmt.Errorf("decode relationship: %w", err)
 	}
-	if envelope.Data.Follows {
-		return true, nil
-	}
-	return envelope.Follows, nil
+	return envelope.Data.Follows || envelope.Follows, envelope.Data.FollowedBy || envelope.FollowedBy, nil
 }
 
 func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
@@ -3671,7 +3749,7 @@ func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*R
 	}
 
 	// 2. Visibility check — private or followers-only posts cannot be reposted
-	if post.Visibility == "private" {
+	if !repostableVisibility(post.Visibility) {
 		return nil, fmt.Errorf("NOT_ELIGIBLE")
 	}
 

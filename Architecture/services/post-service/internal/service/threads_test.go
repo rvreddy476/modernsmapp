@@ -61,15 +61,15 @@ func TestCreateThread_Validation(t *testing.T) {
 	}
 }
 
-// The accepted visibility set must stay in step with migration 019's
-// posts_visibility_check constraint.
+// The accepted visibility set must stay in step with migration 066's
+// posts_visibility_check constraint (019 + friends).
 func TestValidPostVisibility_MatchesSchemaConstraint(t *testing.T) {
-	for _, v := range []string{"public", "followers", "private", "unlisted", "trusted", "close_friends"} {
+	for _, v := range []string{"public", "followers", "friends", "private", "unlisted", "trusted", "close_friends"} {
 		if !validPostVisibility[v] {
 			t.Errorf("%q is allowed by the DB constraint and must be accepted", v)
 		}
 	}
-	for _, v := range []string{"everyone", "friends", "PUBLIC", ""} {
+	for _, v := range []string{"everyone", "mutuals", "PUBLIC", ""} {
 		if validPostVisibility[v] {
 			t.Errorf("%q is not in the DB constraint and must be rejected", v)
 		}

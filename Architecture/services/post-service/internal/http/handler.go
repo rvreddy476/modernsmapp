@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -401,28 +402,30 @@ type CreatePollRequest struct {
 }
 
 type CreatePostRequest struct {
-	Text             string `json:"text"`
-	Visibility       string `json:"visibility" binding:"required,oneof=public followers private unlisted"`
-	VisibilityPolicy *struct {
-		Mode       string   `json:"mode"`
-		AllowLists []string `json:"allow_lists,omitempty"`
-		AllowUsers []string `json:"allow_users,omitempty"`
-		DenyUsers  []string `json:"deny_users,omitempty"`
-	} `json:"visibility_policy,omitempty"`
-	ContentType    string             `json:"content_type"`
-	MediaIDs       []string           `json:"media_ids"`
-	Feeling        *string            `json:"feeling"`
-	Activity       *string            `json:"activity"`
-	ActivityDetail *string            `json:"activity_detail"`
-	RichText       json.RawMessage    `json:"rich_text"`
-	Poll           *CreatePollRequest `json:"poll"`
-	NoComments     bool               `json:"no_comments"`
-	NoLikes        bool               `json:"no_likes"`
-	LocationName   *string            `json:"location_name"`
-	LocationLat    *float64           `json:"location_lat"`
-	LocationLng    *float64           `json:"location_lng"`
-	PostType       string             `json:"post_type"`
-	AppOrigin      string             `json:"app_origin"`
+	Text string `json:"text"`
+	// friends = mutual follows (2026-10-18). "Only you" is private with an
+	// empty share list; there is no separate value for it.
+	Visibility string `json:"visibility" binding:"required,oneof=public followers friends private unlisted"`
+	// VisibilityPolicy (mode / allow_lists / allow_users / deny_users) was
+	// parsed here and never forwarded, so a client that sent one published
+	// to `visibility` alone and was told nothing. No client sends it; the
+	// field is kept only so a request that does gets 400
+	// UNSUPPORTED_VISIBILITY_POLICY instead of a silently wider audience.
+	VisibilityPolicy json.RawMessage    `json:"visibility_policy,omitempty"`
+	ContentType      string             `json:"content_type"`
+	MediaIDs         []string           `json:"media_ids"`
+	Feeling          *string            `json:"feeling"`
+	Activity         *string            `json:"activity"`
+	ActivityDetail   *string            `json:"activity_detail"`
+	RichText         json.RawMessage    `json:"rich_text"`
+	Poll             *CreatePollRequest `json:"poll"`
+	NoComments       bool               `json:"no_comments"`
+	NoLikes          bool               `json:"no_likes"`
+	LocationName     *string            `json:"location_name"`
+	LocationLat      *float64           `json:"location_lat"`
+	LocationLng      *float64           `json:"location_lng"`
+	PostType         string             `json:"post_type"`
+	AppOrigin        string             `json:"app_origin"`
 	// Presence-aware (fixes-v2 / Codex P1-1): a pointer distinguishes an
 	// omitted field from an explicit `false`, so an old client's explicit
 	// opt-out is honored. JSON compatibility is unchanged — the stored
@@ -488,6 +491,23 @@ type CreatePostRequest struct {
 	//  "create_reel_preview":bool}. Omitted = legacy behavior. Unknown
 	// fields, wrong version, or unsupported true flags → 400.
 	Distribution json.RawMessage `json:"distribution"`
+
+	// Post screens parity (2026-10-18, service/post_screen_fields.go).
+	// omitempty on every one so a request that sends none of them
+	// fingerprints exactly as it did before (create_fingerprint.go) and an
+	// in-flight retry across the deploy still replays.
+	//
+	//   cover_index         0-based position in media_ids of a photo post's
+	//                       cover; must agree with cover_media_id when both.
+	//   is_branded          content disclosure next to paid_promotion.
+	//   ai_generated        "made with AI" label.
+	//   link_url            https only, <= 500 chars ("" = none).
+	//   location_place_id   the place provider's id for location_name.
+	CoverIndex      *int    `json:"cover_index,omitempty"`
+	IsBranded       bool    `json:"is_branded,omitempty"`
+	AIGenerated     bool    `json:"ai_generated,omitempty"`
+	LinkURL         string  `json:"link_url,omitempty"`
+	LocationPlaceID *string `json:"location_place_id,omitempty"`
 }
 
 // writeDistributionError maps distribution policy errors to their typed
@@ -546,6 +566,19 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 	case errors.Is(err, service.ErrChannelRequired):
 		// Tube: a long video needs a channel first (founder rule, 2026-09-05).
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "CHANNEL_REQUIRED", "Create your channel before posting a video", nil)
+	// Post screens parity (2026-10-18): statements about the request, 400.
+	case errors.Is(err, service.ErrInvalidCover):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_COVER", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidRemixSetting):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_REMIX_SETTING", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidCommentAccess):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_COMMENT_ACCESS", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidLinkURL):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_LINK_URL", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidLocationPlaceID):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_LOCATION_PLACE_ID", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidVisibility):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_VISIBILITY", err.Error(), nil)
 	default:
 		return false
 	}
@@ -676,6 +709,15 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		return
 	}
 
+	// visibility_policy was never applied (see the field): refuse it rather
+	// than publish to an audience the client did not describe. JSON null
+	// is the same as absent.
+	if p := bytes.TrimSpace(req.VisibilityPolicy); len(p) > 0 && !bytes.Equal(p, []byte("null")) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UNSUPPORTED_VISIBILITY_POLICY",
+			"visibility_policy is not supported; use visibility (public, followers, friends, private, unlisted) and private shares", nil)
+		return
+	}
+
 	// An unknown content_type is refused before any lookup; the service
 	// refuses it too (ErrInvalidContentType) for every other caller.
 	if req.ContentType != "" {
@@ -725,6 +767,11 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	if req.CoverMediaID != nil {
 		if id, err := uuid.Parse(*req.CoverMediaID); err == nil {
 			coverMediaID = &id
+		} else if strings.EqualFold(strings.TrimSpace(req.PostType), "image") && strings.TrimSpace(*req.CoverMediaID) != "" {
+			// A photo post's cover must be one of its pages (2026-10-18);
+			// a value that is not even an id cannot be, and is not dropped.
+			writeCreateGuardError(c, service.ErrInvalidCover)
+			return
 		}
 	}
 
@@ -825,6 +872,11 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		VisibilityExplicit: true,
 		CreateKey:          createKey,
 		CreateFingerprint:  fingerprint,
+		CoverIndex:         req.CoverIndex,
+		IsBranded:          req.IsBranded,
+		AIGenerated:        req.AIGenerated,
+		LinkURL:            req.LinkURL,
+		LocationPlaceID:    req.LocationPlaceID,
 	}
 
 	if req.Poll != nil {
@@ -1287,6 +1339,8 @@ func (h *Handler) AddComment(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
 		case errors.Is(err, service.ErrCommentsRestricted):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
+		case errors.Is(err, service.ErrCommentsFollowersOnly):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_FOLLOWERS_ONLY", "Only followers can comment on this post", nil)
 		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
 		default:
@@ -1807,6 +1861,8 @@ func (h *Handler) CreateReply(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
 		case errors.Is(err, service.ErrCommentsRestricted):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
+		case errors.Is(err, service.ErrCommentsFollowersOnly):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_FOLLOWERS_ONLY", "Only followers can comment on this post", nil)
 		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 		case strings.HasPrefix(err.Error(), "INVALID_REQUEST"):

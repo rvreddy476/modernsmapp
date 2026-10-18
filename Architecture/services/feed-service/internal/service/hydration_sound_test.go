@@ -151,7 +151,8 @@ const reelWithoutSoundUpstream = `{
 // reelWithoutSoundGolden is what the feed wrote for reelWithoutSoundUpstream
 // BEFORE this change, byte for byte (taken from the struct as it stood at
 // 1d55e3fa). A post that plays no added sound must still produce exactly
-// this.
+// this. The four disclosure switches were added on 2026-10-18 (post screens
+// parity); they are not sound keys.
 const reelWithoutSoundGolden = `{"id":"` + soundTestPostID + `","author_id":"` + soundTestAuthorID + `",` +
 	`"text":"monsoon walk #rain","visibility":"public","content_type":"flick","is_pinned":false,` +
 	`"created_at":"2026-09-29T08:30:00Z","updated_at":"2026-09-29T08:30:00Z",` +
@@ -160,7 +161,10 @@ const reelWithoutSoundGolden = `{"id":"` + soundTestPostID + `","author_id":"` +
 	`"counts":{"likes":4,"comments":1,"shares":0},"view_count":0,"has_reacted":false,"is_bookmarked":false,` +
 	`"repost_count":0,"has_reposted":false,"is_repostable":false,"hashtags":["rain"],"post_type":"video",` +
 	`"app_origin":"postbook","share_to_postbook":true,"no_comments":false,"hide_share":false,` +
-	`"allow_download":true,"remix_setting":"allow","is_processing":false,"is_scheduled":false,` +
+	`"allow_download":true,"remix_setting":"allow",` +
+	// The details-screen disclosure switches (2026-10-18), on every row.
+	`"paid_promotion":false,"is_branded":false,"altered_content":false,"ai_generated":false,` +
+	`"is_processing":false,"is_scheduled":false,` +
 	`"author":{"id":"00000000-0000-0000-0000-000000000000","display_name":""}}`
 
 // feedItemJSON decodes an upstream post the way HydratePosts does and

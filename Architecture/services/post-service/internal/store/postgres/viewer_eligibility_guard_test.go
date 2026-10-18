@@ -81,7 +81,7 @@ func TestRevalidationAndEligibilityReadsCarryTheEffectiveStatus(t *testing.T) {
 	for file, needles := range map[string][]string{
 		"post_access_state.go":  {"active_restriction_count"},
 		"search_eligibility.go": {"effective_review_status, active_restriction_count", "ReviewStatus:     effective", "effective_review_status, review_status, (active_restriction_count > 0)"},
-		"posts.go":              {"mention_usernames, active_restriction_count`", "&p.ActiveRestrictionCount"},
+		"posts.go":              {"mention_usernames, active_restriction_count,", "&p.ActiveRestrictionCount"},
 	} {
 		src, err := os.ReadFile(file)
 		if err != nil {

@@ -31,10 +31,11 @@ func (g *HTTPGraphRelationships) RelationshipBatch(ctx context.Context, viewerID
 	out := make(map[string]ViewerRelationship, len(raw))
 	for id, r := range raw {
 		out[id] = ViewerRelationship{
-			Follows:                     r.Follows,
-			Blocked:                     r.Blocked,
-			BlockedBy:                   r.BlockedBy,
-			Muted:                       r.IsMuted,
+			Follows:    r.Follows,
+			FollowedBy: r.FollowedBy,
+			Blocked:    r.Blocked,
+			BlockedBy:  r.BlockedBy,
+			Muted:      r.IsMuted,
 		}
 	}
 	return out, nil

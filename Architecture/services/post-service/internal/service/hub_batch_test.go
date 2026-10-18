@@ -528,7 +528,7 @@ func TestHideLikeCountIsOwnerOnly(t *testing.T) {
 			L *LikeCount     `json:"like_count,omitempty"`
 			C *scylla.Counts `json:"counts"`
 		}{d.LikeCount, d.Counts})
-		if string(b) != `{"like_count":null,"counts":{"likes":0,"comments":2}}` {
+		if string(b) != `{"like_count":null,"counts":{"likes":0,"comments":2,"shares":0,"saves":0}}` {
 			t.Fatalf("viewer: %s", b)
 		}
 		if shared.Likes != 9 {

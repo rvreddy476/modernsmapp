@@ -78,6 +78,10 @@ type updatePostRequest struct {
 	HideLikeCount      *bool   `json:"hide_like_count"`
 	DefaultCommentSort *string `json:"default_comment_sort"`
 	RelatedPostID      *string `json:"related_post_id"`
+	// Post screens parity (2026-10-18). link_url takes "" to clear.
+	IsBranded   *bool   `json:"is_branded,omitempty"`
+	AIGenerated *bool   `json:"ai_generated,omitempty"`
+	LinkURL     *string `json:"link_url,omitempty"`
 }
 
 // maxUpdatePostBodyBytes mirrors the create route's cap.
@@ -111,6 +115,7 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 		RemixSetting: req.RemixSetting, CommentModeration: req.CommentModeration, CommentAccess: req.CommentAccess,
 		NotifySubscribers: req.NotifySubscribers, AgeRestricted: req.AgeRestricted, HideLikeCount: req.HideLikeCount,
 		DefaultCommentSort: req.DefaultCommentSort, RelatedPostID: req.RelatedPostID,
+		IsBranded: req.IsBranded, AIGenerated: req.AIGenerated, LinkURL: req.LinkURL,
 	}
 	if req.CoverMediaID != nil {
 		id, err := uuid.Parse(strings.TrimSpace(*req.CoverMediaID))

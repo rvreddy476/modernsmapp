@@ -72,6 +72,9 @@ const (
 // silent extra round trip.
 type ViewerRelationship struct {
 	Follows bool
+	// FollowedBy: the author follows the viewer. Only the `friends` post
+	// audience (mutual follows) reads it.
+	FollowedBy bool
 	// Blocked / BlockedBy are both required. A block is symmetric here.
 	Blocked   bool
 	BlockedBy bool

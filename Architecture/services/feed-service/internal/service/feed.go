@@ -1199,6 +1199,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			results <- fetchResult{ids: ids, err: err, tag: "circle"}
 		}()
 		followerCount := 0
+		var followerIDs []uuid.UUID
 		for i := 0; i < 2; i++ {
 			r := <-results
 			if r.err != nil {
@@ -1208,6 +1209,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			}
 			if r.tag == "followers" {
 				followerCount = len(r.ids)
+				followerIDs = r.ids
 			}
 			for _, id := range r.ids {
 				recipientSet[id] = struct{}{}
@@ -1227,6 +1229,22 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 					isCeleb = true
 					recipientSet = make(map[uuid.UUID]struct{})
 				}
+			}
+		}
+
+		// 4a. Friends (mutual follows, 2026-10-18): only followers the author
+		// follows back get the row. Circle members and one-way followers do
+		// not - post-service's batch would hide the post from them, but the
+		// row would still light their Following dot (delta.go) for a post they
+		// can never open. Fail closed: no following list, no rows; the error
+		// is returned so the event is retried.
+		if strings.EqualFold(strings.TrimSpace(visibility), "friends") && !isCeleb {
+			following, err := s.fetchFollowing(ctx, authorID)
+			if err != nil {
+				incomplete = append(incomplete, fmt.Errorf("fetch following for friends fanout: %w", err))
+				recipientSet = make(map[uuid.UUID]struct{})
+			} else {
+				recipientSet = mutualRecipients(followerIDs, following)
 			}
 		}
 	}
@@ -1274,7 +1292,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	// channel. A post-service failure here is returned with the others
 	// below: the rows already written are upserts, so the retry it causes
 	// rewrites them rather than duplicating them.
-	if channelID != uuid.Nil && isLongVideoContentType(contentType) {
+	if channelID != uuid.Nil && isLongVideoContentType(contentType) && !strings.EqualFold(strings.TrimSpace(visibility), "friends") {
 		err := s.eachChannelSubscriber(ctx, channelID, func(subscriberID uuid.UUID) {
 			if subscriberID == authorID {
 				return
@@ -1887,6 +1905,22 @@ func candidatesToFeedItems(candidates []ranking.Candidate) []FeedItem {
 			Score:       c.Score,
 			ContentType: c.ContentType,
 			Source:      c.Source,
+		}
+	}
+	return out
+}
+
+// mutualRecipients is the friends audience of a fan-out: the author's
+// followers whom the author also follows.
+func mutualRecipients(followers, following []uuid.UUID) map[uuid.UUID]struct{} {
+	followed := make(map[uuid.UUID]struct{}, len(following))
+	for _, id := range following {
+		followed[id] = struct{}{}
+	}
+	out := make(map[uuid.UUID]struct{})
+	for _, id := range followers {
+		if _, ok := followed[id]; ok {
+			out[id] = struct{}{}
 		}
 	}
 	return out

@@ -22,7 +22,8 @@ import (
 	See store/postgres/comment_counts.go for the definition.
 */
 
-// countsForPost is the per-post read: Scylla likes + PostgreSQL comments.
+// countsForPost is the per-post read: Scylla likes + PostgreSQL comments,
+// shares and saves.
 func (s *Service) countsForPost(ctx context.Context, postID uuid.UUID) (*scylla.Counts, error) {
 	counts, err := s.scyllaStore.GetCounts(ctx, postID)
 	if err != nil {
@@ -31,52 +32,68 @@ func (s *Service) countsForPost(ctx context.Context, postID uuid.UUID) (*scylla.
 	if counts == nil {
 		counts = &scylla.Counts{}
 	}
-	n, err := s.pgStore.GetCommentCount(ctx, postID)
+	rows, err := s.pgStore.GetEngagementCountRows(ctx, []uuid.UUID{postID})
 	if err != nil {
 		return nil, fmt.Errorf("load comment count: %w", err)
 	}
-	counts.Comments = n
+	applyEngagementRow(counts, rows[postID])
 	return counts, nil
 }
 
 // overlayCommentCounts replaces the comment figure in a Scylla batch with the
-// PostgreSQL one, in a single query for the page.
+// PostgreSQL one, and adds the share and save figures, in a single query for
+// the page.
 func (s *Service) overlayCommentCounts(ctx context.Context, ids []uuid.UUID, byPost map[uuid.UUID]*scylla.Counts) error {
-	pg, err := s.pgStore.GetCommentCounts(ctx, ids)
+	rows, err := s.pgStore.GetEngagementCountRows(ctx, ids)
 	if err != nil {
 		return fmt.Errorf("load comment counts: %w", err)
 	}
+	overlayEngagementRows(ids, byPost, rows)
+	return nil
+}
+
+// overlayEngagementRows is overlayCommentCounts' pure half: every id gets a
+// Counts (zeros when it had none) carrying the PostgreSQL figures.
+func overlayEngagementRows(ids []uuid.UUID, byPost map[uuid.UUID]*scylla.Counts, rows map[uuid.UUID]postgres.EngagementCountRow) {
 	for _, id := range ids {
 		c := byPost[id]
 		if c == nil {
 			c = &scylla.Counts{}
 			byPost[id] = c
 		}
-		c.Comments = pg[id]
+		applyEngagementRow(c, rows[id])
 	}
-	return nil
+}
+
+// applyEngagementRow writes one post's PostgreSQL figures onto its Counts:
+// counts.comments, counts.shares (share_count) and counts.saves
+// (bookmark_count). A post with no row reads zero for all three.
+func applyEngagementRow(c *scylla.Counts, row postgres.EngagementCountRow) {
+	c.Comments = row.Comments
+	c.Shares = row.Shares
+	c.Saves = row.Saves
 }
 
 /*
-	comment_change — the realtime frame for every comment mutation.
+comment_change — the realtime frame for every comment mutation.
 
-	Published on Redis channel post:<post_id> (the room ws-gateway subscribes
-	a viewer to after checking they may see the post), inside the {type,
-	payload} envelope the gateway relays; the gateway drops the actor's own
-	frame (they already know). It carries NO comment body: a subscriber
-	re-reads the thread through the authorized list endpoint, which applies
-	moderation and block rules; the frame only says "something changed".
+Published on Redis channel post:<post_id> (the room ws-gateway subscribes
+a viewer to after checking they may see the post), inside the {type,
+payload} envelope the gateway relays; the gateway drops the actor's own
+frame (they already know). It carries NO comment body: a subscriber
+re-reads the thread through the authorized list endpoint, which applies
+moderation and block rules; the frame only says "something changed".
 
-	  {"type":"comment_change","payload":{
-	     "event_id":   uuid,        // for de-duplication
-	     "version":    int64,       // unix micros; later wins
-	     "post_id":    uuid,
-	     "comment_id": uuid,
-	     "parent_id":  uuid|absent, // for replies
-	     "change":     "created"|"replied"|"edited"|"deleted"|"reaction"|"moderated",
-	     "actor_id":   uuid,
-	     "comments":   int64        // the authoritative count after the change
-	  }}
+	{"type":"comment_change","payload":{
+	   "event_id":   uuid,        // for de-duplication
+	   "version":    int64,       // unix micros; later wins
+	   "post_id":    uuid,
+	   "comment_id": uuid,
+	   "parent_id":  uuid|absent, // for replies
+	   "change":     "created"|"replied"|"edited"|"deleted"|"reaction"|"moderated",
+	   "actor_id":   uuid,
+	   "comments":   int64        // the authoritative count after the change
+	}}
 */
 const (
 	CommentChangeCreated   = "created"
