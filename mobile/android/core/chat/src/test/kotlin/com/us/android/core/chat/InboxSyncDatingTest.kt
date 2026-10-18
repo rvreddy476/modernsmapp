@@ -115,6 +115,21 @@ class InboxSyncDatingTest {
     }
 
     @Test
+    fun `a request I sent stays a chat and only incoming requests are cached as requests`() = runTest {
+        val dao = FakeDao()
+        val api = FakeApi(
+            inbox = listOf(dto("d1"), dto("mine").copy(isRequest = true)),
+            pending = listOf(dto("theirs")),
+        )
+
+        assertThat(store(dao, api).syncInbox()).isTrue()
+
+        assertThat(dao.conversations.getValue("mine").isRequest).isFalse()
+        assertThat(dao.conversations.getValue("d1").isRequest).isFalse()
+        assertThat(dao.conversations.getValue("theirs").isRequest).isTrue()
+    }
+
+    @Test
     fun `a match chat an older build cached is removed on the next sync`() = runTest {
         val dao = FakeDao()
         dao.conversations["p1"] = ChatConversationEntity(

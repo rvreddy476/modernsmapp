@@ -754,7 +754,11 @@ class ChatStore @Inject constructor(
             id = id,
             type = type,
             title = title,
-            isRequest = isRequestList || isRequest,
+            // The cache flag means "in MY Requests lane": only rows from the
+            // incoming-requests list. An inbox row flagged as a request is one
+            // the viewer sent; it stays in their chat list and must never count
+            // as someone waiting for their answer.
+            isRequest = isRequestList,
             membersJson = json.encodeToString(
                 ListSerializer(CachedMember.serializer()),
                 members.map { CachedMember(it.userId, it.role, it.displayName, it.avatarMediaId) },
