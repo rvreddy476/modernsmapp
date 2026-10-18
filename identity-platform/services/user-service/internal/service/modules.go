@@ -156,9 +156,6 @@ func (s *Service) SetRegion(ctx context.Context, userID uuid.UUID, countryCode s
 		return "", err
 	}
 
-	cacheKey := fmt.Sprintf("user:settings:%s", userID)
-	if err := s.rdb.Del(ctx, cacheKey).Err(); err != nil {
-		s.log.Warn("failed to delete settings cache after region write", "err", err, "cache_key", cacheKey)
-	}
+	s.invalidateSettingsCache(ctx, userID)
 	return region, nil
 }

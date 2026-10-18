@@ -70,3 +70,38 @@ ALTER TABLE usr.module_preferences DROP CONSTRAINT IF EXISTS module_preferences_
 ALTER TABLE usr.module_preferences ADD CONSTRAINT module_preferences_home_module_known CHECK (
     home_module IN ('feed','reels','commerce','chat','dating','food','qa','posttube','mobility','home_services')
 );
+
+-- Chat parity (2026-10-18, CONTRACT §7) — inbox safety and bubble colour.
+--
+-- usr.user_settings is created by auth-service's setup.sql, but these four
+-- columns are added HERE, the same way region is added to usr.users above:
+-- this service is the one that reads and writes them, and the embedded DDL
+-- ships in the same binary as the code that selects them, so the two cannot
+-- be deployed at different versions. The schema guard (requirements.go)
+-- asserts every column after this file runs.
+--
+--   dm_safe_mode              requests from risky senders land in the
+--                             "filtered" request sub-list. ON by default.
+--   dm_sensitive_media_filter clients blur media flagged sensitive.
+--   dm_filtered_keywords      ≤100 lower-cased, trimmed entries of 1..30
+--                             characters (normalised by the service).
+--   chat_bubble_style         own outgoing bubble colour, one of the six
+--                             palette names below.
+--
+-- Additive, defaulted and idempotent: re-running this file is a no-op.
+ALTER TABLE usr.user_settings
+    ADD COLUMN IF NOT EXISTS dm_safe_mode              BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS dm_sensitive_media_filter BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS dm_filtered_keywords      TEXT[]  NOT NULL DEFAULT '{}'::TEXT[],
+    ADD COLUMN IF NOT EXISTS chat_bubble_style         TEXT    NOT NULL DEFAULT 'default';
+
+-- Backstops for writes that bypass the service. Dropped and re-added so the
+-- vocabulary stays identical everywhere when it changes.
+ALTER TABLE usr.user_settings DROP CONSTRAINT IF EXISTS user_settings_chat_bubble_style_known;
+ALTER TABLE usr.user_settings ADD CONSTRAINT user_settings_chat_bubble_style_known CHECK (
+    chat_bubble_style IN ('default','ocean','ember','forest','violet','mono')
+);
+ALTER TABLE usr.user_settings DROP CONSTRAINT IF EXISTS user_settings_dm_filtered_keywords_max;
+ALTER TABLE usr.user_settings ADD CONSTRAINT user_settings_dm_filtered_keywords_max CHECK (
+    cardinality(dm_filtered_keywords) <= 100
+);

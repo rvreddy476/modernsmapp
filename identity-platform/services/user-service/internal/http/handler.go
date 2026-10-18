@@ -231,6 +231,14 @@ type updateSettingsRequest struct {
 	ChatAvailability     *string `json:"chat_availability"`
 	SendTypingIndicators *bool   `json:"send_typing_indicators"`
 	ShowMessagePreview   *bool   `json:"show_message_preview"`
+
+	// Chat parity (CONTRACT §7). dm_filtered_keywords REPLACES the whole
+	// list when present ([] clears it); the service trims, lower-cases and
+	// dedupes before storing.
+	DmSafeMode             *bool     `json:"dm_safe_mode"`
+	DmSensitiveMediaFilter *bool     `json:"dm_sensitive_media_filter"`
+	DmFilteredKeywords     *[]string `json:"dm_filtered_keywords"`
+	ChatBubbleStyle        *string   `json:"chat_bubble_style"`
 }
 
 // applyTo merges the present fields of the request onto cur.
@@ -307,6 +315,18 @@ func (r *updateSettingsRequest) applyTo(cur *store.UserSettings) {
 	if r.ShowMessagePreview != nil {
 		cur.ShowMessagePreview = *r.ShowMessagePreview
 	}
+	if r.DmSafeMode != nil {
+		cur.DmSafeMode = *r.DmSafeMode
+	}
+	if r.DmSensitiveMediaFilter != nil {
+		cur.DmSensitiveMediaFilter = *r.DmSensitiveMediaFilter
+	}
+	if r.DmFilteredKeywords != nil {
+		cur.DmFilteredKeywords = *r.DmFilteredKeywords
+	}
+	if r.ChatBubbleStyle != nil {
+		cur.ChatBubbleStyle = *r.ChatBubbleStyle
+	}
 }
 
 func (h *Handler) UpdateMySettings(c *gin.Context) {
@@ -347,7 +367,14 @@ func (h *Handler) UpdateMySettings(c *gin.Context) {
 	s, err := h.svc.UpdateSettings(c.Request.Context(), cur)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidPrivacySetting) {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+			// details names the field and a machine code when the service
+			// supplied them (additive: code/message are unchanged).
+			var details interface{}
+			var fieldErr *service.SettingValidationError
+			if errors.As(err, &fieldErr) {
+				details = gin.H{"field": fieldErr.Field, "code": fieldErr.Code}
+			}
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), details, nil)
 			return
 		}
 		h.log.Error("failed to update settings", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))

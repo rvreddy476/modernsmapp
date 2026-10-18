@@ -139,6 +139,7 @@ func validSettings() *store.UserSettings {
 		WhoCanSeeLastSeen:           "everyone",
 		WhoCanSeeProfilePhoto:       "everyone",
 		ChatAvailability:            "enabled",
+		ChatBubbleStyle:             "default",
 	}
 }
 

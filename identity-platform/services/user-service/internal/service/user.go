@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/atpost/identity-user-service/internal/config"
 	"github.com/atpost/identity-user-service/internal/store"
@@ -65,27 +68,107 @@ var allowedPrivacyValues = map[string]map[string]bool{
 	},
 }
 
+// allowedChatBubbleStyles is the chat_bubble_style vocabulary (CONTRACT §7).
+// Clients map each name to a design-token palette; the server stores only the
+// name. Keep in step with the CHECK in database/setup.sql.
+var allowedChatBubbleStyles = map[string]bool{
+	"default": true, "ocean": true, "ember": true, "forest": true, "violet": true, "mono": true,
+}
+
+// Filtered-keyword limits (CONTRACT §7).
+const (
+	maxFilteredKeywords   = 100
+	maxFilteredKeywordLen = 30 // characters (runes), after trimming
+)
+
+// Field-level error codes carried in the 400 response's error.details.
+const (
+	SettingCodeInvalidValue    = "INVALID_VALUE"
+	SettingCodeTooManyKeywords = "TOO_MANY_KEYWORDS"
+	SettingCodeKeywordLength   = "KEYWORD_LENGTH"
+	SettingCodeKeywordInvalid  = "KEYWORD_INVALID"
+)
+
+// SettingValidationError names the offending field and a machine code. It
+// unwraps to ErrInvalidPrivacySetting, so existing errors.Is checks (and the
+// handler's 400 mapping) keep working; Error() keeps the historical message
+// prefix.
+type SettingValidationError struct {
+	Field string
+	Code  string
+	Value string
+}
+
+func (e *SettingValidationError) Error() string {
+	return fmt.Sprintf("%s: %s %q", ErrInvalidPrivacySetting.Error(), e.Field, e.Value)
+}
+
+func (e *SettingValidationError) Unwrap() error { return ErrInvalidPrivacySetting }
+
 // validatePrivacySettings rejects any enum field with an out-of-range value.
 func validatePrivacySettings(s *store.UserSettings) error {
-	checks := []struct{ field, value string }{
-		{"account_visibility", s.AccountVisibility},
-		{"allow_comments_from", s.AllowCommentsFrom},
-		{"who_can_message", s.WhoCanMessage},
-		{"who_can_send_connection_request", s.WhoCanSendConnectionRequest},
-		{"who_can_call", s.WhoCanCall},
-		{"who_can_add_to_groups", s.WhoCanAddToGroups},
-		{"chat_availability", s.ChatAvailability},
-		{"visibility", s.WhoCanSeeOnlineStatus},
-		{"visibility", s.WhoCanSeeReadReceipts},
-		{"visibility", s.WhoCanSeeLastSeen},
-		{"visibility", s.WhoCanSeeProfilePhoto},
+	checks := []struct{ vocab, field, value string }{
+		{"account_visibility", "account_visibility", s.AccountVisibility},
+		{"allow_comments_from", "allow_comments_from", s.AllowCommentsFrom},
+		{"who_can_message", "who_can_message", s.WhoCanMessage},
+		{"who_can_send_connection_request", "who_can_send_connection_request", s.WhoCanSendConnectionRequest},
+		{"who_can_call", "who_can_call", s.WhoCanCall},
+		{"who_can_add_to_groups", "who_can_add_to_groups", s.WhoCanAddToGroups},
+		{"chat_availability", "chat_availability", s.ChatAvailability},
+		{"visibility", "who_can_see_online_status", s.WhoCanSeeOnlineStatus},
+		{"visibility", "who_can_see_read_receipts", s.WhoCanSeeReadReceipts},
+		{"visibility", "who_can_see_last_seen", s.WhoCanSeeLastSeen},
+		{"visibility", "who_can_see_profile_photo", s.WhoCanSeeProfilePhoto},
 	}
 	for _, c := range checks {
-		if !allowedPrivacyValues[c.field][c.value] {
-			return fmt.Errorf("%w: %q", ErrInvalidPrivacySetting, c.value)
+		if !allowedPrivacyValues[c.vocab][c.value] {
+			return &SettingValidationError{Field: c.field, Code: SettingCodeInvalidValue, Value: c.value}
 		}
 	}
+	if !allowedChatBubbleStyles[s.ChatBubbleStyle] {
+		return &SettingValidationError{Field: "chat_bubble_style", Code: SettingCodeInvalidValue, Value: s.ChatBubbleStyle}
+	}
 	return nil
+}
+
+// NormaliseFilteredKeywords validates and normalises dm_filtered_keywords:
+// at most 100 entries; each is trimmed, inner whitespace runs collapse to one
+// space, and it is lower-cased; each must then be 1..30 characters with no
+// control characters; duplicates (case-insensitive) are dropped, keeping the
+// first occurrence's position. The result is what gets stored, so matching
+// downstream is a plain lower-cased comparison.
+//
+// The count is checked on the RAW input, before dedupe, so the work done on
+// an oversized payload stays bounded.
+func NormaliseFilteredKeywords(in []string) ([]string, error) {
+	if len(in) > maxFilteredKeywords {
+		return nil, &SettingValidationError{
+			Field: "dm_filtered_keywords", Code: SettingCodeTooManyKeywords,
+			Value: fmt.Sprintf("%d entries", len(in)),
+		}
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, raw := range in {
+		if !utf8.ValidString(raw) {
+			return nil, &SettingValidationError{Field: "dm_filtered_keywords", Code: SettingCodeKeywordInvalid, Value: raw}
+		}
+		k := strings.ToLower(strings.Join(strings.Fields(raw), " "))
+		if n := utf8.RuneCountInString(k); n < 1 || n > maxFilteredKeywordLen {
+			return nil, &SettingValidationError{Field: "dm_filtered_keywords", Code: SettingCodeKeywordLength, Value: raw}
+		}
+		for _, r := range k {
+			if unicode.IsControl(r) {
+				return nil, &SettingValidationError{Field: "dm_filtered_keywords", Code: SettingCodeKeywordInvalid, Value: raw}
+			}
+		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out, nil
 }
 
 // applyStrictMode forces the strictest values across the matrix when the user
@@ -106,6 +189,10 @@ func applyStrictMode(s *store.UserSettings) {
 	s.AutoFilterAbusiveContent = true
 	s.AllowPhoneDiscovery = false
 	s.DiscoverableByPhoneToContacts = false
+	// Chat parity: risky-sender requests stay filtered and sensitive media
+	// stays blurred for minors and in Strict Privacy Mode.
+	s.DmSafeMode = true
+	s.DmSensitiveMediaFilter = true
 }
 
 // SettingsChangedPublisher announces committed writes to downstream
@@ -186,9 +273,35 @@ func (s *Service) ListUsers(ctx context.Context, limit, offset int) ([]store.Use
 	return s.store.ListUsers(ctx, limit, offset)
 }
 
+// settingsCacheKey is the Redis key for a user's cached settings snapshot.
+//
+// Versioned (v2, chat parity 2026-10-18): an entry written before the dm_* /
+// chat_bubble_style fields existed would unmarshal with dm_safe_mode=false and
+// chat_bubble_style="" — the wrong default, and a value the PUT
+// read-modify-write would then refuse. Bump the version whenever a field with
+// a non-zero default is added.
+func settingsCacheKey(id uuid.UUID) string {
+	return fmt.Sprintf("user:settings:v2:%s", id)
+}
+
+// legacySettingsCacheKey is the pre-v2 key. Still deleted on every write so a
+// pod running the previous build during a rolling deploy never serves a stale
+// snapshot after a change made through a new pod.
+func legacySettingsCacheKey(id uuid.UUID) string {
+	return fmt.Sprintf("user:settings:%s", id)
+}
+
+// invalidateSettingsCache drops both the current and the legacy entry.
+func (s *Service) invalidateSettingsCache(ctx context.Context, id uuid.UUID) {
+	keys := []string{settingsCacheKey(id), legacySettingsCacheKey(id)}
+	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+		s.log.Warn("failed to delete settings cache", "err", err, "cache_keys", keys)
+	}
+}
+
 // GetSettings returns user privacy settings.
 func (s *Service) GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSettings, error) {
-	cacheKey := fmt.Sprintf("user:settings:%s", id)
+	cacheKey := settingsCacheKey(id)
 	if cached, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
 		var us store.UserSettings
 		if jsonErr := json.Unmarshal([]byte(cached), &us); jsonErr == nil {
@@ -219,11 +332,23 @@ func (s *Service) GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSet
 	return us, nil
 }
 
+// prepareSettings is the pure pre-write step: clamp for strict mode/minors,
+// normalise the keyword list, then validate every enum. Split out so the
+// rules are table-testable without Postgres or Redis.
+func prepareSettings(settings *store.UserSettings) error {
+	applyStrictMode(settings)
+	keywords, err := NormaliseFilteredKeywords(settings.DmFilteredKeywords)
+	if err != nil {
+		return err
+	}
+	settings.DmFilteredKeywords = keywords
+	return validatePrivacySettings(settings)
+}
+
 // UpdateSettings validates and persists privacy settings. Strict Privacy Mode
 // and under-18 status clamp the matrix to strict values before the write.
 func (s *Service) UpdateSettings(ctx context.Context, settings *store.UserSettings) (*store.UserSettings, error) {
-	applyStrictMode(settings)
-	if err := validatePrivacySettings(settings); err != nil {
+	if err := prepareSettings(settings); err != nil {
 		return nil, err
 	}
 
@@ -232,10 +357,7 @@ func (s *Service) UpdateSettings(ctx context.Context, settings *store.UserSettin
 		return nil, err
 	}
 
-	cacheKey := fmt.Sprintf("user:settings:%s", settings.UserID)
-	if err := s.rdb.Del(ctx, cacheKey).Err(); err != nil {
-		s.log.Warn("failed to delete settings cache", "err", err, "cache_key", cacheKey)
-	}
+	s.invalidateSettingsCache(ctx, settings.UserID)
 
 	// Invalidation signal for downstream permission caches (graph privacy
 	// cache, chat policy projection). Best-effort AFTER the committed write;

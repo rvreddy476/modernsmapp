@@ -58,6 +58,13 @@ type UserSettings struct {
 	SendTypingIndicators bool   `json:"send_typing_indicators"`
 	ShowMessagePreview   bool   `json:"show_message_preview"`
 
+	// Chat parity (CONTRACT §7). DmFilteredKeywords is always a JSON array
+	// (never null) and holds the normalised form the service stored.
+	DmSafeMode             bool     `json:"dm_safe_mode"`
+	DmSensitiveMediaFilter bool     `json:"dm_sensitive_media_filter"`
+	DmFilteredKeywords     []string `json:"dm_filtered_keywords"`
+	ChatBubbleStyle        string   `json:"chat_bubble_style"`
+
 	// Region is READ-ONLY through the settings surface. It lives on
 	// usr.users (ISO-3166-1 alpha-2, uppercase) and is written only via
 	// PUT /v1/users/me/region; it is joined into settings reads so clients
@@ -79,11 +86,21 @@ const userSettingsColumns = `user_id, account_visibility, allow_messages_from, a
 	strict_privacy_mode, block_unknown_calls, auto_filter_abusive_content, under_18_mode,
 	tc_close_friends_posts, tc_location_pings, tc_after_hours_posts, tc_audio_room_invite,
 	chat_availability, send_typing_indicators, show_message_preview,
+	dm_safe_mode, dm_sensitive_media_filter, dm_filtered_keywords, chat_bubble_style,
 	privacy_version, created_at, updated_at`
+
+// keywordsOrEmpty keeps a nil slice from reaching the NOT NULL TEXT[] column
+// and from serialising as JSON null.
+func keywordsOrEmpty(k []string) []string {
+	if k == nil {
+		return []string{}
+	}
+	return k
+}
 
 // scanUserSettings scans a row matching userSettingsColumns into us.
 func scanUserSettings(row pgx.Row, us *UserSettings) error {
-	return row.Scan(
+	err := row.Scan(
 		&us.UserID, &us.AccountVisibility, &us.AllowMessagesFrom, &us.AllowCommentsFrom,
 		&us.WhoCanMessage, &us.WhoCanSendConnectionRequest, &us.WhoCanCall, &us.WhoCanAddToGroups,
 		&us.WhoCanSeeOnlineStatus, &us.WhoCanSeeReadReceipts, &us.WhoCanSeeLastSeen, &us.WhoCanSeeProfilePhoto,
@@ -91,8 +108,11 @@ func scanUserSettings(row pgx.Row, us *UserSettings) error {
 		&us.StrictPrivacyMode, &us.BlockUnknownCalls, &us.AutoFilterAbusiveContent, &us.Under18Mode,
 		&us.TcCloseFriendsPosts, &us.TcLocationPings, &us.TcAfterHoursPosts, &us.TcAudioRoomInvite,
 		&us.ChatAvailability, &us.SendTypingIndicators, &us.ShowMessagePreview,
+		&us.DmSafeMode, &us.DmSensitiveMediaFilter, &us.DmFilteredKeywords, &us.ChatBubbleStyle,
 		&us.PrivacyVersion, &us.CreatedAt, &us.UpdatedAt,
 	)
+	us.DmFilteredKeywords = keywordsOrEmpty(us.DmFilteredKeywords)
+	return err
 }
 
 type Store struct {
@@ -254,6 +274,10 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 			chat_availability = $24,
 			send_typing_indicators = $25,
 			show_message_preview = $26,
+			dm_safe_mode = $27,
+			dm_sensitive_media_filter = $28,
+			dm_filtered_keywords = $29,
+			chat_bubble_style = $30,
 			privacy_version = privacy_version + 1,
 			updated_at = NOW()
 		WHERE user_id = $1
@@ -265,6 +289,7 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 		settings.StrictPrivacyMode, settings.BlockUnknownCalls, settings.AutoFilterAbusiveContent, settings.Under18Mode,
 		settings.TcCloseFriendsPosts, settings.TcLocationPings, settings.TcAfterHoursPosts, settings.TcAudioRoomInvite,
 		settings.ChatAvailability, settings.SendTypingIndicators, settings.ShowMessagePreview,
+		settings.DmSafeMode, settings.DmSensitiveMediaFilter, keywordsOrEmpty(settings.DmFilteredKeywords), settings.ChatBubbleStyle,
 	)
 	if err := scanUserSettings(row, &us); err != nil {
 		return nil, err
