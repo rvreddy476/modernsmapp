@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/chat-shared/transport"
 	"github.com/atpost/chat-ws-gateway/internal/config"
 	httpapi "github.com/atpost/chat-ws-gateway/internal/http"
+	"github.com/atpost/chat-ws-gateway/internal/peers"
 )
 
 func main() {
@@ -58,22 +59,51 @@ func main() {
 		Policy:         authPolicy,
 	}
 
+	// Presence fan-out (chat parity §4): DM peers from chat_db (read-only),
+	// permissions from graph-service. Either missing leaves it off.
+	var presencePeers httpapi.PeerSource
+	var presenceVisibility httpapi.VisibilityChecker
+	if cfg.PresenceFanoutEnabled && cfg.ChatPostgresDSN != "" && cfg.GraphServiceURL != "" {
+		pg, err := peers.Open(ctx, cfg.ChatPostgresDSN)
+		if err != nil {
+			logger.Warn("presence fan-out disabled: bad CHAT_POSTGRES_DSN", "err", err)
+		} else {
+			defer pg.Close()
+			if err := pg.Ping(ctx); err != nil {
+				logger.Warn("chat_db not reachable yet; presence fan-out retries per transition", "err", err)
+			}
+			presencePeers = pg
+			presenceVisibility = &httpapi.GraphVisibility{
+				BaseURL:            cfg.GraphServiceURL,
+				InternalServiceKey: cfg.InternalServiceKey,
+				Client:             &http.Client{Timeout: 3 * time.Second},
+				Redis:              rdb,
+				Log:                logger,
+			}
+		}
+	}
+	logger.Info("presence fan-out", "enabled", presencePeers != nil)
+
 	server := httpapi.NewServer(rdb, logger, httpapi.ServerOptions{
-		JWTSecret:         cfg.JWTSecret,
-		JWTKeys:           jwtKeys,
-		AllowedOrigins:    cfg.AllowedOrigins,
-		AllowQueryToken:   cfg.WSAllowQueryToken,
-		WriteWait:         cfg.WSWriteWait,
-		PongWait:          cfg.WSPongWait,
-		PingPeriod:        cfg.WSPingPeriod,
-		MaxMessageSize:    cfg.WSMaxMessageSize,
-		EntitlementSecret: cfg.EntitlementSecret,
-		EnablePostRooms:   cfg.PostRoomsEnabled,
-		PostViewer:        httpapi.NewHTTPPostViewAuthorizer(cfg.PostServiceURL, cfg.InternalServiceKey, nil),
-		EnableLiveRooms:   cfg.LiveRoomsEnabled,
-		LiveViewer:        httpapi.NewHTTPLiveViewAuthorizer(cfg.LiveServiceV2URL, cfg.InternalServiceKey, nil),
+		JWTSecret:                cfg.JWTSecret,
+		JWTKeys:                  jwtKeys,
+		AllowedOrigins:           cfg.AllowedOrigins,
+		AllowQueryToken:          cfg.WSAllowQueryToken,
+		WriteWait:                cfg.WSWriteWait,
+		PongWait:                 cfg.WSPongWait,
+		PingPeriod:               cfg.WSPingPeriod,
+		MaxMessageSize:           cfg.WSMaxMessageSize,
+		EntitlementSecret:        cfg.EntitlementSecret,
+		EnablePostRooms:          cfg.PostRoomsEnabled,
+		PostViewer:               httpapi.NewHTTPPostViewAuthorizer(cfg.PostServiceURL, cfg.InternalServiceKey, nil),
+		EnableLiveRooms:          cfg.LiveRoomsEnabled,
+		LiveViewer:               httpapi.NewHTTPLiveViewAuthorizer(cfg.LiveServiceV2URL, cfg.InternalServiceKey, nil),
+		EnableConversationFrames: cfg.ConversationFramesEnabled,
+		TypingNotifier:           httpapi.NewHTTPTypingNotifier(cfg.MessageServiceURL, nil),
+		PresencePeers:            presencePeers,
+		PresenceVisibility:       presenceVisibility,
 	})
-	logger.Info("realtime rooms", "post_rooms", cfg.PostRoomsEnabled, "live_rooms", cfg.LiveRoomsEnabled)
+	logger.Info("realtime rooms", "post_rooms", cfg.PostRoomsEnabled, "live_rooms", cfg.LiveRoomsEnabled, "conversation_frames", cfg.ConversationFramesEnabled)
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,

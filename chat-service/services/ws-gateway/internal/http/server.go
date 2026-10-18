@@ -46,6 +46,29 @@ type ServerOptions struct {
 	// (chat-shared/roomauth). Empty disables `conversation.subscribe`.
 	EntitlementSecret string
 
+	// EnableConversationFrames (chat parity §4) admits the per-conversation
+	// frames — conversation.enter / heartbeat / leave, typing.start /
+	// typing.stop — past the beta gate WITHOUT opening the other
+	// client-selected rooms EnableScopedRooms still guards (subscribe_call,
+	// subscribe_update, subscribe_group_post, call room signalling, none of
+	// which is owner-checked). It is safe because every one of these frames
+	// is honoured only for a conversation the connection holds an entitled
+	// convroom subscription for (see handleConversationFrame).
+	EnableConversationFrames bool
+
+	// TypingNotifier forwards typing transitions to message-service, which
+	// owns the send_typing_indicators / paused policy and publishes the
+	// typing frame. Nil drops typing frames after the presence write.
+	TypingNotifier TypingNotifier
+	// TypingTimeout auto-stops an unrefreshed indicator; zero means 6s.
+	TypingTimeout time.Duration
+	typingClock   typingClock // tests only
+
+	// PresencePeers + PresenceVisibility enable presence_update fan-out to
+	// permitted DM peers (presence_fanout.go). Either nil disables it.
+	PresencePeers      PeerSource
+	PresenceVisibility VisibilityChecker
+
 	// EnablePostRooms admits `subscribe_post` — the live thread under a
 	// post — independently of EnableScopedRooms, because it IS owner-
 	// checked: PostViewer asks post-service whether the viewer may see the
@@ -114,6 +137,9 @@ type Server struct {
 	opts     ServerOptions
 	upgrader websocket.Upgrader
 	pres     presence.Store
+	// activity is the connection-counted online + last-active store.
+	activity *presence.RedisStore
+	fanout   *presenceFanout
 }
 
 func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server {
@@ -138,11 +164,14 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		opts.MaxMessageSize = 10 * 1024
 	}
 
+	store := presence.NewRedisStore(rdb, presence.Options{})
 	s := &Server{
-		rdb:  rdb,
-		log:  log,
-		opts: opts,
-		pres: presence.NewRedisStore(rdb, presence.Options{}),
+		rdb:      rdb,
+		log:      log,
+		opts:     opts,
+		pres:     store,
+		activity: store,
+		fanout:   newPresenceFanout(opts.PresencePeers, opts.PresenceVisibility, rdb, log),
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -237,14 +266,28 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// the old presence:{userID} key is no longer written. Any
 	// consumer still reading the legacy key must migrate — there
 	// are no remaining references in this workspace.
-	if err := s.pres.SetUserOnline(ctx, userID.String()); err != nil {
+	//
+	// Chat parity §4: online is now connection-counted (presconns:{userID})
+	// so one closed tab no longer marks a still-connected phone offline, and
+	// last-active is stamped on connect / heartbeat / disconnect. The legacy
+	// presence:{userID} marker is still written for its readers.
+	connID := uuid.NewString()
+	becameOnline, err := s.activity.ConnectionOpened(ctx, userID.String(), connID, time.Now())
+	if err != nil {
 		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
+	}
+	if becameOnline {
+		s.announcePresence(userID)
 	}
 	// Clear presence when the connection closes.
 	defer func() {
 		delCtx := context.Background()
-		if err := s.pres.ClearUserOnline(delCtx, userID.String()); err != nil {
+		becameOffline, err := s.activity.ConnectionClosed(delCtx, userID.String(), connID, time.Now())
+		if err != nil {
 			s.log.Warn("failed to clear presence on disconnect", "err", err, "user_id", userID)
+		}
+		if becameOffline {
+			s.announcePresence(userID)
 		}
 	}()
 
@@ -270,7 +313,21 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 
 	s.log.Info("websocket connected", "user_id", userID, "channel", chatChannel, "client_ip", s.readClientIP(r))
-	s.serveConnection(ctx, cancel, conn, pubsub, userID)
+	s.serveConnection(ctx, cancel, conn, pubsub, userID, connID, readBearerToken(r, s.opts.AllowQueryToken))
+}
+
+// announcePresence fans the user's current presence out to permitted DM
+// peers in the background, on a context detached from the connection (an
+// offline announce runs after the connection is gone).
+func (s *Server) announcePresence(userID uuid.UUID) {
+	if s.fanout == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), presenceFanoutBudget)
+		defer cancel()
+		s.fanout.Announce(ctx, userID)
+	}()
 }
 
 // roomSubscriptions tracks one connection's entitled conversation-room
@@ -289,6 +346,15 @@ func (r *roomSubscriptions) set(conversationID string, claims *roomauth.Claims) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.claims[conversationID] = claims
+}
+
+// activeFor reports whether the connection holds an unexpired entitled
+// subscription to conversationID.
+func (r *roomSubscriptions) activeFor(conversationID string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	claims, ok := r.claims[conversationID]
+	return ok && claims != nil && now.Unix() < claims.ExpiresAt
 }
 
 func (r *roomSubscriptions) delete(conversationID string) {
@@ -313,6 +379,8 @@ func (s *Server) serveConnection(
 	conn *websocket.Conn,
 	pubsub *redis.PubSub,
 	userID uuid.UUID,
+	connID string,
+	bearerToken string,
 ) {
 	outbound := make(chan []byte, 256)
 	subs := newRoomSubscriptions()
@@ -321,7 +389,15 @@ func (s *Server) serveConnection(
 	// every subscribe on the new socket re-asks live-service-v2.
 	liveGrants := newLiveRoomGrants()
 
-	go s.readLoop(ctx, cancel, conn, pubsub, outbound, userID, subs, postGrants, liveGrants)
+	queue := newTypingQueue()
+	typing := s.newConnTypingTracker(queue, userID)
+	go queue.run(s.opts.TypingNotifier, bearerToken, userID, s.log)
+	defer queue.close()
+	// Runs before queue.close (defers are LIFO): every indicator this
+	// connection left on is turned off.
+	defer typing.StopAll()
+
+	go s.readLoop(ctx, cancel, conn, pubsub, outbound, userID, subs, postGrants, liveGrants, typing, connID)
 	go s.redisLoop(ctx, cancel, pubsub, outbound, userID, subs)
 	go s.reconcileRoomSubscriptions(ctx, pubsub, outbound, userID, subs, postGrants, liveGrants)
 	s.writeLoop(ctx, cancel, conn, outbound, userID)
@@ -447,18 +523,16 @@ var roomSignalingTypes = map[string]bool{
 	"call_recording_stopped":   true,
 }
 
-func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants) {
+func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants, typing *typingTracker, connID string) {
 	defer cancel()
 
 	conn.SetReadLimit(s.opts.MaxMessageSize)
 	_ = conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	conn.SetPongHandler(func(string) error {
-		// Refresh the global presence:user:{userID} TTL on every pong
-		// so a missed disconnect is bounded by GlobalUserTTL (90s).
-		// SetUserOnline rewrites the key value too, which is fractionally
-		// more expensive than a bare EXPIRE — acceptable given how cold
-		// the codepath is per connection (~once every 54s).
-		_ = s.pres.SetUserOnline(ctx, userID.String())
+		// Refresh this connection's liveness, the legacy presence marker
+		// and last-active on every pong, so a missed disconnect is bounded
+		// by GlobalUserTTL (90s). ~once every 54s per connection.
+		_ = s.activity.ConnectionHeartbeat(ctx, userID.String(), connID, time.Now())
 		return conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	})
 
@@ -534,6 +608,7 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			if convID != "" {
 				_ = pubsub.Unsubscribe(ctx, "convroom:"+convID)
 				subs.delete(convID)
+				typing.Stop(convID)
 			}
 			continue
 		}
@@ -549,64 +624,15 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		}
 
+		// Per-conversation presence + typing: honoured only for a room this
+		// connection holds an entitled subscription to (conversation.go).
+		if isConversationFrame(msgType) {
+			s.handleConversationFrame(ctx, msgType, envelope, userID, subs, typing, time.Now())
+			continue
+		}
+
 		// Handle room subscriptions (dynamic per-post and per-call channels)
 		switch msgType {
-		case "conversation.enter":
-			// M1 — track "user is currently viewing this conversation".
-			// Pure presence write; nothing is broadcast here. Clients
-			// listening for a presence_update can call the read-side
-			// presence API (or we can fan out via PUBLISH if there's
-			// demand).
-			convID, _ := envelope["conversation_id"].(string)
-			if convID == "" {
-				convID, _ = envelope["conv_id"].(string)
-			}
-			if convID == "" {
-				continue
-			}
-			if err := s.pres.EnterConversation(ctx, convID, userID.String()); err != nil {
-				s.log.Warn("presence enter failed", "err", err, "user_id", userID, "conv_id", convID)
-			}
-			continue
-		case "conversation.heartbeat":
-			// Refresh active timestamp; eviction of stale members
-			// happens inside the store. Called by clients every ~15s
-			// while the chat screen is open.
-			convID, _ := envelope["conversation_id"].(string)
-			if convID == "" {
-				convID, _ = envelope["conv_id"].(string)
-			}
-			if convID == "" {
-				continue
-			}
-			if err := s.pres.HeartbeatConversation(ctx, convID, userID.String()); err != nil {
-				s.log.Warn("presence heartbeat failed", "err", err, "user_id", userID, "conv_id", convID)
-			}
-			continue
-		case "conversation.leave":
-			convID, _ := envelope["conversation_id"].(string)
-			if convID == "" {
-				convID, _ = envelope["conv_id"].(string)
-			}
-			if convID == "" {
-				continue
-			}
-			if err := s.pres.LeaveConversation(ctx, convID, userID.String()); err != nil {
-				s.log.Warn("presence leave failed", "err", err, "user_id", userID, "conv_id", convID)
-			}
-			continue
-		case "typing.start", "typing.started":
-			convID, _ := envelope["conversation_id"].(string)
-			if convID == "" {
-				convID, _ = envelope["conv_id"].(string)
-			}
-			if convID == "" {
-				continue
-			}
-			if err := s.pres.SetTyping(ctx, convID, userID.String()); err != nil {
-				s.log.Warn("typing set failed", "err", err, "user_id", userID, "conv_id", convID)
-			}
-			continue
 		case "subscribe_post":
 			rawPostID, _ := envelope["post_id"].(string)
 			postID, ok := s.mayJoinPostRoom(ctx, postGrants, userID, rawPostID, time.Now())
@@ -778,7 +804,7 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 func isScopedRoomFrame(msgType string) bool {
 	switch msgType {
 	case "conversation.enter", "conversation.heartbeat", "conversation.leave",
-		"typing.start", "typing.started", "subscribe_post", "unsubscribe_post",
+		"typing.start", "typing.started", "typing.stop", "subscribe_post", "unsubscribe_post",
 		"subscribe_call", "unsubscribe_call", "subscribe_live_stream",
 		"unsubscribe_live_stream", "subscribe_update", "unsubscribe_update",
 		"subscribe_group_post", "unsubscribe_group_post", "group_post_typing":
@@ -805,6 +831,12 @@ func isScopedRoomFrame(msgType string) bool {
 // ride a client-selected room that nothing has authorised.
 func (s *Server) betaRoomGateRejects(msgType string) bool {
 	if s.opts.EnableScopedRooms {
+		return false
+	}
+	// Conversation frames are entitlement-checked per frame
+	// (handleConversationFrame refuses a room the connection is not
+	// subscribed to), so they need no blanket beta refusal.
+	if s.opts.EnableConversationFrames && isConversationFrame(msgType) {
 		return false
 	}
 	// Post rooms are owner-checked on subscribe (mayJoinPostRoom), which is

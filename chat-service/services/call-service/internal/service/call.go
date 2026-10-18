@@ -73,6 +73,43 @@ type Service struct {
 	// other participant-add path is refused until group calls implement
 	// the same locked invariant. There is deliberately no config knob yet.
 	groupCallsEnabled bool
+
+	// muteChecker (chat parity §4): a member who turned mute_calls on for the
+	// conversation is not rung — no CallInvited push, no ringing pair
+	// authorization (so ws-gateway drops the caller's call_ring/call_offer to
+	// them). Nil rings everyone.
+	muteChecker CallMuteChecker
+}
+
+// CallMuteChecker answers whether callee muted calls from this conversation.
+// Implementations must answer false on any lookup failure.
+type CallMuteChecker interface {
+	CallsMuted(ctx context.Context, calleeID, callerID uuid.UUID, sourceConversationID *uuid.UUID) bool
+}
+
+// WithCallMuteChecker enables the per-conversation call mute.
+func (s *Service) WithCallMuteChecker(c CallMuteChecker) *Service {
+	s.muteChecker = c
+	return s
+}
+
+// shouldRing reports whether target is rung for a call from caller. A muted
+// member is still invited and still a participant, so the call records as
+// missed for them when the ring times out; only the ringing is skipped.
+func (s *Service) shouldRing(ctx context.Context, callerID, targetID uuid.UUID, sourceType string, sourceID *uuid.UUID) bool {
+	if s.muteChecker == nil {
+		return true
+	}
+	var sourceConversation *uuid.UUID
+	if sourceType == domain.SourceTypeChat && sourceID != nil {
+		sourceConversation = sourceID
+	}
+	if s.muteChecker.CallsMuted(ctx, targetID, callerID, sourceConversation) {
+		s.log.Info("callee muted calls for this conversation; not ringing",
+			"caller", callerID, "target", targetID)
+		return false
+	}
+	return true
 }
 
 // TURNCredentialSource mints the ICE servers handed out on join.
@@ -371,6 +408,13 @@ func (s *Service) createCallLocked(ctx context.Context, userID uuid.UUID, req Cr
 		}
 		if err := s.store.AddParticipant(ctx, participant); err != nil {
 			s.log.Warn("failed to add participant", "err", err, "target_user_id", targetID)
+			continue
+		}
+
+		// Chat parity §4: a member who muted calls here gets no push and no
+		// ringing authorization (no ring frame reaches them). The invite and
+		// participant rows above stay, so the call logs as missed for them.
+		if !s.shouldRing(ctx, userID, targetID, req.SourceType, req.SourceID) {
 			continue
 		}
 
@@ -1054,6 +1098,11 @@ func (s *Service) InviteParticipants(ctx context.Context, userID, callID uuid.UU
 			CreatedAt:     now,
 		}
 		_ = s.store.AddParticipant(ctx, newParticipant)
+
+		if !s.shouldRing(ctx, userID, targetID, session.SourceType, session.SourceID) {
+			sent++
+			continue
+		}
 
 		_ = s.store.InsertOutboxEvent(ctx, events.CallInvited, events.CallInvitedPayload{
 			CallID:        callID.String(),

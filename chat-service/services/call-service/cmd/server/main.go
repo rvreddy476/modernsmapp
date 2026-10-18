@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/atpost/chat-call-service/database"
+	"github.com/atpost/chat-call-service/internal/chatdb"
 	"github.com/atpost/chat-call-service/internal/config"
 	"github.com/atpost/chat-call-service/internal/domain"
 	callhttp "github.com/atpost/chat-call-service/internal/http"
@@ -189,6 +190,21 @@ func main() {
 		}
 		svc = svc.WithTURNCredentials(minter)
 		logger.Info("managed TURN enabled", "provider", "cloudflare", "ttl", cfg.CloudflareTURNTTL.String())
+	}
+
+	// Per-conversation call mute (chat parity §4): read-only chat_db lookup
+	// of chat.conversation_settings.mute_calls. Unset → everyone rings.
+	if cfg.ChatPostgresDSN != "" {
+		muteReader, err := chatdb.Open(ctx, cfg.ChatPostgresDSN, logger)
+		if err != nil {
+			logger.Warn("call mute disabled: bad CHAT_POSTGRES_DSN", "err", err)
+		} else {
+			defer muteReader.Close()
+			svc = svc.WithCallMuteChecker(muteReader)
+			logger.Info("call mute enabled")
+		}
+	} else {
+		logger.Info("call mute disabled: CHAT_POSTGRES_DSN unset")
 	}
 
 	handler := callhttp.New(svc, logger).WithCallsEnabled(cfg.CallsEnabled)

@@ -1273,6 +1273,12 @@ services:
       # Production chat pass: owner-issued conversation-room entitlements
       # (shared HMAC with chat-ws-gateway).
       CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}
+      # Chat parity (2026-10-18): /v1/chat/search reads people and the chat
+      # message index from search-service (empty = no people / messages,
+      # e.g. SEARCH_SERVICE_URL=http://search-service:8089); message reports
+      # are filed with trust-safety.
+      SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL:-}
+      TRUST_SAFETY_SERVICE_URL: ${TRUST_SAFETY_SERVICE_URL:-http://trust-safety-service:8091}
     ports:
       - "8092:8092"
     depends_on:
@@ -1317,6 +1323,12 @@ services:
       ENABLE_LIVE_ROOMS: "true"
       LIVE_V2_SERVICE_URL: http://live-service-v2:8117
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Chat parity (presence push + typing frames): DM peer lookup reads
+      # chat_db; typing state goes through message-service so its privacy
+      # rules apply; presence visibility is a graph permission check.
+      CHAT_POSTGRES_DSN: *chat_postgres_dsn
+      MESSAGE_SERVICE_URL: http://chat-message-service:8092
+      GRAPH_SERVICE_URL: http://graph-service:8083
     ports:
       - "8093:8093"
     depends_on:
@@ -1339,6 +1351,8 @@ services:
       <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8097"
       POSTGRES_DSN: *call_postgres_dsn
+      # Per-chat "mute calls" (chat.conversation_settings), read-only.
+      CHAT_POSTGRES_DSN: *chat_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}

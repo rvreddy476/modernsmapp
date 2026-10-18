@@ -21,3 +21,18 @@ func TestProductionWebsocketPolicyFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// Chat parity §4: conversation frames and presence fan-out default ON; the
+// broader scoped-rooms gate is not something this config can turn on.
+func TestConversationFramesAndPresenceDefaultOn(t *testing.T) {
+	t.Setenv("WS_CONVERSATION_FRAMES_ENABLED", "")
+	t.Setenv("WS_PRESENCE_FANOUT_ENABLED", "")
+	cfg := Load()
+	if !cfg.ConversationFramesEnabled || !cfg.PresenceFanoutEnabled {
+		t.Fatalf("defaults must be ON: frames=%v fanout=%v", cfg.ConversationFramesEnabled, cfg.PresenceFanoutEnabled)
+	}
+	t.Setenv("WS_CONVERSATION_FRAMES_ENABLED", "false")
+	if Load().ConversationFramesEnabled {
+		t.Fatal("WS_CONVERSATION_FRAMES_ENABLED=false must turn the frames off")
+	}
+}

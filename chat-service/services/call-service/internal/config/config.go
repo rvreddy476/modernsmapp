@@ -62,6 +62,12 @@ type Config struct {
 	AllowInsecureDevMedia  bool
 	GraphServiceURL        string
 	InternalServiceKey     string
+
+	// ChatPostgresDSN (CHAT_POSTGRES_DSN) is a READ-ONLY handle on
+	// message-service's chat_db, used only to read
+	// chat.conversation_settings.mute_calls (chat parity §4). Empty disables
+	// the call mute: everyone rings, exactly as before.
+	ChatPostgresDSN string
 }
 
 func Load() *Config {
@@ -103,6 +109,7 @@ func Load() *Config {
 		AllowInsecureDevMedia:  getEnvBool("CALLS_DEV_ALLOW_STUB_MEDIA", false),
 		GraphServiceURL:        strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")),
 		InternalServiceKey:     strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY")),
+		ChatPostgresDSN:        strings.TrimSpace(os.Getenv("CHAT_POSTGRES_DSN")),
 	}
 }
 
