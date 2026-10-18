@@ -14,6 +14,8 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+
+	"github.com/atpost/notification-service/internal/push"
 )
 
 // Chat message pushes (chat-parity CONTRACT §8).
@@ -45,6 +47,36 @@ const ChatPreviewMaxGraphemes = 80
 // dropped rather than forwarded to a client that would not know it.
 var chatAlertTones = map[string]bool{
 	"default": true, "chime": true, "pop": true, "bell": true, "silent": true,
+}
+
+// Android notification channels a chat push names (chat-parity fix pass 2).
+// They are the exact ids the Android app registers (core/notifications
+// NotificationChannelSpec MESSAGES*): a channel is the only place Android
+// lets a sound live, so each alert tone is its own channel. A message
+// request always uses the default channel.
+const (
+	ChatChannelMessages = "messages"
+	ChatChannelChime    = "messages_chime"
+	ChatChannelPop      = "messages_pop"
+	ChatChannelBell     = "messages_bell"
+	ChatChannelSilent   = "messages_silent"
+)
+
+var chatToneChannels = map[string]string{
+	"default": ChatChannelMessages,
+	"chime":   ChatChannelChime,
+	"pop":     ChatChannelPop,
+	"bell":    ChatChannelBell,
+	"silent":  ChatChannelSilent,
+}
+
+// ChatAndroidChannel is the Android channel for a conversation's alert tone;
+// an absent or unknown tone gets the default "messages" channel.
+func ChatAndroidChannel(alertTone string) string {
+	if ch, ok := chatToneChannels[strings.ToLower(strings.TrimSpace(alertTone))]; ok {
+		return ch
+	}
+	return ChatChannelMessages
 }
 
 // ChatMessagePush is the push-relevant content of one chat message, as
@@ -135,6 +167,10 @@ func chatPushData(msg ChatMessagePush, conversationID uuid.UUID) map[string]stri
 	if tone := strings.ToLower(strings.TrimSpace(msg.AlertTone)); chatAlertTones[tone] {
 		data["alert_tone"] = tone
 	}
+	// The channel rides the data map (clients read it) and the FCM builder
+	// also lifts it into android.notification.channel_id, so a background
+	// push the system draws plays the tone's sound.
+	data[push.AndroidChannelDataKey] = ChatAndroidChannel(msg.AlertTone)
 	return data
 }
 

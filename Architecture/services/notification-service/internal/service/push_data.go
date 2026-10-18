@@ -1,6 +1,10 @@
 package service
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+
+	"github.com/atpost/notification-service/internal/push"
+)
 
 // buildPushData is the device push's copy and data payload for one
 // notification.
@@ -38,6 +42,15 @@ func buildPushData(userID uuid.UUID, notifType, entityType string, entityID uuid
 	for k, v := range render.Data {
 		if _, taken := data[k]; !taken && k != "collapse_key" && v != "" {
 			data[k] = v
+		}
+	}
+	// A chat push always names its Android channel. A "dm" carries its
+	// alert tone's channel from chatPushData; a message request (and a "dm"
+	// rendered without data) gets the default messages channel, so a
+	// background push never lands on the app's catch-all FCM channel.
+	if notifType == "dm" || notifType == "message_request" {
+		if data[push.AndroidChannelDataKey] == "" {
+			data[push.AndroidChannelDataKey] = ChatChannelMessages
 		}
 	}
 	// Collapse key so repeated notifications (e.g. many likes) replace each

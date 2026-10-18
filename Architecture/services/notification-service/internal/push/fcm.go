@@ -81,7 +81,7 @@ var callPushTypes = map[string]bool{
 // AndroidChannelDataKey is a transport-only data key: BuildFCMMessage lifts
 // its value into android.notification.channel_id and strips it from data, so
 // a caller can name the Android notification channel without changing the
-// Pusher interface.
+// Pusher interface. Chat types (channelInDataTypes) keep it in data too.
 const AndroidChannelDataKey = "android_channel_id"
 
 // AndroidTTLDataKey is a transport-only data key: BuildFCMMessage lifts its
@@ -90,6 +90,16 @@ const AndroidChannelDataKey = "android_channel_id"
 // weeks must instead be dropped once the offer has expired — a captain woken
 // by a stale offer wastes a tap, and the matcher has long moved on.
 const AndroidTTLDataKey = "android_ttl"
+
+// channelInDataTypes keep AndroidChannelDataKey in `data` as well as lifting
+// it into android.notification.channel_id. Chat pushes (chat-parity fix pass
+// 2) publish the channel to clients: a foreground push the app draws itself
+// uses the same channel, and so the same tone, as a background one the
+// system draws. Every other type keeps the key transport-only.
+var channelInDataTypes = map[string]bool{
+	"dm":              true,
+	"message_request": true,
+}
 
 // highPriorityTypes are operational pushes that must wake a Dozing device: a
 // kitchen that sees a new order late loses it to the accept SLA, a job or
@@ -114,10 +124,11 @@ var highPriorityTypes = map[string]bool{
 func BuildFCMMessage(token, title, body string, data map[string]string) map[string]interface{} {
 	channelID, hasChannel := data[AndroidChannelDataKey]
 	ttl, hasTTL := data[AndroidTTLDataKey]
-	if hasChannel || hasTTL {
+	keepChannel := channelInDataTypes[data["type"]]
+	if (hasChannel && !keepChannel) || hasTTL {
 		stripped := make(map[string]string, len(data))
 		for k, v := range data {
-			if k != AndroidChannelDataKey && k != AndroidTTLDataKey {
+			if (k != AndroidChannelDataKey || keepChannel) && k != AndroidTTLDataKey {
 				stripped[k] = v
 			}
 		}
