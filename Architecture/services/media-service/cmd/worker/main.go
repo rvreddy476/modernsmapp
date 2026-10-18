@@ -817,6 +817,9 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		moderationStatus = "rejected"
 		log.Printf("Content scan REJECTED media %s: %s", payload.MediaAssetID, res.Reason)
 	} else {
+		if err := recordVideoScanLabels(ctx, pgStore, mediaAssetID, scanner, res); err != nil {
+			return err
+		}
 		moderationStatus = "passed"
 	}
 	if moderationResult == nil {

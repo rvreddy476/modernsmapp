@@ -346,15 +346,38 @@ func (h *Handler) GetMedia(c *gin.Context) {
 	var res *postgres.MediaAsset
 	if h.trustedServiceCaller(c) {
 		res, err = h.recordsSvc().MediaForService(c.Request.Context(), mediaID)
-	} else {
-		res, err = h.recordsSvc().MediaForViewer(c.Request.Context(), deliveryViewer(c), mediaID)
+		if err != nil {
+			writeDeliveryError(c, err)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, serviceMediaRecordOf(res), nil)
+		return
 	}
+	res, err = h.recordsSvc().MediaForViewer(c.Request.Context(), deliveryViewer(c), mediaID)
 	if err != nil {
 		writeDeliveryError(c, err)
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusOK, res, nil)
+}
+
+// serviceMediaRecord is GET /v1/media/:id for a keyed service caller: the
+// record every caller gets, plus the moderation summary (chat parity pass 2;
+// message-service fills media.sensitive from it). Viewers never get these
+// two fields — labels are a moderation signal, not client data.
+//
+//	sensitive          bool, or null when no real scan is on record
+//	moderation_labels  label names only; absent when not scanned or none
+type serviceMediaRecord struct {
+	*postgres.MediaAsset
+	Sensitive        *bool    `json:"sensitive"`
+	ModerationLabels []string `json:"moderation_labels,omitempty"`
+}
+
+func serviceMediaRecordOf(m *postgres.MediaAsset) serviceMediaRecord {
+	s := service.SensitivityOf(m)
+	return serviceMediaRecord{MediaAsset: m, Sensitive: s.Sensitive, ModerationLabels: s.LabelNames}
 }
 
 func (h *Handler) GetMediaURL(c *gin.Context) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Scanner is the interface for content safety scanning.
@@ -61,7 +62,14 @@ func (s *StubScanner) ScanImage(_ context.Context, _ []byte) (ScanResult, error)
 // whole video. With StubScanner every frame is safe; a real Scanner
 // implementation (PhotoDNA / Rekognition / SafeSearch) makes this a
 // genuine content-safety gate.
+//
+// A safe verdict carries every frame's labels merged (one entry per
+// name+parent, at its highest confidence), so the borderline findings a
+// video passed with are kept like an image's (chat parity pass 2: they decide
+// media "sensitive").
 func ScanVideoFrames(ctx context.Context, scanner Scanner, framePaths []string) (ScanResult, error) {
+	merged := []ModerationLabel{}
+	at := map[[2]string]int{}
 	for _, p := range framePaths {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -74,6 +82,17 @@ func ScanVideoFrames(ctx context.Context, scanner Scanner, framePaths []string) 
 		if !res.IsSafe {
 			return res, nil
 		}
+		for _, l := range res.Labels {
+			k := [2]string{strings.ToLower(l.Name), strings.ToLower(l.Parent)}
+			if i, ok := at[k]; ok {
+				if l.Confidence > merged[i].Confidence {
+					merged[i].Confidence = l.Confidence
+				}
+				continue
+			}
+			at[k] = len(merged)
+			merged = append(merged, l)
+		}
 	}
-	return ScanResult{IsSafe: true}, nil
+	return ScanResult{IsSafe: true, Labels: merged}, nil
 }
