@@ -85,7 +85,7 @@ internal fun NotesRow(
     ) {
         item(key = "mine") {
             NoteTile(
-                bubble = notes.mine?.text ?: "Share a thought",
+                bubble = notes.mine?.text ?: "Add a note",
                 bubbleMuted = notes.mine == null,
                 name = "Your note",
                 seed = viewerId,
@@ -221,7 +221,7 @@ private fun NoteEditorSheet(
         ) {
             Text("Your note", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "A short thought for the people you chat with. It disappears after 24 hours.",
+                "A short note for the people you chat with. It disappears after 24 hours.",
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textMuted,
             )

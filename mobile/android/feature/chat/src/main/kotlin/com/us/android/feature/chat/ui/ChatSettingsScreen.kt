@@ -88,7 +88,7 @@ import javax.inject.Inject
 
 /** The own-bubble colours, in our words (`chat_bubble_style`). */
 val BUBBLE_STYLES = listOf(
-    "default" to "Mint",
+    "default" to "Classic",
     "ocean" to "Ocean",
     "ember" to "Ember",
     "forest" to "Forest",

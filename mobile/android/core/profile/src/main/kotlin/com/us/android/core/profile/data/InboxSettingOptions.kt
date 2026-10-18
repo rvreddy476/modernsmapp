@@ -44,7 +44,7 @@ object InboxSettingOptions {
     )
 
     val bubbleStyles = listOf(
-        Option("default", "Mint"),
+        Option("default", "Classic"),
         Option("ocean", "Ocean"),
         Option("ember", "Ember"),
         Option("forest", "Forest"),
