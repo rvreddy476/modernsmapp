@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.chat.data.Conversation
+import com.us.android.core.chat.data.requestTitle
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
@@ -543,7 +544,7 @@ private fun RequestsTab(
     }
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(state.requests, key = { it.id }) { request ->
-            val title = request.displayTitle(state.viewerId)
+            val title = request.requestTitle(state.viewerId)
             ConversationRow(
                 conversation = request,
                 title = title,

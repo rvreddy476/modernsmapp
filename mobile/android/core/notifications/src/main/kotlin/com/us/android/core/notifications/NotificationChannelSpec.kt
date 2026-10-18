@@ -40,11 +40,17 @@ enum class NotificationChannelSpec(
     /** Posts with no sound and no vibration (a chat's "Silent" alert tone). */
     val silent: Boolean = false,
     /**
-     * A vibration pattern of its own (chat parity alert tones). The app
-     * bundles no short sounds, so the tones share the device's notification
-     * sound and are told apart by feel; null keeps the platform default.
+     * A vibration pattern of its own (chat parity alert tones), so the tones
+     * are told apart by feel as well as by ear; null keeps the platform
+     * default.
      */
     val vibration: LongArray? = null,
+    /**
+     * A bundled sound (`res/raw`) the channel plays instead of the device's
+     * notification sound (fix pass 2: the chat alert tones). Fixed at the
+     * channel's creation — Android never lets an app change it afterwards.
+     */
+    val soundRes: Int? = null,
 ) {
     COMMERCE_DELIVERY_DUTY(
         id = "commerce_delivery_duty", title = "Commerce delivery location",
@@ -89,11 +95,14 @@ enum class NotificationChannelSpec(
     /*
      * Chat parity (2026-10-18): a conversation's alert tone (CONTRACT §1.1,
      * §8) picks one of these. A channel is the only place Android lets a
-     * sound live, so each tone is its own channel. The repo bundles NO short
-     * sounds (no res/raw), so chime/pop/bell use the device's notification
-     * sound with a vibration of their own; silent posts quietly. Bundled
-     * sounds can replace them later — under NEW ids, since a channel's sound
-     * cannot change once created.
+     * sound live, so each tone is its own channel. Fix pass 2: chime, pop
+     * and bell play our own bundled tones (res/raw/msg_tone_*.wav), each
+     * with a vibration of its own; silent posts quietly. The ids are the
+     * exact ones notification-service names in `android_channel_id`, so they
+     * never change. A device that created these channels before the sounds
+     * existed keeps its soundless copy (a channel's sound is fixed at
+     * creation) until the app is reinstalled or its data cleared — only the
+     * dev emulator ever ran that build.
      */
     MESSAGES_CHIME(
         id = "messages_chime",
@@ -101,6 +110,7 @@ enum class NotificationChannelSpec(
         description = "Chats you set to the Chime alert",
         importance = NotificationManager.IMPORTANCE_HIGH,
         vibration = longArrayOf(0, 120, 80, 120),
+        soundRes = R.raw.msg_tone_chime,
     ),
     MESSAGES_POP(
         id = "messages_pop",
@@ -108,6 +118,7 @@ enum class NotificationChannelSpec(
         description = "Chats you set to the Pop alert",
         importance = NotificationManager.IMPORTANCE_HIGH,
         vibration = longArrayOf(0, 60),
+        soundRes = R.raw.msg_tone_pop,
     ),
     MESSAGES_BELL(
         id = "messages_bell",
@@ -115,6 +126,7 @@ enum class NotificationChannelSpec(
         description = "Chats you set to the Bell alert",
         importance = NotificationManager.IMPORTANCE_HIGH,
         vibration = longArrayOf(0, 300, 150, 300),
+        soundRes = R.raw.msg_tone_bell,
     ),
     MESSAGES_SILENT(
         id = "messages_silent",
@@ -486,6 +498,15 @@ enum class NotificationChannelSpec(
                             enableVibration(true)
                             vibrationPattern = it
                         }
+                        spec.soundRes?.let { res ->
+                            setSound(
+                                rawSoundUri(context.packageName, res),
+                                AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                    .build(),
+                            )
+                        }
                         if (spec.alertSound) {
                             // Alarm tone where the device has one. A null URI
                             // passed to setSound would SILENCE the channel, so
@@ -513,9 +534,14 @@ enum class NotificationChannelSpec(
          * §8): a MESSAGES push with a known non-default tone goes to that
          * tone's channel; anything else is [forType]'s answer unchanged.
          */
-        fun forPush(type: String?, alertTone: String?): NotificationChannelSpec {
+        fun forPush(type: String?, alertTone: String?, androidChannelId: String? = null): NotificationChannelSpec {
             val base = forType(type)
             if (base != MESSAGES) return base
+            // Fix pass 2: notification-service names the channel itself
+            // (`android_channel_id`). Honoured only when it is one of the
+            // Messages channels — a push can never talk its way onto Calls.
+            val named = androidChannelId?.trim()
+            MESSAGE_TONE_CHANNELS.firstOrNull { it.id == named }?.let { return it }
             return when (alertTone?.trim()?.lowercase()) {
                 "chime" -> MESSAGES_CHIME
                 "pop" -> MESSAGES_POP
@@ -605,5 +631,13 @@ enum class NotificationChannelSpec(
         }
 
         private const val DOORSTEP_PRO_PREFIX = "doorstep.pro."
+
+        /** The five channels a chat push may name (FIXES.md, exact ids). */
+        val MESSAGE_TONE_CHANNELS: List<NotificationChannelSpec> =
+            listOf(MESSAGES, MESSAGES_CHIME, MESSAGES_POP, MESSAGES_BELL, MESSAGES_SILENT)
+
+        /** `android.resource://<package>/<id>`: what a channel's setSound takes for a bundled sound. */
+        internal fun rawSoundUri(packageName: String, resId: Int): android.net.Uri =
+            android.net.Uri.parse("${android.content.ContentResolver.SCHEME_ANDROID_RESOURCE}://$packageName/$resId")
     }
 }

@@ -47,6 +47,21 @@ import javax.inject.Singleton
 interface OutboxScheduler {
     fun scheduleDrain()
     fun cancelDrain()
+
+    /**
+     * Runs [drain] NOW, in-process, off the caller's thread (chat parity fix
+     * pass 2, 2026-10-18). WorkManager's `CONNECTED` constraint also demands
+     * a VALIDATED network, so on a network that reaches our backend but not
+     * the wider internet (the dev emulator, a captive LAN) the worker never
+     * ran and every send sat queued. A foreground send therefore goes
+     * straight away; the WorkManager job stays armed as the durable
+     * fallback. Both paths run [ChatStore.drainOutbox], which is serialised
+     * and replays the row's ONE idempotency key, so neither can double-send.
+     *
+     * Default no-op: a scheduler that cannot run work (the test fakes that
+     * predate this) keeps the old worker-only behaviour.
+     */
+    fun drainNow(drain: suspend () -> Unit) = Unit
 }
 
 /**
@@ -110,6 +125,14 @@ class ChatStore @Inject constructor(
     //    wipe never interleaves with a commit.
     private val gateLock = Mutex()
     private val recoveryLock = Mutex()
+
+    /**
+     * One drain at a time. The foreground drain ([drainNow]) and the
+     * WorkManager worker can both be running; serialised, the second
+     * re-reads the queue AFTER the first finished its rows, so a delivered
+     * row is never attempted twice.
+     */
+    private val drainLock = Mutex()
     private var writeGeneration = 0L
     private var tearingDown = false
 
@@ -368,6 +391,50 @@ class ChatStore @Inject constructor(
         guardedWrite { parityDao?.markUnreadOnly(conversationId) }
     }
 
+    /**
+     * Mark unread from the inbox (fix pass 2): the SERVER keeps the mark
+     * (`PUT .../unread {unread:true}`), so every device shows it until the
+     * conversation is next read or opened. The dot comes back at once; a
+     * refusal puts the row back as it was — no device-only mark is left.
+     */
+    suspend fun markConversationUnread(conversationId: String): com.us.android.core.common.result.AppResult<Unit> {
+        val sender = parity ?: return teardownRefusal()
+        markUnreadLocally(conversationId)
+        val result = sender.setUnread(conversationId, unread = true)
+        if (result is com.us.android.core.common.result.AppResult.Failure) markReadLocally(conversationId)
+        return result
+    }
+
+    /**
+     * Mark read from the inbox (fix pass 2): the read cursor moves to the
+     * newest message (`POST .../read`, which also clears a mark), and a mark
+     * on a chat with nothing new to read is cleared by `PUT .../unread
+     * {unread:false}`. The dot goes at once; if neither write lands the row
+     * shows unread again.
+     */
+    suspend fun markConversationRead(conversation: Conversation): com.us.android.core.common.result.AppResult<Unit> {
+        val sender = parity ?: return teardownRefusal()
+        markReadLocally(conversation.id)
+        val newest = (repository.messages(conversation.id, limit = 1) as? com.us.android.core.common.result.AppResult.Success)
+            ?.data?.items?.firstOrNull { !it.pending && it.id.isNotBlank() }
+        val read = newest?.let { repository.markRead(conversation.id, it.id) }
+        val cleared = if (conversation.markedUnread || read !is com.us.android.core.common.result.AppResult.Success) {
+            sender.setUnread(conversation.id, unread = false)
+        } else {
+            null
+        }
+        val landed = read is com.us.android.core.common.result.AppResult.Success ||
+            cleared is com.us.android.core.common.result.AppResult.Success
+        if (landed) return com.us.android.core.common.result.AppResult.Success(Unit)
+        markUnreadLocally(conversation.id)
+        // Not landed: `cleared` was attempted (read did not succeed), so it is the failure to report.
+        return cleared ?: teardownRefusal()
+    }
+
+    private fun teardownRefusal() = com.us.android.core.common.result.AppResult.Failure(
+        com.us.android.core.common.error.AppError.Unknown(code = "CHAT_UNAVAILABLE", statusCode = null, requestId = null),
+    )
+
     /** The chat settings page's confirmed switches, mirrored so the inbox reorders. */
     suspend fun applyPrefsLocally(conversationId: String, prefs: ConversationPrefs) {
         guardedWrite {
@@ -424,7 +491,7 @@ class ChatStore @Inject constructor(
                 ),
             )
         } ?: return null
-        scheduleDrain()
+        kickDrain()
         return key
     }
 
@@ -485,14 +552,14 @@ class ChatStore @Inject constructor(
                 ),
             )
         } ?: return null
-        scheduleDrain()
+        kickDrain()
         return key
     }
 
     /** Puts a failed row back in the queue and kicks the worker. */
     suspend fun retrySend(idempotencyKey: String) {
         guardedWrite { dao.retry(idempotencyKey) } ?: return
-        scheduleDrain()
+        kickDrain()
     }
 
     suspend fun abandonSend(idempotencyKey: String) {
@@ -502,6 +569,21 @@ class ChatStore @Inject constructor(
     /** Re-arms the outbox worker; also called from app start so sends queued
      *  before a process death resume without any user action. */
     fun scheduleDrain() = scheduler.scheduleDrain()
+
+    /**
+     * Sends what is queued NOW, in-process (see [OutboxScheduler.drainNow]):
+     * after a foreground enqueue or retry, and when the chat socket connects
+     * (the backend is demonstrably reachable then). The worker is never
+     * cancelled for it — it stays the fallback for process death and for a
+     * backend that was unreachable a moment ago.
+     */
+    fun drainNow() = scheduler.drainNow { drainOutbox() }
+
+    /** A new or retried row: arm the durable worker first, then try it straight away. */
+    private fun kickDrain() {
+        scheduleDrain()
+        drainNow()
+    }
 
     /**
      * Drains the outbox. Called by [ChatSendWorker]. Returns false when a
@@ -525,7 +607,9 @@ class ChatStore @Inject constructor(
      *    re-reads the queue after each pass and only stops when it is
      *    genuinely empty or blocked.
      */
-    suspend fun drainOutbox(): Boolean {
+    suspend fun drainOutbox(): Boolean = drainLock.withLock { drainOutboxLocked() }
+
+    private suspend fun drainOutboxLocked(): Boolean {
         // Leased ONCE for the whole drain: WorkManager cancellation is
         // best-effort, so a worker that outlives teardown must find every
         // one of its writes refused — including after a new session opens.
@@ -720,6 +804,8 @@ class ChatStore @Inject constructor(
             peer = extras?.peer?.toDomain(),
             streak = extras?.streak?.let { ChatStreak(it.days, it.atRisk, it.expiresAt) },
             lastMessage = extras?.lastMessage?.let { LastMessageInfo(it.type, it.preview, it.senderId, it.at, it.ownStatus) },
+            markedUnread = extras?.markedUnread == true,
+            sender = extras?.sender?.toDomain(),
         )
     }
 
@@ -795,6 +881,7 @@ fun typedPreview(message: Message): String? = when {
     message.deleted -> "Message unsent"
     message.type == VOICE_MESSAGE || message.voice != null -> "Voice message"
     message.type == STICKER_MESSAGE || message.sticker != null -> "Sticker"
+    message.gif?.isSticker == true -> "Sticker"
     message.type == GIF_MESSAGE || message.gif != null -> "GIF"
     message.type == PROFILE_MESSAGE || message.profileUserId != null -> "Shared a profile"
     message.type == SOUND_MESSAGE || message.soundId != null -> "Shared a sound"

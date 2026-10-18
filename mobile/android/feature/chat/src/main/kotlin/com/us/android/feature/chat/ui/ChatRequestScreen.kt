@@ -47,10 +47,12 @@ fun ChatRequestScreen(
     viewModel: ChatRequestViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // The sender as the request detail names them (fix pass 2); the list's name until then.
+    val shownTitle = state.title ?: title
 
     androidx.compose.runtime.LaunchedEffect(state.outcome) {
         when (state.outcome) {
-            RequestOutcome.Accepted -> onAccepted(viewModel.conversationId, title)
+            RequestOutcome.Accepted -> onAccepted(viewModel.conversationId, shownTitle)
             RequestOutcome.Closed -> onClosed()
             null -> Unit
         }
@@ -76,10 +78,10 @@ fun ChatRequestScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
-                UsAvatar(name = title, size = UsAvatarSize.Large, seed = viewModel.conversationId)
+                UsAvatar(name = shownTitle, size = UsAvatarSize.Large, seed = viewModel.conversationId, imageUrl = state.avatarUrl)
                 Column {
                     Text(
-                        title,
+                        shownTitle,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = UsTheme.extended.textPrimary,

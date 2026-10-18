@@ -230,6 +230,11 @@ open class ChatSessionManager @Inject constructor(
                         // open room with a fresh entitlement. Children of the
                         // session job, so stopAndJoin awaits them.
                         scope.launch { store.syncInbox() }
+                        // The backend is reachable right now, whatever the OS
+                        // thinks of the network: send anything still queued
+                        // (fix pass 2 — the worker waits for a VALIDATED
+                        // network, which some reachable networks never are).
+                        store.drainNow()
                         val rooms = synchronized(roomsLock) { subscribedRooms.toList() }
                         rooms.forEach { scope.launch { sendSubscribe(it) } }
                     }

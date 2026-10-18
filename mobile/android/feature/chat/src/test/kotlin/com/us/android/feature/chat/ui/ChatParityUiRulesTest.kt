@@ -117,4 +117,68 @@ class ChatParityUiRulesTest {
         assertThat(activityVisible(null)).isFalse()
         assertThat(labelForStatus("no_one")).isEqualTo("No one")
     }
+
+    // ── fix pass 2 ──────────────────────────────────────────────────────
+
+    private fun pack(id: String, name: String, stickers: Int) = com.us.android.core.chat.data.StickerPack(
+        id = id,
+        name = name,
+        stickers = (1..stickers).map { com.us.android.core.chat.data.StickerInfo("$id-$it", "https://cdn/$id/$it.webp", 1, 1) },
+    )
+
+    @Test
+    fun `the panel shows Giphy Stickers beside GIF, then our non-empty packs as their own tabs`() {
+        val packs = listOf(pack("p1", "Basics", 2), pack("p2", "Empty", 0), pack("p3", " ", 1))
+        val withGiphy = composerPanelTabs(giphyAvailable = true, packs = packs)
+        assertThat(withGiphy.map { it.label }).containsExactly("Emoji", "Stickers", "GIF", "Basics", "Pack").inOrder()
+        assertThat(withGiphy.map { it.tag }).containsExactly("emoji", "stickers", "gif", "pack:p1", "pack:p3").inOrder()
+        // No Giphy key in this build: neither Giphy tab; our packs still show.
+        assertThat(composerPanelTabs(giphyAvailable = false, packs = packs).map { it.label })
+            .containsExactly("Emoji", "Basics", "Pack").inOrder()
+        assertThat(composerPanelTabs(giphyAvailable = false, packs = emptyList())).containsExactly(PanelTab.Emoji)
+    }
+
+    @Test
+    fun `a Giphy sticker pick is marked as one`() {
+        assertThat(giphyGifOf("s1", "https://media.giphy.com/s.gif", 200, 200, null, isSticker = true)?.isSticker).isTrue()
+        assertThat(giphyGifOf("g1", "https://media.giphy.com/g.gif", 200, 200, null)?.isSticker).isFalse()
+    }
+
+    @Test
+    fun `a released swipe opens past half or on a fling, and shuts otherwise`() {
+        val start = 76f
+        val end = 152f
+        assertThat(swipeRestingOffset(50f, 0f, start, end)).isEqualTo(start)
+        assertThat(swipeRestingOffset(20f, 0f, start, end)).isEqualTo(0f)
+        assertThat(swipeRestingOffset(20f, 3_000f, start, end)).isEqualTo(start)
+        assertThat(swipeRestingOffset(-90f, 0f, start, end)).isEqualTo(-end)
+        assertThat(swipeRestingOffset(-40f, 0f, start, end)).isEqualTo(0f)
+        assertThat(swipeRestingOffset(-40f, -3_000f, start, end)).isEqualTo(-end)
+        // A fling the other way shuts it; a side with no buttons never opens.
+        assertThat(swipeRestingOffset(-40f, 3_000f, start, end)).isEqualTo(0f)
+        assertThat(swipeRestingOffset(60f, 0f, 0f, end)).isEqualTo(0f)
+    }
+
+    @Test
+    fun `chat report uses the conversation route and falls back only when it is missing`() = kotlinx.coroutines.test.runTest {
+        var oldPathCalls = 0
+        val oldPath: suspend () -> com.us.android.core.common.result.AppResult<Unit>? = {
+            oldPathCalls++
+            com.us.android.core.common.result.AppResult.Success(Unit)
+        }
+        val ok = reportChat(whole = { com.us.android.core.common.result.AppResult.Success(Unit) }, oldPath = oldPath)
+        assertThat(ok).isInstanceOf(com.us.android.core.common.result.AppResult.Success::class.java)
+        assertThat(oldPathCalls).isEqualTo(0)
+
+        val refused = com.us.android.core.common.result.AppResult.Failure(
+            com.us.android.core.common.error.AppError.Forbidden(code = "NOT_A_MEMBER"),
+        )
+        assertThat(reportChat(whole = { refused }, oldPath = oldPath)).isEqualTo(refused)
+        assertThat(oldPathCalls).isEqualTo(0)
+
+        val missing = com.us.android.core.common.result.AppResult.Failure(com.us.android.core.common.error.AppError.NotFound())
+        assertThat(reportChat(whole = { missing }, oldPath = oldPath))
+            .isInstanceOf(com.us.android.core.common.result.AppResult.Success::class.java)
+        assertThat(oldPathCalls).isEqualTo(1)
+    }
 }

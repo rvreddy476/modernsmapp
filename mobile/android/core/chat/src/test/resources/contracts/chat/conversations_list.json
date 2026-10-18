@@ -17,6 +17,7 @@
       "last_message_at": "2026-10-18T09:30:00Z",
       "last_message_preview": "hello group",
       "last_message_sender": "0b000000-0000-4000-8000-00000000000b",
+      "marked_unread": false,
       "members": [
         {
           "avatar_media_id": "00000000-0000-4000-8000-000000000002",
@@ -65,6 +66,7 @@
       "last_message_at": "2026-10-18T09:30:00Z",
       "last_message_preview": "see you at the station",
       "last_message_sender": "0a000000-0000-4000-8000-00000000000a",
+      "marked_unread": false,
       "members": [
         {
           "avatar_media_id": "00000000-0000-4000-8000-000000000002",

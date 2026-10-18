@@ -29,6 +29,30 @@ class AlertToneChannelTest {
     }
 
     @Test
+    fun `the server-named channel wins, but only among the Messages channels`() {
+        assertThat(NotificationChannelSpec.forPush("dm", "default", "messages_bell")).isEqualTo(NotificationChannelSpec.MESSAGES_BELL)
+        assertThat(NotificationChannelSpec.forPush("dm", "chime", "messages_silent")).isEqualTo(NotificationChannelSpec.MESSAGES_SILENT)
+        assertThat(NotificationChannelSpec.forPush("message", null, "messages")).isEqualTo(NotificationChannelSpec.MESSAGES)
+        // Unknown or foreign ids fall back to the tone; a non-chat push never moves.
+        assertThat(NotificationChannelSpec.forPush("dm", "pop", "messages_v2")).isEqualTo(NotificationChannelSpec.MESSAGES_POP)
+        assertThat(NotificationChannelSpec.forPush("dm", null, "calls")).isEqualTo(NotificationChannelSpec.MESSAGES)
+        assertThat(NotificationChannelSpec.forPush("like", null, "messages_chime")).isEqualTo(NotificationChannelSpec.SOCIAL)
+    }
+
+    @Test
+    fun `the tone channels keep the exact wire ids and carry their own bundled sounds`() {
+        assertThat(NotificationChannelSpec.MESSAGE_TONE_CHANNELS.map { it.id })
+            .containsExactly("messages", "messages_chime", "messages_pop", "messages_bell", "messages_silent").inOrder()
+        assertThat(NotificationChannelSpec.MESSAGES_CHIME.soundRes).isEqualTo(R.raw.msg_tone_chime)
+        assertThat(NotificationChannelSpec.MESSAGES_POP.soundRes).isEqualTo(R.raw.msg_tone_pop)
+        assertThat(NotificationChannelSpec.MESSAGES_BELL.soundRes).isEqualTo(R.raw.msg_tone_bell)
+        // Default keeps the device sound; silent has none and stays LOW.
+        assertThat(NotificationChannelSpec.MESSAGES.soundRes).isNull()
+        assertThat(NotificationChannelSpec.MESSAGES_SILENT.soundRes).isNull()
+        assertThat(NotificationChannelSpec.MESSAGES_SILENT.importance).isEqualTo(android.app.NotificationManager.IMPORTANCE_LOW)
+    }
+
+    @Test
     fun `the silent channel is quiet and the tones vibrate their own way`() {
         assertThat(NotificationChannelSpec.MESSAGES_SILENT.silent).isTrue()
         val patterns = listOf(

@@ -25,6 +25,7 @@ import com.us.android.core.chat.data.parseChatFrame
 import com.us.android.core.chat.data.plainSnippet
 import com.us.android.core.chat.data.presenceLabel
 import com.us.android.core.chat.data.presenceOf
+import com.us.android.core.chat.data.requestTitle
 import com.us.android.core.chat.data.streakLabel
 import com.us.android.core.chat.data.typingFrame
 import com.us.android.core.chat.data.unreadPillText
@@ -298,5 +299,32 @@ class ChatParityRulesTest {
         assertThat(event.message.voice?.waveform).containsExactly(1, 2, 3).inOrder()
         assertThat(event.message.forwarded).isTrue()
         assertThat(event.message.mediaId).isEqualTo("a1")
+    }
+
+    // ── fix pass 2: a request's name ────────────────────────────────────
+
+    private fun request(
+        sender: com.us.android.core.chat.data.RequestSender? = null,
+        members: List<com.us.android.core.chat.data.ConversationMember> = emptyList(),
+    ) = Conversation(
+        id = "r1", type = "direct", title = null, isRequest = true, members = members, updatedAt = "t", sender = sender,
+    )
+
+    private fun sender(name: String = "", username: String = "", deleted: Boolean = false) =
+        com.us.android.core.chat.data.RequestSender("u9", name, username, null, deleted)
+
+    @Test
+    fun `a request is named by its sender, never Conversation`() {
+        assertThat(request(sender(name = "Chen", username = "chen")).requestTitle("me")).isEqualTo("Chen")
+        assertThat(request(sender(username = "chen")).requestTitle("me")).isEqualTo("@chen")
+        assertThat(request(sender(username = "@chen")).requestTitle("me")).isEqualTo("@chen")
+        // Deleted wins even over a stale name.
+        assertThat(request(sender(name = "Old name", deleted = true)).requestTitle("me")).isEqualTo("Deleted account")
+        assertThat(request(sender(deleted = true)).requestTitle("me")).isEqualTo("Deleted account")
+        // No sender block (an older server): the members, then a neutral word.
+        val member = com.us.android.core.chat.data.ConversationMember("u9", "member", "Dev")
+        assertThat(request(members = listOf(member)).requestTitle("me")).isEqualTo("Dev")
+        assertThat(request().requestTitle("me")).isEqualTo("Someone")
+        assertThat(request(sender(name = " ")).requestTitle("me")).isNotEqualTo("Conversation")
     }
 }

@@ -1,0 +1,50 @@
+{
+  "data": {
+    "alert_tone": "default",
+    "created_at": "2026-10-18T09:30:00Z",
+    "created_by": "0a000000-0000-4000-8000-00000000000a",
+    "has_unread": true,
+    "id": "00000000-0000-4000-8000-000000000001",
+    "is_request": false,
+    "last_message": {
+      "at": "2026-10-18T09:30:00Z",
+      "own_status": null,
+      "preview": "hi",
+      "sender_id": "0a000000-0000-4000-8000-00000000000a",
+      "type": "text"
+    },
+    "last_message_at": "2026-10-18T09:30:00Z",
+    "last_message_preview": "hi",
+    "last_message_sender": "0a000000-0000-4000-8000-00000000000a",
+    "marked_unread": true,
+    "members": [
+      {
+        "avatar_media_id": "00000000-0000-4000-8000-000000000002",
+        "display_name": "Asha",
+        "joined_at": "2026-10-18T09:30:00Z",
+        "role": "member",
+        "user_id": "0a000000-0000-4000-8000-00000000000a"
+      },
+      {
+        "avatar_media_id": "00000000-0000-4000-8000-000000000003",
+        "display_name": "Bilal",
+        "joined_at": "2026-10-18T09:30:00Z",
+        "role": "member",
+        "user_id": "0b000000-0000-4000-8000-00000000000b"
+      }
+    ],
+    "mute_calls": false,
+    "peer": {
+      "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000002/thumb_300.webp",
+      "display_name": "Asha",
+      "is_online": false,
+      "last_active_at": null,
+      "user_id": "0a000000-0000-4000-8000-00000000000a",
+      "username": "asha"
+    },
+    "streak": null,
+    "type": "direct",
+    "unread_count": 1,
+    "updated_at": "2026-10-18T09:30:00Z"
+  }
+}

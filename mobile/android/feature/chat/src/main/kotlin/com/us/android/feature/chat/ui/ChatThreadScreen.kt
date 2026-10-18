@@ -1718,6 +1718,7 @@ private fun Message.withTyped(typed: com.us.android.core.chat.data.TypedSend?): 
             com.us.android.core.chat.data.GifInfo(
                 typed.gifProvider.orEmpty(), typed.gifId.orEmpty(), it, null,
                 typed.gifWidth ?: 0, typed.gifHeight ?: 0, typed.gifStillUrl,
+                isSticker = typed.gifIsSticker == true,
             )
         },
         profileUserId = typed.userId,

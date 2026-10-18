@@ -67,7 +67,7 @@ class NotificationPresenter @Inject constructor(
         val body = data[KEY_BODY].orEmpty()
         val type = data[KEY_TYPE]
         // Chat parity: a chat push rides its conversation's alert-tone channel (CONTRACT §8).
-        val channel = NotificationChannelSpec.forPush(type, data[KEY_ALERT_TONE])
+        val channel = NotificationChannelSpec.forPush(type, data[KEY_ALERT_TONE], data[KEY_ANDROID_CHANNEL_ID])
         val partnerCategory = PartnerOfferCategory.forType(type)
         val actionable = installedApp.orElse(PushApp.MOMENTUM) == PushApp.PARTNER &&
             partnerCategory != null && offer is DoorstepOfferNotification.Open &&
@@ -217,6 +217,9 @@ class NotificationPresenter @Inject constructor(
         /** Chat parity (CONTRACT §8): the conversation's tone and id on a chat push. */
         const val KEY_ALERT_TONE = "alert_tone"
         const val KEY_CONVERSATION_ID = "conversation_id"
+
+        /** Fix pass 2: the channel notification-service chose for a chat push. */
+        const val KEY_ANDROID_CHANNEL_ID = "android_channel_id"
 
     }
 }

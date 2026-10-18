@@ -93,6 +93,21 @@ interface ChatParityApi {
         @Body body: ReportMessageRequest,
     )
 
+    /**
+     * Fix pass 2: mark the conversation unread (`true`) for the caller until
+     * they next read or open it, or clear that mark (`false`). 204.
+     */
+    @PUT("v1/chat/conversations/{id}/unread")
+    suspend fun setUnread(@Path("id") conversationId: String, @Body body: UnreadRequest)
+
+    /**
+     * Fix pass 2: report the whole conversation (a DM reports the other
+     * person with recent messages as evidence; a group reports the group).
+     * 202 with or without a body.
+     */
+    @POST("v1/chat/conversations/{id}/report")
+    suspend fun reportConversation(@Path("id") conversationId: String, @Body body: ReportMessageRequest)
+
     /** §2.7: the sticker catalogue; empty is valid (the tab hides). */
     @GET("v1/chat/stickers")
     suspend fun stickers(): ApiEnvelope<StickerCatalogDto>
@@ -202,6 +217,8 @@ data class GifDto(
     val height: Int = 0,
     /** Founder, 18 Oct: the still frame Giphy returned with the pick. */
     @SerialName("still_url") val stillUrl: String? = null,
+    /** Fix pass 2: a Giphy sticker, drawn without a bubble. */
+    @SerialName("is_sticker") val isSticker: Boolean = false,
 )
 
 // ── Shared, forward, reactions, report (§1.4, §2.4-§2.6) ────────────────
@@ -247,6 +264,26 @@ data class ReactionUserDto(
     @SerialName("user_id") val userId: String = "",
     @SerialName("display_name") val displayName: String = "",
     @SerialName("avatar_url") val avatarUrl: String? = null,
+)
+
+/** Fix pass 2: `PUT .../unread`. Always on the wire — `false` is the clear. */
+@Serializable
+data class UnreadRequest(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    val unread: Boolean = true,
+)
+
+/**
+ * Fix pass 2: who sent a message request. A deleted or missing account is
+ * `display_name: ""` with `deleted: true`.
+ */
+@Serializable
+data class RequestSenderDto(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    val username: String = "",
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+    val deleted: Boolean = false,
 )
 
 @Serializable

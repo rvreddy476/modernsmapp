@@ -74,14 +74,19 @@ class ChatStoreParityTest {
 
     private class FakeParityDao(private val messages: MutableMap<String, ChatMessageEntity>) : ChatParityDao {
         val prunes = mutableListOf<List<String>>()
+        val marks = mutableListOf<String>()
         override suspend fun message(messageId: String) = messages[messageId]
         override suspend fun refreshMessage(messageId: String, type: String?, reactionsJson: String?, extrasJson: String?) = Unit
         override suspend fun updateReactions(messageId: String, reactionsJson: String?) {
             messages[messageId]?.let { messages[messageId] = it.copy(reactionsJson = reactionsJson) }
         }
         override suspend fun clearConversationMessages(conversationId: String) = Unit
-        override suspend fun markRead(conversationId: String) = Unit
-        override suspend fun markUnreadOnly(conversationId: String) = Unit
+        override suspend fun markRead(conversationId: String) {
+            marks += "read:$conversationId"
+        }
+        override suspend fun markUnreadOnly(conversationId: String) {
+            marks += "unread:$conversationId"
+        }
         override suspend fun incrementUnread(conversationId: String) = Unit
         override suspend fun updatePrefs(conversationId: String, pinned: Boolean, muted: Boolean, muteCalls: Boolean, alertTone: String?) = Unit
         override suspend fun alertTone(conversationId: String): String? = null
@@ -170,6 +175,85 @@ class ChatStoreParityTest {
         val key = bare.enqueueTypedSend("c1", TypedSend.sticker(com.us.android.core.chat.data.StickerInfo("s", "u", 1, 1)))!!
         bare.drainOutbox()
         assertThat(dao.pending.getValue(key).failed).isTrue()
+    }
+
+    // ── fix pass 2: mark read / unread through the server ───────────────
+
+    /** Records `PUT .../unread`; answers per [unreadOk]. */
+    private class MarkParityApi(private val unreadOk: Boolean = true) :
+        ChatParityApi by unscriptedParity() {
+        val unreadCalls = mutableListOf<Pair<String, Boolean>>()
+        override suspend fun setUnread(conversationId: String, body: com.us.android.core.chat.data.UnreadRequest) {
+            unreadCalls += conversationId to body.unread
+            if (!unreadOk) throw java.io.IOException("offline")
+        }
+    }
+
+    /** History of one message (or none) and a recorded `POST .../read`. */
+    private class ReadApi(private val newest: String?, private val readOk: Boolean = true) : ChatApi by unscriptedChat() {
+        val reads = mutableListOf<String>()
+        override suspend fun messages(conversationId: String, limit: Int, cursor: String?): ApiEnvelope<List<MessageDto>> =
+            ApiEnvelope(data = listOfNotNull(newest?.let { MessageDto(msgId = it, conversationId = conversationId, senderId = "u2") }))
+        override suspend fun markRead(
+            conversationId: String,
+            body: com.us.android.core.chat.data.MarkReadRequest,
+        ): ApiEnvelope<com.us.android.core.chat.data.StatusDto> {
+            reads += body.messageId
+            if (!readOk) throw java.io.IOException("offline")
+            return ApiEnvelope(data = com.us.android.core.chat.data.StatusDto("ok"))
+        }
+    }
+
+    private fun conversation(id: String, markedUnread: Boolean = false) = com.us.android.core.chat.data.Conversation(
+        id = id, type = "direct", title = null, isRequest = false, members = emptyList(), updatedAt = "t",
+        hasUnread = true, markedUnread = markedUnread,
+    )
+
+    @Test
+    fun `mark unread writes the server mark, and a refusal puts the row back`() = runTest {
+        val dao = FakeDao()
+        val parityDao = FakeParityDao(dao.messages)
+        val ok = MarkParityApi()
+        assertThat(store(dao, parityDao, FakeApi(emptyList()), ok).markConversationUnread("c1"))
+            .isInstanceOf(com.us.android.core.common.result.AppResult.Success::class.java)
+        assertThat(ok.unreadCalls).containsExactly("c1" to true)
+        assertThat(parityDao.marks).containsExactly("unread:c1")
+
+        val refused = FakeParityDao(dao.messages)
+        val offline = MarkParityApi(unreadOk = false)
+        assertThat(store(dao, refused, FakeApi(emptyList()), offline).markConversationUnread("c1"))
+            .isInstanceOf(com.us.android.core.common.result.AppResult.Failure::class.java)
+        // No device-only mark survives a failed write.
+        assertThat(refused.marks).containsExactly("unread:c1", "read:c1").inOrder()
+    }
+
+    @Test
+    fun `mark read moves the cursor and clears a server mark`() = runTest {
+        val dao = FakeDao()
+        val parityDao = FakeParityDao(dao.messages)
+        val parityApi = MarkParityApi()
+        val api = ReadApi(newest = "m9")
+
+        store(dao, parityDao, api, parityApi).markConversationRead(conversation("c1", markedUnread = true))
+
+        assertThat(api.reads).containsExactly("m9")
+        assertThat(parityApi.unreadCalls).containsExactly("c1" to false)
+        assertThat(parityDao.marks).containsExactly("read:c1")
+    }
+
+    @Test
+    fun `mark read on an empty marked chat clears the mark alone, and both failing restores the dot`() = runTest {
+        val dao = FakeDao()
+        val parityDao = FakeParityDao(dao.messages)
+        val parityApi = MarkParityApi()
+        store(dao, parityDao, ReadApi(newest = null), parityApi).markConversationRead(conversation("c1", markedUnread = true))
+        assertThat(parityApi.unreadCalls).containsExactly("c1" to false)
+
+        val failing = FakeParityDao(dao.messages)
+        val result = store(dao, failing, ReadApi(newest = "m1", readOk = false), MarkParityApi(unreadOk = false))
+            .markConversationRead(conversation("c2"))
+        assertThat(result).isInstanceOf(com.us.android.core.common.result.AppResult.Failure::class.java)
+        assertThat(failing.marks).containsExactly("read:c2", "unread:c2").inOrder()
     }
 
     @Test

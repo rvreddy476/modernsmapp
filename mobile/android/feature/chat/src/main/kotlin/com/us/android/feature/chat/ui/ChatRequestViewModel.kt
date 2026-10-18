@@ -3,9 +3,12 @@ package com.us.android.feature.chat.ui
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.ChatStore
+import com.us.android.core.chat.data.requestTitle
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.model.SessionState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,14 +25,25 @@ data class RequestUiState(
     val busy: Boolean = false,
     val error: String? = null,
     val outcome: RequestOutcome? = null,
+    /**
+     * Who sent it, from the request detail's `sender` (fix pass 2):
+     * "Deleted account", their name or @username. Null until read — the
+     * screen keeps the name it was opened with.
+     */
+    val title: String? = null,
+    val avatarUrl: String? = null,
 )
 
 @HiltViewModel
 class ChatRequestViewModel @Inject constructor(
     private val repository: ChatRepository,
     private val store: ChatStore,
+    session: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
+
+    private val viewerId: String =
+        (session.sessionState.value as? SessionState.Authenticated)?.userId.orEmpty()
 
     val conversationId: String = savedStateHandle.get<String>("conversationId").orEmpty()
 
@@ -38,6 +52,18 @@ class ChatRequestViewModel @Inject constructor(
 
     init {
         loadPreview()
+        loadSender()
+    }
+
+    /** The request detail names the sender; the list's name stands if it cannot be read. */
+    private fun loadSender() = viewModelScope.launch {
+        val detail = (repository.conversation(conversationId) as? AppResult.Success)?.data ?: return@launch
+        _state.update {
+            it.copy(
+                title = detail.requestTitle(viewerId),
+                avatarUrl = detail.sender?.takeUnless { who -> who.deleted }?.avatarUrl ?: detail.peer?.avatarUrl,
+            )
+        }
     }
 
     /** The introduction is the request conversation's single message. */

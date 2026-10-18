@@ -17,6 +17,7 @@ import dagger.hilt.components.SingletonComponent
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import javax.inject.Singleton
+import kotlinx.coroutines.launch
 
 /**
  * Creates the chat endpoints and the socket from the app-wide instances.
@@ -72,7 +73,12 @@ object ChatModule {
      */
     @Provides
     @Singleton
-    fun provideOutboxScheduler(workManager: WorkManager): OutboxScheduler =
+    fun provideOutboxScheduler(
+        workManager: WorkManager,
+        @com.us.android.core.common.di.ApplicationScope appScope: kotlinx.coroutines.CoroutineScope,
+        @com.us.android.core.common.di.Dispatcher(com.us.android.core.common.di.UsDispatcher.IO)
+        io: kotlinx.coroutines.CoroutineDispatcher,
+    ): OutboxScheduler =
         object : OutboxScheduler {
             override fun scheduleDrain() {
                 workManager.enqueueUniqueWork(
@@ -95,6 +101,14 @@ object ChatModule {
 
             override fun cancelDrain() {
                 workManager.cancelUniqueWork(ChatStore.SEND_WORK_NAME)
+            }
+
+            // The foreground send (fix pass 2): on the app scope, so leaving
+            // the thread screen does not cancel a send already on the wire.
+            // IO, not Default: the drain is network and Room. A failure is
+            // swallowed — the row stays queued and the worker owns it.
+            override fun drainNow(drain: suspend () -> Unit) {
+                appScope.launch(io) { runCatching { drain() } }
             }
         }
 

@@ -56,7 +56,47 @@ data class GifInfo(
     val height: Int,
     /** The still frame (Giphy `still_url`), for a reduced-motion or loading state. */
     val stillUrl: String? = null,
+    /** A Giphy sticker (fix pass 2): drawn on its own, with no bubble. */
+    val isSticker: Boolean = false,
 )
+
+/**
+ * Who sent a message request (fix pass 2). [deleted] when the account is
+ * gone; the name is then blank.
+ */
+data class RequestSender(
+    val userId: String,
+    val displayName: String,
+    val username: String,
+    val avatarUrl: String?,
+    val deleted: Boolean,
+)
+
+/**
+ * A request row's name (fix pass 2): "Deleted account" for a deleted
+ * sender, else their name, else @username — never "Conversation". Without a
+ * sender block (an older server) the members decide, and a nameless request
+ * still says who it might be rather than the placeholder.
+ */
+fun Conversation.requestTitle(viewerId: String): String {
+    sender?.let { who ->
+        if (who.deleted) return DELETED_ACCOUNT
+        who.displayName.trim().takeIf { it.isNotEmpty() }?.let { return it }
+        who.username.trim().removePrefix("@").takeIf { it.isNotEmpty() }?.let { return "@$it" }
+    }
+    peer?.let { who ->
+        who.displayName.trim().takeIf { it.isNotEmpty() }?.let { return it }
+        who.username.trim().removePrefix("@").takeIf { it.isNotEmpty() }?.let { return "@$it" }
+    }
+    val fromMembers = displayTitle(viewerId)
+    return if (fromMembers == UNNAMED_CONVERSATION) UNNAMED_REQUEST_SENDER else fromMembers
+}
+
+/** What a request from a deleted account is called. */
+const val DELETED_ACCOUNT = "Deleted account"
+
+/** A request whose sender nobody named (an older server, no sender block). */
+const val UNNAMED_REQUEST_SENDER = "Someone"
 
 /** What the server says of an attachment. Every field null when it did not say. */
 data class MediaInfo(
@@ -182,6 +222,7 @@ internal fun GifDto.toInfo() = GifInfo(
     width = width,
     height = height,
     stillUrl = stillUrl?.takeIf { it.isNotBlank() },
+    isSticker = isSticker,
 )
 
 /**
@@ -400,6 +441,20 @@ class ChatParityRepository @Inject constructor(
         noContentApiCall(errorMapper) {
             api.report(conversationId, messageId, ReportMessageRequest(reason.wire, note?.takeIf { it.isNotBlank() }))
         }
+
+    /** Fix pass 2: report the whole conversation (`POST .../report`, 202). */
+    suspend fun reportConversation(
+        conversationId: String,
+        reason: MessageReportReason,
+        note: String? = null,
+    ): AppResult<Unit> =
+        noContentApiCall(errorMapper) {
+            api.reportConversation(conversationId, ReportMessageRequest(reason.wire, note?.takeIf { it.isNotBlank() }))
+        }
+
+    /** Fix pass 2: mark unread on the server (`true`), or clear that mark (`false`). */
+    suspend fun setUnread(conversationId: String, unread: Boolean): AppResult<Unit> =
+        noContentApiCall(errorMapper) { api.setUnread(conversationId, UnreadRequest(unread)) }
 
     suspend fun stickers(): AppResult<List<StickerPack>> =
         apiCall(errorMapper) { api.stickers() }.mapOk { catalogue ->

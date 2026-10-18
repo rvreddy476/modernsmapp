@@ -219,23 +219,35 @@ class ChatSettingsViewModel @Inject constructor(
     }
 
     /**
-     * Report the chat: the person's newest message is what gets reviewed
-     * (CONTRACT §2.6 reports messages; there is no conversation report).
+     * Report the chat (fix pass 2): the conversation report route — a DM
+     * reports the person with their recent messages as evidence, a group
+     * reports the group; the server picks the evidence. A server that has
+     * not shipped the route yet (404) gets the old path: the person's newest
+     * message, reported on its own.
      */
     fun report(reason: MessageReportReason, note: String?) {
-        val viewer = _state.value.viewerId
         viewModelScope.launch {
-            val latest = (repository.messages(conversationId) as? AppResult.Success)?.data?.items
-                ?.firstOrNull { it.senderId != viewer && !it.deleted }
-            if (latest == null) {
-                say("There's nothing from them to report yet.", UsMessageType.Info)
-                return@launch
-            }
-            when (parity.report(conversationId, latest.id, reason, note)) {
+            val result = reportChat(
+                whole = { parity.reportConversation(conversationId, reason, note) },
+                oldPath = { reportNewestMessage(reason, note) },
+            ) ?: return@launch
+            when (result) {
                 is AppResult.Success -> say("Thanks — we'll review it. They won't know it was you.", UsMessageType.Success)
                 is AppResult.Failure -> say("Couldn't send the report.", UsMessageType.Error)
             }
         }
+    }
+
+    /** The pre-route fallback; null (and the person told) when they sent nothing to report. */
+    private suspend fun reportNewestMessage(reason: MessageReportReason, note: String?): AppResult<Unit>? {
+        val viewer = _state.value.viewerId
+        val latest = (repository.messages(conversationId) as? AppResult.Success)?.data?.items
+            ?.firstOrNull { it.senderId != viewer && !it.deleted }
+        if (latest == null) {
+            say("There's nothing from them to report yet.", UsMessageType.Info)
+            return null
+        }
+        return parity.report(conversationId, latest.id, reason, note)
     }
 
     fun block() {
@@ -649,3 +661,17 @@ private val PREVIEW_CORNER = 18.dp
 private val SWATCH = 40.dp
 private val SWATCH_RING_ON = 3.dp
 private val SWATCH_RING_OFF = 1.dp
+
+/**
+ * Chat settings' Report (fix pass 2): the conversation report route; only a
+ * server without it (404) falls back to the old one-message report. Any
+ * other refusal is the answer — it is never retried down the old path.
+ * Null when the old path had nothing to report.
+ */
+internal suspend fun reportChat(
+    whole: suspend () -> AppResult<Unit>,
+    oldPath: suspend () -> AppResult<Unit>?,
+): AppResult<Unit>? = when (val result = whole()) {
+    is AppResult.Success -> result
+    is AppResult.Failure -> if (result.error.isMissingRoute()) oldPath() else result
+}

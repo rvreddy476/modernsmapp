@@ -367,6 +367,11 @@ data class GifRefDto(
     val width: Int? = null,
     val height: Int? = null,
     @SerialName("still_url") val stillUrl: String? = null,
+    /**
+     * A Giphy STICKER (fix pass 2): sent as `type: "gif"` with this true.
+     * Null and omitted for a GIF, so a GIF send stays byte-identical.
+     */
+    @SerialName("is_sticker") val isSticker: Boolean? = null,
 )
 
 /** Field is `message_id`, not `last_read_message_id`. */
@@ -496,6 +501,10 @@ data class ConversationDto(
     val streak: StreakDto? = null,
     val peer: PeerDto? = null,
     @SerialName("last_message") val lastMessage: LastMessageDto? = null,
+    // Fix pass 2 (FIXES.md): the caller marked it unread (`PUT .../unread`),
+    // and — on a request row and request detail — who sent it.
+    @SerialName("marked_unread") val markedUnread: Boolean = false,
+    val sender: RequestSenderDto? = null,
 )
 
 /**

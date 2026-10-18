@@ -186,4 +186,7 @@ internal fun ConversationDto.toDomain(): Conversation = Conversation(
             ownStatus = it.ownStatus?.takeIf { status -> status.isNotBlank() },
         )
     },
+    markedUnread = markedUnread,
+    sender = sender?.takeIf { it.deleted || it.userId.isNotBlank() || it.displayName.isNotBlank() || it.username.isNotBlank() }
+        ?.let { RequestSender(it.userId, it.displayName, it.username, it.avatarUrl?.takeIf { url -> url.isNotBlank() }, it.deleted) },
 )

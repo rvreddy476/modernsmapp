@@ -332,15 +332,23 @@ class ChatHomeViewModel @Inject constructor(
         }
     }
 
-    /** Mark read from the inbox: the server's read cursor moves to the newest message. */
+    /** Mark read from the inbox: the read cursor moves and any unread mark clears, on the server. */
     fun markRead(conversation: Conversation) = viewModelScope.launch {
-        store.markReadLocally(conversation.id)
-        val newest = (repository.messages(conversation.id, limit = 1) as? AppResult.Success)?.data?.items?.firstOrNull()
-        if (newest != null) repository.markRead(conversation.id, newest.id)
+        if (store.markConversationRead(conversation) is AppResult.Failure) {
+            showMessage("Couldn't mark that chat as read.", UsMessageType.Error)
+        }
     }
 
-    /** Mark unread is this device's reminder only — the server has no unread write. */
-    fun markUnread(conversation: Conversation) = viewModelScope.launch { store.markUnreadLocally(conversation.id) }
+    /** Mark unread (fix pass 2): kept by the server until the chat is next read or opened. */
+    fun markUnread(conversation: Conversation) = viewModelScope.launch {
+        when (val result = store.markConversationUnread(conversation.id)) {
+            is AppResult.Success -> Unit
+            is AppResult.Failure -> showMessage(
+                if (result.error.isMissingRoute()) "Marking unread isn't available yet." else "Couldn't mark that chat as unread.",
+                UsMessageType.Error,
+            )
+        }
+    }
 
     // ── Chat parity: activity status (CONTRACT §4, §9) ──────────────────
 

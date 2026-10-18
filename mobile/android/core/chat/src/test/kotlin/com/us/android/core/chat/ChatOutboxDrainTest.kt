@@ -14,6 +14,7 @@ import com.us.android.core.database.ChatDao
 import com.us.android.core.database.ChatMessageEntity
 import com.us.android.core.database.ChatPendingSendEntity
 import com.us.android.core.network.ErrorMapper
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
@@ -87,12 +88,16 @@ class ChatOutboxDrainTest {
         val script: (idempotencyKey: String) -> ScriptedOutcome,
     ) : ChatApi by unusedChatApi() {
         val sentKeys = mutableListOf<String>()
+
+        /** When set, every send suspends on it after recording its key — a request "on the wire". */
+        var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         override suspend fun send(
             conversationId: String,
             idempotencyKey: String,
             body: SendMessageRequest,
         ): com.us.android.core.network.ApiEnvelope<MessageDto> {
             sentKeys += idempotencyKey
+            gate?.await()
             return when (val outcome = script(idempotencyKey)) {
                 is ScriptedOutcome.Ok -> com.us.android.core.network.ApiEnvelope(
                     data = MessageDto(
@@ -243,6 +248,117 @@ class ChatOutboxDrainTest {
         // replays server-side instead of duplicating.
         assertThat(api.sentKeys).containsExactly("k1", "k1")
         assertThat(dao.sends).isEmpty()
+    }
+
+    // ── the foreground send (fix pass 2) ────────────────────────────────
+
+    /**
+     * Records both halves of a kick: the durable WorkManager arm and the
+     * in-process drain, which the test runs when it chooses.
+     */
+    private class ImmediateScheduler : OutboxScheduler {
+        var scheduled = 0
+        val immediate = mutableListOf<suspend () -> Unit>()
+        override fun scheduleDrain() {
+            scheduled++
+        }
+        override fun cancelDrain() = Unit
+        override fun drainNow(drain: suspend () -> Unit) {
+            immediate += drain
+        }
+    }
+
+    private fun immediateStore(dao: FakeDao, api: FakeApi, scheduler: ImmediateScheduler): ChatStore =
+        ChatStore(
+            repository = ChatRepository(api, ErrorMapper(Json { ignoreUnknownKeys = true })),
+            dao = dao,
+            scheduler = scheduler,
+            scrubRecovery = FakeScrubFlag(),
+        )
+
+    @Test
+    fun `a foreground send is attempted at once and a later worker run does not send it again`() = runTest {
+        val dao = FakeDao()
+        val api = FakeApi { key -> ScriptedOutcome.Ok("srv-$key") }
+        val scheduler = ImmediateScheduler()
+        val store = immediateStore(dao, api, scheduler)
+
+        val key = store.enqueueSend("convA", "hello")!!
+
+        // Both armed: the worker as the durable fallback, AND an immediate
+        // in-process attempt — no waiting for a VALIDATED network.
+        assertThat(scheduler.scheduled).isEqualTo(1)
+        assertThat(scheduler.immediate).hasSize(1)
+        scheduler.immediate.single().invoke()
+        assertThat(api.sentKeys).containsExactly(key)
+        assertThat(dao.sends).isEmpty()
+
+        // The WorkManager job fires later (the network finally validated):
+        // the row is gone, so nothing goes out a second time.
+        assertThat(store.drainOutbox()).isTrue()
+        assertThat(api.sentKeys).containsExactly(key)
+    }
+
+    @Test
+    fun `the worker running while the foreground send is on the wire waits and sends nothing twice`() = runTest {
+        val dao = FakeDao()
+        val api = FakeApi { key -> ScriptedOutcome.Ok("srv-$key") }
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        api.gate = gate
+        val scheduler = ImmediateScheduler()
+        val store = immediateStore(dao, api, scheduler)
+        val key = store.enqueueSend("convA", "hello")!!
+
+        val foreground = async { scheduler.immediate.single().invoke() }
+        kotlinx.coroutines.yield()
+        assertThat(api.sentKeys).containsExactly(key)
+        // The worker starts while the foreground request is still in flight.
+        val worker = async { store.drainOutbox() }
+        kotlinx.coroutines.yield()
+        gate.complete(Unit)
+        foreground.await()
+        assertThat(worker.await()).isTrue()
+
+        // One POST: the worker re-read the queue only after the first drain
+        // had completed the row.
+        assertThat(api.sentKeys).containsExactly(key)
+        assertThat(dao.sends).isEmpty()
+    }
+
+    @Test
+    fun `an immediate attempt that cannot reach the server leaves the row for the worker under the same key`() = runTest {
+        val dao = FakeDao()
+        var calls = 0
+        val api = FakeApi {
+            calls++
+            if (calls == 1) ScriptedOutcome.Network else ScriptedOutcome.Ok("srv-1")
+        }
+        val scheduler = ImmediateScheduler()
+        val store = immediateStore(dao, api, scheduler)
+        val key = store.enqueueSend("convA", "hello")!!
+
+        scheduler.immediate.single().invoke()
+        assertThat(dao.sends.keys).containsExactly(key)
+        assertThat(dao.sends[key]!!.failed).isFalse()
+
+        assertThat(store.drainOutbox()).isTrue()
+        assertThat(api.sentKeys).containsExactly(key, key)
+        assertThat(dao.sends).isEmpty()
+    }
+
+    @Test
+    fun `a retried row and a typed send are attempted at once too`() = runTest {
+        val dao = FakeDao()
+        dao.sends["parked"] = row("parked", "convA", at = 1).copy(failed = true)
+        val api = FakeApi { key -> ScriptedOutcome.Ok("srv-$key") }
+        val scheduler = ImmediateScheduler()
+        val store = immediateStore(dao, api, scheduler)
+
+        store.retrySend("parked")
+        store.enqueueTypedSend("convB", com.us.android.core.chat.data.TypedSend.profile("u2"))
+
+        assertThat(scheduler.immediate).hasSize(2)
+        assertThat(scheduler.scheduled).isEqualTo(2)
     }
 
     // ── the classification table ────────────────────────────────────────

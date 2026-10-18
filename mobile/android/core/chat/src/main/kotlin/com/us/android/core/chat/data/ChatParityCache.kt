@@ -40,6 +40,8 @@ internal data class CachedConversationExtras(
     val peer: CachedPeer? = null,
     val streak: CachedStreak? = null,
     val lastMessage: CachedLastMessage? = null,
+    val markedUnread: Boolean = false,
+    val sender: CachedSender? = null,
 ) {
     companion object {
         fun of(conversation: Conversation): CachedConversationExtras? {
@@ -51,10 +53,24 @@ internal data class CachedConversationExtras(
                 lastMessage = conversation.lastMessage?.let {
                     CachedLastMessage(it.type, it.preview, it.senderId, it.at, it.ownStatus)
                 },
+                markedUnread = conversation.markedUnread,
+                sender = conversation.sender?.let { CachedSender(it.userId, it.displayName, it.username, it.avatarUrl, it.deleted) },
             )
             return extras.takeIf { it != CachedConversationExtras() }
         }
     }
+}
+
+/** Fix pass 2: a request's sender, so the cached requests list keeps its names. */
+@Serializable
+internal data class CachedSender(
+    val userId: String = "",
+    val displayName: String = "",
+    val username: String = "",
+    val avatarUrl: String? = null,
+    val deleted: Boolean = false,
+) {
+    fun toDomain() = RequestSender(userId, displayName, username, avatarUrl, deleted)
 }
 
 @Serializable
@@ -75,6 +91,7 @@ internal data class CachedGif(
     val width: Int = 0,
     val height: Int = 0,
     val stillUrl: String? = null,
+    val isSticker: Boolean = false,
 )
 
 @Serializable
@@ -101,7 +118,7 @@ internal data class CachedMessageExtras(
         forwarded = forwarded,
         voice = voice?.let { VoiceInfo(it.durationMs, it.waveform) },
         sticker = sticker?.let { StickerInfo(it.id, it.url, it.width, it.height) },
-        gif = gif?.let { GifInfo(it.provider, it.id, it.url, it.previewUrl, it.width, it.height, it.stillUrl) },
+        gif = gif?.let { GifInfo(it.provider, it.id, it.url, it.previewUrl, it.width, it.height, it.stillUrl, it.isSticker) },
         profileUserId = profileUserId,
         soundId = soundId,
         streamId = streamId,
@@ -117,7 +134,7 @@ internal data class CachedMessageExtras(
                 forwarded = message.forwarded,
                 voice = message.voice?.let { CachedVoice(it.durationMs, it.waveform) },
                 sticker = message.sticker?.let { CachedSticker(it.id, it.url, it.width, it.height) },
-                gif = message.gif?.let { CachedGif(it.provider, it.id, it.url, it.previewUrl, it.width, it.height, it.stillUrl) },
+                gif = message.gif?.let { CachedGif(it.provider, it.id, it.url, it.previewUrl, it.width, it.height, it.stillUrl, it.isSticker) },
                 profileUserId = message.profileUserId,
                 soundId = message.soundId,
                 streamId = message.streamId,
@@ -153,6 +170,8 @@ data class TypedSend(
     val gifWidth: Int? = null,
     val gifHeight: Int? = null,
     val gifStillUrl: String? = null,
+    /** A Giphy sticker (fix pass 2): `gif.is_sticker`; null for a GIF. */
+    val gifIsSticker: Boolean? = null,
     val userId: String? = null,
     val soundId: String? = null,
     val streamId: String? = null,
@@ -173,7 +192,15 @@ data class TypedSend(
         waveform = waveform,
         stickerId = stickerId,
         gif = if (gifProvider != null && gifId != null) {
-            GifRefDto(gifProvider, gifId, url = gifUrl, width = gifWidth, height = gifHeight, stillUrl = gifStillUrl)
+            GifRefDto(
+                gifProvider,
+                gifId,
+                url = gifUrl,
+                width = gifWidth,
+                height = gifHeight,
+                stillUrl = gifStillUrl,
+                isSticker = gifIsSticker?.takeIf { it },
+            )
         } else {
             null
         },
@@ -204,6 +231,7 @@ data class TypedSend(
             gifWidth = gif.width.takeIf { it > 0 },
             gifHeight = gif.height.takeIf { it > 0 },
             gifStillUrl = gif.stillUrl,
+            gifIsSticker = gif.isSticker.takeIf { it },
         )
 
         fun profile(userId: String) = TypedSend(type = PROFILE_MESSAGE, userId = userId)

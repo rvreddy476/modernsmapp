@@ -12,6 +12,7 @@ import com.us.android.core.chat.data.SHARED_POSTS
 import com.us.android.core.chat.data.toDomain
 import com.us.android.core.chat.data.isMissingRoute
 import com.us.android.core.chat.data.ownStatusLabel
+import com.us.android.core.chat.data.requestTitle
 import com.us.android.core.chat.data.streakLabel
 import com.us.android.core.chat.data.unreadPillText
 import com.us.android.core.common.result.AppResult
@@ -221,5 +222,102 @@ class ChatParityContractTest {
         server.enqueue(MockResponse.Builder().code(404).body("""{"error":{"code":"NOT_FOUND"}}""").build())
         val result = parity.notes() as AppResult.Failure
         assertThat(result.error.isMissingRoute()).isTrue()
+    }
+
+    // ── fix pass 2 fixtures (lane M) ────────────────────────────────────
+
+    @Test
+    fun `a marked-unread conversation reads unread with its mark`() {
+        val row = json.decodeFromString<ApiEnvelope<ConversationDto>>(fixture("conversation_marked_unread")).data!!.toDomain()
+        assertThat(row.markedUnread).isTrue()
+        assertThat(row.hasUnread).isTrue()
+        assertThat(unreadPillText(row.unreadCount, row.hasUnread)).isEqualTo("1")
+    }
+
+    @Test
+    fun `requests name their sender, never the placeholder`() = runTest {
+        val detail = json.decodeFromString<ApiEnvelope<ConversationDto>>(fixture("request_detail")).data!!.toDomain()
+        assertThat(detail.sender?.displayName).isEqualTo("Chen")
+        assertThat(detail.sender?.deleted).isFalse()
+        assertThat(detail.requestTitle(viewerId = "0b000000-0000-4000-8000-00000000000b")).isEqualTo("Chen")
+
+        // The list row has no members at all: the sender block is the only name there is.
+        serve("requests_list")
+        val rows = (parity.requests("all") as AppResult.Success).data
+        assertThat(rows.single().members).isEmpty()
+        assertThat(rows.single().sender?.avatarUrl).startsWith("https://cdn.atpost.test/")
+        assertThat(rows.single().requestTitle(viewerId = "0b000000-0000-4000-8000-00000000000b")).isEqualTo("Chen")
+    }
+
+    @Test
+    fun `a Giphy sticker decodes as a GIF marked is_sticker, and a plain GIF is not one`() {
+        val sticker = message("message_gif_sticker")
+        assertThat(sticker.type).isEqualTo("gif")
+        assertThat(sticker.gif?.isSticker).isTrue()
+        assertThat(sticker.gif?.url).isEqualTo("https://media1.giphy.com/media/l0HlNQ03J5JxX6lva/giphy.gif")
+        assertThat(com.us.android.core.chat.data.typedPreview(sticker)).isEqualTo("Sticker")
+        assertThat(message("message_gif").gif?.isSticker).isFalse()
+    }
+
+    @Test
+    fun `media sensitivity is read when the server knows it`() {
+        assertThat(message("message_media_sensitive").media?.sensitive).isFalse()
+    }
+
+    @Test
+    fun `mark unread and conversation report hit the fix-pass routes`() = runTest {
+        server.enqueue(MockResponse.Builder().code(204).build())
+        assertThat(parity.setUnread("c", unread = true)).isInstanceOf(AppResult.Success::class.java)
+        val mark = server.takeRequest()
+        assertThat(mark.method).isEqualTo("PUT")
+        assertThat(mark.target).isEqualTo("/v1/chat/conversations/c/unread")
+        assertThat(mark.body?.utf8()).isEqualTo("""{"unread":true}""")
+
+        server.enqueue(MockResponse.Builder().code(204).build())
+        parity.setUnread("c", unread = false)
+        // `false` is the clear, so it must be on the wire, not omitted.
+        assertThat(server.takeRequest().body?.utf8()).isEqualTo("""{"unread":false}""")
+
+        server.enqueue(MockResponse.Builder().code(202).build())
+        assertThat(parity.reportConversation("c", MessageReportReason.SCAM, note = "asked for money"))
+            .isInstanceOf(AppResult.Success::class.java)
+        val report = server.takeRequest()
+        assertThat(report.method).isEqualTo("POST")
+        assertThat(report.target).isEqualTo("/v1/chat/conversations/c/report")
+        assertThat(report.body?.utf8()).isEqualTo("""{"reason":"scam","note":"asked for money"}""")
+    }
+
+    @Test
+    fun `a Giphy sticker send says is_sticker and a GIF send stays byte-identical`() {
+        val sticker = com.us.android.core.chat.data.TypedSend.gif(
+            com.us.android.core.chat.data.GifInfo("giphy", "abc", "https://media.giphy.com/a.gif", null, 200, 200, isSticker = true),
+        ).toRequest()
+        val gif = com.us.android.core.chat.data.TypedSend.gif(
+            com.us.android.core.chat.data.GifInfo("giphy", "abc", "https://media.giphy.com/a.gif", null, 200, 200),
+        ).toRequest()
+        val wire = Json { explicitNulls = false }
+        assertThat(wire.encodeToString(com.us.android.core.chat.data.SendMessageRequest.serializer(), sticker))
+            .contains(""""is_sticker":true""")
+        assertThat(wire.encodeToString(com.us.android.core.chat.data.SendMessageRequest.serializer(), gif))
+            .doesNotContain("is_sticker")
+    }
+
+    @Test
+    fun `the committed fixtures carry the fix-pass fields everywhere they appear`() = runTest {
+        val rows = json.decodeFromString<ApiEnvelope<List<ConversationDto>>>(fixture("conversations_list")).data!!.map { it.toDomain() }
+        assertThat(rows.map { it.markedUnread }).containsExactly(false, false)
+        val detail = json.decodeFromString<ApiEnvelope<ConversationDto>>(fixture("conversation_detail")).data!!.toDomain()
+        assertThat(detail.markedUnread).isFalse()
+        assertThat(detail.sender).isNull()
+
+        serve("requests_filtered")
+        val filtered = (parity.requests("filtered") as AppResult.Success).data.single()
+        assertThat(filtered.sender?.userId).isEqualTo("0c000000-0000-4000-8000-00000000000c")
+        assertThat(filtered.sender?.username).isEqualTo("chen")
+        assertThat(filtered.requestTitle(viewerId = "0b000000-0000-4000-8000-00000000000b")).isEqualTo("Chen")
+
+        serve("search_result")
+        val search = (parity.search("station") as AppResult.Success).data
+        assertThat(search.conversations.single().markedUnread).isFalse()
     }
 }

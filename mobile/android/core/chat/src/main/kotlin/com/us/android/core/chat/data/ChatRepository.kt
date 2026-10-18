@@ -403,6 +403,10 @@ data class Conversation(
     /** Direct chats only: the other person, privacy-gated presence included. */
     val peer: ChatPeer? = null,
     val lastMessage: LastMessageInfo? = null,
+    /** Fix pass 2: the viewer marked it unread on the server; opening it clears that. */
+    val markedUnread: Boolean = false,
+    /** Fix pass 2: a request's sender (requests list and request detail only). */
+    val sender: RequestSender? = null,
 ) {
     /**
      * A Pulse match's chat. It belongs to the dating feature (founder,

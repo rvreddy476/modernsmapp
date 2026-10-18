@@ -88,78 +88,132 @@ internal fun ConversationRow(
 ) {
     var sheetOpen by remember { mutableStateOf(false) }
     val isOnline = online || conversation.peer?.isOnline == true
-    val photo = avatarUrl ?: conversation.peer?.avatarUrl ?: conversation.avatarUrl
+    val photo = avatarUrl ?: conversation.peer?.avatarUrl
+        ?: conversation.sender?.takeUnless { it.deleted }?.avatarUrl ?: conversation.avatarUrl
     val unread = unreadPillText(conversation.unreadCount, conversation.hasUnread)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = ROW_MARGIN)
-            .clip(RoundedCornerShape(ROW_CORNER))
-            .background(if (conversation.hasUnread) UsTheme.extended.bgCardSolid else Color.Transparent)
-            .combinedClickable(onClick = onClick, onLongClick = { sheetOpen = true })
-            .padding(ROW_PADDING)
-            .testTag("chat-row:${conversation.id}"),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(ROW_PADDING),
-    ) {
-        Box {
-            UsAvatar(name = title, size = UsAvatarSize.Chat, seed = conversation.id, imageUrl = photo)
-            if (isOnline) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .size(ONLINE_DOT)
-                        .clip(CircleShape)
-                        .background(UsTheme.extended.chatOnline)
-                        .border(ONLINE_DOT_RING, UsTheme.extended.bgCanvas, CircleShape)
-                        .testTag("chat-online-dot"),
-                )
-            }
-        }
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(NAME_PREVIEW_GAP)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = UsTheme.extended.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (conversation.isPinned) RowGlyph(UsIcons.Pin, "Pinned", "chat-row-pinned")
-                if (conversation.isMuted) RowGlyph(UsIcons.NotificationsOff, "Muted", "chat-row-muted")
-                Box(modifier = Modifier.weight(1f, fill = true))
-                val time = formatRelativeTime(conversation.lastMessage?.at?.takeIf { it.isNotBlank() }
-                    ?: conversation.lastMessageAt ?: conversation.updatedAt)
-                if (time.isNotBlank()) {
-                    Text(
-                        text = time,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (conversation.hasUnread) UsTheme.extended.chatAccentText else UsTheme.extended.textMuted,
-                        maxLines = 1,
+    // Fix pass 2: a row with actions also swipes; the swipe wrapper then owns
+    // the margin and the rounded clip so the revealed buttons share the shape.
+    val swipe = actions != null
+    var confirmDeleteFirst by remember { mutableStateOf(false) }
+    val body: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (swipe) 0.dp else ROW_MARGIN)
+                .clip(RoundedCornerShape(if (swipe) 0.dp else ROW_CORNER))
+                .background(if (conversation.hasUnread) UsTheme.extended.bgCardSolid else Color.Transparent)
+                .combinedClickable(onClick = onClick, onLongClick = { sheetOpen = true })
+                .padding(ROW_PADDING)
+                .testTag("chat-row:${conversation.id}"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ROW_PADDING),
+        ) {
+            Box {
+                UsAvatar(name = title, size = UsAvatarSize.Chat, seed = conversation.id, imageUrl = photo)
+                if (isOnline) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .size(ONLINE_DOT)
+                            .clip(CircleShape)
+                            .background(UsTheme.extended.chatOnline)
+                            .border(ONLINE_DOT_RING, UsTheme.extended.bgCanvas, CircleShape)
+                            .testTag("chat-online-dot"),
                     )
                 }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.weight(1f)) {
-                    val seen = ownStatusLabel(conversation.lastMessage, viewerId)
-                    if (seen != null && !conversation.hasUnread) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(NAME_PREVIEW_GAP)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = UsTheme.extended.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (conversation.isPinned) RowGlyph(UsIcons.Pin, "Pinned", "chat-row-pinned")
+                    if (conversation.isMuted) RowGlyph(UsIcons.NotificationsOff, "Muted", "chat-row-muted")
+                    Box(modifier = Modifier.weight(1f, fill = true))
+                    val time = formatRelativeTime(conversation.lastMessage?.at?.takeIf { it.isNotBlank() }
+                        ?: conversation.lastMessageAt ?: conversation.updatedAt)
+                    if (time.isNotBlank()) {
                         Text(
-                            text = seen,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = UsTheme.extended.textMuted,
+                            text = time,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (conversation.hasUnread) UsTheme.extended.chatAccentText else UsTheme.extended.textMuted,
                             maxLines = 1,
-                            modifier = Modifier.testTag("chat-row-status"),
                         )
-                    } else {
-                        ConversationPreview(conversation = conversation, viewerId = viewerId)
                     }
                 }
-                streakLabel(conversation.streak)?.let { days -> StreakBadge(days, conversation.streak?.atRisk == true) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        val seen = ownStatusLabel(conversation.lastMessage, viewerId)
+                        if (seen != null && !conversation.hasUnread) {
+                            Text(
+                                text = seen,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = UsTheme.extended.textMuted,
+                                maxLines = 1,
+                                modifier = Modifier.testTag("chat-row-status"),
+                            )
+                        } else {
+                            ConversationPreview(conversation = conversation, viewerId = viewerId)
+                        }
+                    }
+                    streakLabel(conversation.streak)?.let { days -> StreakBadge(days, conversation.streak?.atRisk == true) }
+                }
             }
+            if (unread != null) UnreadPill(unread)
         }
-        if (unread != null) UnreadPill(unread)
+    }
+    if (actions != null) {
+        SwipeableInboxRow(
+            start = listOf(
+                SwipeAction(
+                    icon = UsIcons.Pin,
+                    label = if (conversation.isPinned) "Unpin" else "Pin",
+                    tag = "chat-row-swipe-pin",
+                    fill = UsTheme.extended.chatAccent,
+                    ink = UsTheme.extended.onChatAccent,
+                    onClick = actions.onTogglePin,
+                ),
+            ),
+            end = buildList {
+                val readToggle = if (conversation.hasUnread) actions.onMarkRead else actions.onMarkUnread
+                readToggle?.let {
+                    add(
+                        SwipeAction(
+                            icon = if (conversation.hasUnread) UsIcons.CheckCheck else UsIcons.Circle,
+                            label = if (conversation.hasUnread) "Read" else "Unread",
+                            tag = "chat-row-swipe-read",
+                            fill = UsTheme.extended.statusInfo,
+                            ink = UsTheme.extended.onStatus,
+                            onClick = it,
+                        ),
+                    )
+                }
+                if (actions.onDelete != null) {
+                    add(
+                        SwipeAction(
+                            icon = UsIcons.Trash,
+                            label = "Delete",
+                            tag = "chat-row-swipe-delete",
+                            fill = UsTheme.extended.statusDanger,
+                            ink = UsTheme.extended.onStatus,
+                            // Deleting is never one gesture: the confirm sheet asks first.
+                            onClick = {
+                                confirmDeleteFirst = true
+                                sheetOpen = true
+                            },
+                        ),
+                    )
+                }
+            },
+        ) { body() }
+    } else {
+        body()
     }
 
     if (sheetOpen) {
@@ -167,7 +221,11 @@ internal fun ConversationRow(
             conversation = conversation,
             title = title,
             actions = actions ?: InboxRowActions(onTogglePin = onTogglePin, onToggleMute = onToggleMute),
-            onDismiss = { sheetOpen = false },
+            startWithDeleteConfirm = confirmDeleteFirst,
+            onDismiss = {
+                sheetOpen = false
+                confirmDeleteFirst = false
+            },
         )
     }
 }
@@ -244,8 +302,10 @@ private fun ConversationActionsSheet(
     title: String,
     actions: InboxRowActions,
     onDismiss: () -> Unit,
+    /** Opened from the swipe's Delete: the sheet starts at the confirmation. */
+    startWithDeleteConfirm: Boolean = false,
 ) {
-    var confirmDelete by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(startWithDeleteConfirm) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),

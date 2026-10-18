@@ -304,19 +304,38 @@ internal fun StickerBubble(sticker: StickerInfo) {
 internal fun GifBubble(gif: GifInfo) {
     val context = LocalContext.current
     val aspect = if (gif.width > 0 && gif.height > 0) gif.width.toFloat() / gif.height else 1f
-    val modifier = Modifier
-        .width(GIF_WIDTH)
-        .aspectRatio(aspect.coerceIn(MIN_GIF_ASPECT, MAX_GIF_ASPECT))
-        .clip(RoundedCornerShape(UsTheme.radii.medium))
-        .testTag("bubble-gif")
+    // A Giphy sticker (fix pass 2) is drawn like one of our stickers: no
+    // bubble, no clipped corners, its transparent edges left alone.
+    val modifier = if (gif.isSticker) {
+        Modifier
+            .size(STICKER_SIZE)
+            .testTag("bubble-giphy-sticker")
+    } else {
+        Modifier
+            .width(GIF_WIDTH)
+            .aspectRatio(aspect.coerceIn(MIN_GIF_ASPECT, MAX_GIF_ASPECT))
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .testTag("bubble-gif")
+    }
+    val label = if (gif.isSticker) "Sticker" else "GIF"
     if (GiphySetup.ensure(context)) {
         AndroidView(
-            factory = { ctx -> GPHMediaView(ctx) },
+            factory = { ctx ->
+                GPHMediaView(ctx).apply {
+                    contentDescription = label
+                    if (gif.isSticker) setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                }
+            },
             update = { view -> view.loadAsset(gif.url) },
             modifier = modifier,
         )
     } else {
-        AsyncImage(model = gif.stillUrl ?: gif.url, contentDescription = "GIF", contentScale = ContentScale.Crop, modifier = modifier)
+        AsyncImage(
+            model = gif.stillUrl ?: gif.url,
+            contentDescription = label,
+            contentScale = if (gif.isSticker) ContentScale.Fit else ContentScale.Crop,
+            modifier = modifier,
+        )
     }
 }
 

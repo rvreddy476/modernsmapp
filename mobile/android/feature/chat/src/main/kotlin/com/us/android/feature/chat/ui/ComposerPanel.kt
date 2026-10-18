@@ -3,6 +3,7 @@ package com.us.android.feature.chat.ui
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -22,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,7 +85,14 @@ internal object GiphySetup {
  * id, and its ORIGINAL rendition's url and size EXACTLY as returned — never
  * rewritten — plus the still frame. Pure over plain values so it is a test.
  */
-fun giphyGifOf(id: String, url: String?, width: Int, height: Int, stillUrl: String?): GifInfo? {
+fun giphyGifOf(
+    id: String,
+    url: String?,
+    width: Int,
+    height: Int,
+    stillUrl: String?,
+    isSticker: Boolean = false,
+): GifInfo? {
     if (id.isBlank() || url.isNullOrBlank()) return null
     return GifInfo(
         provider = GIPHY_PROVIDER,
@@ -92,20 +102,60 @@ fun giphyGifOf(id: String, url: String?, width: Int, height: Int, stillUrl: Stri
         width = width,
         height = height,
         stillUrl = stillUrl?.takeIf { it.isNotBlank() },
+        isSticker = isSticker,
     )
 }
 
-private fun Media.toGif(): GifInfo? {
+private fun Media.toGif(isSticker: Boolean): GifInfo? {
     val original = images.original ?: images.fixedWidth
     val still = images.originalStill ?: images.fixedWidthStill
-    return giphyGifOf(id, original?.gifUrl, original?.width ?: 0, original?.height ?: 0, still?.gifUrl)
+    return giphyGifOf(id, original?.gifUrl, original?.width ?: 0, original?.height ?: 0, still?.gifUrl, isSticker)
 }
 
-private enum class PanelTab(val label: String) { EMOJI("Emoji"), STICKERS("Stickers"), GIF("GIF") }
+/**
+ * One tab of the composer's panel (fix pass 2). Emoji first; then, when
+ * Giphy is configured for this build, Stickers (Giphy's sticker library) and
+ * GIF; then one tab per pack of our own catalogue that has stickers in it.
+ */
+sealed interface PanelTab {
+    val label: String
+    val tag: String
+
+    data object Emoji : PanelTab {
+        override val label = "Emoji"
+        override val tag = "emoji"
+    }
+
+    data object Stickers : PanelTab {
+        override val label = "Stickers"
+        override val tag = "stickers"
+    }
+
+    data object Gif : PanelTab {
+        override val label = "GIF"
+        override val tag = "gif"
+    }
+
+    data class Pack(val pack: StickerPack) : PanelTab {
+        override val label: String get() = pack.name.trim().ifEmpty { "Pack" }
+        override val tag: String get() = "pack:${pack.id}"
+    }
+}
+
+/** The panel's tabs, in order. Pure, so the founder's tab rules are a test. */
+fun composerPanelTabs(giphyAvailable: Boolean, packs: List<StickerPack>): List<PanelTab> = buildList {
+    add(PanelTab.Emoji)
+    if (giphyAvailable) {
+        add(PanelTab.Stickers)
+        add(PanelTab.Gif)
+    }
+    packs.filter { it.stickers.isNotEmpty() }.distinctBy { it.id }.forEach { add(PanelTab.Pack(it)) }
+}
 
 /**
- * The composer's panel: Emoji, then Stickers (only when the catalogue has a
- * pack) and GIF (only when Giphy is configured for this build).
+ * The composer's panel: Emoji; Stickers and GIF from Giphy (only when Giphy
+ * is configured for this build); then our own catalogue's packs, each its
+ * own tab, only when it has stickers.
  */
 @Composable
 internal fun ComposerPanel(
@@ -114,17 +164,17 @@ internal fun ComposerPanel(
     onSticker: (StickerInfo) -> Unit,
     onGif: (GifInfo) -> Unit,
 ) {
-    val tabs = buildList {
-        add(PanelTab.EMOJI)
-        if (stickerPacks.isNotEmpty()) add(PanelTab.STICKERS)
-        if (GiphySetup.available) add(PanelTab.GIF)
-    }
-    var tab by remember { mutableStateOf(PanelTab.EMOJI) }
+    val tabs = composerPanelTabs(GiphySetup.available, stickerPacks)
+    var chosen by remember { mutableStateOf<PanelTab>(PanelTab.Emoji) }
+    // A pack that left the catalogue falls back to Emoji rather than a blank panel.
+    val tab = chosen.takeIf { it in tabs } ?: PanelTab.Emoji
     Column(modifier = Modifier.fillMaxWidth().testTag("composer-panel")) {
         if (tabs.size > 1) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.xs),
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.xs),
             ) {
                 tabs.forEach { option ->
                     val selected = option == tab
@@ -133,24 +183,26 @@ internal fun ComposerPanel(
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                         color = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.textMuted,
+                        maxLines = 1,
                         modifier = Modifier
                             .clip(RoundedCornerShape(UsTheme.radii.full))
                             .background(if (selected) UsTheme.extended.fillStrong else UsTheme.extended.bgCanvas)
-                            .clickable { tab = option }
+                            .clickable { chosen = option }
                             .semantics {
                                 role = Role.Tab
                                 this.selected = selected
                             }
                             .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.xs)
-                            .testTag("composer-tab:${option.name.lowercase()}"),
+                            .testTag("composer-tab:${option.tag}"),
                     )
                 }
             }
         }
         when (tab) {
-            PanelTab.EMOJI -> UsEmojiPanel(onPick = onEmoji, modifier = Modifier.testTag("emoji-panel"))
-            PanelTab.STICKERS -> StickerGrid(stickerPacks, onSticker)
-            PanelTab.GIF -> GiphyPanel(onGif)
+            PanelTab.Emoji -> UsEmojiPanel(onPick = onEmoji, modifier = Modifier.testTag("emoji-panel"))
+            PanelTab.Stickers -> GiphyPanel(stickers = true, onPick = onGif)
+            PanelTab.Gif -> GiphyPanel(stickers = false, onPick = onGif)
+            is PanelTab.Pack -> StickerGrid(listOf(tab.pack), onSticker)
         }
     }
 }
@@ -181,25 +233,32 @@ private fun StickerGrid(packs: List<StickerPack>, onSticker: (StickerInfo) -> Un
     }
 }
 
-/** Giphy's own grid (rating G), searched from our field; "Powered by GIPHY" under it. */
+/**
+ * Giphy's own grid (rating G), searched from our field; "Powered by GIPHY"
+ * under it. [stickers] browses Giphy's sticker library instead of its GIFs
+ * (fix pass 2); a sticker pick is sent as a GIF marked `is_sticker`.
+ */
 @Composable
-private fun GiphyPanel(onGif: (GifInfo) -> Unit) {
+private fun GiphyPanel(stickers: Boolean, onPick: (GifInfo) -> Unit) {
+    val mediaType = if (stickers) MediaType.sticker else MediaType.gif
+    // The grid view outlives recompositions; it must call the CURRENT handler.
+    val pick by rememberUpdatedState(onPick)
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     if (!GiphySetup.ensure(context)) {
         Text(
-            "GIFs aren't available right now.",
+            if (stickers) "Stickers aren't available right now." else "GIFs aren't available right now.",
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textMuted,
             modifier = Modifier.padding(UsTheme.spacing.pageHorizontal),
         )
         return
     }
-    Column(modifier = Modifier.fillMaxWidth().testTag("gif-panel")) {
+    Column(modifier = Modifier.fillMaxWidth().testTag(if (stickers) "giphy-sticker-panel" else "gif-panel")) {
         UsTextField(
             value = query,
             onValueChange = { query = it },
-            label = "Search GIFs",
+            label = if (stickers) "Search stickers" else "Search GIFs",
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = UsTheme.spacing.pageHorizontal),
@@ -213,7 +272,7 @@ private fun GiphyPanel(onGif: (GifInfo) -> Unit) {
                         callback = object : GPHGridCallback {
                             override fun contentDidUpdate(resultCount: Int) = Unit
                             override fun didSelectMedia(media: Media) {
-                                media.toGif()?.let(onGif)
+                                media.toGif(isSticker = stickers)?.let { pick(it) }
                             }
                         }
                     }
@@ -221,9 +280,9 @@ private fun GiphyPanel(onGif: (GifInfo) -> Unit) {
                 update = { grid ->
                     val needle = query.trim()
                     grid.content = if (needle.isEmpty()) {
-                        GPHContent.trending(MediaType.gif, RatingType.g)
+                        GPHContent.trending(mediaType, RatingType.g)
                     } else {
-                        GPHContent.searchQuery(needle, MediaType.gif, RatingType.g)
+                        GPHContent.searchQuery(needle, mediaType, RatingType.g)
                     }
                 },
                 modifier = Modifier.fillMaxSize(),

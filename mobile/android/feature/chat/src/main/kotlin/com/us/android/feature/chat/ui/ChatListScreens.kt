@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.chat.data.requestTitle
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.ui.UsEmptyState
@@ -87,7 +88,7 @@ fun RequestsListScreen(
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize().testTag("chat_requests_filtered_list")) {
                         items(filteredList, key = { it.id }) { request ->
-                            val title = request.displayTitle(state.viewerId)
+                            val title = request.requestTitle(state.viewerId)
                             ConversationRow(
                                 conversation = request,
                                 title = title,
@@ -108,7 +109,7 @@ fun RequestsListScreen(
             }
             LazyColumn(modifier = Modifier.fillMaxSize().testTag("chat_requests")) {
                 items(state.requests, key = { it.id }) { request ->
-                    val title = request.displayTitle(state.viewerId)
+                    val title = request.requestTitle(state.viewerId)
                     ConversationRow(
                         conversation = request,
                         title = title,
