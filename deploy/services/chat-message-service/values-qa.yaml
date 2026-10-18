@@ -86,6 +86,8 @@ env:
   IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  SEARCH_SERVICE_URL: http://search-service.atpost.svc.cluster.local:8089
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
   # Dating first-message notifications (dating is closed at the edge; the
   # internal route is harmless while nobody matches).
   DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112

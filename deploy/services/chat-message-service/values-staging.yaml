@@ -47,6 +47,8 @@ env:
   JWT_RS256_KID: rsa-1
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  SEARCH_SERVICE_URL: http://search-service.atpost.svc.cluster.local:8089
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
   USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
   # Chat-policy authority (usr.user_settings). Distinct from the legacy user
   # directory above — pointing this at user-service silently breaks policy

@@ -38,9 +38,13 @@ externalSecret:
     # Owner-issued conversation-room entitlements (shared HMAC with
     # chat-message-service; the gateway verifies, never mints).
     - { secretKey: CHAT_ENTITLEMENT_SECRET, remoteRef: chat_entitlement_secret }
+    # Read-only chat_db DSN for presence fan-out (DM peers). Ops: add chat_postgres_dsn to this service's secret.
+    - { secretKey: CHAT_POSTGRES_DSN, remoteRef: chat_postgres_dsn }
     # Add remaining per-service secrets here (REDIS_ADDR, KAFKA_BROKERS, etc.).
 
 env:
+  MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   ENV: staging
   APP_ENV: staging
   JWT_ISSUER: auth-service

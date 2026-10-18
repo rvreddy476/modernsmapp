@@ -40,6 +40,8 @@ externalSecret:
   data:
     # Aurora `call_db`.
     - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    # Read-only chat_db DSN for per-chat "mute calls". Ops: add chat_postgres_dsn to this service's secret.
+    - { secretKey: CHAT_POSTGRES_DSN, remoteRef: chat_postgres_dsn }
     - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
     - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
     - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
