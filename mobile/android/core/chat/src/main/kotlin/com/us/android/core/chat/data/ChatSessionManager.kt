@@ -86,6 +86,9 @@ open class ChatSessionManager @Inject constructor(
     private val roomsLock = Any()
     private val subscribedRooms = mutableSetOf<String>()
 
+    /** Rooms whose subscribe frame went out on THIS connection — typing frames go only to these. */
+    private val liveRooms = mutableSetOf<String>()
+
     /**
      * Starts (or restarts) the session socket. Idempotent — a second start
      * while running is a no-op, so every screen may call it defensively.
@@ -124,7 +127,10 @@ open class ChatSessionManager @Inject constructor(
     fun stop() {
         sessionScope?.cancel()
         sessionScope = null
-        synchronized(roomsLock) { subscribedRooms.clear() }
+        synchronized(roomsLock) {
+            subscribedRooms.clear()
+            liveRooms.clear()
+        }
         _connection.value = ConnectionState.Disconnected
     }
 
@@ -137,7 +143,10 @@ open class ChatSessionManager @Inject constructor(
     suspend fun stopAndJoin() {
         val scope = sessionScope
         sessionScope = null
-        synchronized(roomsLock) { subscribedRooms.clear() }
+        synchronized(roomsLock) {
+            subscribedRooms.clear()
+            liveRooms.clear()
+        }
         _connection.value = ConnectionState.Disconnected
         scope?.coroutineContext?.get(Job)?.let { job ->
             job.cancel()
@@ -169,9 +178,25 @@ open class ChatSessionManager @Inject constructor(
      */
     open fun sendCallFrame(frame: String): Boolean = socket.send(frame)
 
+    /**
+     * Chat parity (CONTRACT §4): a `typing.start` / `typing.stop` frame for
+     * an OPEN room. False when there is no live socket or the room was never
+     * subscribed — the caller then falls back to the REST route, which
+     * keeps working either way.
+     */
+    open fun sendTyping(conversationId: String, typing: Boolean): Boolean {
+        if (_connection.value != ConnectionState.Connected) return false
+        val subscribed = synchronized(roomsLock) { conversationId in liveRooms }
+        if (!subscribed) return false
+        return socket.send(typingFrame(json, conversationId, typing))
+    }
+
     /** Drops room interest when the thread closes. */
     open fun unsubscribeRoom(conversationId: String) {
-        val wasTracked = synchronized(roomsLock) { subscribedRooms.remove(conversationId) }
+        val wasTracked = synchronized(roomsLock) {
+            liveRooms.remove(conversationId)
+            subscribedRooms.remove(conversationId)
+        }
         if (wasTracked && _connection.value == ConnectionState.Connected) {
             socket.send(unsubscribeFrame(json, conversationId))
         }
@@ -185,7 +210,9 @@ open class ChatSessionManager @Inject constructor(
             is com.us.android.core.common.result.AppResult.Success -> result.data
             is com.us.android.core.common.result.AppResult.Failure -> return
         }
-        if (token.isNotBlank()) socket.send(subscribeFrame(json, token))
+        if (token.isNotBlank() && socket.send(subscribeFrame(json, token))) {
+            synchronized(roomsLock) { if (conversationId in subscribedRooms) liveRooms.add(conversationId) }
+        }
     }
 
     private suspend fun runLoop(scope: CoroutineScope) {
@@ -209,6 +236,8 @@ open class ChatSessionManager @Inject constructor(
                     is ChatSocketEvent.Disconnected -> {
                         permanent = event.permanent
                         _connection.value = ConnectionState.Disconnected
+                        // A new connection must re-subscribe before typing frames flow again.
+                        synchronized(roomsLock) { liveRooms.clear() }
                     }
                     is ChatSocketEvent.MessageReceived ->
                         // Durable FIRST: the cache row and the unread flag
@@ -217,7 +246,16 @@ open class ChatSessionManager @Inject constructor(
                     is ChatSocketEvent.SubscriptionRevoked ->
                         // Removed from the conversation: drop the room so no
                         // reconnect re-subscribes it.
-                        synchronized(roomsLock) { subscribedRooms.remove(event.conversationId) }
+                        synchronized(roomsLock) {
+                            subscribedRooms.remove(event.conversationId)
+                            liveRooms.remove(event.conversationId)
+                        }
+                    // Chat parity: durable first, like a message — the
+                    // cached thread must not resurrect an unsent message or
+                    // forget a reaction when it is next opened offline.
+                    is ChatSocketEvent.MessageDeleted -> store.applyDeleted(event.messageId)
+                    is ChatSocketEvent.ReactionChanged ->
+                        store.applyReaction(event.messageId, event.emoji, event.userId, event.added)
                     else -> Unit
                 }
                 _events.emit(event)

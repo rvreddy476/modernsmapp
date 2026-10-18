@@ -172,4 +172,18 @@ internal fun ConversationDto.toDomain(): Conversation = Conversation(
     avatarUrl = avatarUrl,
     sourceApp = sourceApp?.takeIf { it.isNotBlank() },
     matchId = matchId?.takeIf { it.isNotBlank() },
+    unreadCount = (unreadCount ?: 0).coerceAtLeast(0),
+    muteCalls = muteCalls,
+    alertTone = alertTone?.takeIf { it.isNotBlank() },
+    streak = streak?.takeIf { it.days >= STREAK_MIN_DAYS }?.let { ChatStreak(it.days, it.atRisk, it.expiresAt) },
+    peer = peer?.takeIf { it.userId.isNotBlank() }?.toDomain(),
+    lastMessage = lastMessage?.let {
+        LastMessageInfo(
+            type = it.type,
+            preview = it.preview,
+            senderId = it.senderId,
+            at = it.at,
+            ownStatus = it.ownStatus?.takeIf { status -> status.isNotBlank() },
+        )
+    },
 )

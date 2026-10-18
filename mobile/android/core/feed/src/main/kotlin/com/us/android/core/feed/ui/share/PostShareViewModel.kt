@@ -50,7 +50,20 @@ data class PostShareModel(
     val query: String = "",
     val sending: Set<String> = emptySet(),
     val pickerError: String? = null,
+    /** Chat parity (2026-10-18): the chats picked for the one Send, in tap order (≤ [MAX_SHARE_TARGETS]). */
+    val selected: List<String> = emptyList(),
+    val note: String = "",
 )
+
+/** At most five chats per share (CONTRACT §9), groups included. */
+const val MAX_SHARE_TARGETS = 5
+
+/** Selecting toggles; a sixth pick is refused, not swapped in. */
+fun List<String>.toggledTarget(id: String, cap: Int = MAX_SHARE_TARGETS): List<String> = when {
+    id in this -> this - id
+    size >= cap -> this
+    else -> this + id
+}
 
 /** What the sheet draws for [this] model, for [viewerId], with the repost [overlay] for the post. */
 fun PostShareModel.toUiState(viewerId: String, overlay: EngagementOverlay): UsPostShareState = UsPostShareState(
@@ -71,6 +84,9 @@ fun PostShareModel.toUiState(viewerId: String, overlay: EngagementOverlay): UsPo
             failed = conversations == null && conversationsFailed,
             sending = sending,
             error = pickerError,
+            selected = selected,
+            note = note,
+            maxSelected = MAX_SHARE_TARGETS,
         )
     },
 )
@@ -136,7 +152,60 @@ class PostShareViewModel @Inject constructor(
         if (_state.value.conversations == null) loadConversations()
     }
 
-    fun closePicker() = _state.update { it.copy(picking = false, query = "", pickerError = null) }
+    fun closePicker() =
+        _state.update { it.copy(picking = false, query = "", pickerError = null, selected = emptyList(), note = "") }
+
+    fun toggleTarget(target: UsShareTarget) = _state.update { it.copy(selected = it.selected.toggledTarget(target.id)) }
+
+    fun onNoteChange(note: String) = _state.update { it.copy(note = note.take(NOTE_MAX)) }
+
+    /**
+     * One Send for every picked chat: the card goes to each, the note as its
+     * caption. Each chat keeps its own idempotency key, so a retry after a
+     * partial failure re-sends only what did not land, never a second card.
+     */
+    fun sendSelected() {
+        val current = _state.value
+        val postId = current.postId
+        val targets = current.selected
+        if (postId.isBlank() || targets.isEmpty() || current.sending.isNotEmpty()) return
+        val note = current.note.trim()
+        _state.update { it.copy(sending = targets.toSet(), pickerError = null) }
+        viewModelScope.launch {
+            val failed = mutableListOf<String>()
+            var lastError: com.us.android.core.common.error.AppError? = null
+            for (target in targets) {
+                val intent = target to postId
+                val key = sendKeys.getOrPut(intent) { ChatRepository.newIdempotencyKey() }
+                val result = if (note.isEmpty()) {
+                    chats.sendPost(target, postId, key)
+                } else {
+                    chats.sendPostWithNote(target, postId, key, note)
+                }
+                when (result) {
+                    is AppResult.Success -> sendKeys.remove(intent)
+                    is AppResult.Failure -> {
+                        failed += target
+                        lastError = result.error
+                    }
+                }
+                _state.update { it.copy(sending = it.sending - target) }
+            }
+            if (failed.isEmpty()) {
+                _message.value = UsMessage(SENT, UsMessageType.Success)
+                _state.update { it.copy(selected = emptyList(), note = "") }
+                _sent.tryEmit(targets.last())
+            } else {
+                // The ones that went are dropped from the selection; what is left is what failed.
+                _state.update {
+                    it.copy(
+                        selected = failed,
+                        pickerError = lastError?.let(::sendPostErrorText) ?: "Couldn't send the post. Try again.",
+                    )
+                }
+            }
+        }
+    }
 
     fun onQueryChange(query: String) = _state.update { it.copy(query = query) }
 
@@ -214,5 +283,6 @@ class PostShareViewModel @Inject constructor(
         const val UNREPOSTED = "Repost removed"
         const val REPOST_FAILED = "Couldn't repost. Try again."
         const val UNREPOST_FAILED = "Couldn't remove the repost. Try again."
+        const val NOTE_MAX = 500
     }
 }

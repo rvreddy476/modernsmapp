@@ -84,7 +84,9 @@ fun ChatHomeScreen(
     }
 
     UsScaffold(
-        topBar = { ChatHomeHeader(state = state, destinations = destinations) },
+        topBar = {
+            ChatHomeHeader(state = state, destinations = destinations, onActivityStatus = viewModel::setActivityStatus)
+        },
         applyPageGutter = false,
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -137,12 +139,20 @@ private fun ChatHomePager(
                 onOpenRequests = destinations.onOpenRequests,
                 onTogglePin = viewModel::togglePin,
                 onToggleMute = viewModel::toggleMute,
+                rowActions = { conversation -> viewModel.rowActions(conversation) },
+                notesActions = NotesActions(
+                    onSave = viewModel::saveNote,
+                    onDelete = { viewModel.deleteNote() },
+                    onReply = viewModel::replyToNote,
+                ),
+                onOpenPerson = viewModel::openPerson,
             )
             ChatHomeTab.Groups -> GroupsTab(
                 state = state,
                 destinations = destinations,
                 onTogglePin = viewModel::togglePin,
                 onToggleMute = viewModel::toggleMute,
+                rowActions = { conversation -> viewModel.rowActions(conversation) },
             )
             ChatHomeTab.Communities -> CommunitiesTab(
                 state = state,
@@ -178,8 +188,17 @@ private fun ChatHomeTab.searchPlaceholder(): String = when (this) {
  * push keeps one.
  */
 @Composable
-private fun ChatHomeHeader(state: ChatHomeUiState, destinations: ChatHomeDestinations) {
+private fun ChatHomeHeader(
+    state: ChatHomeUiState,
+    destinations: ChatHomeDestinations,
+    onActivityStatus: (String) -> Unit,
+) {
     val onBack = destinations.onBack
+    var activitySheet by remember { mutableStateOf(false) }
+    val status = state.activityStatus
+    if (activitySheet && status != null) {
+        ActivityStatusSheet(status = status, onSelect = onActivityStatus, onDismiss = { activitySheet = false })
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -190,16 +209,28 @@ private fun ChatHomeHeader(state: ChatHomeUiState, destinations: ChatHomeDestina
         if (onBack != null) {
             HeaderGlyph(icon = UsIcons.Back, description = "Back", onClick = onBack, tag = "chat_home_back")
         }
-        Text(
-            text = "Messages",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = UsTheme.extended.textPrimary,
+        HeaderGlyph(
+            icon = UsIcons.UserPlus,
+            description = "New message",
+            onClick = destinations.onNewMessage,
+            tag = "chat_home_new_message",
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
             modifier = Modifier
                 .weight(1f)
-                .padding(start = if (onBack == null) UsTheme.spacing.l else 0.dp)
-                .semantics { heading() },
-        )
+                .padding(start = if (onBack == null) UsTheme.spacing.s else 0.dp),
+        ) {
+            Text(
+                text = "Messages",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier.semantics { heading() },
+            )
+            if (status != null) ActivityStatusDot(status = status, onClick = { activitySheet = true })
+        }
         HeaderGlyph(
             icon = UsIcons.SquarePen,
             description = "New group",
@@ -233,6 +264,7 @@ private fun HeaderMenu(state: ChatHomeUiState, destinations: ChatHomeDestination
                 open(destinations.onOpenInvitations)
             }
             MenuRow("Join with link", 0, "chat_home_join_link") { open(destinations.onJoinWithLink) }
+            MenuRow("Archived chats", 0, "chat_home_archived") { open(destinations.onOpenArchived) }
             MenuRow("Calls", 0, "chat-call-history") { open(destinations.onOpenCallHistory) }
             MenuRow("Chat lock", 0, "chat-lock-settings") { open(destinations.onOpenLockSettings) }
         }

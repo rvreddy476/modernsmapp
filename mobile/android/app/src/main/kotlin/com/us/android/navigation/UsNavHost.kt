@@ -76,6 +76,13 @@ import com.us.android.feature.chat.navigation.chatListScreens
 import com.us.android.feature.chat.navigation.chatLockSettingsScreen
 import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
+import com.us.android.feature.chat.navigation.ChatParityDestinations
+import com.us.android.feature.chat.navigation.ThreadParityDestinations
+import com.us.android.feature.chat.navigation.chatParityScreens
+import com.us.android.feature.chat.navigation.navigateToArchivedChats
+import com.us.android.feature.chat.navigation.navigateToChatSettings
+import com.us.android.feature.chat.navigation.navigateToNewMessage
+import com.us.android.feature.chat.navigation.navigateToSharedReels
 import com.us.android.feature.chat.navigation.communityScreens
 import com.us.android.feature.chat.navigation.groupCreateScreen
 import com.us.android.feature.chat.navigation.groupScreens
@@ -915,6 +922,22 @@ private fun NavGraphBuilder.tabDestinations(
             onJoinWithLink = { navController.navigateToJoinByLink() },
             onOpenLockSettings = { navController.navigateToChatLockSettings() },
             onOpenCallHistory = { navController.navigateToCallHistory() },
+            // Chat parity (2026-10-18).
+            onNewMessage = { navController.navigateToNewMessage() },
+            onOpenArchived = { navController.navigateToArchivedChats() },
+        ),
+    )
+    chatParityScreens(
+        ChatParityDestinations(
+            onBack = { navController.popBackStack() },
+            onOpenThread = { conversationId, title, isGroup ->
+                navController.navigateToChatThread(conversationId, title, isGroup)
+            },
+            onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+            onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
+            onOpenSharedReels = { conversationId, postId -> navController.navigateToSharedReels(conversationId, postId) },
+            // Deleting a chat or blocking its person closes its settings AND its thread.
+            onChatClosed = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
         ),
     )
     // The 2026-08 inbox stays registered for any older entry point.
@@ -967,6 +990,13 @@ private fun NavGraphBuilder.tabDestinations(
         },
         // A shared post's card opens where the profile grid opens the same post.
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
+        parity = ThreadParityDestinations(
+            onOpenChatSettings = { conversationId -> navController.navigateToChatSettings(conversationId) },
+            onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+            onOpenSound = { soundId -> navController.navigateToSound(soundId) },
+            onOpenLive = { streamId -> navController.navigateToLiveWatch(streamId) },
+            onOpenSharedReels = { conversationId, postId -> navController.navigateToSharedReels(conversationId, postId) },
+        ),
     )
     callScreen(onBack = { navController.popBackStack() })
     callHistoryScreen(onBack = { navController.popBackStack() })
@@ -1258,6 +1288,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 onModules = { navController.navigateToModulesSettings() },
                 // Data & storage: the Offline page lives in Tube's graph.
                 onOfflineVideos = { navController.navigateToTubeOffline() },
+                // Chat parity: Settings › Inbox & messaging.
+                onInboxMessaging = { navController.navigate(com.us.android.feature.profile.navigation.InboxSettingsRoute) },
             ),
             versionName = BuildConfig.VERSION_NAME,
         ),

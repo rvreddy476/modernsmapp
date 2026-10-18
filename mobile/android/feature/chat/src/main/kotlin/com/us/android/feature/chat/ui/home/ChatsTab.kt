@@ -28,6 +28,7 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.chat.ui.ConversationRow
+import com.us.android.feature.chat.ui.InboxRowActions
 import com.us.android.feature.chat.ui.OnlineNowRail
 
 /**
@@ -35,17 +36,24 @@ import com.us.android.feature.chat.ui.OnlineNowRail
  * the requests door when any wait, then the rows, filtered by the pill.
  */
 @Composable
+@Suppress("LongMethod", "LongParameterList")
 internal fun ChatsTab(
     state: ChatHomeUiState,
     onOpenConversation: (String, String, Boolean) -> Unit,
     onOpenRequests: () -> Unit,
     onTogglePin: (Conversation) -> Unit,
     onToggleMute: (Conversation) -> Unit,
+    // Chat parity (2026-10-18).
+    rowActions: ((Conversation) -> InboxRowActions)? = null,
+    notesActions: NotesActions? = null,
+    onOpenPerson: (userId: String, name: String) -> Unit = { _, _ -> },
 ) {
     val chats = state.visibleChats
+    val searching = state.query.isNotBlank()
+    val search = state.search.takeIf { searching }
     when {
         state.loading && state.conversations.isEmpty() -> UsLoadingState(label = "Loading conversations")
-        chats.isEmpty() && state.requests.isEmpty() -> UsEmptyState(
+        chats.isEmpty() && state.requests.isEmpty() && state.notes == null && search == null -> UsEmptyState(
             title = if (state.query.isBlank()) "No chats yet" else "No chats match",
             detail = if (state.query.isBlank()) {
                 "Start from Suggestions — people you follow can message you here."
@@ -58,34 +66,62 @@ internal fun ChatsTab(
             verticalArrangement = Arrangement.spacedBy(ROW_GAP),
             contentPadding = PaddingValues(bottom = LIST_BOTTOM),
         ) {
+            val notes = state.notes
+            if (notes != null && notesActions != null && !searching) {
+                item(key = "notes") {
+                    NotesRow(
+                        notes = notes,
+                        viewerName = "You",
+                        viewerId = state.viewerId,
+                        saving = state.noteSaving,
+                        actions = notesActions,
+                    )
+                }
+            }
             val online = chats.filter { conversation -> conversation.isOnline(state) }
-            if (online.isNotEmpty() && state.query.isBlank()) {
+            if (online.isNotEmpty() && !searching && notes == null) {
                 item(key = "online-now") {
                     OnlineNowRail(online = online, viewerId = state.viewerId, onOpen = onOpenConversation)
                 }
             }
-            if (state.requests.isNotEmpty() && state.query.isBlank()) {
-                item(key = "requests") { RequestsDoor(count = state.requests.size, onClick = onOpenRequests) }
+            if (state.requests.isNotEmpty() && !searching) {
+                item(key = "requests") { RequestsDoor(count = state.requestCount, onClick = onOpenRequests) }
             }
-            item(key = "recent-label") { ChatSectionLabel("Recent chats") }
-            items(chats, key = { it.id }) { conversation ->
-                val title = conversation.displayTitle(state.viewerId)
-                ConversationRow(
-                    conversation = conversation,
-                    title = title,
+            if (search != null) {
+                searchResultItems(
+                    results = search,
                     viewerId = state.viewerId,
-                    online = conversation.isOnline(state),
-                    onClick = { onOpenConversation(conversation.id, title, false) },
-                    onTogglePin = { onTogglePin(conversation) },
-                    onToggleMute = { onToggleMute(conversation) },
+                    onOpenPerson = onOpenPerson,
+                    onOpenConversation = onOpenConversation,
+                    titleFor = { id -> state.conversations.firstOrNull { it.id == id }?.displayTitle(state.viewerId) },
                 )
+            }
+            if (chats.isNotEmpty() && (search == null || search.conversations.isEmpty())) {
+                item(key = "recent-label") { ChatSectionLabel(if (searching) "Chats" else "Recent chats") }
+                items(chats, key = { it.id }) { conversation ->
+                    val title = conversation.displayTitle(state.viewerId)
+                    ConversationRow(
+                        conversation = conversation,
+                        title = title,
+                        viewerId = state.viewerId,
+                        online = conversation.isOnline(state),
+                        onClick = { onOpenConversation(conversation.id, title, false) },
+                        onTogglePin = { onTogglePin(conversation) },
+                        onToggleMute = { onToggleMute(conversation) },
+                        actions = rowActions?.invoke(conversation),
+                    )
+                }
+            }
+            if (searching && state.searching) {
+                item(key = "searching") { ChatSectionLabel("Searching…") }
             }
         }
     }
 }
 
 private fun Conversation.isOnline(state: ChatHomeUiState): Boolean =
-    members.any { it.userId != state.viewerId && it.userId in state.onlineUserIds }
+    peer?.isOnline == true ||
+        members.any { it.userId != state.viewerId && it.userId in state.onlineUserIds }
 
 /** The door to message requests: a raised row with the count in the accent. */
 @Composable

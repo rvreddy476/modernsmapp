@@ -60,7 +60,7 @@ interface RemoteKeyDao {
  * database from version 7 to 6" — points at the test, not at the bump that
  * caused it.
  */
-const val US_DATABASE_VERSION = 8
+const val US_DATABASE_VERSION = 9
 
 /**
  * Phase 1 ships the database skeleton only — one table, so that the schema is
@@ -99,6 +99,9 @@ abstract class UsDatabase : RoomDatabase() {
     abstract fun composerDraftDao(): ComposerDraftDao
 
     abstract fun chatDao(): ChatDao
+
+    /** Chat parity (schema v9): the extra columns' reads and writes, apart so ChatDao fakes stay valid. */
+    abstract fun chatParityDao(): ChatParityDao
 
     abstract fun creatorProjectDao(): CreatorProjectDao
 

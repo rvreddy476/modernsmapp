@@ -3,6 +3,7 @@ package com.us.android.core.chat.data
 import com.us.android.core.database.ChatConversationEntity
 import com.us.android.core.database.ChatDao
 import com.us.android.core.database.ChatMessageEntity
+import com.us.android.core.database.ChatParityDao
 import com.us.android.core.database.ChatPendingSendEntity
 import com.us.android.core.database.scrubDeletedRowsFromDisk
 import kotlinx.coroutines.CompletableDeferred
@@ -82,6 +83,10 @@ class ChatStore @Inject constructor(
     private val dao: ChatDao,
     private val scheduler: OutboxScheduler,
     private val scrubRecovery: ScrubRecoveryFlag,
+    // Chat parity (2026-10-18). Optional so the existing four-argument
+    // constructions (tests) keep compiling; production injects both.
+    private val parityDao: ChatParityDao? = null,
+    private val parity: ChatParityRepository? = null,
 ) {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -220,10 +225,16 @@ class ChatStore @Inject constructor(
         ).flatten().filter { it.isDatingChat }.map { it.id }.distinct()
         if (conversations is com.us.android.core.common.result.AppResult.Success) {
             val written = guardedWrite(generation) {
-                dao.upsertConversations(
-                    conversations.data.withoutDatingChats().map { it.toEntity(isRequestList = false, now) },
-                )
+                val rows = conversations.data.withoutDatingChats()
+                dao.upsertConversations(rows.map { it.toEntity(isRequestList = false, now) })
                 datingIds.forEach { dao.deleteConversation(it) }
+                // Chat parity: a row archived or hidden elsewhere leaves the
+                // primary list. Pruned only when the answer was ONE short
+                // page — then it is certainly the whole inbox; a paged or
+                // partial answer never deletes anything.
+                if (conversations.data.size < CONVERSATION_PAGE_LIMIT) {
+                    parityDao?.pruneInbox(rows.map { it.id })
+                }
             }
             ok = written != null
             _groupAvatarUrls.value = conversations.data
@@ -279,7 +290,10 @@ class ChatStore @Inject constructor(
     }
 
     suspend fun clearUnread(conversationId: String) {
-        guardedWrite { dao.clearUnread(conversationId) }
+        guardedWrite {
+            dao.clearUnread(conversationId)
+            parityDao?.markRead(conversationId)
+        }
     }
 
     // ── Messages ────────────────────────────────────────────────────────
@@ -294,7 +308,13 @@ class ChatStore @Inject constructor(
     suspend fun cacheMessages(messages: List<Message>, lease: Long? = null) {
         if (messages.isEmpty()) return
         guardedWrite(lease) {
-            dao.insertMessages(messages.filter { it.id.isNotBlank() }.map { it.toEntity() })
+            val rows = messages.filter { it.id.isNotBlank() && !it.pending }.map { it.toEntity() }
+            dao.insertMessages(rows)
+            // The insert keeps the first copy; the server-owned parts
+            // (reactions, unsend, type details) follow the newest page.
+            parityDao?.let { extras ->
+                rows.forEach { extras.refreshMessage(it.id, it.type, it.reactionsJson, it.extrasJson) }
+            }
         }
     }
 
@@ -317,7 +337,95 @@ class ChatStore @Inject constructor(
                 preview = inboxPreview(message).take(PREVIEW_LENGTH),
                 at = message.createdAt,
             )
+            parityDao?.incrementUnread(message.conversationId)
         }
+    }
+
+    // ── Chat parity (2026-10-18) ────────────────────────────────────────
+
+    /** Archive / delete for me: the row leaves this device's inbox at once. */
+    suspend fun removeConversationLocally(conversationId: String) {
+        guardedWrite {
+            parityDao?.clearConversationMessages(conversationId)
+            dao.deleteConversation(conversationId)
+        }
+    }
+
+    /** Clear chat: my cached history goes; the row stays. */
+    suspend fun clearConversationLocally(conversationId: String) {
+        guardedWrite { parityDao?.clearConversationMessages(conversationId) }
+    }
+
+    /** Opened or marked read from the inbox: dot and count both go. */
+    suspend fun markReadLocally(conversationId: String) {
+        guardedWrite {
+            dao.clearUnread(conversationId)
+            parityDao?.markRead(conversationId)
+        }
+    }
+
+    suspend fun markUnreadLocally(conversationId: String) {
+        guardedWrite { parityDao?.markUnreadOnly(conversationId) }
+    }
+
+    /** The chat settings page's confirmed switches, mirrored so the inbox reorders. */
+    suspend fun applyPrefsLocally(conversationId: String, prefs: ConversationPrefs) {
+        guardedWrite {
+            parityDao?.updatePrefs(conversationId, prefs.isPinned, prefs.isMuted, prefs.muteCalls, prefs.alertTone.wire)
+        }
+    }
+
+    /** The cached alert tone for a conversation (null when the server never said). */
+    suspend fun cachedAlertTone(conversationId: String): String? = parityDao?.alertTone(conversationId)
+
+    /**
+     * One realtime `reaction` frame applied to the cached row. Idempotent
+     * (the server echoes the reactor's own frame to their other devices):
+     * an add of a present reaction or a removal of an absent one is a no-op.
+     */
+    suspend fun applyReaction(messageId: String, emoji: String, userId: String, added: Boolean) {
+        val extras = parityDao ?: return
+        guardedWrite {
+            val row = extras.message(messageId) ?: return@guardedWrite
+            val current = decodeReactions(row.reactionsJson)
+            val next = current.applyToggle(emoji = emoji, userId = userId, added = added)
+            if (next != current) extras.updateReactions(messageId, encodeReactions(next))
+        }
+    }
+
+    /** A realtime unsend: the cached copy must not survive it. */
+    suspend fun applyDeleted(messageId: String) {
+        guardedWrite { dao.deleteMessage(messageId) }
+    }
+
+    /**
+     * Enqueues a TYPED send (voice, sticker, gif, profile, sound, live)
+     * through the same durable outbox as text: a Room row first, then the
+     * drain. Null when the write was refused — nothing was queued.
+     */
+    suspend fun enqueueTypedSend(
+        conversationId: String,
+        typed: TypedSend,
+        lease: Long? = null,
+    ): String? {
+        val key = ChatRepository.newIdempotencyKey()
+        guardedWrite(lease) {
+            dao.enqueueSend(
+                ChatPendingSendEntity(
+                    idempotencyKey = key,
+                    conversationId = conversationId,
+                    text = typed.text,
+                    mediaId = typed.mediaId,
+                    createdAtMillis = System.currentTimeMillis(),
+                    attempts = 0,
+                    failed = false,
+                    type = typed.type,
+                    extrasJson = json.encodeToString(TypedSend.serializer(), typed),
+                ),
+            )
+        } ?: return null
+        scheduleDrain()
+        return key
     }
 
     // ── The durable send outbox ─────────────────────────────────────────
@@ -333,6 +441,9 @@ class ChatStore @Inject constructor(
                     replyToPreview = it.replyToPreview,
                     createdAtMillis = it.createdAtMillis,
                     failed = it.failed,
+                    typed = it.extrasJson?.let { raw ->
+                        runCatching { json.decodeFromString(TypedSend.serializer(), raw) }.getOrNull()
+                    },
                 )
             }
         }
@@ -454,10 +565,24 @@ class ChatStore @Inject constructor(
                 senderId = row.replyToSenderId.orEmpty(),
             )
         }
-        val result = if (mediaId != null) {
-            repository.sendMedia(row.conversationId, mediaId, row.idempotencyKey, row.text, replyTo)
-        } else {
-            repository.send(row.conversationId, row.text, row.idempotencyKey, replyTo)
+        val typed = row.type?.let {
+            row.extrasJson?.let { raw -> runCatching { json.decodeFromString(TypedSend.serializer(), raw) }.getOrNull() }
+        }
+        val result = when {
+            // A typed send (chat parity) goes out with its own fields under
+            // the row's key; without the parity seam it cannot be sent at
+            // all, so it parks for the user rather than going out as text.
+            row.type != null -> {
+                val sender = parity
+                if (typed == null || sender == null) {
+                    guardedWrite(generation) { dao.markFailed(row.idempotencyKey) } ?: return SendAttempt.Halted
+                    return SendAttempt.Parked
+                }
+                sender.send(row.conversationId, row.idempotencyKey, typed.toRequest())
+            }
+            mediaId != null ->
+                repository.sendMedia(row.conversationId, mediaId, row.idempotencyKey, row.text, replyTo)
+            else -> repository.send(row.conversationId, row.text, row.idempotencyKey, replyTo)
         }
         return when (result) {
             is com.us.android.core.common.result.AppResult.Success -> {
@@ -559,6 +684,12 @@ class ChatStore @Inject constructor(
             syncedAtMillis = syncedAt,
             isPinned = isPinned,
             isMuted = isMuted,
+            unreadCount = unreadCount,
+            muteCalls = muteCalls,
+            alertTone = alertTone,
+            extrasJson = CachedConversationExtras.of(this)?.let {
+                json.encodeToString(CachedConversationExtras.serializer(), it)
+            },
         )
 
     private fun ChatConversationEntity.toDomainConversation() = Conversation(
@@ -578,7 +709,29 @@ class ChatStore @Inject constructor(
         hasUnread = hasUnread,
         isPinned = isPinned,
         isMuted = isMuted,
-    )
+    ).let { base ->
+        val extras = extrasJson?.let { raw ->
+            runCatching { json.decodeFromString(CachedConversationExtras.serializer(), raw) }.getOrNull()
+        }
+        base.copy(
+            unreadCount = unreadCount,
+            muteCalls = muteCalls,
+            alertTone = alertTone,
+            peer = extras?.peer?.toDomain(),
+            streak = extras?.streak?.let { ChatStreak(it.days, it.atRisk, it.expiresAt) },
+            lastMessage = extras?.lastMessage?.let { LastMessageInfo(it.type, it.preview, it.senderId, it.at, it.ownStatus) },
+        )
+    }
+
+    private fun decodeReactions(raw: String?): List<ReactionSummary> =
+        raw?.let {
+            runCatching { json.decodeFromString(ListSerializer(CachedReaction.serializer()), it) }.getOrNull()
+        }?.map { ReactionSummary(it.emoji, it.userIds) }.orEmpty()
+
+    private fun encodeReactions(reactions: List<ReactionSummary>): String? =
+        reactions.takeIf { it.isNotEmpty() }?.let { list ->
+            json.encodeToString(ListSerializer(CachedReaction.serializer()), list.map { CachedReaction(it.emoji, it.userIds) })
+        }
 
     private fun Message.toEntity() = ChatMessageEntity(
         id = id,
@@ -592,6 +745,9 @@ class ChatStore @Inject constructor(
         replyToSenderId = replyToSenderId,
         createdAt = createdAt,
         postId = postId,
+        type = type,
+        reactionsJson = encodeReactions(reactions),
+        extrasJson = CachedMessageExtras.of(this)?.let { json.encodeToString(CachedMessageExtras.serializer(), it) },
     )
 
     private fun ChatMessageEntity.toDomainMessage() = Message(
@@ -606,7 +762,15 @@ class ChatStore @Inject constructor(
         replyToSenderId = replyToSenderId,
         createdAt = createdAt,
         postId = postId,
-    )
+    ).let { base ->
+        val extras = extrasJson?.let { raw ->
+            runCatching { json.decodeFromString(CachedMessageExtras.serializer(), raw) }.getOrNull()
+        }
+        (extras?.applyTo(base) ?: base).copy(
+            type = type ?: base.type,
+            reactions = decodeReactions(reactionsJson),
+        )
+    }
 
     companion object {
         const val SEND_WORK_NAME = "chat-send-outbox"
@@ -620,8 +784,25 @@ class ChatStore @Inject constructor(
  * shared post with no caption, which has none — "Shared a post", so the
  * row does not go blank.
  */
-fun inboxPreview(message: Message): String =
-    if (message.postId != null && message.text.isBlank()) SHARED_POST_PREVIEW else message.text
+fun inboxPreview(message: Message): String = when {
+    message.text.isNotBlank() -> message.text
+    message.postId != null -> SHARED_POST_PREVIEW
+    else -> typedPreview(message) ?: message.text
+}
+
+/** What a message with no text says in the inbox, by its kind (chat parity). Null for a plain text. */
+fun typedPreview(message: Message): String? = when {
+    message.deleted -> "Message unsent"
+    message.type == VOICE_MESSAGE || message.voice != null -> "Voice message"
+    message.type == STICKER_MESSAGE || message.sticker != null -> "Sticker"
+    message.type == GIF_MESSAGE || message.gif != null -> "GIF"
+    message.type == PROFILE_MESSAGE || message.profileUserId != null -> "Shared a profile"
+    message.type == SOUND_MESSAGE || message.soundId != null -> "Shared a sound"
+    message.type == LIVE_MESSAGE || message.streamId != null -> "Shared a LIVE"
+    message.media?.isVideo == true -> "Video"
+    message.mediaId != null -> "Photo"
+    else -> null
+}
 
 /** What a captionless post card says in the inbox. */
 const val SHARED_POST_PREVIEW = "Shared a post"
@@ -702,4 +883,6 @@ data class PendingSend(
     val replyToPreview: String? = null,
     val createdAtMillis: Long,
     val failed: Boolean,
+    /** A typed send's own fields (voice, sticker, gif …); null for text and photos. */
+    val typed: TypedSend? = null,
 )

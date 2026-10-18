@@ -4,7 +4,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.AuthRepository
 import com.us.android.core.chat.data.ChatRepository
+import com.us.android.core.chat.data.ChatSearchResults
 import com.us.android.core.chat.data.ChatSessionManager
+import com.us.android.core.chat.data.ChatSocketEvent
+import com.us.android.core.chat.data.LABEL_ARCHIVED
+import com.us.android.core.chat.data.Notes
+import com.us.android.core.chat.data.OthersNote
+import com.us.android.core.chat.data.PresenceInfo
+import com.us.android.core.chat.data.TypedSend
+import com.us.android.core.chat.data.isMissingRoute
+import com.us.android.core.chat.data.orderInbox
 import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.Community
 import com.us.android.core.chat.data.CommunityRepository
@@ -66,6 +75,17 @@ data class ChatHomeUiState(
     val busyPeopleIds: Set<String> = emptySet(),
     val message: UsMessage? = null,
     val pendingOpen: PendingOpen? = null,
+    // ── Chat parity (2026-10-18) ────────────────────────────────────────
+    /** Notes for the row above the chats; null until read, or when the route is not there (row hidden). */
+    val notes: Notes? = null,
+    val noteSaving: Boolean = false,
+    /** Server search for the Chats tab (q ≥ 2); null = not asked, or fell back to the local filter. */
+    val search: ChatSearchResults? = null,
+    val searching: Boolean = false,
+    /** `who_can_see_online_status`, for the header's activity dot; null until read (dot hidden). */
+    val activityStatus: String? = null,
+    /** Presence details per user (online + last active), from `POST /v1/chat/presence`. */
+    val presence: Map<String, PresenceInfo> = emptyMap(),
 ) {
     /**
      * The rows Messages may show. A Pulse match's chat lives in the dating
@@ -76,8 +96,8 @@ data class ChatHomeUiState(
     private val inbox: List<Conversation> get() = conversations.withoutDatingChats()
     private val inboxRequests: List<Conversation> get() = requests.withoutDatingChats()
 
-    val visibleChats: List<Conversation> get() = ChatHomeFilters.directChats(inbox, query, viewerId)
-    val visibleGroups: List<Conversation> get() = ChatHomeFilters.groups(inbox, query)
+    val visibleChats: List<Conversation> get() = orderInbox(ChatHomeFilters.directChats(inbox, query, viewerId))
+    val visibleGroups: List<Conversation> get() = orderInbox(ChatHomeFilters.groups(inbox, query))
     val visibleMyCommunities: List<Community> get() = ChatHomeFilters.communities(myCommunities, query)
     val visibleDiscover: List<Community>
         get() = ChatHomeFilters.communities(discover, query).filter { row -> myCommunities.none { it.id == row.id } }
@@ -130,11 +150,16 @@ class ChatHomeViewModel @Inject constructor(
     private val startDirect = StartDirectController(repository)
     private var discoverJob: Job? = null
 
+    private val parity get() = sources.parity
+    private var searchJob: Job? = null
+
     init {
         session.start()
         store.scheduleDrain()
         observeCache()
+        observePresence()
         refresh()
+        loadActivityStatus()
     }
 
     fun selectTab(tab: ChatHomeTab) {
@@ -149,6 +174,31 @@ class ChatHomeViewModel @Inject constructor(
     fun onQueryChange(query: String) {
         _state.update { it.copy(query = query) }
         if (_state.value.tab == ChatHomeTab.Communities) searchDiscover(query)
+        if (_state.value.tab == ChatHomeTab.Chats) searchChats(query)
+    }
+
+    /**
+     * CONTRACT §6: people, chats and messages from `GET /v1/chat/search`
+     * once two characters are typed. The local filter keeps drawing the
+     * chats it can match meanwhile, and stays the whole answer when the
+     * route is missing or fails.
+     */
+    private fun searchChats(query: String) {
+        searchJob?.cancel()
+        val needle = query.trim()
+        if (needle.length < SEARCH_MIN_CHARS) {
+            _state.update { it.copy(search = null, searching = false) }
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MILLIS)
+            _state.update { it.copy(searching = true) }
+            val result = parity.search(needle)
+            _state.update { current ->
+                if (current.query.trim() != needle) return@update current
+                current.copy(searching = false, search = (result as? AppResult.Success)?.data)
+            }
+        }
     }
 
     fun onVoiceResults(results: List<String>) {
@@ -177,6 +227,7 @@ class ChatHomeViewModel @Inject constructor(
                 )
             }
             refreshPresence()
+            loadNotes()
         }
         if (_state.value.communitiesLoaded) loadCommunities()
         if (_state.value.suggestionsLoaded) loadSuggestions()
@@ -207,8 +258,190 @@ class ChatHomeViewModel @Inject constructor(
             .distinct()
             .take(PRESENCE_LIMIT)
         if (peers.isEmpty()) return
-        val online = repository.bulkPresence(peers)
-        if (online is AppResult.Success) _state.update { it.copy(onlineUserIds = online.data) }
+        // Chat parity: the detailed read (online + last active) first; the
+        // old boolean map is the fallback for a server without it.
+        when (val detailed = parity.presence(peers)) {
+            is AppResult.Success -> _state.update {
+                it.copy(
+                    presence = detailed.data,
+                    onlineUserIds = detailed.data.filterValues { info -> info.isOnline }.keys,
+                )
+            }
+            is AppResult.Failure -> {
+                val online = repository.bulkPresence(peers)
+                if (online is AppResult.Success) _state.update { it.copy(onlineUserIds = online.data) }
+            }
+        }
+    }
+
+    /** `presence_update` frames move the online dots without a refresh. */
+    private fun observePresence() = viewModelScope.launch {
+        session.events.collect { event ->
+            if (event is ChatSocketEvent.PresenceUpdate) {
+                _state.update { current ->
+                    current.copy(
+                        presence = current.presence + (event.userId to PresenceInfo(event.isOnline, event.lastActiveAt)),
+                        onlineUserIds = if (event.isOnline) {
+                            current.onlineUserIds + event.userId
+                        } else {
+                            current.onlineUserIds - event.userId
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    // ── Chat parity: row actions (CONTRACT §1.1-§1.3) ───────────────────
+
+    /** Everything a long-press on [conversation] offers. */
+    fun rowActions(conversation: Conversation) = com.us.android.feature.chat.ui.InboxRowActions(
+        onTogglePin = { togglePin(conversation) },
+        onToggleMute = { toggleMute(conversation) },
+        onArchive = { archive(conversation) },
+        onDelete = { deleteForMe(conversation) },
+        onMarkRead = { markRead(conversation) },
+        onMarkUnread = { markUnread(conversation) },
+    )
+
+    /** Archive: the row leaves the inbox now; the server keeps it under Archived. */
+    fun archive(conversation: Conversation) = viewModelScope.launch {
+        when (val result = parity.setLabel(conversation, LABEL_ARCHIVED)) {
+            is AppResult.Success -> {
+                store.removeConversationLocally(conversation.id)
+                showMessage("Chat archived.", UsMessageType.Success)
+            }
+            is AppResult.Failure -> showMessage(
+                if (result.error.isMissingRoute()) "Archiving isn't available yet." else "Couldn't archive that chat.",
+                UsMessageType.Error,
+            )
+        }
+    }
+
+    /** Delete chat: hidden for me and my history cleared; a new message brings it back. */
+    fun deleteForMe(conversation: Conversation) = viewModelScope.launch {
+        when (val result = parity.deleteForMe(conversation.id)) {
+            is AppResult.Success -> {
+                store.removeConversationLocally(conversation.id)
+                showMessage("Chat deleted.", UsMessageType.Success)
+            }
+            is AppResult.Failure -> showMessage(
+                if (result.error.isMissingRoute()) "Deleting chats isn't available yet." else "Couldn't delete that chat.",
+                UsMessageType.Error,
+            )
+        }
+    }
+
+    /** Mark read from the inbox: the server's read cursor moves to the newest message. */
+    fun markRead(conversation: Conversation) = viewModelScope.launch {
+        store.markReadLocally(conversation.id)
+        val newest = (repository.messages(conversation.id, limit = 1) as? AppResult.Success)?.data?.items?.firstOrNull()
+        if (newest != null) repository.markRead(conversation.id, newest.id)
+    }
+
+    /** Mark unread is this device's reminder only — the server has no unread write. */
+    fun markUnread(conversation: Conversation) = viewModelScope.launch { store.markUnreadLocally(conversation.id) }
+
+    // ── Chat parity: activity status (CONTRACT §4, §9) ──────────────────
+
+    private fun loadActivityStatus() = viewModelScope.launch {
+        val settings = sources.privacy.get()
+        if (settings is AppResult.Success) _state.update { it.copy(activityStatus = settings.data.whoCanSeeOnlineStatus) }
+    }
+
+    /** The header's dot sheet: who sees when you're active. The server's echo is what shows. */
+    fun setActivityStatus(value: String) {
+        val previous = _state.value.activityStatus ?: return
+        if (value == previous) return
+        _state.update { it.copy(activityStatus = value) }
+        viewModelScope.launch {
+            val saved = when (val current = sources.privacy.get()) {
+                is AppResult.Success -> sources.privacy.save(current.data.copy(whoCanSeeOnlineStatus = value))
+                is AppResult.Failure -> current
+            }
+            when (saved) {
+                is AppResult.Success -> _state.update { it.copy(activityStatus = saved.data.whoCanSeeOnlineStatus) }
+                is AppResult.Failure -> {
+                    _state.update { it.copy(activityStatus = previous) }
+                    showMessage("Couldn't change your activity status.", UsMessageType.Error)
+                }
+            }
+        }
+    }
+
+    // ── Chat parity: notes (CONTRACT §5) ────────────────────────────────
+
+    private suspend fun loadNotes() {
+        when (val result = parity.notes()) {
+            is AppResult.Success -> _state.update { it.copy(notes = result.data) }
+            // Missing route: the row stays hidden. Any other failure keeps what was shown.
+            is AppResult.Failure -> if (result.error.isMissingRoute()) _state.update { it.copy(notes = null) }
+        }
+    }
+
+    fun saveNote(text: String, audience: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() || _state.value.noteSaving) return
+        _state.update { it.copy(noteSaving = true) }
+        viewModelScope.launch {
+            when (val result = parity.putNote(trimmed, audience)) {
+                is AppResult.Success -> {
+                    _state.update { it.copy(noteSaving = false, notes = (it.notes ?: Notes(null, emptyList())).copy(mine = result.data)) }
+                    showMessage("Note shared for 24 hours.", UsMessageType.Success)
+                }
+                is AppResult.Failure -> {
+                    _state.update { it.copy(noteSaving = false) }
+                    showMessage("Couldn't share your note.", UsMessageType.Error)
+                }
+            }
+        }
+    }
+
+    fun deleteNote() = viewModelScope.launch {
+        when (parity.deleteNote()) {
+            is AppResult.Success -> _state.update { it.copy(notes = it.notes?.copy(mine = null)) }
+            is AppResult.Failure -> showMessage("Couldn't remove your note.", UsMessageType.Error)
+        }
+    }
+
+    /**
+     * Reply to someone's note: the DM with them (the server decides which,
+     * or refuses), a text carrying `reply_note_id` through the durable
+     * outbox, then the thread opens.
+     */
+    fun replyToNote(note: OthersNote, text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            when (val opened = startDirect.open(note.userId)) {
+                is StartDirectResult.Opened -> {
+                    val queued = store.enqueueTypedSend(opened.conversation.id, TypedSend.noteReply(trimmed, note.note.id))
+                    if (queued == null) {
+                        showMessage("Chat is busy. Try again in a moment.", UsMessageType.Warning)
+                    } else {
+                        _state.update {
+                            it.copy(pendingOpen = PendingOpen(opened.conversation.id, note.displayName, isGroup = false))
+                        }
+                    }
+                }
+                is StartDirectResult.NotAllowed ->
+                    showMessage("${note.displayName.ifBlank { "They" }} can't receive messages from you yet.", UsMessageType.Warning)
+                is StartDirectResult.Failed -> showMessage("Couldn't send your reply. Try again.", UsMessageType.Error)
+            }
+        }
+    }
+
+    /** A person from search: their DM, or the server's refusal. */
+    fun openPerson(userId: String, name: String) {
+        viewModelScope.launch {
+            when (val result = startDirect.open(userId)) {
+                is StartDirectResult.Opened -> _state.update {
+                    it.copy(pendingOpen = PendingOpen(result.conversation.id, name, isGroup = false))
+                }
+                is StartDirectResult.NotAllowed -> showMessage("$name doesn't accept messages from you yet.", UsMessageType.Warning)
+                is StartDirectResult.Failed -> showMessage("Couldn't start that chat. Try again.", UsMessageType.Error)
+            }
+        }
     }
 
     private fun observeCache() {
@@ -409,5 +642,7 @@ class ChatHomeViewModel @Inject constructor(
     private companion object {
         const val PRESENCE_LIMIT = 50
         const val DISCOVER_DEBOUNCE_MILLIS = 350L
+        const val SEARCH_DEBOUNCE_MILLIS = 300L
+        const val SEARCH_MIN_CHARS = 2
     }
 }

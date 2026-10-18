@@ -13,4 +13,8 @@ data class ChatHomeDestinations(
     val onJoinWithLink: () -> Unit,
     val onOpenLockSettings: () -> Unit,
     val onOpenCallHistory: () -> Unit,
+    /** Chat parity: the header's add-people glyph — the new-message people picker. */
+    val onNewMessage: () -> Unit = onCreateGroup,
+    /** Chat parity: the ≡ menu's "Archived chats". */
+    val onOpenArchived: () -> Unit = {},
 )

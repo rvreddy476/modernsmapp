@@ -153,6 +153,10 @@ private fun PrivacySettingsDto.toDomain() = PrivacySettings(
     accountVisibility,
     allowCommentsFrom,
     privacyVersion,
+    dmSafeMode = dmSafeMode,
+    dmSensitiveMediaFilter = dmSensitiveMediaFilter,
+    dmFilteredKeywords = dmFilteredKeywords,
+    chatBubbleStyle = chatBubbleStyle,
 )
 
 private fun PrivacySettings.toRequest() = UpdatePrivacySettingsRequest(
@@ -179,6 +183,10 @@ private fun PrivacySettings.toRequest() = UpdatePrivacySettingsRequest(
     showMessagePreview,
     accountVisibility,
     allowCommentsFrom,
+    dmSafeMode = dmSafeMode,
+    dmSensitiveMediaFilter = dmSensitiveMediaFilter,
+    dmFilteredKeywords = dmFilteredKeywords,
+    chatBubbleStyle = chatBubbleStyle,
 )
 
 /** Shared with [ManageAccountRepository], which reads the same `/v1/auth/me`. */

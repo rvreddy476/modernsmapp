@@ -19,6 +19,21 @@ plugins {
 
 android {
     namespace = "com.us.android.feature.chat"
+    // The Giphy key (chat parity, founder 2026-10-18) is a build-time value:
+    // CHAT_GIF_API_KEY_ANDROID, falling back to the founder's spelling
+    // CHAT_GIF_API_KEY_ANDRIOD. Absent means "" — the GIF tab is hidden and
+    // Giphy is never configured. Read as a tracked provider, never logged.
+    buildFeatures.buildConfig = true
+    val giphyKey = providers.environmentVariable("CHAT_GIF_API_KEY_ANDROID")
+        .orElse(providers.environmentVariable("CHAT_GIF_API_KEY_ANDRIOD"))
+        .orElse("")
+        .get()
+        .trim()
+    defaultConfig.buildConfigField(
+        "String",
+        "GIPHY_API_KEY",
+        "\"" + giphyKey.replace("\\", "\\\\").replace("\"", "\\\"") + "\"",
+    )
 }
 
 // Screens only.
@@ -60,6 +75,18 @@ dependencies {
     implementation(libs.coil.compose)
     // Chat lock: BiometricPrompt + device credential.
     implementation(libs.androidx.biometric)
+    // Chat parity (2026-10-18): voice/video bubbles and the shared-reel
+    // viewer play through the app's ONE authenticated media chain
+    // (PlayerFactory + MediaSources in :core:media) on a media3 surface.
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui.compose)
+    // The composer's camera: CameraX, at the catalog's single camerax ref.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    // GIFs: Giphy's own SDK, client-side (founder, 2026-10-18).
+    implementation(libs.giphy.ui)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.junit)

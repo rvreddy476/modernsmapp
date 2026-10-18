@@ -9,6 +9,22 @@ import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.ChatSessionManager
 import com.us.android.core.chat.data.ChatSocketEvent
 import com.us.android.core.chat.data.ChatStore
+import com.us.android.core.chat.data.Conversation
+import com.us.android.core.chat.data.DELETE_SCOPE_EVERYONE
+import com.us.android.core.chat.data.DELETE_SCOPE_ME
+import com.us.android.core.chat.data.ForwardOutcome
+import com.us.android.core.chat.data.GifInfo
+import com.us.android.core.chat.data.MAX_FORWARD_TARGETS
+import com.us.android.core.chat.data.MessageReportReason
+import com.us.android.core.chat.data.StickerInfo
+import com.us.android.core.chat.data.StickerPack
+import com.us.android.core.chat.data.TypedSend
+import com.us.android.core.chat.data.downsampleWaveform
+import com.us.android.core.chat.data.forwardSummary
+import com.us.android.core.chat.data.isMissingRoute
+import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.designsystem.component.UsMessageType
+import kotlinx.coroutines.flow.first
 import com.us.android.core.chat.data.DurableSendResult
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
@@ -90,6 +106,31 @@ data class ThreadRenderState(
     val kindPrompt: Boolean = false,
     /** Kind messages: received messages covered until tapped, by message id. */
     val covers: Map<String, KindCover> = emptyMap(),
+    // ── Chat parity (2026-10-18) ────────────────────────────────────────
+    /** The loaded conversation (peer, streak, mute switches). */
+    val conversation: Conversation? = null,
+    /** The direct peer's presence, from the row and then `presence_update` frames. */
+    val peerOnline: Boolean? = null,
+    val peerLastActiveAt: String? = null,
+    /** `chat_bubble_style`, the viewer's own bubble colour; null = default. */
+    val bubbleStyle: String? = null,
+    /** `dm_sensitive_media_filter`. */
+    val sensitiveFilter: Boolean = false,
+    /** Sensitive media the viewer tapped to see. */
+    val revealed: Set<String> = emptySet(),
+    val stickerPacks: List<StickerPack> = emptyList(),
+    val intro: ThreadIntro? = null,
+    val followingPeer: Boolean = false,
+    val reactionSheet: ReactionSheetState? = null,
+    val sheet: MessageSheet? = null,
+    /** Group "Seen by N" for the viewer's newest message. */
+    val seenByCount: Int? = null,
+    /** A quote tapped: the list scrolls to this message once it is loaded. */
+    val jumpToId: String? = null,
+    val voiceSending: Boolean = false,
+    val notice: UsMessage? = null,
+    /** False in a build without the parity seam (tests): every new affordance hides. */
+    val parityEnabled: Boolean = false,
 ) {
     /** Send is offered for text OR photos — a photo alone is a message. */
     val canSend: Boolean
@@ -118,6 +159,8 @@ data class KindCover(
 data class StagedAttachment(
     val uri: Uri,
     val failed: Boolean = false,
+    /** Chat parity: a video from the gallery (photos and videos both stage). */
+    val isVideo: Boolean = false,
 )
 
 @HiltViewModel
@@ -135,6 +178,8 @@ class ChatThreadViewModel @Inject constructor(
     // Kind messages: a product's check over ITS conversations (a Pulse chat);
     // nothing to do for every other conversation.
     private val kindness: ConversationKindness = ConversationKindness.None,
+    // Chat parity (2026-10-18): null in tests, which keeps the thread as it was.
+    private val extras: ThreadExtras? = null,
 ) : ViewModel() {
 
     private val conversationId: String =
@@ -172,6 +217,10 @@ class ChatThreadViewModel @Inject constructor(
         observeSession()
         observePendingSends()
         viewModelScope.launch { store.clearUnread(conversationId) }
+        if (extras != null) {
+            _state.update { it.copy(parityEnabled = true) }
+            loadParity(extras)
+        }
     }
 
     override fun onCleared() {
@@ -317,6 +366,7 @@ class ChatThreadViewModel @Inject constructor(
 
     private fun sendNow() {
         if (_state.value.sendInFlight) return
+        stopTyping()
         if (_state.value.staged.isNotEmpty()) {
             sendStagedAttachments()
             return
@@ -389,7 +439,7 @@ class ChatThreadViewModel @Inject constructor(
                     // Lease per photo (F2-LB-1): an upload that finishes
                     // after logout must not enqueue into the next session.
                     val lease = store.acquireWriteLease() ?: break
-                    val uploaded = attachmentUploader.uploadImage(item.uri)
+                    val uploaded = attachmentUploader.uploadPhotoOrVideo(item.uri)
                     if (uploaded is AppResult.Success) {
                         val queued = store.enqueueSend(
                             conversationId,
@@ -477,7 +527,7 @@ class ChatThreadViewModel @Inject constructor(
             val room = MAX_ATTACHMENTS - state.staged.size
             val added = uris.filterNot { it in existing }.take(room.coerceAtLeast(0))
             state.copy(
-                staged = state.staged + added.map { StagedAttachment(uri = it) },
+                staged = state.staged + added.map { StagedAttachment(uri = it, isVideo = isVideoUri(it)) },
                 attachmentError = if (added.size < uris.filterNot { it in existing }.size) {
                     "You can attach up to $MAX_ATTACHMENTS photos at once."
                 } else {
@@ -507,15 +557,335 @@ class ChatThreadViewModel @Inject constructor(
         _state.value = _state.value.copy(thread = controller.snapshot())
     }
 
-    fun sendTyping() = viewModelScope.launch {
-        // Server-side the sender's privacy toggle decides whether anything is
-        // published; a denial is silent by design.
-        repository.setTyping(conversationId, typing = true)
+    private var lastTypingStartMillis = 0L
+    private var typingStopJob: Job? = null
+
+    /**
+     * Typing (CONTRACT §4): one `typing.start` per [TYPING_RESEND_MILLIS]
+     * while the draft keeps changing, a `typing.stop` after
+     * [TYPING_IDLE_MILLIS] of quiet or on send. The socket frame goes first;
+     * REST is the fallback when there is no live room. Server-side the
+     * sender's privacy toggle decides whether anything is published.
+     */
+    fun sendTyping() {
+        val now = System.currentTimeMillis()
+        if (now - lastTypingStartMillis >= TYPING_RESEND_MILLIS) {
+            lastTypingStartMillis = now
+            if (!session.sendTyping(conversationId, typing = true)) {
+                viewModelScope.launch { repository.setTyping(conversationId, typing = true) }
+            }
+        }
+        typingStopJob?.cancel()
+        typingStopJob = viewModelScope.launch {
+            delay(TYPING_IDLE_MILLIS)
+            stopTyping()
+        }
     }
+
+    private fun stopTyping() {
+        if (lastTypingStartMillis == 0L) return
+        lastTypingStartMillis = 0L
+        typingStopJob?.cancel()
+        if (!session.sendTyping(conversationId, typing = false)) {
+            viewModelScope.launch { repository.setTyping(conversationId, typing = false) }
+        }
+    }
+
+    private fun isVideoUri(uri: Uri): Boolean =
+        runCatching { attachmentUploader.mimeOf(uri) }.getOrNull()?.startsWith("video/") == true
+
+    // ── Chat parity (2026-10-18) ────────────────────────────────────────
+
+    private fun loadParity(extras: ThreadExtras) {
+        viewModelScope.launch {
+            val settings = extras.privacy.get()
+            if (settings is AppResult.Success) {
+                _state.update {
+                    it.copy(
+                        bubbleStyle = settings.data.chatBubbleStyle,
+                        sensitiveFilter = settings.data.dmSensitiveMediaFilter == true,
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            val packs = extras.parity.stickers()
+            if (packs is AppResult.Success) _state.update { it.copy(stickerPacks = packs.data) }
+        }
+        viewModelScope.launch {
+            // The intro card and Follow need the peer, which the roster read names.
+            _state.map { it.peerUserId }.distinctUntilChanged().collect { peer ->
+                if (peer.isNotBlank()) loadIntro(extras, peer)
+            }
+        }
+        viewModelScope.launch {
+            _state.map { s -> s.thread.messages.firstOrNull { it.senderId == viewerId && !it.pending }?.id }
+                .distinctUntilChanged()
+                .collect { newestOwn -> if (newestOwn != null && _state.value.loadedIsGroup) loadSeenCount(extras, newestOwn) }
+        }
+        viewModelScope.launch {
+            extras.followGraph.edges.collect { edges ->
+                val peer = _state.value.peerUserId
+                if (peer.isNotBlank()) {
+                    _state.update {
+                        it.copy(followingPeer = edges[peer] == com.us.android.core.model.FollowStatus.FOLLOWING)
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun loadIntro(extras: ThreadExtras, peerId: String) {
+        val conversation = _state.value.conversation
+        val peer = conversation?.peer
+        val profile = (extras.profiles.getProfile(peerId) as? AppResult.Success)?.data
+        _state.update {
+            it.copy(
+                intro = ThreadIntro(
+                    userId = peerId,
+                    name = profile?.displayName?.ifBlank { null } ?: peer?.displayName?.ifBlank { null } ?: it.loadedTitle,
+                    username = profile?.username?.ifBlank { null } ?: peer?.username.orEmpty(),
+                    avatarUrl = peer?.avatarUrl,
+                    followers = profile?.counts?.followers,
+                    posts = profile?.counts?.posts,
+                ),
+            )
+        }
+        extras.followGraph.ensureKnown(listOf(peerId))
+    }
+
+    private suspend fun loadSeenCount(extras: ThreadExtras, messageId: String) {
+        val summary = extras.parity.readSummary(conversationId, messageId)
+        if (summary is AppResult.Success) _state.update { it.copy(seenByCount = summary.data.count) }
+    }
+
+    fun followPeer() {
+        val extras = extras ?: return
+        val peer = _state.value.peerUserId.takeIf { it.isNotBlank() } ?: return
+        viewModelScope.launch {
+            if (extras.followGraph.follow(peer) is AppResult.Failure) notice("Couldn't follow right now.")
+        }
+    }
+
+    fun revealSensitive(messageId: String) = _state.update { it.copy(revealed = it.revealed + messageId) }
+
+    fun dismissNotice() = _state.update { it.copy(notice = null) }
+
+    private fun notice(text: String, type: UsMessageType = UsMessageType.Error) =
+        _state.update { it.copy(notice = UsMessage(text, type)) }
+
+    /** A recorded voice message: upload as audio, then the durable outbox (`type: voice`). */
+    fun sendVoice(file: java.io.File, durationMs: Long, amplitudes: List<Int>) {
+        if (durationMs < MIN_VOICE_MILLIS) {
+            file.delete()
+            notice("Hold to record a voice message.", UsMessageType.Info)
+            return
+        }
+        val replyTo = _state.value.replyingTo?.toReplyRef()
+        _state.update { it.copy(voiceSending = true) }
+        viewModelScope.launch {
+            try {
+                val lease = store.acquireWriteLease() ?: return@launch
+                when (val uploaded = attachmentUploader.uploadVoice(file)) {
+                    is AppResult.Success -> {
+                        val queued = store.enqueueTypedSend(
+                            conversationId,
+                            TypedSend.voice(uploaded.data, durationMs, downsampleWaveform(amplitudes), replyTo),
+                            lease,
+                        )
+                        if (queued == null) notice("Chat is finishing a security cleanup. Try again.")
+                        else _state.update { it.copy(replyingTo = null) }
+                    }
+                    is AppResult.Failure -> notice("Your voice message couldn't be sent.")
+                }
+            } finally {
+                file.delete()
+                _state.update { it.copy(voiceSending = false) }
+            }
+        }
+    }
+
+    fun sendSticker(sticker: StickerInfo) = sendTyped(TypedSend.sticker(sticker))
+
+    /** A GIF picked from Giphy's SDK: its id and url go EXACTLY as the SDK returned them. */
+    fun sendGif(gif: GifInfo) = sendTyped(TypedSend.gif(gif))
+
+    private fun sendTyped(typed: TypedSend) = viewModelScope.launch {
+        if (store.enqueueTypedSend(conversationId, typed) == null) {
+            notice("Chat is finishing a security cleanup. Try again.")
+        }
+    }
+
+    /** Unsend (CONTRACT §2.3 `everyone`): the author's, or a group owner/admin moderating. */
+    fun unsend(messageId: String) = deleteWithScope(messageId, DELETE_SCOPE_EVERYONE)
+
+    /** Delete for me (`me`): anyone, for their own view only. */
+    fun deleteForMe(messageId: String) = deleteWithScope(messageId, DELETE_SCOPE_ME)
+
+    private fun deleteWithScope(messageId: String, scope: String) = viewModelScope.launch {
+        when (val result = controller.deleteMessage(messageId, scope)) {
+            is AppResult.Success -> store.removeCachedMessage(messageId)
+            is AppResult.Failure -> notice(
+                if (scope == DELETE_SCOPE_EVERYONE) "Couldn't unsend that message." else "Couldn't delete that message.",
+            )
+            null -> Unit
+        }
+        _state.update { it.copy(thread = controller.snapshot()) }
+    }
+
+    fun openReactions(messageId: String) {
+        val extras = extras ?: return
+        _state.update { it.copy(reactionSheet = ReactionSheetState(messageId)) }
+        viewModelScope.launch {
+            val result = extras.parity.reactions(conversationId, messageId)
+            _state.update { s ->
+                if (s.reactionSheet?.messageId != messageId) return@update s
+                s.copy(
+                    reactionSheet = when (result) {
+                        is AppResult.Success -> ReactionSheetState(messageId, result.data)
+                        is AppResult.Failure -> ReactionSheetState(messageId, failed = true)
+                    },
+                )
+            }
+        }
+    }
+
+    fun closeReactions() = _state.update { it.copy(reactionSheet = null) }
+
+    fun closeSheet() = _state.update { it.copy(sheet = null) }
+
+    fun openSeenBy() {
+        val extras = extras ?: return
+        val newestOwn = _state.value.thread.messages.firstOrNull { it.senderId == viewerId && !it.pending } ?: return
+        _state.update { it.copy(sheet = MessageSheet.SeenBy()) }
+        viewModelScope.launch {
+            val result = extras.parity.readSummary(conversationId, newestOwn.id)
+            _state.update { s ->
+                if (s.sheet !is MessageSheet.SeenBy) return@update s
+                s.copy(
+                    sheet = when (result) {
+                        is AppResult.Success -> MessageSheet.SeenBy(result.data)
+                        is AppResult.Failure -> MessageSheet.SeenBy(failed = true)
+                    },
+                )
+            }
+        }
+    }
+
+    fun openForward(message: Message) {
+        if (!message.canForward()) return
+        _state.update { it.copy(sheet = MessageSheet.Forward(message)) }
+        viewModelScope.launch {
+            val rows = store.conversationsFlow().first()
+            _state.update { s ->
+                val sheet = s.sheet as? MessageSheet.Forward ?: return@update s
+                s.copy(sheet = sheet.copy(targets = forwardTargets(rows, conversationId)))
+            }
+        }
+    }
+
+    /** Forward to at most five chats; one summary line says how it went. */
+    fun forward(targetIds: List<String>) {
+        val extras = extras ?: return
+        val sheet = _state.value.sheet as? MessageSheet.Forward ?: return
+        if (sheet.sending || targetIds.isEmpty()) return
+        _state.update { it.copy(sheet = sheet.copy(sending = true)) }
+        viewModelScope.launch {
+            val result = forwardOnce(extras.parity, conversationId, sheet.message, targetIds.take(MAX_FORWARD_TARGETS))
+            _state.update { it.copy(sheet = null) }
+            when (result) {
+                is AppResult.Success -> {
+                    val summary = forwardSummary(result.data)
+                    val allSent = result.data.isNotEmpty() && result.data.all { it.outcome == ForwardOutcome.SENT }
+                    notice(summary, if (allSent) UsMessageType.Success else UsMessageType.Warning)
+                }
+                is AppResult.Failure -> notice(
+                    if (result.error.isMissingRoute()) "Forwarding isn't available yet." else "Couldn't forward. Try again.",
+                )
+            }
+        }
+    }
+
+    fun openReport(message: Message) = _state.update { it.copy(sheet = MessageSheet.Report(message)) }
+
+    fun report(reason: MessageReportReason, note: String?) {
+        val extras = extras ?: return
+        val sheet = _state.value.sheet as? MessageSheet.Report ?: return
+        if (sheet.sending) return
+        _state.update { it.copy(sheet = sheet.copy(sending = true)) }
+        viewModelScope.launch {
+            val result = extras.parity.report(conversationId, sheet.message.id, reason, note)
+            _state.update { it.copy(sheet = null) }
+            when (result) {
+                is AppResult.Success -> notice("Thanks — we'll review it. They won't know it was you.", UsMessageType.Success)
+                is AppResult.Failure -> notice("Couldn't send the report. Try again.")
+            }
+        }
+    }
+
+    fun openEdit(message: Message) {
+        if (!message.canEdit(viewerId)) return
+        _state.update { it.copy(sheet = MessageSheet.Edit(message, message.text)) }
+    }
+
+    fun onEditChange(text: String) = _state.update { s ->
+        val sheet = s.sheet as? MessageSheet.Edit ?: return@update s
+        s.copy(sheet = sheet.copy(text = text))
+    }
+
+    fun saveEdit() {
+        val extras = extras ?: return
+        val sheet = _state.value.sheet as? MessageSheet.Edit ?: return
+        val text = sheet.text.trim()
+        if (sheet.saving || !text.isValidMessage() || text == sheet.message.text) {
+            if (text == sheet.message.text) closeSheet()
+            return
+        }
+        _state.update { it.copy(sheet = sheet.copy(saving = true)) }
+        viewModelScope.launch {
+            when (val result = extras.parity.edit(conversationId, sheet.message, text)) {
+                is AppResult.Success -> {
+                    controller.replaceText(sheet.message.id, text)?.let { thread -> _state.update { it.copy(thread = thread) } }
+                    _state.update { it.copy(sheet = null) }
+                }
+                is AppResult.Failure -> {
+                    _state.update { it.copy(sheet = sheet.copy(saving = false)) }
+                    notice("Couldn't edit that message.")
+                }
+            }
+        }
+    }
+
+    /**
+     * Tapping a quote: scroll to the original. Older history is read page by
+     * page (at most [JUMP_PAGES]) until it is found; a note reply has no
+     * original in the thread and does nothing.
+     */
+    fun jumpTo(messageId: String?) {
+        if (messageId.isNullOrBlank()) return
+        viewModelScope.launch {
+            var pages = 0
+            while (controller.snapshot().messages.none { it.id == messageId } && controller.snapshot().canLoadMore &&
+                pages < JUMP_PAGES
+            ) {
+                val lease = store.acquireWriteLease() ?: break
+                store.cacheMessages(controller.loadMore().messages, lease)
+                pages++
+            }
+            val found = controller.snapshot().messages.any { it.id == messageId }
+            _state.update { it.copy(thread = controller.snapshot(), jumpToId = if (found) messageId else null) }
+            if (!found) notice("That message is too far back to show.", UsMessageType.Info)
+        }
+    }
+
+    fun consumeJump() = _state.update { it.copy(jumpToId = null) }
 
     private fun loadMembers() = viewModelScope.launch {
         when (val result = repository.conversation(conversationId)) {
             is AppResult.Success -> _state.value = _state.value.copy(
+                conversation = result.data,
+                peerOnline = result.data.peer?.isOnline ?: _state.value.peerOnline,
+                peerLastActiveAt = result.data.peer?.lastActiveAt ?: _state.value.peerLastActiveAt,
                 thread = controller.setMembers(result.data.members),
                 // Deep links navigate with a blank title; the loaded
                 // conversation supplies the real one.
@@ -563,6 +933,12 @@ class ChatThreadViewModel @Inject constructor(
                         event.conversationId == conversationId
                     ) {
                         restartTypingTimer(event.userId)
+                    }
+                    // Chat parity: the header's "Active now" follows the peer live.
+                    if (event is ChatSocketEvent.PresenceUpdate && event.userId == _state.value.peerUserId) {
+                        _state.update {
+                            it.copy(peerOnline = event.isOnline, peerLastActiveAt = event.lastActiveAt ?: it.peerLastActiveAt)
+                        }
                     }
                     if (event is ChatSocketEvent.MessageReceived &&
                         event.message.conversationId == conversationId
@@ -616,5 +992,11 @@ class ChatThreadViewModel @Inject constructor(
         const val CONVERSATION_ID_KEY = "conversationId"
         const val MERGE_WINDOW = 10
         const val MAX_ATTACHMENTS = 10
+        const val TYPING_RESEND_MILLIS = 2_500L
+        const val TYPING_IDLE_MILLIS = 4_000L
+        const val JUMP_PAGES = 5
+
+        /** Shorter than this is a tap, not a recording. */
+        const val MIN_VOICE_MILLIS = 800L
     }
 }

@@ -77,6 +77,33 @@ sealed interface ChatSocketEvent {
      */
     data class CallSignal(val type: String, val frame: JsonObject) : ChatSocketEvent
 
+    /** Chat parity (CONTRACT §2.3): a message was unsent for everyone. */
+    data class MessageDeleted(val conversationId: String, val messageId: String) : ChatSocketEvent
+
+    /**
+     * Chat parity (CONTRACT §2.5): one reaction added or removed. The server
+     * sends the reactor's own frame to their other devices too, so applying
+     * it must be idempotent.
+     */
+    data class ReactionChanged(
+        val conversationId: String,
+        val messageId: String,
+        val userId: String,
+        val emoji: String,
+        val added: Boolean,
+    ) : ChatSocketEvent
+
+    /**
+     * Chat parity (CONTRACT §4): a DM peer's presence changed. ws-gateway
+     * relays this one FLAT (`type` injected into the presence payload), so
+     * the parser reads it from the frame itself when there is no `payload`.
+     */
+    data class PresenceUpdate(
+        val userId: String,
+        val isOnline: Boolean,
+        val lastActiveAt: String?,
+    ) : ChatSocketEvent
+
     /**
      * A frame this client does not model.
      *
@@ -302,9 +329,34 @@ private fun parseMessageFrame(type: String, payload: JsonObject): ChatSocketEven
             // until the thread was reopened.
             postId = payload.str("post_id")?.takeIf { it.isNotBlank() },
             createdAt = payload.str("created_at").orEmpty(),
-        ),
+        ).withParityFields(payload),
     )
 }
+
+/**
+ * Chat parity: the typed fields a realtime frame may carry (voice, sticker,
+ * gif, profile/sound/live, forwarded, media details), read through the same
+ * tolerant DTO the REST list uses. A frame without them is unchanged.
+ */
+private fun Message.withParityFields(payload: JsonObject): Message {
+    val dto = runCatching { parityJson.decodeFromJsonElement(MessageDto.serializer(), payload) }.getOrNull()
+        ?: return this
+    val typed = dto.toDomain()
+    return copy(
+        type = payload.str("type")?.takeIf { it.isNotBlank() } ?: typed.type,
+        forwarded = typed.forwarded,
+        voice = typed.voice,
+        sticker = typed.sticker,
+        gif = typed.gif,
+        profileUserId = typed.profileUserId,
+        soundId = typed.soundId,
+        streamId = typed.streamId,
+        replyKind = typed.replyKind,
+        media = typed.media,
+    )
+}
+
+private val parityJson = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
 
 fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
     val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
@@ -320,8 +372,13 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
     // "payload":"<the raw string>"} (server.go:616). The payload is then a
     // string, not an object, and asking for .jsonObject would throw inside a
     // socket callback.
-    val payload = runCatching { frame["payload"]?.jsonObject }.getOrNull()
-        ?: return ChatSocketEvent.Unknown(type)
+    val nested = runCatching { frame["payload"]?.jsonObject }.getOrNull()
+
+    // Presence is relayed FLAT by ws-gateway (server.go: the presence map
+    // with `type` injected); a nested copy is accepted too.
+    if (type == FRAME_PRESENCE_UPDATE) return parsePresence(nested ?: frame)
+
+    val payload = nested ?: return ChatSocketEvent.Unknown(type)
 
     return when (type) {
         FRAME_MESSAGE -> {
@@ -362,9 +419,64 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
 
         FRAME_SUBSCRIPTION_REVOKED -> parseSubscriptionRevoked(payload)
 
+        FRAME_MESSAGE_DELETED -> parseMessageDeleted(payload)
+
+        FRAME_REACTION -> parseReaction(payload)
+
         else -> ChatSocketEvent.Unknown(type)
     }
 }
+
+private fun parseMessageDeleted(payload: JsonObject): ChatSocketEvent {
+    val conversationId = payload.str("conversation_id").orEmpty()
+    val messageId = payload.str("message_id").orEmpty()
+    return if (conversationId.isBlank() || messageId.isBlank()) {
+        ChatSocketEvent.Malformed(FRAME_MESSAGE_DELETED, "missing or blank identifier")
+    } else {
+        ChatSocketEvent.MessageDeleted(conversationId, messageId)
+    }
+}
+
+/** `reaction {conversation_id, message_id, user_id, emoji, added}` (message.go ToggleReaction). */
+private fun parseReaction(payload: JsonObject): ChatSocketEvent {
+    val conversationId = payload.str("conversation_id").orEmpty()
+    val messageId = payload.str("message_id").orEmpty()
+    val userId = payload.str("user_id").orEmpty()
+    val emoji = payload.str("emoji").orEmpty()
+    val added = payload.bool("added")
+    return if (conversationId.isBlank() || messageId.isBlank() || userId.isBlank() || emoji.isBlank() || added == null) {
+        ChatSocketEvent.Malformed(FRAME_REACTION, "missing or blank field")
+    } else {
+        ChatSocketEvent.ReactionChanged(conversationId, messageId, userId, emoji, added)
+    }
+}
+
+private fun parsePresence(payload: JsonObject): ChatSocketEvent {
+    val userId = payload.str("user_id").orEmpty()
+    // Older presence payloads say `status: "online"|"offline"` instead.
+    val online = payload.bool("is_online") ?: payload.str("status")?.let { it == "online" }
+    return if (userId.isBlank() || online == null) {
+        ChatSocketEvent.Malformed(FRAME_PRESENCE_UPDATE, "missing user_id or state")
+    } else {
+        ChatSocketEvent.PresenceUpdate(userId, online, payload.str("last_active_at")?.takeIf { it.isNotBlank() })
+    }
+}
+
+/**
+ * The typing frames a client may send once scoped rooms are on (CONTRACT
+ * §4): `{"type":"typing.start"|"typing.stop","conversation_id":…}`.
+ */
+fun typingFrame(json: Json, conversationId: String, typing: Boolean): String =
+    json.encodeToString(
+        TypingFrame.serializer(),
+        TypingFrame(type = if (typing) "typing.start" else "typing.stop", conversationId = conversationId),
+    )
+
+@kotlinx.serialization.Serializable
+internal data class TypingFrame(
+    val type: String,
+    @kotlinx.serialization.SerialName("conversation_id") val conversationId: String,
+)
 
 /**
  * Same fail-closed identifier rule as message frames: a receipt with a blank
@@ -434,6 +546,9 @@ private const val FRAME_MESSAGE = "message"
 private const val FRAME_TYPING = "typing"
 private const val FRAME_READ_RECEIPT = "read_receipt"
 private const val FRAME_SUBSCRIPTION_REVOKED = "subscription_revoked"
+private const val FRAME_MESSAGE_DELETED = "message_deleted"
+private const val FRAME_REACTION = "reaction"
+private const val FRAME_PRESENCE_UPDATE = "presence_update"
 
 /**
  * How long to wait before the next reconnection attempt.

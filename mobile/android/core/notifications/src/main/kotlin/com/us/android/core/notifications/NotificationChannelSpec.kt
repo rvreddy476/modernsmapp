@@ -37,6 +37,14 @@ enum class NotificationChannelSpec(
      * who sparked you — is private.
      */
     val privateOnLockScreen: Boolean = false,
+    /** Posts with no sound and no vibration (a chat's "Silent" alert tone). */
+    val silent: Boolean = false,
+    /**
+     * A vibration pattern of its own (chat parity alert tones). The app
+     * bundles no short sounds, so the tones share the device's notification
+     * sound and are told apart by feel; null keeps the platform default.
+     */
+    val vibration: LongArray? = null,
 ) {
     COMMERCE_DELIVERY_DUTY(
         id = "commerce_delivery_duty", title = "Commerce delivery location",
@@ -76,6 +84,44 @@ enum class NotificationChannelSpec(
         title = "Messages",
         description = "Direct messages and chat requests",
         importance = NotificationManager.IMPORTANCE_HIGH,
+    ),
+
+    /*
+     * Chat parity (2026-10-18): a conversation's alert tone (CONTRACT §1.1,
+     * §8) picks one of these. A channel is the only place Android lets a
+     * sound live, so each tone is its own channel. The repo bundles NO short
+     * sounds (no res/raw), so chime/pop/bell use the device's notification
+     * sound with a vibration of their own; silent posts quietly. Bundled
+     * sounds can replace them later — under NEW ids, since a channel's sound
+     * cannot change once created.
+     */
+    MESSAGES_CHIME(
+        id = "messages_chime",
+        title = "Messages · Chime",
+        description = "Chats you set to the Chime alert",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        vibration = longArrayOf(0, 120, 80, 120),
+    ),
+    MESSAGES_POP(
+        id = "messages_pop",
+        title = "Messages · Pop",
+        description = "Chats you set to the Pop alert",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        vibration = longArrayOf(0, 60),
+    ),
+    MESSAGES_BELL(
+        id = "messages_bell",
+        title = "Messages · Bell",
+        description = "Chats you set to the Bell alert",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        vibration = longArrayOf(0, 300, 150, 300),
+    ),
+    MESSAGES_SILENT(
+        id = "messages_silent",
+        title = "Messages · Silent",
+        description = "Chats you set to the Silent alert: in the shade, no sound",
+        importance = NotificationManager.IMPORTANCE_LOW,
+        silent = true,
     ),
 
     /**
@@ -349,6 +395,11 @@ enum class NotificationChannelSpec(
         val MOMENTUM: Set<NotificationChannelSpec> = setOf(
             CALLS,
             MESSAGES,
+            // A chat's alert tone (chat parity, 2026-10-18).
+            MESSAGES_CHIME,
+            MESSAGES_POP,
+            MESSAGES_BELL,
+            MESSAGES_SILENT,
             SOCIAL,
             NEW_VIDEOS,
             // "{creator} is live" (2026-10-02).
@@ -427,6 +478,14 @@ enum class NotificationChannelSpec(
                         if (spec.privateOnLockScreen) {
                             lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
                         }
+                        if (spec.silent) {
+                            setSound(null, null)
+                            enableVibration(false)
+                        }
+                        spec.vibration?.let {
+                            enableVibration(true)
+                            vibrationPattern = it
+                        }
                         if (spec.alertSound) {
                             // Alarm tone where the device has one. A null URI
                             // passed to setSound would SILENCE the channel, so
@@ -446,6 +505,23 @@ enum class NotificationChannelSpec(
                         }
                     },
                 )
+            }
+        }
+
+        /**
+         * The channel for a push, honouring a chat's `alert_tone` (CONTRACT
+         * §8): a MESSAGES push with a known non-default tone goes to that
+         * tone's channel; anything else is [forType]'s answer unchanged.
+         */
+        fun forPush(type: String?, alertTone: String?): NotificationChannelSpec {
+            val base = forType(type)
+            if (base != MESSAGES) return base
+            return when (alertTone?.trim()?.lowercase()) {
+                "chime" -> MESSAGES_CHIME
+                "pop" -> MESSAGES_POP
+                "bell" -> MESSAGES_BELL
+                "silent" -> MESSAGES_SILENT
+                else -> MESSAGES
             }
         }
 

@@ -19,6 +19,19 @@ import javax.inject.Singleton
 interface PostShareChats {
     suspend fun conversations(): AppResult<List<Conversation>>
     suspend fun sendPost(conversationId: String, postId: String, idempotencyKey: String): AppResult<Message>
+
+    /**
+     * Chat parity (2026-10-18): the card with the sheet's optional note as
+     * its caption — a `post` message's `text` IS its caption, so the note
+     * rides the card rather than becoming a second message. Defaults to the
+     * plain card so a seam without captions still sends.
+     */
+    suspend fun sendPostWithNote(
+        conversationId: String,
+        postId: String,
+        idempotencyKey: String,
+        note: String,
+    ): AppResult<Message> = sendPost(conversationId, postId, idempotencyKey)
 }
 
 /**
@@ -129,7 +142,11 @@ class ChatRepository @Inject constructor(
             .mapValue { }
 
     suspend fun setTyping(conversationId: String, typing: Boolean): AppResult<Unit> =
-        apiCall(errorMapper) { api.setTyping(conversationId, TypingRequest(typing)) }
+        // A stop also carries CONTRACT §4's `is_typing: false`; a start
+        // stays byte-identical to what every server already accepts.
+        apiCall(errorMapper) {
+            api.setTyping(conversationId, TypingRequest(typing, isTyping = if (typing) null else false))
+        }
             .mapValue { }
 
     suspend fun presence(conversationId: String): AppResult<Presence> =
@@ -182,6 +199,20 @@ class ChatRepository @Inject constructor(
                 conversationId,
                 idempotencyKey,
                 SendMessageRequest(type = POST_MESSAGE, text = "", postId = postId),
+            )
+        }.mapValue { it.toDomain() }
+
+    override suspend fun sendPostWithNote(
+        conversationId: String,
+        postId: String,
+        idempotencyKey: String,
+        note: String,
+    ): AppResult<Message> =
+        apiCall(errorMapper) {
+            api.send(
+                conversationId,
+                idempotencyKey,
+                SendMessageRequest(type = POST_MESSAGE, text = note.trim().take(MAX_MESSAGE_LENGTH), postId = postId),
             )
         }.mapValue { it.toDomain() }
 
@@ -258,13 +289,21 @@ class ChatRepository @Inject constructor(
             )
         }.mapValue { ReactionToggle(added = it.added, emoji = it.emoji, messageId = it.messageId) }
 
-    /** Deletes one message; the server enforces who may. */
-    suspend fun deleteMessage(conversationId: String, message: Message): AppResult<Unit> =
+    /**
+     * Deletes one message; the server enforces who may. [scope] is
+     * CONTRACT §2.3's `everyone` (unsend) or `me` (hide for me); null sends
+     * the old body, which the server treats as `everyone`.
+     */
+    suspend fun deleteMessage(
+        conversationId: String,
+        message: Message,
+        scope: String? = null,
+    ): AppResult<Unit> =
         apiCall(errorMapper) {
             api.deleteMessage(
                 conversationId,
                 message.id,
-                DeleteMessageRequest(bucket = message.bucket, ts = message.ts),
+                DeleteMessageRequest(bucket = message.bucket, ts = message.ts, scope = scope),
             )
         }.mapValue { }
 
@@ -353,6 +392,17 @@ data class Conversation(
     val sourceApp: String? = null,
     /** That product's own id for it (the Pulse match); null otherwise. */
     val matchId: String? = null,
+    // Chat parity (2026-10-18, CONTRACT §1). Defaults read as before.
+    /** Server-maintained; 0 with [hasUnread] true means "unread, count unknown". */
+    val unreadCount: Int = 0,
+    val muteCalls: Boolean = false,
+    /** `default|chime|pop|bell|silent`; null when the server never said. */
+    val alertTone: String? = null,
+    /** Direct chats only. */
+    val streak: ChatStreak? = null,
+    /** Direct chats only: the other person, privacy-gated presence included. */
+    val peer: ChatPeer? = null,
+    val lastMessage: LastMessageInfo? = null,
 ) {
     /**
      * A Pulse match's chat. It belongs to the dating feature (founder,
@@ -440,6 +490,24 @@ data class Message(
     val ts: String = "",
     /** Reaction summaries as the LIST response reported them. */
     val reactions: List<ReactionSummary> = emptyList(),
+    // Chat parity (2026-10-18, CONTRACT §2.2). Defaults read as before.
+    /** The wire `type`: text, media, post, voice, sticker, gif, profile, sound, live, call. */
+    val type: String = TEXT_MESSAGE,
+    val forwarded: Boolean = false,
+    val voice: VoiceInfo? = null,
+    val sticker: StickerInfo? = null,
+    val gif: GifInfo? = null,
+    val profileUserId: String? = null,
+    val soundId: String? = null,
+    val streamId: String? = null,
+    /** `message`, `note`, or null. */
+    val replyKind: String? = null,
+    /** The attachment's kind, size and sensitivity, when the server said. */
+    val media: MediaInfo? = null,
+    /** Unsent: drawn as a tombstone, never as its old content. */
+    val deleted: Boolean = false,
+    /** The author edited the text; the bubble says so. */
+    val edited: Boolean = false,
 ) {
     /** True when this row carries enough address to react/delete. */
     val addressable: Boolean get() = bucket.isNotBlank() && ts.isNotBlank()
@@ -454,7 +522,7 @@ data class ConversationSettings(val isMuted: Boolean, val isPinned: Boolean)
 
 data class Presence(val activeCount: Int, val isBigGroup: Boolean)
 
-private fun MessageDto.toDomain() = Message(
+internal fun MessageDto.toDomain() = Message(
     id = msgId,
     conversationId = conversationId,
     senderId = senderId,
@@ -469,4 +537,16 @@ private fun MessageDto.toDomain() = Message(
     bucket = bucket,
     ts = ts,
     reactions = reactions.map { ReactionSummary(it.emoji, it.userIds) },
+    type = type.ifBlank { TEXT_MESSAGE },
+    forwarded = forwarded,
+    voice = voice?.let { VoiceInfo(it.durationMs, it.waveform) },
+    sticker = sticker?.takeIf { it.url.isNotBlank() }?.let { StickerInfo(it.id, it.url, it.width, it.height) },
+    gif = gif?.takeIf { it.url.isNotBlank() }?.toInfo(),
+    profileUserId = profileUserId?.takeIf { it.isNotBlank() },
+    soundId = soundId?.takeIf { it.isNotBlank() },
+    streamId = streamId?.takeIf { it.isNotBlank() },
+    replyKind = replyKind?.takeIf { it.isNotBlank() },
+    media = mediaInfoOf(media),
+    deleted = deleted,
+    edited = !editedAt.isNullOrBlank(),
 )

@@ -51,6 +51,12 @@ object ChatApisModule {
     @Singleton
     fun providePeopleLookupApi(retrofit: Retrofit): PeopleLookupApi = retrofit.create(PeopleLookupApi::class.java)
 
+    /** The chat-parity routes (2026-10-18): their own interface, so existing ChatApi fakes stay valid. */
+    @Provides
+    @Singleton
+    fun provideChatParityApi(retrofit: Retrofit): com.us.android.core.chat.data.ChatParityApi =
+        retrofit.create(com.us.android.core.chat.data.ChatParityApi::class.java)
+
     /** A post's share sheet (2026-10-17) reads the inbox and sends the card through the one repository. */
     @Provides
     fun providePostShareChats(repository: ChatRepository): PostShareChats = repository

@@ -989,6 +989,84 @@ object UsIcons {
         "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4",
     )
 
+    // ── Chat parity (2026-10-18) ────────────────────────────────────────
+
+    /** Lucide `flame` — a chat streak beside its day count. */
+    val Flame: ImageVector = lucideStroked(
+        "Flame",
+        "M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 " +
+            "2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z",
+    )
+
+    /** Lucide `archive` — archive a chat. */
+    val Archive: ImageVector = lucideStroked(
+        "Archive",
+        "M3 3h18a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+        "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8",
+        "M10 12h4",
+    )
+
+    /** Lucide `copy` — copy a message's text. */
+    val Copy: ImageVector = lucideStroked(
+        "Copy",
+        "M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z",
+        "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2",
+    )
+
+    /** Lucide `reply` — answer one message. */
+    val Reply: ImageVector = lucideStroked("Reply", "M20 18v-2a4 4 0 0 0-4-4H4", "m9 17-5-5 5-5")
+
+    /** Lucide `droplet` — the bubble colour setting. */
+    val Droplet: ImageVector = lucideStroked(
+        "Droplet",
+        "M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z",
+    )
+
+    /** Lucide `phone-off` — mute calls from one chat. */
+    val PhoneOff: ImageVector = lucideStroked(
+        "PhoneOff",
+        "M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 " +
+            "1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67" +
+            "m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 " +
+            ".7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91",
+        "M22 2 2 22",
+    )
+
+    /** Lucide `sticker` — the sticker tab. */
+    val Sticker: ImageVector = lucideStroked(
+        "Sticker",
+        "M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z",
+        "M14 3v4a2 2 0 0 0 2 2h4",
+        "M8 13h.01",
+        "M16 13h.01",
+        "M10 16s.8 1 2 1c1.3 0 2-1 2-1",
+    )
+
+    /** Lucide `eye` — reveal blurred media; "Seen by". */
+    val Eye: ImageVector = lucideStroked(
+        "Eye",
+        "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
+        "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
+    )
+
+    /** Lucide `eye-off` — sensitive media, covered. */
+    val EyeOff: ImageVector = lucideStroked(
+        "EyeOff",
+        "M9.88 9.88a3 3 0 1 0 4.24 4.24",
+        "M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68",
+        "M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61",
+        "m2 2 20 20",
+    )
+
+    /** Lucide `check-check` — mark a chat read. */
+    val CheckCheck: ImageVector = lucideStroked("CheckCheck", "M18 6 7 17l-5-5", "m22 10-7.5 7.5L13 16")
+
+    /** Lucide `square` — stop recording. */
+    val Square: ImageVector = lucideStroked(
+        "Square",
+        "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+    )
+
     /** Lucide `bike` — a ride (Mopedu) notice in the Activity inbox. */
     val Bike: ImageVector = lucideStroked(
         "Bike",

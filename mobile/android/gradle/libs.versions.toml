@@ -106,6 +106,10 @@ media3                    = "1.9.0"
 # load-bearing detail: feed images are authorized gateway URLs, so a loader
 # with its own HTTP stack would 401 on every one of them.
 coil                      = "3.4.0"
+# Giphy Android SDK (chat GIF picker, founder 2026-10-18). Client-side by
+# Giphy's terms (no server proxy or cache). Pulls Fresco for its views;
+# only :feature:chat may depend on it.
+giphy                     = "2.5.3"
 datastore                 = "1.2.1"
 securityCrypto            = "1.1.0"
 biometric                 = "1.1.0"
@@ -256,6 +260,7 @@ media3-transformer                 = { module = "androidx.media3:media3-transfor
 media3-effect                      = { module = "androidx.media3:media3-effect", version.ref = "media3" }
 coil-compose                       = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-network-okhttp                = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
+giphy-ui                           = { module = "com.giphy.sdk:ui", version.ref = "giphy" }
 paging-runtime                     = { module = "androidx.paging:paging-runtime", version.ref = "paging" }
 paging-compose                     = { module = "androidx.paging:paging-compose", version.ref = "paging" }
 paging-common                      = { module = "androidx.paging:paging-common", version.ref = "paging" }

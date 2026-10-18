@@ -69,6 +69,8 @@ import coil3.compose.AsyncImage
 import com.us.android.core.chat.data.MAX_MESSAGE_LENGTH
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
+import com.us.android.core.chat.data.presenceLabel
+import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
@@ -104,6 +106,8 @@ fun ChatThreadScreen(
     onReportSender: (senderId: String, messageId: String, name: String) -> Unit = { _, _, _ -> },
     // A shared post's card (2026-10-17): :app opens the post where it plays.
     onOpenPost: (postId: String, contentType: String) -> Unit = { _, _ -> },
+    // Chat parity (2026-10-18). Defaults keep every older call site valid.
+    links: ThreadLinks = ThreadLinks(),
     viewModel: ChatThreadViewModel = hiltViewModel(),
     postCards: PostCardsViewModel = hiltViewModel(),
 ) {
@@ -111,12 +115,23 @@ fun ChatThreadScreen(
     val cards by postCards.cards.collectAsStateWithLifecycle()
     val state = render.thread
     val listState = rememberLazyListState()
+    var cameraOpen by remember { mutableStateOf(false) }
+    var actionsFor by remember { mutableStateOf<Message?>(null) }
 
     // MULTIPLE, and staged rather than sent. The picker hands back a list
-    // that lands on the composer; the upload waits for Send.
+    // that lands on the composer; the upload waits for Send. Chat parity:
+    // photos AND videos.
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(ChatThreadViewModel.MAX_ATTACHMENTS),
     ) { uris -> viewModel.stageAttachments(uris) }
+
+    // A tapped quote scrolls to its original once it is loaded.
+    LaunchedEffect(render.jumpToId) {
+        val target = render.jumpToId ?: return@LaunchedEffect
+        val index = state.messages.indexOfFirst { it.id == target }
+        if (index >= 0) listState.animateScrollToItem(index + render.pendingSends.size + typingSlots(state))
+        viewModel.consumeJump()
+    }
 
     val shouldLoadMore by remember(state) {
         derivedStateOf {
@@ -143,6 +158,16 @@ fun ChatThreadScreen(
                 // loaded conversation supplies the real one.
                 title = title.ifBlank { render.loadedTitle.ifBlank { "Conversation" } },
                 typing = state.typingUserIds.isNotEmpty(),
+                avatarUrl = render.conversation?.peer?.avatarUrl ?: render.conversation?.avatarUrl,
+                presence = if (isGroup || render.loadedIsGroup) {
+                    null
+                } else {
+                    presenceLabel(render.peerOnline, render.peerLastActiveAt, System.currentTimeMillis())
+                },
+                onMore = links.onOpenChatSettings?.takeIf { render.parityEnabled },
+                onOpenPeer = links.onOpenProfile?.let { open ->
+                    { render.peerUserId.takeIf { it.isNotBlank() }?.let(open) }
+                },
                 // Calls are DIRECT-only in P0, and the buttons appear only
                 // once the roster resolved the peer. Whether the peer may
                 // actually be called is the server's decision when the button
@@ -164,6 +189,7 @@ fun ChatThreadScreen(
         // The keyboard inset arrives in `padding`: UsScaffold folds the ime
         // into its contentWindowInsets, so applying it here is what lifts the
         // composer above the keyboard instead of leaving it underneath.
+        Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             if (render.offline) {
                 OfflineThreadBanner(onRetry = viewModel::refresh)
@@ -179,16 +205,33 @@ fun ChatThreadScreen(
                         onRetry = viewModel::refresh,
                     )
 
-                    state.messages.isEmpty() && render.pendingSends.isEmpty() -> UsEmptyState(
-                        title = "No messages yet",
-                        detail = "Say something to start the conversation.",
-                    )
+                    state.messages.isEmpty() && render.pendingSends.isEmpty() -> {
+                        val intro = render.intro
+                        if (intro != null && !isGroup && !render.loadedIsGroup) {
+                            ThreadIntroCard(
+                                intro = intro,
+                                following = render.followingPeer,
+                                onFollow = viewModel::followPeer,
+                                onViewProfile = links.onOpenProfile?.let { open -> { open(intro.userId) } },
+                            )
+                        } else {
+                            UsEmptyState(
+                                title = "No messages yet",
+                                detail = "Say something to start the conversation.",
+                            )
+                        }
+                    }
 
                     else -> LazyColumn(
                         state = listState,
                         reverseLayout = true,
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        // The typing bubble sits at the very bottom, under
+                        // anything still sending (CONTRACT §9).
+                        if (state.typingUserIds.isNotEmpty()) {
+                            item(key = "typing") { TypingBubble() }
+                        }
                         // Outbox rows render newest-most (index 0 = visual
                         // bottom): whatever is still queued sits under the
                         // confirmed history, where an in-flight message
@@ -216,12 +259,16 @@ fun ChatThreadScreen(
                             // The list is newest-first under reverseLayout,
                             // so the message drawn ABOVE this one is index+1.
                             val previousSender = state.messages.getOrNull(index + 1)?.senderId
+                            val isOwn = message.senderId == render.viewerId
+                            val newestOwn = isOwn && state.messages.firstOrNull { it.senderId == render.viewerId }?.id == message.id
                             MessageRow(
                                 message = message,
-                                isOwn = message.senderId == render.viewerId,
+                                isOwn = isOwn,
                                 showSenderName = (isGroup || render.loadedIsGroup) &&
                                     previousSender != message.senderId,
-                                readByPeer = message.id == state.peerLastReadMessageId,
+                                readByPeer = message.id == state.peerLastReadMessageId ||
+                                    (newestOwn && render.conversation?.lastMessage?.ownStatus == "read" &&
+                                        render.conversation?.lastMessage?.at == message.createdAt),
                                 quoteAuthor = viewModel.quoteAuthorName(message.replyToSenderId),
                                 onReact = { emoji ->
                                     viewModel.toggleReaction(message.id, emoji)
@@ -232,7 +279,33 @@ fun ChatThreadScreen(
                                 postCard = PostCardSlot(
                                     state = message.postId?.let { cards[it] },
                                     onEnsure = postCards::ensure,
-                                    onOpen = { card -> onOpenPost(card.postId, card.contentType) },
+                                    onOpen = { card ->
+                                        val reels = links.onOpenSharedReels
+                                        if (card.isVideo && reels != null && card.contentType != "long_video") {
+                                            reels(card.postId)
+                                        } else {
+                                            onOpenPost(card.postId, card.contentType)
+                                        }
+                                    },
+                                ),
+                                rich = RichSlot(
+                                    parity = render.parityEnabled,
+                                    bubbleStyle = render.bubbleStyle,
+                                    blurred = shouldBlur(
+                                        message,
+                                        render.sensitiveFilter,
+                                        render.conversation?.isRequest == true,
+                                        message.id in render.revealed,
+                                    ),
+                                    onReveal = { viewModel.revealSensitive(message.id) },
+                                    onLongPress = { actionsFor = message },
+                                    onOpenReactions = { viewModel.openReactions(message.id) },
+                                    onQuote = { viewModel.jumpTo(message.replyToId) },
+                                    onOpenProfile = links.onOpenProfile ?: {},
+                                    onOpenSound = links.onOpenSound ?: {},
+                                    onOpenLive = links.onOpenLive ?: {},
+                                    seenByCount = if (newestOwn && (isGroup || render.loadedIsGroup)) render.seenByCount else null,
+                                    onOpenSeenBy = viewModel::openSeenBy,
                                 ),
                                 onReveal = { viewModel.revealCovered(message.id) },
                                 onBothered = { viewModel.answerBothered(message.id, it) },
@@ -286,7 +359,7 @@ fun ChatThreadScreen(
                 // One send at a time: while an enqueue awaits Room, a second
                 // tap must not mint a second outbox row for the same text.
                 canSend = render.canSend,
-                attaching = render.sendInFlight,
+                attaching = render.sendInFlight || render.voiceSending,
                 onDraftChange = {
                     viewModel.onDraftChange(it)
                     viewModel.sendTyping()
@@ -294,15 +367,192 @@ fun ChatThreadScreen(
                 onSend = viewModel::send,
                 onAttach = {
                     pickImages.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        PickVisualMediaRequest(
+                            if (render.parityEnabled) {
+                                ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                            } else {
+                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                            },
+                        ),
                     )
                 },
+                parity = if (render.parityEnabled) {
+                    ComposerParity(
+                        stickerPacks = render.stickerPacks,
+                        onCamera = { cameraOpen = true },
+                        onSticker = viewModel::sendSticker,
+                        onGif = viewModel::sendGif,
+                        onVoice = { take -> viewModel.sendVoice(take.file, take.durationMs, take.amplitudes) },
+                        // Hold-to-record replaces Send while there is nothing typed or staged.
+                        showMic = state.draft.isBlank() && render.staged.isEmpty(),
+                    )
+                } else {
+                    null
+                },
             )
+        }
+        UsMessageHost(message = render.notice, onDismiss = viewModel::dismissNotice)
         }
     }
 
     if (render.kindPrompt) {
         KindPromptSheet(onEdit = viewModel::editHeldMessage, onSendAnyway = viewModel::sendAnyway)
+    }
+    if (cameraOpen) {
+        ChatCameraDialog(
+            onCaptured = { uri ->
+                cameraOpen = false
+                viewModel.stageAttachments(listOf(uri))
+            },
+            onDismiss = { cameraOpen = false },
+        )
+    }
+    actionsFor?.let { message ->
+        val isOwn = message.senderId == render.viewerId
+        MessageActionSheet(
+            message = message,
+            actions = MessageActions(
+                onReact = { emoji -> viewModel.toggleReaction(message.id, emoji) },
+                onReply = { viewModel.startReply(message) }.takeIf { !message.deleted },
+                onForward = { viewModel.openForward(message) }.takeIf { render.parityEnabled && message.canForward() },
+                onEdit = { viewModel.openEdit(message) }.takeIf { render.parityEnabled && message.canEdit(render.viewerId) },
+                onDeleteForMe = { viewModel.deleteForMe(message.id); Unit }.takeIf { render.parityEnabled && message.addressable },
+                onUnsend = (
+                    if (render.parityEnabled) {
+                        { viewModel.unsend(message.id); Unit }
+                    } else {
+                        { viewModel.deleteMessage(message.id); Unit }
+                    }
+                    ).takeIf { isOwn && message.addressable && !message.deleted },
+                onReport = { viewModel.openReport(message) }.takeIf { render.parityEnabled && !isOwn && !message.deleted },
+            ),
+            onDismiss = { actionsFor = null },
+        )
+    }
+    render.reactionSheet?.let { ReactionsSheet(state = it, onDismiss = viewModel::closeReactions) }
+    when (val sheet = render.sheet) {
+        is MessageSheet.Forward -> ForwardSheet(
+            targets = sheet.targets,
+            sending = sheet.sending,
+            viewerId = render.viewerId,
+            onSend = viewModel::forward,
+            onDismiss = viewModel::closeSheet,
+        )
+        is MessageSheet.Report -> ReportSheet(sending = sheet.sending, onReport = viewModel::report, onDismiss = viewModel::closeSheet)
+        is MessageSheet.Edit -> EditSheet(
+            text = sheet.text,
+            saving = sheet.saving,
+            onChange = viewModel::onEditChange,
+            onSave = viewModel::saveEdit,
+            onDismiss = viewModel::closeSheet,
+        )
+        is MessageSheet.SeenBy -> SeenBySheet(summary = sheet.summary, failed = sheet.failed, onDismiss = viewModel::closeSheet)
+        null -> Unit
+    }
+}
+
+/** Where the thread's new affordances lead; `:app` owns each destination (chat parity). */
+data class ThreadLinks(
+    val onOpenChatSettings: (() -> Unit)? = null,
+    val onOpenProfile: ((userId: String) -> Unit)? = null,
+    val onOpenSound: ((soundId: String) -> Unit)? = null,
+    val onOpenLive: ((streamId: String) -> Unit)? = null,
+    /** A shared reel: the swipeable viewer over this chat's shared posts, starting at [postId]. */
+    val onOpenSharedReels: ((postId: String) -> Unit)? = null,
+)
+
+/** The composer's chat-parity tools; null keeps the composer as it was. */
+internal class ComposerParity(
+    val stickerPacks: List<com.us.android.core.chat.data.StickerPack>,
+    val onCamera: () -> Unit,
+    val onSticker: (com.us.android.core.chat.data.StickerInfo) -> Unit,
+    val onGif: (com.us.android.core.chat.data.GifInfo) -> Unit,
+    val onVoice: (VoiceTake) -> Unit,
+    val showMic: Boolean,
+)
+
+/** What a bubble needs beyond the message itself (chat parity). */
+internal class RichSlot(
+    val parity: Boolean,
+    val bubbleStyle: String?,
+    val blurred: Boolean,
+    val onReveal: () -> Unit,
+    val onLongPress: () -> Unit,
+    val onOpenReactions: () -> Unit,
+    val onQuote: () -> Unit,
+    val onOpenProfile: (String) -> Unit,
+    val onOpenSound: (String) -> Unit,
+    val onOpenLive: (String) -> Unit,
+    val seenByCount: Int?,
+    val onOpenSeenBy: () -> Unit,
+)
+
+private fun typingSlots(state: com.us.android.core.chat.data.ThreadUiState): Int =
+    if (state.typingUserIds.isNotEmpty()) 1 else 0
+
+/** "…" in an incoming bubble while someone is typing. */
+@Composable
+private fun TypingBubble() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s)
+            .testTag("thread-typing-bubble"),
+    ) {
+        Text(
+            text = "•••",
+            style = MaterialTheme.typography.titleMedium,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier
+                .clip(RoundedCornerShape(BUBBLE_CORNER))
+                .background(UsTheme.extended.bgCardSolid)
+                .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.s)
+                .semantics { contentDescription = "Typing" },
+        )
+    }
+}
+
+/** An empty direct thread: who this is, their counts, Follow and View profile (CONTRACT §9). */
+@Composable
+private fun ThreadIntroCard(
+    intro: ThreadIntro,
+    following: Boolean,
+    onFollow: () -> Unit,
+    onViewProfile: (() -> Unit)?,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(UsTheme.spacing.xxl)
+            .testTag("thread-intro"),
+    ) {
+        Box(modifier = Modifier.weight(1f))
+        UsAvatar(name = intro.name, size = UsAvatarSize.Large, seed = intro.userId, imageUrl = intro.avatarUrl)
+        Text(intro.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = UsTheme.extended.textPrimary)
+        if (intro.username.isNotBlank()) {
+            Text("@${intro.username}", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
+        }
+        val counts = listOfNotNull(
+            intro.followers?.let { "$it followers" },
+            intro.posts?.let { "$it posts" },
+        ).joinToString(" · ")
+        if (counts.isNotBlank()) {
+            Text(counts, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+            if (!following) UsButton(text = "Follow", onClick = onFollow, modifier = Modifier.testTag("thread-intro-follow"))
+            onViewProfile?.let {
+                UsSecondaryButton(text = "View profile", onClick = it, modifier = Modifier.testTag("thread-intro-profile"))
+            }
+        }
+        Text(
+            "Say hello — your first message starts the conversation.",
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+        )
+        Box(modifier = Modifier.weight(1f))
     }
 }
 
@@ -407,6 +657,12 @@ private fun ChatThreadTopBar(
     onAudioCall: () -> Unit,
     onVideoCall: () -> Unit,
     onOpenGroupInfo: () -> Unit,
+    avatarUrl: String? = null,
+    /** "Active now" / "Active 5m ago" (direct chats; privacy-gated, so often null). */
+    presence: String? = null,
+    /** The ⋯ → Chat settings page; null hides it. */
+    onMore: (() -> Unit)? = null,
+    onOpenPeer: (() -> Unit)? = null,
 ) {
     Column {
         Row(
@@ -431,7 +687,13 @@ private fun ChatThreadTopBar(
                     tint = UsTheme.extended.textPrimary,
                 )
             }
-            UsAvatar(name = title, size = UsAvatarSize.Small, seed = title)
+            UsAvatar(
+                name = title,
+                size = UsAvatarSize.Small,
+                seed = title,
+                imageUrl = avatarUrl,
+                modifier = if (onOpenPeer != null) Modifier.clickable(onClick = onOpenPeer) else Modifier,
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
@@ -451,6 +713,13 @@ private fun ChatThreadTopBar(
                         style = MaterialTheme.typography.labelSmall,
                         color = UsTheme.extended.chatOnline,
                         modifier = Modifier.testTag("thread-typing"),
+                    )
+                } else if (presence != null) {
+                    Text(
+                        text = presence,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (presence == "Active now") UsTheme.extended.chatOnline else UsTheme.extended.textMuted,
+                        modifier = Modifier.testTag("thread-presence"),
                     )
                 }
             }
@@ -481,6 +750,10 @@ private fun ChatThreadTopBar(
                     onClick = onOpenGroupInfo,
                     modifier = Modifier.testTag("thread-group-info"),
                 ) { Text("Info") }
+            } else if (onMore != null) {
+                IconButton(onClick = onMore, modifier = Modifier.testTag("thread-more")) {
+                    Icon(imageVector = UsIcons.More, contentDescription = "Chat settings", tint = UsTheme.extended.textPrimary)
+                }
             }
         }
         Box(
@@ -671,8 +944,10 @@ private fun Composer(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onAttach: () -> Unit,
+    parity: ComposerParity? = null,
 ) {
     var emojiOpen by remember { mutableStateOf(false) }
+    var recordingMillis by remember { mutableStateOf<Long?>(null) }
     Column {
         Box(
             modifier = Modifier
@@ -680,8 +955,33 @@ private fun Composer(
                 .height(HAIRLINE)
                 .background(UsTheme.extended.borderSubtle),
         )
+        recordingMillis?.let { elapsed ->
+            Text(
+                text = "Recording ${com.us.android.core.chat.data.formatVoiceDuration(elapsed)} — release to send",
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.statusDanger,
+                modifier = Modifier
+                    .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.xs)
+                    .testTag("thread-recording"),
+            )
+        }
         if (emojiOpen) {
-            EmojiPanel(onPick = { emoji -> onDraftChange(draft + emoji) })
+            if (parity != null) {
+                ComposerPanel(
+                    stickerPacks = parity.stickerPacks,
+                    onEmoji = { emoji -> onDraftChange(draft + emoji) },
+                    onSticker = {
+                        emojiOpen = false
+                        parity.onSticker(it)
+                    },
+                    onGif = {
+                        emojiOpen = false
+                        parity.onGif(it)
+                    },
+                )
+            } else {
+                EmojiPanel(onPick = { emoji -> onDraftChange(draft + emoji) })
+            }
         }
         Row(
             modifier = Modifier
@@ -707,11 +1007,17 @@ private fun Composer(
                 attaching = attaching,
                 emojiOpen = emojiOpen,
                 onDraftChange = onDraftChange,
-                onAttach = onAttach,
+                onAttach = parity?.onCamera ?: onAttach,
                 onToggleEmoji = { emojiOpen = !emojiOpen },
                 modifier = Modifier.weight(1f),
             )
-            Box(
+            if (parity != null && parity.showMic) {
+                HoldToRecordButton(
+                    enabled = !attaching,
+                    onRecordingChange = { recording, elapsed -> recordingMillis = if (recording) elapsed else null },
+                    onRecorded = parity.onVoice,
+                )
+            } else Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .size(SEND_BUTTON)
@@ -850,7 +1156,7 @@ private fun PendingSendRow(
                 mediaId = pending.mediaId,
                 createdAt = "",
                 pending = true,
-            ),
+            ).withTyped(pending.typed),
             isOwn = true,
         )
         if (pending.failed) {
@@ -894,15 +1200,21 @@ private fun MessageRow(
     onReveal: () -> Unit = {},
     onBothered: (Boolean) -> Unit = {},
     onReport: () -> Unit = {},
+    rich: RichSlot? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    // A call log is a line in the conversation, not a bubble (CONTRACT §9).
+    if (rich?.parity == true && message.type == com.us.android.core.chat.data.CALL_MESSAGE) {
+        CallLogRow(message)
+        return
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
-                enabled = message.addressable,
+                enabled = message.addressable || rich != null,
                 onClick = {},
-                onLongClick = { menuOpen = true },
+                onLongClick = { if (rich != null) rich.onLongPress() else menuOpen = true },
             )
             .padding(
                 horizontal = UsTheme.spacing.pageHorizontal,
@@ -937,8 +1249,17 @@ private fun MessageRow(
                 covered = cover != null && !cover.revealed,
                 onReveal = onReveal,
                 postCard = postCard,
+                rich = rich,
             )
             cover?.let { KindCoverActions(cover = it, onBothered = onBothered, onReport = onReport) }
+            if (message.edited && !message.deleted) {
+                Text(
+                    text = "Edited",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = UsTheme.extended.textMuted,
+                    modifier = Modifier.testTag("message-edited"),
+                )
+            }
             if (message.reactions.isNotEmpty()) {
                 // The reaction chip hangs off the bubble's corner (98:363).
                 Text(
@@ -948,6 +1269,8 @@ private fun MessageRow(
                     modifier = Modifier
                         .padding(top = UsTheme.spacing.xs)
                         .clip(RoundedCornerShape(UsTheme.radii.full))
+                        // Tap → who reacted (CONTRACT §2.5).
+                        .then(if (rich?.parity == true) Modifier.clickable(onClick = rich.onOpenReactions) else Modifier)
                         .background(UsTheme.extended.bgCardSolid)
                         .border(
                             width = HAIRLINE,
@@ -963,10 +1286,20 @@ private fun MessageRow(
             }
             if (isOwn && readByPeer) {
                 Text(
-                    text = "Read",
+                    text = "Seen",
                     style = MaterialTheme.typography.labelSmall,
                     color = UsTheme.extended.textMuted,
                     modifier = Modifier.testTag("message-read"),
+                )
+            }
+            rich?.seenByCount?.takeIf { it > 0 }?.let { count ->
+                Text(
+                    text = "Seen by $count",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = UsTheme.extended.textMuted,
+                    modifier = Modifier
+                        .clickable(onClick = rich.onOpenSeenBy)
+                        .testTag("message-seen-by"),
                 )
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -1028,6 +1361,7 @@ private fun MessageBubble(
     covered: Boolean = false,
     onReveal: () -> Unit = {},
     postCard: PostCardSlot? = null,
+    rich: RichSlot? = null,
 ) {
     val shape = if (isOwn) {
         RoundedCornerShape(
@@ -1053,15 +1387,22 @@ private fun MessageBubble(
     // one still needs a readable ground, so a media message WITH text keeps
     // the fill; only the bare photo goes without — unless it QUOTES another
     // message, because the quote card needs a ground to sit on.
-    val photoOnly = message.mediaId != null && message.text.isBlank() &&
-        message.replyToId == null
+    // Chat parity: a sticker or a GIF is its own picture too — no slab.
+    val pictureOnly = !message.deleted && message.text.isBlank() && message.replyToId == null &&
+        !message.forwarded && (message.mediaId != null || message.sticker != null || message.gif != null)
+    val photoOnly = pictureOnly
     // Own bubbles are LIGHT green with near-black text — the solid accent
     // fill read as a hard slab of colour down the whole thread. The accent
     // survives where it is small: the send button, the quote bar, badges.
+    // Chat parity: the viewer may pick their own colour (chat_bubble_style).
+    val swatch = UsTheme.extended.chatBubbles.forStyle(rich?.bubbleStyle)
+    val ownFill = if (rich?.bubbleStyle != null) swatch.fill else UsTheme.extended.chatBubbleOwn
+    val ownInk = if (rich?.bubbleStyle != null) swatch.ink else UsTheme.extended.onChatBubbleOwn
+    val ink = if (isOwn) ownInk else UsTheme.extended.textPrimary
     val bubbleColor = when {
         photoOnly -> Color.Transparent
-        isOwn && message.pending -> UsTheme.extended.chatBubbleOwn.copy(alpha = PENDING_ALPHA)
-        isOwn -> UsTheme.extended.chatBubbleOwn
+        isOwn && message.pending -> ownFill.copy(alpha = PENDING_ALPHA)
+        isOwn -> ownFill
         else -> UsTheme.extended.bgCardSolid
     }
     Column(
@@ -1078,15 +1419,62 @@ private fun MessageBubble(
         // with the original's author and snapshot, the way every messenger
         // draws a reply. Rendered from the denormalised fields alone; the
         // original message may be pages away or deleted.
-        if (message.replyToId != null) {
-            QuoteCard(
-                author = quoteAuthor,
-                preview = message.replyToPreview.orEmpty(),
-                lightGround = isOwn,
-            )
+        if (message.deleted) {
+            TombstoneText(isOwn = isOwn, ink = ink)
+            return@Column
         }
-        message.mediaId?.let { mediaId ->
-            AttachmentImage(mediaId = mediaId)
+        if (message.forwarded) ForwardedLabel(ink = ink)
+        if (message.replyToId != null || message.replyKind == "note") {
+            Box(
+                modifier = if (rich != null && message.replyKind != "note") {
+                    Modifier.clickable(onClick = rich.onQuote).testTag("message-quote")
+                } else {
+                    Modifier
+                },
+            ) {
+                QuoteCard(
+                    author = if (message.replyKind == "note") "Replied to a note" else quoteAuthor,
+                    preview = message.replyToPreview.orEmpty(),
+                    lightGround = isOwn,
+                )
+            }
+        }
+        val voice = message.voice
+        val sticker = message.sticker
+        val gif = message.gif
+        when {
+            voice != null -> VoiceBubble(mediaId = message.mediaId, voice = voice, ink = ink)
+            sticker != null -> StickerBubble(sticker)
+            gif != null -> GifBubble(gif)
+            message.mediaId != null && message.media?.isVideo == true -> VideoBubble(
+                mediaId = message.mediaId.orEmpty(),
+                blurred = rich?.blurred == true,
+                onReveal = rich?.onReveal ?: {},
+            )
+            message.mediaId != null -> Box {
+                AttachmentImage(mediaId = message.mediaId.orEmpty(), blurred = rich?.blurred == true)
+                if (rich?.blurred == true) {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clip(RoundedCornerShape(UsTheme.radii.medium))
+                            .clickable(onClick = rich.onReveal),
+                    ) { SensitiveCover() }
+                }
+            }
+        }
+        message.profileUserId?.let { userId ->
+            ProfileCardBubble(userId = userId, ink = ink, onOpen = rich?.onOpenProfile ?: {})
+        }
+        message.soundId?.let { soundId ->
+            LinkCardBubble("Sound", "Tap to listen", live = false, ink = ink, tag = "bubble-sound") {
+                rich?.onOpenSound?.invoke(soundId)
+            }
+        }
+        message.streamId?.let { streamId ->
+            LinkCardBubble("LIVE", "Tap to watch", live = true, ink = ink, tag = "bubble-live") {
+                rich?.onOpenLive?.invoke(streamId)
+            }
         }
         // A shared post is its card; any caption follows under it.
         val postId = message.postId
@@ -1115,7 +1503,7 @@ private fun MessageBubble(
             Text(
                 text = message.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isOwn) UsTheme.extended.onChatBubbleOwn else UsTheme.extended.textPrimary,
+                color = ink,
             )
         }
     }
@@ -1240,6 +1628,7 @@ private fun ReplyBanner(author: String, preview: String, onCancel: () -> Unit) {
 @Composable
 private fun AttachmentImage(
     mediaId: String,
+    blurred: Boolean = false,
     config: ApiConfig = androidx.compose.ui.platform.LocalContext.current.let {
         // ApiConfig is provided via Hilt; using the composition-local context
         // entry point avoids threading it through every call site.
@@ -1258,6 +1647,7 @@ private fun AttachmentImage(
             .aspectRatio(ATTACHMENT_ASPECT)
             .clip(RoundedCornerShape(UsTheme.radii.medium))
             .background(UsTheme.extended.bgCard)
+            .sensitiveBlur(blurred)
             .testTag("thread-attachment"),
     )
 }
@@ -1314,3 +1704,22 @@ private val COMPOSER_GLYPH = 20.dp
  */
 private fun senderColor(seed: String, palette: List<Color>): Color =
     palette[abs(seed.hashCode()) % palette.size]
+
+/** A queued typed send drawn as what it will be: the voice, sticker or GIF it carries. */
+private fun Message.withTyped(typed: com.us.android.core.chat.data.TypedSend?): Message {
+    if (typed == null) return this
+    return copy(
+        type = typed.type,
+        text = typed.text,
+        mediaId = typed.mediaId,
+        voice = typed.durationMs?.let { com.us.android.core.chat.data.VoiceInfo(it, typed.waveform.orEmpty()) },
+        sticker = typed.stickerUrl?.let { com.us.android.core.chat.data.StickerInfo(typed.stickerId.orEmpty(), it, 0, 0) },
+        gif = typed.gifUrl?.let {
+            com.us.android.core.chat.data.GifInfo(
+                typed.gifProvider.orEmpty(), typed.gifId.orEmpty(), it, null,
+                typed.gifWidth ?: 0, typed.gifHeight ?: 0, typed.gifStillUrl,
+            )
+        },
+        profileUserId = typed.userId,
+    )
+}

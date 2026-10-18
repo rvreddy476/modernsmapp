@@ -39,19 +39,46 @@ class ChatAttachmentUploader @Inject constructor(
      * by media-service's lifecycle and an unreferenced confirmed asset is
      * never pinned to a message.
      */
-    @Suppress("CyclomaticComplexMethod") // Reserve → PUT → confirm → poll pipeline; each branch is one failure mode.
     suspend fun uploadImage(
         uri: Uri,
         onProgress: (sentBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): AppResult<String> = upload(uri, mimeOverride = null, allowed = setOf("image/"), onProgress = onProgress)
+
+    /**
+     * Chat parity (2026-10-18): a photo OR a video from the gallery, through
+     * the same reserve → PUT → confirm → ready pipeline. A video gets a
+     * longer readiness wait — it has to be processed before it can be sent.
+     */
+    suspend fun uploadPhotoOrVideo(
+        uri: Uri,
+        onProgress: (sentBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): AppResult<String> = upload(uri, mimeOverride = null, allowed = setOf("image/", "video/"), onProgress = onProgress)
+
+    /** A recorded voice message (a file this app wrote), as audio. */
+    suspend fun uploadVoice(file: java.io.File, mime: String = VOICE_MIME): AppResult<String> =
+        upload(Uri.fromFile(file), mimeOverride = mime, allowed = setOf("audio/"))
+
+    /** The media type a picked item reports, for staging it as a photo or a video. */
+    fun mimeOf(uri: Uri): String? = context.contentResolver.getType(uri)
+
+    @Suppress("CyclomaticComplexMethod", "LongMethod") // Reserve → PUT → confirm → poll pipeline; each branch is one failure mode.
+    private suspend fun upload(
+        uri: Uri,
+        mimeOverride: String?,
+        allowed: Set<String>,
+        onProgress: (sentBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): AppResult<String> = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        val mime = resolver.getType(uri) ?: DEFAULT_IMAGE_MIME
+        val mime = mimeOverride ?: resolver.getType(uri) ?: DEFAULT_IMAGE_MIME
         // Validate BEFORE any network: the two refusals a user can act on.
-        if (!mime.startsWith("image/")) {
+        if (allowed.none { mime.startsWith(it) }) {
             return@withContext AppResult.Failure(
-                AppError.InvalidRequest("Only photos can be attached here."),
+                AppError.InvalidRequest(
+                    if (allowed == setOf("image/")) "Only photos can be attached here." else "That file can't be sent here.",
+                ),
             )
         }
+        val polls = if (mime.startsWith("video/")) VIDEO_READINESS_POLLS else READINESS_POLLS
         val size = runCatching {
             resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
         }.getOrDefault(-1L)
@@ -90,7 +117,7 @@ class ChatAttachmentUploader @Inject constructor(
             return@withContext AppResult.Failure(AppError.Unknown(null, null))
         }
 
-        repeat(READINESS_POLLS) { attempt ->
+        repeat(polls) { attempt ->
             coroutineContext.ensureActive()
             when (val status = uploader.status(init.mediaId)) {
                 is AppResult.Failure -> Unit
@@ -107,7 +134,7 @@ class ChatAttachmentUploader @Inject constructor(
                     }
                 }
             }
-            if (attempt < READINESS_POLLS - 1) delay(READINESS_POLL_MILLIS)
+            if (attempt < polls - 1) delay(READINESS_POLL_MILLIS)
         }
         AppResult.Failure(AppError.Timeout())
     }
@@ -115,6 +142,10 @@ class ChatAttachmentUploader @Inject constructor(
     private companion object {
         const val DEFAULT_IMAGE_MIME = "image/jpeg"
         const val READINESS_POLLS = 30
+
+        /** A video is transcoded before it is ready; two minutes before giving up. */
+        const val VIDEO_READINESS_POLLS = 120
+        const val VOICE_MIME = "audio/mp4"
         const val READINESS_POLL_MILLIS = 1_000L
 
         /** The chat attachment cap; media-service enforces its own upstream. */

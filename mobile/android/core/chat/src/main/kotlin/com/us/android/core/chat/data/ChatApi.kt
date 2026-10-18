@@ -332,6 +332,41 @@ data class SendMessageRequest(
      * every other kind, so text and media sends stay byte-identical.
      */
     @SerialName("post_id") val postId: String? = null,
+    // Chat parity (2026-10-18, CONTRACT §2.1). Every field is null and
+    // omitted unless its own `type` is being sent, so text, media and post
+    // sends stay byte-identical.
+    /** `type = "voice"`: the recording's length, 1..300000 ms. */
+    @SerialName("duration_ms") val durationMs: Long? = null,
+    /** `type = "voice"`: at most 64 amplitude samples, each 0..255. */
+    val waveform: List<Int>? = null,
+    /** `type = "sticker"`: a sticker id from `GET /v1/chat/stickers`. */
+    @SerialName("sticker_id") val stickerId: String? = null,
+    /** `type = "gif"`: the provider's own id; the server resolves the url. */
+    val gif: GifRefDto? = null,
+    /** `type = "profile"`: the shared person. */
+    @SerialName("user_id") val userId: String? = null,
+    /** `type = "sound"`. */
+    @SerialName("sound_id") val soundId: String? = null,
+    /** `type = "live"`. */
+    @SerialName("stream_id") val streamId: String? = null,
+    /** A reply to someone's Note (CONTRACT §5): the note's id. */
+    @SerialName("reply_note_id") val replyNoteId: String? = null,
+)
+
+/**
+ * The GIF a `type = "gif"` send names. Founder, 18 Oct: picked client-side
+ * from Giphy's SDK (its terms forbid a server proxy or cache), so the client
+ * sends what the SDK's Media object returned — `url` exactly as returned,
+ * never rewritten — plus its size and still frame.
+ */
+@Serializable
+data class GifRefDto(
+    val provider: String,
+    val id: String,
+    val url: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    @SerialName("still_url") val stillUrl: String? = null,
 )
 
 /** Field is `message_id`, not `last_read_message_id`. */
@@ -361,6 +396,11 @@ data class ToggleReactionDto(
 data class DeleteMessageRequest(
     val bucket: String,
     val ts: String,
+    /**
+     * Chat parity (CONTRACT §2.3): `everyone` (unsend, the server default)
+     * or `me` (hide for me only). Null and omitted keeps the old body.
+     */
+    val scope: String? = null,
 )
 
 /**
@@ -375,6 +415,13 @@ data class ConversationSettingsDto(
     @SerialName("is_muted") val isMuted: Boolean = false,
     @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     @SerialName("is_pinned") val isPinned: Boolean = false,
+    // Chat parity (CONTRACT §1.1). Nullable and omitted when null, so a PUT
+    // from a screen that does not know them never resets them.
+    @SerialName("mute_calls") val muteCalls: Boolean? = null,
+    /** `default|chime|pop|bell|silent`. */
+    @SerialName("alert_tone") val alertTone: String? = null,
+    /** `archived|none` on the PUT. */
+    val label: String? = null,
 )
 
 @Serializable
@@ -391,7 +438,11 @@ data class ReactionSummaryDto(
 )
 
 @Serializable
-data class TypingRequest(val typing: Boolean)
+data class TypingRequest(
+    val typing: Boolean,
+    /** CONTRACT §4: an explicit stop is `{"is_typing": false}`; null (omitted) on a start. */
+    @SerialName("is_typing") val isTyping: Boolean? = null,
+)
 
 @Serializable
 data class BulkPresenceRequest(@SerialName("user_ids") val userIds: List<String>)
@@ -436,6 +487,15 @@ data class ConversationDto(
     // Omitted for every other conversation.
     @SerialName("source_app") val sourceApp: String? = null,
     @SerialName("match_id") val matchId: String? = null,
+    // Chat parity (2026-10-18, CONTRACT §1). Every one tolerant: an older
+    // server omits them and the row reads as it did before.
+    @SerialName("unread_count") val unreadCount: Int? = null,
+    @SerialName("mute_calls") val muteCalls: Boolean = false,
+    @SerialName("alert_tone") val alertTone: String? = null,
+    val label: String? = null,
+    val streak: StreakDto? = null,
+    val peer: PeerDto? = null,
+    @SerialName("last_message") val lastMessage: LastMessageDto? = null,
 )
 
 /**
@@ -486,6 +546,27 @@ data class MessageDto(
     val bucket: String = "",
     val ts: String = "",
     @SerialName("created_at") val createdAt: String = "",
+    // Chat parity (2026-10-18, CONTRACT §2.2). All tolerant.
+    val forwarded: Boolean = false,
+    val voice: VoiceDto? = null,
+    val sticker: StickerDto? = null,
+    val gif: GifDto? = null,
+    @SerialName("profile_user_id") val profileUserId: String? = null,
+    @SerialName("sound_id") val soundId: String? = null,
+    @SerialName("stream_id") val streamId: String? = null,
+    /** `message`, `note` or null. */
+    @SerialName("reply_kind") val replyKind: String? = null,
+    /**
+     * The attachment's details (`kind`, `width`, `height`, `duration_ms`,
+     * `sensitive`). Read RAW: the contract names `media.kind` without
+     * pinning whether `media` is an object, so anything that is not one is
+     * ignored rather than failing the whole page.
+     */
+    val media: kotlinx.serialization.json.JsonElement? = null,
+    /** A tombstone some servers return for an unsent message. */
+    val deleted: Boolean = false,
+    /** Set once the author edited the text. */
+    @SerialName("edited_at") val editedAt: String? = null,
 )
 
 const val TEXT_MESSAGE = "text"
@@ -493,6 +574,15 @@ const val MEDIA_MESSAGE = "media"
 
 /** A shared post ("Send in Messages", 2026-10-17): `post_id` is the card. */
 const val POST_MESSAGE = "post"
+
+// Chat parity (CONTRACT §2.1).
+const val VOICE_MESSAGE = "voice"
+const val STICKER_MESSAGE = "sticker"
+const val GIF_MESSAGE = "gif"
+const val PROFILE_MESSAGE = "profile"
+const val SOUND_MESSAGE = "sound"
+const val LIVE_MESSAGE = "live"
+const val CALL_MESSAGE = "call"
 
 /** The server's page cap for `GET /v1/chat/conversations`. */
 const val CONVERSATION_PAGE_LIMIT = 100

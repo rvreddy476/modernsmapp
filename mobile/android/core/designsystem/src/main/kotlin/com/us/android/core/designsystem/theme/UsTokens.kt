@@ -179,11 +179,41 @@ data class UsExtendedColors(
     val onChatBubbleOwn: Color,
     /** Per-sender name colours in a group thread, readable on the incoming bubble of each theme. */
     val chatSenders: List<Color>,
+    /** The own-bubble colours a person may pick (`chat_bubble_style`), each with its ink. Not themed. */
+    val chatBubbles: UsChatBubbles = UsChatBubbles(),
     /** The Create sheet's per-type circle gradients. See [UsCreateColors]. */
     val create: UsCreateColors,
     /** The Explore launcher's per-app tile gradients. See [UsLauncherColors]. */
     val launcher: UsLauncherColors,
 )
+
+/** One own-bubble colour and the ink drawn on it. */
+@Immutable
+data class UsBubbleSwatch(val fill: Color, val ink: Color)
+
+/**
+ * The own-bubble palette (chat parity, 2026-10-18), keyed by the server's
+ * `chat_bubble_style` value. Anything unknown is [default], so a newer
+ * server's style never draws an unreadable bubble.
+ */
+@Immutable
+data class UsChatBubbles(
+    val default: UsBubbleSwatch = UsBubbleSwatch(UsColorTokens.ChatBubbleOwn, UsColorTokens.OnChatBubbleOwn),
+    val ocean: UsBubbleSwatch = UsBubbleSwatch(UsColorTokens.ChatBubbleOcean, UsColorTokens.OnChatBubbleOcean),
+    val ember: UsBubbleSwatch = UsBubbleSwatch(UsColorTokens.ChatBubbleEmber, UsColorTokens.OnChatBubbleEmber),
+    val forest: UsBubbleSwatch = UsBubbleSwatch(UsColorTokens.ChatBubbleForest, UsColorTokens.OnChatBubbleForest),
+    val violet: UsBubbleSwatch = UsBubbleSwatch(UsColorTokens.ChatBubbleViolet, UsColorTokens.OnChatBubbleViolet),
+    val mono: UsBubbleSwatch = UsBubbleSwatch(UsColorTokens.ChatBubbleMono, UsColorTokens.OnChatBubbleMono),
+) {
+    fun forStyle(style: String?): UsBubbleSwatch = when (style) {
+        "ocean" -> ocean
+        "ember" -> ember
+        "forest" -> forest
+        "violet" -> violet
+        "mono" -> mono
+        else -> default
+    }
+}
 
 /**
  * The Explore launcher's tiles — one gradient per mini-app (founder,

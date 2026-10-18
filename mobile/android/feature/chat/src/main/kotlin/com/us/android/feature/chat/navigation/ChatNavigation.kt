@@ -4,6 +4,7 @@
 
 package com.us.android.feature.chat.navigation
 
+import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
@@ -162,11 +163,22 @@ fun NavGraphBuilder.chatThreadScreen(
     onReportSender: (senderId: String, messageId: String, name: String) -> Unit = { _, _, _ -> },
     // A shared post's card (2026-10-17): :app opens the post where it plays.
     onOpenPost: (postId: String, contentType: String) -> Unit = { _, _ -> },
+    // Chat parity (2026-10-18): where the thread's new affordances lead.
+    parity: ThreadParityDestinations? = null,
 ) {
     composable<ChatThreadRoute> { entry ->
         val route = entry.toRoute<ChatThreadRoute>()
         ChatLockGate {
             ChatThreadScreen(
+                links = parity?.let { destinations ->
+                    com.us.android.feature.chat.ui.ThreadLinks(
+                        onOpenChatSettings = { destinations.onOpenChatSettings(route.conversationId) },
+                        onOpenProfile = destinations.onOpenProfile,
+                        onOpenSound = destinations.onOpenSound,
+                        onOpenLive = destinations.onOpenLive,
+                        onOpenSharedReels = { postId -> destinations.onOpenSharedReels(route.conversationId, postId) },
+                    )
+                } ?: com.us.android.feature.chat.ui.ThreadLinks(),
                 title = route.title,
                 isGroup = route.isGroup,
                 onOpenGroupInfo = { onOpenGroupInfo(route.conversationId) },
@@ -298,3 +310,91 @@ fun NavGraphBuilder.chatLockSettingsScreen(onBack: () -> Unit) {
         ChatLockSettingsScreen(onBack = onBack)
     }
 }
+
+// ── Chat parity (2026-10-18) ───────────────────────────────────────────
+
+/** The new-message people picker. */
+@Serializable
+data object NewMessageRoute
+
+/** Chats archived from the inbox (`lane=archived`). */
+@Serializable
+data object ArchivedChatsRoute
+
+/** The chat settings page behind a thread's ⋯. The key matches ChatSettingsViewModel's. */
+@Serializable
+data class ChatSettingsRoute(val conversationId: String)
+
+/** The swipe viewer over a chat's shared posts, starting at [postId]. Keys match SharedReelsViewModel's. */
+@Serializable
+data class SharedReelsRoute(val conversationId: String, val postId: String)
+
+/** Where the thread's chat-parity affordances lead; `:app` owns every destination. */
+data class ThreadParityDestinations(
+    val onOpenChatSettings: (conversationId: String) -> Unit,
+    val onOpenProfile: (userId: String) -> Unit,
+    val onOpenSound: (soundId: String) -> Unit,
+    val onOpenLive: (streamId: String) -> Unit,
+    val onOpenSharedReels: (conversationId: String, postId: String) -> Unit,
+)
+
+/** Where the chat-parity screens send the user. */
+data class ChatParityDestinations(
+    val onBack: () -> Unit,
+    val onOpenThread: (conversationId: String, title: String, isGroup: Boolean) -> Unit,
+    val onOpenProfile: (userId: String) -> Unit,
+    val onOpenPost: (postId: String, contentType: String) -> Unit,
+    val onOpenSharedReels: (conversationId: String, postId: String) -> Unit,
+    /** The chat was deleted or the person blocked: leave its settings AND its thread. */
+    val onChatClosed: () -> Unit,
+)
+
+/** Registers the new-message picker, archived chats, chat settings and the shared-reel viewer. */
+fun NavGraphBuilder.chatParityScreens(destinations: ChatParityDestinations) {
+    composable<NewMessageRoute> {
+        ChatLockGate {
+            com.us.android.feature.chat.ui.NewMessageScreen(
+                onBack = destinations.onBack,
+                onOpenThread = destinations.onOpenThread,
+            )
+        }
+    }
+    composable<ArchivedChatsRoute> {
+        ChatLockGate {
+            com.us.android.feature.chat.ui.ArchivedChatsScreen(
+                onBack = destinations.onBack,
+                onOpenThread = destinations.onOpenThread,
+            )
+        }
+    }
+    composable<ChatSettingsRoute> { entry ->
+        val route = entry.toRoute<ChatSettingsRoute>()
+        ChatLockGate {
+            com.us.android.feature.chat.ui.ChatSettingsScreen(
+                onBack = destinations.onBack,
+                onClosed = destinations.onChatClosed,
+                onOpenProfile = destinations.onOpenProfile,
+                onOpenThread = destinations.onBack,
+                onOpenSharedPost = { postId -> destinations.onOpenSharedReels(route.conversationId, postId) },
+            )
+        }
+    }
+    composable<SharedReelsRoute> {
+        ChatLockGate {
+            com.us.android.feature.chat.ui.SharedReelsScreen(
+                onBack = destinations.onBack,
+                onOpenPost = destinations.onOpenPost,
+                onOpenAuthor = destinations.onOpenProfile,
+            )
+        }
+    }
+}
+
+fun NavController.navigateToNewMessage() = navigate(NewMessageRoute)
+
+fun NavController.navigateToArchivedChats() = navigate(ArchivedChatsRoute)
+
+fun NavController.navigateToChatSettings(conversationId: String) = navigate(ChatSettingsRoute(conversationId))
+
+fun NavController.navigateToSharedReels(conversationId: String, postId: String) =
+    navigate(SharedReelsRoute(conversationId, postId))

@@ -17,6 +17,7 @@ class SettingsHubTest {
             .containsExactly(
                 "Account",
                 "Privacy & safety",
+                "Inbox & messaging",
                 "Notifications",
                 "Content & display",
                 "Data & storage",
@@ -38,6 +39,8 @@ class SettingsHubTest {
             SettingsRow.RECENTLY_DELETED,
         ).inOrder()
         assertThat(rows.getValue(SettingsGroup.PRIVACY)).containsExactly(SettingsRow.PRIVACY)
+        // Chat parity (2026-10-18): its own group, its own page.
+        assertThat(rows.getValue(SettingsGroup.INBOX)).containsExactly(SettingsRow.INBOX_MESSAGING)
         assertThat(rows.getValue(SettingsGroup.NOTIFICATIONS)).containsExactly(SettingsRow.PUSH_NOTIFICATIONS)
         assertThat(rows.getValue(SettingsGroup.CONTENT)).containsExactly(
             SettingsRow.APPEARANCE,
@@ -73,6 +76,7 @@ class SettingsHubTest {
             onSecurity = { opened += "security" },
             onModules = { opened += "modules" },
             onOfflineVideos = { opened += "offline videos" },
+            onInboxMessaging = { opened += "inbox and messaging" },
         )
         val web = mutableListOf<String>()
 
@@ -94,6 +98,7 @@ class SettingsHubTest {
             "modules",
             "recently deleted",
             "privacy",
+            "inbox and messaging",
             "notifications",
             "screen time",
             "content preferences",

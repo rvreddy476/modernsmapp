@@ -1,6 +1,10 @@
 package com.us.android.core.ui
 
 import android.content.ClipData
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.semantics.selected
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -67,6 +71,11 @@ data class UsSharePickerState(
     val sending: Set<String> = emptySet(),
     /** Why the last send was refused, in words; null when there is nothing to say. */
     val error: String? = null,
+    // Chat parity (2026-10-18): pick up to [maxSelected] chats (groups too),
+    // add an optional note, one Send.
+    val selected: List<String> = emptyList(),
+    val note: String = "",
+    val maxSelected: Int = 5,
 )
 
 /** What the share sheet draws. [picker] is non-null while "Send in Messages" is open. */
@@ -92,6 +101,10 @@ class UsPostShareCallbacks(
     val onToggleRepost: () -> Unit,
     /** "More…": the system share sheet. The sheet has already left. */
     val onMore: () -> Unit,
+    /** Chat parity: select/unselect a chat for the one Send. Null keeps the per-row Send. */
+    val onToggleTarget: ((UsShareTarget) -> Unit)? = null,
+    val onNoteChange: (String) -> Unit = {},
+    val onSendSelected: () -> Unit = {},
 )
 
 /**
@@ -241,6 +254,7 @@ private fun SharePicker(picker: UsSharePickerState, callbacks: UsPostShareCallba
             picker.targets.isEmpty() -> UsEmptyState(
                 title = if (picker.query.isBlank()) "No chats yet" else "No chats match \"${picker.query.trim()}\"",
             )
+            callbacks.onToggleTarget != null -> MultiSelectTargets(picker = picker, onToggle = callbacks.onToggleTarget)
             else -> LazyColumn(modifier = Modifier.fillMaxWidth().testTag("post_share_targets")) {
                 items(picker.targets, key = { it.id }) { target ->
                     TargetRow(
@@ -252,7 +266,97 @@ private fun SharePicker(picker: UsSharePickerState, callbacks: UsPostShareCallba
             }
         }
     }
+    if (callbacks.onToggleTarget != null) SelectedSendBar(picker = picker, callbacks = callbacks)
 }
+
+/**
+ * Chat parity (2026-10-18): the chats as an avatar grid, up to
+ * [UsSharePickerState.maxSelected] picked (groups too), then an optional
+ * note and ONE Send under it.
+ */
+@Composable
+private fun MultiSelectTargets(picker: UsSharePickerState, onToggle: (UsShareTarget) -> Unit) {
+    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(GRID_COLUMNS),
+        modifier = Modifier.fillMaxWidth().testTag("post_share_targets"),
+    ) {
+        items(picker.targets.size, key = { picker.targets[it].id }) { index ->
+            val target = picker.targets[index]
+            val selected = target.id in picker.selected
+            val full = !selected && picker.selected.size >= picker.maxSelected
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                modifier = Modifier
+                    .padding(UsTheme.spacing.s)
+                    .clickable(enabled = !full) { onToggle(target) }
+                    .semantics { this.selected = selected }
+                    .testTag("post_share_target:${target.id}"),
+            ) {
+                Box {
+                    UsAvatar(
+                        name = target.name,
+                        seed = target.id,
+                        size = UsAvatarSize.Large,
+                        imageUrl = target.avatarUrl,
+                        hasRing = selected,
+                    )
+                    if (selected) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .size(CHECK)
+                                .background(UsTheme.extended.accent, CircleShape),
+                        ) {
+                            Icon(UsIcons.Check, contentDescription = null, tint = UsTheme.extended.onAccent, modifier = Modifier.size(CHECK_GLYPH))
+                        }
+                    }
+                }
+                Text(
+                    text = target.name,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (full) UsTheme.extended.textGhost else UsTheme.extended.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** The note and the one Send, under a multi-select picker. */
+@Composable
+private fun SelectedSendBar(picker: UsSharePickerState, callbacks: UsPostShareCallbacks) {
+    if (picker.selected.isEmpty()) return
+    val sending = picker.sending.isNotEmpty()
+    Column(
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s),
+    ) {
+        UsTextField(
+            value = picker.note,
+            onValueChange = callbacks.onNoteChange,
+            label = "Add a note",
+            placeholder = "Write a message…",
+            modifier = Modifier.fillMaxWidth().testTag("post_share_note"),
+        )
+        com.us.android.core.designsystem.component.UsButton(
+            text = when {
+                sending -> "Sending…"
+                picker.selected.size == 1 -> "Send"
+                else -> "Send separately to ${picker.selected.size}"
+            },
+            onClick = callbacks.onSendSelected,
+            enabled = !sending,
+            modifier = Modifier.fillMaxWidth().testTag("post_share_send_selected"),
+        )
+    }
+}
+
+
 
 @Composable
 private fun TargetRow(target: UsShareTarget, sending: Boolean, onSend: () -> Unit) {
@@ -310,3 +414,6 @@ private val PICKER_MIN_HEIGHT = 160.dp
 private val PICKER_MAX_HEIGHT = 420.dp
 private val SPINNER = 20.dp
 private val SPINNER_STROKE = 2.dp
+private const val GRID_COLUMNS = 4
+private val CHECK = 18.dp
+private val CHECK_GLYPH = 12.dp

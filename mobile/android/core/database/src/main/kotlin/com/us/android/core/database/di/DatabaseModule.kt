@@ -54,5 +54,9 @@ object DatabaseModule {
     fun provideChatDao(database: UsDatabase): ChatDao = database.chatDao()
 
     @Provides
+    fun provideChatParityDao(database: UsDatabase): com.us.android.core.database.ChatParityDao =
+        database.chatParityDao()
+
+    @Provides
     fun provideAnalyticsDao(database: UsDatabase): AnalyticsDao = database.analyticsDao()
 }

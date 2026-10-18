@@ -194,9 +194,10 @@ class ChatSocketTest {
         val presence = """{"type":"presence_update","conversation_id":"c1","active_count":"2"}"""
 
         assertThat(parseChatFrame(json, started)).isEqualTo(ChatSocketEvent.Unknown("typing.started"))
-        assertThat(parseChatFrame(json, presence)).isEqualTo(
-            ChatSocketEvent.Unknown("presence_update"),
-        )
+        // Chat parity (2026-10-18): presence_update IS modelled now (ws-gateway
+        // relays it flat with a user_id). The old room-count shape has no
+        // user, so it is refused rather than guessed at.
+        assertThat(parseChatFrame(json, presence)).isInstanceOf(ChatSocketEvent.Malformed::class.java)
     }
 
     /**
@@ -312,10 +313,11 @@ class ChatSocketTest {
         // read_receipt WAS the unmodelled example here; the completion pass
         // modelled it, so an empty one is now refused rather than unknown.
         val malformed = parseChatFrame(json, """{"type":"message","payload":{}}""")
-        val unmodelled = parseChatFrame(json, """{"type":"presence_update","payload":{}}""")
+        // presence_update was the unmodelled example until chat parity modelled it.
+        val unmodelled = parseChatFrame(json, """{"type":"conversation.heartbeat","payload":{}}""")
 
         assertThat(malformed).isInstanceOf(ChatSocketEvent.Malformed::class.java)
-        assertThat(unmodelled).isEqualTo(ChatSocketEvent.Unknown("presence_update"))
+        assertThat(unmodelled).isEqualTo(ChatSocketEvent.Unknown("conversation.heartbeat"))
     }
 
     // ── Completion-pass frames ──────────────────────────────────────────

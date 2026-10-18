@@ -206,8 +206,34 @@ val MIGRATION_7_8 = object : Migration(SCHEMA_V7, SCHEMA_V8) {
     }
 }
 
+private const val SCHEMA_V9 = 9
+
+/**
+ * 8 → 9: chat parity (2026-10-18). Purely additive ALTERs on the three chat
+ * tables, with the SAME defaults the entities declare (Room validates the
+ * catalog on open; [ChatMigrationOpenTest] opens a migrated file through
+ * production Room to prove it). Nothing is dropped or rewritten, so an
+ * upgrading install keeps its cached inbox, threads and queued sends.
+ */
+val MIGRATION_8_9 = object : Migration(SCHEMA_V8, SCHEMA_V9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `chat_conversation` ADD COLUMN `unreadCount` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `chat_conversation` ADD COLUMN `muteCalls` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `chat_conversation` ADD COLUMN `alertTone` TEXT")
+        db.execSQL("ALTER TABLE `chat_conversation` ADD COLUMN `extrasJson` TEXT")
+        db.execSQL("ALTER TABLE `chat_message` ADD COLUMN `type` TEXT")
+        db.execSQL("ALTER TABLE `chat_message` ADD COLUMN `reactionsJson` TEXT")
+        db.execSQL("ALTER TABLE `chat_message` ADD COLUMN `extrasJson` TEXT")
+        db.execSQL("ALTER TABLE `chat_pending_send` ADD COLUMN `type` TEXT")
+        db.execSQL("ALTER TABLE `chat_pending_send` ADD COLUMN `extrasJson` TEXT")
+    }
+}
+
 val UsDatabaseMigrations: List<Migration> =
-    listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+    listOf(
+        MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+        MIGRATION_8_9,
+    )
 
 /**
  * Callbacks the production database builder installs.

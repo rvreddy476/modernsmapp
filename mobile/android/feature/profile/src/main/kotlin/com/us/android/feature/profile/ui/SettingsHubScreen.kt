@@ -55,6 +55,7 @@ import com.us.android.feature.profile.navigation.SettingsSections
 enum class SettingsGroup(val title: String) {
     ACCOUNT("Account"),
     PRIVACY("Privacy & safety"),
+    INBOX("Inbox & messaging"),
     NOTIFICATIONS("Notifications"),
     CONTENT("Content & display"),
     DATA("Data & storage"),
@@ -91,6 +92,12 @@ enum class SettingsRow(
     MODULES(SettingsGroup.ACCOUNT, "Modules and home page", "Which apps you use and which opens first", UsIcons.Home),
     RECENTLY_DELETED(SettingsGroup.ACCOUNT, "Recently deleted", "Restore posts from the last 30 days", UsIcons.Trash),
     PRIVACY(SettingsGroup.PRIVACY, "Privacy", "Private account, messages, calls and discovery", UsIcons.Lock),
+    INBOX_MESSAGING(
+        SettingsGroup.INBOX,
+        "Inbox & messaging",
+        "Messages, calls, activity status, requests",
+        UsIcons.Comment,
+    ),
     PUSH_NOTIFICATIONS(
         SettingsGroup.NOTIFICATIONS,
         "Push notifications",
@@ -142,6 +149,7 @@ private fun SettingsSections.screenFor(row: SettingsRow): (() -> Unit)? = when (
     SettingsRow.MODULES -> onModules
     SettingsRow.RECENTLY_DELETED -> onRecentlyDeleted
     SettingsRow.PRIVACY -> onPrivacy
+    SettingsRow.INBOX_MESSAGING -> onInboxMessaging
     SettingsRow.PUSH_NOTIFICATIONS -> onNotifications
     SettingsRow.SCREEN_TIME -> onScreenTime
     SettingsRow.CONTENT_PREFERENCES -> onContentPreferences

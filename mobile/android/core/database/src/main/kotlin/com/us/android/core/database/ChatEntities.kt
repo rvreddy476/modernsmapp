@@ -49,6 +49,13 @@ data class ChatConversationEntity(
     /** The viewer's pin/mute switches, mirrored from the server (v5). */
     @androidx.room.ColumnInfo(defaultValue = "0") val isPinned: Boolean = false,
     @androidx.room.ColumnInfo(defaultValue = "0") val isMuted: Boolean = false,
+    // Chat parity (schema v9): the server's unread count, the viewer's
+    // call mute and alert tone, and one JSON column for the row's peer,
+    // streak and last-message status (rendered offline, re-synced always).
+    @androidx.room.ColumnInfo(defaultValue = "0") val unreadCount: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val muteCalls: Boolean = false,
+    val alertTone: String? = null,
+    val extrasJson: String? = null,
 )
 
 @Entity(
@@ -70,6 +77,12 @@ data class ChatMessageEntity(
     val createdAt: String,
     // A shared post's card (schema v8): renders the card offline.
     val postId: String? = null,
+    // Chat parity (schema v9): the wire type, the reaction summaries (kept
+    // current by realtime frames) and one JSON column for the rest —
+    // voice, sticker, gif, profile/sound/live ids, forwarded, media info.
+    val type: String? = null,
+    val reactionsJson: String? = null,
+    val extrasJson: String? = null,
 )
 
 @Entity(tableName = "chat_pending_send")
@@ -87,6 +100,10 @@ data class ChatPendingSendEntity(
     val attempts: Int,
     /** Set when retries exhausted; the row waits for an explicit user retry. */
     val failed: Boolean,
+    // Chat parity (schema v9): a typed send (voice, sticker, gif) survives
+    // process death with its own fields; null type is a text/media send.
+    val type: String? = null,
+    val extrasJson: String? = null,
 )
 
 @Dao

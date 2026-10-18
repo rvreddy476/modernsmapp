@@ -30,6 +30,11 @@ data class PrivacySettings(
     /** `everyone` or `friends`. */
     val allowCommentsFrom: String,
     val privacyVersion: Int,
+    // Chat parity (CONTRACT §7). Null = the server does not carry it.
+    val dmSafeMode: Boolean? = null,
+    val dmSensitiveMediaFilter: Boolean? = null,
+    val dmFilteredKeywords: List<String>? = null,
+    val chatBubbleStyle: String? = null,
 ) {
     val isPrivateAccount: Boolean get() = accountVisibility == VISIBILITY_PRIVATE
 

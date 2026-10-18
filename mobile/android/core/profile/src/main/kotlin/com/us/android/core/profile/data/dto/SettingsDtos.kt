@@ -33,6 +33,12 @@ data class PrivacySettingsDto(
     @SerialName("account_visibility") val accountVisibility: String = "public",
     @SerialName("allow_comments_from") val allowCommentsFrom: String = "everyone",
     @SerialName("privacy_version") val privacyVersion: Int = 0,
+    // Chat parity (CONTRACT §7, 2026-10-18). Null = this server does not
+    // carry the key yet: the row is hidden and the PUT omits it.
+    @SerialName("dm_safe_mode") val dmSafeMode: Boolean? = null,
+    @SerialName("dm_sensitive_media_filter") val dmSensitiveMediaFilter: Boolean? = null,
+    @SerialName("dm_filtered_keywords") val dmFilteredKeywords: List<String>? = null,
+    @SerialName("chat_bubble_style") val chatBubbleStyle: String? = null,
 )
 
 /** Full authoritative snapshot. No defaults: false and enum values must all be encoded. */
@@ -64,6 +70,14 @@ data class UpdatePrivacySettingsRequest(
     // Launch-safety pass: `public` | `private`, and `everyone` | `friends`.
     @SerialName("account_visibility") val accountVisibility: String,
     @SerialName("allow_comments_from") val allowCommentsFrom: String,
+    // Chat parity (CONTRACT §7). Omitted when null — an older server never
+    // sees a key it does not know, and a value this client never read is
+    // never written back as a default. The keyword list REPLACES the
+    // server's when present.
+    @SerialName("dm_safe_mode") val dmSafeMode: Boolean? = null,
+    @SerialName("dm_sensitive_media_filter") val dmSensitiveMediaFilter: Boolean? = null,
+    @SerialName("dm_filtered_keywords") val dmFilteredKeywords: List<String>? = null,
+    @SerialName("chat_bubble_style") val chatBubbleStyle: String? = null,
 )
 
 /*

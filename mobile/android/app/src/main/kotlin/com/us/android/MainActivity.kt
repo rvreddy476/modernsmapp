@@ -189,7 +189,10 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
     private fun offerPushDestination(intent: Intent?) {
         pushDestinations.offer(
             type = intent?.getStringExtra(NotificationPresenter.KEY_TYPE),
-            entityId = intent?.getStringExtra(NotificationPresenter.KEY_ENTITY_ID),
+            // A background chat push may name its thread only as
+            // `conversation_id` (chat parity, CONTRACT §8).
+            entityId = intent?.getStringExtra(NotificationPresenter.KEY_ENTITY_ID)
+                ?: intent?.getStringExtra(NotificationPresenter.KEY_CONVERSATION_ID),
             deepLink = intent?.getStringExtra(NotificationPresenter.KEY_DEEP_LINK),
         )
     }

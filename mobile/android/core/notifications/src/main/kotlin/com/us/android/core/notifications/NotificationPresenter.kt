@@ -66,7 +66,8 @@ class NotificationPresenter @Inject constructor(
         val title = data[KEY_TITLE] ?: return
         val body = data[KEY_BODY].orEmpty()
         val type = data[KEY_TYPE]
-        val channel = NotificationChannelSpec.forType(type)
+        // Chat parity: a chat push rides its conversation's alert-tone channel (CONTRACT §8).
+        val channel = NotificationChannelSpec.forPush(type, data[KEY_ALERT_TONE])
         val partnerCategory = PartnerOfferCategory.forType(type)
         val actionable = installedApp.orElse(PushApp.MOMENTUM) == PushApp.PARTNER &&
             partnerCategory != null && offer is DoorstepOfferNotification.Open &&
@@ -154,7 +155,8 @@ class NotificationPresenter @Inject constructor(
         val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
             ?: return null
         launch.putExtra(KEY_TYPE, data[KEY_TYPE])
-        launch.putExtra(KEY_ENTITY_ID, data[KEY_ENTITY_ID])
+        // A chat push names its thread as `conversation_id` (chat parity); it routes like an entity id.
+        launch.putExtra(KEY_ENTITY_ID, data[KEY_ENTITY_ID] ?: data[KEY_CONVERSATION_ID])
         launch.putExtra(KEY_DEEP_LINK, data[KEY_DEEP_LINK])
         launch.putExtra("offer_id", data["offer_id"])
         return PendingIntent.getActivity(
@@ -195,7 +197,8 @@ class NotificationPresenter @Inject constructor(
      * silently loses all but the last.
      */
     private fun notificationId(data: Map<String, String>): Int =
-        (data["offer_id"] ?: data[KEY_ENTITY_ID] ?: data[KEY_SUBJECT])?.hashCode() ?: data.hashCode()
+        (data["offer_id"] ?: data[KEY_ENTITY_ID] ?: data[KEY_CONVERSATION_ID] ?: data[KEY_SUBJECT])?.hashCode()
+            ?: data.hashCode()
 
     private fun NotificationChannelSpec.compatPriority(): Int = when (importance) {
         NotificationManager.IMPORTANCE_HIGH -> NotificationCompat.PRIORITY_HIGH
@@ -210,6 +213,10 @@ class NotificationPresenter @Inject constructor(
         const val KEY_SUBJECT = "subject_id"
         const val KEY_ENTITY_ID = "entity_id"
         const val KEY_DEEP_LINK = "deep_link"
+
+        /** Chat parity (CONTRACT §8): the conversation's tone and id on a chat push. */
+        const val KEY_ALERT_TONE = "alert_tone"
+        const val KEY_CONVERSATION_ID = "conversation_id"
 
     }
 }

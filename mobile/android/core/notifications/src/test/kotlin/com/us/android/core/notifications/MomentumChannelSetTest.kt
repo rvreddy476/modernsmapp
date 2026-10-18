@@ -34,7 +34,10 @@ class MomentumChannelSetTest {
         // "doorstep_updates" joined on 2026-10-04: the Doorstep customer flow ships only in Momentum.
         // "partner_business" preserves updates for its existing seller entry point.
         assertThat(NotificationChannelSpec.MOMENTUM.map { it.id })
-            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business")
+            .containsExactly(
+                "calls", "messages", "messages_chime", "messages_pop", "messages_bell", "messages_silent",
+                "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business",
+            )
     }
 
     @Test
@@ -47,6 +50,9 @@ class MomentumChannelSetTest {
 
         NotificationChannelSpec.createAll(context, NotificationChannelSpec.MOMENTUM)
         assertThat(manager.notificationChannels.map { it.id })
-            .containsExactly("calls", "messages", "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business")
+            .containsExactly(
+                "calls", "messages", "messages_chime", "messages_pop", "messages_bell", "messages_silent",
+                "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business",
+            )
     }
 }

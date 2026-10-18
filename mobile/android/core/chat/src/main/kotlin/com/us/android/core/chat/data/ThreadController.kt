@@ -291,6 +291,23 @@ class ThreadController(
         // "ignore" by default. SubscriptionRevoked belongs to the session
         // manager (room bookkeeping); a removed member's next thread action
         // surfaces the server's refusal.
+        // Chat parity: an unsend leaves a tombstone where the message was,
+        // so the conversation does not silently close up around a gap.
+        is ChatSocketEvent.MessageDeleted -> when {
+            event.conversationId != conversationId -> null
+            else -> onMessageUnsent(event.messageId)
+        }
+
+        // Chat parity: a reaction from anyone, the viewer's other devices
+        // included — applied idempotently by the same summary arithmetic a
+        // confirmed toggle uses.
+        is ChatSocketEvent.ReactionChanged -> when {
+            event.conversationId != conversationId -> null
+            else -> onReaction(event.messageId, event.emoji, event.userId, event.added)
+        }
+
+        // Presence is the header's business (the ViewModel knows the peer).
+        is ChatSocketEvent.PresenceUpdate,
         is ChatSocketEvent.Connected,
         is ChatSocketEvent.Disconnected,
         is ChatSocketEvent.SubscriptionRevoked,
@@ -392,16 +409,63 @@ class ThreadController(
     /**
      * Deletes one message. The server decides who may (sender, or a group
      * owner/admin moderating); a refusal leaves the row untouched.
+     *
+     * [scope] (chat parity, CONTRACT §2.3): `me` hides it for the viewer
+     * only and the row goes; `everyone` (or null, the old body) unsends it
+     * and the row goes too — the other side sees the tombstone their
+     * realtime frame leaves.
      */
-    suspend fun deleteMessage(messageId: String): AppResult<Unit>? {
+    suspend fun deleteMessage(messageId: String, scope: String? = null): AppResult<Unit>? {
         val message = state.messages.firstOrNull { it.id == messageId } ?: return null
         if (!message.addressable) return null
-        val result = repository.deleteMessage(conversationId, message)
+        val result = repository.deleteMessage(conversationId, message, scope)
         if (result is AppResult.Success) {
             state = state.copy(messages = state.messages.filterNot { it.id == messageId })
         }
         return result
     }
+
+    /** A message unsent by its author (or a moderator): its content is gone, a tombstone stays. */
+    fun onMessageUnsent(messageId: String): ThreadUiState? {
+        val message = state.messages.firstOrNull { it.id == messageId } ?: return null
+        if (message.deleted) return null
+        val tombstone = message.copy(
+            deleted = true,
+            text = "",
+            mediaId = null,
+            postId = null,
+            voice = null,
+            sticker = null,
+            gif = null,
+            profileUserId = null,
+            soundId = null,
+            streamId = null,
+            reactions = emptyList(),
+        )
+        return state.copy(messages = state.messages.map { if (it.id == messageId) tombstone else it })
+            .also { state = it }
+    }
+
+    /** One realtime reaction, idempotent. Returns null when nothing changed. */
+    fun onReaction(messageId: String, emoji: String, userId: String, added: Boolean): ThreadUiState? {
+        if (emoji.isBlank() || userId.isBlank()) return null
+        val message = state.messages.firstOrNull { it.id == messageId } ?: return null
+        val next = message.reactions.applyToggle(emoji = emoji, userId = userId, added = added)
+        if (next == message.reactions) return null
+        return state.copy(messages = state.messages.map { if (it.id == messageId) it.copy(reactions = next) else it })
+            .also { state = it }
+    }
+
+    /** A confirmed edit of the viewer's own text. */
+    fun replaceText(messageId: String, text: String): ThreadUiState? {
+        if (state.messages.none { it.id == messageId }) return null
+        return state.copy(
+            messages = state.messages.map { if (it.id == messageId) it.copy(text = text, edited = true) else it },
+        ).also { state = it }
+    }
+
+    /** Clear chat: the loaded history goes, the thread stays open. */
+    fun clearLoaded(): ThreadUiState = state.copy(messages = emptyList(), nextCursor = null).also { state = it }
 
     /** Marks the newest message read; a no-op on an empty thread. */
     suspend fun markRead(): AppResult<Unit>? {

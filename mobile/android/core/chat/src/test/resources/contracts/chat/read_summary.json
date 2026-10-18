@@ -1,0 +1,13 @@
+{
+  "data": {
+    "count": 1,
+    "seen_by": [
+      {
+        "at": "2026-10-18T09:30:00Z",
+        "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000001/thumb_300.webp",
+        "display_name": "Dev",
+        "user_id": "0d000000-0000-4000-8000-00000000000d"
+      }
+    ]
+  }
+}

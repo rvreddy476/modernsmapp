@@ -55,6 +55,7 @@ internal fun GroupsTab(
     destinations: ChatHomeDestinations,
     onTogglePin: (Conversation) -> Unit,
     onToggleMute: (Conversation) -> Unit,
+    rowActions: ((Conversation) -> com.us.android.feature.chat.ui.InboxRowActions)? = null,
 ) {
     val groups = state.visibleGroups
     val onOpenConversation = destinations.onOpenThread
@@ -107,13 +108,18 @@ internal fun GroupsTab(
         } else {
             item(key = "label") { ChatSectionLabel("Your groups") }
             items(groups, key = { it.id }) { group ->
-                GroupRow(
-                    group = group,
-                    avatarUrl = state.groupAvatarUrls[group.id],
+                // Chat parity: the one inbox row, with the group's PHOTO, the
+                // count pill and the long-press sheet the Chats tab has.
+                val title = group.displayTitle(state.viewerId).ifBlank { "Group" }
+                com.us.android.feature.chat.ui.ConversationRow(
+                    conversation = group,
+                    title = title,
                     viewerId = state.viewerId,
+                    avatarUrl = state.groupAvatarUrls[group.id] ?: group.avatarUrl,
                     onClick = { onOpenConversation(group.id, group.title.orEmpty().ifBlank { "Group" }, true) },
                     onTogglePin = { onTogglePin(group) },
                     onToggleMute = { onToggleMute(group) },
+                    actions = rowActions?.invoke(group),
                 )
             }
         }
@@ -172,121 +178,7 @@ private fun GroupsEmptyState(searching: Boolean, onCreateGroup: () -> Unit) {
     }
 }
 
-/** One group: avatar or initials, bold title, the last line, the unread dot. */
-@Composable
-private fun GroupRow(
-    group: Conversation,
-    avatarUrl: String?,
-    viewerId: String,
-    onClick: () -> Unit,
-    onTogglePin: () -> Unit,
-    onToggleMute: () -> Unit,
-) {
-    var menuOpen by remember { mutableStateOf(false) }
-    val title = group.title.orEmpty().ifBlank { "Group" }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = ROW_MARGIN)
-            .clip(RoundedCornerShape(ROW_CORNER))
-            .background(if (group.hasUnread) UsTheme.extended.bgCardSolid else Color.Transparent)
-            .pressScale(onClick)
-            .padding(ROW_PADDING)
-            .testTag("chat_home_group:${group.id}"),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(ROW_PADDING),
-    ) {
-        UsAvatar(name = title, size = UsAvatarSize.Chat, seed = group.id, imageUrl = avatarUrl)
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(NAME_PREVIEW_GAP)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val markers = buildString {
-                    if (group.isPinned) append("📌 ")
-                    if (group.isMuted) append("🔕 ")
-                }
-                Text(
-                    text = markers + title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = UsTheme.extended.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(end = UsTheme.spacing.s),
-                )
-                val time = formatRelativeTime(group.lastMessageAt ?: group.updatedAt)
-                if (time.isNotBlank()) {
-                    Text(
-                        text = time,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (group.hasUnread) UsTheme.extended.accentSolid else UsTheme.extended.textMuted,
-                    )
-                }
-            }
-            GroupPreview(group = group, viewerId = viewerId)
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text(if (group.isPinned) "Unpin" else "Pin") },
-                    onClick = {
-                        menuOpen = false
-                        onTogglePin()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(if (group.isMuted) "Unmute" else "Mute") },
-                    onClick = {
-                        menuOpen = false
-                        onToggleMute()
-                    },
-                )
-            }
-        }
-        if (group.hasUnread) {
-            Box(
-                modifier = Modifier
-                    .size(UNREAD_BADGE)
-                    .clip(CircleShape)
-                    .background(UsTheme.extended.ctaGradient),
-            )
-        } else {
-            HeaderGlyph(
-                icon = UsIcons.More,
-                description = "Group options",
-                onClick = { menuOpen = true },
-                size = MORE_TARGET,
-                glyph = MORE_GLYPH,
-                tint = UsTheme.extended.textMuted,
-            )
-        }
-    }
-}
-
-@Composable
-private fun GroupPreview(group: Conversation, viewerId: String) {
-    val body = when {
-        group.lastMessagePreview.isNotBlank() -> group.lastMessagePreview
-        group.lastMessageAt != null -> "Photo"
-        else -> "${group.members.size} members"
-    }
-    val sender = group.lastMessageSender
-        ?.takeIf { it != viewerId }
-        ?.let { id -> group.members.firstOrNull { it.userId == id }?.displayName }
-        ?.takeIf { it.isNotBlank() }
-    Text(
-        text = if (sender != null) "$sender: $body" else body,
-        style = MaterialTheme.typography.bodySmall,
-        color = UsTheme.extended.textMuted,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
-}
-
 private val ROW_GAP = 8.dp
-private val ROW_MARGIN = 12.dp
-private val ROW_PADDING = 12.dp
-private val ROW_CORNER = 16.dp
-private val NAME_PREVIEW_GAP = 2.dp
-private val UNREAD_BADGE = 12.dp
-private val MORE_TARGET = 32.dp
-private val MORE_GLYPH = 18.dp
 private val EMPTY_TOP = 40.dp
 private val EMPTY_ICON = 72.dp
 private val EMPTY_GLYPH = 34.dp

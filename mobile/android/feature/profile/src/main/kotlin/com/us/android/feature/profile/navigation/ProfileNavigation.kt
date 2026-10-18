@@ -203,6 +203,9 @@ data object EditProfileRoute
 /** "Who can message you", the three-row picker pushed from Privacy. */
 @Serializable data object DirectMessagesRoute
 
+/** Settings › Inbox & messaging (chat parity, 2026-10-18). */
+@Serializable data object InboxSettingsRoute
+
 /**
  * Registers the edit-profile destination.
  *
@@ -255,6 +258,7 @@ fun NavGraphBuilder.settingsScreens(
         PrivacySettingsScreen(destinations.onBack, destinations.onDirectMessages)
     }
     composable<DirectMessagesRoute> { DirectMessagesScreen(destinations.onBack) }
+    composable<InboxSettingsRoute> { com.us.android.feature.profile.ui.InboxSettingsScreen(destinations.onBack) }
     composable<NotificationSettingsRoute> { NotificationSettingsScreen(destinations.onBack) }
     composable<SecuritySettingsRoute> {
         SecuritySettingsScreen(destinations.onBack, destinations.onSignedOut)
@@ -294,6 +298,8 @@ data class SettingsSections(
     val onModules: () -> Unit,
     /** Data & storage › Offline videos: the Offline page, which lives in Tube's graph. */
     val onOfflineVideos: () -> Unit,
+    /** Chat parity (2026-10-18): Settings › Inbox & messaging, a page of this feature. */
+    val onInboxMessaging: () -> Unit = {},
 )
 
 /** Type-safe navigation to another user's profile. */
@@ -305,3 +311,4 @@ fun NavController.navigateToOwnProfile() = navigate(ProfileRoute())
 /** Type-safe navigation to the edit form for the signed-in user's profile. */
 fun NavController.navigateToEditProfile() = navigate(EditProfileRoute)
 fun NavController.navigateToSettings() = navigate(SettingsRoute)
+fun NavController.navigateToInboxSettings() = navigate(InboxSettingsRoute)

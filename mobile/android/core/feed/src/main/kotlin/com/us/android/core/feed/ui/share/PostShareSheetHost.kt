@@ -45,6 +45,10 @@ fun PostShareSheetHost(
             onLinkCopied = viewModel::onLinkCopied,
             onToggleRepost = viewModel::toggleRepost,
             onMore = { onMore(item) },
+            // Chat parity: avatar multi-select (≤5), an optional note, one Send.
+            onToggleTarget = viewModel::toggleTarget,
+            onNoteChange = viewModel::onNoteChange,
+            onSendSelected = viewModel::sendSelected,
         )
     }
     UsPostShareSheet(

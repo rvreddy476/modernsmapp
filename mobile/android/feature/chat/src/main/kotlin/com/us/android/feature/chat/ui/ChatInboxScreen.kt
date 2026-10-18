@@ -621,96 +621,6 @@ internal fun InvitationRow(
     }
 }
 
-@Composable
-@Suppress("LongMethod")
-internal fun ConversationRow(
-    conversation: Conversation,
-    title: String,
-    viewerId: String,
-    onClick: () -> Unit,
-    online: Boolean = false,
-    onTogglePin: () -> Unit = {},
-    onToggleMute: () -> Unit = {},
-) {
-    var menuOpen by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = ROW_MARGIN)
-            .clip(RoundedCornerShape(ROW_CORNER))
-            // A CARD, and only when the row wants something (136:144).
-            //
-            // The frame raises exactly one row onto #1A1A1A. Our conversation
-            // payload carries `has_unread` and nothing finer, so the raise is
-            // keyed on that: the rows needing attention lift off the page and
-            // the settled ones lie flat. Keying it on list position instead
-            // would leave the top row highlighted after everything was read.
-            .background(if (conversation.hasUnread) UsTheme.extended.bgCardSolid else Color.Transparent)
-            .combinedClickable(onClick = onClick, onLongClick = { menuOpen = true })
-            .padding(ROW_PADDING),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(ROW_PADDING),
-    ) {
-        Box {
-            UsAvatar(name = title, size = UsAvatarSize.Chat, seed = conversation.id)
-            if (online) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .size(ONLINE_DOT)
-                        .clip(CircleShape)
-                        .background(UsTheme.extended.chatOnline)
-                        .border(ONLINE_DOT_RING, UsTheme.extended.bgCanvas, CircleShape),
-                )
-            }
-        }
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(NAME_PREVIEW_GAP),
-        ) {
-            val markers = buildString {
-                if (conversation.isPinned) append("📌 ")
-                if (conversation.isMuted) append("🔕 ")
-            }
-            NameAndTimeLine(
-                name = markers + title,
-                timeIso = conversation.lastMessageAt ?: conversation.updatedAt,
-                unread = conversation.hasUnread,
-            )
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text(if (conversation.isPinned) "Unpin" else "Pin") },
-                    onClick = {
-                        menuOpen = false
-                        onTogglePin()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(if (conversation.isMuted) "Unmute" else "Mute") },
-                    onClick = {
-                        menuOpen = false
-                        onToggleMute()
-                    },
-                )
-            }
-            ConversationPreview(conversation = conversation, viewerId = viewerId)
-        }
-        if (conversation.hasUnread) {
-            // The badge's SIZE, COLOUR and PLACE are the design's (136:153);
-            // the number is not, because there is no number to show. The
-            // conversation payload carries `has_unread` and no count — the
-            // server never sends one — so the circle stays empty rather than
-            // displaying a figure the client made up.
-            Box(
-                modifier = Modifier
-                    .size(UNREAD_BADGE)
-                    .clip(CircleShape)
-                    .background(UsTheme.extended.chatAccent)
-                    .testTag("chat-unread-dot"),
-            )
-        }
-    }
-}
 
 /**
  * The second line: what was last said, and by whom when that is not obvious.
@@ -720,13 +630,15 @@ internal fun ConversationRow(
  * prefix would be noise. A missed call is the design's one red line (136:193).
  */
 @Composable
-private fun ConversationPreview(conversation: Conversation, viewerId: String) {
+internal fun ConversationPreview(conversation: Conversation, viewerId: String) {
     val body = when {
         conversation.isRequest -> "Message request"
         conversation.lastMessagePreview.isNotBlank() -> conversation.lastMessagePreview
-        // A message exists but carries no text — that is a media send, whose
+        conversation.lastMessage?.preview?.isNotBlank() == true -> conversation.lastMessage?.preview.orEmpty()
+        // A message exists but carries no text — a media or typed send, whose
         // preview the server leaves empty. Saying so beats the half-drawn row
         // a blank second line produces.
+        conversation.lastMessage != null -> typedRowPreview(conversation.lastMessage?.type.orEmpty())
         conversation.lastMessageAt != null -> "Photo"
         else -> return
     }

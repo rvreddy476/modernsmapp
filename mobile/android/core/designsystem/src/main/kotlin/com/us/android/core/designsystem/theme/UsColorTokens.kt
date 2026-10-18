@@ -388,6 +388,23 @@ internal object UsColorTokens {
     val ChatBubbleOwn = Color(0xFFD9FDD3)
     val OnChatBubbleOwn = Color(0xFF10231B)
 
+    /**
+     * The other own-bubble colours a person may pick (chat parity,
+     * `chat_bubble_style`, 2026-10-18). Same rule as [ChatBubbleOwn]: a
+     * personal choice, the same in both themes, each with an ink that reads
+     * on it at 7:1 or better.
+     */
+    val ChatBubbleOcean = Color(0xFFD3E8FD)
+    val OnChatBubbleOcean = Color(0xFF0B2239)
+    val ChatBubbleEmber = Color(0xFFFFE1CC)
+    val OnChatBubbleEmber = Color(0xFF3A1606)
+    val ChatBubbleForest = Color(0xFF1F5135)
+    val OnChatBubbleForest = Color(0xFFF1FBF4)
+    val ChatBubbleViolet = Color(0xFFE6DAFB)
+    val OnChatBubbleViolet = Color(0xFF241338)
+    val ChatBubbleMono = Color(0xFF2B2F36)
+    val OnChatBubbleMono = Color(0xFFF5F6F8)
+
     // ── Brand chip (legacy "at" logo square) ────────────────────────────
     val BrandChip = Color(0xFFFFFFFF)
     val OnBrandChip = Color(0xFF0F1419)
