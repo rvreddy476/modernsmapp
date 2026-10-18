@@ -90,7 +90,19 @@ func (s *ConversationStore) CreateDirectConversation(ctx context.Context, userA,
 	var conversationID uuid.UUID
 	err = tx.QueryRow(ctx, `SELECT conversation_id FROM chat.direct_conversation_keys WHERE user_a = $1 AND user_b = $2`, userA, userB).Scan(&conversationID)
 	if err == nil {
-		return conversationID, false, nil
+		revived, err := reviveSeveredDirect(ctx, tx, conversationID)
+		if err != nil {
+			return uuid.Nil, false, err
+		}
+		if !revived {
+			return conversationID, false, nil
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return uuid.Nil, false, err
+		}
+		// A revived conversation is new to both people: the caller applies
+		// the same request downgrade it applies to a brand-new one.
+		return conversationID, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, false, err
@@ -118,6 +130,50 @@ func (s *ConversationStore) CreateDirectConversation(ctx context.Context, userA,
 		return uuid.Nil, false, err
 	}
 	return conversationID, true, nil
+}
+
+// reviveSeveredDirect re-admits the members of a direct conversation that a
+// block severed (SeverDirectConversation sets left_at on both sides). The pair
+// key stays pointed at that conversation for ever, so without this a pair that
+// was once blocked could never message again even after unblocking: every
+// "Message" tap returned the dead conversation with no active members.
+//
+// Callers reach this only after the DM permission check passed, so the block
+// is gone. History from before the sever stays hidden (cleared_before = now)
+// — a block is often about abuse, and nothing said before it resurfaces
+// without either person choosing it. Each re-admitted member gets a fresh
+// join generation, like any new membership. Returns false when both members
+// are still active (the ordinary existing-conversation case).
+func reviveSeveredDirect(ctx context.Context, tx pgx.Tx, conversationID uuid.UUID) (bool, error) {
+	var convType string
+	if err := tx.QueryRow(ctx, `SELECT type FROM chat.conversations WHERE id = $1 FOR UPDATE`,
+		conversationID).Scan(&convType); err != nil {
+		return false, err
+	}
+	if convType != "direct" {
+		return false, nil
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE chat.conversation_members
+		SET left_at = NULL,
+		    join_gen = nextval('chat.membership_gen_seq'),
+		    cleared_before = NOW(),
+		    hidden = FALSE,
+		    unread_count = 0
+		WHERE conversation_id = $1 AND left_at IS NOT NULL
+	`, conversationID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	// The old conversation may still carry a request flag from before the
+	// block; the caller marks it again if this attempt is a request.
+	if _, err := tx.Exec(ctx, `UPDATE chat.conversations SET is_request = FALSE, updated_at = NOW() WHERE id = $1`, conversationID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // MarkConversationAsRequest flags a freshly created direct conversation as a

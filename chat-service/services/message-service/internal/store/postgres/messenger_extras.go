@@ -503,7 +503,19 @@ func (s *ConversationStore) CreateMessageRequest(ctx context.Context, convID, se
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO chat.message_requests (conversation_id, sender_id, receiver_id)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (conversation_id) DO NOTHING
+		ON CONFLICT (conversation_id) DO UPDATE
+		SET sender_id = EXCLUDED.sender_id,
+		    receiver_id = EXCLUDED.receiver_id,
+		    preview = '',
+		    status = 'pending',
+		    risk_score = 0,
+		    created_at = NOW(),
+		    responded_at = NULL,
+		    expires_at = NOW() + INTERVAL '30 days'
+		-- Only a finished request is reopened: this runs for a brand-new or a
+		-- revived (post-block) conversation, and a still-pending row is the
+		-- same request retried.
+		WHERE chat.message_requests.status <> 'pending'
 	`, convID, senderID, receiverID)
 	return err
 }
