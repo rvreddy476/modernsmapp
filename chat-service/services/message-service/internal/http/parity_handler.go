@@ -42,6 +42,7 @@ type ParityService interface {
 	NotesFeed(ctx context.Context, userID uuid.UUID) (*service.NotesFeed, error)
 	SearchChat(ctx context.Context, userID uuid.UUID, q, cursor string) (*service.ChatSearchResult, error)
 	ListRequestsFiltered(ctx context.Context, userID uuid.UUID, filter string, limit, offset int) ([]service.RequestRow, error)
+	ListRequestsDirected(ctx context.Context, userID uuid.UUID, filter, direction string, limit, offset int) ([]service.RequestRow, error)
 	SetTypingState(ctx context.Context, userID, convID uuid.UUID, isTyping bool) error
 }
 

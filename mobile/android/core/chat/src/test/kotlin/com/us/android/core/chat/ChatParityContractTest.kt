@@ -203,7 +203,7 @@ class ChatParityContractTest {
         serve("requests_filtered")
         val filtered = (parity.requests("filtered") as AppResult.Success).data
         assertThat(filtered.single().isRequest).isTrue()
-        assertThat(server.takeRequest().target).isEqualTo("/v1/chat/requests?filter=filtered")
+        assertThat(server.takeRequest().target).isEqualTo("/v1/chat/requests?filter=filtered&direction=incoming")
     }
 
     @Test

@@ -223,6 +223,26 @@ type RequestRow struct {
 	// Sender is who sent the request (fix pass 2): clients show "Deleted
 	// account" when deleted, else display_name, else @username.
 	Sender *RequestSender `json:"sender"`
+	// Direction is "incoming" (the caller must answer it) or "outgoing" (the
+	// caller sent it). The list holds both; only incoming ones are waiting
+	// for the caller.
+	Direction string `json:"direction"`
+}
+
+// requestDirection says whether the viewer received ("incoming") or sent
+// ("outgoing") a request. A request row with no receiver (its sender was
+// purged) falls back to the conversation creator as the sender.
+func requestDirection(receiverID, senderID uuid.UUID, createdBy *uuid.UUID, viewer uuid.UUID) string {
+	if receiverID == viewer {
+		return "incoming"
+	}
+	if senderID == viewer {
+		return "outgoing"
+	}
+	if receiverID == uuid.Nil && createdBy != nil && *createdBy != viewer {
+		return "incoming"
+	}
+	return "outgoing"
 }
 
 // newAccountAge is the "new account" request signal (CONTRACT §7).
@@ -254,8 +274,20 @@ func requestFiltered(preview string, policy ChatPolicy, senderCreatedAt *time.Ti
 // (the default) is every request NOT filtered; "filtered" is the safe-mode
 // sub-list. Requests the caller sent are never filtered.
 func (s *Service) ListRequestsFiltered(ctx context.Context, userID uuid.UUID, filter string, limit, offset int) ([]RequestRow, error) {
+	return s.ListRequestsDirected(ctx, userID, filter, "", limit, offset)
+}
+
+// ListRequestsDirected adds ?direction=incoming|outgoing|all (default all, the
+// list as it always was).
+func (s *Service) ListRequestsDirected(ctx context.Context, userID uuid.UUID, filter, direction string, limit, offset int) ([]RequestRow, error) {
 	if filter == "" {
 		filter = "all"
+	}
+	if direction == "" {
+		direction = "all"
+	}
+	if direction != "all" && direction != "incoming" && direction != "outgoing" {
+		return nil, fmt.Errorf("%w: direction must be incoming, outgoing or all", ErrInvalidMessageContent)
 	}
 	if filter != "all" && filter != "filtered" {
 		return nil, fmt.Errorf("%w: filter must be all or filtered", ErrInvalidMessageContent)
@@ -271,7 +303,11 @@ func (s *Service) ListRequestsFiltered(ctx context.Context, userID uuid.UUID, fi
 			return out, nil
 		}
 		for _, c := range convs {
-			out = append(out, RequestRow{Conversation: c})
+			dir := requestDirection(uuid.Nil, uuid.Nil, c.CreatedBy, userID)
+			if direction != "all" && dir != direction {
+				continue
+			}
+			out = append(out, RequestRow{Conversation: c, Direction: dir})
 		}
 		return out, nil
 	}
@@ -291,9 +327,13 @@ func (s *Service) ListRequestsFiltered(ctx context.Context, userID uuid.UUID, fi
 	rows := make([]RequestRow, 0, len(envs))
 	senderOf := map[uuid.UUID]uuid.UUID{}
 	for _, e := range envs {
+		dir := requestDirection(e.ReceiverID, e.SenderID, e.Conversation.CreatedBy, userID)
+		if direction != "all" && dir != direction {
+			continue
+		}
 		filtered := e.ReceiverID == userID && requestFiltered(e.Preview, policy, ages[e.SenderID].AccountCreatedAt, now)
 		if filtered == (filter == "filtered") {
-			rows = append(rows, RequestRow{Conversation: e.Conversation, Filtered: filtered})
+			rows = append(rows, RequestRow{Conversation: e.Conversation, Filtered: filtered, Direction: dir})
 			// A purged sender's request row is gone: the creator is the sender.
 			sender := e.SenderID
 			if sender == uuid.Nil && e.Conversation.CreatedBy != nil {

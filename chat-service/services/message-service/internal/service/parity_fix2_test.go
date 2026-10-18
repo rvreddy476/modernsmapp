@@ -175,3 +175,23 @@ func (c caseTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func caseClient(base *http.Client, name string) *http.Client {
 	return &http.Client{Transport: caseTransport{base: base.Transport, name: name}}
 }
+
+func TestRequestDirection(t *testing.T) {
+	me, other := uuid.New(), uuid.New()
+	cases := []struct {
+		name             string
+		receiver, sender uuid.UUID
+		createdBy        *uuid.UUID
+		want             string
+	}{
+		{"I received it", me, other, &other, "incoming"},
+		{"I sent it", other, me, &me, "outgoing"},
+		{"purged sender row, someone else created it", uuid.Nil, uuid.Nil, &other, "incoming"},
+		{"purged row, I created it", uuid.Nil, uuid.Nil, &me, "outgoing"},
+	}
+	for _, c := range cases {
+		if got := requestDirection(c.receiver, c.sender, c.createdBy, me); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

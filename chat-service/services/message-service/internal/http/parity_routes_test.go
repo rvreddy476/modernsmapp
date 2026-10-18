@@ -143,6 +143,9 @@ func (s *stubParity) SearchChat(context.Context, uuid.UUID, string, string) (*se
 func (s *stubParity) ListRequestsFiltered(context.Context, uuid.UUID, string, int, int) ([]service.RequestRow, error) {
 	return []service.RequestRow{}, nil
 }
+func (s *stubParity) ListRequestsDirected(context.Context, uuid.UUID, string, string, int, int) ([]service.RequestRow, error) {
+	return []service.RequestRow{}, nil
+}
 func (s *stubParity) SetTypingState(context.Context, uuid.UUID, uuid.UUID, bool) error { return nil }
 
 func parityRouter(svc ChatService) *gin.Engine {

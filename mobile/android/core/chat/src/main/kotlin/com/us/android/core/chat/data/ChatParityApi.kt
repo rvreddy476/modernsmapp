@@ -40,7 +40,12 @@ interface ChatParityApi {
 
     /** §7: requests, `filter=all|filtered`. */
     @GET("v1/chat/requests")
-    suspend fun requestsFiltered(@Query("filter") filter: String): ApiEnvelope<List<ConversationDto>>
+    suspend fun requestsFiltered(
+        @Query("filter") filter: String,
+        // Only requests the viewer must answer; the server list also holds the
+        // ones they sent (those stay in their chat list).
+        @Query("direction") direction: String = "incoming",
+    ): ApiEnvelope<List<ConversationDto>>
 
     /** §1.2: hide the conversation for me and clear my history up to now. 204. */
     @DELETE("v1/chat/conversations/{id}/for-me")

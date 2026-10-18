@@ -371,7 +371,9 @@ func (h *Handler) ListMessageRequests(c *gin.Context) {
 
 	// Chat parity §7: ?filter=all|filtered (default all = not filtered).
 	if ps, ok := h.svc.(ParityService); ok {
-		rows, err := ps.ListRequestsFiltered(c.Request.Context(), userID, c.Query("filter"), limit, offset)
+		// ?direction=incoming|outgoing|all (default all): only incoming
+		// requests are waiting for the caller.
+		rows, err := ps.ListRequestsDirected(c.Request.Context(), userID, c.Query("filter"), c.Query("direction"), limit, offset)
 		if err != nil {
 			if writeMessagingError(c, err) {
 				return

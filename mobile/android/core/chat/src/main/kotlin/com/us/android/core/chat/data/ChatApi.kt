@@ -113,7 +113,7 @@ interface ChatApi {
     // ── Production chat pass: requests, groups, invitations ─────────────
 
     /** The recipient's pending message requests. */
-    @GET("v1/chat/requests")
+    @GET("v1/chat/requests?direction=incoming")
     suspend fun requests(): ApiEnvelope<List<ConversationDto>>
 
     @POST("v1/chat/conversations/{id}/requests/accept")
