@@ -734,23 +734,33 @@ fun stagePageCounter(current: Int, count: Int): String {
 }
 
 /**
- * A text post as a page: the words large and centred on a deep accent
- * gradient, sized down to fit (never below body size; a longer post
- * scrolls). [footer] is what follows the text — a poll's ballots.
+ * A text post as a page: the words large and centred on a colour of its own
+ * (picked from the design's create palette by [seed], so the same post keeps
+ * its colour and neighbours differ), sized down to fit (never below body
+ * size; a longer post scrolls). The words stay clear of the action rail on
+ * the right and the caption block at the bottom. [footer] is what follows
+ * the text — a poll's ballots.
  */
 @Composable
 fun StageTextCard(
     text: String,
     modifier: Modifier = Modifier,
+    seed: String = text,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp),
     footer: @Composable ColumnScope.() -> Unit = {},
 ) {
     val typography = MaterialTheme.typography
+    val create = UsTheme.extended.create
+    val palette = listOf(create.photo, create.reel, create.audio, create.poll, create.article, create.text)
+    val swatch = palette[stageTextColourIndex(seed, palette.size)]
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(UsTheme.extended.accentDeep, UsTheme.extended.stage)))
+            .background(swatch.brush)
+            // A soft dark wash so white words read on every swatch.
+            .background(Brush.verticalGradient(listOf(Color.Transparent, UsTheme.extended.stage.copy(alpha = TEXT_WASH_ALPHA))))
             .padding(contentPadding)
+            .padding(end = TEXT_RAIL_CLEARANCE, bottom = TEXT_CAPTION_CLEARANCE)
             .testTag("stage_text_card"),
         contentAlignment = Alignment.Center,
     ) {
@@ -758,7 +768,7 @@ fun StageTextCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = UsTheme.spacing.xxxxl),
+                .padding(start = UsTheme.spacing.xxl, end = UsTheme.spacing.s),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
         ) {
@@ -780,6 +790,12 @@ fun StageTextCard(
             footer()
         }
     }
+}
+
+/** Which of [size] swatches a text post with [seed] wears: stable for a post, spread across posts. Pure. */
+fun stageTextColourIndex(seed: String, size: Int): Int {
+    if (size <= 0) return 0
+    return Math.floorMod(seed.hashCode(), size)
 }
 
 /** The largest style a text post of [length] characters starts from: a line is a headline, a page is body. Pure. */
@@ -829,3 +845,9 @@ private val DOT_UNSELECTED = 5.dp
 private val FILL_BLUR = 28.dp
 private val EXPANDED_MAX = 240.dp
 private val TEXT_CARD_MAX = 520.dp
+
+// The rail is a 48dp target plus its end margin; the caption block is the
+// name line, two caption lines and the sound line.
+private val TEXT_RAIL_CLEARANCE = 72.dp
+private val TEXT_CAPTION_CLEARANCE = 120.dp
+private const val TEXT_WASH_ALPHA = 0.45f

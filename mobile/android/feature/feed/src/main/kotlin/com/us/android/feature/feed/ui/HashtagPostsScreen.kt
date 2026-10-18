@@ -8,8 +8,8 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTopBar
 
 /**
- * One tag's posts (`GET /v1/hashtags/{tag}/posts`), pushed from the HashTag
- * tab with the tag as its title and a back arrow.
+ * One tag's posts (`GET /v1/hashtags/{tag}/posts`), pushed from a tapped
+ * #tag with the tag as its title and a back arrow.
  *
  * The rows come from post-service rather than feed-service and are hydrated
  * on the way in (see `HashtagPostHydrator`), so this is the same card list as

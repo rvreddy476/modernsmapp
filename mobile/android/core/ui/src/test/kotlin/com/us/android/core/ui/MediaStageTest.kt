@@ -50,4 +50,13 @@ class MediaStageTest {
         chrome.onTabReselected()
         assertThat(chrome.reselected.replayCache).isEmpty()
     }
+
+    @Test
+    fun `a text post keeps its colour, and posts spread across the palette`() {
+        assertThat(stageTextColourIndex("post-1", 6)).isEqualTo(stageTextColourIndex("post-1", 6))
+        val used = (1..60).map { stageTextColourIndex("post-$it", 6) }.toSet()
+        assertThat(used.size).isAtLeast(4)
+        assertThat(used.all { it in 0 until 6 }).isTrue()
+        assertThat(stageTextColourIndex("anything", 0)).isEqualTo(0)
+    }
 }

@@ -742,7 +742,7 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
 
-    // A trending tag's posts, pushed over Home from the HashTag tab.
+    // A tag's posts, pushed over Home from a tapped #tag.
     hashtagPostsScreen(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },

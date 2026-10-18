@@ -25,7 +25,7 @@ data object FeedRoute
 data object FriendsFeedRoute
 
 /**
- * One tag's posts, pushed from the HashTag tab. [tag] is the normalized name
+ * One tag's posts, pushed from a tapped #tag. [tag] is the normalized name
  * without its `#`, exactly as `GET /v1/hashtags/{tag}/posts` takes it.
  */
 @Serializable

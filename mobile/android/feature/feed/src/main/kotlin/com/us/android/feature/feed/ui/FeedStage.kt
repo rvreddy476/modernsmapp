@@ -138,6 +138,7 @@ internal fun FeedStagePage(
             }
             StageKind.PHOTO -> StagePhotoCarousel(pages = state.pages, pagerState = carousel)
             StageKind.POLL -> StageTextCard(
+                seed = item.id,
                 text = item.text.ifBlank { item.poll?.question.orEmpty() },
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(top = state.topInset),
             ) {
@@ -156,6 +157,7 @@ internal fun FeedStagePage(
                 }
             }
             StageKind.TEXT -> StageTextCard(
+                seed = item.id,
                 text = item.text,
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(top = state.topInset),
             )

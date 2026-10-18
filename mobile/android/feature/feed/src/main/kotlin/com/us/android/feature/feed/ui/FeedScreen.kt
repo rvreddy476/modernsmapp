@@ -81,12 +81,9 @@ import kotlinx.coroutines.launch
  * The Home tab: a full-screen vertical feed (post-screens parity,
  * 2026-10-18). One post per screen — a video plays with sound, a photo post
  * is a sideways carousel, a text post a large card — under a header of the
- * three tabs (For You, Following, HashTag) with the menu at the left and
- * search at the right, all white over the media. The shell draws no inset
- * above this tab and its bar goes dark under it.
- *
- * HashTag is not a timeline: it is the day's trending tags, drawn in the
- * dark theme on the same stage, each opening its tag's posts.
+ * two tabs (For You, Following) with the menu at the left and Messages, the
+ * bell and search at the right, all white over the media. The shell draws no
+ * inset above this tab and its bar goes dark under it.
  *
  * Refresh is the reference feed's: pull down at the top for a fresh batch,
  * tap Home again for a fresh batch from the top, a fresh feed on a cold
@@ -114,7 +111,6 @@ fun FeedScreen(
 ) {
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val tab by viewModel.tab.collectAsStateWithLifecycle()
-    val trending by viewModel.trending.collectAsStateWithLifecycle()
     val followingDot by viewModel.followingDot.collectAsStateWithLifecycle()
     val unread by badge.count.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { badge.refresh() }
@@ -137,15 +133,6 @@ fun FeedScreen(
     val topInset = HEADER_HEIGHT
     Box(modifier = Modifier.fillMaxSize().background(UsTheme.extended.stage).testTag("home_stage")) {
         when (tab) {
-            FeedTab.HASHTAG -> UsTheme(darkTheme = true) {
-                TrendingHashtagsList(
-                    state = trending,
-                    onOpenHashtag = onOpenHashtag,
-                    onRetry = viewModel::refreshTrending,
-                    modifier = Modifier.statusBarsPadding().padding(top = topInset),
-                )
-            }
-
             FeedTab.FOR_YOU, FeedTab.FOLLOWING -> tabStates.SaveableStateProvider(tab) {
                 FeedContent(
                     viewModel = viewModel,

@@ -12,7 +12,7 @@ import com.us.android.core.designsystem.component.UsTopBar
  * (`GET /v1/feed/home?circle_only=true`).
  *
  * The same posts and the same body as Home (founder, 2026-09-04) — no
- * "For You | Following | HashTag" row, because those are narrowings of the
+ * "For You | Following" row, because those are narrowings of the
  * whole timeline and this page is already one. It left the bottom bar for
  * the Explore launcher (founder, 2026-09-05), so it wears a titled bar with
  * a back arrow rather than the Momentum header: it is a page you open, and

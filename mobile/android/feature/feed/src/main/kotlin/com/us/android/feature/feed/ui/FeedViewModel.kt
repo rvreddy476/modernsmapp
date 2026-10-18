@@ -35,7 +35,6 @@ import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FeedSurface
 import com.us.android.core.model.FollowStatus
-import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.ui.PostCardMediaPage
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
@@ -60,22 +59,16 @@ import java.time.ZoneOffset
  * setter after the fact, so the first page requested is the right one.
  */
 sealed interface FeedMode {
-    /** The Home tab: For You / Following under the header, HashTag alongside. */
+    /** The Home tab: For You / Following under the header. */
     data object Home : FeedMode
 
     /** The Friends tab: the home timeline narrowed to mutual follows. */
     data object Friends : FeedMode
 
-    /** One tag's posts, pushed from the HashTag list. */
+    /** One tag's posts, pushed from a tapped #tag. */
     data class Hashtag(val tag: String) : FeedMode
 }
 
-/** The HashTag tab's list, as the screen renders it. */
-sealed interface TrendingState {
-    data object Loading : TrendingState
-    data class Content(val tags: List<TrendingHashtag>) : TrendingState
-    data class Error(val error: AppError) : TrendingState
-}
 
 @HiltViewModel(assistedFactory = FeedViewModel.Factory::class)
 // Constructor injection of the timeline's collaborators; a wrapper would add
@@ -218,8 +211,6 @@ class FeedViewModel @AssistedInject constructor(
                     .flatMapLatest { repository.endlessFeed(FeedQuery.Following, FeedQuery.ForYou) }
                     .cachedIn(viewModelScope),
             )
-            // The HashTag tab has no timeline: the screen shows the trending
-            // list instead, and this stream simply goes quiet.
             tab.flatMapLatest { pages[it] ?: emptyFlow() }
         }
         FeedMode.Friends -> cached(FeedQuery.Friends)
@@ -246,20 +237,8 @@ class FeedViewModel @AssistedInject constructor(
 
     private fun cached(query: FeedQuery) = repository.feed(query).cachedIn(viewModelScope)
 
-    private val _trending = MutableStateFlow<TrendingState>(TrendingState.Loading)
-
-    /** The HashTag tab's rows. Fetched the first time the tab is shown, not at launch. */
-    val trending: StateFlow<TrendingState> = _trending.asStateFlow()
-
-    private var trendingRequested = false
-
     init {
         if (mode == FeedMode.Home) {
-            viewModelScope.launch {
-                tab.collect { selected ->
-                    if (selected == FeedTab.HASHTAG && !trendingRequested) refreshTrending()
-                }
-            }
             viewModelScope.launch {
                 feedEntry.first.collect { postId -> postId?.let { pin(it) } }
             }
@@ -290,17 +269,6 @@ class FeedViewModel @AssistedInject constructor(
             }
         }
         feedEntry.clear()
-    }
-
-    fun refreshTrending() {
-        trendingRequested = true
-        _trending.value = TrendingState.Loading
-        viewModelScope.launch {
-            _trending.value = when (val result = repository.trendingHashtags()) {
-                is AppResult.Success -> TrendingState.Content(result.data)
-                is AppResult.Failure -> TrendingState.Error(result.error)
-            }
-        }
     }
 
     /**

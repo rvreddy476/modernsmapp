@@ -7,17 +7,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * The three tabs under the home header, in the Figma frame's order.
- *
- * Two are the same timeline narrowed server-side ([FeedTab.FOLLOWING] is
- * `following_only=true`); the third is not a timeline at all but the day's
- * trending tags, each opening its own post list. The label is the user-visible
- * string exactly as the frame spells it.
+ * The two tabs on the home header: the same timeline, [FeedTab.FOLLOWING]
+ * narrowed server-side (`following_only=true`). The HashTag tab was removed
+ * (founder, 2026-10-19); a tapped #tag still opens its own post list.
  */
 enum class FeedTab(val label: String) {
     FOR_YOU("For You"),
     FOLLOWING("Following"),
-    HASHTAG("HashTag"),
 }
 
 /**
