@@ -1702,6 +1702,11 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 		if err := ps.RemoveSharedItem(ctx, conversationID, messageID); err != nil {
 			s.log.Warn("unsend: shared-items removal failed", "err", err, "message_id", messageID)
 		}
+		// An unsent message no longer counts as unread for anyone who had
+		// not read it yet.
+		if err := ps.ReleaseUnreadForUnsent(ctx, conversationID, messageID, msg.SenderID, msg.Ts); err != nil {
+			s.log.Warn("unsend: unread release failed", "err", err, "message_id", messageID)
+		}
 	}
 	if members, err := s.convStore.GetMembers(ctx, conversationID); err == nil {
 		s.publishToConversation(conversationID, members, "message_deleted", map[string]interface{}{

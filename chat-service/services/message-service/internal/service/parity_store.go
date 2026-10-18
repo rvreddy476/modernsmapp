@@ -18,7 +18,8 @@ type parityStore interface {
 	ClearForMe(ctx context.Context, conversationID, userID uuid.UUID, at time.Time, hide bool) error
 	GetMemberCutoff(ctx context.Context, conversationID, userID uuid.UUID) (*time.Time, error)
 	ResetUnread(ctx context.Context, conversationID, userID uuid.UUID) error
-	HideMessageForMe(ctx context.Context, userID, conversationID, messageID uuid.UUID) error
+	HideMessageForMe(ctx context.Context, userID, conversationID, messageID, senderID uuid.UUID, msgTs time.Time) error
+	ReleaseUnreadForUnsent(ctx context.Context, conversationID, messageID, senderID uuid.UUID, msgTs time.Time) error
 	HiddenMessageIDs(ctx context.Context, userID, conversationID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]bool, error)
 	LookupMessageTS(ctx context.Context, conversationID, messageID uuid.UUID) (string, time.Time, uuid.UUID, bool, error)
 	ApplyDeliveryParity(ctx context.Context, d postgres.DeliveryParity) error

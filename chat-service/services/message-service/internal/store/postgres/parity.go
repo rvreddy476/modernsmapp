@@ -262,11 +262,55 @@ func (s *ConversationStore) ResetUnread(ctx context.Context, conversationID, use
 
 // --- Delete for me (§2.3) ---
 
-func (s *ConversationStore) HideMessageForMe(ctx context.Context, userID, conversationID, messageID uuid.UUID) error {
+func (s *ConversationStore) HideMessageForMe(ctx context.Context, userID, conversationID, messageID, senderID uuid.UUID, msgTs time.Time) error {
+	// One statement: the unread release only happens when THIS call hid the
+	// message, so a retried delete-for-me never decrements twice.
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO chat.hidden_messages (user_id, conversation_id, message_id)
-		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
-	`, userID, conversationID, messageID)
+		WITH ins AS (
+			INSERT INTO chat.hidden_messages (user_id, conversation_id, message_id)
+			VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+			RETURNING user_id
+		)
+		UPDATE chat.conversation_members m
+		SET unread_count = m.unread_count - 1
+		WHERE EXISTS (SELECT 1 FROM ins)
+		  AND m.conversation_id = $2 AND m.user_id = $1 AND m.user_id <> $4
+		  AND `+unreadStillCounts("$5")+`
+	`, userID, conversationID, messageID, senderID, msgTs)
+	return err
+}
+
+// unreadStillCounts is true for a member row m whose unread counter still
+// includes a message sent at the timestamp parameter ts: the counter is
+// positive, the member is active, has not cleared past it, and has not read
+// up to it.
+func unreadStillCounts(ts string) string {
+	return strings.ReplaceAll(unreadStillCountsSQL, "$TS", ts)
+}
+
+const unreadStillCountsSQL = `m.unread_count > 0
+		  AND m.left_at IS NULL
+		  AND (m.cleared_before IS NULL OR m.cleared_before < $TS)
+		  AND NOT EXISTS (
+			SELECT 1 FROM chat.read_cursors rc
+			WHERE rc.conversation_id = m.conversation_id AND rc.user_id = m.user_id
+			  AND rc.last_read_at >= $TS
+		  )`
+
+// ReleaseUnreadForUnsent takes an unsent message back out of every other
+// member's unread counter, except members who had already hidden it for
+// themselves (their counter released it then).
+func (s *ConversationStore) ReleaseUnreadForUnsent(ctx context.Context, conversationID, messageID, senderID uuid.UUID, msgTs time.Time) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversation_members m
+		SET unread_count = m.unread_count - 1
+		WHERE m.conversation_id = $1 AND m.user_id <> $3
+		  AND NOT EXISTS (
+			SELECT 1 FROM chat.hidden_messages h
+			WHERE h.user_id = m.user_id AND h.conversation_id = $1 AND h.message_id = $2
+		  )
+		  AND `+unreadStillCounts("$4")+`
+	`, conversationID, messageID, senderID, msgTs)
 	return err
 }
 

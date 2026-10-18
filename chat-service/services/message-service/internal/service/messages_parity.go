@@ -126,14 +126,16 @@ func (s *Service) visibleMessage(ctx context.Context, userID, convID, msgID uuid
 
 // DeleteMessageForMe hides one message for the caller only.
 func (s *Service) DeleteMessageForMe(ctx context.Context, userID, convID, msgID uuid.UUID, tsHint *time.Time) error {
-	if _, err := s.visibleMessage(ctx, userID, convID, msgID, tsHint); err != nil {
+	msg, err := s.visibleMessage(ctx, userID, convID, msgID, tsHint)
+	if err != nil {
 		return err
 	}
 	ps, ok := s.parity()
 	if !ok {
 		return errors.New("not supported")
 	}
-	return ps.HideMessageForMe(ctx, userID, convID, msgID)
+	// Hiding an unread message also takes it out of the caller's unread count.
+	return ps.HideMessageForMe(ctx, userID, convID, msgID, msg.SenderID, msg.Ts)
 }
 
 // LocateMessage exposes the partition lookup to the handler (delete with no
