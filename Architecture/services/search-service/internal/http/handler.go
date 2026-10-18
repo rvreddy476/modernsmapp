@@ -179,6 +179,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		discover.GET("/trending", h.GetTrending)
 		discover.GET("/suggested", h.GetSuggested)
 	}
+
+	// Chat search (service-to-service; handler_chat.go). Outside the
+	// block-scope group: the caller is message-service, not a viewer.
+	h.registerChatRoutes(r)
 }
 
 func (h *Handler) SearchUsers(c *gin.Context) {
@@ -904,6 +908,11 @@ func (h *Handler) SearchEvents(c *gin.Context) {
 // SearchMessages handles GET /v1/search/messages
 // Query params: q (required), conv_id (optional), limit (default: 20)
 // Requires X-User-Id header.
+//
+// Legacy: behaviour unchanged, but this is NOT the chat search surface.
+// Chat search goes through message-service (GET /v1/chat/search), which
+// calls the internal GET /internal/v1/search/chat-messages
+// (handler_chat.go) and re-checks membership and clear/hide cut-offs.
 func (h *Handler) SearchMessages(c *gin.Context) {
 	userID, ok := requireUserID(c)
 	if !ok {

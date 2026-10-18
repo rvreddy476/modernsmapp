@@ -17,6 +17,8 @@ type searchEraser interface {
 	DeleteUser(ctx context.Context, userID string) error
 	UpdateUserHidden(ctx context.Context, userID string, hidden bool) error
 	UpdatePostsAuthorHidden(ctx context.Context, authorID string, hidden bool) error
+	// DeleteChatMessagesBySender erases the user's chat_messages_v1 rows (chat.go).
+	DeleteChatMessagesBySender(ctx context.Context, senderID string) error
 }
 
 // pgEraser is satisfied by both *postgres.AnalyticsStore and
@@ -75,6 +77,10 @@ func (p *PurgeStore) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 	}
 	if err := p.search.DeleteUser(ctx, id); err != nil {
 		return fmt.Errorf("purge: delete user doc %s: %w", id, err)
+	}
+	// Chat parity: the messages they sent leave chat search too.
+	if err := p.search.DeleteChatMessagesBySender(ctx, id); err != nil {
+		return fmt.Errorf("purge: chat messages %s: %w", id, err)
 	}
 	if p.extras != nil {
 		if err := p.extras.PurgeUser(ctx, userID); err != nil {

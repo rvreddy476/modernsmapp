@@ -170,8 +170,10 @@ func main() {
 		brokerList, "search-service-group", socialTopic, searchStore, kafkaDialer,
 	).WithPrivacyLookup(privacyLookup).WithCommerceClient(commerceClient).
 		// The DLQ replayer re-applies dead letters through this consumer,
-		// and a dead-lettered MediaSubtitlesChanged needs the lookup too.
-		WithPostsByMedia(postClient)
+		// and a dead-lettered MediaSubtitlesChanged needs the lookup too —
+		// as does a dead-lettered chat message event (shared DLQ topic).
+		WithPostsByMedia(postClient).
+		WithChatIndex(searchStore)
 	go socialConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", socialTopic, "group", "search-service-group")
 
@@ -185,6 +187,18 @@ func main() {
 	).WithPostsByMedia(postClient)
 	go mediaConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", mediaTopic, "group", "search-service-media-group")
+
+	// Chat search (chat parity, 2026-10-18): chat-service's outbox topic
+	// feeds chat_messages_v1 (internal/events/chat.go). Its own group so a
+	// stalled chat write never holds up posts. CHAT_KAFKA_TOPIC="-" disables.
+	if chatTopic := env("CHAT_KAFKA_TOPIC", "chat.events.v1"); chatTopic != "-" {
+		chatConsumer := events.NewConsumerWithDialer(
+			brokerList, "search-service-chat-group", chatTopic, searchStore, kafkaDialer,
+		).WithChatIndex(searchStore)
+		go chatConsumer.Start(consumerCtx)
+		slog.Info("started kafka consumer", "topic", chatTopic, "group", "search-service-chat-group",
+			"index", searchStore.ChatMessagesIndex())
+	}
 
 	// Account control (auth-service 30-day deletion): on user.deactivated /
 	// user.deletion_scheduled the author's presence is hidden (unconditional

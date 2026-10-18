@@ -104,6 +104,9 @@ type Consumer struct {
 	// MediaSubtitlesChanged (subtitles.go). Nil: those events error (retry,
 	// then DLQ) rather than being dropped.
 	postsByMedia PostsByMedia
+	// chat indexes chat-service message events into chat_messages_v1
+	// (chat.go). Nil: chat events fall through and are ignored.
+	chat ChatIndex
 }
 
 // WithPrivacyLookup wires the identity settings lookup used to stamp
@@ -415,6 +418,12 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
 		return err
+	}
+
+	// Chat message events (chat.go). Their names do not collide with any
+	// case below; checked first so a chat event never reaches the default.
+	if c.chat != nil && isChatEvent(envelope.EventType) {
+		return c.handleChatEvent(ctx, envelope.EventType, envelope.Payload)
 	}
 
 	switch envelope.EventType {

@@ -17,6 +17,7 @@ import (
 // tested without a live OpenSearch cluster.
 type fakeSearchEraser struct {
 	erasedAuthors []string
+	chatErased    []string
 	deletedUsers  []string
 	hiddenUsers   map[string]bool
 	hiddenAuthors map[string]bool
@@ -33,6 +34,11 @@ func (f *fakeSearchEraser) EraseAuthorContent(_ context.Context, authorID string
 		return f.eraseErr
 	}
 	f.erasedAuthors = append(f.erasedAuthors, authorID)
+	return nil
+}
+
+func (f *fakeSearchEraser) DeleteChatMessagesBySender(_ context.Context, senderID string) error {
+	f.chatErased = append(f.chatErased, senderID)
 	return nil
 }
 
@@ -112,6 +118,9 @@ func TestPurgeStore_PurgeUser_ErasesEverythingAndIsIdempotent(t *testing.T) {
 	}
 	if len(se.deletedUsers) != 2 || se.deletedUsers[0] != id.String() {
 		t.Fatalf("expected DeleteUser called twice with %s, got %v", id, se.deletedUsers)
+	}
+	if len(se.chatErased) != 2 || se.chatErased[0] != id.String() {
+		t.Fatalf("expected the user's chat messages erased on every delivery, got %v", se.chatErased)
 	}
 	if len(analytics.purged) != 2 || analytics.purged[0] != id {
 		t.Fatalf("expected optional analytics store purged on every delivery, got %v", analytics.purged)

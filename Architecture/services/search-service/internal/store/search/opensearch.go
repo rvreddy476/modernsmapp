@@ -17,6 +17,9 @@ import (
 
 type Store struct {
 	client *opensearch.Client
+	// chatIndex is the chat message index name (CHAT_MESSAGES_INDEX,
+	// default chat_messages_v1). See chat_messages.go.
+	chatIndex string
 }
 
 // New connects without credentials — the dev/compose cluster and the test
@@ -36,7 +39,7 @@ func NewWithConfig(cfg Config) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{client: client}
+	s := &Store{client: client, chatIndex: ChatMessagesIndexFromEnv()}
 	s.initIndices()
 	return s, nil
 }
@@ -161,6 +164,13 @@ func (s *Store) initIndices() {
 	// MTube (2026-09-27): the video-filter fields on posts_v1 and the two
 	// Tube indices (channels, public playlists). See tube.go.
 	s.initTubeIndices(ctx)
+
+	// Chat parity (2026-10-18): the chat message index message-service
+	// queries for "search my chats". Best-effort like the others; until it
+	// exists the search answers empty and writes fail (and retry).
+	if err := s.EnsureChatMessagesIndex(ctx); err != nil {
+		slog.Error("opensearch: chat messages index bootstrap failed", "index", s.ChatMessagesIndex(), "error", err)
+	}
 }
 
 // putEngagementMapping idempotently adds `engagement_score` (double)
@@ -2320,6 +2330,12 @@ func (s *Store) rankedHashtagSearch(ctx context.Context, q string, opts RankedSe
 }
 
 // SearchMessages searches messages within an optional conversation for the given user.
+// SearchMessages is the legacy messages_v1 lookup behind the public
+// GET /v1/search/messages. Nothing writes messages_v1, and it only matches
+// the caller's own messages. It is NOT the chat search surface: chat search
+// goes through message-service (GET /v1/chat/search), which queries
+// chat_messages_v1 via SearchChatMessages (chat_messages.go) and re-checks
+// membership. Kept unchanged for any old client.
 func (s *Store) SearchMessages(ctx context.Context, userID, convID, query string, limit int) ([]map[string]any, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
