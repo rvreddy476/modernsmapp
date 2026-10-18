@@ -72,9 +72,15 @@ enum class ShellInsets {
  * is a pushed route that is dark edge to edge — the LIVE screens — where a
  * reserved status-bar band would show the app's LIGHT ground behind the
  * light glyphs those screens ask for, a white bar over a black room.
+ * [fullBleed] is a pushed route that pads both bars itself — the Create
+ * camera (2026-10-19), black edge to edge, never framed by the light ground.
  */
-fun shellInsetsFor(currentTab: TopLevelDestination?, darkStage: Boolean): ShellInsets = when {
-    currentTab?.drawsUnderStatusBar == true -> ShellInsets.NONE
+fun shellInsetsFor(
+    currentTab: TopLevelDestination?,
+    darkStage: Boolean,
+    fullBleed: Boolean = false,
+): ShellInsets = when {
+    currentTab?.drawsUnderStatusBar == true || fullBleed -> ShellInsets.NONE
     darkStage -> ShellInsets.NO_TOP
     else -> ShellInsets.ALL
 }

@@ -89,16 +89,7 @@ fun HideShellBottomBar(hidden: Boolean) {
  * here. Outside an Activity (a preview, a test) it does nothing.
  */
 @Composable
-fun LightStatusBarGlyphs() {
-    val activity = LocalActivity.current ?: return
-    val view = LocalView.current
-    DisposableEffect(activity, view) {
-        val controller = WindowCompat.getInsetsController(activity.window, view)
-        val wasLightBar = controller.isAppearanceLightStatusBars
-        controller.isAppearanceLightStatusBars = false
-        onDispose { controller.isAppearanceLightStatusBars = wasLightBar }
-    }
-}
+fun LightStatusBarGlyphs() = HoldLightGlyphs(navigation = false)
 
 /**
  * [LightStatusBarGlyphs] for a screen that is a stage from edge to edge
@@ -108,18 +99,62 @@ fun LightStatusBarGlyphs() {
  * were when the screen leaves.
  */
 @Composable
-fun LightSystemBarGlyphs() {
+fun LightSystemBarGlyphs() = HoldLightGlyphs(navigation = true)
+
+@Composable
+private fun HoldLightGlyphs(navigation: Boolean) {
     val activity = LocalActivity.current ?: return
     val view = LocalView.current
     DisposableEffect(activity, view) {
         val controller = WindowCompat.getInsetsController(activity.window, view)
-        val wasLightStatus = controller.isAppearanceLightStatusBars
-        val wasLightNavigation = controller.isAppearanceLightNavigationBars
-        controller.isAppearanceLightStatusBars = false
-        controller.isAppearanceLightNavigationBars = false
-        onDispose {
-            controller.isAppearanceLightStatusBars = wasLightStatus
-            controller.isAppearanceLightNavigationBars = wasLightNavigation
+        val ledgers = glyphLedgers.getOrPut(activity.window) { GlyphLedgers() }
+        controller.isAppearanceLightStatusBars = ledgers.status.acquire(controller.isAppearanceLightStatusBars)
+        if (navigation) {
+            controller.isAppearanceLightNavigationBars =
+                ledgers.navigation.acquire(controller.isAppearanceLightNavigationBars)
         }
+        onDispose {
+            ledgers.status.release()?.let { controller.isAppearanceLightStatusBars = it }
+            if (navigation) ledgers.navigation.release()?.let { controller.isAppearanceLightNavigationBars = it }
+        }
+    }
+}
+
+private class GlyphLedgers {
+    val status = LightGlyphLedger()
+    val navigation = LightGlyphLedger()
+}
+
+/** One ledger pair per window; weak so a destroyed activity's window is not kept. */
+private val glyphLedgers = java.util.WeakHashMap<android.view.Window, GlyphLedgers>()
+
+/**
+ * Who is holding a bar's glyphs light, and what to put back when nobody is
+ * (2026-10-19). Pure, so the overlap is a test.
+ *
+ * Each screen used to save the bar's appearance when it appeared and restore
+ * it when it left. Navigation overlaps the two: the camera handed to the photo
+ * studio, the studio's hold began while the camera's was still on and saved
+ * "light glyphs" as the original; the camera then restored the real original,
+ * and when the studio's dark editor gave way to its light details step, it
+ * put LIGHT glyphs back — a white clock on a white screen. Counting the holds
+ * keeps the first holder's original until the last holder leaves.
+ */
+class LightGlyphLedger {
+    private var holds = 0
+    private var original = false
+
+    /** Starts a hold on a bar currently drawn with [current]; returns what to draw now. */
+    fun acquire(current: Boolean): Boolean {
+        if (holds == 0) original = current
+        holds++
+        return false
+    }
+
+    /** Ends a hold; returns the appearance to put back once the last hold ends, else null. */
+    fun release(): Boolean? {
+        if (holds == 0) return null
+        holds--
+        return if (holds == 0) original else null
     }
 }

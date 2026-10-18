@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -212,7 +213,9 @@ private fun EditStep(
             .background(UsTheme.extended.stage)
             .testTag("studio"),
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        // The shell leaves the studio both bars (2026-10-19); the stage runs
+        // under them and the controls pad themselves clear.
+        Column(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
             // Which editing tools this studio offers.
             //
             // With the advanced editor available, the studio's own Filter,

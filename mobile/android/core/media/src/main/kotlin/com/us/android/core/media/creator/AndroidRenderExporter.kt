@@ -121,6 +121,7 @@ class AndroidRenderExporter @Inject constructor(
 
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
         val decoded = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size, options)
+            ?.let { SourceOrientation.upright(it, SourceOrientation.of(sourceBytes)) }
             ?: return RenderResult.Failure("source failed to decode", recoverable = false)
 
         val encoded = ByteArrayOutputStream().use { stream ->
@@ -155,7 +156,9 @@ class AndroidRenderExporter @Inject constructor(
                 "no bytes supplied for asset ${layer.assetRef}",
                 recoverable = true,
             )
+        // Upright first: the crop is over the image as SEEN (see [SourceOrientation]).
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?.let { SourceOrientation.upright(it, SourceOrientation.of(bytes)) }
             ?: return RenderResult.Failure(
                 "asset ${layer.assetRef} failed to decode",
                 recoverable = false,

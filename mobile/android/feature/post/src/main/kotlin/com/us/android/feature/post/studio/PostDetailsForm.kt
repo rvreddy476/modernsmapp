@@ -120,7 +120,7 @@ class PostDetailsFormActions(
     val onLanguageChanged: ((String) -> Unit)? = null,
 )
 
-private enum class DetailsSheet { AUDIENCE, LOCATION, LINK, MORE, DISCLOSURE, ALT }
+private enum class DetailsSheet { AUDIENCE, LOCATION, LINK, MORE, DISCLOSURE, ALT, LANGUAGE }
 
 /**
  * The post details screen (post-screens parity, 2026-10-18), shared by the
@@ -331,14 +331,26 @@ fun PostDetailsForm(
         )
         DetailsSheet.MORE -> MoreOptionsSheet(
             details = details,
-            language = state.language,
-            onLanguageChanged = actions.onLanguageChanged,
+            language = state.language.takeIf { actions.onLanguageChanged != null },
+            onOpenLanguage = { sheet = DetailsSheet.LANGUAGE },
             hasPhotos = state.tiles.isNotEmpty() && actions.onAltText != null,
             onDetails = actions.onDetails,
             onOpenDisclosure = { sheet = DetailsSheet.DISCLOSURE },
             onOpenAlt = { sheet = DetailsSheet.ALT },
             onDismiss = { sheet = null },
         )
+        DetailsSheet.LANGUAGE -> actions.onLanguageChanged?.let { onLanguage ->
+            ReelOptionSheet(
+                title = "Language",
+                options = POST_LANGUAGE_OPTIONS,
+                selected = postLanguageSelection(state.language.orEmpty()),
+                onPick = { code ->
+                    onLanguage(code)
+                    sheet = DetailsSheet.MORE
+                },
+                onDismiss = { sheet = DetailsSheet.MORE },
+            )
+        }
         DetailsSheet.DISCLOSURE -> DisclosureSheet(details = details, onDetails = actions.onDetails, onDismiss = { sheet = DetailsSheet.MORE })
         DetailsSheet.ALT -> actions.onAltText?.let { onAlt ->
             AltTextSheet(tiles = state.tiles, onAltText = onAlt, onDismiss = { sheet = DetailsSheet.MORE })
@@ -574,7 +586,7 @@ private fun LinkSheet(initial: String, onDone: (String) -> Unit, onDismiss: () -
 private fun MoreOptionsSheet(
     details: PostDetailsUi,
     language: String?,
-    onLanguageChanged: ((String) -> Unit)?,
+    onOpenLanguage: () -> Unit,
     hasPhotos: Boolean,
     onDetails: ((PostDetailsUi) -> PostDetailsUi) -> Unit,
     onOpenDisclosure: () -> Unit,
@@ -620,15 +632,8 @@ private fun MoreOptionsSheet(
             onChange = { on -> onDetails { it.copy(aiGenerated = on) } },
             tag = "post-details-ai",
         )
-        if (language != null && onLanguageChanged != null) {
-            SectionLabel("Language")
-            ReelInputField(
-                value = language,
-                onValueChange = onLanguageChanged,
-                placeholder = "Post language, like en",
-                icon = UsIcons.Globe,
-                modifier = Modifier.testTag("post-details-language"),
-            )
+        if (language != null) {
+            SheetLinkRow(title = "Language", detail = postLanguageLabel(language), onClick = onOpenLanguage, tag = "post-details-language")
         }
     }
 }

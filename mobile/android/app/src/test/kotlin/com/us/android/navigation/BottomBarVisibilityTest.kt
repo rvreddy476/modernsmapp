@@ -85,5 +85,6 @@ class BottomBarVisibilityTest {
         assertThat(shellInsetsFor(null, darkStage = false)).isEqualTo(ShellInsets.ALL)
         assertThat(shellInsetsFor(TopLevelDestination.HOME, darkStage = false)).isEqualTo(ShellInsets.NONE)
         assertThat(shellInsetsFor(TopLevelDestination.ME, darkStage = false)).isEqualTo(ShellInsets.ALL)
+        assertThat(shellInsetsFor(null, darkStage = false, fullBleed = true)).isEqualTo(ShellInsets.NONE)
     }
 }

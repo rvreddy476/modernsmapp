@@ -376,6 +376,12 @@ fun UsNavHost(
     val chrome = remember { ChromeVisibility() }
 
     val liveStage = backStackEntry?.destination.isLiveStage()
+    // The Create camera and the photo studio pad both bars themselves; any
+    // shell inset showed the light ground as white bands around their dark
+    // stage (2026-10-19).
+    val fullBleed = backStackEntry?.destination.let {
+        it?.hasRoute(CaptureRoute::class) == true || it?.hasRoute(StudioRoute::class) == true
+    }
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         // On a LIVE screen the shell still reserves the gesture-bar band; it
@@ -387,7 +393,7 @@ fun UsNavHost(
         // hands that tab no inset at all; every other screen's own scaffold
         // reserves the system bars as before, because the NavHost below
         // consumes only what it was given.
-        contentWindowInsets = when (shellInsetsFor(currentTab, darkStage = liveStage)) {
+        contentWindowInsets = when (shellInsetsFor(currentTab, darkStage = liveStage, fullBleed = fullBleed)) {
             ShellInsets.NONE -> WindowInsets(0)
             ShellInsets.NO_TOP -> ScaffoldDefaults.contentWindowInsets
                 .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)

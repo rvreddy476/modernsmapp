@@ -2,6 +2,8 @@ package com.us.android.feature.post.studio
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import com.us.android.core.media.creator.SourceOrientation
+import com.us.android.core.media.creator.orientedSize
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -317,7 +319,11 @@ class StudioViewModel @Inject constructor(
 
     private suspend fun loadOrCreate() {
         // Resume the most recent editable project; a published one starts fresh.
-        val existing = store.all()
+        // Photos handed over by the camera or picker are a NEW post: resuming
+        // here added the fresh shot to an abandoned project's pages
+        // (2026-10-19). The abandoned project stays saved and is resumed the
+        // next time the studio opens with nothing handed to it.
+        val existing = if (initialUris.isNotEmpty()) null else store.all()
             .firstOrNull { it.status == AndroidCreatorProject.STATUS_EDITING }
         val project = existing?.let {
             (store.load(it.projectId) as? ProjectStore.LoadResult.Loaded)?.project
@@ -758,7 +764,8 @@ class StudioViewModel @Inject constructor(
         val file = vault.resolve(relativePath) ?: return 1 to 1
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.absolutePath, options)
-        return maxOf(options.outWidth, 1) to maxOf(options.outHeight, 1)
+        // The size as SEEN: a camera photo tagged "rotate 90" is measured upright.
+        return orientedSize(maxOf(options.outWidth, 1), maxOf(options.outHeight, 1), SourceOrientation.of(file))
     }
 
     private fun newProject() = AndroidCreatorProject(
