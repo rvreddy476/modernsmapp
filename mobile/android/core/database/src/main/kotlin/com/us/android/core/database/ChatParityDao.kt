@@ -53,6 +53,18 @@ interface ChatParityDao {
     )
     suspend fun updatePreview(conversationId: String, preview: String, at: String)
 
+    @Query("SELECT * FROM chat_conversation WHERE id = :conversationId")
+    suspend fun conversation(conversationId: String): ChatConversationEntity?
+
+    /**
+     * The row's last-message sender and its JSON extras (which hold the
+     * last message's type, preview, time and the viewer's Sent/Seen status)
+     * — written when a message lands in realtime, so the inbox row shows it
+     * before the next sync.
+     */
+    @Query("UPDATE chat_conversation SET lastMessageSender = :senderId, extrasJson = :extrasJson WHERE id = :conversationId")
+    suspend fun updateLastMessage(conversationId: String, senderId: String?, extrasJson: String?)
+
     @Query(
         "UPDATE chat_conversation SET isPinned = :pinned, isMuted = :muted, muteCalls = :muteCalls, " +
             "alertTone = :alertTone WHERE id = :conversationId",

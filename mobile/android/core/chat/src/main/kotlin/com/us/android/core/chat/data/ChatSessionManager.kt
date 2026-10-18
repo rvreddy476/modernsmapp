@@ -261,6 +261,10 @@ open class ChatSessionManager @Inject constructor(
                     is ChatSocketEvent.MessageDeleted -> store.applyDeleted(event.messageId)
                     is ChatSocketEvent.ReactionChanged ->
                         store.applyReaction(event.messageId, event.emoji, event.userId, event.added)
+                    // The peer read my last message: the inbox row's "Sent"
+                    // becomes "Seen" without waiting for the next sync.
+                    is ChatSocketEvent.ReadReceipt ->
+                        store.applyReadReceipt(event.conversationId, event.userId, event.messageId)
                     else -> Unit
                 }
                 _events.emit(event)

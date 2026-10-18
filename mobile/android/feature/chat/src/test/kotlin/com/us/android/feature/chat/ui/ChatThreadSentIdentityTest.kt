@@ -39,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -122,11 +123,17 @@ class ChatThreadSentIdentityTest {
         override fun setPending(pending: Boolean): Boolean = true
     }
 
+    private val signedIn = object : SessionStateProvider {
+        override val sessionState: StateFlow<SessionState> =
+            MutableStateFlow(SessionState.Authenticated(userId = VIEWER, sessionId = "s"))
+    }
+
     private class Harness(
         val vm: ChatThreadViewModel,
         val api: ScriptedApi,
         val store: ChatStore,
         val events: MutableSharedFlow<ChatSocketEvent>,
+        val db: UsDatabase,
     )
 
     private fun harness(): Harness {
@@ -145,6 +152,7 @@ class ChatThreadSentIdentityTest {
             scheduler = InlineScheduler(),
             scrubRecovery = NoScrubOwed,
             parityDao = db.chatParityDao(),
+            sessionState = { signedIn },
         )
         val events = MutableSharedFlow<ChatSocketEvent>(extraBufferCapacity = 16)
         val session = object : ChatSessionManager(
@@ -169,13 +177,10 @@ class ChatThreadSentIdentityTest {
                 MediaUploader(unusedUploadApi(), PresignedUploader(OkHttpClient()), errorMapper),
             ),
             notificationPresenter = NotificationPresenter(context, AppForegroundState(), DoorstepOfferAlertCoordinator()),
-            sessionState = object : SessionStateProvider {
-                override val sessionState: StateFlow<SessionState> =
-                    MutableStateFlow(SessionState.Authenticated(userId = VIEWER, sessionId = "s"))
-            },
+            sessionState = signedIn,
             savedStateHandle = SavedStateHandle(mapOf("conversationId" to CONVERSATION)),
         )
-        return Harness(vm, api, store, events)
+        return Harness(vm, api, store, events, db)
     }
 
     /**
@@ -317,6 +322,45 @@ class ChatThreadSentIdentityTest {
         awaitUntil { h.vm.state.value.pendingSends.singleOrNull()?.failed == true }
         awaitUntil { h.copiesOf("srv-laptop").isNotEmpty() }
         assertThat(h.copiesOf("srv-laptop")).hasSize(1)
+    }
+
+    // ── the inbox row, over the real Room queries ──────────────────────
+
+    @Test
+    fun `after a send the inbox row shows my message as Sent now, then Seen on the peer's receipt`() = runTest {
+        val h = harness()
+        // The emulator's row: my old message, read an hour ago (as synced).
+        h.db.chatDao().upsertConversations(
+            listOf(
+                com.us.android.core.database.ChatConversationEntity(
+                    id = CONVERSATION, type = "direct", title = null, isRequest = false, membersJson = "[]",
+                    updatedAt = "2026-10-18T09:00:00Z", avatarMediaId = null, lastMessageAt = "2026-10-18T09:00:00Z",
+                    lastMessagePreview = "old", lastMessageSender = VIEWER, hasUnread = false, syncedAtMillis = 0,
+                    extrasJson = """{"lastMessage":{"type":"text","preview":"old","senderId":"$VIEWER",""" +
+                        """"at":"2026-10-18T09:00:00Z","ownStatus":"read"}}""",
+                ),
+            ),
+        )
+        suspend fun row() = h.store.conversationsFlow().first().single { it.id == CONVERSATION }
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(row().lastMessage, VIEWER)).isEqualTo("Seen")
+
+        h.sendText()
+        h.awaitDelivered()
+
+        val sent = row()
+        assertThat(sent.lastMessage?.preview).isEqualTo(TEXT)
+        assertThat(sent.lastMessage?.at).isEqualTo(TS)
+        assertThat(sent.lastMessagePreview).isEqualTo(TEXT)
+        assertThat(sent.lastMessageAt).isEqualTo(TS)
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(sent.lastMessage, VIEWER)).isEqualTo("Sent")
+
+        // The echo lands after; the row stays as it is.
+        h.deliverEcho()
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(row().lastMessage, VIEWER)).isEqualTo("Sent")
+        assertThat(row().hasUnread).isFalse()
+
+        h.store.applyReadReceipt(CONVERSATION, readerId = "peer", messageId = SERVER_ID)
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(row().lastMessage, VIEWER)).isEqualTo("Seen")
     }
 
     private companion object {

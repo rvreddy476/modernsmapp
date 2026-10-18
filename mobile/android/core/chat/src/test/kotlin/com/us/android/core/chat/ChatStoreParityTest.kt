@@ -22,6 +22,7 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Test
@@ -37,7 +38,7 @@ class ChatStoreParityTest {
         override suspend fun upsertConversations(rows: List<ChatConversationEntity>) {
             rows.forEach { conversations[it.id] = it }
         }
-        override fun conversations(): Flow<List<ChatConversationEntity>> = MutableStateFlow(emptyList())
+        override fun conversations(): Flow<List<ChatConversationEntity>> = kotlinx.coroutines.flow.flow { emit(conversations.values.toList()) }
         override fun requests(): Flow<List<ChatConversationEntity>> = MutableStateFlow(emptyList())
         override fun unreadConversationCount(): Flow<Int> = MutableStateFlow(0)
         override suspend fun clearUnread(conversationId: String) = Unit
@@ -75,7 +76,10 @@ class ChatStoreParityTest {
         override suspend fun clearPendingSends() = pending.clear()
     }
 
-    private class FakeParityDao(private val messages: MutableMap<String, ChatMessageEntity>) : ChatParityDao {
+    private class FakeParityDao(
+        private val messages: MutableMap<String, ChatMessageEntity>,
+        private val conversations: MutableMap<String, ChatConversationEntity> = linkedMapOf(),
+    ) : ChatParityDao {
         val prunes = mutableListOf<List<String>>()
         val marks = mutableListOf<String>()
         override suspend fun message(messageId: String) = messages[messageId]
@@ -101,6 +105,15 @@ class ChatStoreParityTest {
         }
         override suspend fun updatePreview(conversationId: String, preview: String, at: String) {
             previews += Triple(conversationId, preview, at)
+            conversations[conversationId]?.let {
+                conversations[conversationId] = it.copy(lastMessagePreview = preview, lastMessageAt = at, updatedAt = at)
+            }
+        }
+        override suspend fun conversation(conversationId: String) = conversations[conversationId]
+        override suspend fun updateLastMessage(conversationId: String, senderId: String?, extrasJson: String?) {
+            conversations[conversationId]?.let {
+                conversations[conversationId] = it.copy(lastMessageSender = senderId, extrasJson = extrasJson)
+            }
         }
         override suspend fun updatePrefs(conversationId: String, pinned: Boolean, muted: Boolean, muteCalls: Boolean, alertTone: String?) = Unit
         override suspend fun alertTone(conversationId: String): String? = null
@@ -346,8 +359,8 @@ class ChatStoreParityTest {
         }
     }
 
-    private fun sessionStore(dao: FakeDao, parityDao: FakeParityDao) = ChatStore(
-        repository = ChatRepository(FakeApi(emptyList()), ErrorMapper(json)),
+    private fun sessionStore(dao: FakeDao, parityDao: FakeParityDao, api: ChatApi = FakeApi(emptyList())) = ChatStore(
+        repository = ChatRepository(api, ErrorMapper(json)),
         dao = dao,
         scheduler = NoScheduler,
         scrubRecovery = NoScrubOwed,
@@ -361,7 +374,8 @@ class ChatStoreParityTest {
     @Test
     fun `my own message echoed from another device moves the preview but never marks unread`() = runTest {
         val dao = FakeDao()
-        val parityDao = FakeParityDao(dao.messages)
+        val parityDao = FakeParityDao(dao.messages, dao.conversations)
+        dao.conversations["c1"] = row("c1")
         sessionStore(dao, parityDao).applyRealtimeMessage(realtime("m1", sender = "me"))
 
         assertThat(dao.unreadMarks).isEmpty()
@@ -379,6 +393,165 @@ class ChatStoreParityTest {
         assertThat(dao.unreadMarks).containsExactly(Triple("c1", "on my way", "2026-10-18T10:00:00Z"))
         assertThat(parityDao.increments).containsExactly("c1")
         assertThat(parityDao.previews).isEmpty()
+    }
+
+    // ── the inbox row shows my newest message at once ──────────────────
+
+    /** The emulator's row: my old message, already read by the peer an hour ago. */
+    private val seenAnHourAgo = com.us.android.core.chat.data.CachedLastMessage(
+        type = "text", preview = "old", senderId = "me", at = "2026-10-18T09:00:00Z", ownStatus = "read",
+    )
+
+    private fun row(
+        id: String,
+        last: com.us.android.core.chat.data.CachedLastMessage? = null,
+        type: String = "direct",
+    ) = ChatConversationEntity(
+        id = id, type = type, title = null, isRequest = false, membersJson = "[]",
+        updatedAt = "2026-10-18T09:00:00Z", avatarMediaId = null, lastMessageAt = "2026-10-18T09:00:00Z",
+        lastMessagePreview = last?.preview.orEmpty(), lastMessageSender = last?.senderId, hasUnread = false,
+        syncedAtMillis = 0,
+        extrasJson = last?.let {
+            json.encodeToString(
+                com.us.android.core.chat.data.CachedConversationExtras.serializer(),
+                com.us.android.core.chat.data.CachedConversationExtras(lastMessage = it),
+            )
+        },
+    )
+
+    private suspend fun ChatStore.inboxRow(id: String) = conversationsFlow().first().single { it.id == id }
+
+    private fun stickerEcho(at: String = "2026-10-18T10:00:00.5Z") = com.us.android.core.chat.data.Message(
+        "m-sticker", "c1", "me", null, "", at,
+        type = "gif",
+        gif = com.us.android.core.chat.data.GifInfo("giphy", "g1", "https://media/g1.gif", null, 200, 200, null, isSticker = true),
+    )
+
+    @Test
+    fun `my own sticker echo makes the row say Sent, Sticker and now`() = runTest {
+        val dao = FakeDao()
+        dao.conversations["c1"] = row("c1", seenAnHourAgo)
+        val store = sessionStore(dao, FakeParityDao(dao.messages, dao.conversations))
+
+        store.applyRealtimeMessage(stickerEcho())
+
+        val row = store.inboxRow("c1")
+        assertThat(row.lastMessage?.type).isEqualTo("gif")
+        assertThat(row.lastMessage?.preview).isEqualTo("Sticker")
+        assertThat(row.lastMessage?.at).isEqualTo("2026-10-18T10:00:00.5Z")
+        assertThat(row.lastMessagePreview).isEqualTo("Sticker")
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(row.lastMessage, "me")).isEqualTo("Sent")
+        assertThat(row.hasUnread).isFalse()
+    }
+
+    @Test
+    fun `a confirmed send moves the row even when no echo arrives`() = runTest {
+        val dao = FakeDao()
+        dao.conversations["c1"] = row("c1", seenAnHourAgo)
+        val store = sessionStore(dao, FakeParityDao(dao.messages, dao.conversations), AddressedSendApi())
+
+        store.enqueueSend("c1", "hello")
+        assertThat(store.drainOutbox()).isTrue()
+
+        val row = store.inboxRow("c1")
+        assertThat(row.lastMessage?.preview).isEqualTo("hello")
+        assertThat(row.lastMessage?.at).isEqualTo("2026-10-18T10:00:00.123Z")
+        assertThat(row.lastMessagePreview).isEqualTo("hello")
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(row.lastMessage, "me")).isEqualTo("Sent")
+    }
+
+    @Test
+    fun `an older message never moves the row back`() = runTest {
+        val dao = FakeDao()
+        val newer = seenAnHourAgo.copy(at = "2026-10-18T11:00:00Z", preview = "newest")
+        dao.conversations["c1"] = row("c1", newer)
+        val store = sessionStore(dao, FakeParityDao(dao.messages, dao.conversations))
+
+        // Earlier as an instant, though it sorts LATER as text ('.' < 'Z').
+        store.applyRealtimeMessage(stickerEcho(at = "2026-10-18T10:59:59.9Z"))
+
+        val row = store.inboxRow("c1")
+        assertThat(row.lastMessage?.preview).isEqualTo("newest")
+        assertThat(row.lastMessagePreview).isEqualTo("newest")
+    }
+
+    @Test
+    fun `the peer's message becomes the row's last message with no Sent line`() = runTest {
+        val dao = FakeDao()
+        dao.conversations["c1"] = row("c1", seenAnHourAgo)
+        val store = sessionStore(dao, FakeParityDao(dao.messages, dao.conversations))
+
+        store.applyRealtimeMessage(realtime("m2", sender = "u2"))
+
+        val row = store.inboxRow("c1")
+        assertThat(row.lastMessage?.senderId).isEqualTo("u2")
+        assertThat(row.lastMessage?.at).isEqualTo("2026-10-18T10:00:00Z")
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(row.lastMessage, "me")).isNull()
+    }
+
+    @Test
+    fun `the peer's read receipt turns Sent into Seen`() = runTest {
+        val dao = FakeDao()
+        dao.conversations["c1"] = row("c1", seenAnHourAgo)
+        val store = sessionStore(dao, FakeParityDao(dao.messages, dao.conversations))
+        store.applyRealtimeMessage(stickerEcho())
+
+        store.applyReadReceipt("c1", readerId = "u2", messageId = "m-sticker")
+
+        val row = store.inboxRow("c1")
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(row.lastMessage, "me")).isEqualTo("Seen")
+        // The same message landing again (its HTTP copy) keeps the Seen.
+        store.applyRealtimeMessage(stickerEcho())
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(store.inboxRow("c1").lastMessage, "me")).isEqualTo("Seen")
+    }
+
+    @Test
+    fun `the session applies a read_receipt frame to the cached row`() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        dao.conversations["c1"] = row("c1", seenAnHourAgo)
+        val store = sessionStore(dao, FakeParityDao(dao.messages, dao.conversations))
+        store.applyRealtimeMessage(stickerEcho())
+        val socket = object : com.us.android.core.chat.data.ChatSocket(okhttp3.OkHttpClient(), "ws://unused") {
+            override fun connect(tokenProvider: () -> String?) = kotlinx.coroutines.flow.flowOf(
+                com.us.android.core.chat.data.ChatSocketEvent.ReadReceipt("c1", "u2", "m-sticker"),
+                com.us.android.core.chat.data.ChatSocketEvent.Disconnected(permanent = true),
+            )
+            override fun send(frame: String): Boolean = false
+        }
+        val session = com.us.android.core.chat.data.ChatSessionManager(
+            socket = socket,
+            store = store,
+            tokenProvider = object : com.us.android.core.network.TokenProvider {
+                override fun currentAccessToken(): String? = "t"
+            },
+            repository = ChatRepository(FakeApi(emptyList()), ErrorMapper(json)),
+        )
+        session.start()
+        kotlinx.coroutines.withTimeout(10_000) {
+            while (com.us.android.core.chat.data.ownStatusLabel(store.inboxRow("c1").lastMessage, "me") != "Seen") {
+                kotlinx.coroutines.delay(10)
+            }
+        }
+        session.stopAndJoin()
+    }
+
+    @Test
+    fun `a receipt for an older message, from me, for an unknown message or in a group changes nothing`() = runTest {
+        val dao = FakeDao()
+        dao.conversations["c1"] = row("c1", seenAnHourAgo)
+        dao.conversations["g1"] = row("g1", seenAnHourAgo, type = "group")
+        val store = sessionStore(dao, FakeParityDao(dao.messages, dao.conversations))
+        dao.messages["m-old"] = ChatMessageEntity("m-old", "c1", "me", null, "older", null, createdAt = "2026-10-18T09:30:00Z")
+        store.applyRealtimeMessage(stickerEcho())
+        store.applyRealtimeMessage(stickerEcho().copy(id = "g-sticker", conversationId = "g1"))
+
+        store.applyReadReceipt("c1", readerId = "u2", messageId = "m-old")
+        store.applyReadReceipt("c1", readerId = "me", messageId = "m-sticker")
+        store.applyReadReceipt("c1", readerId = "u2", messageId = "never-cached")
+        store.applyReadReceipt("g1", readerId = "u2", messageId = "g-sticker")
+
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(store.inboxRow("c1").lastMessage, "me")).isEqualTo("Sent")
+        assertThat(com.us.android.core.chat.data.ownStatusLabel(store.inboxRow("g1").lastMessage, "me")).isEqualTo("Sent")
     }
 
     @Test

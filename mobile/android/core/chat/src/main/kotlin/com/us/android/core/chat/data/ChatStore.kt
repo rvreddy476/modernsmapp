@@ -374,17 +374,96 @@ class ChatStore @Inject constructor(
         // and time like any other, but never marks the chat unread: a message
         // sent from the laptop must not light this phone's inbox dot.
         val own = viewer.isNotBlank() && message.senderId == viewer
-        val preview = inboxPreview(message).take(PREVIEW_LENGTH)
         guardedWrite {
             dao.insertMessages(listOf(message.toEntity()))
-            if (own) {
-                parityDao?.updatePreview(message.conversationId, preview, message.createdAt)
-            } else {
-                dao.markUnread(conversationId = message.conversationId, preview = preview, at = message.createdAt)
+            if (!own) {
+                dao.markUnread(
+                    conversationId = message.conversationId,
+                    preview = inboxPreview(message).take(PREVIEW_LENGTH),
+                    at = message.createdAt,
+                )
                 parityDao?.incrementUnread(message.conversationId)
             }
+            // Own or not, the row's last message moves (for my own, the
+            // preview and time too — markUnread already did that for theirs).
+            recordLastMessage(message, own)
         }
     }
+
+    /**
+     * Writes [message] as the inbox row's last message — type, preview,
+     * sender, time and, for the viewer's own, the "Sent" status — so the row
+     * shows it at once instead of the previous message until the next sync.
+     *
+     * The row draws its time and its Sent/Seen line from this cached copy
+     * (the server's `last_message`), not from the preview columns, which is
+     * why updating the columns alone left "Seen · 1h" on a chat the viewer
+     * had just written in.
+     *
+     * Never moves backwards: a message older than the cached one (a replayed
+     * frame, a slow response) changes nothing. The same message written
+     * twice — its echo and its HTTP copy — keeps a "Seen" the peer's receipt
+     * already set. Runs inside the caller's guarded write.
+     */
+    private suspend fun recordLastMessage(message: Message, own: Boolean) {
+        val extras = parityDao ?: return
+        val row = extras.conversation(message.conversationId) ?: return
+        val current = decodeConversationExtras(row.extrasJson)
+        val previous = current?.lastMessage
+        val at = message.createdAt.ifBlank { message.ts }
+        if (at.isBlank() || isBefore(at, previous?.at)) return
+        val sameMessage = previous != null && previous.at == at && previous.senderId == message.senderId
+        val status = when {
+            !own -> null
+            sameMessage && previous?.ownStatus == OWN_STATUS_READ -> OWN_STATUS_READ
+            else -> OWN_STATUS_SENT
+        }
+        val last = CachedLastMessage(
+            type = message.type,
+            preview = inboxPreview(message).take(PREVIEW_LENGTH),
+            senderId = message.senderId,
+            at = at,
+            ownStatus = status,
+        )
+        val merged = (current ?: CachedConversationExtras()).copy(lastMessage = last)
+        if (own) extras.updatePreview(message.conversationId, last.preview, at)
+        extras.updateLastMessage(
+            conversationId = message.conversationId,
+            senderId = message.senderId,
+            extrasJson = json.encodeToString(CachedConversationExtras.serializer(), merged),
+        )
+    }
+
+    /**
+     * The peer's `read_receipt`: the viewer's last message in a DIRECT chat
+     * flips from "Sent" to "Seen" when the message they read is that one or
+     * newer. A receipt for an older message, for a message this device never
+     * cached, or from the viewer themself changes nothing — the next sync
+     * repairs anything this cannot decide.
+     */
+    suspend fun applyReadReceipt(conversationId: String, readerId: String, messageId: String) {
+        val extras = parityDao ?: return
+        val viewer = viewerId()
+        if (viewer.isBlank() || readerId.isBlank() || readerId == viewer) return
+        guardedWrite {
+            val row = extras.conversation(conversationId) ?: return@guardedWrite
+            if (row.type == GROUP_CONVERSATION) return@guardedWrite
+            val current = decodeConversationExtras(row.extrasJson) ?: return@guardedWrite
+            val last = current.lastMessage ?: return@guardedWrite
+            if (last.senderId != viewer || last.ownStatus == OWN_STATUS_READ) return@guardedWrite
+            val read = extras.message(messageId) ?: return@guardedWrite
+            if (read.conversationId != conversationId || isBefore(read.createdAt, last.at)) return@guardedWrite
+            val merged = current.copy(lastMessage = last.copy(ownStatus = OWN_STATUS_READ))
+            extras.updateLastMessage(
+                conversationId = conversationId,
+                senderId = row.lastMessageSender,
+                extrasJson = json.encodeToString(CachedConversationExtras.serializer(), merged),
+            )
+        }
+    }
+
+    private fun decodeConversationExtras(raw: String?): CachedConversationExtras? =
+        raw?.let { runCatching { json.decodeFromString(CachedConversationExtras.serializer(), it) }.getOrNull() }
 
     // ── Chat parity (2026-10-18) ────────────────────────────────────────
 
@@ -733,6 +812,9 @@ class ChatStore @Inject constructor(
         if (message.id.isBlank()) return
         val entity = message.toEntity()
         dao.insertMessages(listOf(entity))
+        // The viewer's own message, confirmed: the inbox row says so now
+        // ("Sent", this preview, this time), echo or no echo.
+        recordLastMessage(message, own = true)
         if (!message.addressable) return
         val extras = parityDao ?: return
         val row = extras.message(message.id) ?: return
@@ -921,6 +1003,11 @@ class ChatStore @Inject constructor(
         const val SEND_WORK_NAME = "chat-send-outbox"
         const val MAX_SEND_ATTEMPTS = 5
         private const val PREVIEW_LENGTH = 140
+
+        /** `last_message.own_status` values (CONTRACT §1), as [ownStatusLabel] reads them. */
+        private const val OWN_STATUS_SENT = "sent"
+        private const val OWN_STATUS_READ = "read"
+        private const val GROUP_CONVERSATION = "group"
     }
 }
 
@@ -949,6 +1036,22 @@ fun typedPreview(message: Message): String? = when {
     message.mediaId != null -> "Photo"
     else -> null
 }
+
+/**
+ * True only when both are server timestamps and [at] is strictly earlier
+ * than [than]. Compared as instants, not strings: "10:00:00.5Z" sorts
+ * BEFORE "10:00:00Z" as text. Anything unparseable is never "before", so an
+ * odd value updates the row rather than freezing it.
+ */
+internal fun isBefore(at: String, than: String?): Boolean {
+    if (than.isNullOrBlank()) return false
+    val a = parseInstant(at) ?: return false
+    val b = parseInstant(than) ?: return false
+    return a.isBefore(b)
+}
+
+private fun parseInstant(value: String): java.time.Instant? =
+    runCatching { java.time.OffsetDateTime.parse(value).toInstant() }.getOrNull()
 
 /** What a captionless post card says in the inbox. */
 const val SHARED_POST_PREVIEW = "Shared a post"
