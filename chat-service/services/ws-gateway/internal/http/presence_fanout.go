@@ -130,10 +130,17 @@ func (f *presenceFanout) Announce(ctx context.Context, userID uuid.UUID) {
 	}
 	sem := make(chan struct{}, presenceConcurrency)
 	var wg sync.WaitGroup
+	// Exactly once per peer per transition, whatever the peer source returns
+	// (a pair with two direct conversations used to be listed twice).
+	sent := make(map[uuid.UUID]struct{}, len(peers))
 	for _, peer := range peers {
 		if peer == userID {
 			continue
 		}
+		if _, dup := sent[peer]; dup {
+			continue
+		}
+		sent[peer] = struct{}{}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(peer uuid.UUID) {

@@ -75,13 +75,17 @@ func TestDMPeersOnlyAcceptedActiveDirectConversations(t *testing.T) {
 	add("direct", true, "1 second", stranger, false) // pending request
 	add("direct", false, "1 second", leaver, true)
 	add("group", false, "1 second", groupMate, false)
+	// A second, older direct conversation with the same friend (seen on dev:
+	// it doubled every presence frame). The friend must still appear once,
+	// ranked by the newest shared conversation.
+	add("direct", false, "2 days", friend, false)
 
 	got, err := New(pool).DMPeers(ctx, me, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || got[0] != friend || got[1] != older {
-		t.Fatalf("peers = %v, want [friend older] (no requests, leavers or group members)", got)
+		t.Fatalf("peers = %v, want [friend older] (each peer once; no requests, leavers or group members)", got)
 	}
 	if limited, _ := New(pool).DMPeers(ctx, me, 1); len(limited) != 1 || limited[0] != friend {
 		t.Fatalf("limit must keep the most recent: %v", limited)

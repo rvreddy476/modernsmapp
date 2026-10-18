@@ -18,6 +18,12 @@ import (
 // the user still belongs to, most recently active first. Pending message
 // requests are excluded: a stranger whose request was never accepted gets
 // no presence pushes.
+//
+// Each peer appears ONCE: a pair can hold more than one direct conversation
+// (an older DM kept alongside a newer one, e.g. after a block severed the
+// first), and one row per conversation made every presence transition reach
+// that peer once per shared conversation. A peer ranks by its most recent
+// shared conversation, and LIMIT counts distinct peers.
 const dmPeersSQL = `
 SELECT other.user_id
 FROM chat.conversation_members me
@@ -29,7 +35,8 @@ WHERE me.user_id = $1
   AND c.is_request = false
   AND me.left_at IS NULL
   AND other.left_at IS NULL
-ORDER BY c.updated_at DESC
+GROUP BY other.user_id
+ORDER BY MAX(c.updated_at) DESC
 LIMIT $2`
 
 // Postgres implements PeerSource over chat_db.
