@@ -1441,6 +1441,26 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	if err != nil {
 		return nil, nil, err
 	}
+	// Messages hidden for this member are filtered after the read, so a page
+	// can come back short or empty while older history remains. Keep reading
+	// (bounded) so a run of hidden messages never looks like the start of
+	// the chat to a client that stops on an empty page.
+	for round := 0; round < 5 && len(messages) < limit && nextCursor != nil; round++ {
+		more, moreCursor, err := s.msgStore.GetMessages(ctx, conversationID, nextCursor, limit-len(messages))
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(more) == 0 {
+			nextCursor = nil
+			break
+		}
+		more, moreCursor, err = s.applyHistoryCutoff(ctx, userID, conversationID, more, moreCursor)
+		if err != nil {
+			return nil, nil, err
+		}
+		messages = append(messages, more...)
+		nextCursor = moreCursor
+	}
 
 	// Group messages by bucket to batch-fetch reactions.
 	bucketKeys := make(map[string][]scylla.MsgKey)

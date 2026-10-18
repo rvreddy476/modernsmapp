@@ -197,18 +197,21 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, is_edited, edited_at, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ? AND (ts, msg_id) < (?, ?)
-				LIMIT ?
-			`, convGocql, bucket, cursor.Ts, uuidToGocql(cursor.MsgID), remaining)
+			`, convGocql, bucket, cursor.Ts, uuidToGocql(cursor.MsgID))
 		} else {
 			q = s.session.Query(`
 				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, is_edited, edited_at, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ?
-				LIMIT ?
-			`, convGocql, bucket, remaining)
+			`, convGocql, bucket)
 		}
 
-		iter := q.WithContext(ctx).Iter()
+		// No LIMIT: unsent (is_deleted) rows used to count against it, so a
+		// run of them hid older live messages in the same bucket (the loop
+		// moved on to the previous month) and could return an empty page.
+		// The driver pages lazily and the loop below stops as soon as enough
+		// live messages are read.
+		iter := q.WithContext(ctx).PageSize(remaining + 20).Iter()
 		var t scanTarget
 		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.PostID, &t.Extra, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt) {
 			if !t.IsDeleted {
