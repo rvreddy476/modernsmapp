@@ -264,11 +264,11 @@ func TestPostIDIsPartOfTheIdempotencyHash(t *testing.T) {
 
 func TestRealtimeFrameCarriesPostIDOnlyOnPosts(t *testing.T) {
 	conv, msg, sender, post := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	body := messageFrameBody(conv, msg, sender, MessageTypePost, "", nil, &post, time.Now())
+	body := messageFrameBody(conv, msg, sender, MessageTypePost, "", nil, &post, "202610", time.Now())
 	if body["type"] != MessageTypePost || body["post_id"] != &post {
 		t.Fatalf("post frame = %v", body)
 	}
-	text := messageFrameBody(conv, msg, sender, MessageTypeText, "hi", nil, nil, time.Now())
+	text := messageFrameBody(conv, msg, sender, MessageTypeText, "hi", nil, nil, "202610", time.Now())
 	if _, ok := text["post_id"]; ok {
 		t.Fatalf("a text frame must not carry post_id: %v", text)
 	}
@@ -386,5 +386,14 @@ func TestPreviewRepairDescribesASurvivingPostCard(t *testing.T) {
 	}
 	if !fx.conv.applied || fx.conv.lastPreview != PostMessagePreview {
 		t.Fatalf("repaired preview = %q (applied=%v), want %q", fx.conv.lastPreview, fx.conv.applied, PostMessagePreview)
+	}
+}
+
+func TestRealtimeFrameCarriesTheMessageAddress(t *testing.T) {
+	conv, msg, sender := uuid.New(), uuid.New(), uuid.New()
+	at := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	body := messageFrameBody(conv, msg, sender, MessageTypeText, "hi", nil, nil, "202610", at)
+	if body["bucket"] != "202610" || body["ts"] != at || body["msg_id"] != msg {
+		t.Fatalf("frame must carry bucket, ts and msg_id: %v", body)
 	}
 }

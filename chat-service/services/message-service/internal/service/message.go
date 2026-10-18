@@ -1325,7 +1325,7 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 		go func() {
 			pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			msgBody := messageFrameBody(conversationID, msgID, userID, msgType, text, mediaID, postID, now)
+			msgBody := messageFrameBody(conversationID, msgID, userID, msgType, text, mediaID, postID, bucket, now)
 			if intent.ReplyToID != nil {
 				msgBody["reply_to_id"] = intent.ReplyToID
 				msgBody["reply_to_preview"] = intent.ReplyToPreview
@@ -2428,7 +2428,7 @@ func (s *Service) discloseOnlineTo(ctx context.Context, viewerID, targetID uuid.
 // chat:<user> and convroom:<conversation>. post_id rides only on a post card;
 // it is the card's whole content (no post data is copied — see
 // MessageTypePost).
-func messageFrameBody(conversationID, msgID, senderID uuid.UUID, msgType, text string, mediaID, postID *uuid.UUID, createdAt time.Time) map[string]interface{} {
+func messageFrameBody(conversationID, msgID, senderID uuid.UUID, msgType, text string, mediaID, postID *uuid.UUID, bucket string, createdAt time.Time) map[string]interface{} {
 	body := map[string]interface{}{
 		"conversation_id": conversationID,
 		"message_id":      msgID,
@@ -2437,6 +2437,13 @@ func messageFrameBody(conversationID, msgID, senderID uuid.UUID, msgType, text s
 		"text":            text,
 		"media_id":        mediaID,
 		"created_at":      createdAt,
+		// The message's Scylla address, as in the HTTP send response: edit,
+		// delete and reactions address a message by (bucket, ts, msg_id), so
+		// a client holding only this frame (the sender's own echo, or a
+		// recipient) can act on it without refetching the page.
+		"msg_id": msgID,
+		"bucket": bucket,
+		"ts":     createdAt,
 	}
 	if postID != nil {
 		body["post_id"] = postID
