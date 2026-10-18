@@ -22,6 +22,10 @@ type ConversationSettings struct {
 	Theme               string     `json:"theme"`
 	IsPinned            bool       `json:"is_pinned"`
 	PinnedAt            *time.Time `json:"pinned_at,omitempty"`
+	// Chat parity §1.1. call-service reads chat.conversation_settings.mute_calls
+	// and does not ring this member for calls in the conversation.
+	MuteCalls bool   `json:"mute_calls"`
+	AlertTone string `json:"alert_tone"`
 }
 
 type ChatFolder struct {
@@ -110,8 +114,8 @@ type MessageThread struct {
 func (s *ConversationStore) UpsertConversationSettings(ctx context.Context, settings *ConversationSettings) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO chat.conversation_settings
-			(conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms, read_receipts_enabled, theme, is_pinned, pinned_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			(conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms, read_receipts_enabled, theme, is_pinned, pinned_at, mute_calls, alert_tone)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (conversation_id, user_id) DO UPDATE SET
 			label                 = EXCLUDED.label,
 			is_muted              = EXCLUDED.is_muted,
@@ -120,10 +124,12 @@ func (s *ConversationStore) UpsertConversationSettings(ctx context.Context, sett
 			read_receipts_enabled = EXCLUDED.read_receipts_enabled,
 			theme                 = EXCLUDED.theme,
 			is_pinned             = EXCLUDED.is_pinned,
-			pinned_at             = EXCLUDED.pinned_at
+			pinned_at             = EXCLUDED.pinned_at,
+			mute_calls            = EXCLUDED.mute_calls,
+			alert_tone            = EXCLUDED.alert_tone
 	`, settings.ConversationID, settings.UserID, settings.Label, settings.IsMuted,
 		settings.MuteUntil, settings.DisappearAfterMs, settings.ReadReceiptsEnabled,
-		settings.Theme, settings.IsPinned, settings.PinnedAt)
+		settings.Theme, settings.IsPinned, settings.PinnedAt, settings.MuteCalls, alertToneOrDefault(settings.AlertTone))
 	return err
 }
 
@@ -131,12 +137,12 @@ func (s *ConversationStore) GetConversationSettings(ctx context.Context, convID,
 	var cs ConversationSettings
 	err := s.db.QueryRow(ctx, `
 		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,
-		       read_receipts_enabled, theme, is_pinned, pinned_at
+		       read_receipts_enabled, theme, is_pinned, pinned_at, mute_calls, alert_tone
 		FROM chat.conversation_settings
 		WHERE conversation_id = $1 AND user_id = $2
 	`, convID, userID).Scan(
 		&cs.ConversationID, &cs.UserID, &cs.Label, &cs.IsMuted, &cs.MuteUntil,
-		&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt,
+		&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt, &cs.MuteCalls, &cs.AlertTone,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -146,6 +152,7 @@ func (s *ConversationStore) GetConversationSettings(ctx context.Context, convID,
 				UserID:              userID,
 				ReadReceiptsEnabled: true,
 				Theme:               "default",
+				AlertTone:           "default",
 			}, nil
 		}
 		return nil, err
@@ -162,7 +169,7 @@ func (s *ConversationStore) GetSettingsForConversations(ctx context.Context, use
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,
-		       read_receipts_enabled, theme, is_pinned, pinned_at
+		       read_receipts_enabled, theme, is_pinned, pinned_at, mute_calls, alert_tone
 		FROM chat.conversation_settings
 		WHERE user_id = $1 AND conversation_id = ANY($2::uuid[])
 	`, userID, convIDs)
@@ -175,7 +182,7 @@ func (s *ConversationStore) GetSettingsForConversations(ctx context.Context, use
 		var cs ConversationSettings
 		if err := rows.Scan(
 			&cs.ConversationID, &cs.UserID, &cs.Label, &cs.IsMuted, &cs.MuteUntil,
-			&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt,
+			&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt, &cs.MuteCalls, &cs.AlertTone,
 		); err != nil {
 			return nil, err
 		}
@@ -216,7 +223,7 @@ func (s *ConversationStore) ListMutedMemberIDs(ctx context.Context, conversation
 func (s *ConversationStore) ListConversationsByLabel(ctx context.Context, userID uuid.UUID, label string, limit, offset int) ([]ConversationSettings, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,
-		       read_receipts_enabled, theme, is_pinned, pinned_at
+		       read_receipts_enabled, theme, is_pinned, pinned_at, mute_calls, alert_tone
 		FROM chat.conversation_settings
 		WHERE user_id = $1 AND label = $2
 		ORDER BY pinned_at DESC NULLS LAST, conversation_id
@@ -232,7 +239,7 @@ func (s *ConversationStore) ListConversationsByLabel(ctx context.Context, userID
 		var cs ConversationSettings
 		if err := rows.Scan(
 			&cs.ConversationID, &cs.UserID, &cs.Label, &cs.IsMuted, &cs.MuteUntil,
-			&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt,
+			&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt, &cs.MuteCalls, &cs.AlertTone,
 		); err != nil {
 			return nil, err
 		}

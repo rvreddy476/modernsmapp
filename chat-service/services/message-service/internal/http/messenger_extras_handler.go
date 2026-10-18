@@ -41,7 +41,14 @@ type UpdateConversationSettingsRequest struct {
 	ReadReceiptsEnabled *bool      `json:"read_receipts_enabled"`
 	Theme               *string    `json:"theme"`
 	IsPinned            *bool      `json:"is_pinned"`
+	// Chat parity §1.1. label also accepts "none" (clears the label).
+	MuteCalls *bool   `json:"mute_calls"`
+	AlertTone *string `json:"alert_tone"`
 }
+
+// settingsLabels are the labels the settings route accepts ("none" clears).
+var settingsLabels = map[string]bool{"primary": true, "requests": true, "fan_inbox": true, "business": true,
+	"archived": true, "spam": true, "none": true}
 
 func (h *Handler) UpdateConversationSettings(c *gin.Context) {
 	userID, ok := getUserID(c, h.log)
@@ -67,7 +74,25 @@ func (h *Handler) UpdateConversationSettings(c *gin.Context) {
 	}
 
 	if req.Label != nil {
-		current.Label = req.Label
+		if !settingsLabels[*req.Label] {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "label must be archived or none", nil, nil)
+			return
+		}
+		if *req.Label == "none" {
+			current.Label = nil
+		} else {
+			current.Label = req.Label
+		}
+	}
+	if req.MuteCalls != nil {
+		current.MuteCalls = *req.MuteCalls
+	}
+	if req.AlertTone != nil {
+		if !store.AlertTones[*req.AlertTone] {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "alert_tone must be default, chime, pop, bell or silent", nil, nil)
+			return
+		}
+		current.AlertTone = *req.AlertTone
 	}
 	if req.IsMuted != nil {
 		current.IsMuted = *req.IsMuted
@@ -344,6 +369,20 @@ func (h *Handler) ListMessageRequests(c *gin.Context) {
 		}
 	}
 
+	// Chat parity §7: ?filter=all|filtered (default all = not filtered).
+	if ps, ok := h.svc.(ParityService); ok {
+		rows, err := ps.ListRequestsFiltered(c.Request.Context(), userID, c.Query("filter"), limit, offset)
+		if err != nil {
+			if writeMessagingError(c, err) {
+				return
+			}
+			h.log.Error("failed to list message requests", "err", err, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list requests", nil, nil)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, rows, nil)
+		return
+	}
 	requests, err := h.svc.ListRequests(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		h.log.Error("failed to list message requests", "err", err, "request_id", RequestIDFromContext(c))

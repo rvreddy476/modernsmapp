@@ -16,6 +16,7 @@ func TestMissingMessageColumnsIncludesPostID(t *testing.T) {
 	want := map[string]string{
 		"reply_to_id": "uuid", "reply_to_preview": "text", "reply_to_sender_id": "uuid",
 		"is_edited": "boolean", "edited_at": "timestamp", "post_id": "uuid",
+		"extra": "text",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("missing columns = %v, want %v", got, want)
@@ -31,10 +32,12 @@ func TestMissingMessageColumnsIncludesPostID(t *testing.T) {
 		original[name] = true
 	}
 	delete(original, "post_id")
-	if cols := missingMessageColumns(original); len(cols) != 1 || cols[0].name != "post_id" {
-		t.Fatalf("dev-shaped cluster: missing = %v, want only post_id", cols)
+	delete(original, "extra")
+	if cols := missingMessageColumns(original); len(cols) != 2 || cols[0].name != "post_id" || cols[1].name != "extra" {
+		t.Fatalf("dev-shaped cluster: missing = %v, want post_id and extra", cols)
 	}
 	original["post_id"] = true
+	original["extra"] = true
 	if cols := missingMessageColumns(original); len(cols) != 0 {
 		t.Fatalf("converged table must need nothing, got %v", cols)
 	}

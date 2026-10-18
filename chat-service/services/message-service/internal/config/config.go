@@ -35,6 +35,10 @@ type Config struct {
 	DatingKafkaTopic     string
 	DatingKafkaGroupID   string
 	DatingServiceURL     string
+	// Chat parity (2026-10-18). SearchServiceURL empty: /v1/chat/search
+	// returns no people and no messages. TrustSafetyURL: message reports.
+	SearchServiceURL string
+	TrustSafetyURL   string
 }
 
 func Load() *Config {
@@ -74,6 +78,8 @@ func Load() *Config {
 		// Dating lane D4: first-message notifications go to
 		// /v1/dating/internal/matches/{id}/first-message on this base.
 		DatingServiceURL: getEnv("DATING_SERVICE_URL", "http://dating-service:8112"),
+		SearchServiceURL: getEnv("SEARCH_SERVICE_URL", ""),
+		TrustSafetyURL:   getEnv("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"),
 	}
 }
 

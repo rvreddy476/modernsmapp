@@ -33,7 +33,10 @@ type MessageDeliveryIntent struct {
 	ReplyToPreview  string
 	ReplyToSenderID *uuid.UUID
 	// PostID is the shared post on a "post" card (TikTok parity T-25).
-	PostID      *uuid.UUID
+	PostID *uuid.UUID
+	// Extra is the rich-message payload (chat parity §2) as JSON; nil for a
+	// plain text / media / post message.
+	Extra       []byte
 	CompletedAt *time.Time
 }
 
@@ -44,14 +47,14 @@ func (s *ConversationStore) ReserveMessageDeliveryIntent(ctx context.Context, in
 			message_id, bucket, message_ts, message_type, message_text,
 			media_id, member_ids, first_request_message,
 			request_receiver_id, source_app, match_id,
-			reply_to_id, reply_to_preview, reply_to_sender_id, post_id
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (idempotency_key) DO NOTHING
 	`, intent.IdempotencyKey, intent.RequestHash, intent.ConversationID, intent.SenderID,
 		intent.MessageID, intent.Bucket, intent.MessageTS, intent.MessageType, intent.MessageText,
 		intent.MediaID, intent.MemberIDs, intent.FirstRequest, intent.RequestReceiverID,
 		intent.SourceApp, intent.MatchID, intent.ReplyToID, intent.ReplyToPreview, intent.ReplyToSenderID,
-		intent.PostID)
+		intent.PostID, intent.Extra)
 	if err != nil {
 		return nil, err
 	}
@@ -75,14 +78,14 @@ func (s *ConversationStore) GetMessageDeliveryIntent(ctx context.Context, key st
 		       message_id, bucket, message_ts, message_type, message_text,
 		       media_id, member_ids, first_request_message,
 		       request_receiver_id, source_app, match_id,
-		       reply_to_id, reply_to_preview, reply_to_sender_id, post_id, completed_at
+		       reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, completed_at
 		FROM chat.message_delivery_intents WHERE idempotency_key = $1
 	`, key).Scan(&intent.IdempotencyKey, &intent.RequestHash, &intent.ConversationID,
 		&intent.SenderID, &intent.MessageID, &intent.Bucket, &intent.MessageTS,
 		&intent.MessageType, &intent.MessageText, &intent.MediaID, &intent.MemberIDs,
 		&intent.FirstRequest, &intent.RequestReceiverID, &intent.SourceApp,
 		&intent.MatchID, &intent.ReplyToID, &intent.ReplyToPreview, &intent.ReplyToSenderID,
-		&intent.PostID, &intent.CompletedAt)
+		&intent.PostID, &intent.Extra, &intent.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -95,7 +98,7 @@ func (s *ConversationStore) FetchPendingMessageDeliveryIntents(ctx context.Conte
 		       message_id, bucket, message_ts, message_type, message_text,
 		       media_id, member_ids, first_request_message,
 		       request_receiver_id, source_app, match_id,
-		       reply_to_id, reply_to_preview, reply_to_sender_id, post_id, completed_at
+		       reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, completed_at
 		FROM chat.message_delivery_intents
 		WHERE completed_at IS NULL
 		ORDER BY created_at
@@ -114,7 +117,7 @@ func (s *ConversationStore) FetchPendingMessageDeliveryIntents(ctx context.Conte
 			&intent.MessageText, &intent.MediaID, &intent.MemberIDs,
 			&intent.FirstRequest, &intent.RequestReceiverID, &intent.SourceApp,
 			&intent.MatchID, &intent.ReplyToID, &intent.ReplyToPreview, &intent.ReplyToSenderID,
-			&intent.PostID, &intent.CompletedAt); err != nil {
+			&intent.PostID, &intent.Extra, &intent.CompletedAt); err != nil {
 			return nil, err
 		}
 		intents = append(intents, intent)
@@ -162,6 +165,12 @@ func (s *ConversationStore) ViewerMayAccessChatMedia(ctx context.Context, viewer
 			FROM chat.message_media_references r
 			JOIN chat.conversation_members m ON m.conversation_id = r.conversation_id
 			WHERE r.media_id = $1 AND m.user_id = $2 AND m.left_at IS NULL
+		) OR EXISTS (
+			-- Chat parity §2.7: an active catalogue sticker is deliverable
+			-- to any signed-in viewer (the catalogue is the same for all).
+			SELECT 1 FROM chat.stickers st
+			JOIN chat.sticker_packs p ON p.id = st.pack_id
+			WHERE st.media_id = $1 AND st.active AND p.active
 		)
 	`, mediaID, viewerID).Scan(&allowed)
 	return allowed, err

@@ -144,10 +144,25 @@ func TestValidateMessageContent(t *testing.T) {
 // default) and produce a preview.
 func TestEveryMessageTypeIsHandled(t *testing.T) {
 	id := uuid.New()
+	gif := &GIFRef{Provider: "giphy", ID: "abc123", URL: "https://media.giphy.com/media/abc123/giphy.gif", Width: 200, Height: 150}
 	wellFormed := map[string]func() error{
 		MessageTypeText:  func() error { return validateMessageContent(MessageTypeText, "hi", nil, nil) },
 		MessageTypeMedia: func() error { return validateMessageContent(MessageTypeMedia, "", &id, nil) },
 		MessageTypePost:  func() error { return validateMessageContent(MessageTypePost, "", nil, &id) },
+		// Chat parity rich types go through validateSendInput.
+		MessageTypeVoice: func() error {
+			return validateSendInput(SendInput{Type: MessageTypeVoice, MediaID: &id, DurationMs: 1200})
+		},
+		MessageTypeSticker: func() error { return validateSendInput(SendInput{Type: MessageTypeSticker, StickerID: &id}) },
+		MessageTypeGIF:     func() error { return validateSendInput(SendInput{Type: MessageTypeGIF, GIF: gif}) },
+		MessageTypeProfile: func() error { return validateSendInput(SendInput{Type: MessageTypeProfile, ProfileUserID: &id}) },
+		MessageTypeSound:   func() error { return validateSendInput(SendInput{Type: MessageTypeSound, SoundID: &id}) },
+		MessageTypeLive:    func() error { return validateSendInput(SendInput{Type: MessageTypeLive, StreamID: &id}) },
+	}
+	for _, typ := range KnownMessageTypes {
+		if messagePreview(typ, "") == "" && typ != MessageTypeText && typ != MessageTypeMedia {
+			t.Errorf("message type %q has no preview", typ)
+		}
 	}
 	for _, typ := range KnownMessageTypes {
 		check, ok := wellFormed[typ]

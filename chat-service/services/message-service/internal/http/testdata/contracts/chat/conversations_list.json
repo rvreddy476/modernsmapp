@@ -1,0 +1,103 @@
+{
+  "data": [
+    {
+      "alert_tone": "default",
+      "created_at": "2026-10-18T09:30:00Z",
+      "created_by": "0a000000-0000-4000-8000-00000000000a",
+      "has_unread": false,
+      "id": "00000000-0000-4000-8000-000000000001",
+      "is_request": false,
+      "last_message": {
+        "at": "2026-10-18T09:30:00Z",
+        "own_status": "sent",
+        "preview": "hello group",
+        "sender_id": "0b000000-0000-4000-8000-00000000000b",
+        "type": "text"
+      },
+      "last_message_at": "2026-10-18T09:30:00Z",
+      "last_message_preview": "hello group",
+      "last_message_sender": "0b000000-0000-4000-8000-00000000000b",
+      "members": [
+        {
+          "avatar_media_id": "00000000-0000-4000-8000-000000000002",
+          "display_name": "Asha",
+          "joined_at": "2026-10-18T09:30:00Z",
+          "role": "owner",
+          "user_id": "0a000000-0000-4000-8000-00000000000a"
+        },
+        {
+          "avatar_media_id": "00000000-0000-4000-8000-000000000003",
+          "display_name": "Bilal",
+          "joined_at": "2026-10-18T09:30:00Z",
+          "role": "member",
+          "user_id": "0b000000-0000-4000-8000-00000000000b"
+        },
+        {
+          "avatar_media_id": "00000000-0000-4000-8000-000000000004",
+          "display_name": "Dev",
+          "joined_at": "2026-10-18T09:30:00Z",
+          "role": "member",
+          "user_id": "0d000000-0000-4000-8000-00000000000d"
+        }
+      ],
+      "mute_calls": false,
+      "peer": null,
+      "streak": null,
+      "title": "Trip",
+      "type": "group",
+      "unread_count": 0,
+      "updated_at": "2026-10-18T09:30:00Z"
+    },
+    {
+      "alert_tone": "default",
+      "created_at": "2026-10-18T09:30:00Z",
+      "created_by": "0a000000-0000-4000-8000-00000000000a",
+      "has_unread": true,
+      "id": "00000000-0000-4000-8000-000000000005",
+      "is_request": false,
+      "last_message": {
+        "at": "2026-10-18T09:30:00Z",
+        "own_status": null,
+        "preview": "see you at the station",
+        "sender_id": "0a000000-0000-4000-8000-00000000000a",
+        "type": "text"
+      },
+      "last_message_at": "2026-10-18T09:30:00Z",
+      "last_message_preview": "see you at the station",
+      "last_message_sender": "0a000000-0000-4000-8000-00000000000a",
+      "members": [
+        {
+          "avatar_media_id": "00000000-0000-4000-8000-000000000002",
+          "display_name": "Asha",
+          "joined_at": "2026-10-18T09:30:00Z",
+          "role": "member",
+          "user_id": "0a000000-0000-4000-8000-00000000000a"
+        },
+        {
+          "avatar_media_id": "00000000-0000-4000-8000-000000000003",
+          "display_name": "Bilal",
+          "joined_at": "2026-10-18T09:30:00Z",
+          "role": "member",
+          "user_id": "0b000000-0000-4000-8000-00000000000b"
+        }
+      ],
+      "mute_calls": false,
+      "peer": {
+        "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000002/thumb_300.webp",
+        "display_name": "Asha",
+        "is_online": false,
+        "last_active_at": null,
+        "user_id": "0a000000-0000-4000-8000-00000000000a",
+        "username": "asha"
+      },
+      "streak": {
+        "at_risk": false,
+        "days": 5,
+        "expires_at": "2026-10-18T09:30:00Z"
+      },
+      "type": "direct",
+      "unread_count": 9,
+      "updated_at": "2026-10-18T09:30:00Z"
+    }
+  ]
+}

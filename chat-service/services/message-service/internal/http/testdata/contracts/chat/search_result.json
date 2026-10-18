@@ -1,0 +1,73 @@
+{
+  "data": {
+    "conversations": [
+      {
+        "alert_tone": "default",
+        "created_at": "2026-10-18T09:30:00Z",
+        "created_by": "0a000000-0000-4000-8000-00000000000a",
+        "has_unread": false,
+        "id": "00000000-0000-4000-8000-000000000001",
+        "is_request": false,
+        "last_message": {
+          "at": "2026-10-18T09:30:00Z",
+          "own_status": "sent",
+          "preview": "where to?",
+          "sender_id": "0b000000-0000-4000-8000-00000000000b",
+          "type": "text"
+        },
+        "last_message_at": "2026-10-18T09:30:00Z",
+        "last_message_preview": "where to?",
+        "last_message_sender": "0b000000-0000-4000-8000-00000000000b",
+        "members": [
+          {
+            "avatar_media_id": "00000000-0000-4000-8000-000000000002",
+            "display_name": "Asha",
+            "joined_at": "2026-10-18T09:30:00Z",
+            "role": "member",
+            "user_id": "0a000000-0000-4000-8000-00000000000a"
+          },
+          {
+            "avatar_media_id": "00000000-0000-4000-8000-000000000003",
+            "display_name": "Bilal",
+            "joined_at": "2026-10-18T09:30:00Z",
+            "role": "member",
+            "user_id": "0b000000-0000-4000-8000-00000000000b"
+          }
+        ],
+        "mute_calls": false,
+        "peer": {
+          "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000002/thumb_300.webp",
+          "display_name": "Asha",
+          "is_online": false,
+          "last_active_at": null,
+          "user_id": "0a000000-0000-4000-8000-00000000000a",
+          "username": "asha"
+        },
+        "streak": {
+          "at_risk": false,
+          "days": 5,
+          "expires_at": "2026-10-18T09:30:00Z"
+        },
+        "type": "direct",
+        "unread_count": 0,
+        "updated_at": "2026-10-18T09:30:00Z"
+      }
+    ],
+    "messages": [
+      {
+        "at": "2026-10-18T09:30:00Z",
+        "conversation_id": "00000000-0000-4000-8000-000000000001",
+        "message_id": "00000000-0000-4000-8000-000000000004",
+        "sender_id": "0a000000-0000-4000-8000-00000000000a",
+        "snippet": "see you at the \u003cem\u003estation\u003c/em\u003e"
+      }
+    ],
+    "people": [
+      {
+        "display_name": "Asha",
+        "id": "0a000000-0000-4000-8000-00000000000a",
+        "username": "asha"
+      }
+    ]
+  }
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -247,6 +248,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Threads
 		v1.GET("/conversations/:id/threads/:parentMessageId", h.GetOrCreateThread)
 		v1.GET("/conversations/:id/threads", h.ListConversationThreads)
+
+		// Chat parity programme (CONTRACT §1-3, §5-7, 2026-10-18).
+		h.registerParityRoutes(v1, internal)
 	}
 }
 
@@ -512,7 +516,19 @@ func (h *Handler) ListConversations(c *gin.Context) {
 		cursor = cur
 	}
 
-	convs, next, err := h.svc.ListConversations(c.Request.Context(), userID, limit, cursor)
+	// Chat parity §1: ?lane=primary|requests|archived (default primary).
+	var convs []service.ConversationResponse
+	var next *service.ConversationCursor
+	var err error
+	if ps, ok := h.svc.(ParityService); ok {
+		convs, next, err = ps.ListInbox(c.Request.Context(), userID, c.Query("lane"), limit, cursor)
+		if errors.Is(err, service.ErrInvalidLane) {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", err.Error(), nil, nil)
+			return
+		}
+	} else {
+		convs, next, err = h.svc.ListConversations(c.Request.Context(), userID, limit, cursor)
+	}
 	if err != nil {
 		h.log.Error("failed to list conversations", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list conversations", nil, nil)
@@ -657,7 +673,7 @@ const replyPreviewMaxRunes = 140
 
 type SendMessageRequest struct {
 	// Keep oneof in step with service.KnownMessageTypes (a test pins it).
-	Type    string     `json:"type" binding:"required,oneof=text media post"`
+	Type    string     `json:"type" binding:"required,oneof=text media post voice sticker gif profile sound live"`
 	Text    string     `json:"text" binding:"max=2000"`
 	MediaID *uuid.UUID `json:"media_id"`
 	// PostID is the shared post on a "post" card ("Send to friends"). Text
@@ -669,6 +685,16 @@ type SendMessageRequest struct {
 	ReplyToID       *uuid.UUID `json:"reply_to_id"`
 	ReplyToPreview  string     `json:"reply_to_preview" binding:"max=500"`
 	ReplyToSenderID *uuid.UUID `json:"reply_to_sender_id"`
+
+	// Chat parity §2.1 (additive). A malformed UUID fails binding (400).
+	ReplyNoteID *uuid.UUID      `json:"reply_note_id"`
+	DurationMs  int             `json:"duration_ms"`
+	Waveform    []int           `json:"waveform" binding:"max=64"`
+	StickerID   *uuid.UUID      `json:"sticker_id"`
+	GIF         *service.GIFRef `json:"gif"`
+	UserID      *uuid.UUID      `json:"user_id"`
+	SoundID     *uuid.UUID      `json:"sound_id"`
+	StreamID    *uuid.UUID      `json:"stream_id"`
 }
 
 func (h *Handler) SendMessage(c *gin.Context) {
@@ -708,6 +734,10 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "post_id is only allowed on post messages", nil, nil)
 		return
 	}
+	if req.ReplyNoteID != nil && req.ReplyToID != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "reply_note_id and reply_to_id are exclusive", nil, nil)
+		return
+	}
 	idempotencyKey := c.GetHeader("Idempotency-Key")
 
 	var replyTo *service.ReplyRef
@@ -722,7 +752,18 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		}
 	}
 
-	msg, err := h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, req.PostID, replyTo, idempotencyKey)
+	var msg *service.MessageResponse
+	var err error
+	if ps, ok := h.svc.(ParityService); ok {
+		msg, err = ps.SendRich(c.Request.Context(), userID, convID, service.SendInput{
+			Type: req.Type, Text: req.Text, MediaID: req.MediaID, PostID: req.PostID, ReplyTo: replyTo,
+			IdempotencyKey: idempotencyKey, ReplyNoteID: req.ReplyNoteID, DurationMs: req.DurationMs,
+			Waveform: req.Waveform, StickerID: req.StickerID, GIF: req.GIF, ProfileUserID: req.UserID,
+			SoundID: req.SoundID, StreamID: req.StreamID,
+		})
+	} else {
+		msg, err = h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, req.PostID, replyTo, idempotencyKey)
+	}
 	if err != nil {
 		if handled := writeIdempotencyError(c, err); handled {
 			return
@@ -788,8 +829,12 @@ func (h *Handler) GetMessages(c *gin.Context) {
 // in), so it is optional: the web sends only a timestamp, and requiring the
 // bucket made every delete from the web a 400.
 type DeleteMessageRequest struct {
-	Bucket string    `json:"bucket"`
-	Ts     time.Time `json:"ts" binding:"required"`
+	Bucket string `json:"bucket"`
+	// Ts is optional since chat parity: without it the message is located
+	// from its durable delivery record.
+	Ts time.Time `json:"ts"`
+	// Scope (chat parity §2.3): "everyone" (default, unsend) or "me".
+	Scope string `json:"scope" binding:"omitempty,oneof=everyone me"`
 }
 
 // EditMessageRequest is DeleteMessageRequest plus the replacement text.
@@ -871,6 +916,30 @@ func (h *Handler) DeleteMessage(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
 		return
+	}
+	if req.Scope == "me" {
+		var ts *time.Time
+		if !req.Ts.IsZero() {
+			ts = &req.Ts
+		}
+		h.deleteForMe(c, userID, convID, msgID, ts)
+		return
+	}
+	if req.Ts.IsZero() {
+		ps, ok := h.svc.(ParityService)
+		if !ok {
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "ts is required", nil, nil)
+			return
+		}
+		bucket, ts, err := ps.LocateMessage(c.Request.Context(), convID, msgID)
+		if err != nil {
+			if writeParityError(c, err) {
+				return
+			}
+			h.internalError(c, "could not locate the message", err)
+			return
+		}
+		req.Bucket, req.Ts = bucket, ts
 	}
 
 	if err := h.svc.DeleteMessage(c.Request.Context(), userID, convID, msgID, bucketFor(req.Bucket, req.Ts), req.Ts); err != nil {
@@ -1301,7 +1370,24 @@ func (h *Handler) SetTyping(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.SetTyping(c.Request.Context(), userID, convID); err != nil {
+	// CONTRACT §4: the body may carry {"is_typing": false} to stop. An
+	// empty or absent body keeps the original meaning (started typing).
+	var body struct {
+		IsTyping *bool `json:"is_typing"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+			return
+		}
+	}
+	var err error
+	if ps, ok := h.svc.(ParityService); ok && body.IsTyping != nil {
+		err = ps.SetTypingState(c.Request.Context(), userID, convID, *body.IsTyping)
+	} else {
+		err = h.svc.SetTyping(c.Request.Context(), userID, convID)
+	}
+	if err != nil {
 		h.log.Warn("failed to set typing", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return

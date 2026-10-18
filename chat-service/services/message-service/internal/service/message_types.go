@@ -28,7 +28,8 @@ const (
 )
 
 // KnownMessageTypes is every type SendMessage accepts.
-var KnownMessageTypes = []string{MessageTypeText, MessageTypeMedia, MessageTypePost}
+var KnownMessageTypes = []string{MessageTypeText, MessageTypeMedia, MessageTypePost,
+	MessageTypeVoice, MessageTypeSticker, MessageTypeGIF, MessageTypeProfile, MessageTypeSound, MessageTypeLive}
 
 // MessageTextMaxRunes matches the HTTP binding (`max=2000`) and applies to a
 // post's optional caption exactly as to a text message.
@@ -81,6 +82,9 @@ func validateMessageContent(msgType, text string, mediaID, postID *uuid.UUID) er
 // uncaptioned attachment). A post shows its caption, or "Sent a post" —
 // never anything taken from the post itself.
 func messagePreview(msgType, text string) string {
+	if p, ok := richPreview(msgType, text); ok {
+		return p
+	}
 	switch msgType {
 	case MessageTypePost:
 		if strings.TrimSpace(text) == "" {

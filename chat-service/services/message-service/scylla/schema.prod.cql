@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS chatservice.messages (
     -- Existing clusters: message-service adds it at boot, or
     -- ALTER TABLE chatservice.messages ADD post_id UUID;
     post_id UUID,
+    -- Chat parity rich messages (2026-10-18): voice, sticker, gif, profile,
+    -- sound, live, forwarded, reply kind and media metadata as JSON.
+    -- Existing clusters: message-service adds it at boot, or
+    -- ALTER TABLE chatservice.messages ADD extra TEXT;
+    extra TEXT,
     is_deleted BOOLEAN,
     -- Edit metadata. Existing clusters:
     -- ALTER TABLE chatservice.messages ADD (is_edited BOOLEAN, edited_at TIMESTAMP);

@@ -33,8 +33,12 @@ type Message struct {
 	ReplyToSenderID *uuid.UUID `json:"reply_to_sender_id,omitempty"`
 	// PostID is the shared post on a "post" card — the only post data
 	// stored; clients hydrate it as the viewer.
-	PostID    *uuid.UUID `json:"post_id,omitempty"`
-	IsDeleted bool       `json:"is_deleted"`
+	PostID *uuid.UUID `json:"post_id,omitempty"`
+	// Extra is the rich-message payload (chat parity §2: voice, sticker,
+	// gif, profile, sound, live, forwarded, reply kind, media metadata) as
+	// JSON. Empty for rows written before it existed.
+	Extra     string `json:"extra,omitempty"`
+	IsDeleted bool   `json:"is_deleted"`
 	// Edit metadata. Rows written before edits existed carry NULL, which
 	// gocql scans as the zero value — i.e. "never edited", which is right.
 	IsEdited  bool       `json:"is_edited,omitempty"`
@@ -62,6 +66,7 @@ type scanTarget struct {
 	ReplyToPreview  string
 	ReplyToSenderID *gocql.UUID
 	PostID          *gocql.UUID
+	Extra           *string
 	IsDeleted       bool
 	IsEdited        bool
 	EditedAt        *time.Time
@@ -90,6 +95,9 @@ func (t *scanTarget) toMessage() Message {
 		id := uuidFromGocql(*t.ReplyToID)
 		m.ReplyToID = &id
 		m.ReplyToPreview = t.ReplyToPreview
+	}
+	if t.Extra != nil {
+		m.Extra = *t.Extra
 	}
 	if t.PostID != nil {
 		id := uuidFromGocql(*t.PostID)
@@ -139,21 +147,21 @@ func PrevBucket(bucket string) string {
 // CreateMessage writes a message to the bucketed messages table.
 func (s *MessageStore) CreateMessage(ctx context.Context, msg *Message) error {
 	return s.session.Query(`
-		INSERT INTO messages (conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, is_deleted, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, uuidToGocql(msg.ConversationID), msg.Bucket, msg.Ts, uuidToGocql(msg.MsgID), uuidToGocql(msg.SenderID), msg.Type, msg.Text, uuidPtrToGocql(msg.MediaID), uuidPtrToGocql(msg.ReplyToID), msg.ReplyToPreview, uuidPtrToGocql(msg.ReplyToSenderID), uuidPtrToGocql(msg.PostID), msg.IsDeleted, msg.CreatedAt).
+		INSERT INTO messages (conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, uuidToGocql(msg.ConversationID), msg.Bucket, msg.Ts, uuidToGocql(msg.MsgID), uuidToGocql(msg.SenderID), msg.Type, msg.Text, uuidPtrToGocql(msg.MediaID), uuidPtrToGocql(msg.ReplyToID), msg.ReplyToPreview, uuidPtrToGocql(msg.ReplyToSenderID), uuidPtrToGocql(msg.PostID), extraOrNil(msg.Extra), msg.IsDeleted, msg.CreatedAt).
 		WithContext(ctx).Exec()
 }
 
 func (s *MessageStore) GetMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) (*Message, error) {
 	var t scanTarget
 	err := s.session.Query(`
-		SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, is_deleted, is_edited, edited_at, created_at
+		SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, is_edited, edited_at, created_at
 		FROM messages
 		WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?
 		LIMIT 1
 	`, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).WithContext(ctx).
-		Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.PostID, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt)
+		Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.PostID, &t.Extra, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil, nil
@@ -186,14 +194,14 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 		var q *gocql.Query
 		if cursor != nil && i == 0 {
 			q = s.session.Query(`
-				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, is_deleted, is_edited, edited_at, created_at
+				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, is_edited, edited_at, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ? AND (ts, msg_id) < (?, ?)
 				LIMIT ?
 			`, convGocql, bucket, cursor.Ts, uuidToGocql(cursor.MsgID), remaining)
 		} else {
 			q = s.session.Query(`
-				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, is_deleted, is_edited, edited_at, created_at
+				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, is_edited, edited_at, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ?
 				LIMIT ?
@@ -202,7 +210,7 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 
 		iter := q.WithContext(ctx).Iter()
 		var t scanTarget
-		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.PostID, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt) {
+		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.PostID, &t.Extra, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt) {
 			if !t.IsDeleted {
 				messages = append(messages, t.toMessage())
 				remaining--
@@ -362,4 +370,13 @@ func (s *MessageStore) GetReactionsForMessages(ctx context.Context, convID uuid.
 	}
 
 	return result, nil
+}
+
+// extraOrNil stores NULL (not an empty string) for a message without a
+// rich payload, so legacy rows and new plain rows read the same.
+func extraOrNil(extra string) *string {
+	if extra == "" {
+		return nil
+	}
+	return &extra
 }

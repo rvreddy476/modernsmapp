@@ -1277,7 +1277,7 @@ services:
       # message index from search-service (empty = no people / messages,
       # e.g. SEARCH_SERVICE_URL=http://search-service:8089); message reports
       # are filed with trust-safety.
-      SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL:-}
+      SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL:-http://search-service:8089}
       TRUST_SAFETY_SERVICE_URL: ${TRUST_SAFETY_SERVICE_URL:-http://trust-safety-service:8091}
     ports:
       - "8092:8092"

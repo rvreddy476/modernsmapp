@@ -185,6 +185,16 @@ type ConversationResponse struct {
 	// every other conversation, so earlier captures stay byte-compatible.
 	SourceApp string     `json:"source_app,omitempty"`
 	MatchID   *uuid.UUID `json:"match_id,omitempty"`
+
+	// Chat parity §1 / §1.5 (additive). unread_count is server-maintained;
+	// streak and peer are null outside a DM; last_message is null when the
+	// conversation has no message the viewer can still see.
+	UnreadCount int              `json:"unread_count"`
+	MuteCalls   bool             `json:"mute_calls"`
+	AlertTone   string           `json:"alert_tone,omitempty"`
+	Streak      *StreakInfo      `json:"streak"`
+	Peer        *PeerInfo        `json:"peer"`
+	LastMessage *LastMessageInfo `json:"last_message"`
 }
 
 type ReactionSummary struct {
@@ -213,6 +223,18 @@ type MessageResponse struct {
 	IsEdited  bool       `json:"is_edited,omitempty"`
 	EditedAt  *time.Time `json:"edited_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
+
+	// Chat parity §2.2 (additive). forwarded and reply_kind are always
+	// present; the card fields only on their type; media on attachments.
+	Forwarded     bool         `json:"forwarded"`
+	Voice         *VoiceInfo   `json:"voice,omitempty"`
+	Sticker       *StickerInfo `json:"sticker,omitempty"`
+	GIF           *GIFInfo     `json:"gif,omitempty"`
+	ProfileUserID *uuid.UUID   `json:"profile_user_id,omitempty"`
+	SoundID       *uuid.UUID   `json:"sound_id,omitempty"`
+	StreamID      *uuid.UUID   `json:"stream_id,omitempty"`
+	ReplyKind     *string      `json:"reply_kind"`
+	Media         *MediaInfo   `json:"media,omitempty"`
 }
 
 type ToggleReactionResponse struct {
@@ -254,6 +276,13 @@ type Service struct {
 	// conversations' first messages (Dating lane D4).
 	datingServiceURL string
 	httpClient       *http.Client
+
+	// Chat parity (lane B1). nowFn pins the clock in tests; searchServiceURL
+	// empty means /v1/chat/search returns no people or messages;
+	// trustSafetyURL is where message reports are filed.
+	nowFn            func() time.Time
+	searchServiceURL string
+	trustSafetyURL   string
 }
 
 var (
@@ -699,7 +728,7 @@ func (s *Service) GetConversation(ctx context.Context, userID, conversationID uu
 	return s.getConversationResponseFor(ctx, userID, conversationID)
 }
 
-func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit int, cursor *ConversationCursor) ([]ConversationResponse, *ConversationCursor, error) {
+func (s *Service) listConversationsLegacy(ctx context.Context, userID uuid.UUID, limit int, cursor *ConversationCursor) ([]ConversationResponse, *ConversationCursor, error) {
 	var cursorUpdatedAt *time.Time
 	var cursorID *uuid.UUID
 	if cursor != nil {
@@ -988,10 +1017,19 @@ func replyRefSenderID(r *ReplyRef) *uuid.UUID {
 }
 
 func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID, postID *uuid.UUID, replyTo *ReplyRef, idempotencyKey string) (*MessageResponse, error) {
+	return s.SendRich(ctx, userID, conversationID, SendInput{
+		Type: msgType, Text: text, MediaID: mediaID, PostID: postID, ReplyTo: replyTo, IdempotencyKey: idempotencyKey,
+	})
+}
+
+// SendRich is the one send pipeline (chat parity §2.1): SendMessage is the
+// legacy positional wrapper. Every gate below applies to every type.
+func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID, in SendInput) (*MessageResponse, error) {
+	msgType, text, mediaID, postID, replyTo, idempotencyKey := in.Type, in.Text, in.MediaID, in.PostID, in.ReplyTo, in.IdempotencyKey
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return nil, ErrIdempotencyKeyRequired
 	}
-	if err := validateMessageContent(msgType, text, mediaID, postID); err != nil {
+	if err := validateSendInput(in); err != nil {
 		return nil, err
 	}
 	// A post card runs every gate below unchanged — membership (blocks sever
@@ -1061,7 +1099,20 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		MediaID        *uuid.UUID `json:"media_id,omitempty"`
 		PostID         *uuid.UUID `json:"post_id,omitempty"` // omitempty: pre-existing request hashes unchanged
 		ReplyToID      *uuid.UUID `json:"reply_to_id,omitempty"`
-	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID, PostID: postID}
+		// Chat parity rich fields — all omitempty, so the hash of every
+		// pre-existing text / media / post request is unchanged.
+		ReplyNoteID   *uuid.UUID `json:"reply_note_id,omitempty"`
+		DurationMs    int        `json:"duration_ms,omitempty"`
+		Waveform      []int      `json:"waveform,omitempty"`
+		StickerID     *uuid.UUID `json:"sticker_id,omitempty"`
+		GIF           *GIFRef    `json:"gif,omitempty"`
+		ProfileUserID *uuid.UUID `json:"profile_user_id,omitempty"`
+		SoundID       *uuid.UUID `json:"sound_id,omitempty"`
+		StreamID      *uuid.UUID `json:"stream_id,omitempty"`
+		Forwarded     bool       `json:"forwarded,omitempty"`
+	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID, PostID: postID,
+		ReplyNoteID: in.ReplyNoteID, DurationMs: in.DurationMs, Waveform: in.Waveform, StickerID: in.StickerID, GIF: in.GIF,
+		ProfileUserID: in.ProfileUserID, SoundID: in.SoundID, StreamID: in.StreamID, Forwarded: in.Forwarded}
 	if replyTo != nil {
 		req.ReplyToID = &replyTo.ID
 	}
@@ -1176,7 +1227,17 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			sourceApp = meta.SourceApp
 			matchID = meta.MatchID
 		}
-		if mediaID != nil {
+		// Chat parity §2.1: resolve the rich payload (catalogue sticker,
+		// client gif, note reply, attachment metadata) before anything is
+		// reserved, so a refusal leaves nothing behind.
+		extra, replyResolved, err := s.buildExtra(ctx, userID, in, activeMemberIDs(members))
+		if err != nil {
+			return nil, err
+		}
+		if replyResolved != nil {
+			replyTo = replyResolved
+		}
+		if mediaID != nil && !in.forwardedMediaOK {
 			// The reference is stable across retries but opaque outside this
 			// service. media-service atomically validates and pins the asset
 			// before any cross-store message mutation starts.
@@ -1185,6 +1246,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 				return nil, err
 			}
 		}
+		extraBytes, _ := encodeExtra(extra)
 		intent, err := s.deliveryStore().ReserveMessageDeliveryIntent(ctx, postgres.MessageDeliveryIntent{
 			IdempotencyKey:    idempotencyKey,
 			RequestHash:       requestHash,
@@ -1205,6 +1267,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			ReplyToID:         replyRefID(replyTo),
 			ReplyToPreview:    replyRefPreview(replyTo),
 			ReplyToSenderID:   replyRefSenderID(replyTo),
+			Extra:             extraBytes,
 		})
 		if err != nil {
 			if errors.Is(err, postgres.ErrDeliveryIntentConflict) {
@@ -1224,9 +1287,12 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			Text:           text,
 			MediaID:        mediaID,
 			PostID:         postID,
+			Extra:          string(intent.Extra),
 			IsDeleted:      false,
 			CreatedAt:      now,
 		}
+		// The durable intent is the truth on a replayed key.
+		storedExtra := decodeExtra(string(intent.Extra))
 
 		l := s.log.With("conversation_id", conversationID, "sender_id", userID, "msg_id", msgID)
 		if err := s.completeMessageDelivery(ctx, intent); err != nil {
@@ -1264,6 +1330,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			if matchIDMeta != "" {
 				msgBody["match_id"] = matchIDMeta
 			}
+			addExtraToFrame(msgBody, storedExtra)
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type":    "message",
 				"payload": msgBody,
@@ -1326,7 +1393,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			}
 		}()
 
-		return &MessageResponse{
+		resp := &MessageResponse{
 			ConversationID:  conversationID,
 			Bucket:          bucket,
 			Ts:              now,
@@ -1340,7 +1407,11 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			ReplyToPreview:  intent.ReplyToPreview,
 			ReplyToSenderID: intent.ReplyToSenderID,
 			CreatedAt:       now,
-		}, nil
+		}
+		applyExtra(resp, storedExtra)
+		one := []MessageResponse{*resp}
+		s.resolveStickerURLs(ctx, userID, one)
+		return &one[0], nil
 	})
 }
 
@@ -1354,6 +1425,12 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	}
 
 	messages, nextCursor, err := s.msgStore.GetMessages(ctx, conversationID, cursor, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Chat parity §1.2 / §1.3 / §2.3: the member's cleared history and the
+	// messages they deleted for themselves are not returned.
+	messages, nextCursor, err = s.applyHistoryCutoff(ctx, userID, conversationID, messages, nextCursor)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1416,8 +1493,10 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 		if rxns, ok := allReactions[m.MsgID]; ok {
 			resp.Reactions = aggregateReactions(rxns)
 		}
+		applyExtra(&resp, decodeExtra(m.Extra))
 		out = append(out, resp)
 	}
+	s.resolveStickerURLs(ctx, userID, out)
 
 	return out, nextCursor, nil
 }
@@ -1489,6 +1568,15 @@ func (s *Service) EditMessage(
 
 	s.rdb.Del(ctx, fmt.Sprintf("chat_messages:%s", conversationID))
 
+	// Chat parity: search re-indexes the new text.
+	_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageEdited, sharedEvents.MessageEditedPayload{
+		MessageID:      messageID.String(),
+		ConversationID: conversationID.String(),
+		SenderID:       msg.SenderID.String(),
+		Text:           newText,
+		EditedAt:       editedAt,
+	})
+
 	members, _ := s.convStore.GetMembers(ctx, conversationID)
 	go func() {
 		pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1548,7 +1636,9 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 			if err != nil {
 				return err
 			}
-			authorized = role == "admin"
+			// Chat parity §2.3: the group OWNER may unsend members'
+			// messages too (the owner role was refused here before).
+			authorized = role == "admin" || role == "owner"
 		}
 	}
 	if !authorized {
@@ -1606,12 +1696,29 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 		DeletedAt:      time.Now(),
 	})
 
+	// Chat parity §2.3: unsent messages leave the shared tabs, and every
+	// member (and the room) hears message_deleted, like message_edited.
+	if ps, ok := s.parity(); ok {
+		if err := ps.RemoveSharedItem(ctx, conversationID, messageID); err != nil {
+			s.log.Warn("unsend: shared-items removal failed", "err", err, "message_id", messageID)
+		}
+	}
+	if members, err := s.convStore.GetMembers(ctx, conversationID); err == nil {
+		s.publishToConversation(conversationID, members, "message_deleted", map[string]interface{}{
+			"conversation_id": conversationID,
+			"message_id":      messageID,
+		})
+	}
+
 	return nil
 }
 
 // --- Reactions ---
 
 func (s *Service) ToggleReaction(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time, emoji string) (*ToggleReactionResponse, error) {
+	if !ValidReactionEmoji(emoji) {
+		return nil, ErrInvalidReaction
+	}
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
 		return nil, err
@@ -1674,10 +1781,11 @@ func (s *Service) ToggleReaction(ctx context.Context, userID, conversationID, me
 			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
 			recipients++
 		}
-		if recipients > 0 {
-			if _, err := pipe.Exec(pubCtx); err != nil {
-				s.log.Warn("failed to pipeline-publish reaction to redis", "err", err, "recipients", recipients)
-			}
+		// Chat parity §2.5: the conversation room hears reactions too, the
+		// same way it hears message / message_edited; always flush.
+		pipe.Publish(pubCtx, fmt.Sprintf("convroom:%s", conversationID), payload)
+		if _, err := pipe.Exec(pubCtx); err != nil {
+			s.log.Warn("failed to pipeline-publish reaction to redis", "err", err, "recipients", recipients)
 		}
 	}()
 
@@ -1824,6 +1932,7 @@ func (s *Service) getConversationResponseFor(ctx context.Context, viewerID, conv
 	page := []ConversationResponse{*resp}
 	s.resolveGroupAvatarURLs(ctx, viewerID, page)
 	s.attachReadCursors(ctx, viewerID, &page[0])
+	s.decorateRows(ctx, viewerID, page)
 	return &page[0], nil
 }
 
@@ -2117,6 +2226,13 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 	if msgID, err := uuid.Parse(messageID); err == nil {
 		if err := s.groupStore().UpsertReadCursor(ctx, conversationID, userID, msgID, now); err != nil {
 			s.log.Warn("read cursor upsert failed", "err", err, "conversation_id", conversationID, "user_id", userID)
+		}
+	}
+	// Chat parity §1: reading resets the server-maintained unread count
+	// (the inbox also reconciles it against the cursor written above).
+	if ps, ok := s.parity(); ok {
+		if err := ps.ResetUnread(ctx, conversationID, userID); err != nil {
+			s.log.Warn("unread reset failed", "err", err, "conversation_id", conversationID, "user_id", userID)
 		}
 	}
 

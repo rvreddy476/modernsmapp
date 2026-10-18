@@ -27,6 +27,8 @@ var lateMessageColumns = []messageColumn{
 	{"edited_at", "timestamp"},
 	// Post cards (TikTok parity T-25, 2026-10-14).
 	{"post_id", "uuid"},
+	// Chat parity rich messages (2026-10-18): the JSON payload.
+	{"extra", "text"},
 }
 
 // missingMessageColumns returns the late columns absent from existing.

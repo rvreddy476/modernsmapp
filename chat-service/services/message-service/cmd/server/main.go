@@ -135,6 +135,9 @@ func main() {
 	svc.SetMediaService(cfg.MediaServiceURL)
 	svc.SetInviteLinkBaseURL(cfg.InviteLinkBaseURL)
 	svc.SetDatingService(cfg.DatingServiceURL)
+	// Chat parity (2026-10-18): inbox/message search and message reports.
+	svc.SetSearchService(cfg.SearchServiceURL)
+	svc.SetTrustSafetyService(cfg.TrustSafetyURL)
 	// Scoped-room entitlement issuance (production chat pass §5.3). Shared
 	// with ws-gateway; empty disables issuance and the personal channel
 	// remains the only delivery path.

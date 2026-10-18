@@ -54,6 +54,25 @@ type ChatPolicy struct {
 	ChatPaused             bool
 	SendTypingIndicators   bool
 	ReadReceiptsVisibility string
+	// Chat parity §7 (identity keys from lane B3).
+	DMSafeMode             bool
+	DMSensitiveMediaFilter bool
+	DMFilteredKeywords     []string
+	ChatBubbleStyle        string
+}
+
+// policyFromRow lifts a projection row into the resolved policy.
+func policyFromRow(row postgres.UserPolicy) ChatPolicy {
+	return ChatPolicy{
+		Known:                  true,
+		ChatPaused:             row.ChatPaused,
+		SendTypingIndicators:   row.SendTypingIndicators,
+		ReadReceiptsVisibility: row.ReadReceiptsVisibility,
+		DMSafeMode:             row.DMSafeMode,
+		DMSensitiveMediaFilter: row.DMSensitiveMediaFilter,
+		DMFilteredKeywords:     row.DMFilteredKeywords,
+		ChatBubbleStyle:        row.ChatBubbleStyle,
+	}
 }
 
 type policyStore interface {
@@ -75,12 +94,7 @@ func (s *Service) GetChatPolicy(ctx context.Context, userID uuid.UUID) ChatPolic
 		row = nil
 	}
 	if row != nil && time.Since(row.RefreshedAt) < policyMaxAge {
-		return ChatPolicy{
-			Known:                  true,
-			ChatPaused:             row.ChatPaused,
-			SendTypingIndicators:   row.SendTypingIndicators,
-			ReadReceiptsVisibility: row.ReadReceiptsVisibility,
-		}
+		return policyFromRow(*row)
 	}
 
 	fresh, ok := s.fetchPolicyFromIdentity(ctx, userID)
@@ -88,29 +102,21 @@ func (s *Service) GetChatPolicy(ctx context.Context, userID uuid.UUID) ChatPolic
 		if err := s.policyStore().UpsertUserPolicy(ctx, fresh); err != nil {
 			s.log.Warn("policy projection upsert failed", "err", err, "user_id", userID)
 		}
-		return ChatPolicy{
-			Known:                  true,
-			ChatPaused:             fresh.ChatPaused,
-			SendTypingIndicators:   fresh.SendTypingIndicators,
-			ReadReceiptsVisibility: fresh.ReadReceiptsVisibility,
-		}
+		return policyFromRow(fresh)
 	}
 
 	// Fetch failed: a STALE projection beats no answer, but only within the
 	// short grace window — an old row must not stay authoritative.
 	if row != nil && time.Since(row.RefreshedAt) < policyStaleGrace {
-		return ChatPolicy{
-			Known:                  true,
-			ChatPaused:             row.ChatPaused,
-			SendTypingIndicators:   row.SendTypingIndicators,
-			ReadReceiptsVisibility: row.ReadReceiptsVisibility,
-		}
+		return policyFromRow(*row)
 	}
 	return ChatPolicy{
 		Known:                  false,
 		ChatPaused:             false,
 		SendTypingIndicators:   false,    // disclosure fails closed
 		ReadReceiptsVisibility: "no_one", // disclosure fails closed
+		DMSafeMode:             true,     // request screening fails safe
+		ChatBubbleStyle:        "default",
 	}
 }
 
@@ -149,6 +155,11 @@ func (s *Service) fetchPolicyFromIdentity(ctx context.Context, userID uuid.UUID)
 			SendTypingIndicators  *bool  `json:"send_typing_indicators"`
 			WhoCanSeeReadReceipts string `json:"who_can_see_read_receipts"`
 			PrivacyVersion        int    `json:"privacy_version"`
+			// Chat parity §7 (lane B3). Absent keys keep the defaults.
+			DMSafeMode             *bool    `json:"dm_safe_mode"`
+			DMSensitiveMediaFilter *bool    `json:"dm_sensitive_media_filter"`
+			DMFilteredKeywords     []string `json:"dm_filtered_keywords"`
+			ChatBubbleStyle        string   `json:"chat_bubble_style"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -169,11 +180,23 @@ func (s *Service) fetchPolicyFromIdentity(ctx context.Context, userID uuid.UUID)
 	if receipts == "" {
 		receipts = "connections_only"
 	}
+	safeMode := true
+	if envelope.Data.DMSafeMode != nil {
+		safeMode = *envelope.Data.DMSafeMode
+	}
+	sensitive := false
+	if envelope.Data.DMSensitiveMediaFilter != nil {
+		sensitive = *envelope.Data.DMSensitiveMediaFilter
+	}
 	return postgres.UserPolicy{
 		UserID:                 userID,
 		ChatPaused:             envelope.Data.ChatAvailability == "paused",
 		SendTypingIndicators:   typing,
 		ReadReceiptsVisibility: receipts,
 		PrivacyVersion:         envelope.Data.PrivacyVersion,
+		DMSafeMode:             safeMode,
+		DMSensitiveMediaFilter: sensitive,
+		DMFilteredKeywords:     postgres.NormalizeKeywords(envelope.Data.DMFilteredKeywords),
+		ChatBubbleStyle:        postgres.BubbleOrDefault(envelope.Data.ChatBubbleStyle),
 	}, true
 }

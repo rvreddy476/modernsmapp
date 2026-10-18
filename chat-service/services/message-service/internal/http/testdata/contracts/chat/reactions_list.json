@@ -1,0 +1,31 @@
+{
+  "data": [
+    {
+      "count": 2,
+      "emoji": "❤️",
+      "users": [
+        {
+          "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000001/thumb_300.webp",
+          "display_name": "Asha",
+          "user_id": "0a000000-0000-4000-8000-00000000000a"
+        },
+        {
+          "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000002/thumb_300.webp",
+          "display_name": "Bilal",
+          "user_id": "0b000000-0000-4000-8000-00000000000b"
+        }
+      ]
+    },
+    {
+      "count": 1,
+      "emoji": "👍🏽",
+      "users": [
+        {
+          "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000002/thumb_300.webp",
+          "display_name": "Bilal",
+          "user_id": "0b000000-0000-4000-8000-00000000000b"
+        }
+      ]
+    }
+  ]
+}

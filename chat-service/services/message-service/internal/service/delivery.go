@@ -91,6 +91,7 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		ReplyToPreview:  intent.ReplyToPreview,
 		ReplyToSenderID: intent.ReplyToSenderID,
 		PostID:          intent.PostID,
+		Extra:           string(intent.Extra),
 		CreatedAt:       intent.MessageTS,
 	}
 	if err := s.msgStore.CreateMessage(ctx, message); err != nil {
@@ -118,6 +119,28 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 			return fmt.Errorf("persist canonical media reference: %w", err)
 		}
 	}
+	// Chat parity: last_message.type, unread counters, the shared tabs and
+	// the DM streak — one replay-safe transaction (see ApplyDeliveryParity).
+	if ps, ok := s.parity(); ok {
+		mediaKind := ""
+		if e := decodeExtra(string(intent.Extra)); e != nil && e.Media != nil {
+			mediaKind = e.Media.Kind
+		}
+		if err := ps.ApplyDeliveryParity(ctx, postgres.DeliveryParity{
+			IdempotencyKey: intent.IdempotencyKey,
+			ConversationID: intent.ConversationID,
+			MessageID:      intent.MessageID,
+			SenderID:       intent.SenderID,
+			MemberIDs:      intent.MemberIDs,
+			MessageType:    intent.MessageType,
+			MessageTS:      intent.MessageTS,
+			PostID:         intent.PostID,
+			MediaID:        intent.MediaID,
+			MediaKind:      mediaKind,
+		}); err != nil {
+			return fmt.Errorf("apply delivery parity: %w", err)
+		}
+	}
 
 	recipients := make([]string, 0, len(intent.MemberIDs))
 	for _, memberID := range intent.MemberIDs {
@@ -136,6 +159,15 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		// notifier never has to ask across the service boundary.
 		MutedRecipientIDs: s.mutedRecipients(ctx, intent.ConversationID, recipients),
 		CreatedAt:         intent.MessageTS,
+		// Chat parity (additive): search indexes the text; notifications
+		// render the preview and pick the channel from the alert tone.
+		Text:       intent.MessageText,
+		Preview:    preview,
+		SourceApp:  datingSourceApp(intent.SourceApp),
+		AlertTones: s.recipientAlertTones(ctx, intent.ConversationID, recipients),
+	}
+	if e := decodeExtra(string(intent.Extra)); e != nil && e.Media != nil {
+		created.MediaKind = e.Media.Kind
 	}
 	if err := s.deliveryStore().InsertOutboxEventOnce(ctx, "message-created:"+intent.MessageID.String(), sharedEvents.MessageCreated, created); err != nil {
 		return fmt.Errorf("queue message-created event: %w", err)

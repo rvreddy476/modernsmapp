@@ -32,6 +32,10 @@ type Conversation struct {
 	// Pulse match's chat is source_app 'dating' with its match id.
 	SourceApp string     `json:"source_app,omitempty"`
 	MatchID   *uuid.UUID `json:"match_id,omitempty"`
+
+	// SortAt is the inbox ordering value (last activity) the parity inbox
+	// query returns as its cursor. Never serialised.
+	SortAt time.Time `json:"-"`
 }
 
 type Member struct {

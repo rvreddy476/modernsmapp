@@ -10,9 +10,15 @@ const (
 	ConversationCreated = "ConversationCreated"
 	MessageCreated      = "MessageCreated"
 	MessageDeleted      = "MessageDeleted"
-	MemberAdded         = "MemberAdded"
-	MemberRemoved       = "MemberRemoved"
-	ReactionToggled     = "ReactionToggled"
+	// MessageEdited carries the new text so search can re-index (chat
+	// parity, 2026-10-18).
+	MessageEdited = "MessageEdited"
+	// MessageReported is a member reporting one message (chat parity §2.6);
+	// trust-safety files the report.
+	MessageReported = "MessageReported"
+	MemberAdded     = "MemberAdded"
+	MemberRemoved   = "MemberRemoved"
+	ReactionToggled = "ReactionToggled"
 
 	// Message-request lifecycle (messaging/privacy spec v2 §7.2).
 	MessageRequestCreated  = "MessageRequestCreated"
@@ -154,6 +160,26 @@ type MessageCreatedPayload struct {
 	// push. Additive and omitempty: an older publisher simply mutes nobody.
 	MutedRecipientIDs []string  `json:"muted_recipient_ids,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
+	// Chat parity (2026-10-18, additive): the message text (search indexing,
+	// notification previews), the inbox preview line, the source app
+	// ("dating" for a Pulse chat; consumers skip it) and the per-recipient
+	// alert tone for the push channel. All omitempty: older publishers and
+	// media-only messages simply carry none.
+	Text       string            `json:"text,omitempty"`
+	Preview    string            `json:"preview,omitempty"`
+	SourceApp  string            `json:"source_app,omitempty"`
+	AlertTones map[string]string `json:"alert_tones,omitempty"`
+	// MediaKind is image|video|audio for an attachment (push previews).
+	MediaKind string `json:"media_kind,omitempty"`
+}
+
+// MessageEditedPayload is published when the author rewrites a text message.
+type MessageEditedPayload struct {
+	MessageID      string    `json:"message_id"`
+	ConversationID string    `json:"conversation_id"`
+	SenderID       string    `json:"sender_id"`
+	Text           string    `json:"text"`
+	EditedAt       time.Time `json:"edited_at"`
 }
 
 type MessageDeletedPayload struct {
@@ -161,6 +187,24 @@ type MessageDeletedPayload struct {
 	ConversationID string    `json:"conversation_id"`
 	DeletedBy      string    `json:"deleted_by"`
 	DeletedAt      time.Time `json:"deleted_at"`
+}
+
+// MessageReportedPayload is one member's report of one message. EntityID is
+// "<conversation_id>:<message_id>"; Text / MediaID are the snapshot at
+// report time.
+type MessageReportedPayload struct {
+	EntityType     string    `json:"entity_type"`
+	EntityID       string    `json:"entity_id"`
+	ConversationID string    `json:"conversation_id"`
+	MessageID      string    `json:"message_id"`
+	ReporterID     string    `json:"reporter_id"`
+	SenderID       string    `json:"sender_id"`
+	Reason         string    `json:"reason"`
+	Note           string    `json:"note,omitempty"`
+	Text           string    `json:"text,omitempty"`
+	MediaID        string    `json:"media_id,omitempty"`
+	MessageType    string    `json:"message_type"`
+	ReportedAt     time.Time `json:"reported_at"`
 }
 
 type MemberAddedPayload struct {

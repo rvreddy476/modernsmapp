@@ -81,7 +81,7 @@ func TestSendPostMessageValidation(t *testing.T) {
 		{"post caption too long", fmt.Sprintf(`{"type":"post","post_id":%q,"text":%q}`, post, long), http.StatusBadRequest},
 		{"text with post_id", fmt.Sprintf(`{"type":"text","text":"hi","post_id":%q}`, post), http.StatusBadRequest},
 		{"media with post_id", fmt.Sprintf(`{"type":"media","media_id":%q,"post_id":%q}`, media, post), http.StatusBadRequest},
-		{"unknown type", `{"type":"sticker","text":"hi"}`, http.StatusBadRequest},
+		{"unknown type", `{"type":"hologram","text":"hi"}`, http.StatusBadRequest},
 		{"missing type", `{"text":"hi"}`, http.StatusBadRequest},
 		{"plain text still ok", `{"type":"text","text":"hi"}`, http.StatusOK},
 	}

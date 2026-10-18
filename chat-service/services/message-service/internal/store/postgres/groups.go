@@ -52,6 +52,12 @@ type UserPolicy struct {
 	ReadReceiptsVisibility string    `json:"read_receipts_visibility"`
 	PrivacyVersion         int       `json:"privacy_version"`
 	RefreshedAt            time.Time `json:"refreshed_at"`
+	// Chat parity §7 (identity keys added by lane B3). Missing keys project
+	// as the defaults: safe mode on, no keywords, no filter, default bubble.
+	DMSafeMode             bool     `json:"dm_safe_mode"`
+	DMSensitiveMediaFilter bool     `json:"dm_sensitive_media_filter"`
+	DMFilteredKeywords     []string `json:"dm_filtered_keywords"`
+	ChatBubbleStyle        string   `json:"chat_bubble_style"`
 }
 
 // ReadCursor is a member's durable unread watermark for one conversation.
@@ -695,9 +701,11 @@ func (s *ConversationStore) GetReadCursors(ctx context.Context, userID uuid.UUID
 func (s *ConversationStore) GetUserPolicy(ctx context.Context, userID uuid.UUID) (*UserPolicy, error) {
 	var p UserPolicy
 	err := s.db.QueryRow(ctx, `
-		SELECT user_id, chat_paused, send_typing_indicators, read_receipts_visibility, privacy_version, refreshed_at
+		SELECT user_id, chat_paused, send_typing_indicators, read_receipts_visibility, privacy_version, refreshed_at,
+		       dm_safe_mode, dm_sensitive_media_filter, dm_filtered_keywords, chat_bubble_style
 		FROM chat.user_policy WHERE user_id = $1
-	`, userID).Scan(&p.UserID, &p.ChatPaused, &p.SendTypingIndicators, &p.ReadReceiptsVisibility, &p.PrivacyVersion, &p.RefreshedAt)
+	`, userID).Scan(&p.UserID, &p.ChatPaused, &p.SendTypingIndicators, &p.ReadReceiptsVisibility, &p.PrivacyVersion, &p.RefreshedAt,
+		&p.DMSafeMode, &p.DMSensitiveMediaFilter, &p.DMFilteredKeywords, &p.ChatBubbleStyle)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -711,16 +719,22 @@ func (s *ConversationStore) GetUserPolicy(ctx context.Context, userID uuid.UUID)
 // stale fetch racing a fresher one can never regress the projection.
 func (s *ConversationStore) UpsertUserPolicy(ctx context.Context, p UserPolicy) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO chat.user_policy (user_id, chat_paused, send_typing_indicators, read_receipts_visibility, privacy_version, refreshed_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
+		INSERT INTO chat.user_policy (user_id, chat_paused, send_typing_indicators, read_receipts_visibility, privacy_version, refreshed_at,
+		                              dm_safe_mode, dm_sensitive_media_filter, dm_filtered_keywords, chat_bubble_style)
+		VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9)
 		ON CONFLICT (user_id) DO UPDATE
 			SET chat_paused = EXCLUDED.chat_paused,
 			    send_typing_indicators = EXCLUDED.send_typing_indicators,
 			    read_receipts_visibility = EXCLUDED.read_receipts_visibility,
 			    privacy_version = EXCLUDED.privacy_version,
+			    dm_safe_mode = EXCLUDED.dm_safe_mode,
+			    dm_sensitive_media_filter = EXCLUDED.dm_sensitive_media_filter,
+			    dm_filtered_keywords = EXCLUDED.dm_filtered_keywords,
+			    chat_bubble_style = EXCLUDED.chat_bubble_style,
 			    refreshed_at = NOW()
 			WHERE chat.user_policy.privacy_version <= EXCLUDED.privacy_version
-	`, p.UserID, p.ChatPaused, p.SendTypingIndicators, p.ReadReceiptsVisibility, p.PrivacyVersion)
+	`, p.UserID, p.ChatPaused, p.SendTypingIndicators, p.ReadReceiptsVisibility, p.PrivacyVersion,
+		p.DMSafeMode, p.DMSensitiveMediaFilter, NormalizeKeywords(p.DMFilteredKeywords), BubbleOrDefault(p.ChatBubbleStyle))
 	return err
 }
 
