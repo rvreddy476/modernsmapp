@@ -22,37 +22,39 @@ func TestMessageAndInboxReplayIsIdempotent(t *testing.T) {
 		t.Fatal("SCYLLA_HOST is required")
 	}
 
+	keyspace, err := integrationKeyspace(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The real schema, not a copy: scylla/schema.cql rewritten for the test
+	// keyspace, then the same boot-time convergence the service runs.
+	statements, err := loadRealSchema(keyspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	system := connectWithRetry(t, host, "system", 2*time.Minute)
-	if err := system.Query(`CREATE KEYSPACE IF NOT EXISTS chatservice_m5integration WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`).Exec(); err != nil {
-		system.Close()
-		t.Fatalf("create integration keyspace: %v", err)
+	for _, statement := range statements {
+		if err := system.Query(statement).Exec(); err != nil {
+			system.Close()
+			t.Fatalf("apply schema.cql statement %q: %v", statement, err)
+		}
 	}
 	system.Close()
 
-	session := connectWithRetry(t, host, "chatservice_m5integration", 30*time.Second)
+	session := connectWithRetry(t, host, keyspace, 30*time.Second)
 	defer session.Close()
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS messages (
-			conversation_id UUID, bucket TEXT, ts TIMESTAMP, msg_id UUID,
-			sender_id UUID, type TEXT, text TEXT, media_id UUID,
-			is_deleted BOOLEAN, created_at TIMESTAMP,
-			PRIMARY KEY ((conversation_id, bucket), ts, msg_id)
-		) WITH CLUSTERING ORDER BY (ts DESC, msg_id DESC)`,
-		`CREATE TABLE IF NOT EXISTS conversations_by_user (
-			user_id UUID, bucket TEXT, last_ts TIMESTAMP, conversation_id UUID,
-			last_sender_id UUID, last_text TEXT,
-			PRIMARY KEY ((user_id, bucket), last_ts, conversation_id)
-		) WITH CLUSTERING ORDER BY (last_ts DESC, conversation_id DESC)`,
-		`TRUNCATE messages`,
-		`TRUNCATE conversations_by_user`,
-	} {
-		if err := session.Query(statement).Exec(); err != nil {
-			t.Fatalf("apply integration schema %q: %v", statement, err)
+	store := New(session)
+	ctx := context.Background()
+	if _, err := store.EnsureMessageColumns(ctx, keyspace); err != nil {
+		t.Fatalf("converge %s.messages: %v", keyspace, err)
+	}
+	for _, table := range []string{"messages", "conversations_by_user", "message_reactions"} {
+		if err := session.Query("TRUNCATE " + table).Exec(); err != nil {
+			t.Fatalf("truncate %s.%s: %v", keyspace, table, err)
 		}
 	}
 
-	store := New(session)
-	ctx := context.Background()
 	conversationID, messageID, senderID, recipientID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	messageTS := time.Now().UTC().Truncate(time.Millisecond)
 	message := &Message{
