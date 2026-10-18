@@ -27,6 +27,11 @@ var validEntityTypes = map[string]bool{
 	"sound":   true,
 	// Chat-parity: a chat message, "<conversation_id>:<message_id>".
 	ReportEntityMessage: true,
+	// Chat-parity fix pass 2: a whole group conversation, by its id. Filed
+	// only through the internal conversation route (the public route's
+	// entity_type binding does not list it), after message-service has
+	// checked membership (conversation_reports.go).
+	ReportEntityConversation: true,
 }
 
 var legacyEntityTypeAliases = map[string]string{
@@ -127,7 +132,7 @@ func (s *Service) FileReportWith(ctx context.Context, in FileReportInput) (*post
 	entityRef := in.EntityRef
 	// 1. Validate entityType
 	if !validEntityTypes[entityType] {
-		return nil, fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, sound, or message)", ErrInvalidReport, entityType)
+		return nil, fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, sound, message, or conversation)", ErrInvalidReport, entityType)
 	}
 	evidence, err := encodeEvidence(entityType, in.Evidence)
 	if err != nil {

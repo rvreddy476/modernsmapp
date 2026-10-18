@@ -50,6 +50,11 @@ var keyAddressedEntityTypes = map[string]bool{
 // canonical pair as entity_key (migration 015).
 const ReportEntityMessage = "message"
 
+// ReportEntityConversation is a whole chat conversation (a group), addressed
+// by the conversation UUID like any UUID entity, so entity_key stays NULL
+// (migration 016). A DM is reported as the other person ("user") instead.
+const ReportEntityConversation = "conversation"
+
 // ParseMessageEntityRef splits "<conversation_id>:<message_id>". Both parts
 // must be non-nil UUIDs.
 func ParseMessageEntityRef(ref string) (conversationID, messageID uuid.UUID, ok bool) {
@@ -90,7 +95,7 @@ func ReportEntityID(entityType, key string) uuid.UUID {
 // types, the normalised key. Errors wrap ErrInvalidReport.
 func ResolveReportEntity(entityType, ref string) (uuid.UUID, string, error) {
 	if !validEntityTypes[entityType] {
-		return uuid.Nil, "", fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, or sound)", ErrInvalidReport, entityType)
+		return uuid.Nil, "", fmt.Errorf("%w: invalid entity_type: %s (must be user, post, comment, hashtag, sound, message, or conversation)", ErrInvalidReport, entityType)
 	}
 	if entityType == ReportEntityMessage {
 		conv, msg, ok := ParseMessageEntityRef(ref)

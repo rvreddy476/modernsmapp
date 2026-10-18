@@ -59,6 +59,8 @@ func (h *Handler) RegisterRoutes(r gin.IRouter) {
 	r.POST(DatingReportGrievancePath, h.LinkDatingReportGrievance)
 	// Chat parity: message-service files a user's message report here.
 	r.POST(MessageReportPath, h.FileMessageReportInternal)
+	// Chat parity fix pass 2: a member reports a whole conversation.
+	r.POST(ConversationReportPath, h.FileConversationReportInternal)
 
 	v1 := r.Group("/v1/reports")
 	{

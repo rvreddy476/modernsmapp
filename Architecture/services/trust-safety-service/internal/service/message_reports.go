@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -56,18 +57,34 @@ type FileReportInput struct {
 
 // ReportEvidence is the snapshot stored with a report.
 type ReportEvidence struct {
-	Text           string    `json:"text,omitempty"`
-	MediaID        string    `json:"media_id,omitempty"`
-	SenderID       string    `json:"sender_id,omitempty"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	MessageType    string    `json:"message_type,omitempty"`
-	Source         string    `json:"source"`
-	CapturedAt     time.Time `json:"captured_at"`
+	Text           string `json:"text,omitempty"`
+	MediaID        string `json:"media_id,omitempty"`
+	SenderID       string `json:"sender_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	MessageType    string `json:"message_type,omitempty"`
+	// ConversationType and MessageIDs describe a conversation report
+	// (conversation_reports.go): the chat's type ("direct", "group") and up
+	// to MaxEvidenceMessageIDs message ids, newest first.
+	ConversationType string    `json:"conversation_type,omitempty"`
+	MessageIDs       []string  `json:"message_ids,omitempty"`
+	Source           string    `json:"source"`
+	CapturedAt       time.Time `json:"captured_at"`
 }
 
-// evidenceEntityTypes may carry a snapshot: a message, and a user reported
-// from a message request (the request event names no message id).
-var evidenceEntityTypes = map[string]bool{ReportEntityMessage: true, "user": true}
+// evidenceEntityTypes may carry a snapshot: a message, a user reported from
+// a message request (the request event names no message id) or from a DM's
+// chat settings, and a group conversation.
+var evidenceEntityTypes = map[string]bool{ReportEntityMessage: true, "user": true, ReportEntityConversation: true}
+
+// MaxEvidenceMessageIDs bounds the message ids a conversation report
+// carries (message-service sends the newest ≤20 the reporter can see).
+const MaxEvidenceMessageIDs = 20
+
+// maxEvidenceConversationTypeLength bounds the conversation type token.
+const maxEvidenceConversationTypeLength = 32
+
+// conversationTypePattern is a lower-case type token ("direct", "group").
+var conversationTypePattern = regexp.MustCompile(`^[a-z_]+$`)
 
 // encodeEvidence validates a snapshot and returns its stored JSON (nil when
 // there is none). Errors wrap ErrInvalidReport.
@@ -101,6 +118,16 @@ func encodeEvidence(entityType string, ev *ReportEvidence) (json.RawMessage, err
 	if len(out.MessageType) > maxEvidenceMessageTypeLength {
 		return nil, fmt.Errorf("%w: evidence message_type too long", ErrInvalidReport)
 	}
+	out.ConversationType = strings.ToLower(strings.TrimSpace(out.ConversationType))
+	if out.ConversationType != "" && (len(out.ConversationType) > maxEvidenceConversationTypeLength ||
+		!conversationTypePattern.MatchString(out.ConversationType)) {
+		return nil, fmt.Errorf("%w: evidence conversation_type must be a short lower-case word", ErrInvalidReport)
+	}
+	ids, err := canonicalMessageIDs(ev.MessageIDs)
+	if err != nil {
+		return nil, err
+	}
+	out.MessageIDs = ids
 	switch out.Source {
 	case EvidenceSourceReporter, EvidenceSourceMessageService, EvidenceSourceRequestEvent:
 	default:
@@ -109,7 +136,8 @@ func encodeEvidence(entityType string, ev *ReportEvidence) (json.RawMessage, err
 	if out.CapturedAt.IsZero() {
 		out.CapturedAt = time.Now().UTC()
 	}
-	if out.Text == "" && out.MediaID == "" && out.SenderID == "" && out.ConversationID == "" && out.MessageType == "" {
+	if out.Text == "" && out.MediaID == "" && out.SenderID == "" && out.ConversationID == "" && out.MessageType == "" &&
+		out.ConversationType == "" && len(out.MessageIDs) == 0 {
 		return nil, nil // nothing captured
 	}
 	b, err := json.Marshal(out)
@@ -117,6 +145,32 @@ func encodeEvidence(entityType string, ev *ReportEvidence) (json.RawMessage, err
 		return nil, err
 	}
 	return b, nil
+}
+
+// canonicalMessageIDs validates evidence message ids: at most
+// MaxEvidenceMessageIDs, each a non-nil UUID, returned canonical with
+// repeats dropped and the caller's order kept. Errors wrap ErrInvalidReport.
+func canonicalMessageIDs(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > MaxEvidenceMessageIDs {
+		return nil, fmt.Errorf("%w: evidence carries at most %d message_ids", ErrInvalidReport, MaxEvidenceMessageIDs)
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[uuid.UUID]bool, len(raw))
+	for _, s := range raw {
+		id, err := uuid.Parse(strings.TrimSpace(s))
+		if err != nil || id == uuid.Nil {
+			return nil, fmt.Errorf("%w: evidence message_ids must be UUIDs", ErrInvalidReport)
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id.String())
+	}
+	return out, nil
 }
 
 // MessageRequestReported mirrors chat-service's MessageRequestPayload as
