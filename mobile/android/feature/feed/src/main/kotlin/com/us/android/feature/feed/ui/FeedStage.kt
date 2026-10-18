@@ -293,9 +293,9 @@ internal fun FeedPoll.toCardPoll(localPollVotes: Set<String>): PostCardPoll {
 }
 
 /**
- * Home's header over the stage: the More menu at the left (with the unread
- * count on it — Messages and the bell's list live in that menu now), the
- * three tabs in the middle with Following's dot, and Search at the right.
+ * Home's header over the stage: the More menu at the left, the three tabs
+ * in the middle with Following's dot, then Messages (founder, 2026-10-19:
+ * always visible), the bell with its unread count, and Search at the right.
  * White on the top scrim, under the status bar.
  */
 @Composable
@@ -305,6 +305,7 @@ internal fun HomeStageHeader(
     unreadCount: Int,
     onSelect: (FeedTab) -> Unit,
     onOpenMore: () -> Unit,
+    onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenSearch: () -> Unit,
     modifier: Modifier = Modifier,
@@ -323,7 +324,7 @@ internal fun HomeStageHeader(
         }
         Row(
             modifier = Modifier.weight(1f).selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l, Alignment.CenterHorizontally),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FeedTab.entries.forEach { tab ->
@@ -334,6 +335,9 @@ internal fun HomeStageHeader(
                     onClick = { onSelect(tab) },
                 )
             }
+        }
+        IconButton(onClick = onOpenMessages, modifier = Modifier.testTag("home_header:messages")) {
+            Icon(imageVector = UsIcons.Comment, contentDescription = "Messages", tint = UsTheme.extended.onMedia)
         }
         IconButton(
             onClick = onOpenNotifications,

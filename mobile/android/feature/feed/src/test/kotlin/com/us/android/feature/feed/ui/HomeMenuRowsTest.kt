@@ -7,15 +7,15 @@ import org.junit.Test
  * Protects Home's More menu (2026-10-02): the rows are in ascending
  * alphabetical order by label (the founder's rule for every menu), each is a
  * screen that exists, and Notifications is not folded into it — the bell
- * stays on the header with the unread count. Messages joined the menu with
- * the full-screen feed (2026-10-18).
+ * stays on the header with the unread count, and so does Messages (founder,
+ * 2026-10-19: always visible).
  */
 class HomeMenuRowsTest {
 
     @Test
-    fun `the rows are Friends, Live, Messages, Settings, in alphabetical order`() {
+    fun `the rows are Friends, Live, Settings, in alphabetical order`() {
         assertThat(homeMenuRows().map { it.label })
-            .containsExactly("Friends", "Live", "Messages", "Settings")
+            .containsExactly("Friends", "Live", "Settings")
             .inOrder()
     }
 
@@ -28,9 +28,9 @@ class HomeMenuRowsTest {
     }
 
     @Test
-    fun `notifications stays on the header, and there is no create row`() {
+    fun `notifications and messages stay on the header, and there is no create row`() {
         val labels = homeMenuRows().map { it.label.lowercase() }
 
-        assertThat(labels).containsNoneOf("notifications", "create", "new post")
+        assertThat(labels).containsNoneOf("notifications", "create", "new post", "messages")
     }
 }

@@ -723,11 +723,10 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenSearch = { navController.navigateToSearch(SearchOrigin.HOME) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenSound = { soundId -> navController.navigateToSound(soundId) },
-        // Home's More menu (2026-10-02): screens that already exist; Messages
-        // joined it when the full-screen header lost its glyph (2026-10-18).
+        // Home's More menu (2026-10-02): screens that already exist. Messages
+        // is on the header itself (founder, 2026-10-19: always visible).
         onOpenMenuRow = { row ->
             when (row) {
-                HomeMenuRow.MESSAGES -> navController.navigateToTopLevel(TopLevelDestination.MESSAGES)
                 HomeMenuRow.FRIENDS -> navController.navigate(FriendsFeedRoute)
                 HomeMenuRow.LIVE -> navController.navigateToLiveHub()
                 HomeMenuRow.SETTINGS -> navController.navigateToSettings()

@@ -167,6 +167,7 @@ fun FeedScreen(
             unreadCount = unread,
             onSelect = { picked -> if (viewModel.selectTab(picked)) followingStartOver++ },
             onOpenMore = { menuOpen = true },
+            onOpenMessages = onOpenMessages,
             onOpenNotifications = onOpenNotifications,
             onOpenSearch = onOpenSearch,
             modifier = Modifier.align(Alignment.TopCenter),
@@ -174,7 +175,7 @@ fun FeedScreen(
     }
     if (menuOpen) {
         HomeMoreSheet(
-            onRow = { row -> if (row == HomeMenuRow.MESSAGES) onOpenMessages() else onOpenMenuRow(row) },
+            onRow = onOpenMenuRow,
             onDismiss = { menuOpen = false },
         )
     }
