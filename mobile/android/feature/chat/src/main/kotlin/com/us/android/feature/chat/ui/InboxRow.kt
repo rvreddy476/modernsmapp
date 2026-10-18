@@ -124,18 +124,23 @@ internal fun ConversationRow(
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(NAME_PREVIEW_GAP)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = UsTheme.extended.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    if (conversation.isPinned) RowGlyph(UsIcons.Pin, "Pinned", "chat-row-pinned")
-                    if (conversation.isMuted) RowGlyph(UsIcons.NotificationsOff, "Muted", "chat-row-muted")
-                    Box(modifier = Modifier.weight(1f, fill = true))
+                    // Name and its glyphs take all the space the time leaves,
+                    // so the time always sits at the end and a long name only
+                    // truncates against it (two weighted children used to
+                    // split the row in half).
+                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = UsTheme.extended.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (conversation.isPinned) RowGlyph(UsIcons.Pin, "Pinned", "chat-row-pinned")
+                        if (conversation.isMuted) RowGlyph(UsIcons.NotificationsOff, "Muted", "chat-row-muted")
+                    }
                     val time = formatRelativeTime(conversation.lastMessage?.at?.takeIf { it.isNotBlank() }
                         ?: conversation.lastMessageAt ?: conversation.updatedAt)
                     if (time.isNotBlank()) {
