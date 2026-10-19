@@ -241,7 +241,7 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
 /**
  * The Follow ring (founder, 2026-10-19): the author's picture inside a pink
  * ring, FOLLOW bent along the ring's top half and a small plus at its foot.
- * One target; it follows. Drawn on a 60-unit grid, the same numbers as the
+ * One target; it follows. Drawn on a 56-unit grid, the same numbers as the
  * web's ReelRail ring, so both read alike.
  */
 @Composable
@@ -267,7 +267,17 @@ private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modi
                 role = Role.Button
             },
     ) {
-        UsAvatar(name = author.name, seed = author.seed, imageUrl = author.imageUrl, size = UsAvatarSize.Post)
+        UsAvatar(
+            name = author.name,
+            seed = author.seed,
+            imageUrl = author.imageUrl,
+            size = UsAvatarSize.Post,
+            // 36dp drawn at 40dp: the picture one step bigger in the ring (20 Oct).
+            modifier = Modifier.graphicsLayer {
+                scaleX = FOLLOW_FACE_SCALE
+                scaleY = FOLLOW_FACE_SCALE
+            },
+        )
         Canvas(modifier = Modifier.fillMaxSize()) {
             val unit = size.width / FOLLOW_GRID
             val centre = size.width / 2f
@@ -866,16 +876,20 @@ private val RAIL_TARGET = 48.dp
 /** 26dp glyphs (was 30, founder 2026-10-19: smaller rail icons); the 48dp target stays. */
 private val RAIL_ICON = 26.dp
 private val AVATAR_RIM = 1.5.dp
-/** The Follow ring at the top of the rail (2026-10-19): 60dp, the picture 36dp inside. */
-private val FOLLOW_RING = 60.dp
-/** Its drawing grid and marks, in grid units (web: ReelRail's 60-unit SVG). */
-private const val FOLLOW_GRID = 60f
-private const val FOLLOW_ARC_RADIUS = 21.5f
-private const val FOLLOW_WORD_SIZE = 7f
-private const val FOLLOW_WORD_TRACKING = 0.08f
-private const val FOLLOW_PLUS_CENTRE_Y = 54f
-private const val FOLLOW_PLUS_HALF = 3f
-private const val FOLLOW_PLUS_STROKE = 2.2f
+/**
+ * The Follow ring at the top of the rail: 56dp with the picture 40dp inside
+ * (2026-10-20: a step smaller ring, a step bigger picture, letters and plus).
+ */
+private val FOLLOW_RING = 56.dp
+private const val FOLLOW_FACE_SCALE = 40f / 36f
+/** Its drawing grid and marks, in grid units (web: ReelRail's 56-unit SVG). */
+private const val FOLLOW_GRID = 56f
+private const val FOLLOW_ARC_RADIUS = 21.2f
+private const val FOLLOW_WORD_SIZE = 8f
+private const val FOLLOW_WORD_TRACKING = 0.02f
+private const val FOLLOW_PLUS_CENTRE_Y = 52f
+private const val FOLLOW_PLUS_HALF = 3.5f
+private const val FOLLOW_PLUS_STROKE = 2.6f
 private val RING_STROKE = 3.dp
 private val RING_GAP = 2.dp
 /** 40dp (was 44, 2026-10-19), shrunk with the rail's glyphs. */
