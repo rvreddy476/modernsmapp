@@ -381,7 +381,7 @@ internal object UsColorTokens {
     val ChatAccent = Color(0xFF22C55E)
 
     /**
-     * The "+" (Follow / Subscribe) badge under a creator's avatar on the
+     * The Follow / Subscribe pill above a creator's avatar on the
      * stage rail (founder, 2026-10-19: pink, from the reference). It sits over
      * photos and video, so one value serves both themes.
      */

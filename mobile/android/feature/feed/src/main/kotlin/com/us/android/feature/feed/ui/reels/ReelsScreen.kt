@@ -122,7 +122,6 @@ import com.us.android.core.ui.StagePausedGlyph
 import com.us.android.core.ui.StageRail
 import com.us.android.core.ui.StageRailAuthor
 import com.us.android.core.ui.StageRailBadge
-import com.us.android.core.ui.StageAuthorRow
 import com.us.android.core.ui.StageVolumeControl
 import com.us.android.core.ui.StageRailSound
 import com.us.android.core.ui.UsEmptyState
@@ -1275,9 +1274,10 @@ private fun ReelPage(
                     onOpenHashtag = actions.onOpenHashtag,
                     onSoundLine = { actions.onSoundLine(item) },
                 ),
-                // Full mode: the picture, name and Follow in a row over the
-                // description, because the rail that carried them is gone.
-                authorRow = if (chrome.authorRow) reelAuthor(item, relationship, offersRelationship, actions, progress = null) else null,
+                // Full mode: the description alone — no name line — and the
+                // full width, because the rail is gone.
+                showName = chrome.showName,
+                clearRail = chrome.showRail,
                 // With the bar gone the page reaches the screen's bottom edge,
                 // so the description keeps clear of the gesture handle.
                 clearNavigationBar = !chrome.showBottomBar,
@@ -1465,7 +1465,7 @@ private fun ReelRail(
     )
 }
 
-/** The reel's author for the rail's avatar and full mode's author row: the picture, and Follow when it is offered. */
+/** The reel's author for the rail: the picture, and the Follow pill above it when it is offered. */
 private fun reelAuthor(
     item: FeedItem,
     relationship: ReelRelationship,
@@ -1494,7 +1494,8 @@ private fun reelAuthor(
  * reel's title, the caption clamped to two lines with "more" that opens it
  * in place, the tags (each opens that tag's posts), and the sound line —
  * drawn only when it can be followed ([soundLine]). The Follow pill that
- * sat beside the name moved onto the rail's avatar.
+ * sat beside the name moved to the top of the rail, above the avatar.
+ * Full mode draws the description without the name line (2026-10-19).
  */
 @Composable
 private fun ReelOverlay(
@@ -1502,8 +1503,10 @@ private fun ReelOverlay(
     soundLine: SoundLine?,
     actions: ReelOverlayActions,
     modifier: Modifier = Modifier,
-    /** Full mode: draw the author as a row (picture, name, Follow) and leave the sound line out. */
-    authorRow: StageRailAuthor? = null,
+    /** False leaves the "@name · age" line out (full mode, 2026-10-19). */
+    showName: Boolean = true,
+    /** The rail is up: stop short of it. */
+    clearRail: Boolean = true,
     /** The page runs to the screen's bottom edge: keep clear of the navigation bar. */
     clearNavigationBar: Boolean = false,
 ) {
@@ -1521,7 +1524,7 @@ private fun ReelOverlay(
         onOpenAuthor = { actions.onOpenAuthor(item.author.id) },
         onOpenHashtag = actions.onOpenHashtag,
         onSound = actions.onSoundLine,
-        author = authorRow?.let { author -> { StageAuthorRow(author = author, tagPrefix = "reel_author_row") } },
+        showAuthor = showName,
         tagPrefix = "reel_overlay",
         modifier = modifier
             .fillMaxWidth()
@@ -1529,7 +1532,7 @@ private fun ReelOverlay(
             // No rail in full mode, so the description may use the width.
             .padding(
                 start = OVERLAY_SIDE,
-                end = if (authorRow == null) OVERLAY_RAIL_CLEARANCE else OVERLAY_SIDE,
+                end = if (clearRail) OVERLAY_RAIL_CLEARANCE else OVERLAY_SIDE,
                 bottom = OVERLAY_BOTTOM,
             ),
     )

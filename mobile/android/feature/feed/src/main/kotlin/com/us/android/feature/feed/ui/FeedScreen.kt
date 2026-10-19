@@ -113,7 +113,7 @@ fun FeedScreen(
 ) {
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     // Full mode (founder, 2026-10-19): a double tap on a post leaves only its
-    // description and author row; the header, the rail and the bar go. Back
+    // description (no name, no picture); the header, the rail and the bar go. Back
     // or another double tap brings them back.
     var fullMode by rememberSaveable { mutableStateOf(false) }
     HideShellBottomBar(hidden = fullMode)
@@ -227,7 +227,7 @@ internal fun FeedContent(
     reselected: Flow<Unit> = emptyFlow(),
     /** Bumped when the timeline was started over on a fresh generation: back to the first post. */
     startOver: Int = 0,
-    /** Home's full mode: pages draw only their description and author row. */
+    /** Home's full mode: pages draw only their description, no name line. */
     fullMode: Boolean = false,
     /** A double tap on a page; null leaves double taps alone. */
     onToggleFullMode: (() -> Unit)? = null,

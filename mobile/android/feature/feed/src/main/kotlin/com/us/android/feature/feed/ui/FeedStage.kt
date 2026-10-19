@@ -64,7 +64,6 @@ import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.core.ui.PostCardPoll
 import com.us.android.core.ui.PostCardPollOption
 import com.us.android.core.ui.PostPollBlock
-import com.us.android.core.ui.StageAuthorRow
 import com.us.android.core.ui.StageBottomScrim
 import com.us.android.core.ui.StageCaption
 import com.us.android.core.ui.StageCaptionState
@@ -115,7 +114,7 @@ internal fun FeedStagePage(
     onTogglePause: () -> Unit,
     onOpenHashtag: ((String) -> Unit)?,
     onOpenSound: ((String) -> Unit)?,
-    /** Full mode: only the description and its author row; no rail. */
+    /** Full mode (2026-10-19): only the description — no name line, no rail. */
     fullMode: Boolean = false,
     /** A double tap anywhere on the page switches full mode; null leaves double taps alone. */
     onToggleFullMode: (() -> Unit)? = null,
@@ -203,11 +202,8 @@ internal fun FeedStagePage(
                     StagePageDots(pageCount = state.pages.size, currentPage = carousel.currentPage)
                 }
             },
-            author = if (fullMode) {
-                { StageAuthorRow(author = author, tagPrefix = "feed_author_row") }
-            } else {
-                null
-            },
+            // Full mode: no "@name · age" line either (founder, 2026-10-19).
+            showAuthor = !fullMode,
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()

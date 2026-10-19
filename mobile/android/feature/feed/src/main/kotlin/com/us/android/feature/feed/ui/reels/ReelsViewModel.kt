@@ -135,32 +135,32 @@ enum class ReelsMode {
 }
 
 /**
- * What each mode leaves on screen. Four flags rather than one because they
- * are drawn by different owners: the header by the screen, the rail and the
- * author block by the reel page, the bottom bar by the app shell.
+ * What each mode leaves on screen. Separate flags because they are drawn by
+ * different owners: the header by the screen, the rail and the caption block
+ * by the reel page, the bottom bar by the app shell.
  */
 data class ReelsChrome(
     /** The Momentum header over the top of the video. */
     val showHeader: Boolean,
-    /** Like, comment, share, save, more, mute — the right rail. */
+    /** Follow, the avatar, like, comment, share, save, more — the right rail. */
     val showRail: Boolean,
-    /** Avatar, username, Follow and the caption — bottom-left. */
+    /** The caption block — description and tags — bottom-left. */
     val showAuthor: Boolean,
     /** The shell's bottom navigation bar. */
     val showBottomBar: Boolean,
     /**
-     * The author as one horizontal row — picture, name, Follow — over the
-     * description, standing in for the rail's avatar while the rail is gone.
+     * The "@name · date" line over the description. Full mode drops it
+     * (founder, 2026-10-19: "no need to show even Profile or channel name").
      */
-    val authorRow: Boolean = false,
+    val showName: Boolean = true,
 ) {
     companion object {
         /** Everything. */
         val NORMAL = ReelsChrome(showHeader = true, showRail = true, showAuthor = true, showBottomBar = true)
 
         /**
-         * Full mode (founder, 2026-10-19): only the description, with the
-         * picture, name and Follow in a row above it. The header, the rail
+         * Full mode (founder, 2026-10-19): the description and its tags, and
+         * nothing else — no name, no picture, no Follow. The header, the rail
          * and the bottom bar all go.
          */
         val FULL = ReelsChrome(
@@ -168,14 +168,13 @@ data class ReelsChrome(
             showRail = false,
             showAuthor = true,
             showBottomBar = false,
-            authorRow = true,
+            showName = false,
         )
     }
 }
 
 /**
- * The one rule: normal shows everything; full keeps only the description
- * and its author row.
+ * The one rule: normal shows everything; full keeps only the description.
  */
 fun ReelsMode.chrome(): ReelsChrome = when (this) {
     ReelsMode.NORMAL -> ReelsChrome.NORMAL

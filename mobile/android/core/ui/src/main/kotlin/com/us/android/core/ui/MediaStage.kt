@@ -22,7 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -103,8 +103,8 @@ data class StageRailControl(
 
 /**
  * The author at the top of the rail: their avatar, which opens their
- * profile, and — while the viewer can still make the edge — a small "+"
- * badge under it that makes it ([badge]).
+ * profile, and — while the viewer can still make the edge — a small Follow
+ * pill above it that makes it ([badge]).
  */
 @Immutable
 data class StageRailAuthor(
@@ -112,13 +112,13 @@ data class StageRailAuthor(
     val seed: String,
     val imageUrl: String? = null,
     val onOpen: () -> Unit,
-    /** The "+" under the avatar, or null when there is no edge to make. */
+    /** The Follow pill above the avatar, or null when there is no edge to make. */
     val badge: StageRailBadge? = null,
     /** How far the video has played, 0..1, drawn as a ring round the avatar; null for none. */
     val progress: Float? = null,
 )
 
-/** The "+" badge: what it does, said for a screen reader ("Follow"), and the tap. */
+/** The Follow pill: what it says and does ("Follow", a subscribe label), and the tap. */
 @Immutable
 data class StageRailBadge(val description: String, val onClick: () -> Unit)
 
@@ -134,7 +134,7 @@ data class StageRailSound(
 )
 
 /**
- * The right-hand rail, top to bottom: the author's avatar with its "+",
+ * The right-hand rail, top to bottom: the Follow pill, the author's avatar,
  * every control with its label under it, anything the surface adds
  * ([extra] — Reels' mute), and the sound disc at the foot.
  */
@@ -169,7 +169,7 @@ fun StageRail(
 }
 
 /**
- * A 28dp glyph over a one-line label. The label is what the control says
+ * A 26dp glyph over a one-line label. The label is what the control says
  * about itself — the count, or its name — and the description is what a
  * screen reader says, which folds the two into one phrase.
  */
@@ -220,133 +220,59 @@ fun stageControlDescription(description: String, label: String?): String = when 
 
 @Composable
 private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            contentAlignment = Alignment.TopCenter,
-            // Room under the avatar for the half of the badge that hangs below it.
-            modifier = Modifier.padding(bottom = BADGE_SIZE / 2),
-        ) {
-            val avatar = @Composable {
-                UsAvatar(
-                    name = author.name,
-                    seed = author.seed,
-                    imageUrl = author.imageUrl,
-                    size = UsAvatarSize.Medium,
-                    contentDescription = "${author.name}, profile",
-                    modifier = Modifier
-                        .border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            role = Role.Button,
-                            onClick = author.onOpen,
-                        )
-                        .testTag("$tagPrefix:author"),
-                )
-            }
-            val progress = author.progress
-            if (progress != null) StageProgressRing(progress = progress) { avatar() } else avatar()
-            author.badge?.let { badge ->
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .offset(y = BADGE_SIZE / 2)
-                        .size(BADGE_SIZE)
-                        .clip(CircleShape)
-                        .background(UsTheme.extended.followBadge)
-                        .clickable(role = Role.Button, onClickLabel = badge.description, onClick = badge.onClick)
-                        .semantics { contentDescription = badge.description }
-                        .testTag("$tagPrefix:badge"),
-                ) {
-                    Icon(
-                        imageVector = UsIcons.Create,
-                        contentDescription = null,
-                        tint = UsTheme.extended.onMedia,
-                        modifier = Modifier.size(BADGE_GLYPH),
-                    )
-                }
-            }
-        }
-        // The "+" says what it does (founder, 2026-10-19: a bare plus on first
-        // launch meant nothing to anyone). Its own tap target, the same action.
-        author.badge?.let { badge ->
-            Text(
-                text = badge.description,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.onMedia,
-                maxLines = 1,
-                modifier = Modifier
-                    .clickable(role = Role.Button, onClick = badge.onClick)
-                    .clearAndSetSemantics { }
-                    .testTag("$tagPrefix:badge_label"),
-            )
-        }
-    }
-}
-
-/**
- * Full mode's author line (founder, 2026-10-19): the picture, the name and
- * a Follow pill side by side, above the description. The rail is hidden in
- * full mode, so this is where the avatar and its Follow go.
- */
-@Composable
-fun StageAuthorRow(
-    author: StageRailAuthor,
-    modifier: Modifier = Modifier,
-    tagPrefix: String = "stage_author",
-) {
-    Row(
-        modifier = modifier.testTag(tagPrefix),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    role = Role.Button,
-                    onClick = author.onOpen,
-                )
-                .testTag("$tagPrefix:open"),
-        ) {
+        // Follow sits ABOVE the avatar as one pill (founder, 2026-10-19): it
+        // replaced the "+" badge and the label under it, which said it twice.
+        author.badge?.let { badge -> StageFollowPill(badge = badge, modifier = Modifier.testTag("$tagPrefix:badge")) }
+        val avatar = @Composable {
             UsAvatar(
                 name = author.name,
                 seed = author.seed,
                 imageUrl = author.imageUrl,
-                size = UsAvatarSize.Post,
+                size = UsAvatarSize.Medium,
                 contentDescription = "${author.name}, profile",
-                modifier = Modifier.border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape),
-            )
-            Text(
-                text = author.name,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = UsTheme.extended.onMedia,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        author.badge?.let { badge ->
-            Text(
-                text = badge.description,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.onMedia,
-                maxLines = 1,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(FOLLOW_PILL_RADIUS))
-                    .background(UsTheme.extended.followBadge)
-                    .clickable(role = Role.Button, onClick = badge.onClick)
-                    .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.s)
-                    .testTag("$tagPrefix:follow"),
+                    .border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        role = Role.Button,
+                        onClick = author.onOpen,
+                    )
+                    .testTag("$tagPrefix:author"),
             )
         }
+        val progress = author.progress
+        if (progress != null) StageProgressRing(progress = progress) { avatar() } else avatar()
+    }
+}
+
+/** The pink Follow pill at the top of the rail: the badge's own words, white on pink. */
+@Composable
+private fun StageFollowPill(badge: StageRailBadge, modifier: Modifier = Modifier) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .height(FOLLOW_PILL_HEIGHT)
+            .clip(RoundedCornerShape(UsTheme.radii.pill))
+            .background(UsTheme.extended.followBadge)
+            .stagePressScale(badge.onClick)
+            .clearAndSetSemantics {
+                contentDescription = badge.description
+                role = Role.Button
+            }
+            .padding(horizontal = UsTheme.spacing.m),
+    ) {
+        Text(
+            text = badge.description,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = UsTheme.extended.onMedia,
+            maxLines = 1,
+        )
     }
 }
 
@@ -493,11 +419,11 @@ fun StageCaption(
     /** What sits directly above the caption: a carousel's dots. */
     above: @Composable ColumnScope.() -> Unit = {},
     /**
-     * Full mode (founder, 2026-10-19): the rail is gone, so the author row —
-     * picture, name, Follow — takes the "@name · date" line's place. Null
-     * keeps the line.
+     * False leaves the "@name · date" line out (full mode, founder
+     * 2026-10-19: "no need to show even Profile or channel name"); the
+     * description and its tags stay.
      */
-    author: (@Composable () -> Unit)? = null,
+    showAuthor: Boolean = true,
     tagPrefix: String = "stage_caption",
 ) {
     // Say each thing once (founder, 2026-10-19: "so much duplicate description").
@@ -508,7 +434,7 @@ fun StageCaption(
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
     ) {
         above()
-        if (author != null) author() else Row(
+        if (showAuthor) Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
         ) {
@@ -926,19 +852,21 @@ private const val RING_START_ANGLE = -90f
 private const val FULL_SWEEP = 360f
 /**
  * 12dp between rail items (was 18, 2026-10-19): with the avatar's Follow
- * label the rail ran from mid-screen to the bar — too long next to TikTok's.
+ * label the rail ran from mid-screen to the bar — too long.
  */
 private val RAIL_GAP = 12.dp
-private val FOLLOW_PILL_RADIUS = 6.dp
 private val RAIL_TARGET = 48.dp
-private val RAIL_ICON = 30.dp
+/** 26dp glyphs (was 30, founder 2026-10-19: smaller rail icons); the 48dp target stays. */
+private val RAIL_ICON = 26.dp
 private val AVATAR_RIM = 1.5.dp
-private val BADGE_SIZE = 20.dp
-private val BADGE_GLYPH = 14.dp
+/** The Follow pill above the rail's avatar (2026-10-19). */
+private val FOLLOW_PILL_HEIGHT = 26.dp
 private val RING_STROKE = 3.dp
 private val RING_GAP = 2.dp
-private val DISC_SIZE = 44.dp
-private val DISC_RIM = 6.dp
+/** 40dp (was 44, 2026-10-19), shrunk with the rail's glyphs. */
+private val DISC_SIZE = 40.dp
+/** 4dp (was 6) so the 40dp disc still shows the 32dp face whole. */
+private val DISC_RIM = 4.dp
 private val SOUND_LINE_ICON = 14.dp
 private val SOUND_LINE_TARGET = 32.dp
 private val PAUSE_DISC = 72.dp
