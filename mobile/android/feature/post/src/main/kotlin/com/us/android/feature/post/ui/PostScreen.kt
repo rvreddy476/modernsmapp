@@ -299,7 +299,6 @@ private fun PostStage(
                     onBookmark = onBookmark,
                     onShare = { share(post.id, post.text.ifBlank { post.title }, authorName.ifBlank { null }) },
                 ),
-                sound = null,
                 tagPrefix = "post_rail",
                 modifier = Modifier
                     .align(Alignment.BottomEnd)

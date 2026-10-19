@@ -75,7 +75,6 @@ import com.us.android.core.ui.StagePhotoCarousel
 import com.us.android.core.ui.StageRail
 import com.us.android.core.ui.StageRailAuthor
 import com.us.android.core.ui.StageRailBadge
-import com.us.android.core.ui.StageRailSound
 import com.us.android.core.ui.StageTextCard
 import com.us.android.feature.feed.ui.reels.reelAuthorLabel
 import com.us.android.feature.feed.ui.reels.reelHashtags
@@ -226,14 +225,6 @@ internal fun FeedStagePage(
                 onBookmark = callbacks.onBookmark,
                 onShare = callbacks.onShare,
             ),
-            sound = item.sound?.let { sound ->
-                StageRailSound(
-                    name = item.author.nameForDisplay,
-                    seed = item.author.id,
-                    description = "Sound: ${sound.title}",
-                    onClick = { onOpenSound?.invoke(sound.id) },
-                )
-            },
             tagPrefix = "feed_rail",
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -288,8 +279,8 @@ internal fun stageCaption(item: FeedItem, kind: StageKind = stageKind(item)) = S
     text = if (kind == StageKind.TEXT || kind == StageKind.POLL) "" else item.text,
     hashtags = reelHashtags(item),
     labels = disclosureLabels(item.disclosure),
-    // No sound line in the caption (2026-10-19): the rail's sound disc says it already.
-    soundLabel = null,
+    // The sound is named in the caption (2026-10-19): the rail has no sound disc.
+    soundLabel = item.sound?.title,
 )
 
 /**

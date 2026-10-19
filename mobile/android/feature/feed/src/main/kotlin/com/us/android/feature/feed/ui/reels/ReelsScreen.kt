@@ -120,7 +120,6 @@ import com.us.android.core.ui.StageRailAuthor
 import com.us.android.core.ui.StageRailBadge
 import com.us.android.core.ui.StagePlayheadLine
 import com.us.android.core.ui.StageVolumeControl
-import com.us.android.core.ui.StageRailSound
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -1432,14 +1431,6 @@ private fun ReelRail(
             onBookmark = actions.onBookmark,
             onShare = actions.onShare,
         ),
-        sound = soundLine?.let { line ->
-            StageRailSound(
-                name = item.creatorName,
-                seed = item.author.id,
-                description = "Sound: ${line.label}",
-                onClick = { actions.onSoundLine(item) },
-            )
-        },
         tagPrefix = "reel_rail",
         modifier = modifier.padding(end = UsTheme.spacing.m, bottom = RAIL_BOTTOM_INSET),
     )
@@ -1498,8 +1489,8 @@ private fun ReelOverlay(
             title = reelTitle(item),
             text = item.text,
             hashtags = reelHashtags(item),
-            // No sound line (2026-10-19): the rail's disc already names the sound.
-            soundLabel = null,
+            // The sound is named here (2026-10-19): the rail has no sound disc.
+            soundLabel = soundLine?.label,
         ),
         onOpenAuthor = { actions.onOpenAuthor(item.author.id) },
         onOpenHashtag = actions.onOpenHashtag,

@@ -106,9 +106,9 @@ data class StageRailControl(
 )
 
 /**
- * The author at the top of the rail: their avatar, which opens their
- * profile, and — while the viewer can still make the edge — a small Follow
- * pill above it that makes it ([badge]).
+ * The author on the rail (founder, 2026-10-19): their picture at the foot,
+ * always, which opens their profile; and — only while the viewer can still
+ * make the edge — the Follow ring at the top ([badge]).
  */
 @Immutable
 data class StageRailAuthor(
@@ -116,37 +116,26 @@ data class StageRailAuthor(
     val seed: String,
     val imageUrl: String? = null,
     val onOpen: () -> Unit,
-    /** The Follow pill above the avatar, or null when there is no edge to make. */
+    /** The Follow ring at the top of the rail, or null when there is no edge to make. */
     val badge: StageRailBadge? = null,
     /** How far the video has played, 0..1, drawn as a ring round the avatar; null for none. */
     val progress: Float? = null,
 )
 
-/** The Follow pill: what it says and does ("Follow", a subscribe label), and the tap. */
+/** The Follow ring: what it says and does ("Follow", a subscribe label), and the tap. */
 @Immutable
 data class StageRailBadge(val description: String, val onClick: () -> Unit)
 
-/** The sound disc at the foot of the rail: whose face spins in it, and where a tap goes. */
-@Immutable
-data class StageRailSound(
-    val name: String,
-    val seed: String,
-    val imageUrl: String? = null,
-    /** "Sound: <title>" — what a screen reader says. */
-    val description: String,
-    val onClick: () -> Unit,
-)
-
 /**
- * The right-hand rail, top to bottom: the Follow pill, the author's avatar,
- * every control with its label under it, anything the surface adds
- * ([extra] — Reels' mute), and the sound disc at the foot.
+ * The right-hand rail, top to bottom (founder, 2026-10-19): the Follow ring
+ * while the viewer does not follow, every control with its label under it,
+ * anything the surface adds ([extra]), and the author's picture at the foot.
+ * No sound disc: the sound is named in the caption and controlled top-left.
  */
 @Composable
 fun StageRail(
     author: StageRailAuthor?,
     controls: List<StageRailControl>,
-    sound: StageRailSound?,
     modifier: Modifier = Modifier,
     tagPrefix: String = "stage_rail",
     extra: @Composable ColumnScope.() -> Unit = {},
@@ -156,7 +145,9 @@ fun StageRail(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(RAIL_GAP),
     ) {
-        if (author != null) StageRailAvatar(author = author, tagPrefix = tagPrefix)
+        author?.badge?.let { badge ->
+            StageFollowRing(author = author, badge = badge, modifier = Modifier.testTag("$tagPrefix:badge"))
+        }
         controls.forEach { control ->
             StageRailButton(
                 icon = control.icon,
@@ -168,7 +159,7 @@ fun StageRail(
             )
         }
         extra()
-        if (sound != null) StageSoundDisc(sound = sound, tagPrefix = tagPrefix)
+        if (author != null) StageRailAvatar(author = author, tagPrefix = tagPrefix)
     }
 }
 
@@ -222,46 +213,39 @@ fun stageControlDescription(description: String, label: String?): String = when 
     else -> "$description, $label"
 }
 
+/** The author's picture at the foot of the rail: always there, it opens their profile. */
 @Composable
 private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-    ) {
-        // Follow sits ABOVE the avatar as one round button (founder,
-        // 2026-10-19): FOLLOW along the top half of its rim, a plus inside.
-        author.badge?.let { badge -> StageFollowPill(badge = badge, modifier = Modifier.testTag("$tagPrefix:badge")) }
-        val avatar = @Composable {
-            UsAvatar(
-                name = author.name,
-                seed = author.seed,
-                imageUrl = author.imageUrl,
-                size = UsAvatarSize.Medium,
-                contentDescription = "${author.name}, profile",
-                modifier = Modifier
-                    .border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        role = Role.Button,
-                        onClick = author.onOpen,
-                    )
-                    .testTag("$tagPrefix:author"),
-            )
-        }
-        val progress = author.progress
-        if (progress != null) StageProgressRing(progress = progress) { avatar() } else avatar()
+    val avatar = @Composable {
+        UsAvatar(
+            name = author.name,
+            seed = author.seed,
+            imageUrl = author.imageUrl,
+            size = UsAvatarSize.Chat,
+            contentDescription = "${author.name}, profile",
+            modifier = Modifier
+                .border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    role = Role.Button,
+                    onClick = author.onOpen,
+                )
+                .testTag("$tagPrefix:author"),
+        )
     }
+    val progress = author.progress
+    if (progress != null) StageProgressRing(progress = progress) { avatar() } else avatar()
 }
 
-/** The pink Follow pill at the top of the rail: the badge's own words, white on pink. */
 /**
- * The Follow button (founder, 2026-10-19): a pink circle with FOLLOW bent
- * along the top half of its rim and a plus in the middle. Drawn on a 44-unit
- * grid, the same numbers as the web's ReelRail mark, so both read alike.
+ * The Follow ring (founder, 2026-10-19): the author's picture inside a pink
+ * ring, FOLLOW bent along the ring's top half and a small plus at its foot.
+ * One target; it follows. Drawn on a 60-unit grid, the same numbers as the
+ * web's ReelRail ring, so both read alike.
  */
 @Composable
-private fun StageFollowPill(badge: StageRailBadge, modifier: Modifier = Modifier) {
+private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modifier: Modifier = Modifier) {
     val ink = UsTheme.extended.onMedia
     val word = remember {
         android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -271,9 +255,10 @@ private fun StageFollowPill(badge: StageRailBadge, modifier: Modifier = Modifier
         }
     }
     val arc = remember { android.graphics.Path() }
-    Canvas(
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = modifier
-            .size(FOLLOW_BUTTON)
+            .size(FOLLOW_RING)
             .clip(CircleShape)
             .background(UsTheme.extended.followBadge)
             .stagePressScale(badge.onClick)
@@ -282,21 +267,24 @@ private fun StageFollowPill(badge: StageRailBadge, modifier: Modifier = Modifier
                 role = Role.Button
             },
     ) {
-        val unit = size.width / FOLLOW_GRID
-        val centre = size.width / 2f
-        val radius = FOLLOW_ARC_RADIUS * unit
-        arc.reset()
-        arc.addArc(centre - radius, centre - radius, centre + radius, centre + radius, 180f, 180f)
-        word.color = ink.toArgb()
-        word.textSize = FOLLOW_WORD_SIZE * unit
-        drawIntoCanvas { canvas ->
-            canvas.nativeCanvas.drawTextOnPath("FOLLOW", arc, (Math.PI * radius / 2).toFloat(), 0f, word)
+        UsAvatar(name = author.name, seed = author.seed, imageUrl = author.imageUrl, size = UsAvatarSize.Post)
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val unit = size.width / FOLLOW_GRID
+            val centre = size.width / 2f
+            val radius = FOLLOW_ARC_RADIUS * unit
+            arc.reset()
+            arc.addArc(centre - radius, centre - radius, centre + radius, centre + radius, 180f, 180f)
+            word.color = ink.toArgb()
+            word.textSize = FOLLOW_WORD_SIZE * unit
+            drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawTextOnPath("FOLLOW", arc, (Math.PI * radius / 2).toFloat(), 0f, word)
+            }
+            val stroke = FOLLOW_PLUS_STROKE * unit
+            val plusY = FOLLOW_PLUS_CENTRE_Y * unit
+            val half = FOLLOW_PLUS_HALF * unit
+            drawLine(ink, Offset(centre, plusY - half), Offset(centre, plusY + half), stroke, StrokeCap.Round)
+            drawLine(ink, Offset(centre - half, plusY), Offset(centre + half, plusY), stroke, StrokeCap.Round)
         }
-        val stroke = FOLLOW_PLUS_STROKE * unit
-        val plusY = FOLLOW_PLUS_CENTRE_Y * unit
-        val half = FOLLOW_PLUS_HALF * unit
-        drawLine(ink, Offset(centre, plusY - half), Offset(centre, plusY + half), stroke, StrokeCap.Round)
-        drawLine(ink, Offset(centre - half, plusY), Offset(centre + half, plusY), stroke, StrokeCap.Round)
     }
 }
 
@@ -361,31 +349,6 @@ fun StageProgressRing(progress: Float, modifier: Modifier = Modifier, content: @
         contentAlignment = Alignment.Center,
     ) {
         content()
-    }
-}
-
-/**
- * The sound disc: a dark record with the sound's creator in the middle.
- * It holds still (founder, 2026-10-19: the turning disc read as a moving
- * profile picture). The whole disc is the target.
- */
-@Composable
-private fun StageSoundDisc(sound: StageRailSound, tagPrefix: String) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(DISC_SIZE)
-            .clip(CircleShape)
-            .background(Brush.radialGradient(listOf(UsTheme.extended.mediaPlate, UsTheme.extended.stage)))
-            .border(DISC_RIM, UsTheme.extended.mediaRim, CircleShape)
-            .stagePressScale(sound.onClick)
-            .clearAndSetSemantics {
-                contentDescription = sound.description
-                role = Role.Button
-            }
-            .testTag("$tagPrefix:sound"),
-    ) {
-        UsAvatar(name = sound.name, seed = sound.seed, imageUrl = sound.imageUrl, size = UsAvatarSize.Small)
     }
 }
 
@@ -903,24 +866,20 @@ private val RAIL_TARGET = 48.dp
 /** 26dp glyphs (was 30, founder 2026-10-19: smaller rail icons); the 48dp target stays. */
 private val RAIL_ICON = 26.dp
 private val AVATAR_RIM = 1.5.dp
-/** The round Follow button above the rail's avatar (2026-10-19). */
-private val FOLLOW_BUTTON = 44.dp
-/** Its drawing grid and marks, in grid units (web: ReelRail's 44-unit SVG). */
-private const val FOLLOW_GRID = 44f
-private const val FOLLOW_ARC_RADIUS = 14f
-private const val FOLLOW_WORD_SIZE = 7.5f
+/** The Follow ring at the top of the rail (2026-10-19): 60dp, the picture 36dp inside. */
+private val FOLLOW_RING = 60.dp
+/** Its drawing grid and marks, in grid units (web: ReelRail's 60-unit SVG). */
+private const val FOLLOW_GRID = 60f
+private const val FOLLOW_ARC_RADIUS = 21.5f
+private const val FOLLOW_WORD_SIZE = 7f
 private const val FOLLOW_WORD_TRACKING = 0.08f
-private const val FOLLOW_PLUS_CENTRE_Y = 26.5f
-private const val FOLLOW_PLUS_HALF = 5.5f
-private const val FOLLOW_PLUS_STROKE = 2.6f
+private const val FOLLOW_PLUS_CENTRE_Y = 54f
+private const val FOLLOW_PLUS_HALF = 3f
+private const val FOLLOW_PLUS_STROKE = 2.2f
 private val RING_STROKE = 3.dp
 private val RING_GAP = 2.dp
 /** 40dp (was 44, 2026-10-19), shrunk with the rail's glyphs. */
-/** The sound disc at the rail's foot, the creator's picture inside it: 48dp (2026-10-19: "increase it"). */
-private val DISC_SIZE = 48.dp
 private val PLAYHEAD_HEIGHT = 2.dp
-/** 4dp (was 6) so the 40dp disc still shows the 32dp face whole. */
-private val DISC_RIM = 4.dp
 private val SOUND_LINE_ICON = 14.dp
 private val SOUND_LINE_TARGET = 32.dp
 private val PAUSE_DISC = 72.dp
