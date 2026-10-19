@@ -46,6 +46,8 @@ data class UsExtendedColors(
     val onBrandChip: Color,
     /** Chat's green identity: outgoing bubbles, send, unread badges. */
     val chatAccent: Color,
+    /** The pink "+" badge under a creator's avatar on the stage rail. */
+    val followBadge: Color,
     val chatOnline: Color,
     /** Presence: the web's success. */
     val onlineGreen: Color,
@@ -378,6 +380,7 @@ internal val DarkExtendedColors = UsExtendedColors(
     brandChip = UsColorTokens.BrandChip,
     onBrandChip = UsColorTokens.OnBrandChip,
     chatAccent = UsColorTokens.ChatAccent,
+    followBadge = UsColorTokens.FollowBadge,
     chatOnline = UsColorTokens.ChatOnline,
     onlineGreen = UsColorTokens.Dark.Success,
     liveRed = UsColorTokens.Dark.Danger,

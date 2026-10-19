@@ -254,7 +254,7 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
                         .offset(y = BADGE_SIZE / 2)
                         .size(BADGE_SIZE)
                         .clip(CircleShape)
-                        .background(UsTheme.extended.accentStrong)
+                        .background(UsTheme.extended.followBadge)
                         .clickable(role = Role.Button, onClickLabel = badge.description, onClick = badge.onClick)
                         .semantics { contentDescription = badge.description }
                         .testTag("$tagPrefix:badge"),
@@ -262,7 +262,7 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
                     Icon(
                         imageVector = UsIcons.Create,
                         contentDescription = null,
-                        tint = UsTheme.extended.onAccent,
+                        tint = UsTheme.extended.onMedia,
                         modifier = Modifier.size(BADGE_GLYPH),
                     )
                 }

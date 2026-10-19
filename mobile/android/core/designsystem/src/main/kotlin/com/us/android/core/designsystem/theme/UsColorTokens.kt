@@ -379,6 +379,13 @@ internal object UsColorTokens {
     // badges. Shared across themes. NOT yet the web's: the web's chat is
     // black and white with `--theme-send` as its one colour.
     val ChatAccent = Color(0xFF22C55E)
+
+    /**
+     * The "+" (Follow / Subscribe) badge under a creator's avatar on the
+     * stage rail (founder, 2026-10-19: pink, from the reference). It sits over
+     * photos and video, so one value serves both themes.
+     */
+    val FollowBadge = Color(0xFFFE2C55)
     val ChatOnline = Color(0xFF4ADE80)
 
     /** The glyph or count ON chat's green (send, a badge): the web's ink, 8:1. White on it is 2.3:1. */
