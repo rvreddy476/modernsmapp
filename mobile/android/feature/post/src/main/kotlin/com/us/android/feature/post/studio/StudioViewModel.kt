@@ -42,6 +42,7 @@ import com.us.android.feature.post.data.PostDraftsRepository
 import com.us.android.feature.post.navigation.StudioRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +50,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.SecureRandom
@@ -291,7 +293,11 @@ class StudioViewModel @Inject constructor(
         viewModelScope.launch {
             store.save(session.current, System.currentTimeMillis())
             val projectId = session.current.projectId
-            val notice = when (val pages = publisher.uploadPages(projectId)) {
+            // Off the main thread: every page is rendered (CPU) and uploaded. The
+            // publish worker always ran this in the background; the draft save
+            // ran it here and crashed the app (2026-10-19).
+            val uploaded = withContext(Dispatchers.Default) { publisher.uploadPages(projectId) }
+            val notice = when (val pages = uploaded) {
                 is CreatorPublisher.PagesUpload.Ready -> {
                     val content = DraftContent(
                         text = current.postText,

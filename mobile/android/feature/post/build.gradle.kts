@@ -58,6 +58,8 @@ dependencies {
     // The Reel studio (2026-09-05): a 9:16 preview with live effects through
     // ExoPlayer, and the export through Transformer. Both at the player's
     // version — one Media3 in the app, never two.
+    // The full-screen post viewer's video surface (2026-10-19), as Home's.
+    implementation(libs.media3.ui.compose)
     implementation(libs.media3.transformer)
     implementation(libs.media3.effect)
 

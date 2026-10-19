@@ -99,6 +99,16 @@ class MediaUrlResolverTest {
         assertThat(resolver.bestVariant(mapOf("1080p" to "u"), maxHeight = 240)).isNull()
     }
 
+    /** 2026-10-19: photo sizes were unrecognised, so every photo drew its 150px thumbnail. */
+    @Test
+    fun `a photo's sizes are ranked and the cropped thumbnail never is`() {
+        val photo = mapOf("thumb_150" to "uThumb", "small_480" to "u480", "medium_1080" to "u1080", "original" to "uOrig")
+
+        assertThat(resolver.bestVariant(photo, maxHeight = 1080)).isEqualTo("u1080")
+        assertThat(resolver.bestVariant(photo, maxHeight = 720)).isEqualTo("u480")
+        assertThat(resolver.bestVariant(mapOf("thumb_150" to "uThumb"), maxHeight = 1080)).isNull()
+    }
+
     @Test
     fun `an empty variant map yields null`() {
         assertThat(resolver.bestVariant(emptyMap(), maxHeight = 1080)).isNull()

@@ -189,6 +189,11 @@ class PostViewerStateContractTest {
             ),
             engagement = EngagementStore(writes),
             engagementRepository = engagementRepository,
+            // No test plays a video: either would fail loudly if one were asked for.
+            playerFactory = object : com.us.android.core.media.PlayerFactory {
+                override fun create() = error("no video in this test")
+            },
+            mediaSources = com.us.android.core.media.MediaSources({ error("no video") }, { error("no video") }),
             savedStateHandle = SavedStateHandle(mapOf("postId" to POST_ID)),
         )
     }

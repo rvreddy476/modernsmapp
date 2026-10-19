@@ -467,6 +467,20 @@ fun EngagementOverlay.likeCountOr(serverCount: Int, serverReacted: Boolean): Int
     }
 }
 
+/**
+ * The save count to draw, the same derivation as likes; null stays null — a
+ * count the server never sent is not invented from a tap (2026-10-19).
+ */
+fun EngagementOverlay.saveCountOr(serverCount: Int?, serverSaved: Boolean): Int? {
+    val count = serverCount ?: return null
+    val shown = bookmarked ?: return count
+    return when {
+        shown == serverSaved -> count
+        shown -> count + 1
+        else -> (count - 1).coerceAtLeast(0)
+    }
+}
+
 /** Same derivation for reposts. */
 fun EngagementOverlay.repostCountOr(serverCount: Int, serverReposted: Boolean): Int {
     val shown = reposted ?: return serverCount

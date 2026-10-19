@@ -6,7 +6,9 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
+import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.likeCountOr
+import com.us.android.core.engagement.data.saveCountOr
 import com.us.android.core.engagement.data.reactedOr
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -556,5 +558,14 @@ class EngagementStoreTest {
 
         assertThat(server.reacted).isTrue()
         assertThat(store.overlayFor(postId).reacted).isTrue()
+    }
+
+    /** 2026-10-19: the post viewer's save count follows a tap the way likes do; an unsent count stays unsent. */
+    @Test
+    fun `the save count moves with a save tap and an unsent count stays null`() {
+        assertThat(EngagementOverlay().saveCountOr(serverCount = 4, serverSaved = false)).isEqualTo(4)
+        assertThat(EngagementOverlay(bookmarked = true).saveCountOr(serverCount = 4, serverSaved = false)).isEqualTo(5)
+        assertThat(EngagementOverlay(bookmarked = false).saveCountOr(serverCount = 0, serverSaved = true)).isEqualTo(0)
+        assertThat(EngagementOverlay(bookmarked = true).saveCountOr(serverCount = null, serverSaved = false)).isNull()
     }
 }

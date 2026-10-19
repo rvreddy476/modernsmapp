@@ -1,6 +1,8 @@
 package com.us.android.core.media.upload
 
 import com.us.android.core.network.di.BareClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -83,6 +85,13 @@ open class PresignedUploader @Inject constructor(
         val body = ProgressRequestBody(mimeType, sizeBytes, source, onProgress)
         val request = Request.Builder().url(url).put(body).build()
 
+        // The blocking call runs on IO whatever thread called: the draft save
+        // (2026-10-19) called this from the main thread and the app died of
+        // NetworkOnMainThreadException.
+        return withContext(Dispatchers.IO) { execute(request) }
+    }
+
+    private fun execute(request: Request): PresignedPutResult {
         return try {
             client.newCall(request).execute().use { response ->
                 when {

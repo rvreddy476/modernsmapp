@@ -59,4 +59,11 @@ class MediaStageTest {
         assertThat(used.all { it in 0 until 6 }).isTrue()
         assertThat(stageTextColourIndex("anything", 0)).isEqualTo(0)
     }
+
+    @Test
+    fun `a rail label shows zero as 0 and keeps the name only for a count never sent`() {
+        assertThat(stageCountLabel(0, "Like")).isEqualTo("0")
+        assertThat(stageCountLabel(1_200, "Share")).isEqualTo("1.2K")
+        assertThat(stageCountLabel(null, "Save")).isEqualTo("Save")
+    }
 }

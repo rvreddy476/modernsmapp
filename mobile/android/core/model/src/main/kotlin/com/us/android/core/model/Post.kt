@@ -47,6 +47,12 @@ data class Post(
      * are resolved separately through media-service.
      */
     val media: List<PostMediaRef> = emptyList(),
+    /** The author's tags, without `#` (2026-10-19, for the full-screen viewer). */
+    val hashtags: List<String> = emptyList(),
+    /** What the author declared: paid partnership, brand, AI-made. */
+    val disclosure: FeedDisclosure = FeedDisclosure(),
+    /** The author hid the share control. */
+    val hideShare: Boolean = false,
 )
 
 /**
@@ -92,6 +98,9 @@ data class PostCounts(
     val comments: Int,
     val reposts: Int,
     val views: Int,
+    /** Null when the payload did not carry them (older servers). */
+    val shares: Int? = null,
+    val saves: Int? = null,
 )
 
 /**

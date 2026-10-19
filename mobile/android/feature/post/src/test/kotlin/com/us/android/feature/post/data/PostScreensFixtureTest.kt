@@ -132,6 +132,20 @@ class PostScreensFixtureTest {
         }
     }
 
+    /** 2026-10-19: the full-screen viewer draws these; the DTO used to drop every one. */
+    @Test
+    fun `a post read carries the viewer's counts, tags and disclosure`() {
+        val post = app.decodeFromString(PostDto.serializer(), read("post_detail.json"))
+
+        assertThat(post.counts.shares).isEqualTo(6)
+        assertThat(post.counts.saves).isEqualTo(21)
+        assertThat(post.hashtags).isNotEmpty()
+        assertThat(post.isBranded).isTrue()
+        assertThat(post.aiGenerated).isTrue()
+        assertThat(post.paidPromotion).isFalse()
+        assertThat(post.linkUrl).isEqualTo("https://example.com/sunday-market")
+    }
+
     private fun PostDraftRequestDto.toContent(): DraftContent {
         val draft = PostDraftDto(id = "x", postType = postType, payload = payload, status = "draft").toDraft()
         return DraftContent(draft.text, draft.language, draft.mediaIds, draft.altTexts, draft.details)

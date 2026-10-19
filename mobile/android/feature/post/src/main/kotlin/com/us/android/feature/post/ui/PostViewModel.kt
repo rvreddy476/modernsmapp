@@ -3,6 +3,8 @@ package com.us.android.feature.post.ui
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementAction
@@ -10,6 +12,9 @@ import com.us.android.core.engagement.data.EngagementFailure
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.media.MediaSources
+import com.us.android.core.media.Playback
+import com.us.android.core.media.PlayerFactory
 import com.us.android.core.media.data.MediaRepository
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.feature.post.data.PostRepository
@@ -31,8 +36,36 @@ class PostViewModel @Inject constructor(
     private val media: MediaRepository,
     private val engagement: EngagementStore,
     private val engagementRepository: EngagementRepository,
+    private val playerFactory: PlayerFactory,
+    private val mediaSources: MediaSources,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
+
+    /**
+     * The one player a video post plays in (2026-10-19, full-screen viewer).
+     * Its own, not Home's pool: the pool's page indices belong to the feed,
+     * and borrowing one would re-prepare the feed's video behind this screen.
+     */
+    private var player: ExoPlayer? = null
+    private var prepared: Playback? = null
+
+    /** The player for [playback], prepared, looping, and playing. */
+    fun player(playback: Playback): ExoPlayer {
+        val current = player ?: playerFactory.create().also { player = it }
+        if (prepared != playback) {
+            current.setMediaSource(mediaSources.create(playback))
+            current.repeatMode = Player.REPEAT_MODE_ONE
+            current.prepare()
+            current.playWhenReady = true
+            prepared = playback
+        }
+        return current
+    }
+
+    override fun onCleared() {
+        player?.release()
+        player = null
+    }
 
     private val postId: String = savedStateHandle.get<String>(POST_ID_KEY).orEmpty()
 

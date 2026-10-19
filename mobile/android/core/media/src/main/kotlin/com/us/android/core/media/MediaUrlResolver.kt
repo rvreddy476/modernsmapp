@@ -50,9 +50,12 @@ class MediaUrlResolver @Inject constructor(
     /**
      * The best variant for a target width, or null when none fit.
      *
-     * Variant keys are quality labels (`360p`, `720p`, `1080p`) plus
+     * Variant keys are a video's quality labels (`360p`, `720p`, `1080p`), a
+     * photo's sizes (`small_480`, `medium_1080`, by the long edge), plus
      * `original` and `thumb_150`. Only the ladder entries are candidates:
-     * `original` can be arbitrarily large, and `thumb_150` is a still.
+     * `original` can be arbitrarily large, and `thumb_150` is a cropped still.
+     * The photo sizes were not recognised until 2026-10-19, so every photo
+     * fell back to the 150px thumbnail and drew blurred.
      *
      * Used for the poster frame and for progressive fallback, never as the
      * primary video source — that is HLS, so the ladder is chosen by ABR at
@@ -68,10 +71,14 @@ class MediaUrlResolver @Inject constructor(
     /** The still frame, when one has been generated. */
     fun thumbnail(variants: Map<String, String>): String? = variants[THUMBNAIL_KEY]
 
-    private fun String.heightOrNull(): Int? =
-        takeIf { it.endsWith('p') }?.dropLast(1)?.toIntOrNull()
+    private fun String.heightOrNull(): Int? = when {
+        endsWith('p') -> dropLast(1).toIntOrNull()
+        startsWith(THUMBNAIL_PREFIX) -> null
+        else -> substringAfterLast('_', missingDelimiterValue = "").toIntOrNull()
+    }
 
     private companion object {
         const val THUMBNAIL_KEY = "thumb_150"
+        const val THUMBNAIL_PREFIX = "thumb_"
     }
 }

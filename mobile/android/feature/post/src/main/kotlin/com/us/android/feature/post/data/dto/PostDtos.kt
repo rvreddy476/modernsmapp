@@ -72,6 +72,12 @@ data class PostDto(
     @SerialName("viewer_reaction") val viewerReaction: String? = null,
     @SerialName("has_reposted") val hasReposted: Boolean = false,
     @SerialName("is_repostable") val isRepostable: Boolean = false,
+    val hashtags: List<String> = emptyList(),
+    @SerialName("paid_promotion") val paidPromotion: Boolean = false,
+    @SerialName("is_branded") val isBranded: Boolean = false,
+    @SerialName("ai_generated") val aiGenerated: Boolean = false,
+    @SerialName("link_url") val linkUrl: String? = null,
+    @SerialName("hide_share") val hideShare: Boolean = false,
 )
 
 /** Nested object, not flat fields — `counts.likes`, `counts.comments`. */
@@ -79,6 +85,9 @@ data class PostDto(
 data class PostCountsDto(
     val likes: Int = 0,
     val comments: Int = 0,
+    // Null when absent, so the viewer never claims a zero nobody counted.
+    val shares: Int? = null,
+    val saves: Int? = null,
 )
 
 /**

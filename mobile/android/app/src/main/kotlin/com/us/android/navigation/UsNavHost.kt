@@ -376,11 +376,12 @@ fun UsNavHost(
     val chrome = remember { ChromeVisibility() }
 
     val liveStage = backStackEntry?.destination.isLiveStage()
-    // The Create camera and the photo studio pad both bars themselves; any
+    // The Create camera, the photo studio and the post viewer pad both bars themselves; any
     // shell inset showed the light ground as white bands around their dark
     // stage (2026-10-19).
     val fullBleed = backStackEntry?.destination.let {
-        it?.hasRoute(CaptureRoute::class) == true || it?.hasRoute(StudioRoute::class) == true
+        it?.hasRoute(CaptureRoute::class) == true || it?.hasRoute(StudioRoute::class) == true ||
+            it?.hasRoute(PostRoute::class) == true
     }
     Scaffold(
         modifier = Modifier.fillMaxSize(),

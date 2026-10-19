@@ -214,6 +214,12 @@ fun StageRailButton(
     }
 }
 
+/**
+ * A rail label: the compact count, zero included; the control's own name
+ * only when no count was sent (2026-10-19). Pure.
+ */
+fun stageCountLabel(count: Int?, noun: String): String = count?.let { formatCount(it) } ?: noun
+
 /** What a rail control announces: its name, then its label when that says something more. Pure. */
 fun stageControlDescription(description: String, label: String?): String = when (label) {
     null, description -> description

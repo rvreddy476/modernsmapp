@@ -1,7 +1,7 @@
 package com.us.android.feature.feed.ui.reels
 
 import com.us.android.core.model.FeedPostControls
-import com.us.android.core.ui.formatCount
+import com.us.android.core.ui.stageCountLabel
 
 /**
  * The rail's controls, in order, each with the label under its glyph
@@ -70,7 +70,7 @@ fun layeredSaves(serverSaves: Int?, serverSaved: Boolean, saved: Boolean): Int? 
 }
 
 /** The compact count, zero included; the control's own name only when no count was sent. */
-fun railCountLabel(count: Int?, noun: String): String = count?.let { formatCount(it) } ?: noun
+fun railCountLabel(count: Int?, noun: String): String = stageCountLabel(count, noun)
 
 /**
  * The author line under the reel: "@handle" when the account has one, the

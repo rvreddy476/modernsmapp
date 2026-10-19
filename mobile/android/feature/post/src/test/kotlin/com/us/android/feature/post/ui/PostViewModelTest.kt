@@ -176,6 +176,11 @@ class PostViewModelTest {
         ),
         engagement = com.us.android.core.engagement.data.EngagementStore(engagementRepository),
         engagementRepository = engagementRepository,
+        // No test plays a video: either would fail loudly if one were asked for.
+        playerFactory = object : com.us.android.core.media.PlayerFactory {
+            override fun create() = error("no video in this test")
+        },
+        mediaSources = com.us.android.core.media.MediaSources({ error("no video in this test") }, { error("no video in this test") }),
         savedStateHandle = SavedStateHandle(mapOf("postId" to "p")),
     )
 

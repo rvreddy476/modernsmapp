@@ -2,6 +2,7 @@ package com.us.android.feature.post.data
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.model.FeedDisclosure
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
 import com.us.android.core.model.PostViewerState
@@ -46,6 +47,8 @@ private fun PostDto.toDomain() = Post(
         comments = counts.comments,
         reposts = repostCount,
         views = viewCount,
+        shares = counts.shares,
+        saves = counts.saves,
     ),
     viewer = PostViewerState(
         isBookmarked = isBookmarked,
@@ -61,4 +64,7 @@ private fun PostDto.toDomain() = Post(
     allowsReactions = !noLikes,
     isRepostable = isRepostable,
     isPinned = isPinned,
+    hashtags = hashtags,
+    disclosure = FeedDisclosure(paidPromotion, isBranded, aiGenerated, linkUrl),
+    hideShare = hideShare,
 )

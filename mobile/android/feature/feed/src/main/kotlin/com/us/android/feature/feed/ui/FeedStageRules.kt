@@ -95,11 +95,7 @@ internal fun stageKind(item: FeedItem): StageKind = when {
  * partnership, a brand's own post, AI-made content. In that order; none
  * when nothing was declared.
  */
-internal fun disclosureLabels(disclosure: FeedDisclosure): List<String> = buildList {
-    if (disclosure.paidPromotion) add(PAID_PARTNERSHIP)
-    if (disclosure.isBranded) add(BRAND)
-    if (disclosure.aiGenerated) add(AI_GENERATED)
-}
+internal fun disclosureLabels(disclosure: FeedDisclosure): List<String> = disclosure.labels
 
 /**
  * Whether the screen is RESUMED — the feed plays only then. Backgrounding,

@@ -153,7 +153,19 @@ data class FeedDisclosure(
     val aiGenerated: Boolean = false,
     /** An https link the author attached, or null. */
     val linkUrl: String? = null,
-)
+) {
+    /**
+     * The small labels shown for what was declared: a paid partnership, a
+     * brand's own post, AI-made content. In that order; none when nothing was
+     * declared. Here so Home and the post viewer say the same words.
+     */
+    val labels: List<String>
+        get() = buildList {
+            if (paidPromotion) add("Paid partnership")
+            if (isBranded) add("Brand")
+            if (aiGenerated) add("AI-generated")
+        }
+}
 
 /**
  * A hydrated poll, delivered inline like everything else on a feed row.
