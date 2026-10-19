@@ -7,6 +7,7 @@ package com.us.android.core.ui
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -55,6 +56,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -224,8 +228,8 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
     ) {
-        // Follow sits ABOVE the avatar as one pill (founder, 2026-10-19): it
-        // replaced the "+" badge and the label under it, which said it twice.
+        // Follow sits ABOVE the avatar as one round button (founder,
+        // 2026-10-19): FOLLOW along the top half of its rim, a plus inside.
         author.badge?.let { badge -> StageFollowPill(badge = badge, modifier = Modifier.testTag("$tagPrefix:badge")) }
         val avatar = @Composable {
             UsAvatar(
@@ -251,37 +255,48 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
 }
 
 /** The pink Follow pill at the top of the rail: the badge's own words, white on pink. */
+/**
+ * The Follow button (founder, 2026-10-19): a pink circle with FOLLOW bent
+ * along the top half of its rim and a plus in the middle. Drawn on a 44-unit
+ * grid, the same numbers as the web's ReelRail mark, so both read alike.
+ */
 @Composable
 private fun StageFollowPill(badge: StageRailBadge, modifier: Modifier = Modifier) {
-    Box(
-        contentAlignment = Alignment.Center,
+    val ink = UsTheme.extended.onMedia
+    val word = remember {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            textAlign = android.graphics.Paint.Align.CENTER
+            letterSpacing = FOLLOW_WORD_TRACKING
+        }
+    }
+    val arc = remember { android.graphics.Path() }
+    Canvas(
         modifier = modifier
-            .height(FOLLOW_PILL_HEIGHT)
-            // Fully round, "+ Follow" (founder, 2026-10-19).
-            .clip(RoundedCornerShape(percent = 50))
+            .size(FOLLOW_BUTTON)
+            .clip(CircleShape)
             .background(UsTheme.extended.followBadge)
             .stagePressScale(badge.onClick)
             .clearAndSetSemantics {
                 contentDescription = badge.description
                 role = Role.Button
-            }
-            .padding(start = UsTheme.spacing.m, end = UsTheme.spacing.l),
+            },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
-            Icon(
-                imageVector = UsIcons.Create,
-                contentDescription = null,
-                tint = UsTheme.extended.onMedia,
-                modifier = Modifier.size(FOLLOW_PLUS),
-            )
-            Text(
-                text = badge.description,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.onMedia,
-                maxLines = 1,
-            )
+        val unit = size.width / FOLLOW_GRID
+        val centre = size.width / 2f
+        val radius = FOLLOW_ARC_RADIUS * unit
+        arc.reset()
+        arc.addArc(centre - radius, centre - radius, centre + radius, centre + radius, 180f, 180f)
+        word.color = ink.toArgb()
+        word.textSize = FOLLOW_WORD_SIZE * unit
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawTextOnPath("FOLLOW", arc, (Math.PI * radius / 2).toFloat(), 0f, word)
         }
+        val stroke = FOLLOW_PLUS_STROKE * unit
+        val plusY = FOLLOW_PLUS_CENTRE_Y * unit
+        val half = FOLLOW_PLUS_HALF * unit
+        drawLine(ink, Offset(centre, plusY - half), Offset(centre, plusY + half), stroke, StrokeCap.Round)
+        drawLine(ink, Offset(centre - half, plusY), Offset(centre + half, plusY), stroke, StrokeCap.Round)
     }
 }
 
@@ -888,14 +903,21 @@ private val RAIL_TARGET = 48.dp
 /** 26dp glyphs (was 30, founder 2026-10-19: smaller rail icons); the 48dp target stays. */
 private val RAIL_ICON = 26.dp
 private val AVATAR_RIM = 1.5.dp
-/** The Follow pill above the rail's avatar (2026-10-19). */
-private val FOLLOW_PILL_HEIGHT = 26.dp
+/** The round Follow button above the rail's avatar (2026-10-19). */
+private val FOLLOW_BUTTON = 44.dp
+/** Its drawing grid and marks, in grid units (web: ReelRail's 44-unit SVG). */
+private const val FOLLOW_GRID = 44f
+private const val FOLLOW_ARC_RADIUS = 14f
+private const val FOLLOW_WORD_SIZE = 7.5f
+private const val FOLLOW_WORD_TRACKING = 0.08f
+private const val FOLLOW_PLUS_CENTRE_Y = 26.5f
+private const val FOLLOW_PLUS_HALF = 5.5f
+private const val FOLLOW_PLUS_STROKE = 2.6f
 private val RING_STROKE = 3.dp
 private val RING_GAP = 2.dp
 /** 40dp (was 44, 2026-10-19), shrunk with the rail's glyphs. */
 /** The sound disc at the rail's foot, the creator's picture inside it: 48dp (2026-10-19: "increase it"). */
 private val DISC_SIZE = 48.dp
-private val FOLLOW_PLUS = 14.dp
 private val PLAYHEAD_HEIGHT = 2.dp
 /** 4dp (was 6) so the 40dp disc still shows the 32dp face whole. */
 private val DISC_RIM = 4.dp
