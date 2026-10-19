@@ -386,6 +386,14 @@ internal object UsColorTokens {
      * photos and video, so one value serves both themes.
      */
     val FollowBadge = Color(0xFFFE2C55)
+
+    /**
+     * The played part of every video progress bar: the Reels playhead line,
+     * the long-video seek bar and its thin line (founder, 2026-10-19: red
+     * everywhere, one token; the web's --theme-playhead). Over media, so one
+     * value serves both themes.
+     */
+    val Playhead = Color(0xFFDC2626)
     val ChatOnline = Color(0xFF4ADE80)
 
     /** The glyph or count ON chat's green (send, a badge): the web's ink, 8:1. White on it is 2.3:1. */

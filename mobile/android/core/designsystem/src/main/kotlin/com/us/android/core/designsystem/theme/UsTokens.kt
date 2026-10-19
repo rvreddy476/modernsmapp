@@ -48,6 +48,8 @@ data class UsExtendedColors(
     val chatAccent: Color,
     /** The pink Follow pill above a creator's avatar on the stage rail. */
     val followBadge: Color,
+    /** The red played part of every video progress bar. */
+    val playhead: Color,
     val chatOnline: Color,
     /** Presence: the web's success. */
     val onlineGreen: Color,
@@ -381,6 +383,7 @@ internal val DarkExtendedColors = UsExtendedColors(
     onBrandChip = UsColorTokens.OnBrandChip,
     chatAccent = UsColorTokens.ChatAccent,
     followBadge = UsColorTokens.FollowBadge,
+    playhead = UsColorTokens.Playhead,
     chatOnline = UsColorTokens.ChatOnline,
     onlineGreen = UsColorTokens.Dark.Success,
     liveRed = UsColorTokens.Dark.Danger,

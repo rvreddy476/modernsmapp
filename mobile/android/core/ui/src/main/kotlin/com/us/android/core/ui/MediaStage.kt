@@ -293,7 +293,7 @@ private fun StageFollowPill(badge: StageRailBadge, modifier: Modifier = Modifier
 @Composable
 fun StagePlayheadLine(progress: Float, modifier: Modifier = Modifier) {
     val track = UsTheme.extended.mediaTrack
-    val played = UsTheme.extended.onMedia
+    val played = UsTheme.extended.playhead
     Box(
         modifier = modifier
             .fillMaxWidth()

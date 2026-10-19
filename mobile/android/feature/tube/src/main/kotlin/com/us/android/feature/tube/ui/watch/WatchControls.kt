@@ -418,7 +418,7 @@ private fun SeekBar(playhead: Playhead, onSeekTo: (Long) -> Unit, modifier: Modi
     val buffered = playhead.bufferedFraction
     val track = UsTheme.extended.onMedia.copy(alpha = TRACK_ALPHA)
     val loaded = UsTheme.extended.onMedia.copy(alpha = BUFFERED_ALPHA)
-    val accent = UsTheme.extended.accentSolid
+    val accent = UsTheme.extended.playhead
     val duration = playhead.durationMs
     Canvas(
         modifier = modifier
@@ -453,7 +453,7 @@ private fun SeekBar(playhead: Playhead, onSeekTo: (Long) -> Unit, modifier: Modi
 @Composable
 private fun ProgressLine(playhead: Playhead, modifier: Modifier = Modifier) {
     val track = UsTheme.extended.onMedia.copy(alpha = TRACK_ALPHA)
-    val accent = UsTheme.extended.accentSolid
+    val accent = UsTheme.extended.playhead
     val played = playhead.playedFraction
     Canvas(
         modifier = modifier

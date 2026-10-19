@@ -132,14 +132,22 @@ class UsHeaderCornerTest {
     }
 
     @Test
-    fun `Reels and Tube draw their corners by walking the standard one`() {
-        val headers = listOf(
-            "feature/feed/src/main/kotlin/com/us/android/feature/feed/ui/reels/ReelsScreen.kt",
-            "feature/tube/src/main/kotlin/com/us/android/feature/tube/ui/TubeChrome.kt",
-        )
-        for (path in headers) {
-            assertThat(source(path)).contains("UsHeaderCorner.forEach { action ->")
-        }
+    fun `Tube draws its corner by walking the standard one`() {
+        assertThat(source("feature/tube/src/main/kotlin/com/us/android/feature/tube/ui/TubeChrome.kt"))
+            .contains("UsHeaderCorner.forEach { action ->")
+    }
+
+    /**
+     * 2026-10-19 (founder): Reels' header is the sound control, Clear screen
+     * and More on one line; no search and no bell on short videos. The bell
+     * stays on Home and long video.
+     */
+    @Test
+    fun `Reels draws no search and no bell`() {
+        val reels = source("feature/feed/src/main/kotlin/com/us/android/feature/feed/ui/reels/ReelsScreen.kt")
+        assertThat(reels).doesNotContain("UsHeaderCorner.forEach")
+        assertThat(reels).doesNotContain("UsHeaderCornerAction.SEARCH")
+        assertThat(reels).doesNotContain("UsHeaderCornerAction.NOTIFICATIONS")
     }
 
     /**
