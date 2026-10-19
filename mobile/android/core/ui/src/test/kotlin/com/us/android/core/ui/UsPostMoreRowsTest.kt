@@ -136,7 +136,6 @@ class UsPostMoreRowsTest {
         val labels = state(reason = "Trending").copy(reel = reel(canUseSound = true)).labels()
 
         assertThat(labels).containsExactly(
-            "Block channel",
             "Copy link",
             "Description",
             "Don't recommend this channel",
@@ -151,7 +150,6 @@ class UsPostMoreRowsTest {
         val labels = state(follow = UsPostMoreFollowRow.UNFOLLOW).copy(reel = reel(), longVideo = longVideo()).labels()
 
         assertThat(labels).containsExactly(
-            "Block channel",
             "Copy link",
             "Description",
             "Don't recommend this channel",
@@ -166,7 +164,7 @@ class UsPostMoreRowsTest {
         val labels = state(follow = UsPostMoreFollowRow.UNFOLLOW).labels()
 
         assertThat(labels).containsAtLeast("Report", "Unfollow @call_userb").inOrder()
-        assertThat(labels.first()).isEqualTo("Block @call_userb")
+        assertThat(labels.first()).isEqualTo("Copy link")
         assertThat(UsPostMoreRow.DONT_RECOMMEND.menuLabel("ada")).isEqualTo("Don't recommend @ada")
         assertThat(UsPostMoreRow.UNFOLLOW.menuLabel("ada")).isEqualTo("Unfollow @ada")
         assertThat(UsPostMoreRow.BLOCK.menuLabel("ada")).isEqualTo("Block @ada")
@@ -254,28 +252,29 @@ class UsPostMoreRowsTest {
             UsPostMoreRow.COPY_LINK,
             UsPostMoreRow.WHY,
             UsPostMoreRow.UNFOLLOW,
-            UsPostMoreRow.BLOCK,
             UsPostMoreRow.REPORT,
         )
     }
 
     /**
-     * The founder looked for Block and Report on his OWN reel (2026-09-04)
-     * and found them "missing": that is the rule, not a bug. Pinned both
-     * ways so neither side of it can drift.
+     * Report is offered on another person's post and never on the viewer's
+     * own (2026-09-04). Block is never on the sheet (founder, 2026-10-19): as
+     * on TikTok and YouTube it lives on the person's profile.
      */
     @Test
-    fun `block and report are offered on another person's post and never on the viewer's own`() {
+    fun `report is offered on another person's post only, and block never`() {
         for (follow in UsPostMoreFollowRow.entries) {
             val other = state(own = false, follow = follow).rows()
-            assertThat(other).containsAtLeast(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
+            assertThat(other).contains(UsPostMoreRow.REPORT)
+            assertThat(other).doesNotContain(UsPostMoreRow.BLOCK)
 
             val own = state(own = true, follow = follow).rows()
             assertThat(own).containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
         }
         // A video (a reel, a long video) follows the same rule.
         for (video in listOf(state().copy(reel = reel()), state().copy(longVideo = longVideo()))) {
-            assertThat(video.rows()).containsAtLeast(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
+            assertThat(video.rows()).contains(UsPostMoreRow.REPORT)
+            assertThat(video.rows()).doesNotContain(UsPostMoreRow.BLOCK)
             assertThat(video.copy(isOwnPost = true).rows()).containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
         }
     }
@@ -395,7 +394,6 @@ class UsPostMoreRowsTest {
 
     /** The rows the founder listed for another person's video; Share left More on 2026-10-19. */
     private val viewerRows = listOf(
-        UsPostMoreRow.BLOCK,
         UsPostMoreRow.COPY_LINK,
         UsPostMoreRow.DESCRIPTION,
         UsPostMoreRow.DONT_RECOMMEND,
@@ -445,7 +443,7 @@ class UsPostMoreRowsTest {
     }
 
     @Test
-    fun `another person's video offers exactly the founder's six rows, on a reel and on a long video`() {
+    fun `another person's video offers exactly the founder's five rows, on a reel and on a long video`() {
         val (onReel, onVideo) = bothVideos(state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "Trending"))
 
         assertThat(onReel.rows()).containsExactlyElementsIn(viewerRows).inOrder()

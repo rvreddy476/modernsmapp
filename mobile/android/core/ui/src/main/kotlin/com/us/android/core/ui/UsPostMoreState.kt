@@ -358,7 +358,8 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
         UsPostMoreFollowRow.FOLLOW -> add(UsPostMoreRow.FOLLOW)
         UsPostMoreFollowRow.HIDDEN -> Unit
     }
-    add(UsPostMoreRow.BLOCK)
+    // No Block here (founder, 2026-10-19): as on TikTok and YouTube, blocking
+    // is on the person's profile, not one tap away while scrolling.
     add(UsPostMoreRow.REPORT)
 }
 
@@ -367,10 +368,10 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
  * must be the same in Reels and in long videos"). One function, so the two
  * cannot drift again; [rows] puts it in alphabetical order:
  *
- *   Block channel · Copy link · Description · Don't recommend this channel ·
- *   Playback speed · Quality · Report
+ *   Copy link · Description · Don't recommend this channel · Playback speed ·
+ *   Quality · Report
  *
- * (2026-10-19: Not interested, Share and Save offline left the sheet.)
+ * (2026-10-19: Block, Not interested, Share and Save offline left the sheet.)
  *
  * Playback speed is listed when the host offers speeds (T-32, 2026-10-15:
  * both do), and Captions only when the video HAS caption tracks — a row that
@@ -414,7 +415,7 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
         add(UsPostMoreRow.DELETE)
         return@buildList
     }
-    add(UsPostMoreRow.BLOCK)
+    // No Block here (2026-10-19): it is on the channel's profile.
     // One "show me less" row (2026-10-19): Don't recommend; no Not interested.
     add(UsPostMoreRow.DONT_RECOMMEND)
     add(UsPostMoreRow.REPORT)
