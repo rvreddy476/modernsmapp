@@ -361,12 +361,14 @@ class StudioViewModel @Inject constructor(
     fun onImagesPicked(uris: List<Uri>) {
         viewModelScope.launch {
             var imported = 0
+            var firstAdded: String? = null
             // Bounded up front rather than checked mid-loop: the cap is a page
             // budget, and taking N slots then importing is one decision.
             val room = MAX_PAGES - session.current.pages.size
             for (uri in uris.take(room)) {
                 val assetId = importAsset(uri, origin = "photoPicker") ?: continue
                 apply(CreatorCommand.AddPage("p$assetId", "l$assetId", assetId))
+                if (firstAdded == null) firstAdded = "p$assetId"
                 imported++
             }
             if (imported == 0 && uris.isNotEmpty()) {
@@ -378,7 +380,9 @@ class StudioViewModel @Inject constructor(
             // emulator, not by a test, which is exactly why item 14 exists.
             refresh()
             _state.update { state ->
-                val landed = state.copy(selectedPageId = session.current.pages.lastOrNull()?.pageId)
+                // The FIRST photo of what was just added (2026-10-19): the editor
+                // opened on the last one, so a new post started on photo 2 of 2.
+                val landed = state.copy(selectedPageId = firstAdded ?: session.current.pages.lastOrNull()?.pageId)
                 // Pictures that arrived already edited go straight to Share.
                 // Checked HERE, not at the call site, because the import runs
                 // in this coroutine — at the call site the page list is still

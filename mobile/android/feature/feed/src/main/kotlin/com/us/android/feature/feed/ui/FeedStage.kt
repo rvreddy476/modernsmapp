@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -384,8 +385,13 @@ private fun HeaderTab(tab: FeedTab, active: Boolean, dot: Boolean, onClick: () -
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = UsTheme.spacing.xs)
+                    // Clear of the word's last letter, ringed so it reads on a
+                    // light photo (2026-10-19: 6dp on the "g" was easy to miss).
+                    .offset(x = DOT_SIZE / 2 + DOT_GAP, y = UsTheme.spacing.xs)
                     .size(DOT_SIZE)
+                    .clip(CircleShape)
+                    .background(UsTheme.extended.stage)
+                    .padding(DOT_RING)
                     .clip(CircleShape)
                     .background(UsTheme.extended.liveRed)
                     .testTag("home_tab_dot"),
@@ -401,5 +407,7 @@ internal val HEADER_HEIGHT = 48.dp
 private val RAIL_CLEARANCE = 80.dp
 private val UNDERLINE_HEIGHT = 2.dp
 private const val UNDERLINE_FRACTION = 0.6f
-private val DOT_SIZE = 6.dp
+private val DOT_SIZE = 9.dp
+private val DOT_RING = 1.5.dp
+private val DOT_GAP = 2.dp
 private const val VIDEO_CROP_HIGH = 1.35f

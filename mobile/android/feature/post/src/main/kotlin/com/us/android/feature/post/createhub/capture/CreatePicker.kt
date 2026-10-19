@@ -42,6 +42,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -112,7 +113,19 @@ fun CreatePicker(
             .testTag("create-picker"),
     ) {
         when (access) {
-            MediaAccess.Full, MediaAccess.Partial -> PickerBody(epoch = epoch, onClose = onClose, onResult = onResult, onCamera = onCamera)
+            MediaAccess.Full, MediaAccess.Partial -> PickerBody(
+                epoch = epoch,
+                onClose = onClose,
+                onResult = onResult,
+                onCamera = onCamera,
+                // Limited access (2026-10-19): say why the grid is short, and let
+                // the person pick more or allow all — asking again does that.
+                onManageAccess = if (access == MediaAccess.Partial) {
+                    { request.launch(wanted.toTypedArray()) }
+                } else {
+                    null
+                },
+            )
             MediaAccess.Denied -> Column(
                 modifier = Modifier.fillMaxSize().padding(UsTheme.spacing.xxl),
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l, Alignment.CenterVertically),
@@ -138,7 +151,13 @@ fun CreatePicker(
 
 @Suppress("LongMethod")
 @Composable
-private fun ColumnScope.PickerBody(epoch: Int, onClose: () -> Unit, onResult: (PickerResult) -> Unit, onCamera: (() -> Unit)?) {
+private fun ColumnScope.PickerBody(
+    epoch: Int,
+    onClose: () -> Unit,
+    onResult: (PickerResult) -> Unit,
+    onCamera: (() -> Unit)?,
+    onManageAccess: (() -> Unit)?,
+) {
     val context = LocalContext.current
     val all by produceState<List<PickerItem>?>(initialValue = null, epoch) {
         value = withContext(Dispatchers.IO) { queryPickerMedia(context) }
@@ -204,6 +223,7 @@ private fun ColumnScope.PickerBody(epoch: Int, onClose: () -> Unit, onResult: (P
             )
         }
     }
+    onManageAccess?.let { LimitedAccessBanner(onManage = it) }
     LazyVerticalGrid(
         columns = GridCells.Fixed(GRID_COLUMNS),
         horizontalArrangement = Arrangement.spacedBy(GRID_GAP),
@@ -361,6 +381,33 @@ internal fun loadThumb(context: Context, uri: Uri): ImageBitmap? = runCatching {
         null
     }
 }.getOrNull()
+
+/**
+ * The note over a limited grid: the person chose some photos only, so the
+ * grid shows those. "Manage" asks again, which offers picking more or
+ * allowing all.
+ */
+@Composable
+private fun LimitedAccessBanner(onManage: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.xs)
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.bgCardSolid)
+            .padding(start = UsTheme.spacing.l)
+            .testTag("create-picker-limited"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "You've allowed access to some photos and videos.",
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onManage, modifier = Modifier.testTag("create-picker-manage")) { Text("Manage") }
+    }
+}
 
 private const val GRID_COLUMNS = 3
 private const val RECENT_LIMIT = 300
