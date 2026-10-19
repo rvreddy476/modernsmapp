@@ -62,7 +62,6 @@ class UsPlayerRowsTest {
             "Playback speed",
             "Quality",
             "Report",
-            "Share",
             "Use this sound",
         ).inOrder()
     }

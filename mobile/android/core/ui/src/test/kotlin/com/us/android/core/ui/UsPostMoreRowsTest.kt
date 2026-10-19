@@ -143,7 +143,6 @@ class UsPostMoreRowsTest {
             "Not interested",
             "Quality",
             "Report",
-            "Share",
             "Use this sound",
         ).inOrder()
     }
@@ -160,7 +159,6 @@ class UsPostMoreRowsTest {
             "Not interested",
             "Quality",
             "Report",
-            "Share",
         ).inOrder()
     }
 
@@ -169,7 +167,7 @@ class UsPostMoreRowsTest {
     fun `a row about the author sorts by its own word, with the handle after it`() {
         val labels = state(follow = UsPostMoreFollowRow.UNFOLLOW).labels()
 
-        assertThat(labels).containsAtLeast("Share", "Unfollow @call_userb").inOrder()
+        assertThat(labels).containsAtLeast("Report", "Unfollow @call_userb").inOrder()
         assertThat(labels.first()).isEqualTo("Block @call_userb")
         assertThat(UsPostMoreRow.DONT_RECOMMEND.menuLabel("ada")).isEqualTo("Don't recommend @ada")
         assertThat(UsPostMoreRow.UNFOLLOW.menuLabel("ada")).isEqualTo("Unfollow @ada")
@@ -240,7 +238,6 @@ class UsPostMoreRowsTest {
             UsPostMoreRow.COPY_LINK,
             UsPostMoreRow.DELETE,
             UsPostMoreRow.SAVE,
-            UsPostMoreRow.SHARE,
         ).inOrder()
     }
 
@@ -257,7 +254,6 @@ class UsPostMoreRowsTest {
         assertThat(rows).containsExactly(
             UsPostMoreRow.SAVE,
             UsPostMoreRow.COPY_LINK,
-            UsPostMoreRow.SHARE,
             UsPostMoreRow.WHY,
             UsPostMoreRow.NOT_INTERESTED,
             UsPostMoreRow.UNFOLLOW,
@@ -302,13 +298,12 @@ class UsPostMoreRowsTest {
     }
 
     @Test
-    fun `the viewer's own post shows save, copy link, share and delete, and nothing about the author`() {
+    fun `the viewer's own post shows save, copy link and delete, and nothing about the author`() {
         val rows = state(own = true, reason = "Trending now", follow = UsPostMoreFollowRow.UNFOLLOW).rows()
 
         assertThat(rows).containsExactly(
             UsPostMoreRow.SAVE,
             UsPostMoreRow.COPY_LINK,
-            UsPostMoreRow.SHARE,
             UsPostMoreRow.DELETE,
         )
     }
@@ -323,7 +318,7 @@ class UsPostMoreRowsTest {
     @Test
     fun `a bookmarked post offers unsave in save's place`() {
         val saved = state(bookmarked = true).rows()
-        assertThat(saved).containsAtLeast(UsPostMoreRow.UNSAVE, UsPostMoreRow.COPY_LINK, UsPostMoreRow.SHARE)
+        assertThat(saved).containsAtLeast(UsPostMoreRow.UNSAVE, UsPostMoreRow.COPY_LINK)
         assertThat(saved).doesNotContain(UsPostMoreRow.SAVE)
 
         val unsaved = state(bookmarked = false).rows()
@@ -403,7 +398,7 @@ class UsPostMoreRowsTest {
 
     // ── A video's rows: a reel and a long video, ONE list (2026-10-02) ──
 
-    /** The eight rows the founder listed, for another person's video. */
+    /** The rows the founder listed for another person's video; Share left More on 2026-10-19. */
     private val viewerRows = listOf(
         UsPostMoreRow.BLOCK,
         UsPostMoreRow.COPY_LINK,
@@ -412,7 +407,6 @@ class UsPostMoreRowsTest {
         UsPostMoreRow.NOT_INTERESTED,
         UsPostMoreRow.QUALITY,
         UsPostMoreRow.REPORT,
-        UsPostMoreRow.SHARE,
     )
 
     /** A reel and the long video beside it, in the same state: what must not differ. */
@@ -457,7 +451,7 @@ class UsPostMoreRowsTest {
     }
 
     @Test
-    fun `another person's video offers exactly the founder's eight rows, on a reel and on a long video`() {
+    fun `another person's video offers exactly the founder's seven rows, on a reel and on a long video`() {
         val (onReel, onVideo) = bothVideos(state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "Trending"))
 
         assertThat(onReel.rows()).containsExactlyElementsIn(viewerRows).inOrder()
@@ -486,12 +480,11 @@ class UsPostMoreRowsTest {
             UsPostMoreRow.DELETE,
             UsPostMoreRow.DESCRIPTION,
             UsPostMoreRow.QUALITY,
-            UsPostMoreRow.SHARE,
         )
 
         assertThat(onReel.rows()).containsExactlyElementsIn(ownerRows).inOrder()
         assertThat(onVideo.rows()).containsExactlyElementsIn(ownerRows).inOrder()
-        assertThat(onReel.labels()).containsExactly("Copy link", "Delete", "Description", "Quality", "Share").inOrder()
+        assertThat(onReel.labels()).containsExactly("Copy link", "Delete", "Description", "Quality").inOrder()
     }
 
     /** The follow edge, the bookmark and the "why" sentence shape a feed post's menu. They do not shape a video's. */
@@ -547,17 +540,20 @@ class UsPostMoreRowsTest {
         )
     }
 
-    /** `hide_share`: the creator turned sharing off, so the row is absent, on both surfaces, for the owner too. */
+    /**
+     * Founder, 2026-10-19: Share is not a More row on any surface — a reel and
+     * a feed post have it on the rail, a long video on its action row.
+     */
     @Test
-    fun `a video with sharing off has no share row, on either surface`() {
-        val (onReel, onVideo) = bothVideos(state(), reel(shareHidden = true))
-
-        assertThat(onReel.rows()).isEqualTo(viewerRows - UsPostMoreRow.SHARE)
-        assertThat(onVideo.rows()).isEqualTo(viewerRows - UsPostMoreRow.SHARE)
-        // The watch screen's own flag is honoured as well.
-        assertThat(state().copy(reel = reel(), longVideo = longVideo(shareHidden = true)).rows())
-            .doesNotContain(UsPostMoreRow.SHARE)
-        assertThat(state(own = true).copy(reel = reel(shareHidden = true)).rows()).doesNotContain(UsPostMoreRow.SHARE)
+    fun `no more sheet offers share, whatever the surface or the share switch`() {
+        for (hidden in listOf(true, false)) {
+            val (onReel, onVideo) = bothVideos(state(), reel(shareHidden = hidden))
+            assertThat(onReel.rows()).doesNotContain(UsPostMoreRow.SHARE)
+            assertThat(onVideo.rows()).doesNotContain(UsPostMoreRow.SHARE)
+            assertThat(state(own = true).copy(reel = reel(shareHidden = hidden)).rows()).doesNotContain(UsPostMoreRow.SHARE)
+        }
+        assertThat(state().rows()).doesNotContain(UsPostMoreRow.SHARE)
+        assertThat(state(own = true).rows()).doesNotContain(UsPostMoreRow.SHARE)
     }
 
     /** What "Don't recommend" says once the server has it names the channel on a long video. */

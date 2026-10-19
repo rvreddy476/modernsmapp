@@ -63,7 +63,7 @@ import com.us.android.feature.tube.ui.pressScale
 import com.us.android.feature.tube.ui.videoMetaLine
 
 /** The row of actions under a video, in order: the web watch page's row. */
-enum class WatchActionKind { LIKE, DISLIKE, WATCH_LATER, ADD_TO_COLLECTION, SAVE, MORE }
+enum class WatchActionKind { LIKE, DISLIKE, WATCH_LATER, ADD_TO_COLLECTION, SAVE, SHARE, MORE }
 
 /** One control: what it reads and whether it is lit (the viewer has done it). */
 data class WatchAction(val kind: WatchActionKind, val label: String, val lit: Boolean = false)
@@ -89,23 +89,27 @@ fun watchViewerState(item: FeedItem, overlay: EngagementOverlay, library: VideoL
 )
 
 /**
- * Like · Dislike · Watch later · Add to collection · Save · More
+ * Like · Dislike · Watch later · Add to collection · Save · Share · More
  * (founder, 2026-10-02: the same row and the same words as the web's watch
  * page, RUTUBE's words). Like carries its count as the label when there is
  * one. Every control is always there; a lit one says so.
  *
  * Comment left this row (the "Comments" line under the description opens
- * them, as the web's section does) and Share moved into More, where the web
- * has it. Save is the one control the web's row does not have: the web saves
- * a long video through "Add to collection" only, while the app also keeps
+ * them, as the web's section does). Share came back to this row on
+ * 2026-10-19, when the founder took it out of every More menu; it is left out
+ * when the creator turned sharing off ([shareable] false).
+ *
+ * Save is the one control the web's row does not have: the web saves a long
+ * video through "Add to collection" only, while the app also keeps
  * the bookmark and its "Saved" list, so the control stays.
  */
-fun watchActions(likes: Int, viewer: WatchViewerState): List<WatchAction> = listOf(
+fun watchActions(likes: Int, viewer: WatchViewerState, shareable: Boolean = true): List<WatchAction> = listOfNotNull(
     WatchAction(WatchActionKind.LIKE, countLabel(likes, "Like"), lit = viewer.liked),
     WatchAction(WatchActionKind.DISLIKE, "Dislike", lit = viewer.disliked),
     WatchAction(WatchActionKind.WATCH_LATER, "Watch later", lit = viewer.queued),
     WatchAction(WatchActionKind.ADD_TO_COLLECTION, "Add to collection"),
     WatchAction(WatchActionKind.SAVE, if (viewer.saved) "Saved" else "Save", lit = viewer.saved),
+    WatchAction(WatchActionKind.SHARE, "Share").takeIf { shareable },
     WatchAction(WatchActionKind.MORE, "More"),
 )
 
@@ -119,7 +123,7 @@ fun WatchAction.description(): String = when (kind) {
     WatchActionKind.DISLIKE -> if (lit) "Remove dislike" else "Dislike"
     WatchActionKind.WATCH_LATER -> if (lit) "Remove from Watch later" else "Watch later"
     WatchActionKind.SAVE -> if (lit) "Remove from Saved" else "Save"
-    WatchActionKind.ADD_TO_COLLECTION, WatchActionKind.MORE -> label
+    WatchActionKind.ADD_TO_COLLECTION, WatchActionKind.SHARE, WatchActionKind.MORE -> label
 }
 
 private fun countLabel(count: Int, noun: String): String = if (count > 0) formatCount(count) else noun
@@ -139,6 +143,7 @@ class WatchDetailsActions(
     /** Opens the collection picker for the video. */
     val onAddToCollection: (FeedItem) -> Unit,
     val onBookmark: (FeedItem) -> Unit,
+    val onShare: (FeedItem) -> Unit,
     val onComment: (postId: String) -> Unit,
     val onMore: (FeedItem) -> Unit,
     val onOpenVideo: (FeedItem) -> Unit,
@@ -173,7 +178,7 @@ fun LazyListScope.watchDetails(
 ) {
     item(key = "title") { TitleBlock(item) }
     item(key = "author") { AuthorRow(item, subscription, actions) }
-    item(key = "actions") { ActionRow(item, watchActions(likes, viewer), actions) }
+    item(key = "actions") { ActionRow(item, watchActions(likes, viewer, shareable = !item.controls.hideShare), actions) }
     if (item.text.isNotBlank()) item(key = "description") { Description(item) }
     if (!item.controls.noComments) {
         item(key = "comments") { CommentsRow(count = item.counts.comments, onClick = { actions.onComment(item.id) }) }
@@ -327,6 +332,7 @@ private fun WatchDetailsActions.onTap(kind: WatchActionKind, item: FeedItem) = w
     WatchActionKind.WATCH_LATER -> onWatchLater(item)
     WatchActionKind.ADD_TO_COLLECTION -> onAddToCollection(item)
     WatchActionKind.SAVE -> onBookmark(item)
+    WatchActionKind.SHARE -> onShare(item)
     WatchActionKind.MORE -> onMore(item)
 }
 
@@ -425,6 +431,7 @@ private fun WatchAction.icon(): ImageVector = when (kind) {
     WatchActionKind.WATCH_LATER -> UsIcons.ListVideo
     WatchActionKind.ADD_TO_COLLECTION -> UsIcons.FolderPlus
     WatchActionKind.SAVE -> if (lit) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline
+    WatchActionKind.SHARE -> UsIcons.Share
     WatchActionKind.MORE -> UsIcons.More
 }
 

@@ -50,10 +50,11 @@ class UsOfflineRowsTest {
     private fun UsPostMoreState.offlineOnly(): List<UsPostMoreRow> = rows().filter { it in offlineRowSet }
 
     @Test
-    fun `a video that may be saved offers save offline alone`() {
+    fun `a video that may be saved offers no save offline row`() {
+        // Founder, 2026-10-19: "Save offline" is gone from the sheet.
         val rows = state(UsOfflineMoreState(UsOfflineAction.SAVE)).offlineOnly()
 
-        assertThat(rows).containsExactly(UsPostMoreRow.SAVE_OFFLINE)
+        assertThat(rows).isEmpty()
     }
 
     @Test
@@ -112,7 +113,7 @@ class UsOfflineRowsTest {
 
     @Test
     fun `the offline row sits in the sheet's alphabetical order`() {
-        val labels = state(UsOfflineMoreState(UsOfflineAction.SAVE)).labels()
+        val labels = state(UsOfflineMoreState(UsOfflineAction.REMOVE)).labels()
 
         assertThat(labels).containsExactly(
             "Block channel",
@@ -121,9 +122,8 @@ class UsOfflineRowsTest {
             "Don't recommend this channel",
             "Not interested",
             "Quality",
+            "Remove offline copy",
             "Report",
-            "Save offline",
-            "Share",
         ).inOrder()
         for (action in UsOfflineAction.entries) {
             assertThat(state(UsOfflineMoreState(action)).labels().map { it.lowercase() }).isInStrictOrder()
@@ -151,7 +151,6 @@ class UsOfflineRowsTest {
             "Not interested",
             "Quality",
             "Report",
-            "Share",
         ).inOrder()
     }
 

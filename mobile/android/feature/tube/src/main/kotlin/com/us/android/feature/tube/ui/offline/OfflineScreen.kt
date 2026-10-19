@@ -161,7 +161,7 @@ internal fun OfflineList(
             item(key = "empty") {
                 UsEmptyState(
                     title = "Nothing saved offline",
-                    detail = "Open More on a video or a reel and tap Save offline to watch it here with no connection.",
+                    detail = "Videos kept for watching with no connection appear here.",
                     modifier = Modifier
                         .padding(top = EMPTY_TOP)
                         .testTag("tube_offline_empty"),

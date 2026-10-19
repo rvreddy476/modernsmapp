@@ -327,7 +327,7 @@ internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = when (surface)
 /**
  * A feed post:
  *
- *  - Always: Save or Unsave, Copy link, Share.
+ *  - Always: Save or Unsave, Copy link. (Share is on the rail, not here — 2026-10-19.)
  *  - OTHER people's posts: "Why you're seeing this post" only when the
  *    server sent a sentence; Interested only for a suggestion; Not
  *    interested; "Don't recommend @user" (founder, 2026-09-04, from YouTube's
@@ -340,7 +340,7 @@ internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = when (surface)
 private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
     add(if (isBookmarked) UsPostMoreRow.UNSAVE else UsPostMoreRow.SAVE)
     add(UsPostMoreRow.COPY_LINK)
-    add(UsPostMoreRow.SHARE)
+    // No Share row (founder, 2026-10-19): the post's rail has Share.
     if (isOwnPost) {
         add(UsPostMoreRow.DELETE)
         return@buildList
@@ -405,7 +405,8 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
     if (reel?.speeds?.isNotEmpty() == true) add(UsPostMoreRow.PLAYBACK_SPEED)
     if (reel?.captions?.isNotEmpty() == true) add(UsPostMoreRow.CAPTIONS)
     if (reel?.autoScroll != null) add(UsPostMoreRow.AUTO_SCROLL)
-    if (!shareHidden) add(UsPostMoreRow.SHARE)
+    // No Share row (founder, 2026-10-19): a reel has Share on its rail, a
+    // long video on the action row under it.
     if (reel?.canUseSound == true) add(UsPostMoreRow.USE_SOUND)
     addAll(offlineRows())
     if (isOwnPost) {
@@ -435,7 +436,9 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
 internal fun UsPostMoreState.offlineRows(): List<UsPostMoreRow> {
     val state = offline ?: return emptyList()
     return when (state.action) {
-        UsOfflineAction.SAVE -> listOf(UsPostMoreRow.SAVE_OFFLINE)
+        // No "Save offline" any more (founder, 2026-10-19). A save already
+        // running can still be cancelled, and a stored copy removed.
+        UsOfflineAction.SAVE -> emptyList()
         UsOfflineAction.CANCEL -> listOf(UsPostMoreRow.CANCEL_OFFLINE)
         UsOfflineAction.REMOVE -> listOf(UsPostMoreRow.REMOVE_OFFLINE)
         UsOfflineAction.NONE -> emptyList()
@@ -455,9 +458,6 @@ fun offlineProgressText(offline: UsOfflineMoreState?): String {
 
 private const val PERCENT = 100
 
-/** The creator turned sharing off for this video, whichever surface it is on. */
-private val UsPostMoreState.shareHidden: Boolean
-    get() = reel?.shareHidden == true || longVideo?.shareHidden == true
 
 /**
  * What the row prints on THIS sheet, and therefore what it is sorted by.

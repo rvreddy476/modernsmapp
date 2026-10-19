@@ -48,12 +48,20 @@ class WatchActionsTest {
             WatchActionKind.WATCH_LATER,
             WatchActionKind.ADD_TO_COLLECTION,
             WatchActionKind.SAVE,
+            WatchActionKind.SHARE,
             WatchActionKind.MORE,
         ).inOrder()
         assertThat(actions.map { it.label })
-            .containsExactly("8.8K", "Dislike", "Watch later", "Add to collection", "Save", "More")
+            .containsExactly("8.8K", "Dislike", "Watch later", "Add to collection", "Save", "Share", "More")
             .inOrder()
         assertThat(actions.none { it.lit }).isTrue()
+    }
+
+    /** Share left the More sheet for this row (2026-10-19); the creator's share switch still takes it away. */
+    @Test
+    fun `share is on the row unless the creator turned sharing off`() {
+        assertThat(watchActions(1, nothing).map { it.kind }).contains(WatchActionKind.SHARE)
+        assertThat(watchActions(1, nothing, shareable = false).map { it.kind }).doesNotContain(WatchActionKind.SHARE)
     }
 
     @Test

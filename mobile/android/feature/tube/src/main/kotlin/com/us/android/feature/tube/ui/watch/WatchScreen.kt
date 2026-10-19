@@ -143,6 +143,8 @@ fun WatchScreen(
             onWatchLater = viewModel::onWatchLater,
             onAddToCollection = { sheets.collectionFor = it.id },
             onBookmark = viewModel::onBookmark,
+            // The row's Share (2026-10-19: out of More, onto the row).
+            onShare = onShare,
             onComment = { sheets.commentsFor = it },
             onMore = { sheets.moreFor = it },
             onOpenVideo = { viewModel.open(it.id) },
