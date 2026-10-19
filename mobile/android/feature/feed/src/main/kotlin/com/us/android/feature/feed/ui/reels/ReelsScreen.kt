@@ -12,6 +12,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
@@ -121,7 +124,7 @@ import com.us.android.core.ui.StagePausedGlyph
 import com.us.android.core.ui.StageRail
 import com.us.android.core.ui.StageRailAuthor
 import com.us.android.core.ui.StageRailBadge
-import com.us.android.core.ui.StageRailButton
+import com.us.android.core.ui.StageAuthorRow
 import com.us.android.core.ui.StageRailSound
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -1273,8 +1276,23 @@ private fun ReelPage(
                     onOpenHashtag = actions.onOpenHashtag,
                     onSoundLine = { actions.onSoundLine(item) },
                 ),
+                // Full mode: the picture, name and Follow in a row over the
+                // description, because the rail that carried them is gone.
+                authorRow = if (chrome.authorRow) reelAuthor(item, relationship, offersRelationship, actions, progress = null) else null,
+                // With the bar gone the page reaches the screen's bottom edge,
+                // so the description keeps clear of the gesture handle.
+                clearNavigationBar = !chrome.showBottomBar,
             )
         }
+
+        // Mute sits in the top corner (2026-10-19), not on the rail: with
+        // it the rail ran from mid-screen to the bar. It stays in full mode,
+        // because reels open muted and this is the way to hear one.
+        ReelMuteButton(
+            muted = view.muted,
+            onToggle = actions.onToggleMute,
+            modifier = Modifier.align(Alignment.TopEnd),
+        )
 
         // The rail sits on the right edge, clear of the caption, because that
         // is where a thumb rests while the other hand holds nothing. Putting
@@ -1293,7 +1311,6 @@ private fun ReelPage(
                 offersRelationship = offersRelationship,
                 soundLine = soundLine,
                 progress = progress,
-                muted = view.muted,
                 actions = actions,
             )
         }
@@ -1418,27 +1435,11 @@ private fun ReelRail(
     offersRelationship: Boolean,
     soundLine: SoundLine?,
     progress: Float,
-    muted: Boolean,
     actions: ReelActions,
     modifier: Modifier = Modifier,
 ) {
     StageRail(
-        author = StageRailAuthor(
-            name = item.creatorName,
-            seed = item.author.id,
-            onOpen = { actions.onOpenAuthor(item.author.id) },
-            badge = if (offersRelationship) {
-                StageRailBadge(relationship.label) {
-                    when (relationship) {
-                        is ReelRelationship.Follow -> actions.onFollow(relationship.ref)
-                        is ReelRelationship.Subscribe -> actions.onSubscribe(relationship.ref)
-                    }
-                }
-            } else {
-                null
-            },
-            progress = progress,
-        ),
+        author = reelAuthor(item, relationship, offersRelationship, actions, progress),
         controls = stageRailControls(
             item = item,
             overlay = overlay,
@@ -1457,13 +1458,56 @@ private fun ReelRail(
         },
         tagPrefix = "reel_rail",
         modifier = modifier.padding(end = UsTheme.spacing.m, bottom = RAIL_BOTTOM_INSET),
+    )
+}
+
+/** The reel's author for the rail's avatar and full mode's author row: the picture, and Follow when it is offered. */
+private fun reelAuthor(
+    item: FeedItem,
+    relationship: ReelRelationship,
+    offersRelationship: Boolean,
+    actions: ReelActions,
+    progress: Float?,
+) = StageRailAuthor(
+    name = item.creatorName,
+    seed = item.author.id,
+    onOpen = { actions.onOpenAuthor(item.author.id) },
+    badge = if (offersRelationship) {
+        StageRailBadge(relationship.label) {
+            when (relationship) {
+                is ReelRelationship.Follow -> actions.onFollow(relationship.ref)
+                is ReelRelationship.Subscribe -> actions.onSubscribe(relationship.ref)
+            }
+        }
+    } else {
+        null
+    },
+    progress = progress,
+)
+
+/**
+ * Mute / unmute in the page's top corner, under the header: a small dark
+ * disc so it reads over any frame.
+ */
+@Composable
+private fun ReelMuteButton(muted: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .statusBarsPadding()
+            .padding(top = OFFLINE_STATUS_TOP, end = UsTheme.spacing.pageHorizontal)
+            .size(MUTE_DISC)
+            .clip(CircleShape)
+            .background(UsTheme.extended.stage.copy(alpha = MUTE_DISC_ALPHA))
+            .clickable(role = Role.Button, onClickLabel = if (muted) "Unmute" else "Mute", onClick = onToggle)
+            .semantics { contentDescription = if (muted) "Unmute" else "Mute" }
+            .testTag("reel_mute"),
     ) {
-        StageRailButton(
-            icon = if (muted) UsIcons.SoundOff else UsIcons.SoundOn,
-            description = if (muted) "Unmute" else "Mute",
-            label = null,
-            onClick = actions.onToggleMute,
-            modifier = Modifier.testTag("reel_rail:mute"),
+        Icon(
+            imageVector = if (muted) UsIcons.SoundOff else UsIcons.SoundOn,
+            contentDescription = null,
+            tint = UsTheme.extended.onMedia,
+            modifier = Modifier.size(MUTE_GLYPH),
         )
     }
 }
@@ -1481,6 +1525,10 @@ private fun ReelOverlay(
     soundLine: SoundLine?,
     actions: ReelOverlayActions,
     modifier: Modifier = Modifier,
+    /** Full mode: draw the author as a row (picture, name, Follow) and leave the sound line out. */
+    authorRow: StageRailAuthor? = null,
+    /** The page runs to the screen's bottom edge: keep clear of the navigation bar. */
+    clearNavigationBar: Boolean = false,
 ) {
     StageCaption(
         state = StageCaptionState(
@@ -1490,15 +1538,22 @@ private fun ReelOverlay(
             title = reelTitle(item),
             text = item.text,
             hashtags = reelHashtags(item),
-            soundLabel = soundLine?.label,
+            soundLabel = soundLine?.label.takeIf { authorRow == null },
         ),
         onOpenAuthor = { actions.onOpenAuthor(item.author.id) },
         onOpenHashtag = actions.onOpenHashtag,
         onSound = actions.onSoundLine,
+        author = authorRow?.let { author -> { StageAuthorRow(author = author, tagPrefix = "reel_author_row") } },
         tagPrefix = "reel_overlay",
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = OVERLAY_SIDE, end = OVERLAY_RAIL_CLEARANCE, bottom = OVERLAY_BOTTOM),
+            .then(if (clearNavigationBar) Modifier.navigationBarsPadding() else Modifier)
+            // No rail in full mode, so the description may use the width.
+            .padding(
+                start = OVERLAY_SIDE,
+                end = if (authorRow == null) OVERLAY_RAIL_CLEARANCE else OVERLAY_SIDE,
+                bottom = OVERLAY_BOTTOM,
+            ),
     )
 }
 
@@ -1576,8 +1631,17 @@ private const val CHROME_ANIM_MILLIS = 200
 
 /** The bottom scrim covers the lowest 40% of the page. */
 
-/** The rail's bottom edge: 56dp up from the page's bottom. */
-private val RAIL_BOTTOM_INSET = 56.dp
+/**
+ * The rail's bottom edge: 12dp up from the page's bottom (was 56, which left
+ * a band of empty video above the bar — founder, 2026-10-19). The page
+ * already ends at the bar, so this is all the gap there is.
+ */
+private val RAIL_BOTTOM_INSET = 12.dp
+
+/** The mute disc in the top corner: 36dp, its glyph 20dp, the stage at 40%. */
+private val MUTE_DISC = 36.dp
+private val MUTE_GLYPH = 20.dp
+private const val MUTE_DISC_ALPHA = 0.4f
 
 /** 20dp between rail controls. */
 
@@ -1586,7 +1650,8 @@ private val RAIL_BOTTOM_INSET = 56.dp
 /** The label under each rail glyph: Figtree 11sp semibold, one line. */
 
 private val OVERLAY_SIDE = 16.dp
-private val OVERLAY_BOTTOM = 56.dp
+/** The description's bottom edge, level with the rail's (was 56dp). */
+private val OVERLAY_BOTTOM = 12.dp
 
 /** How far above the frame's bottom the caption line sits (T-32): over the author block, not on it. */
 private val CAPTIONS_LIFT = 160.dp

@@ -287,6 +287,70 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
 }
 
 /**
+ * Full mode's author line (founder, 2026-10-19): the picture, the name and
+ * a Follow pill side by side, above the description. The rail is hidden in
+ * full mode, so this is where the avatar and its Follow go.
+ */
+@Composable
+fun StageAuthorRow(
+    author: StageRailAuthor,
+    modifier: Modifier = Modifier,
+    tagPrefix: String = "stage_author",
+) {
+    Row(
+        modifier = modifier.testTag(tagPrefix),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    role = Role.Button,
+                    onClick = author.onOpen,
+                )
+                .testTag("$tagPrefix:open"),
+        ) {
+            UsAvatar(
+                name = author.name,
+                seed = author.seed,
+                imageUrl = author.imageUrl,
+                size = UsAvatarSize.Post,
+                contentDescription = "${author.name}, profile",
+                modifier = Modifier.border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape),
+            )
+            Text(
+                text = author.name,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.onMedia,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        author.badge?.let { badge ->
+            Text(
+                text = badge.description,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.onMedia,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(FOLLOW_PILL_RADIUS))
+                    .background(UsTheme.extended.followBadge)
+                    .clickable(role = Role.Button, onClick = badge.onClick)
+                    .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.s)
+                    .testTag("$tagPrefix:follow"),
+            )
+        }
+    }
+}
+
+/**
  * The playhead as a ring around the author's avatar: a faint white track,
  * and the accent arc starting at twelve o'clock and sweeping clockwise as
  * the video plays (Reels, founder 2026-09-05).
@@ -415,6 +479,12 @@ fun StageCaption(
     onSound: (() -> Unit)? = null,
     /** What sits directly above the caption: a carousel's dots. */
     above: @Composable ColumnScope.() -> Unit = {},
+    /**
+     * Full mode (founder, 2026-10-19): the rail is gone, so the author row —
+     * picture, name, Follow — takes the "@name · date" line's place. Null
+     * keeps the line.
+     */
+    author: (@Composable () -> Unit)? = null,
     tagPrefix: String = "stage_caption",
 ) {
     Column(
@@ -422,7 +492,7 @@ fun StageCaption(
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
     ) {
         above()
-        Row(
+        if (author != null) author() else Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
         ) {
@@ -833,7 +903,12 @@ private const val PRESS_SCALE = 0.85f
 private const val PRESS_STIFFNESS = 1200f
 private const val RING_START_ANGLE = -90f
 private const val FULL_SWEEP = 360f
-private val RAIL_GAP = 18.dp
+/**
+ * 12dp between rail items (was 18, 2026-10-19): with the avatar's Follow
+ * label the rail ran from mid-screen to the bar — too long next to TikTok's.
+ */
+private val RAIL_GAP = 12.dp
+private val FOLLOW_PILL_RADIUS = 6.dp
 private val RAIL_TARGET = 48.dp
 private val RAIL_ICON = 30.dp
 private val AVATAR_RIM = 1.5.dp

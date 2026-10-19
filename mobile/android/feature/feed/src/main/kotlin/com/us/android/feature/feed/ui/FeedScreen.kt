@@ -1,5 +1,6 @@
 package com.us.android.feature.feed.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -66,6 +67,7 @@ import com.us.android.core.model.FollowStatus
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
 import com.us.android.core.ui.EngagementFailureBar
+import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.LocalChromeVisibility
 import com.us.android.core.ui.StageTopScrim
@@ -110,6 +112,12 @@ fun FeedScreen(
     badge: UnreadBadgeViewModel = hiltViewModel(),
 ) {
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    // Full mode (founder, 2026-10-19): a double tap on a post leaves only its
+    // description and author row; the header, the rail and the bar go. Back
+    // or another double tap brings them back.
+    var fullMode by rememberSaveable { mutableStateOf(false) }
+    HideShellBottomBar(hidden = fullMode)
+    BackHandler(enabled = fullMode) { fullMode = false }
     val tab by viewModel.tab.collectAsStateWithLifecycle()
     val followingDot by viewModel.followingDot.collectAsStateWithLifecycle()
     val unread by badge.count.collectAsStateWithLifecycle()
@@ -144,21 +152,25 @@ fun FeedScreen(
                     underStatusBar = true,
                     reselected = reselected,
                     startOver = if (tab == FeedTab.FOLLOWING) followingStartOver else 0,
+                    fullMode = fullMode,
+                    onToggleFullMode = { fullMode = !fullMode },
                 )
             }
         }
-        StageTopScrim(modifier = Modifier.align(Alignment.TopCenter))
-        HomeStageHeader(
-            selected = tab,
-            followingDot = followingDot,
-            unreadCount = unread,
-            onSelect = { picked -> if (viewModel.selectTab(picked)) followingStartOver++ },
-            onOpenMore = { menuOpen = true },
-            onOpenMessages = onOpenMessages,
-            onOpenNotifications = onOpenNotifications,
-            onOpenSearch = onOpenSearch,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
+        if (!fullMode) {
+            StageTopScrim(modifier = Modifier.align(Alignment.TopCenter))
+            HomeStageHeader(
+                selected = tab,
+                followingDot = followingDot,
+                unreadCount = unread,
+                onSelect = { picked -> if (viewModel.selectTab(picked)) followingStartOver++ },
+                onOpenMore = { menuOpen = true },
+                onOpenMessages = onOpenMessages,
+                onOpenNotifications = onOpenNotifications,
+                onOpenSearch = onOpenSearch,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
+        }
     }
     if (menuOpen) {
         HomeMoreSheet(
@@ -215,6 +227,10 @@ internal fun FeedContent(
     reselected: Flow<Unit> = emptyFlow(),
     /** Bumped when the timeline was started over on a fresh generation: back to the first post. */
     startOver: Int = 0,
+    /** Home's full mode: pages draw only their description and author row. */
+    fullMode: Boolean = false,
+    /** A double tap on a page; null leaves double taps alone. */
+    onToggleFullMode: (() -> Unit)? = null,
     more: PostMoreViewModel = hiltViewModel(),
     playback: FeedPlaybackViewModel = hiltViewModel(),
     sharing: PostShareViewModel = hiltViewModel(),
@@ -349,6 +365,8 @@ internal fun FeedContent(
                                 pool = pool,
                                 callbacks = callbacks,
                                 onTogglePause = { paused = !paused },
+                                fullMode = fullMode,
+                                onToggleFullMode = onToggleFullMode,
                                 onOpenHashtag = onOpenHashtag,
                                 onOpenSound = onOpenSound,
                             )

@@ -148,19 +148,34 @@ data class ReelsChrome(
     val showAuthor: Boolean,
     /** The shell's bottom navigation bar. */
     val showBottomBar: Boolean,
+    /**
+     * The author as one horizontal row — picture, name, Follow — over the
+     * description, standing in for the rail's avatar while the rail is gone.
+     */
+    val authorRow: Boolean = false,
 ) {
     companion object {
         /** Everything. */
         val NORMAL = ReelsChrome(showHeader = true, showRail = true, showAuthor = true, showBottomBar = true)
 
-        /** The app's strips gone; the reel's own controls stay. */
-        val FULL = ReelsChrome(showHeader = false, showRail = true, showAuthor = true, showBottomBar = false)
+        /**
+         * Full mode (founder, 2026-10-19): only the description, with the
+         * picture, name and Follow in a row above it. The header, the rail
+         * and the bottom bar all go.
+         */
+        val FULL = ReelsChrome(
+            showHeader = false,
+            showRail = false,
+            showAuthor = true,
+            showBottomBar = false,
+            authorRow = true,
+        )
     }
 }
 
 /**
- * The one rule: normal shows everything; full hides the header and the
- * bottom bar and nothing else — the rail and the author block are always on.
+ * The one rule: normal shows everything; full keeps only the description
+ * and its author row.
  */
 fun ReelsMode.chrome(): ReelsChrome = when (this) {
     ReelsMode.NORMAL -> ReelsChrome.NORMAL

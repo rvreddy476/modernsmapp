@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -63,6 +64,7 @@ import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.core.ui.PostCardPoll
 import com.us.android.core.ui.PostCardPollOption
 import com.us.android.core.ui.PostPollBlock
+import com.us.android.core.ui.StageAuthorRow
 import com.us.android.core.ui.StageBottomScrim
 import com.us.android.core.ui.StageCaption
 import com.us.android.core.ui.StageCaptionState
@@ -113,17 +115,30 @@ internal fun FeedStagePage(
     onTogglePause: () -> Unit,
     onOpenHashtag: ((String) -> Unit)?,
     onOpenSound: ((String) -> Unit)?,
+    /** Full mode: only the description and its author row; no rail. */
+    fullMode: Boolean = false,
+    /** A double tap anywhere on the page switches full mode; null leaves double taps alone. */
+    onToggleFullMode: (() -> Unit)? = null,
 ) {
     val kind = stageKind(item)
     val carousel = rememberPagerState(pageCount = { state.pages.size })
+    val author = StageRailAuthor(
+        name = item.author.nameForDisplay,
+        seed = item.author.id,
+        onOpen = { callbacks.onOpenAuthor(item.author.id) },
+        badge = if (state.offersFollow) StageRailBadge("Follow") { callbacks.onFollow(item.author.id) } else null,
+    )
     Box(
         modifier = Modifier
             .fillMaxSize()
             .clipToBounds()
             .background(UsTheme.extended.stage)
-            .pointerInput(item.id, kind) {
+            .pointerInput(item.id, kind, onToggleFullMode) {
+                // A single tap waits out the double-tap window before it
+                // pauses, so a double tap is one mode change, not a pause too.
                 detectTapGestures(
                     onTap = { if (kind == StageKind.VIDEO) onTogglePause() },
+                    onDoubleTap = onToggleFullMode?.let { toggle -> { toggle() } },
                     onLongPress = { callbacks.onMore?.invoke(item) },
                 )
             }
@@ -179,7 +194,8 @@ internal fun FeedStagePage(
 
         StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
         StageCaption(
-            state = stageCaption(item, kind),
+            // Full mode keeps the description only: no sound line under it.
+            state = stageCaption(item, kind).let { if (fullMode) it.copy(soundLabel = null) else it },
             onOpenAuthor = { callbacks.onOpenAuthor(item.author.id) },
             onOpenHashtag = onOpenHashtag,
             onSound = item.sound?.let { sound -> onOpenSound?.let { open -> { open(sound.id) } } },
@@ -188,18 +204,24 @@ internal fun FeedStagePage(
                     StagePageDots(pageCount = state.pages.size, currentPage = carousel.currentPage)
                 }
             },
+            author = if (fullMode) {
+                { StageAuthorRow(author = author, tagPrefix = "feed_author_row") }
+            } else {
+                null
+            },
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .padding(start = UsTheme.spacing.xxl, end = RAIL_CLEARANCE, bottom = UsTheme.spacing.xxl),
+                // Full mode hides the bar, so the page reaches the gesture handle.
+                .then(if (fullMode) Modifier.navigationBarsPadding() else Modifier)
+                .padding(
+                    start = UsTheme.spacing.xxl,
+                    end = if (fullMode) UsTheme.spacing.xxl else RAIL_CLEARANCE,
+                    bottom = UsTheme.spacing.xxl,
+                ),
         )
-        StageRail(
-            author = StageRailAuthor(
-                name = item.author.nameForDisplay,
-                seed = item.author.id,
-                onOpen = { callbacks.onOpenAuthor(item.author.id) },
-                badge = if (state.offersFollow) StageRailBadge("Follow") { callbacks.onFollow(item.author.id) } else null,
-            ),
+        if (!fullMode) StageRail(
+            author = author,
             controls = stageRailControls(
                 item = item,
                 overlay = state.overlay,

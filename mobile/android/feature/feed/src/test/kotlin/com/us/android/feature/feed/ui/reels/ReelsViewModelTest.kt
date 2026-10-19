@@ -523,19 +523,20 @@ class ReelsViewModelTest {
             .isEqualTo(ReelsChrome(showHeader = true, showRail = true, showAuthor = true, showBottomBar = true))
     }
 
-    /** Full mode hides ONLY the app's strips — the header and the bottom bar; the rail and the author stay. */
+    /** Full mode (2026-10-19) keeps only the description, the author as a row over it: header, rail and bar go. */
     @Test
-    fun `full mode hides the header and the bottom bar and keeps the reel's own controls`() {
-        assertThat(ReelsMode.FULL.chrome())
-            .isEqualTo(ReelsChrome(showHeader = false, showRail = true, showAuthor = true, showBottomBar = false))
+    fun `full mode keeps only the description and its author row`() {
+        assertThat(ReelsMode.FULL.chrome()).isEqualTo(
+            ReelsChrome(showHeader = false, showRail = false, showAuthor = true, showBottomBar = false, authorRow = true),
+        )
     }
 
-    /** The rail and the author block are never hidden by any mode. */
+    /** No mode hides the description; the author row stands in exactly when the rail is gone. */
     @Test
-    fun `no mode hides the rail or the author block`() {
+    fun `no mode hides the description and the author row only replaces the rail`() {
         ReelsMode.entries.forEach { mode ->
-            assertThat(mode.chrome().showRail).isTrue()
             assertThat(mode.chrome().showAuthor).isTrue()
+            assertThat(mode.chrome().authorRow).isEqualTo(!mode.chrome().showRail)
         }
     }
 
