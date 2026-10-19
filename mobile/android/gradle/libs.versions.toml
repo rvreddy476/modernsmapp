@@ -115,7 +115,10 @@ securityCrypto            = "1.1.0"
 biometric                 = "1.1.0"
 # Prebuilt libwebrtc (Maven Central; Google stopped publishing their own
 # artifact). Powers the 1:1 direct-WebRTC call engine in :core:call.
-streamWebrtc              = "1.1.3"
+# 1.3.10's arm64-v8a/x86_64 libjingle_peerconnection_so.so is 16 KB
+# aligned (Play requires it for Android 15+); 1.1.3's was 4 KB. Check
+# with llvm-readelf -lW before ever pinning an older version.
+streamWebrtc              = "1.3.10"
 # LiveKit ships its own RELOCATED libwebrtc (livekit.org.webrtc), so it
 # coexists with stream-webrtc above rather than colliding on org.webrtc.
 livekit                   = "2.12.0"
