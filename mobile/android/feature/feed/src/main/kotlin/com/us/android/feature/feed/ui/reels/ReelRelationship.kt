@@ -28,8 +28,11 @@ sealed interface ReelRelationship {
         override val label: String get() = "Follow"
     }
 
+    // Says "Follow" too (founder, 2026-10-19): a channel subscription already
+    // includes the follow (12 Sep, "Subscribe = follow + notify, one button"),
+    // and one word on the rail reads the same on every reel.
     data class Subscribe(override val ref: String) : ReelRelationship {
-        override val label: String get() = "Subscribe"
+        override val label: String get() = "Follow"
     }
 }
 

@@ -118,7 +118,7 @@ data class StageRailAuthor(
     val progress: Float? = null,
 )
 
-/** The "+" badge: what it does, said for a screen reader ("Follow", "Subscribe"), and the tap. */
+/** The "+" badge: what it does, said for a screen reader ("Follow"), and the tap. */
 @Immutable
 data class StageRailBadge(val description: String, val onClick: () -> Unit)
 

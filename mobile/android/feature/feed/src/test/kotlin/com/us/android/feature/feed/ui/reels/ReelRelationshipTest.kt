@@ -35,11 +35,12 @@ class ReelRelationshipTest {
     )
 
     @Test
-    fun `a reel whose author has a channel offers Subscribe, keyed by the channel`() {
+    fun `a reel whose author has a channel subscribes, keyed by the channel, and says Follow`() {
         val relationship = reelRelationship(reel(FeedChannel(userId = "chan", name = "Ada's channel", handle = "ada")))
 
         assertThat(relationship).isEqualTo(ReelRelationship.Subscribe("chan"))
-        assertThat(relationship.label).isEqualTo("Subscribe")
+        // 2026-10-19: one word on the rail; the subscription includes the follow.
+        assertThat(relationship.label).isEqualTo("Follow")
     }
 
     @Test
