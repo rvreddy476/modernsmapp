@@ -188,6 +188,7 @@ internal fun ProfileMediaGrid(
     val failure = failing?.failure
     if (failing != null && failure != null) {
         PublishFailureSheet(
+            title = failing.failureTitle,
             failure = failure,
             onRetry = {
                 failureKey = null
@@ -844,6 +845,7 @@ private fun DrawScope.drawRing(track: Color, played: Brush, sweep: Float) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PublishFailureSheet(
+    title: String,
     failure: ReelPublishState.Failed,
     onRetry: () -> Unit,
     onDiscard: () -> Unit,
@@ -868,7 +870,7 @@ private fun PublishFailureSheet(
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
             Text(
-                text = "Couldn't post your video",
+                text = title,
                 style = MaterialTheme.typography.titleLarge.copy(fontSize = SHEET_TITLE_SIZE),
                 fontWeight = FontWeight.Bold,
                 color = UsTheme.extended.textPrimary,

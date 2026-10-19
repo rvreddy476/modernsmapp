@@ -10,7 +10,7 @@ import org.junit.Test
  * drift from them:
  *
  *  - a count is the label where there is one, the control's name where
- *    there is not — "8.8K" over "Like", never "0";
+ *    there is not — "8.8K", and "0" at zero; a name only for a count never sent;
  *  - share and save carry their counts too, when the row sends them
  *    (2026-09-30), and a count the row never gave is never invented;
  *  - `hide_share` removes Share, `no_comments` removes Comment, and nothing
@@ -33,10 +33,10 @@ class ReelRailTest {
     ) = railControls(controls, likes, comments, saved, shares, saves)
 
     @Test
-    fun `the rail is like, comment, save, share with their names when there is nothing to count`() {
+    fun `the rail is like, comment, save, share, zero shows as 0 and an unsent count as the name`() {
         assertThat(rail().map { it.kind to it.label }).containsExactly(
-            RailKind.LIKE to "Like",
-            RailKind.COMMENT to "Comment",
+            RailKind.LIKE to "0",
+            RailKind.COMMENT to "0",
             RailKind.SAVE to "Save",
             RailKind.SHARE to "Share",
         ).inOrder()
@@ -51,9 +51,10 @@ class ReelRailTest {
     }
 
     @Test
-    fun `a count label falls back to the noun at zero and below`() {
-        assertThat(railCountLabel(0, "Like")).isEqualTo("Like")
-        assertThat(railCountLabel(-3, "Comment")).isEqualTo("Comment")
+    fun `a count label shows zero as 0 and falls back to the noun only when no count was sent`() {
+        assertThat(railCountLabel(0, "Like")).isEqualTo("0")
+        assertThat(railCountLabel(-3, "Comment")).isEqualTo("0")
+        assertThat(railCountLabel(null, "Share")).isEqualTo("Share")
         assertThat(railCountLabel(1, "Like")).isEqualTo("1")
         assertThat(railCountLabel(999, "Like")).isEqualTo("999")
         assertThat(railCountLabel(1_000, "Like")).isEqualTo("1K")
@@ -74,10 +75,10 @@ class ReelRailTest {
     }
 
     @Test
-    fun `a share or save count of zero, or none at all, falls back to the control's name`() {
+    fun `a share or save count of zero shows 0, and only a count never sent falls back to the name`() {
         val zero = rail(shares = 0, saves = 0).associate { it.kind to it.label }
-        assertThat(zero[RailKind.SHARE]).isEqualTo("Share")
-        assertThat(zero[RailKind.SAVE]).isEqualTo("Save")
+        assertThat(zero[RailKind.SHARE]).isEqualTo("0")
+        assertThat(zero[RailKind.SAVE]).isEqualTo("0")
 
         val absent = rail(saved = true).associate { it.kind to it.label }
         assertThat(absent[RailKind.SHARE]).isEqualTo("Share")

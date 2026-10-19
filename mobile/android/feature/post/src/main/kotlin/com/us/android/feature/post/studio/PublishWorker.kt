@@ -62,6 +62,7 @@ class PublishWorker @AssistedInject constructor(
     private val store: ProjectStore,
     private val vault: SourceVault,
     private val tracker: ReelPublishTracker,
+    private val records: PhotoPublishRecords,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
@@ -82,6 +83,7 @@ class PublishWorker @AssistedInject constructor(
 
         return when (val outcome = publisher.publish(projectId, details) { report(it) }) {
             is CreatorPublisher.PublishResult.Published -> {
+                records.remove(projectId)
                 tracker.update(projectId, ReelPublishState.Published(outcome.postId))
                 Result.success(workDataOf(KEY_POST_ID to outcome.postId))
             }
@@ -93,12 +95,12 @@ class PublishWorker @AssistedInject constructor(
                     // The checkpoints hold: nothing is lost, and the Studio's
                     // failure state offers a manual retry with the same
                     // operation and the same bytes.
-                    tracker.update(projectId, failure(outcome.reason, retryable = true))
+                    giveUp(projectId, failure(outcome.reason, retryable = true), details)
                     Result.failure(reason(outcome.reason))
                 }
 
             is CreatorPublisher.PublishResult.Failed -> {
-                tracker.update(projectId, failure(outcome.reason, retryable = false))
+                giveUp(projectId, failure(outcome.reason, retryable = false), details)
                 Result.failure(reason(outcome.reason))
             }
         }
@@ -123,6 +125,15 @@ class PublishWorker @AssistedInject constructor(
             CreatorPublisher.PublishProgress.CreatingPost -> ReelPublishState.Posting
         }
         tracker.update(projectId, state)
+    }
+
+    /**
+     * The tile shows the failure now, and the record keeps it — with the
+     * details — so a restart brings the tile and its Retry back (2026-10-19).
+     */
+    private suspend fun giveUp(projectId: String, failed: ReelPublishState.Failed, details: PostDetails) {
+        records.fail(projectId, PendingPhotoFailure(failed.message, failed.retryable), details)
+        tracker.update(projectId, failed)
     }
 
     private fun fraction(halfPagesDone: Int, totalPages: Int): Float =

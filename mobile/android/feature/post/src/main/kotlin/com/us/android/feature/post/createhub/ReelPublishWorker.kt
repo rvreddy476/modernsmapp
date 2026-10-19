@@ -11,11 +11,17 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.us.android.core.common.di.ApplicationScope
+import com.us.android.core.creator.engine.ProjectStore
+import com.us.android.core.creator.engine.SourceVault
+import com.us.android.core.creator.model.AndroidCreatorProject
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishPreview
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.feature.post.studio.PendingPhotoPublish
+import com.us.android.feature.post.studio.PhotoPublishRecords
 import com.us.android.feature.post.studio.PublishWorker
+import com.us.android.feature.post.studio.studioPublishPreview
 import dagger.Binds
 import dagger.Module
 import dagger.assisted.Assisted
@@ -169,10 +175,16 @@ class ReelPublishController @Inject constructor(
     private val tracker: ReelPublishTracker,
     private val discards: ReelPublishDiscards,
     @ApplicationScope private val scope: CoroutineScope,
+    private val photos: PhotoPublishRecords,
+    private val projects: ProjectStore,
+    private val vault: SourceVault,
 ) : ReelPublishLauncher, ReelPublishActions {
 
     init {
-        scope.launch { restore() }
+        scope.launch {
+            restore()
+            restorePhotos()
+        }
     }
 
     override suspend fun enqueue(pending: PendingReelPublish) {
@@ -211,6 +223,7 @@ class ReelPublishController @Inject constructor(
                 // reopens the most recent editable project, so discarding the
                 // upload does not throw away the edit behind it.
                 WorkManager.getInstance(context).cancelUniqueWork(PublishWorker.uniqueName(creationKey))
+                photos.remove(creationKey)
                 tracker.reset(creationKey)
                 return@launch
             }
@@ -220,9 +233,42 @@ class ReelPublishController @Inject constructor(
         }
     }
 
-    private fun retryPhoto(creationKey: String) {
+    private suspend fun retryPhoto(creationKey: String) {
+        // The details saved when Post was pressed: a retry without them
+        // published the photos with no title and the default audience.
+        val record = photos.load(creationKey) ?: PendingPhotoPublish(creationKey)
+        photos.save(record.copy(failure = null))
         tracker.update(creationKey, ReelPublishState.Preparing)
-        PublishWorker.enqueue(context, creationKey)
+        PublishWorker.enqueue(context, creationKey, record.details)
+    }
+
+    /**
+     * Photo publishes after a process restart (2026-10-19): a failed one shows
+     * its failure and Retry again; one whose work was lost is enqueued again
+     * with its details; one whose work is alive reports itself.
+     */
+    private suspend fun restorePhotos() {
+        val manager = WorkManager.getInstance(context)
+        photos.loadAll().forEach { record ->
+            val key = record.projectId
+            val project = (projects.load(key) as? ProjectStore.LoadResult.Loaded)?.project
+            // Gone, or published by a run that died before clearing its record:
+            // nothing is left to publish, and a re-run would only report a failure.
+            if (project == null || project.status == AndroidCreatorProject.STATUS_PUBLISHED) {
+                photos.remove(key)
+                return@forEach
+            }
+            if (tracker.previewOf(key) == null) tracker.setPreview(studioPublishPreview(project, vault))
+            val failure = record.failure
+            if (failure != null) {
+                tracker.restoreIfIdle(key, ReelPublishState.Failed(failure.message, failure.retryable))
+            } else {
+                val alive = manager.getWorkInfosForUniqueWorkFlow(PublishWorker.uniqueName(key)).first()
+                    .any { !it.state.isFinished }
+                if (!alive) PublishWorker.enqueue(context, key, record.details)
+                tracker.restoreIfIdle(key, ReelPublishState.Preparing)
+            }
+        }
     }
 
     override fun dismiss(creationKey: String) = tracker.dismiss(creationKey)

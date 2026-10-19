@@ -108,6 +108,10 @@ data class PendingVideoTile(
 
     /** "Scheduled · 6 Sep 18:30", when there is a schedule to say. */
     val scheduleLabel: String? get() = PublishSchedule.tileLabel(publishAt)
+
+    /** The failure sheet's title: a photo post is not a video (2026-10-19). */
+    val failureTitle: String
+        get() = if (tab == ProfileGridTab.POSTS) "Couldn't post your photos" else "Couldn't post your video"
 }
 
 /** A post the server is holding until its `publish_at` (2026-09-05): drawn with a clock until then. */

@@ -219,4 +219,15 @@ class ProfileGridTest {
         assertThat(scheduled.scheduleLabel).contains("Sep")
         assertThat(broken.scheduleLabel).isNull()
     }
+
+    /** 2026-10-19: a failed photo post said "Couldn't post your video". */
+    @Test
+    fun `the failure sheet names photos for a post and video for the video tabs`() {
+        val failed = ReelPublishState.Failed("That didn't finish uploading. Try again.", retryable = true)
+        fun tile(tab: ProfileGridTab) = PendingVideoTile("k", null, "", failed, tab)
+
+        assertThat(tile(ProfileGridTab.POSTS).failureTitle).isEqualTo("Couldn't post your photos")
+        assertThat(tile(ProfileGridTab.REELS).failureTitle).isEqualTo("Couldn't post your video")
+        assertThat(tile(ProfileGridTab.VIDEOS).failureTitle).isEqualTo("Couldn't post your video")
+    }
 }

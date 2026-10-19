@@ -7,11 +7,11 @@ import com.us.android.core.ui.formatCount
  * The rail's controls, in order, each with the label under its glyph
  * (founder, 2026-09-04, from YouTube Shorts: every control names itself).
  *
- * Like and Comment carry their COUNT as the label — "8.8K" — and fall back
- * to the noun when there is nothing to count, because "0" under a heart
- * reads as a score and "Like" reads as an invitation. Share and Save carry
- * theirs too WHEN THE ROW SENDS ONE (2026-09-30, as the web's rail does);
- * a row that does not say reads "Share", and "Save" or "Saved". Share
+ * Every control carries its COUNT as the label — "8.8K", and "0" on a new
+ * post (founder, 2026-10-19: the reference rail shows the number, never the
+ * word). Share and Save have one only WHEN THE ROW SENDS IT (2026-09-30, as
+ * the web's rail does); a row that does not say reads "Share", and "Save" or
+ * "Saved", rather than claiming a zero nobody counted. Share
  * follows the author's `hide_share` switch (see [railVisibility]). Mute is not in this list: it sits under the rail
  * without a label, a setting rather than an action on the reel.
  *
@@ -48,8 +48,8 @@ fun railControls(
     return buildList {
         add(RailControl(RailKind.LIKE, railCountLabel(likes, "Like")))
         if (visible.showComment) add(RailControl(RailKind.COMMENT, railCountLabel(comments, "Comment")))
-        add(RailControl(RailKind.SAVE, railCountLabel(saves ?: 0, if (saved) "Saved" else "Save")))
-        if (visible.showShare) add(RailControl(RailKind.SHARE, railCountLabel(shares ?: 0, "Share")))
+        add(RailControl(RailKind.SAVE, railCountLabel(saves, if (saved) "Saved" else "Save")))
+        if (visible.showShare) add(RailControl(RailKind.SHARE, railCountLabel(shares, "Share")))
     }
 }
 
@@ -69,8 +69,8 @@ fun layeredSaves(serverSaves: Int?, serverSaved: Boolean, saved: Boolean): Int? 
     return (count + delta).coerceAtLeast(0)
 }
 
-/** The compact count when there is one, the control's own name when there is not. */
-fun railCountLabel(count: Int, noun: String): String = if (count > 0) formatCount(count) else noun
+/** The compact count, zero included; the control's own name only when no count was sent. */
+fun railCountLabel(count: Int?, noun: String): String = count?.let { formatCount(it) } ?: noun
 
 /**
  * The author line under the reel: "@handle" when the account has one, the

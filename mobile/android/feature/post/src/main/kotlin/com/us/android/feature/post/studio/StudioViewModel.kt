@@ -89,6 +89,7 @@ class StudioViewModel @Inject constructor(
     private val drafts: PostDraftsRepository,
     private val lookups: ReelLookups,
     private val recentLocations: RecentLocations,
+    private val publishRecords: PhotoPublishRecords,
 ) : ViewModel() {
 
     /**
@@ -323,8 +324,12 @@ class StudioViewModel @Inject constructor(
         // here added the fresh shot to an abandoned project's pages
         // (2026-10-19). The abandoned project stays saved and is resumed the
         // next time the studio opens with nothing handed to it.
+        // A project handed to the publish queue is not work in progress, even
+        // while it is still "editing" because its upload failed: its tile on
+        // the profile owns it (Retry or Discard), not this editor.
+        val queued = publishRecords.loadAll().map { it.projectId }.toSet()
         val existing = if (initialUris.isNotEmpty()) null else store.all()
-            .firstOrNull { it.status == AndroidCreatorProject.STATUS_EDITING }
+            .firstOrNull { it.status == AndroidCreatorProject.STATUS_EDITING && it.projectId !in queued }
         val project = existing?.let {
             (store.load(it.projectId) as? ProjectStore.LoadResult.Loaded)?.project
         } ?: newProject()
@@ -610,11 +615,10 @@ class StudioViewModel @Inject constructor(
             store.save(session.current, System.currentTimeMillis())
             tracker.setPreview(studioPublishPreview(session.current, vault))
             tracker.update(session.current.projectId, ReelPublishState.Preparing)
-            PublishWorker.enqueue(
-                appContext,
-                session.current.projectId,
-                current.details.toDetails(current.postText, current.pages.size),
-            )
+            val details = current.details.toDetails(current.postText, current.pages.size)
+            // Durable before the worker starts, so a failure and its Retry survive a restart.
+            publishRecords.save(PendingPhotoPublish(session.current.projectId, details))
+            PublishWorker.enqueue(appContext, session.current.projectId, details)
             _state.update { it.copy(publish = PublishUi.Publishing, handedOff = true) }
         }
     }
