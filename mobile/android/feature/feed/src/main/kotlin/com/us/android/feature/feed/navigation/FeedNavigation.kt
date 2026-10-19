@@ -123,8 +123,6 @@ data object ReelsRoute
 fun NavGraphBuilder.reelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
-    /** The header's search glyph over the video; `:app` decides it opens Explore. */
-    onOpenSearch: () -> Unit,
     /** A hashtag chip under a reel; `:app` pushes [HashtagPostsRoute] for it. */
     onOpenHashtag: (tag: String) -> Unit,
     /** A reel's sound line; `:app` pushes [SoundRoute] for it. */
@@ -142,19 +140,15 @@ fun NavGraphBuilder.reelsScreen(
      * same reason.
      */
     onOpenOffline: () -> Unit,
-    /** The header's bell (2026-10-02): `:app` pushes the notification list, as Home's bell does. */
-    onOpenNotifications: () -> Unit,
 ) {
     composable<ReelsRoute> {
         ReelsScreen(
             pool = pool,
             onOpenAuthor = onOpenAuthor,
-            onOpenSearch = onOpenSearch,
             onOpenHashtag = onOpenHashtag,
             onOpenSound = onOpenSound,
             onCreateWithSound = onCreateWithSound,
             onOpenOffline = onOpenOffline,
-            onOpenNotifications = onOpenNotifications,
         )
     }
 }

@@ -76,12 +76,9 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.common.time.formatRelativeTime
-import com.us.android.core.designsystem.component.UsBadgedIcon
-import com.us.android.core.designsystem.component.UsHeaderCorner
 import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsMessageHost
-import com.us.android.core.designsystem.component.usNotificationsDescription
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
@@ -110,7 +107,6 @@ import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.canUseSound
-import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.PLAYBACK_SPEEDS
@@ -214,8 +210,6 @@ import kotlinx.coroutines.launch
 fun ReelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
-    /** The header's search glyph. Required: a header glyph that does nothing must not ship again. */
-    onOpenSearch: () -> Unit,
     /** A hashtag chip under the reel's title; `:app` pushes that tag's posts. */
     onOpenHashtag: (tag: String) -> Unit,
     /** The reel's sound line; `:app` pushes that sound's page. */
@@ -224,18 +218,12 @@ fun ReelsScreen(
     onCreateWithSound: () -> Unit,
     /** The header's More with no reel to describe (the feed did not load): `:app` pushes what this device keeps. */
     onOpenOffline: () -> Unit,
-    /** The header's bell. Required for the reason [onOpenSearch] is. */
-    onOpenNotifications: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     sound: ReelSoundViewModel = hiltViewModel(),
-    // The same count Home's bell shows: one singleton behind both, refreshed when the page appears.
-    badge: UnreadBadgeViewModel = hiltViewModel(),
     // The Share sheet's (2026-10-17): the screen's, so "Sent" is read over the reel after the sheet has gone.
     sharing: PostShareViewModel = hiltViewModel(),
 ) {
-    val unread by badge.count.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { badge.refresh() }
     val head by viewModel.head.collectAsStateWithLifecycle()
     val view = rememberReelsViewState(viewModel)
     val chrome = view.chrome
@@ -328,9 +316,8 @@ fun ReelsScreen(
             // With no reel to open the sheet for (the feed did not load, as with no
             // network), More goes straight to what the device keeps.
             onOpenMenu = { settledReel?.let { moreFor = it } ?: onOpenOffline() },
-            onOpenSearch = onOpenSearch,
-            unreadCount = unread,
-            onOpenNotifications = onOpenNotifications,
+            muted = view.muted,
+            onToggleMute = viewModel::toggleMuted,
         )
         ReelsMessages(viewModel = viewModel, more = more, sharing = sharing)
     }
@@ -681,9 +668,8 @@ private fun BoxScope.ScreenChrome(
     paused: Boolean,
     showHeader: Boolean,
     onOpenMenu: () -> Unit,
-    onOpenSearch: () -> Unit,
-    unreadCount: Int,
-    onOpenNotifications: () -> Unit,
+    muted: Boolean,
+    onToggleMute: () -> Unit,
 ) {
     AnimatedVisibility(
         visible = paused,
@@ -701,31 +687,36 @@ private fun BoxScope.ScreenChrome(
         exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
     ) {
         ReelsHeader(
-            unreadCount = unreadCount,
             onOpenMenu = onOpenMenu,
-            onOpenSearch = onOpenSearch,
-            onOpenNotifications = onOpenNotifications,
             modifier = Modifier.testTag("reels_header"),
         )
     }
+    // The sound control on the header's line, at the left (founder,
+    // 2026-10-19): one for the screen, not one per reel. It stays in full
+    // mode, where the header has gone, because reels open muted and this is
+    // the way to hear one.
+    StageVolumeControl(
+        muted = muted,
+        onToggleMute = onToggleMute,
+        tagPrefix = "reel_volume",
+        modifier = Modifier
+            .align(Alignment.TopStart)
+            .statusBarsPadding()
+            .padding(start = UsTheme.spacing.l, top = SOUND_ROW_TOP),
+    )
 }
 
 /**
- * Three white glyphs over the translucent top scrim: search, the bell with
- * its unread count, and then, at the corner, the three-dots More, which
- * opens the settled reel's More sheet. The order and the glyphs are
- * [UsHeaderCorner]'s (founder, 2026-10-02: Search, Notifications, More at
- * the corner, the same on every page but Home). No wordmark (over a video
- * the brand is the video) and no messages: that one stays on Home's
- * header. The same [UsHomeTopBar] as Home so the scrim, the height and the
+ * The header over a reel: the sound control at the left (drawn by
+ * [ScreenChrome]) and the three-dots More at the corner, which opens the
+ * settled reel's More sheet. No search and no bell on Reels (founder,
+ * 2026-10-19: notifications live on Home and long video only). No wordmark
+ * (over a video the brand is the video) and no messages. The same [UsHomeTopBar] as Home so the scrim, the height and the
  * status-bar padding are one drawing, not two.
  */
 @Composable
 private fun ReelsHeader(
-    unreadCount: Int,
     onOpenMenu: () -> Unit,
-    onOpenSearch: () -> Unit,
-    onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     UsHomeTopBar(
@@ -733,32 +724,12 @@ private fun ReelsHeader(
         translucent = true,
         showWordmark = false,
         actions = {
-            UsHeaderCorner.forEach { action ->
-                val (onClick, tag) = when (action) {
-                    UsHeaderCornerAction.SEARCH -> onOpenSearch to "reels_header:search"
-                    UsHeaderCornerAction.NOTIFICATIONS -> onOpenNotifications to "reels_header:notifications"
-                    UsHeaderCornerAction.MORE -> onOpenMenu to "reels_header:menu"
-                    // Home's alone; the standard corner never carries it.
-                    UsHeaderCornerAction.MESSAGES -> return@forEach
-                }
-                if (action == UsHeaderCornerAction.NOTIFICATIONS) {
-                    IconButton(
-                        onClick = onClick,
-                        modifier = Modifier
-                            .testTag(tag)
-                            .semantics { contentDescription = usNotificationsDescription(unreadCount) },
-                    ) {
-                        UsBadgedIcon(icon = action.icon, count = unreadCount, tint = UsTheme.extended.onMedia)
-                    }
-                } else {
-                    IconButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
-                        Icon(
-                            imageVector = action.icon,
-                            contentDescription = action.description,
-                            tint = UsTheme.extended.onMedia,
-                        )
-                    }
-                }
+            IconButton(onClick = onOpenMenu, modifier = Modifier.testTag("reels_header:menu")) {
+                Icon(
+                    imageVector = UsHeaderCornerAction.MORE.icon,
+                    contentDescription = UsHeaderCornerAction.MORE.description,
+                    tint = UsTheme.extended.onMedia,
+                )
             }
         },
     )
@@ -1284,20 +1255,6 @@ private fun ReelPage(
             )
         }
 
-        // The sound control sits at the top LEFT (founder, 2026-10-19), off the
-        // rail: tap to mute or unmute, and a volume slider opens beside it. It
-        // stays in full mode, because reels open muted and this is the way to
-        // hear one.
-        StageVolumeControl(
-            muted = view.muted,
-            onToggleMute = actions.onToggleMute,
-            tagPrefix = "reel_volume",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP),
-        )
-
         // The rail sits on the right edge, clear of the caption, because that
         // is where a thumb rests while the other hand holds nothing. Putting
         // controls under the caption means reaching across the video to use
@@ -1669,8 +1626,7 @@ private const val LOADER_TRACK_ALPHA = 0.25f
 private fun ReelOfflineStatus(playsOffline: Boolean, entry: OfflineEntry?, modifier: Modifier = Modifier) {
     val place = modifier
         .statusBarsPadding()
-        // Under the sound control, which holds the top-left corner (2026-10-19).
-        .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP + SOUND_CONTROL_CLEARANCE)
+        .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP)
     when {
         playsOffline -> OfflineCopyBadge(modifier = place)
         entry == null || entry.phase == OfflinePhase.STORED -> Unit
@@ -1685,5 +1641,5 @@ private fun ReelOfflineStatus(playsOffline: Boolean, entry: OfflineEntry?, modif
 /** Clear of the header's two glyphs. */
 private val OFFLINE_STATUS_TOP = 56.dp
 
-/** Room for the sound control (36dp) and a gap above the offline badge. */
-private val SOUND_CONTROL_CLEARANCE = 44.dp
+/** The sound control (36dp) centred on the header's 64dp row. */
+private val SOUND_ROW_TOP = 14.dp

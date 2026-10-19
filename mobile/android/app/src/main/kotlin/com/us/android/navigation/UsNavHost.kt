@@ -1114,13 +1114,11 @@ private fun NavGraphBuilder.tabDestinations(
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenSearch = { navController.navigateToSearch(SearchOrigin.REELS) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenSound = { soundId -> navController.navigateToSound(soundId) },
         onCreateWithSound = onCreateWithSound,
         // The Offline page lives in Tube's graph; Reels' header More opens it when there is no reel.
         onOpenOffline = { navController.navigateToTubeOffline() },
-        onOpenNotifications = { navController.navigateToNotifications() },
     )
     // A sound's page, pushed over Reels. A tile opens its reel in the Reels
     // TAB (the page has left the id in ReelsEntry, as the feeds do).
