@@ -241,7 +241,7 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
 /**
  * The Follow ring (founder, 2026-10-19): the author's picture inside a pink
  * ring, FOLLOW bent along the ring's top half and a small plus at its foot.
- * One target; it follows. Drawn on a 56-unit grid, the same numbers as the
+ * One target; it follows. Drawn on a 48-unit grid, the same numbers as the
  * web's ReelRail ring, so both read alike.
  */
 @Composable
@@ -272,7 +272,7 @@ private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modi
             seed = author.seed,
             imageUrl = author.imageUrl,
             size = UsAvatarSize.Post,
-            // 36dp drawn at 40dp: the picture one step bigger in the ring (20 Oct).
+            // 36dp drawn at 32dp: the picture inside the 48dp ring (20 Oct).
             modifier = Modifier.graphicsLayer {
                 scaleX = FOLLOW_FACE_SCALE
                 scaleY = FOLLOW_FACE_SCALE
@@ -877,17 +877,18 @@ private val RAIL_TARGET = 48.dp
 private val RAIL_ICON = 26.dp
 private val AVATAR_RIM = 1.5.dp
 /**
- * The Follow ring at the top of the rail: 56dp with the picture 40dp inside
- * (2026-10-20: a step smaller ring, a step bigger picture, letters and plus).
+ * The Follow ring at the top of the rail: 48dp with the picture 32dp inside
+ * (2026-10-20: a smaller button and picture; the 8dp band keeps FOLLOW and
+ * the plus at their size).
  */
-private val FOLLOW_RING = 56.dp
-private const val FOLLOW_FACE_SCALE = 40f / 36f
-/** Its drawing grid and marks, in grid units (web: ReelRail's 56-unit SVG). */
-private const val FOLLOW_GRID = 56f
-private const val FOLLOW_ARC_RADIUS = 21.2f
+private val FOLLOW_RING = 48.dp
+private const val FOLLOW_FACE_SCALE = 32f / 36f
+/** Its drawing grid and marks, in grid units (web: ReelRail's 48-unit SVG). */
+private const val FOLLOW_GRID = 48f
+private const val FOLLOW_ARC_RADIUS = 17.2f
 private const val FOLLOW_WORD_SIZE = 8f
 private const val FOLLOW_WORD_TRACKING = 0.02f
-private const val FOLLOW_PLUS_CENTRE_Y = 52f
+private const val FOLLOW_PLUS_CENTRE_Y = 44f
 private const val FOLLOW_PLUS_HALF = 3.5f
 private const val FOLLOW_PLUS_STROKE = 2.6f
 private val RING_STROKE = 3.dp
