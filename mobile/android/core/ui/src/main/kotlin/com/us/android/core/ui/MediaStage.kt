@@ -257,23 +257,52 @@ private fun StageFollowPill(badge: StageRailBadge, modifier: Modifier = Modifier
         contentAlignment = Alignment.Center,
         modifier = modifier
             .height(FOLLOW_PILL_HEIGHT)
-            .clip(RoundedCornerShape(UsTheme.radii.pill))
+            // Fully round, "+ Follow" (founder, 2026-10-19).
+            .clip(RoundedCornerShape(percent = 50))
             .background(UsTheme.extended.followBadge)
             .stagePressScale(badge.onClick)
             .clearAndSetSemantics {
                 contentDescription = badge.description
                 role = Role.Button
             }
-            .padding(horizontal = UsTheme.spacing.m),
+            .padding(start = UsTheme.spacing.m, end = UsTheme.spacing.l),
     ) {
-        Text(
-            text = badge.description,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = UsTheme.extended.onMedia,
-            maxLines = 1,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
+            Icon(
+                imageVector = UsIcons.Create,
+                contentDescription = null,
+                tint = UsTheme.extended.onMedia,
+                modifier = Modifier.size(FOLLOW_PLUS),
+            )
+            Text(
+                text = badge.description,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.onMedia,
+                maxLines = 1,
+            )
+        }
     }
+}
+
+/**
+ * How far the video has played, as a thin line along the bottom of the
+ * frame (founder, 2026-10-19: off the avatar, "horizontal, at the bottom,
+ * like others"): a 2dp track, the played part white.
+ */
+@Composable
+fun StagePlayheadLine(progress: Float, modifier: Modifier = Modifier) {
+    val track = UsTheme.extended.mediaTrack
+    val played = UsTheme.extended.onMedia
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(PLAYHEAD_HEIGHT)
+            .drawBehind {
+                drawRect(color = track)
+                drawRect(color = played, size = Size(size.width * progress.coerceIn(0f, 1f), size.height))
+            },
+    )
 }
 
 /**
@@ -864,7 +893,10 @@ private val FOLLOW_PILL_HEIGHT = 26.dp
 private val RING_STROKE = 3.dp
 private val RING_GAP = 2.dp
 /** 40dp (was 44, 2026-10-19), shrunk with the rail's glyphs. */
-private val DISC_SIZE = 40.dp
+/** The sound disc at the rail's foot, the creator's picture inside it: 48dp (2026-10-19: "increase it"). */
+private val DISC_SIZE = 48.dp
+private val FOLLOW_PLUS = 14.dp
+private val PLAYHEAD_HEIGHT = 2.dp
 /** 4dp (was 6) so the 40dp disc still shows the 32dp face whole. */
 private val DISC_RIM = 4.dp
 private val SOUND_LINE_ICON = 14.dp

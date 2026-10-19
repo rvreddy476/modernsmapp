@@ -523,22 +523,19 @@ class ReelsViewModelTest {
             .isEqualTo(ReelsChrome(showHeader = true, showRail = true, showAuthor = true, showBottomBar = true))
     }
 
-    /**
-     * Full mode (2026-10-19) keeps only the description: no name line, no
-     * picture, no Follow — header, rail and bar go.
-     */
+    /** Full mode (2026-10-19) is the video alone: no description, no name, no rail, no header, no bar. */
     @Test
-    fun `full mode keeps only the description and no name`() {
+    fun `full mode is the video alone`() {
         assertThat(ReelsMode.FULL.chrome()).isEqualTo(
-            ReelsChrome(showHeader = false, showRail = false, showAuthor = true, showBottomBar = false, showName = false),
+            ReelsChrome(showHeader = false, showRail = false, showAuthor = false, showBottomBar = false, showName = false),
         )
     }
 
-    /** No mode hides the description; the name line goes exactly when the rail does, so nothing names the author. */
+    /** The description, the name and the rail come and go together. */
     @Test
-    fun `no mode hides the description and the name goes only with the rail`() {
+    fun `the description, the name and the rail go together`() {
         ReelsMode.entries.forEach { mode ->
-            assertThat(mode.chrome().showAuthor).isTrue()
+            assertThat(mode.chrome().showAuthor).isEqualTo(mode.chrome().showRail)
             assertThat(mode.chrome().showName).isEqualTo(mode.chrome().showRail)
         }
     }

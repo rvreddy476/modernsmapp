@@ -118,6 +118,7 @@ import com.us.android.core.ui.StagePausedGlyph
 import com.us.android.core.ui.StageRail
 import com.us.android.core.ui.StageRailAuthor
 import com.us.android.core.ui.StageRailBadge
+import com.us.android.core.ui.StagePlayheadLine
 import com.us.android.core.ui.StageVolumeControl
 import com.us.android.core.ui.StageRailSound
 import com.us.android.core.ui.UsEmptyState
@@ -316,6 +317,7 @@ fun ReelsScreen(
             // With no reel to open the sheet for (the feed did not load, as with no
             // network), More goes straight to what the device keeps.
             onOpenMenu = { settledReel?.let { moreFor = it } ?: onOpenOffline() },
+            onClearScreen = viewModel::toggleMode,
             muted = view.muted,
             onToggleMute = viewModel::toggleMuted,
         )
@@ -668,6 +670,7 @@ private fun BoxScope.ScreenChrome(
     paused: Boolean,
     showHeader: Boolean,
     onOpenMenu: () -> Unit,
+    onClearScreen: () -> Unit,
     muted: Boolean,
     onToggleMute: () -> Unit,
 ) {
@@ -688,6 +691,7 @@ private fun BoxScope.ScreenChrome(
     ) {
         ReelsHeader(
             onOpenMenu = onOpenMenu,
+            onClearScreen = onClearScreen,
             modifier = Modifier.testTag("reels_header"),
         )
     }
@@ -717,6 +721,7 @@ private fun BoxScope.ScreenChrome(
 @Composable
 private fun ReelsHeader(
     onOpenMenu: () -> Unit,
+    onClearScreen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     UsHomeTopBar(
@@ -724,6 +729,11 @@ private fun ReelsHeader(
         translucent = true,
         showWordmark = false,
         actions = {
+            // Clear screen, before More (founder, 2026-10-19): the video alone; a
+            // double tap or Back brings everything back.
+            IconButton(onClick = onClearScreen, modifier = Modifier.testTag("reels_header:clear")) {
+                Icon(imageVector = UsIcons.Maximize, contentDescription = "Clear screen", tint = UsTheme.extended.onMedia)
+            }
             IconButton(onClick = onOpenMenu, modifier = Modifier.testTag("reels_header:menu")) {
                 Icon(
                     imageVector = UsHeaderCornerAction.MORE.icon,
@@ -1255,6 +1265,18 @@ private fun ReelPage(
             )
         }
 
+        // The playhead: a thin line along the bottom (founder, 2026-10-19), in
+        // place of the ring that went round the avatar. In full mode the page
+        // reaches the gesture handle, so it sits above it.
+        if (playback != null && settled) {
+            StagePlayheadLine(
+                progress = progress,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .then(if (!chrome.showBottomBar) Modifier.navigationBarsPadding() else Modifier),
+            )
+        }
+
         // The rail sits on the right edge, clear of the caption, because that
         // is where a thumb rests while the other hand holds nothing. Putting
         // controls under the caption means reaching across the video to use
@@ -1400,7 +1422,8 @@ private fun ReelRail(
     modifier: Modifier = Modifier,
 ) {
     StageRail(
-        author = reelAuthor(item, relationship, offersRelationship, actions, progress),
+        // No ring round the avatar (2026-10-19): the playhead is a line at the bottom.
+        author = reelAuthor(item, relationship, offersRelationship, actions, progress = null),
         controls = stageRailControls(
             item = item,
             overlay = overlay,

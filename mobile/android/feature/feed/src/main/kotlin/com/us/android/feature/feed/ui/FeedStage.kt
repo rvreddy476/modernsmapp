@@ -191,8 +191,9 @@ internal fun FeedStagePage(
             )
         }
 
-        StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
-        StageCaption(
+        // Full mode is the post alone (founder, 2026-10-19): no shade, no caption, no rail.
+        if (!fullMode) StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
+        if (!fullMode) StageCaption(
             state = stageCaption(item, kind),
             onOpenAuthor = { callbacks.onOpenAuthor(item.author.id) },
             onOpenHashtag = onOpenHashtag,

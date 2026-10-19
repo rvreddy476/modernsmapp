@@ -159,14 +159,14 @@ data class ReelsChrome(
         val NORMAL = ReelsChrome(showHeader = true, showRail = true, showAuthor = true, showBottomBar = true)
 
         /**
-         * Full mode (founder, 2026-10-19): the description and its tags, and
-         * nothing else — no name, no picture, no Follow. The header, the rail
-         * and the bottom bar all go.
+         * Full mode (founder, 2026-10-19): the video alone — no description,
+         * no name, no picture, no Follow; the header, the rail and the bottom
+         * bar go too. Only the sound control stays, at the top left.
          */
         val FULL = ReelsChrome(
             showHeader = false,
             showRail = false,
-            showAuthor = true,
+            showAuthor = false,
             showBottomBar = false,
             showName = false,
         )
@@ -174,7 +174,7 @@ data class ReelsChrome(
 }
 
 /**
- * The one rule: normal shows everything; full keeps only the description.
+ * The one rule: normal shows everything; full shows the video alone.
  */
 fun ReelsMode.chrome(): ReelsChrome = when (this) {
     ReelsMode.NORMAL -> ReelsChrome.NORMAL
