@@ -54,6 +54,7 @@ import com.us.android.core.common.time.formatDuration
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.ui.VideoLoadState
+import com.us.android.core.ui.StageVolumeControl
 import com.us.android.core.media.ui.VideoLoadingOverlay
 import com.us.android.core.media.ui.rememberVideoLoadState
 import kotlinx.coroutines.delay
@@ -153,6 +154,11 @@ fun WatchPlayer(
         }
     }
     val interact: () -> Unit = { touch++ }
+    // The player's own mute (2026-10-19): the sound control at the top left
+    // silences this video without touching the phone's volume; its slider
+    // moves the phone's media volume.
+    var muted by remember(player) { mutableStateOf(player.volume == 0f) }
+    LaunchedEffect(player, muted) { player.volume = if (muted) 0f else 1f }
 
     Box(
         modifier = modifier
@@ -186,6 +192,11 @@ fun WatchPlayer(
                 fullscreen = fullscreen,
                 transport = transport,
                 onInteract = interact,
+                muted = muted,
+                onToggleMute = {
+                    interact()
+                    muted = !muted
+                },
                 // The spinner takes the centre while it is there; two discs
                 // stacked on one another is how a control reads as broken.
                 busy = loadState != VideoLoadState.NONE,
@@ -260,6 +271,8 @@ private fun Controls(
     fullscreen: Boolean,
     transport: WatchTransport,
     onInteract: () -> Unit,
+    muted: Boolean,
+    onToggleMute: () -> Unit,
     /** The buffering spinner has the centre; the play/pause stands down. */
     busy: Boolean,
 ) {
@@ -276,7 +289,11 @@ private fun Controls(
                 .padding(horizontal = UsTheme.spacing.xs),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            GlyphButton(icon = UsIcons.Back, description = "Back", onClick = transport.onBack, tag = "watch_back")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GlyphButton(icon = UsIcons.Back, description = "Back", onClick = transport.onBack, tag = "watch_back")
+                // The sound control on the left (founder, 2026-10-19), as on Reels.
+                StageVolumeControl(muted = muted, onToggleMute = onToggleMute, tagPrefix = "watch_volume")
+            }
             GlyphButton(
                 icon = UsIcons.Settings,
                 description = "Quality and speed",

@@ -194,8 +194,7 @@ internal fun FeedStagePage(
 
         StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
         StageCaption(
-            // Full mode keeps the description only: no sound line under it.
-            state = stageCaption(item, kind).let { if (fullMode) it.copy(soundLabel = null) else it },
+            state = stageCaption(item, kind),
             onOpenAuthor = { callbacks.onOpenAuthor(item.author.id) },
             onOpenHashtag = onOpenHashtag,
             onSound = item.sound?.let { sound -> onOpenSound?.let { open -> { open(sound.id) } } },
@@ -292,7 +291,8 @@ internal fun stageCaption(item: FeedItem, kind: StageKind = stageKind(item)) = S
     text = if (kind == StageKind.TEXT || kind == StageKind.POLL) "" else item.text,
     hashtags = reelHashtags(item),
     labels = disclosureLabels(item.disclosure),
-    soundLabel = item.sound?.title,
+    // No sound line in the caption (2026-10-19): the rail's sound disc says it already.
+    soundLabel = null,
 )
 
 /**

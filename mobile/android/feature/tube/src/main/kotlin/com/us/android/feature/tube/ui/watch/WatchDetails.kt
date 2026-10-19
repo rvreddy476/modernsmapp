@@ -179,7 +179,7 @@ fun LazyListScope.watchDetails(
     item(key = "title") { TitleBlock(item) }
     item(key = "author") { AuthorRow(item, subscription, actions) }
     item(key = "actions") { ActionRow(item, watchActions(likes, viewer, shareable = !item.controls.hideShare), actions) }
-    if (item.text.isNotBlank()) item(key = "description") { Description(item) }
+    if (watchDescriptionShown(item)) item(key = "description") { Description(item) }
     if (!item.controls.noComments) {
         item(key = "comments") { CommentsRow(count = item.counts.comments, onClick = { actions.onComment(item.id) }) }
     }
@@ -354,13 +354,13 @@ private fun VotePill(vote: List<WatchAction>, onTap: (WatchAction) -> Unit) {
                         .background(UsTheme.extended.borderMedium),
                 )
             }
-            val like = control.kind == WatchActionKind.LIKE
-            val tint = if (like && control.lit) UsTheme.extended.statusDanger else UsTheme.extended.textPrimary
+            // Like and Dislike light the same way now both are thumbs (2026-10-19).
+            val tint = UsTheme.extended.textPrimary
             Row(
                 modifier = Modifier
                     .height(PILL_HEIGHT)
                     .clip(RoundedCornerShape(UsTheme.radii.medium))
-                    .then(if (!like && control.lit) Modifier.background(UsTheme.extended.fillStrong) else Modifier)
+                    .then(if (control.lit) Modifier.background(UsTheme.extended.fillStrong) else Modifier)
                     .pressScale { onTap(control) }
                     .padding(horizontal = UsTheme.spacing.l)
                     .pillSemantics(control),
@@ -374,7 +374,7 @@ private fun VotePill(vote: List<WatchAction>, onTap: (WatchAction) -> Unit) {
                     modifier = Modifier.size(PILL_GLYPH),
                 )
                 // Like reads its count (or "Like"); Dislike is the glyph alone, as on the web.
-                if (like) PillLabel(control.label)
+                if (control.kind == WatchActionKind.LIKE) PillLabel(control.label)
             }
         }
     }
@@ -426,7 +426,8 @@ private fun Modifier.pillSemantics(control: WatchAction): Modifier =
 
 /** Lucide, the web's glyphs: heart · thumbs-down · list-video · folder-plus · bookmark · more. */
 private fun WatchAction.icon(): ImageVector = when (kind) {
-    WatchActionKind.LIKE -> if (lit) UsIcons.HeartFilled else UsIcons.HeartOutline
+    // Thumbs up and down, as on YouTube (founder, 2026-10-19); a lit one takes the accent.
+    WatchActionKind.LIKE -> UsIcons.ThumbsUp
     WatchActionKind.DISLIKE -> UsIcons.ThumbsDown
     WatchActionKind.WATCH_LATER -> UsIcons.ListVideo
     WatchActionKind.ADD_TO_COLLECTION -> UsIcons.FolderPlus
@@ -585,3 +586,13 @@ private val HAIRLINE = 1.dp
 private val DIVIDER_HEIGHT = 18.dp
 private val CHEVRON = 18.dp
 private val EPISODE_NUMBER_WIDTH = 24.dp
+
+/**
+ * Whether the description is drawn under the title (2026-10-19): not when it
+ * is empty, and not when it only says the title again — the founder saw the
+ * same line twice on every video uploaded without a description. Pure.
+ */
+fun watchDescriptionShown(item: FeedItem): Boolean {
+    val text = item.text.trim()
+    return text.isNotEmpty() && !text.equals(item.title.trim(), ignoreCase = true)
+}

@@ -12,8 +12,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -125,6 +123,7 @@ import com.us.android.core.ui.StageRail
 import com.us.android.core.ui.StageRailAuthor
 import com.us.android.core.ui.StageRailBadge
 import com.us.android.core.ui.StageAuthorRow
+import com.us.android.core.ui.StageVolumeControl
 import com.us.android.core.ui.StageRailSound
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -1285,13 +1284,18 @@ private fun ReelPage(
             )
         }
 
-        // Mute sits in the top corner (2026-10-19), not on the rail: with
-        // it the rail ran from mid-screen to the bar. It stays in full mode,
-        // because reels open muted and this is the way to hear one.
-        ReelMuteButton(
+        // The sound control sits at the top LEFT (founder, 2026-10-19), off the
+        // rail: tap to mute or unmute, and a volume slider opens beside it. It
+        // stays in full mode, because reels open muted and this is the way to
+        // hear one.
+        StageVolumeControl(
             muted = view.muted,
-            onToggle = actions.onToggleMute,
-            modifier = Modifier.align(Alignment.TopEnd),
+            onToggleMute = actions.onToggleMute,
+            tagPrefix = "reel_volume",
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP),
         )
 
         // The rail sits on the right edge, clear of the caption, because that
@@ -1486,33 +1490,6 @@ private fun reelAuthor(
 )
 
 /**
- * Mute / unmute in the page's top corner, under the header: a small dark
- * disc so it reads over any frame.
- */
-@Composable
-private fun ReelMuteButton(muted: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier
-            .statusBarsPadding()
-            .padding(top = OFFLINE_STATUS_TOP, end = UsTheme.spacing.pageHorizontal)
-            .size(MUTE_DISC)
-            .clip(CircleShape)
-            .background(UsTheme.extended.stage.copy(alpha = MUTE_DISC_ALPHA))
-            .clickable(role = Role.Button, onClickLabel = if (muted) "Unmute" else "Mute", onClick = onToggle)
-            .semantics { contentDescription = if (muted) "Unmute" else "Mute" }
-            .testTag("reel_mute"),
-    ) {
-        Icon(
-            imageVector = if (muted) UsIcons.SoundOff else UsIcons.SoundOn,
-            contentDescription = null,
-            tint = UsTheme.extended.onMedia,
-            modifier = Modifier.size(MUTE_GLYPH),
-        )
-    }
-}
-
-/**
  * Bottom-left, the shared caption block (2026-10-18): "@handle · age", the
  * reel's title, the caption clamped to two lines with "more" that opens it
  * in place, the tags (each opens that tag's posts), and the sound line —
@@ -1538,7 +1515,8 @@ private fun ReelOverlay(
             title = reelTitle(item),
             text = item.text,
             hashtags = reelHashtags(item),
-            soundLabel = soundLine?.label.takeIf { authorRow == null },
+            // No sound line (2026-10-19): the rail's disc already names the sound.
+            soundLabel = null,
         ),
         onOpenAuthor = { actions.onOpenAuthor(item.author.id) },
         onOpenHashtag = actions.onOpenHashtag,
@@ -1638,10 +1616,6 @@ private const val CHROME_ANIM_MILLIS = 200
  */
 private val RAIL_BOTTOM_INSET = 12.dp
 
-/** The mute disc in the top corner: 36dp, its glyph 20dp, the stage at 40%. */
-private val MUTE_DISC = 36.dp
-private val MUTE_GLYPH = 20.dp
-private const val MUTE_DISC_ALPHA = 0.4f
 
 /** 20dp between rail controls. */
 
@@ -1692,7 +1666,8 @@ private const val LOADER_TRACK_ALPHA = 0.25f
 private fun ReelOfflineStatus(playsOffline: Boolean, entry: OfflineEntry?, modifier: Modifier = Modifier) {
     val place = modifier
         .statusBarsPadding()
-        .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP)
+        // Under the sound control, which holds the top-left corner (2026-10-19).
+        .padding(start = UsTheme.spacing.pageHorizontal, top = OFFLINE_STATUS_TOP + SOUND_CONTROL_CLEARANCE)
     when {
         playsOffline -> OfflineCopyBadge(modifier = place)
         entry == null || entry.phase == OfflinePhase.STORED -> Unit
@@ -1706,3 +1681,6 @@ private fun ReelOfflineStatus(playsOffline: Boolean, entry: OfflineEntry?, modif
 
 /** Clear of the header's two glyphs. */
 private val OFFLINE_STATUS_TOP = 56.dp
+
+/** Room for the sound control (36dp) and a gap above the offline badge. */
+private val SOUND_CONTROL_CLEARANCE = 44.dp

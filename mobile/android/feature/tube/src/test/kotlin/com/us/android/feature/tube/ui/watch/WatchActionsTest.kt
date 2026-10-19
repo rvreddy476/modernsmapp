@@ -57,6 +57,14 @@ class WatchActionsTest {
         assertThat(actions.none { it.lit }).isTrue()
     }
 
+    /** A description that only says the title again is not drawn (2026-10-19). */
+    @Test
+    fun `the description is drawn only when it says something the title does not`() {
+        assertThat(watchDescriptionShown(video().copy(title = "Six Days", text = " six days "))).isFalse()
+        assertThat(watchDescriptionShown(video().copy(title = "Six Days", text = ""))).isFalse()
+        assertThat(watchDescriptionShown(video().copy(title = "Six Days", text = "Lyrics by Tokyo Drift"))).isTrue()
+    }
+
     /** Share left the More sheet for this row (2026-10-19); the creator's share switch still takes it away. */
     @Test
     fun `share is on the row unless the creator turned sharing off`() {

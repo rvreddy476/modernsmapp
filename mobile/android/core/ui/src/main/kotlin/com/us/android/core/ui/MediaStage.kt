@@ -441,6 +441,19 @@ fun Modifier.stagePressScale(onClick: () -> Unit): Modifier {
         }
 }
 
+/**
+ * The caption with nothing said twice (founder, 2026-10-19): no title when
+ * the caption already opens with it, and no tag the caption already
+ * carries as "#tag". Pure.
+ */
+fun StageCaptionState.withoutRepeats(): StageCaptionState {
+    val body = text.trim()
+    val lower = body.lowercase()
+    val keptTitle = title?.trim()?.takeIf { it.isNotEmpty() && !lower.startsWith(it.lowercase()) }
+    val inText = TAG_IN_TEXT.findAll(body).map { it.groupValues[1].lowercase() }.toSet()
+    return copy(title = keptTitle, hashtags = hashtags.filterNot { it.trimStart('#').lowercase() in inText })
+}
+
 /** What the caption block at the bottom left says. */
 @Immutable
 data class StageCaptionState(
@@ -487,6 +500,9 @@ fun StageCaption(
     author: (@Composable () -> Unit)? = null,
     tagPrefix: String = "stage_caption",
 ) {
+    // Say each thing once (founder, 2026-10-19: "so much duplicate description").
+    @Suppress("NAME_SHADOWING")
+    val state = state.withoutRepeats()
     Column(
         modifier = modifier.testTag(tagPrefix),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
@@ -895,8 +911,13 @@ private const val CROP_HIGH = 1.35f
 private const val SHORT_TEXT = 80
 private const val MEDIUM_TEXT = 200
 private const val LONG_TEXT = 500
-private const val SCRIM_FRACTION = 0.45f
-private const val SCRIM_ALPHA = 0.7f
+/** A "#tag" inside the caption: letters (with their combining marks), digits and underscores, any script. */
+private val TAG_IN_TEXT = Regex("""#([\p{L}\p{M}\p{N}_]+)""")
+
+// The bottom shade: the lowest 28% at 60% (2026-10-19; was 45% at 70%, a
+// dark band that covered a third of the video).
+private const val SCRIM_FRACTION = 0.28f
+private const val SCRIM_ALPHA = 0.6f
 private const val TOP_SCRIM_FRACTION = 0.16f
 private const val TOP_SCRIM_ALPHA = 0.55f
 private const val PRESS_SCALE = 0.85f
