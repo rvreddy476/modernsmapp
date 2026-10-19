@@ -348,11 +348,10 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
 
     if (reasonText.isNotBlank()) add(UsPostMoreRow.WHY)
     if (suggested) add(UsPostMoreRow.INTERESTED)
-    // "Not interested" is about this post and applies to anyone; it is
-    // not an unfollow.
-    add(UsPostMoreRow.NOT_INTERESTED)
-    // Muting an account you follow is what Unfollow is for, so the row
-    // exists only while the author is not followed.
+    // One "show me less" row, not two (founder, 2026-10-19): "Not interested"
+    // and "Don't recommend" read as the same thing, so only Don't recommend
+    // stays. Muting an account you follow is what Unfollow is for, so the
+    // row exists only while the author is not followed.
     if (followRow != UsPostMoreFollowRow.UNFOLLOW) add(UsPostMoreRow.DONT_RECOMMEND)
     when (followRow) {
         UsPostMoreFollowRow.UNFOLLOW -> add(UsPostMoreRow.UNFOLLOW)
@@ -369,7 +368,9 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
  * cannot drift again; [rows] puts it in alphabetical order:
  *
  *   Block channel · Copy link · Description · Don't recommend this channel ·
- *   Not interested · Playback speed · Quality · Report · Share
+ *   Playback speed · Quality · Report
+ *
+ * (2026-10-19: Not interested, Share and Save offline left the sheet.)
  *
  * Playback speed is listed when the host offers speeds (T-32, 2026-10-15:
  * both do), and Captions only when the video HAS caption tracks — a row that
@@ -414,8 +415,8 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
         return@buildList
     }
     add(UsPostMoreRow.BLOCK)
+    // One "show me less" row (2026-10-19): Don't recommend; no Not interested.
     add(UsPostMoreRow.DONT_RECOMMEND)
-    add(UsPostMoreRow.NOT_INTERESTED)
     add(UsPostMoreRow.REPORT)
 }
 

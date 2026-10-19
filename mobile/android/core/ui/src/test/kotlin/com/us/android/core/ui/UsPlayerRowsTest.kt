@@ -58,7 +58,6 @@ class UsPlayerRowsTest {
             "Copy link",
             "Description",
             "Don't recommend this channel",
-            "Not interested",
             "Playback speed",
             "Quality",
             "Report",

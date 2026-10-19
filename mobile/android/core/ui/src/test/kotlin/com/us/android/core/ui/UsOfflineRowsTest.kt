@@ -120,7 +120,6 @@ class UsOfflineRowsTest {
             "Copy link",
             "Description",
             "Don't recommend this channel",
-            "Not interested",
             "Quality",
             "Remove offline copy",
             "Report",
@@ -148,7 +147,6 @@ class UsOfflineRowsTest {
             "Copy link",
             "Description",
             "Don't recommend this channel",
-            "Not interested",
             "Quality",
             "Report",
         ).inOrder()

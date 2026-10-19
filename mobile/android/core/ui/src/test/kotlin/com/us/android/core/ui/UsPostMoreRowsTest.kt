@@ -140,7 +140,6 @@ class UsPostMoreRowsTest {
             "Copy link",
             "Description",
             "Don't recommend this channel",
-            "Not interested",
             "Quality",
             "Report",
             "Use this sound",
@@ -156,7 +155,6 @@ class UsPostMoreRowsTest {
             "Copy link",
             "Description",
             "Don't recommend this channel",
-            "Not interested",
             "Quality",
             "Report",
         ).inOrder()
@@ -255,7 +253,6 @@ class UsPostMoreRowsTest {
             UsPostMoreRow.SAVE,
             UsPostMoreRow.COPY_LINK,
             UsPostMoreRow.WHY,
-            UsPostMoreRow.NOT_INTERESTED,
             UsPostMoreRow.UNFOLLOW,
             UsPostMoreRow.BLOCK,
             UsPostMoreRow.REPORT,
@@ -288,7 +285,6 @@ class UsPostMoreRowsTest {
     fun `don't recommend is offered on another person's post and is never on the viewer's own`() {
         assertThat(state(own = false).rows()).containsAtLeast(
             UsPostMoreRow.INTERESTED,
-            UsPostMoreRow.NOT_INTERESTED,
             UsPostMoreRow.DONT_RECOMMEND,
         )
 
@@ -349,13 +345,12 @@ class UsPostMoreRowsTest {
     @Test
     fun `interested is for suggestions and don't recommend is for accounts not followed`() {
         val followed = state(follow = UsPostMoreFollowRow.UNFOLLOW).copy(suggested = false).rows()
-        assertThat(followed).contains(UsPostMoreRow.NOT_INTERESTED)
+        assertThat(followed).doesNotContain(UsPostMoreRow.NOT_INTERESTED)
         assertThat(followed).containsNoneOf(UsPostMoreRow.INTERESTED, UsPostMoreRow.DONT_RECOMMEND)
 
         val suggestedStranger = state(follow = UsPostMoreFollowRow.FOLLOW).copy(suggested = true).rows()
         assertThat(suggestedStranger).containsAtLeast(
             UsPostMoreRow.INTERESTED,
-            UsPostMoreRow.NOT_INTERESTED,
             UsPostMoreRow.DONT_RECOMMEND,
         )
 
@@ -404,7 +399,6 @@ class UsPostMoreRowsTest {
         UsPostMoreRow.COPY_LINK,
         UsPostMoreRow.DESCRIPTION,
         UsPostMoreRow.DONT_RECOMMEND,
-        UsPostMoreRow.NOT_INTERESTED,
         UsPostMoreRow.QUALITY,
         UsPostMoreRow.REPORT,
     )
@@ -451,7 +445,7 @@ class UsPostMoreRowsTest {
     }
 
     @Test
-    fun `another person's video offers exactly the founder's seven rows, on a reel and on a long video`() {
+    fun `another person's video offers exactly the founder's six rows, on a reel and on a long video`() {
         val (onReel, onVideo) = bothVideos(state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "Trending"))
 
         assertThat(onReel.rows()).containsExactlyElementsIn(viewerRows).inOrder()
