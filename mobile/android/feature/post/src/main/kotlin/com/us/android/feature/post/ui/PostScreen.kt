@@ -300,7 +300,6 @@ private fun PostStage(
                     onShare = { share(post.id, post.text.ifBlank { post.title }, authorName.ifBlank { null }) },
                 ),
                 sound = null,
-                spinning = false,
                 tagPrefix = "post_rail",
                 modifier = Modifier
                     .align(Alignment.BottomEnd)

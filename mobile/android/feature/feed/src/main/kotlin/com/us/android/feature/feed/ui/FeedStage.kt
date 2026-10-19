@@ -216,7 +216,6 @@ internal fun FeedStagePage(
                     onClick = { onOpenSound?.invoke(sound.id) },
                 )
             },
-            spinning = state.active && !state.paused,
             tagPrefix = "feed_rail",
             modifier = Modifier
                 .align(Alignment.BottomEnd)

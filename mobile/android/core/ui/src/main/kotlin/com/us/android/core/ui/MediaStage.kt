@@ -4,14 +4,9 @@
 
 package com.us.android.core.ui
 
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,7 +49,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -142,7 +136,7 @@ data class StageRailSound(
 /**
  * The right-hand rail, top to bottom: the author's avatar with its "+",
  * every control with its label under it, anything the surface adds
- * ([extra] — Reels' mute), and the spinning sound disc at the foot.
+ * ([extra] — Reels' mute), and the sound disc at the foot.
  */
 @Composable
 fun StageRail(
@@ -150,8 +144,6 @@ fun StageRail(
     controls: List<StageRailControl>,
     sound: StageRailSound?,
     modifier: Modifier = Modifier,
-    /** The disc turns while the post is playing; it holds still while paused. */
-    spinning: Boolean = true,
     tagPrefix: String = "stage_rail",
     extra: @Composable ColumnScope.() -> Unit = {},
 ) {
@@ -172,7 +164,7 @@ fun StageRail(
             )
         }
         extra()
-        if (sound != null) StageSoundDisc(sound = sound, spinning = spinning, tagPrefix = tagPrefix)
+        if (sound != null) StageSoundDisc(sound = sound, tagPrefix = tagPrefix)
     }
 }
 
@@ -228,51 +220,68 @@ fun stageControlDescription(description: String, label: String?): String = when 
 
 @Composable
 private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
-    Box(
-        contentAlignment = Alignment.TopCenter,
-        // Room under the avatar for the half of the badge that hangs below it.
-        modifier = Modifier.padding(bottom = BADGE_SIZE / 2),
-    ) {
-        val avatar = @Composable {
-            UsAvatar(
-                name = author.name,
-                seed = author.seed,
-                imageUrl = author.imageUrl,
-                size = UsAvatarSize.Medium,
-                contentDescription = "${author.name}, profile",
-                modifier = Modifier
-                    .border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        role = Role.Button,
-                        onClick = author.onOpen,
-                    )
-                    .testTag("$tagPrefix:author"),
-            )
-        }
-        val progress = author.progress
-        if (progress != null) StageProgressRing(progress = progress) { avatar() } else avatar()
-        author.badge?.let { badge ->
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .offset(y = BADGE_SIZE / 2)
-                    .size(BADGE_SIZE)
-                    .clip(CircleShape)
-                    .background(UsTheme.extended.accentStrong)
-                    .clickable(role = Role.Button, onClickLabel = badge.description, onClick = badge.onClick)
-                    .semantics { contentDescription = badge.description }
-                    .testTag("$tagPrefix:badge"),
-            ) {
-                Icon(
-                    imageVector = UsIcons.Create,
-                    contentDescription = null,
-                    tint = UsTheme.extended.onAccent,
-                    modifier = Modifier.size(BADGE_GLYPH),
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            contentAlignment = Alignment.TopCenter,
+            // Room under the avatar for the half of the badge that hangs below it.
+            modifier = Modifier.padding(bottom = BADGE_SIZE / 2),
+        ) {
+            val avatar = @Composable {
+                UsAvatar(
+                    name = author.name,
+                    seed = author.seed,
+                    imageUrl = author.imageUrl,
+                    size = UsAvatarSize.Medium,
+                    contentDescription = "${author.name}, profile",
+                    modifier = Modifier
+                        .border(AVATAR_RIM, UsTheme.extended.onMedia, CircleShape)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Button,
+                            onClick = author.onOpen,
+                        )
+                        .testTag("$tagPrefix:author"),
                 )
             }
+            val progress = author.progress
+            if (progress != null) StageProgressRing(progress = progress) { avatar() } else avatar()
+            author.badge?.let { badge ->
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .offset(y = BADGE_SIZE / 2)
+                        .size(BADGE_SIZE)
+                        .clip(CircleShape)
+                        .background(UsTheme.extended.accentStrong)
+                        .clickable(role = Role.Button, onClickLabel = badge.description, onClick = badge.onClick)
+                        .semantics { contentDescription = badge.description }
+                        .testTag("$tagPrefix:badge"),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.Create,
+                        contentDescription = null,
+                        tint = UsTheme.extended.onAccent,
+                        modifier = Modifier.size(BADGE_GLYPH),
+                    )
+                }
+            }
+        }
+        // The "+" says what it does (founder, 2026-10-19: a bare plus on first
+        // launch meant nothing to anyone). Its own tap target, the same action.
+        author.badge?.let { badge ->
+            Text(
+                text = badge.description,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.onMedia,
+                maxLines = 1,
+                modifier = Modifier
+                    .clickable(role = Role.Button, onClick = badge.onClick)
+                    .clearAndSetSemantics { }
+                    .testTag("$tagPrefix:badge_label"),
+            )
         }
     }
 }
@@ -322,23 +331,16 @@ fun StageProgressRing(progress: Float, modifier: Modifier = Modifier, content: @
 }
 
 /**
- * The sound disc: a dark record with the sound's creator in the middle,
- * turning slowly while the post plays. The whole disc is the target.
+ * The sound disc: a dark record with the sound's creator in the middle.
+ * It holds still (founder, 2026-10-19: the turning disc read as a moving
+ * profile picture). The whole disc is the target.
  */
 @Composable
-private fun StageSoundDisc(sound: StageRailSound, spinning: Boolean, tagPrefix: String) {
-    val turn = rememberInfiniteTransition(label = "soundDisc")
-    val angle by turn.animateFloat(
-        initialValue = 0f,
-        targetValue = FULL_SWEEP,
-        animationSpec = infiniteRepeatable(tween(DISC_TURN_MILLIS, easing = LinearEasing)),
-        label = "soundDiscAngle",
-    )
+private fun StageSoundDisc(sound: StageRailSound, tagPrefix: String) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(DISC_SIZE)
-            .rotate(if (spinning) angle else 0f)
             .clip(CircleShape)
             .background(Brush.radialGradient(listOf(UsTheme.extended.mediaPlate, UsTheme.extended.stage)))
             .border(DISC_RIM, UsTheme.extended.mediaRim, CircleShape)
@@ -831,7 +833,6 @@ private const val PRESS_SCALE = 0.85f
 private const val PRESS_STIFFNESS = 1200f
 private const val RING_START_ANGLE = -90f
 private const val FULL_SWEEP = 360f
-private const val DISC_TURN_MILLIS = 6_000
 private val RAIL_GAP = 18.dp
 private val RAIL_TARGET = 48.dp
 private val RAIL_ICON = 30.dp

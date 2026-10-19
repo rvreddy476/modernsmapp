@@ -1293,7 +1293,6 @@ private fun ReelPage(
                 offersRelationship = offersRelationship,
                 soundLine = soundLine,
                 progress = progress,
-                spinning = settled && !view.paused,
                 muted = view.muted,
                 actions = actions,
             )
@@ -1419,7 +1418,6 @@ private fun ReelRail(
     offersRelationship: Boolean,
     soundLine: SoundLine?,
     progress: Float,
-    spinning: Boolean,
     muted: Boolean,
     actions: ReelActions,
     modifier: Modifier = Modifier,
@@ -1457,7 +1455,6 @@ private fun ReelRail(
                 onClick = { actions.onSoundLine(item) },
             )
         },
-        spinning = spinning,
         tagPrefix = "reel_rail",
         modifier = modifier.padding(end = UsTheme.spacing.m, bottom = RAIL_BOTTOM_INSET),
     ) {
