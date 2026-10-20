@@ -637,6 +637,10 @@ services:
       # Default is false everywhere else; dev runs it on so the feature is
       # exercised on the stack the founder tests against.
       DATING_CALLS_ENABLED: ${DATING_CALLS_ENABLED:-true}
+      # DM consent (2026-10-20): accepting a request no longer makes a graph
+      # connection, so calls under accepted_chats_only ask chat-service's
+      # internal direct-chat state route. Same MESSAGE_SERVICE_URL requirement.
+      ACCEPTED_CHAT_CALLS_ENABLED: ${ACCEPTED_CHAT_CALLS_ENABLED:-true}
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
