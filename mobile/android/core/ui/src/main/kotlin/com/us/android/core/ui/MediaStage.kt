@@ -4,9 +4,14 @@
 
 package com.us.android.core.ui
 
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -54,9 +59,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
@@ -239,61 +246,87 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
 }
 
 /**
- * The Follow ring (founder, 2026-10-19): the author's picture inside a pink
- * ring, FOLLOW bent along the ring's top half and a small plus at its foot.
- * One target; it follows. Drawn on a 48-unit grid, the same numbers as the
- * web's ReelRail ring, so both read alike.
+ * The Follow seal (founder, 2026-10-20, from the "Circular Follow Seal"
+ * reference): the size of the profile picture at the rail's foot; the
+ * author's picture in the middle, a solid and a dotted rim, "FOLLOW •"
+ * twice round a full circle turning once every 12 seconds, and a white
+ * plus badge at the lower right. One target; it follows. Drawn on a
+ * 44-unit grid, the same numbers as the web's ReelRail seal.
  */
 @Composable
 private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modifier: Modifier = Modifier) {
     val ink = UsTheme.extended.onMedia
+    val pink = UsTheme.extended.followBadge
     val word = remember {
         android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-            textAlign = android.graphics.Paint.Align.CENTER
-            letterSpacing = FOLLOW_WORD_TRACKING
         }
     }
-    val arc = remember { android.graphics.Path() }
+    val circle = remember { android.graphics.Path() }
+    val turn by rememberInfiniteTransition(label = "follow-seal").animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = FOLLOW_SPIN_MILLIS, easing = LinearEasing)),
+        label = "follow-seal-turn",
+    )
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .size(FOLLOW_RING)
-            .clip(CircleShape)
-            .background(UsTheme.extended.followBadge)
+            .size(FOLLOW_SEAL)
             .stagePressScale(badge.onClick)
             .clearAndSetSemantics {
                 contentDescription = badge.description
                 role = Role.Button
             },
     ) {
+        Canvas(modifier = Modifier.fillMaxSize()) { drawCircle(pink) }
         UsAvatar(
             name = author.name,
             seed = author.seed,
             imageUrl = author.imageUrl,
             size = UsAvatarSize.Post,
-            // 36dp drawn at 32dp: the picture inside the 48dp ring (20 Oct).
-            modifier = Modifier.graphicsLayer {
-                scaleX = FOLLOW_FACE_SCALE
-                scaleY = FOLLOW_FACE_SCALE
-            },
+            // 36dp drawn at the seal's 26-unit face with a 1-unit white edge.
+            modifier = Modifier
+                .graphicsLayer {
+                    scaleX = FOLLOW_FACE_SCALE
+                    scaleY = FOLLOW_FACE_SCALE
+                }
+                .border(FOLLOW_FACE_EDGE, ink, CircleShape),
         )
         Canvas(modifier = Modifier.fillMaxSize()) {
             val unit = size.width / FOLLOW_GRID
-            val centre = size.width / 2f
-            val radius = FOLLOW_ARC_RADIUS * unit
-            arc.reset()
-            arc.addArc(centre - radius, centre - radius, centre + radius, centre + radius, 180f, 180f)
+            val c = Offset(size.width / 2f, size.height / 2f)
+            drawCircle(ink.copy(alpha = FOLLOW_RIM_ALPHA), radius = FOLLOW_OUTER_RIM * unit, center = c, style = Stroke(width = FOLLOW_RIM_WIDTH * unit))
+            drawCircle(
+                ink.copy(alpha = FOLLOW_RIM_ALPHA),
+                radius = FOLLOW_DOTTED_RIM * unit,
+                center = c,
+                style = Stroke(
+                    width = FOLLOW_RIM_WIDTH * unit,
+                    cap = StrokeCap.Round,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(FOLLOW_DOT * unit, FOLLOW_DOT_GAP * unit)),
+                ),
+            )
+            // The words fill the circle: tracking is set so the line is exactly its circumference.
+            val radius = FOLLOW_TEXT_RADIUS * unit
+            circle.reset()
+            circle.addCircle(c.x, c.y, radius, android.graphics.Path.Direction.CW)
             word.color = ink.toArgb()
             word.textSize = FOLLOW_WORD_SIZE * unit
-            drawIntoCanvas { canvas ->
-                canvas.nativeCanvas.drawTextOnPath("FOLLOW", arc, (Math.PI * radius / 2).toFloat(), 0f, word)
+            word.letterSpacing = 0f
+            val bare = word.measureText(FOLLOW_SEAL_TEXT)
+            val around = (2 * Math.PI * radius).toFloat()
+            word.letterSpacing = ((around - bare) / (word.textSize * FOLLOW_SEAL_TEXT.length)).coerceAtLeast(0f)
+            rotate(degrees = turn, pivot = c) {
+                drawIntoCanvas { canvas -> canvas.nativeCanvas.drawTextOnPath(FOLLOW_SEAL_TEXT, circle, 0f, 0f, word) }
             }
-            val stroke = FOLLOW_PLUS_STROKE * unit
-            val plusY = FOLLOW_PLUS_CENTRE_Y * unit
+            val plus = Offset(FOLLOW_PLUS_CENTRE * unit, FOLLOW_PLUS_CENTRE * unit)
+            drawCircle(pink, radius = (FOLLOW_PLUS_RADIUS + FOLLOW_RIM_WIDTH * 1.4f) * unit, center = plus)
+            drawCircle(ink, radius = FOLLOW_PLUS_RADIUS * unit, center = plus)
             val half = FOLLOW_PLUS_HALF * unit
-            drawLine(ink, Offset(centre, plusY - half), Offset(centre, plusY + half), stroke, StrokeCap.Round)
-            drawLine(ink, Offset(centre - half, plusY), Offset(centre + half, plusY), stroke, StrokeCap.Round)
+            val stroke = FOLLOW_PLUS_STROKE * unit
+            drawLine(pink, Offset(plus.x, plus.y - half), Offset(plus.x, plus.y + half), stroke, StrokeCap.Round)
+            drawLine(pink, Offset(plus.x - half, plus.y), Offset(plus.x + half, plus.y), stroke, StrokeCap.Round)
         }
     }
 }
@@ -877,20 +910,29 @@ private val RAIL_TARGET = 48.dp
 private val RAIL_ICON = 26.dp
 private val AVATAR_RIM = 1.5.dp
 /**
- * The Follow ring at the top of the rail: 48dp with the picture 32dp inside
- * (2026-10-20: a smaller button and picture; the 8dp band keeps FOLLOW and
- * the plus at their size).
+ * The Follow seal at the top of the rail (2026-10-20): 48dp, the size of the
+ * profile picture at the foot (UsAvatarSize.Chat). Its marks on a 44-unit
+ * grid, the web's numbers: face 26, rims at 21.3 and 14.6, words on 16.4,
+ * the plus badge 12 across centred at (34, 34).
  */
-private val FOLLOW_RING = 48.dp
-private const val FOLLOW_FACE_SCALE = 32f / 36f
-/** Its drawing grid and marks, in grid units (web: ReelRail's 48-unit SVG). */
-private const val FOLLOW_GRID = 48f
-private const val FOLLOW_ARC_RADIUS = 17.2f
-private const val FOLLOW_WORD_SIZE = 8f
-private const val FOLLOW_WORD_TRACKING = 0.02f
-private const val FOLLOW_PLUS_CENTRE_Y = 44f
-private const val FOLLOW_PLUS_HALF = 3.5f
-private const val FOLLOW_PLUS_STROKE = 2.6f
+private val FOLLOW_SEAL = 48.dp
+private const val FOLLOW_GRID = 44f
+private const val FOLLOW_FACE_SCALE = (26f / 44f * 48f) / 36f
+private val FOLLOW_FACE_EDGE = 1.dp
+private const val FOLLOW_OUTER_RIM = 21.3f
+private const val FOLLOW_DOTTED_RIM = 14.6f
+private const val FOLLOW_RIM_WIDTH = 0.7f
+private const val FOLLOW_RIM_ALPHA = 0.9f
+private const val FOLLOW_DOT = 0.6f
+private const val FOLLOW_DOT_GAP = 1.6f
+private const val FOLLOW_TEXT_RADIUS = 16.4f
+private const val FOLLOW_WORD_SIZE = 5.4f
+private const val FOLLOW_SEAL_TEXT = "FOLLOW • FOLLOW • "
+private const val FOLLOW_SPIN_MILLIS = 12_000
+private const val FOLLOW_PLUS_CENTRE = 34f
+private const val FOLLOW_PLUS_RADIUS = 6f
+private const val FOLLOW_PLUS_HALF = 2.8f
+private const val FOLLOW_PLUS_STROKE = 1.8f
 private val RING_STROKE = 3.dp
 private val RING_GAP = 2.dp
 /** 40dp (was 44, 2026-10-19), shrunk with the rail's glyphs. */
