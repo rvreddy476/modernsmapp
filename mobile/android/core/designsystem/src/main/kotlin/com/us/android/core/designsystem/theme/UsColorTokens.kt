@@ -394,6 +394,14 @@ internal object UsColorTokens {
      * value serves both themes.
      */
     val Playhead = Color(0xFFDC2626)
+
+    /**
+     * The Follow seal in the flag's colours (founder, 2026-10-20): a deep
+     * saffron ring and a green plus badge (the web's --theme-follow-seal and
+     * --theme-follow-seal-plus). Over media, so one value serves both themes.
+     */
+    val FollowSeal = Color(0xFFF15A22)
+    val FollowSealPlus = Color(0xFF138808)
     val ChatOnline = Color(0xFF4ADE80)
 
     /** The glyph or count ON chat's green (send, a badge): the web's ink, 8:1. White on it is 2.3:1. */

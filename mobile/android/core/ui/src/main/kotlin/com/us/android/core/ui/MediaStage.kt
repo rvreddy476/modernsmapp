@@ -249,14 +249,15 @@ private fun StageRailAvatar(author: StageRailAuthor, tagPrefix: String) {
  * The Follow seal (founder, 2026-10-20, from the "Circular Follow Seal"
  * reference): the size of the profile picture at the rail's foot; the
  * author's picture in the middle, a solid and a dotted rim, "FOLLOW •"
- * twice round a full circle turning once every 12 seconds, and a white
- * plus badge at the lower right. One target; it follows. Drawn on a
+ * twice round a full circle turning once every 12 seconds, and a green
+ * plus badge at the lower right, in the flag's colours (2026-10-20). One target; it follows. Drawn on a
  * 44-unit grid, the same numbers as the web's ReelRail seal.
  */
 @Composable
 private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modifier: Modifier = Modifier) {
     val ink = UsTheme.extended.onMedia
-    val pink = UsTheme.extended.followBadge
+    val saffron = UsTheme.extended.followSeal
+    val green = UsTheme.extended.followSealPlus
     val word = remember {
         android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
@@ -279,7 +280,7 @@ private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modi
                 role = Role.Button
             },
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) { drawCircle(pink) }
+        Canvas(modifier = Modifier.fillMaxSize()) { drawCircle(saffron) }
         UsAvatar(
             name = author.name,
             seed = author.seed,
@@ -321,12 +322,12 @@ private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modi
                 drawIntoCanvas { canvas -> canvas.nativeCanvas.drawTextOnPath(FOLLOW_SEAL_TEXT, circle, 0f, 0f, word) }
             }
             val plus = Offset(FOLLOW_PLUS_CENTRE * unit, FOLLOW_PLUS_CENTRE * unit)
-            drawCircle(pink, radius = (FOLLOW_PLUS_RADIUS + FOLLOW_RIM_WIDTH * 1.4f) * unit, center = plus)
-            drawCircle(ink, radius = FOLLOW_PLUS_RADIUS * unit, center = plus)
+            drawCircle(ink, radius = (FOLLOW_PLUS_RADIUS + FOLLOW_RIM_WIDTH * 1.4f) * unit, center = plus)
+            drawCircle(green, radius = FOLLOW_PLUS_RADIUS * unit, center = plus)
             val half = FOLLOW_PLUS_HALF * unit
             val stroke = FOLLOW_PLUS_STROKE * unit
-            drawLine(pink, Offset(plus.x, plus.y - half), Offset(plus.x, plus.y + half), stroke, StrokeCap.Round)
-            drawLine(pink, Offset(plus.x - half, plus.y), Offset(plus.x + half, plus.y), stroke, StrokeCap.Round)
+            drawLine(ink, Offset(plus.x, plus.y - half), Offset(plus.x, plus.y + half), stroke, StrokeCap.Round)
+            drawLine(ink, Offset(plus.x - half, plus.y), Offset(plus.x + half, plus.y), stroke, StrokeCap.Round)
         }
     }
 }

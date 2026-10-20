@@ -50,6 +50,9 @@ data class UsExtendedColors(
     val followBadge: Color,
     /** The red played part of every video progress bar. */
     val playhead: Color,
+    /** The Follow seal's saffron ring and its green plus badge. */
+    val followSeal: Color,
+    val followSealPlus: Color,
     val chatOnline: Color,
     /** Presence: the web's success. */
     val onlineGreen: Color,
@@ -384,6 +387,8 @@ internal val DarkExtendedColors = UsExtendedColors(
     chatAccent = UsColorTokens.ChatAccent,
     followBadge = UsColorTokens.FollowBadge,
     playhead = UsColorTokens.Playhead,
+    followSeal = UsColorTokens.FollowSeal,
+    followSealPlus = UsColorTokens.FollowSealPlus,
     chatOnline = UsColorTokens.ChatOnline,
     onlineGreen = UsColorTokens.Dark.Success,
     liveRed = UsColorTokens.Dark.Danger,
