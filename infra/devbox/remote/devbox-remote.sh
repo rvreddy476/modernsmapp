@@ -230,6 +230,36 @@ cmd_load_image() {
   rm -f "$f"
 }
 
+# build-admin <bucket> <bundle-key> <ref> <image-tag>
+# Builds the admin console image ON the server from an atpost-web-ui bundle
+# (Dockerfile ZONE=admin, served at the root of admin.cleestudio.com). The
+# browser Maps key comes from the stack's .env and is never echoed.
+cmd_build_admin() {
+  local bucket="$1" key="$2" ref="$3" tag="$4" dir="$ROOT/admin-web" bundle maps log
+  bundle="$(mktemp --suffix=.bundle)"
+  aws s3 cp "s3://$bucket/$key" "$bundle" --only-show-errors
+  [ -d "$dir/.git" ] || git init -q "$dir"
+  git config --global --add safe.directory "$dir" 2>/dev/null || true
+  git -C "$dir" bundle verify -q "$bundle" >/dev/null
+  git -C "$dir" fetch -q "$bundle" "$ref"
+  git -C "$dir" checkout -q --force --detach FETCH_HEAD
+  rm -f "$bundle"
+  aws s3 rm "s3://$bucket/$key" --only-show-errors
+  say "admin source at $(git -C "$dir" log -1 --format='%h %cd %s' --date=short)"
+  maps="$(grep -E '^NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"\r')"
+  [ -n "$maps" ] || say "note: NEXT_PUBLIC_GOOGLE_MAPS_API_KEY not in .env; the zones map will not load"
+  mkdir -p "$LOGS"
+  log="$LOGS/build-admin-$(date -u +%Y%m%dT%H%M%S).log"
+  if docker build "$dir" -t "$tag" \
+       --build-arg ZONE=admin --build-arg ADMIN_BASE_PATH=/ \
+       --build-arg NEXT_PUBLIC_GOOGLE_MAPS_API_KEY="$maps" >"$log" 2>&1; then
+    say "built $tag (log $log)"
+  else
+    tail -n 30 "$log"
+    die "admin build failed (log $log)"
+  fi
+}
+
 sub="${1:-}"; shift || true
 case "$sub" in
   wait-ready)      cmd_wait_ready "$@" ;;
@@ -241,5 +271,6 @@ case "$sub" in
   status)          cmd_status "$@" ;;
   logs)            cmd_logs "$@" ;;
   load-image)      cmd_load_image "$@" ;;
+  build-admin)     cmd_build_admin "$@" ;;
   *) die "unknown subcommand '$sub'" ;;
 esac
