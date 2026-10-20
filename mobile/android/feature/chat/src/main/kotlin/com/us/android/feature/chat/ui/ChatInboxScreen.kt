@@ -633,7 +633,9 @@ internal fun InvitationRow(
 @Composable
 internal fun ConversationPreview(conversation: Conversation, viewerId: String) {
     val body = when {
-        conversation.isRequest -> "Message request"
+        // A request row shows the requester's one message (the server sends
+        // it as `preview`); "Message request" only while there is no text yet.
+        conversation.isRequest -> requestRowPreview(conversation)
         conversation.lastMessagePreview.isNotBlank() -> conversation.lastMessagePreview
         conversation.lastMessage?.preview?.isNotBlank() == true -> conversation.lastMessage?.preview.orEmpty()
         // A message exists but carries no text — a media or typed send, whose

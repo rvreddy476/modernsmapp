@@ -401,6 +401,15 @@ internal fun SheetAction(
     }
 }
 
+/**
+ * A request row's second line (DM consent, 2026-10-20): the requester's one
+ * message, which the requests list sends as `preview`; "Message request"
+ * only while there is no text yet.
+ */
+internal fun requestRowPreview(conversation: Conversation): String =
+    conversation.lastMessagePreview.ifBlank { conversation.lastMessage?.preview.orEmpty() }
+        .ifBlank { "Message request" }
+
 /** What a typed last message says when the server left the preview empty. */
 internal fun typedRowPreview(type: String): String = when (type) {
     "voice" -> "Voice message"
