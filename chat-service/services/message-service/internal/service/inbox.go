@@ -243,7 +243,8 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 			lm := &LastMessageInfo{Type: typ, Preview: r.LastMessagePreview, SenderID: r.LastMessageSender, At: *r.LastMessageAt}
 			if r.LastMessageSender != nil && *r.LastMessageSender == viewerID {
 				status := "sent"
-				if p, ok := peers[r.ID]; ok && r.Type == "direct" {
+				// DM consent: never "read" while it is still a request.
+				if p, ok := peers[r.ID]; ok && r.Type == "direct" && !r.IsRequest {
 					if rc, ok := others[r.ID][p.UserID]; ok && !rc.LastReadAt.Before(*r.LastMessageAt) &&
 						s.receiptDisclosed(ctx, r.ID, viewerID, p.UserID) {
 						status = "read"

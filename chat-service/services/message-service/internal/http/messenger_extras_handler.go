@@ -393,6 +393,14 @@ func (h *Handler) ListMessageRequests(c *gin.Context) {
 		return
 	}
 
+	// DM consent model: cursor paged, incoming by default, ?filtered=true
+	// for Hidden requests; data stays the row array and meta carries
+	// next_cursor / has_more (dm_consent_handler.go).
+	if pager, ok := h.svc.(RequestsPager); ok {
+		h.listRequestsPaged(c, pager, userID)
+		return
+	}
+
 	limit := 20
 	if l := c.Query("limit"); l != "" {
 		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 100 {

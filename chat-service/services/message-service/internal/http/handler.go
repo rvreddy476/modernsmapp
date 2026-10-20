@@ -151,6 +151,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// a graph connection. Same gates, same prefix, same reasoning as above.
 	internal.POST("/dating-match/state", h.DatingMatchState)
 	internal.POST("/dating-match/turns", h.DatingTurns)
+	// DM consent model: graph-service decides calls under
+	// accepted_chats_only by asking whether the pair chat by consent.
+	internal.POST("/direct-chat/state", h.DirectChatState)
 	managedGroups := internal.Group("/groups")
 	{
 		managedGroups.POST("/conversations", h.CreateManagedGroupConversation)
@@ -205,6 +208,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Message requests
 		v1.GET("/requests", h.ListMessageRequests)
+		v1.GET("/requests/count", h.CountMessageRequests)
 		v1.POST("/conversations/:id/requests/accept", h.AcceptMessageRequest)
 		v1.POST("/conversations/:id/requests/decline", h.DeclineMessageRequest)
 		v1.POST("/conversations/:id/requests/block", h.BlockMessageRequest)
@@ -1578,6 +1582,11 @@ func writeIdempotencyError(c *gin.Context, err error) bool {
 // writeMessagingError maps DM-gating / message-request errors (spec §4, §9.5)
 // to their HTTP statuses. Returns true when the error was handled.
 func writeMessagingError(c *gin.Context, err error) bool {
+	// DM consent model: deny reasons and the fail-closed request limiter
+	// (dm_consent_handler.go).
+	if writeConsentError(c, err) {
+		return true
+	}
 	switch {
 	case errors.Is(err, service.ErrMessagingNotAllowed):
 		api.Error(c.Writer, http.StatusForbidden, "MESSAGING_NOT_ALLOWED", err.Error(), nil, nil)

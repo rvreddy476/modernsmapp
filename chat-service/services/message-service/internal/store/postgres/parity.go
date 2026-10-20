@@ -75,7 +75,9 @@ const incomingRequest = `(c.is_request AND COALESCE(mr.receiver_id = $1, true))`
 func laneFilter(lane string) string {
 	switch lane {
 	case LaneRequests:
-		return incomingRequest + ` AND c.request_declined_at IS NULL`
+		// DM consent: only a LIVE request (pending, not past its 30-day
+		// expiry) — a deleted or expired one has left Requests.
+		return incomingRequest + ` AND ` + liveRequest
 	case LaneArchived:
 		return `COALESCE(s.label, '') = 'archived' AND NOT ` + incomingRequest
 	default:
@@ -939,46 +941,16 @@ func (s *ConversationStore) HiddenAmong(ctx context.Context, userID uuid.UUID, m
 
 // --- Requests (§7) ---
 
-// RequestEnvelope is a pending request row with its conversation.
+// RequestEnvelope is a live request row with its conversation (listed by
+// ListRequestEnvelopesPage). RequestAt is the request's own creation time —
+// the list order and cursor key.
 type RequestEnvelope struct {
 	Conversation Conversation
 	SenderID     uuid.UUID
 	ReceiverID   uuid.UUID
 	Preview      string
 	Status       string
-}
-
-// ListRequestEnvelopes returns the requests the legacy /requests list shows
-// (every request conversation the user is a member of, not declined), with
-// the envelope, newest first, bounded.
-func (s *ConversationStore) ListRequestEnvelopes(ctx context.Context, userID uuid.UUID, limit int) ([]RequestEnvelope, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at,
-		       COALESCE(mr.sender_id, '00000000-0000-0000-0000-000000000000'::uuid),
-		       COALESCE(mr.receiver_id, '00000000-0000-0000-0000-000000000000'::uuid),
-		       COALESCE(mr.preview, ''), COALESCE(mr.status, '')
-		FROM chat.conversations c
-		JOIN chat.conversation_members m ON m.conversation_id = c.id
-		LEFT JOIN chat.message_requests mr ON mr.conversation_id = c.id
-		WHERE m.user_id = $1 AND c.is_request = TRUE AND c.request_declined_at IS NULL
-		ORDER BY c.created_at DESC
-		LIMIT $2
-	`, userID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []RequestEnvelope
-	for rows.Next() {
-		var e RequestEnvelope
-		c := &e.Conversation
-		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt,
-			&e.SenderID, &e.ReceiverID, &e.Preview, &e.Status); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	RequestAt    time.Time
 }
 
 // --- Profile extras (§1 peer.username, §7 account age) ---

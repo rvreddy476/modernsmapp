@@ -46,6 +46,12 @@ type Config struct {
 	DisappearingWorkerEnabled bool
 	DisappearingPollInterval  time.Duration
 	DisappearingBatch         int
+
+	// DM consent model (20 Oct 2026): the 30-day message-request expiry
+	// sweep. ON unless MESSAGE_REQUEST_EXPIRY_WORKER_ENABLED is false/0/off.
+	RequestExpiryWorkerEnabled bool
+	RequestExpiryPollInterval  time.Duration
+	RequestExpiryBatch         int
 }
 
 func Load() *Config {
@@ -91,6 +97,10 @@ func Load() *Config {
 		DisappearingWorkerEnabled: getEnvBool("DISAPPEARING_MESSAGES_WORKER_ENABLED", true),
 		DisappearingPollInterval:  getEnvDuration("DISAPPEARING_MESSAGES_POLL_INTERVAL", 30*time.Second),
 		DisappearingBatch:         getEnvInt("DISAPPEARING_MESSAGES_BATCH", 100),
+
+		RequestExpiryWorkerEnabled: getEnvBool("MESSAGE_REQUEST_EXPIRY_WORKER_ENABLED", true),
+		RequestExpiryPollInterval:  getEnvDuration("MESSAGE_REQUEST_EXPIRY_POLL_INTERVAL", 10*time.Minute),
+		RequestExpiryBatch:         getEnvInt("MESSAGE_REQUEST_EXPIRY_BATCH", 200),
 	}
 }
 

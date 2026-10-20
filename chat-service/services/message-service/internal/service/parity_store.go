@@ -38,7 +38,6 @@ type parityStore interface {
 	SearchMyConversations(ctx context.Context, userID uuid.UUID, q string, limit int) ([]uuid.UUID, error)
 	GetMemberSearchStates(ctx context.Context, userID uuid.UUID, convIDs []uuid.UUID) (map[uuid.UUID]postgres.MemberSearchState, error)
 	HiddenAmong(ctx context.Context, userID uuid.UUID, messageIDs []uuid.UUID) (map[uuid.UUID]bool, error)
-	ListRequestEnvelopes(ctx context.Context, userID uuid.UUID, limit int) ([]postgres.RequestEnvelope, error)
 	GetProfileExtras(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]postgres.ProfileExtras, error)
 	SetProfileExtras(ctx context.Context, userID uuid.UUID, username string, createdAt *time.Time) error
 }

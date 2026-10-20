@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -262,4 +263,94 @@ func TestUnpinOnlyRemovesAPinOfTheNamedConversation(t *testing.T) {
 	if pins, _ := store.GetConversationPins(ctx, convA); len(pins) != 0 {
 		t.Fatal("the pin must be gone")
 	}
+}
+
+// A claim never takes more than its batch limit, even with a large backlog
+// and replicas claiming side by side. The old `WHERE message_id IN (… LIMIT
+// … SKIP LOCKED)` form could be rescanned by the planner, each rescan
+// picking a fresh set, so one claim could lease more rows than the limit.
+func TestDisappearClaimNeverExceedsTheBatchLimit(t *testing.T) {
+	_, pool := disappearingStore(t)
+	// Claims run on connections pinned to the rescanning plan, so the
+	// test does not depend on the planner's choice for a small table.
+	store := rescanPlanStore(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM chat.message_expiries`); err != nil {
+		t.Fatal(err)
+	}
+	a, b := uuid.New(), uuid.New()
+	convID := seedDirect(t, pool, a, b)
+	now := time.Now()
+	const backlog, limit = 60, 5
+	due := map[uuid.UUID]bool{}
+	for i := 0; i < backlog; i++ {
+		id := uuid.New()
+		expires := now.Add(-time.Duration(i+1) * time.Minute)
+		if err := store.ScheduleMessageExpiry(ctx, MessageExpiry{MessageID: id, ConversationID: convID, Bucket: now.UTC().Format("200601"),
+			MessageTS: expires.Add(-time.Hour), SenderID: a, ExpiresAt: expires}); err != nil {
+			t.Fatal(err)
+		}
+		due[id] = true
+	}
+
+	var mu sync.Mutex
+	claimed := map[uuid.UUID]int{}
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				got, err := store.ClaimDueMessageExpiries(ctx, limit, time.Hour)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if len(got) > limit {
+					t.Errorf("one claim leased %d rows, limit %d", len(got), limit)
+				}
+				if len(got) == 0 {
+					return
+				}
+				mu.Lock()
+				for _, e := range got {
+					claimed[e.MessageID]++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(claimed) != backlog {
+		t.Fatalf("claimed %d distinct rows, want the whole backlog %d", len(claimed), backlog)
+	}
+	for id, n := range claimed {
+		if !due[id] || n != 1 {
+			t.Fatalf("row %v claimed %d times (due=%v)", id, n, due[id])
+		}
+	}
+}
+
+// rescanPlanStore is a store whose connections pin the planner to the
+// worst case for a claim: a nested-loop semi join that rescans the claim
+// subquery once per outer row, with no hash, merge, sort or materialise
+// step to cache it. Under that plan the old `WHERE id IN (… LIMIT … FOR
+// UPDATE SKIP LOCKED)` form re-runs the LIMIT on every rescan, skips the
+// rows it has just updated and picks fresh ones, so a claim of 5 leases
+// far more. A MATERIALIZED CTE runs once and holds.
+func rescanPlanStore(t *testing.T) *ConversationStore {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(os.Getenv("CHAT_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"enable_hashjoin", "enable_mergejoin", "enable_material", "enable_hashagg", "enable_sort"} {
+		cfg.ConnConfig.RuntimeParams[p] = "off"
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return New(pool)
 }

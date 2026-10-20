@@ -197,6 +197,14 @@ func main() {
 	} else {
 		logger.Warn("disappearing-message expiry worker DISABLED by DISAPPEARING_MESSAGES_WORKER_ENABLED; due messages will not disappear")
 	}
+	// DM consent model: unanswered message requests expire after 30 days
+	// (lists already hide them; this records the 'expired' status). Safe
+	// with several replicas (SKIP LOCKED claims).
+	if cfg.RequestExpiryWorkerEnabled {
+		go svc.StartMessageRequestExpiryWorker(ctx, cfg.RequestExpiryPollInterval, cfg.RequestExpiryBatch)
+	} else {
+		logger.Warn("message-request expiry worker DISABLED by MESSAGE_REQUEST_EXPIRY_WORKER_ENABLED; pending requests will not be marked expired")
+	}
 
 	// 9. HTTP Server
 	r := gin.New()

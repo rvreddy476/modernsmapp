@@ -271,7 +271,7 @@ type Service struct {
 	msgStore    MessageStore
 	rdb         *redis.Client
 	pres        presence.Store
-	rateLimiter *ratelimit.Limiter
+	rateLimiter rateLimitAllower
 	producer    EventProducer
 	log         *slog.Logger
 	// purgeAckProducer writes user.purge_acked outbox rows to the
@@ -477,35 +477,49 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 	// (directive §3.2). The target's pause is enforced by the graph decision
 	// below. Unknown own-policy fails closed for CREATION (sensitive action).
 	if own := s.GetChatPolicy(ctx, userID); !own.Known || own.ChatPaused {
+		if own.Known {
+			return nil, notAllowed(ReasonYouPaused)
+		}
 		return nil, ErrMessagingNotAllowed
 	}
 
 	// DM gating (spec §1, §4): a non-connection cannot silently open a direct
 	// DM. Depending on the target's privacy + relationship state the attempt
-	// is permitted, downgraded to a Message Request, or rejected outright.
-	allowed, asRequest, err := s.checkMessagePermission(ctx, userID, otherID)
+	// is permitted, downgraded to a Message Request, or rejected outright —
+	// with graph's reason, so the client can say why.
+	allowed, asRequest, reason, err := s.checkMessagePermission(ctx, userID, otherID)
 	if err != nil {
 		return nil, err
 	}
 	if !allowed && !asRequest {
-		return nil, ErrMessagingNotAllowed
+		return nil, notAllowed(reason)
 	}
 
-	// Decline cooldown (directive §3.3): a recently declined/blocked/reported
-	// request bars a re-request REGARDLESS of the idempotency key presented.
-	// Checked outside the idempotency closure on purpose — a rotated key is
-	// exactly the bypass this closes.
+	// Decline cooldown (directive §3.3): a recently deleted/blocked/reported
+	// request bars a re-request for 7 days REGARDLESS of the idempotency key
+	// presented. Checked outside the idempotency closure on purpose — a
+	// rotated key is exactly the bypass this closes.
+	//
+	// The refusal never reveals what happened (DM consent model):
+	//   - deleted ("ignored"): the requester gets the SAME conversation back,
+	//     unchanged — still a request, still out of the recipient's
+	//     Requests — exactly as if it were pending. Their one message is
+	//     spent, so further sends get AWAITING_REQUEST_ACCEPTANCE as for any
+	//     pending request.
+	//   - blocked / reported: the requester's membership was severed, so
+	//     there is nothing to hand back; they get the same answer graph gives
+	//     for a block, "unavailable".
 	if !allowed && asRequest {
 		prev, err := s.groupStore().GetLatestRequestBetween(ctx, userID, otherID)
 		if err != nil {
 			return nil, err
 		}
-		if prev != nil && prev.RespondedAt != nil {
+		if prev != nil && prev.RespondedAt != nil && time.Since(*prev.RespondedAt) < requestDeclineCooldown {
 			switch prev.Status {
-			case "ignored", "blocked", "reported":
-				if time.Since(*prev.RespondedAt) < requestDeclineCooldown {
-					return nil, ErrRequestCooldown
-				}
+			case "ignored":
+				return s.getConversationResponse(ctx, prev.ConversationID)
+			case "blocked", "reported":
+				return nil, notAllowed(ReasonUnavailable)
 			}
 		}
 	}
@@ -515,6 +529,13 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 		OtherID uuid.UUID `json:"other_id"`
 	}{UserID: userID, OtherID: otherID}
 	return withIdempotency(ctx, s, idempotencyKey, req, func() (*ConversationResponse, error) {
+		// DM consent model: the Postgres store opens, revives, reopens or
+		// promotes the conversation in one transaction (see
+		// OpenDirectConversation). The legacy steps below remain only for
+		// stores without it (test fakes).
+		if opener, ok := s.convStore.(directOpener); ok {
+			return s.openDirect(ctx, opener, userID, otherID, allowed)
+		}
 		convID, created, err := s.convStore.CreateDirectConversation(ctx, userID, otherID, userID)
 		if err != nil {
 			return nil, err
@@ -526,7 +547,8 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 			// user may open at most messageRequestRateLimit.Max new
 			// requests per window. Checked only on the actual creation
 			// path so idempotent retries / existing conversations are free.
-			if err := s.checkRateLimit(ctx, messageRequestRateLimit, userID); err != nil {
+			// Fails CLOSED when the limiter store is unavailable.
+			if err := s.checkRateLimitFailClosed(ctx, messageRequestRateLimit, userID); err != nil {
 				return nil, err
 			}
 			if err := s.convStore.MarkConversationAsRequest(ctx, convID); err != nil {
@@ -643,20 +665,21 @@ func (s *Service) HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID
 }
 
 // checkMessagePermission asks graph-service whether actor may DM target.
-// Returns (allowed, asRequest): allowed=true means a direct DM is permitted;
-// allowed=false + asRequest=true means it must route through a Message
-// Request; both false means messaging is not permitted at all.
-func (s *Service) checkMessagePermission(ctx context.Context, actorID, targetID uuid.UUID) (allowed bool, asRequest bool, err error) {
+// Returns (allowed, asRequest, reason): allowed=true means a direct DM is
+// permitted; allowed=false + asRequest=true means it must route through a
+// Message Request; both false means messaging is not permitted at all, and
+// reason (normalised by normalizeDenyReason) says why when graph said so.
+func (s *Service) checkMessagePermission(ctx context.Context, actorID, targetID uuid.UUID) (allowed bool, asRequest bool, reason string, err error) {
 	if s.graphServiceURL == "" {
 		// Deploy misconfiguration. Fail closed on direct DMs but keep the
 		// request path open so messaging is degraded, not bricked.
 		s.log.Warn("GRAPH_SERVICE_URL not configured — DM gating degraded to request-only")
-		return false, true, nil
+		return false, true, "", nil
 	}
 	url := fmt.Sprintf("%s/v1/permissions/check?target_user_id=%s&actions=message", s.graphServiceURL, targetID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
 	req.Header.Set("X-User-Id", actorID.String())
 	if s.internalServiceKey != "" {
@@ -665,15 +688,15 @@ func (s *Service) checkMessagePermission(ctx context.Context, actorID, targetID 
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return false, false, fmt.Errorf("permission check request failed: %w", err)
+		return false, false, "", fmt.Errorf("permission check request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, false, fmt.Errorf("permission check returned %d: %s", resp.StatusCode, string(body))
+		return false, false, "", fmt.Errorf("permission check returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var envelope struct {
@@ -682,15 +705,19 @@ func (s *Service) checkMessagePermission(ctx context.Context, actorID, targetID 
 				Message struct {
 					Allowed  bool   `json:"allowed"`
 					Fallback string `json:"fallback"`
+					Reason   string `json:"reason"`
 				} `json:"message"`
 			} `json:"decisions"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return false, false, fmt.Errorf("decode permission response: %w", err)
+		return false, false, "", fmt.Errorf("decode permission response: %w", err)
 	}
 	d := envelope.Data.Decisions.Message
-	return d.Allowed, d.Fallback == "message_request", nil
+	if !d.Allowed && d.Fallback != "message_request" {
+		reason = normalizeDenyReason(d.Reason)
+	}
+	return d.Allowed, d.Fallback == "message_request", reason, nil
 }
 
 func (s *Service) CreateGroupConversation(ctx context.Context, userID uuid.UUID, title string, memberIDs []uuid.UUID, idempotencyKey string) (*ConversationResponse, error) {
@@ -1167,7 +1194,10 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 			if err != nil {
 				return nil, err
 			}
-			if mr == nil || mr.Status != "pending" {
+			// A request past its 30-day expiry is closed even before the
+			// sweep marks it (zero ExpiresAt: an envelope without one).
+			if mr == nil || mr.Status != "pending" ||
+				(!mr.ExpiresAt.IsZero() && !mr.ExpiresAt.After(time.Now())) {
 				return nil, ErrAwaitingRequestAcceptance
 			}
 			if userID != mr.SenderID {
@@ -1180,9 +1210,9 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 				// there is, so it is honoured as consent.
 				//
 				// This runs the SAME path as the Accept button, so the
-				// graph connection, the request status and the
-				// MessageRequestAccepted event all still happen exactly
-				// once. Decline and Block are untouched and remain the
+				// request status and the MessageRequestAccepted event
+				// still happen exactly once (accepting no longer makes a
+				// graph connection — DM consent model, 20 Oct 2026). Decline and Block are untouched and remain the
 				// only other ways out.
 				//
 				// A failed accept is fatal to the send: delivering a reply
@@ -2001,6 +2031,11 @@ func (s *Service) attachReadCursors(ctx context.Context, viewerID uuid.UUID, res
 	if resp == nil || len(resp.Members) == 0 {
 		return
 	}
+	// DM consent: a request conversation discloses no receipts (the same
+	// rule as the live frame in MarkRead).
+	if resp.IsRequest {
+		return
+	}
 	// Dating mechanic M9: in a gated dating conversation the viewer sees
 	// receipts only while dating allows it.
 	if meta, err := s.convStore.GetConversationMeta(ctx, resp.ID); err == nil && meta != nil && meta.ReceiptsGated &&
@@ -2297,6 +2332,12 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 
 	conv, err := s.convStore.GetConversation(ctx, conversationID)
 	if err != nil || conv == nil {
+		return nil
+	}
+	// DM consent: no read receipts while the conversation is a request
+	// (pending, or deleted without the sender being told) — reading a
+	// request must not tell its sender anything.
+	if conv.IsRequest {
 		return nil
 	}
 	members, _ := s.convStore.GetMembers(ctx, conversationID)

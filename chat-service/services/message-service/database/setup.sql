@@ -651,3 +651,9 @@ CREATE INDEX IF NOT EXISTS idx_message_expiries_due
     ON chat.message_expiries(next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_message_expiries_conversation
     ON chat.message_expiries(conversation_id);
+
+-- ===== 014: DM consent model (20 Oct 2026) =====
+-- See migrations/014_dm_consent_requests.sql. The 30-day request expiry
+-- sweep claims due pending requests by expires_at.
+CREATE INDEX IF NOT EXISTS idx_message_requests_pending_expiry
+    ON chat.message_requests(expires_at) WHERE status = 'pending';

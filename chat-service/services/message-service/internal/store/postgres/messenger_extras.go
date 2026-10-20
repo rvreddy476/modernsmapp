@@ -479,8 +479,9 @@ func (s *ConversationStore) ListMessageRequests(ctx context.Context, userID uuid
 	rows, err := s.db.Query(ctx, `
 		SELECT c.id, c.type, c.title, c.created_by, c.created_at, c.updated_at
 		FROM chat.conversations c
-		JOIN chat.conversation_members m ON m.conversation_id = c.id
-		WHERE m.user_id = $1 AND c.is_request = TRUE AND c.request_declined_at IS NULL
+		JOIN chat.conversation_members m ON m.conversation_id = c.id AND m.left_at IS NULL
+		LEFT JOIN chat.message_requests mr ON mr.conversation_id = c.id
+		WHERE m.user_id = $1 AND `+liveRequest+`
 		ORDER BY c.created_at DESC
 		LIMIT $2 OFFSET $3
 	`, userID, limit, offset)

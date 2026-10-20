@@ -227,6 +227,10 @@ type RequestRow struct {
 	// caller sent it). The list holds both; only incoming ones are waiting
 	// for the caller.
 	Direction string `json:"direction"`
+	// DM consent model (additive): the request's one message ("" until
+	// it is sent) and when the request was made — the list order.
+	Preview     string    `json:"preview"`
+	RequestedAt time.Time `json:"requested_at"`
 }
 
 // requestDirection says whether the viewer received ("incoming") or sent
@@ -248,10 +252,6 @@ func requestDirection(receiverID, senderID uuid.UUID, createdBy *uuid.UUID, view
 // newAccountAge is the "new account" request signal (CONTRACT §7).
 const newAccountAge = 7 * 24 * time.Hour
 
-// requestScanCap bounds the requests evaluated per call (pages are cut in
-// memory after filtering).
-const requestScanCap = 200
-
 // requestFiltered decides whether an incoming request goes to the filtered
 // sub-list: a filtered keyword always does; with safe mode on, a link or a
 // sender account younger than 7 days does too. A first request message is
@@ -268,95 +268,4 @@ func requestFiltered(preview string, policy ChatPolicy, senderCreatedAt *time.Ti
 		return true
 	}
 	return senderCreatedAt != nil && now.Sub(*senderCreatedAt) < newAccountAge
-}
-
-// ListRequestsFiltered is GET /v1/chat/requests?filter=all|filtered. "all"
-// (the default) is every request NOT filtered; "filtered" is the safe-mode
-// sub-list. Requests the caller sent are never filtered.
-func (s *Service) ListRequestsFiltered(ctx context.Context, userID uuid.UUID, filter string, limit, offset int) ([]RequestRow, error) {
-	return s.ListRequestsDirected(ctx, userID, filter, "", limit, offset)
-}
-
-// ListRequestsDirected adds ?direction=incoming|outgoing|all (default all, the
-// list as it always was).
-func (s *Service) ListRequestsDirected(ctx context.Context, userID uuid.UUID, filter, direction string, limit, offset int) ([]RequestRow, error) {
-	if filter == "" {
-		filter = "all"
-	}
-	if direction == "" {
-		direction = "all"
-	}
-	if direction != "all" && direction != "incoming" && direction != "outgoing" {
-		return nil, fmt.Errorf("%w: direction must be incoming, outgoing or all", ErrInvalidMessageContent)
-	}
-	if filter != "all" && filter != "filtered" {
-		return nil, fmt.Errorf("%w: filter must be all or filtered", ErrInvalidMessageContent)
-	}
-	ps, ok := s.parity()
-	if !ok {
-		convs, err := s.ListRequests(ctx, userID, limit, offset)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]RequestRow, 0, len(convs))
-		if filter == "filtered" {
-			return out, nil
-		}
-		for _, c := range convs {
-			dir := requestDirection(uuid.Nil, uuid.Nil, c.CreatedBy, userID)
-			if direction != "all" && dir != direction {
-				continue
-			}
-			out = append(out, RequestRow{Conversation: c, Direction: dir})
-		}
-		return out, nil
-	}
-	envs, err := ps.ListRequestEnvelopes(ctx, userID, requestScanCap)
-	if err != nil {
-		return nil, err
-	}
-	var senders []uuid.UUID
-	for _, e := range envs {
-		if e.ReceiverID == userID && e.SenderID != uuid.Nil {
-			senders = append(senders, e.SenderID)
-		}
-	}
-	policy := s.GetChatPolicy(ctx, userID)
-	ages := s.profileExtras(ctx, senders)
-	now := s.clock()
-	rows := make([]RequestRow, 0, len(envs))
-	senderOf := map[uuid.UUID]uuid.UUID{}
-	for _, e := range envs {
-		dir := requestDirection(e.ReceiverID, e.SenderID, e.Conversation.CreatedBy, userID)
-		if direction != "all" && dir != direction {
-			continue
-		}
-		filtered := e.ReceiverID == userID && requestFiltered(e.Preview, policy, ages[e.SenderID].AccountCreatedAt, now)
-		if filtered == (filter == "filtered") {
-			rows = append(rows, RequestRow{Conversation: e.Conversation, Filtered: filtered, Direction: dir})
-			// A purged sender's request row is gone: the creator is the sender.
-			sender := e.SenderID
-			if sender == uuid.Nil && e.Conversation.CreatedBy != nil {
-				sender = *e.Conversation.CreatedBy
-			}
-			senderOf[e.Conversation.ID] = sender
-		}
-	}
-	if offset >= len(rows) {
-		return []RequestRow{}, nil
-	}
-	rows = rows[offset:]
-	if limit > 0 && len(rows) > limit {
-		rows = rows[:limit]
-	}
-	// Fix pass 2: the sender block, resolved for the page only.
-	page := make(map[uuid.UUID]uuid.UUID, len(rows))
-	for _, r := range rows {
-		page[r.ID] = senderOf[r.ID]
-	}
-	blocks := s.requestSenders(ctx, userID, page)
-	for i := range rows {
-		rows[i].Sender = blocks[rows[i].ID]
-	}
-	return rows, nil
 }

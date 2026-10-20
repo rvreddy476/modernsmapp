@@ -87,23 +87,31 @@ func (s *ConversationStore) ScheduleMessageExpiry(ctx context.Context, e Message
 // claimed. FOR UPDATE SKIP LOCKED lets replicas run side by side without
 // blocking; pushing next_attempt_at forward by lease means a crashed
 // worker's claim is picked up again once the lease runs out.
+//
+// The claim set is a MATERIALIZED CTE, not `WHERE message_id IN
+// (subquery)`: the planner may rescan an IN subquery once per outer row,
+// and each rescan re-runs LIMIT + SKIP LOCKED, skips the rows this
+// statement just updated and picks fresh ones — leasing more rows than the
+// limit (8 for a limit of 5 under a nested-loop plan).
 func (s *ConversationStore) ClaimDueMessageExpiries(ctx context.Context, limit int, lease time.Duration) ([]MessageExpiry, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	rows, err := s.db.Query(ctx, `
-		UPDATE chat.message_expiries
-		SET next_attempt_at = now() + $2::interval,
-		    attempt_count   = attempt_count + 1
-		WHERE message_id IN (
+		WITH due AS MATERIALIZED (
 			SELECT message_id FROM chat.message_expiries
 			WHERE next_attempt_at <= now()
 			ORDER BY next_attempt_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING message_id, conversation_id, bucket, message_ts, sender_id,
-		          expires_at, attempt_count, deleted_at
+		UPDATE chat.message_expiries e
+		SET next_attempt_at = now() + $2::interval,
+		    attempt_count   = e.attempt_count + 1
+		FROM due
+		WHERE e.message_id = due.message_id
+		RETURNING e.message_id, e.conversation_id, e.bucket, e.message_ts, e.sender_id,
+		          e.expires_at, e.attempt_count, e.deleted_at
 	`, limit, lease.String())
 	if err != nil {
 		return nil, err

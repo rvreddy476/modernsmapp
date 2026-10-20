@@ -44,9 +44,9 @@ var (
 	// ErrOwnerMustTransfer is returned when the owner tries to leave without
 	// an explicit ownership transfer while other members remain.
 	ErrOwnerMustTransfer = errors.New("transfer ownership before leaving the group")
-	// ErrRequestCooldown is returned when a declined request is still inside
-	// its re-request cooldown window.
-	ErrRequestCooldown = errors.New("a previous request to this person was declined recently")
+	// (ErrRequestCooldown is gone: the re-request cooldown never surfaces as
+	// an error, so it cannot tell the requester their request was deleted —
+	// see CreateDirectConversation.)
 )
 
 // groupStore is the governance surface of the postgres store.

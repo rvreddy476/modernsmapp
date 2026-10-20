@@ -3,9 +3,12 @@
     {
       "created_at": "2026-10-18T09:30:00Z",
       "created_by": "0c000000-0000-4000-8000-00000000000c",
+      "direction": "incoming",
       "filtered": true,
       "id": "00000000-0000-4000-8000-000000000001",
       "is_request": true,
+      "preview": "hello from chen",
+      "requested_at": "2026-10-18T09:30:00Z",
       "sender": {
         "avatar_url": "https://cdn.atpost.test/00000000-0000-4000-8000-000000000002/thumb_300.webp",
         "deleted": false,
@@ -16,5 +19,8 @@
       "type": "direct",
       "updated_at": "2026-10-18T09:30:00Z"
     }
-  ]
+  ],
+  "meta": {
+    "has_more": false
+  }
 }

@@ -433,6 +433,12 @@ func (s *Service) ReadSummaryFor(ctx context.Context, viewerID, convID, msgID uu
 	if err != nil {
 		return nil, err
 	}
+	// DM consent: a request conversation discloses no other reader.
+	conv, err := s.convStore.GetConversation(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	requestGated := conv == nil || conv.IsRequest
 	members, err := s.convStore.GetMembers(ctx, convID)
 	if err != nil {
 		return nil, err
@@ -454,7 +460,7 @@ func (s *Service) ReadSummaryFor(ctx context.Context, viewerID, convID, msgID uu
 		if !ok || rc.LastReadAt.Before(msg.Ts) {
 			continue
 		}
-		if m.UserID != viewerID && !s.receiptDisclosed(ctx, convID, viewerID, m.UserID) {
+		if m.UserID != viewerID && (requestGated || !s.receiptDisclosed(ctx, convID, viewerID, m.UserID)) {
 			continue
 		}
 		readers = append(readers, reader{m.UserID, rc.LastReadAt.UTC()})

@@ -73,11 +73,13 @@ type parityFakes struct {
 	goneUsers      map[uuid.UUID]bool
 	convRouteOn    bool
 	convReports    []map[string]any
+	// DM consent model: "actor>target" -> the graph `message` decision.
+	msgDecisions map[string]map[string]any
 }
 
 func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
 	f := &parityFakes{mediaKind: map[string]string{}, keywords: map[uuid.UUID][]string{},
-		mediaSensitive: map[string]*bool{}, goneUsers: map[uuid.UUID]bool{}}
+		mediaSensitive: map[string]*bool{}, goneUsers: map[uuid.UUID]bool{}, msgDecisions: map[string]map[string]any{}}
 	mux := http.NewServeMux()
 	writeJSON := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -121,6 +123,12 @@ func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
 		if action == "message" && actor == pC {
 			decision = map[string]any{"allowed": false, "fallback": "message_request"}
 		}
+		// DM consent tests script per-pair message decisions.
+		f.mu.Lock()
+		if d, ok := f.msgDecisions[actor.String()+">"+r.URL.Query().Get("target_user_id")]; ok && action == "message" {
+			decision = d
+		}
+		f.mu.Unlock()
 		writeJSON(w, map[string]any{"data": map[string]any{"decisions": map[string]any{action: decision}}})
 	})
 	mux.HandleFunc("/graph/v1/graph/relationships/batch", func(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +155,10 @@ func newParityFakes(t *testing.T) (*parityFakes, *httptest.Server) {
 	mux.HandleFunc("/graph/v1/internal/graph/blocked-any", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"blocked_user_ids": []string{}})
 	})
+	// DM consent model: accepting a request no longer makes a connection,
+	// so chat must never call this any more.
 	mux.HandleFunc("/graph/v1/internal/graph/connections/ensure", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("chat called graph connections/ensure; accepting a request must not create a connection")
 		writeJSON(w, map[string]any{"data": map[string]any{"ok": true}})
 	})
 	// media

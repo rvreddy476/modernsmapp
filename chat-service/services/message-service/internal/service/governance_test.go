@@ -567,15 +567,21 @@ func TestRequestCooldownBlocksRotatedKeys(t *testing.T) {
 	f := newGovernanceFake()
 	actor, target := uuid.New(), uuid.New()
 	f.freshPolicy(actor, false)
+	existing := uuid.New()
+	f.conversations[existing] = &postgres.Conversation{ID: existing, Type: "direct", IsRequest: true}
+	f.roles[existing] = map[uuid.UUID]string{actor: "member", target: "member"}
 	respondedAt := time.Now().Add(-time.Hour)
 	f.latestRequest = &postgres.MessageRequest{
-		SenderID: actor, ReceiverID: target,
+		ConversationID: existing, SenderID: actor, ReceiverID: target,
 		Status: "ignored", RespondedAt: &respondedAt,
 	}
 	svc := newGovernanceService(f)
 	// graphServiceURL is empty → checkMessagePermission degrades to
-	// request-only (allowed=false, asRequest=true), which hits the cooldown.
-	if _, err := svc.CreateDirectConversation(context.Background(), actor, target, "rotated-key"); !errors.Is(err, ErrRequestCooldown) {
-		t.Fatalf("cooldown: got %v, want ErrRequestCooldown", err)
+	// request-only (allowed=false, asRequest=true), which hits the cooldown:
+	// a rotated key gets the deleted request back unchanged, never a new one
+	// (CreateDirectConversation on this fake would mint a new id).
+	resp, err := svc.CreateDirectConversation(context.Background(), actor, target, "rotated-key")
+	if err != nil || resp.ID != existing || !resp.IsRequest {
+		t.Fatalf("cooldown: got %+v %v, want the existing request unchanged", resp, err)
 	}
 }
