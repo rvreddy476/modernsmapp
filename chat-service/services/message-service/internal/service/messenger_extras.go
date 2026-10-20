@@ -27,7 +27,7 @@ type MessengerExtrasStore interface {
 	GetFolderConversations(ctx context.Context, folderID uuid.UUID) ([]uuid.UUID, error)
 	// Pins
 	PinMessage(ctx context.Context, convID, messageID, pinnedBy uuid.UUID) (*postgres.ConversationPin, error)
-	UnpinMessage(ctx context.Context, pinID uuid.UUID) error
+	UnpinMessage(ctx context.Context, convID, pinID uuid.UUID) (*postgres.ConversationPin, error)
 	GetConversationPins(ctx context.Context, convID uuid.UUID) ([]postgres.ConversationPin, error)
 	// Message requests
 	GetMessageRequestSettings(ctx context.Context, userID uuid.UUID) (*postgres.MessageRequestSettings, error)
@@ -80,7 +80,21 @@ func (s *Service) GetSettings(ctx context.Context, userID, convID uuid.UUID) (*p
 	if !ok {
 		return nil, errors.New("not a conversation member")
 	}
-	return s.extrasStore().GetConversationSettings(ctx, convID, userID)
+	cs, err := s.extrasStore().GetConversationSettings(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	// Disappearing messages: the timer is conversation-wide, so the
+	// settings carry the conversation's value (0 = off), never the stale
+	// per-member column.
+	timer, err := s.GetDisappearingTimer(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	ms := timer.DisappearAfterMs
+	cs.DisappearAfterMs = &ms
+	cs.DisappearUpdatedBy, cs.DisappearUpdatedAt = timer.UpdatedBy, timer.UpdatedAt
+	return cs, nil
 }
 
 func (s *Service) UpdateSettings(ctx context.Context, settings *postgres.ConversationSettings) error {
@@ -192,11 +206,60 @@ func (s *Service) PinMessageSvc(ctx context.Context, userID, convID, messageID u
 	if !ok {
 		return nil, errors.New("not a conversation member")
 	}
-	return s.extrasStore().PinMessage(ctx, convID, messageID, userID)
+	pin, err := s.extrasStore().PinMessage(ctx, convID, messageID, userID)
+	if err != nil {
+		return nil, err
+	}
+	s.publishPinUpdate(ctx, convID, "pinned", pin, userID)
+	return pin, nil
 }
 
-func (s *Service) UnpinMessageSvc(ctx context.Context, userID, pinID uuid.UUID) error {
-	return s.extrasStore().UnpinMessage(ctx, pinID)
+// ErrPinNotFound is a pin id that does not exist in the conversation named
+// by the route (including a real pin of ANOTHER conversation).
+var ErrPinNotFound = errors.New("pin not found")
+
+// UnpinMessageSvc removes a pin. The caller must be an active member of
+// convID and the pin must belong to convID; otherwise ErrNotMember /
+// ErrPinNotFound (both 404), and nothing is deleted. Before this check any
+// signed-in user holding a pin id could unpin in any chat.
+func (s *Service) UnpinMessageSvc(ctx context.Context, userID, convID, pinID uuid.UUID) error {
+	ok, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotMember
+	}
+	pin, err := s.extrasStore().UnpinMessage(ctx, convID, pinID)
+	if err != nil {
+		return err
+	}
+	if pin == nil {
+		return ErrPinNotFound
+	}
+	s.publishPinUpdate(ctx, convID, "unpinned", pin, userID)
+	return nil
+}
+
+// publishPinUpdate tells every member (and the room) about a pin change:
+// {"type":"pin_update","payload":{conversation_id, action: "pinned"|
+// "unpinned", pin_id, message_id, by, at}}. Best-effort, like other frames.
+func (s *Service) publishPinUpdate(ctx context.Context, convID uuid.UUID, action string, pin *postgres.ConversationPin, by uuid.UUID) {
+	if pin == nil {
+		return
+	}
+	members, err := s.convStore.GetMembers(ctx, convID)
+	if err != nil {
+		return
+	}
+	s.publishToConversation(convID, members, "pin_update", map[string]interface{}{
+		"conversation_id": convID,
+		"action":          action,
+		"pin_id":          pin.ID,
+		"message_id":      pin.MessageID,
+		"by":              by,
+		"at":              s.clock().UTC(),
+	})
 }
 
 func (s *Service) GetPins(ctx context.Context, userID, convID uuid.UUID) ([]postgres.ConversationPin, error) {

@@ -59,7 +59,7 @@ type ChatService interface {
 	RemoveFromFolder(ctx context.Context, userID, folderID, conversationID uuid.UUID) error
 	// Pins
 	PinMessageSvc(ctx context.Context, userID, convID, messageID uuid.UUID) (*store.ConversationPin, error)
-	UnpinMessageSvc(ctx context.Context, userID uuid.UUID, pinID uuid.UUID) error
+	UnpinMessageSvc(ctx context.Context, userID, convID, pinID uuid.UUID) error
 	GetPins(ctx context.Context, userID, convID uuid.UUID) ([]store.ConversationPin, error)
 	// Message requests
 	AcceptRequest(ctx context.Context, userID, convID uuid.UUID) error

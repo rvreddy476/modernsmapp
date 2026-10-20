@@ -5,6 +5,7 @@ import (
 
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -95,6 +96,9 @@ type MessageExtra struct {
 	StreamID      *uuid.UUID   `json:"stream_id,omitempty"`
 	ReplyKind     string       `json:"reply_kind,omitempty"`
 	Media         *MediaInfo   `json:"media,omitempty"`
+	// ExpiresAt is when a disappearing message goes (created_at + the
+	// conversation timer captured AT SEND TIME). Nil: never.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // storedStick keeps the sticker's media id in storage (the wire never shows
@@ -109,7 +113,8 @@ type storedStick struct {
 
 func (e *MessageExtra) empty() bool {
 	return e == nil || (!e.Forwarded && e.Voice == nil && e.Sticker == nil && e.GIF == nil &&
-		e.ProfileUserID == nil && e.SoundID == nil && e.StreamID == nil && e.ReplyKind == "" && e.Media == nil)
+		e.ProfileUserID == nil && e.SoundID == nil && e.StreamID == nil && e.ReplyKind == "" && e.Media == nil &&
+		e.ExpiresAt == nil)
 }
 
 func encodeExtra(e *MessageExtra) ([]byte, string) {
@@ -162,6 +167,7 @@ func applyExtra(resp *MessageResponse, e *MessageExtra) {
 		resp.ReplyKind = &k
 	}
 	resp.Media = e.Media
+	resp.ExpiresAt = e.ExpiresAt
 }
 
 // GIFRef is the client's gif card on a send (same shape as GIFInfo).

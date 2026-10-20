@@ -154,6 +154,9 @@ type InboxMeta struct {
 	Label           *string
 	// MarkedUnread is the member's own "mark as unread" (fix pass 2).
 	MarkedUnread bool
+	// DisappearAfterMs is the conversation-wide disappearing-message timer
+	// (0 = off). Not viewer-scoped, but read in the same page query.
+	DisappearAfterMs int64
 }
 
 // GetInboxMeta loads the viewer's member + settings state for a page in one
@@ -166,7 +169,8 @@ func (s *ConversationStore) GetInboxMeta(ctx context.Context, userID uuid.UUID, 
 	rows, err := s.db.Query(ctx, `
 		SELECT m.conversation_id, m.unread_count, m.cleared_before, m.hidden, c.last_message_type,
 		       COALESCE(s.is_pinned, false), s.pinned_at, COALESCE(s.is_muted, false), s.mute_until,
-		       COALESCE(s.mute_calls, false), COALESCE(s.alert_tone, 'default'), s.label, m.marked_unread
+		       COALESCE(s.mute_calls, false), COALESCE(s.alert_tone, 'default'), s.label, m.marked_unread,
+		       COALESCE(c.disappear_after_ms, 0)
 		FROM chat.conversation_members m
 		JOIN chat.conversations c ON c.id = m.conversation_id
 		LEFT JOIN chat.conversation_settings s ON s.conversation_id = m.conversation_id AND s.user_id = m.user_id
@@ -179,7 +183,8 @@ func (s *ConversationStore) GetInboxMeta(ctx context.Context, userID uuid.UUID, 
 	for rows.Next() {
 		var im InboxMeta
 		if err := rows.Scan(&im.ConversationID, &im.UnreadCount, &im.ClearedBefore, &im.Hidden, &im.LastMessageType,
-			&im.IsPinned, &im.PinnedAt, &im.IsMuted, &im.MuteUntil, &im.MuteCalls, &im.AlertTone, &im.Label, &im.MarkedUnread); err != nil {
+			&im.IsPinned, &im.PinnedAt, &im.IsMuted, &im.MuteUntil, &im.MuteCalls, &im.AlertTone, &im.Label, &im.MarkedUnread,
+			&im.DisappearAfterMs); err != nil {
 			return nil, err
 		}
 		out[im.ConversationID] = im
@@ -322,7 +327,14 @@ const unreadStillCountsSQL = `m.unread_count > 0
 // member's unread counter, except members who had already hidden it for
 // themselves (their counter released it then).
 func (s *ConversationStore) ReleaseUnreadForUnsent(ctx context.Context, conversationID, messageID, senderID uuid.UUID, msgTs time.Time) error {
-	_, err := s.db.Exec(ctx, `
+	_, err := s.db.Exec(ctx, releaseUnreadForUnsentSQL, conversationID, messageID, senderID, msgTs)
+	return err
+}
+
+// releaseUnreadForUnsentSQL is shared by unsend and by the disappearing-
+// message expiry (which runs it inside its own transaction). Parameters:
+// $1 conversation, $2 message, $3 sender, $4 message timestamp.
+var releaseUnreadForUnsentSQL = `
 		UPDATE chat.conversation_members m
 		SET unread_count = m.unread_count - 1
 		WHERE m.conversation_id = $1 AND m.user_id <> $3
@@ -330,10 +342,8 @@ func (s *ConversationStore) ReleaseUnreadForUnsent(ctx context.Context, conversa
 			SELECT 1 FROM chat.hidden_messages h
 			WHERE h.user_id = m.user_id AND h.conversation_id = $1 AND h.message_id = $2
 		  )
-		  AND `+unreadStillCounts("$4")+`
-	`, conversationID, messageID, senderID, msgTs)
-	return err
-}
+		  AND ` + unreadStillCounts("$4") + `
+	`
 
 // HiddenMessageIDs returns which of ids the user hid in the conversation.
 func (s *ConversationStore) HiddenMessageIDs(ctx context.Context, userID, conversationID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]bool, error) {

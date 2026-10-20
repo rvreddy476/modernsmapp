@@ -12,12 +12,18 @@ import (
 // --- Types ---
 
 type ConversationSettings struct {
-	ConversationID      uuid.UUID  `json:"conversation_id"`
-	UserID              uuid.UUID  `json:"user_id"`
-	Label               *string    `json:"label,omitempty"`
-	IsMuted             bool       `json:"is_muted"`
-	MuteUntil           *time.Time `json:"mute_until,omitempty"`
-	DisappearAfterMs    *int64     `json:"disappear_after_ms,omitempty"`
+	ConversationID uuid.UUID  `json:"conversation_id"`
+	UserID         uuid.UUID  `json:"user_id"`
+	Label          *string    `json:"label,omitempty"`
+	IsMuted        bool       `json:"is_muted"`
+	MuteUntil      *time.Time `json:"mute_until,omitempty"`
+	// DisappearAfterMs: the settings routes fill it with the CONVERSATION-
+	// WIDE timer (chat.conversations.disappear_after_ms, 0 = off); the
+	// per-member column it scans from was never enforced and is only a
+	// mirror. DisappearUpdatedBy/At say who last changed the timer.
+	DisappearAfterMs    *int64     `json:"disappear_after_ms"`
+	DisappearUpdatedBy  *uuid.UUID `json:"disappear_updated_by,omitempty"`
+	DisappearUpdatedAt  *time.Time `json:"disappear_updated_at,omitempty"`
 	ReadReceiptsEnabled bool       `json:"read_receipts_enabled"`
 	Theme               string     `json:"theme"`
 	IsPinned            bool       `json:"is_pinned"`
@@ -373,9 +379,23 @@ func (s *ConversationStore) PinMessage(ctx context.Context, convID, messageID, p
 	return &pin, nil
 }
 
-func (s *ConversationStore) UnpinMessage(ctx context.Context, pinID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM chat.conversation_pins WHERE id = $1`, pinID)
-	return err
+// UnpinMessage deletes a pin only when it belongs to convID (the caller has
+// already proven membership of convID). It reports whether a pin was
+// removed, so a pin id from another conversation is a not-found, never a
+// cross-conversation delete.
+func (s *ConversationStore) UnpinMessage(ctx context.Context, convID, pinID uuid.UUID) (*ConversationPin, error) {
+	var pin ConversationPin
+	err := s.db.QueryRow(ctx, `
+		DELETE FROM chat.conversation_pins WHERE id = $1 AND conversation_id = $2
+		RETURNING id, conversation_id, message_id, pinned_by, pinned_at
+	`, pinID, convID).Scan(&pin.ID, &pin.ConversationID, &pin.MessageID, &pin.PinnedBy, &pin.PinnedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &pin, nil
 }
 
 func (s *ConversationStore) GetConversationPins(ctx context.Context, convID uuid.UUID) ([]ConversationPin, error) {

@@ -375,6 +375,9 @@ type ConversationMeta struct {
 	// ReceiptsGated (dating mechanic M9): read receipts only for members
 	// dating-service allows.
 	ReceiptsGated bool
+	// DisappearAfterMs is the conversation-wide disappearing-message timer
+	// in force right now (nil = off). The send path captures it per message.
+	DisappearAfterMs *int64
 }
 
 // GetConversationMeta returns the source_app + match_id + closed_at for
@@ -384,10 +387,12 @@ type ConversationMeta struct {
 func (s *ConversationStore) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*ConversationMeta, error) {
 	var m ConversationMeta
 	err := s.db.QueryRow(ctx, `
-		SELECT source_app, match_id, closed_at, COALESCE(dating_first_movers, '{}'), last_message_at, dating_receipts_gated
+		SELECT source_app, match_id, closed_at, COALESCE(dating_first_movers, '{}'), last_message_at, dating_receipts_gated,
+		       disappear_after_ms
 		FROM chat.conversations
 		WHERE id = $1
-	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt, &m.FirstMovers, &m.LastMessageAt, &m.ReceiptsGated)
+	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt, &m.FirstMovers, &m.LastMessageAt, &m.ReceiptsGated,
+		&m.DisappearAfterMs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

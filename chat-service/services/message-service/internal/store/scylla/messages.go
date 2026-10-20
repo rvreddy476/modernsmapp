@@ -271,6 +271,34 @@ func (s *MessageStore) SoftDeleteMessage(ctx context.Context, conversationID uui
 	`, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).WithContext(ctx).Exec()
 }
 
+// RedactMessage is the disappearing-message delete: the row stays (other
+// members' paging stays consistent, exactly like a soft delete) but every
+// piece of content goes — text, attachment, post card, quote snapshot and
+// the rich payload. Idempotent.
+func (s *MessageStore) RedactMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) error {
+	return s.session.Query(`
+		UPDATE messages SET text = '', media_id = null, post_id = null, reply_to_preview = '',
+		       extra = null, is_deleted = true
+		WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?
+	`, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).WithContext(ctx).Exec()
+}
+
+// DeleteInboxProjection removes the conversations_by_user rows one message
+// wrote (one per member, keyed by the message timestamp), which carry a
+// copy of its text. Idempotent.
+func (s *MessageStore) DeleteInboxProjection(ctx context.Context, memberIDs []uuid.UUID, conversationID uuid.UUID, ts time.Time) error {
+	bucket := ts.UTC().Format("200601")
+	for _, userID := range memberIDs {
+		if err := s.session.Query(`
+			DELETE FROM conversations_by_user
+			WHERE user_id = ? AND bucket = ? AND last_ts = ? AND conversation_id = ?
+		`, uuidToGocql(userID), bucket, ts, uuidToGocql(conversationID)).WithContext(ctx).Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // UpsertInbox writes a row to the conversations_by_user inbox projection.
 // Called for each member of a conversation when a message is sent.
 func (s *MessageStore) UpsertInbox(ctx context.Context, userID, conversationID, senderID uuid.UUID, text string, ts time.Time) error {

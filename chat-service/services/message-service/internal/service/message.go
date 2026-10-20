@@ -202,6 +202,11 @@ type ConversationResponse struct {
 	// present only on request conversations.
 	MarkedUnread bool           `json:"marked_unread"`
 	Sender       *RequestSender `json:"sender,omitempty"`
+
+	// Disappearing messages: the conversation-wide timer in milliseconds,
+	// always present; 0 = off, else 86400000 (24 h), 604800000 (7 d) or
+	// 7776000000 (90 d).
+	DisappearAfterMs int64 `json:"disappear_after_ms"`
 }
 
 type ReactionSummary struct {
@@ -242,6 +247,10 @@ type MessageResponse struct {
 	StreamID      *uuid.UUID   `json:"stream_id,omitempty"`
 	ReplyKind     *string      `json:"reply_kind"`
 	Media         *MediaInfo   `json:"media,omitempty"`
+
+	// Disappearing messages (additive): when this message disappears for
+	// everyone (RFC 3339). Omitted when the message does not disappear.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type ToggleReactionResponse struct {
@@ -1244,6 +1253,12 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 		if replyResolved != nil {
 			replyTo = replyResolved
 		}
+		// Disappearing messages: the timer in force NOW is captured into the
+		// message itself. The durable intent stores it, so a replay keeps the
+		// first attempt's expiry and a later timer change never moves it.
+		if meta != nil {
+			extra.ExpiresAt = disappearExpiry(now, meta.DisappearAfterMs)
+		}
 		if mediaID != nil && !in.forwardedMediaOK {
 			// The reference is stable across retries but opaque outside this
 			// service. media-service atomically validates and pins the asset
@@ -1441,6 +1456,10 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	if err != nil {
 		return nil, nil, err
 	}
+	// Disappearing messages: one past its expiry is never served, even in
+	// the seconds before the expiry worker deletes it.
+	now := s.clock()
+	messages = dropExpired(messages, now)
 	// Messages hidden for this member are filtered after the read, so a page
 	// can come back short or empty while older history remains. Keep reading
 	// (bounded) so a run of hidden messages never looks like the start of
@@ -1458,7 +1477,7 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 		if err != nil {
 			return nil, nil, err
 		}
-		messages = append(messages, more...)
+		messages = append(messages, dropExpired(more, now)...)
 		nextCursor = moreCursor
 	}
 

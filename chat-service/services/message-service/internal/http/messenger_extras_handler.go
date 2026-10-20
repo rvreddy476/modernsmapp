@@ -1,10 +1,12 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/service"
 	store "github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/atpost/chat-shared/api"
 	"github.com/gin-gonic/gin"
@@ -65,6 +67,21 @@ func (h *Handler) UpdateConversationSettings(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
 		return
 	}
+	// Disappearing messages: refuse an unsupported timer before anything is
+	// written. 0 turns the timer off (JSON null means "leave unchanged").
+	var timerSvc DisappearingService
+	if req.DisappearAfterMs != nil {
+		ds, ok := h.svc.(DisappearingService)
+		if !ok {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "disappearing messages are not available", nil, nil)
+			return
+		}
+		if !service.ValidDisappearAfterMs(*req.DisappearAfterMs) {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", service.ErrInvalidDisappearTimer.Error(), nil, nil)
+			return
+		}
+		timerSvc = ds
+	}
 
 	// Fetch current settings first, then merge
 	current, err := h.svc.GetSettings(c.Request.Context(), userID, convID)
@@ -100,8 +117,18 @@ func (h *Handler) UpdateConversationSettings(c *gin.Context) {
 	if req.MuteUntil != nil {
 		current.MuteUntil = req.MuteUntil
 	}
-	if req.DisappearAfterMs != nil {
-		current.DisappearAfterMs = req.DisappearAfterMs
+	if timerSvc != nil {
+		// Conversation-wide: written to the conversation (every member sees
+		// it, members hear disappearing_timer_updated). Messages already
+		// sent keep the expiry they were given.
+		timer, err := timerSvc.SetDisappearingTimer(c.Request.Context(), userID, convID, *req.DisappearAfterMs)
+		if err != nil {
+			h.writeDisappearingError(c, err)
+			return
+		}
+		ms := timer.DisappearAfterMs
+		current.DisappearAfterMs = &ms
+		current.DisappearUpdatedBy, current.DisappearUpdatedAt = timer.UpdatedBy, timer.UpdatedAt
 	}
 	if req.ReadReceiptsEnabled != nil {
 		current.ReadReceiptsEnabled = *req.ReadReceiptsEnabled
@@ -312,6 +339,10 @@ func (h *Handler) UnpinMessage(c *gin.Context) {
 		return
 	}
 
+	convID, ok := parseConvID(c)
+	if !ok {
+		return
+	}
 	pinIDStr := c.Param("pinId")
 	pinID, err := uuid.Parse(pinIDStr)
 	if err != nil {
@@ -319,7 +350,13 @@ func (h *Handler) UnpinMessage(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UnpinMessageSvc(c.Request.Context(), userID, pinID); err != nil {
+	if err := h.svc.UnpinMessageSvc(c.Request.Context(), userID, convID, pinID); err != nil {
+		// Not a member, or a pin of another conversation: the same 404, so
+		// the route never confirms that a pin id exists elsewhere.
+		if errors.Is(err, service.ErrNotMember) || errors.Is(err, service.ErrPinNotFound) {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "pin not found", nil, nil)
+			return
+		}
 		h.log.Warn("failed to unpin message", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,6 +40,12 @@ type Config struct {
 	// returns no people and no messages. TrustSafetyURL: message reports.
 	SearchServiceURL string
 	TrustSafetyURL   string
+
+	// Disappearing messages (20 Oct 2026): the expiry worker. ON unless
+	// DISAPPEARING_MESSAGES_WORKER_ENABLED is false/0/off.
+	DisappearingWorkerEnabled bool
+	DisappearingPollInterval  time.Duration
+	DisappearingBatch         int
 }
 
 func Load() *Config {
@@ -80,7 +87,32 @@ func Load() *Config {
 		DatingServiceURL: getEnv("DATING_SERVICE_URL", "http://dating-service:8112"),
 		SearchServiceURL: getEnv("SEARCH_SERVICE_URL", ""),
 		TrustSafetyURL:   getEnv("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"),
+
+		DisappearingWorkerEnabled: getEnvBool("DISAPPEARING_MESSAGES_WORKER_ENABLED", true),
+		DisappearingPollInterval:  getEnvDuration("DISAPPEARING_MESSAGES_POLL_INTERVAL", 30*time.Second),
+		DisappearingBatch:         getEnvInt("DISAPPEARING_MESSAGES_BATCH", 100),
 	}
+}
+
+func getEnvBool(key string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "":
+		return def
+	case "0", "false", "off", "no":
+		return false
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return def
+}
+
+func getEnvInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
 
 func getEnv(key, def string) string {

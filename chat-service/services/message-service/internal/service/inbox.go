@@ -192,6 +192,7 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 		r.IsPinned = m.IsPinned
 		r.IsMuted = m.IsMuted && (m.MuteUntil == nil || m.MuteUntil.After(now))
 		r.MuteCalls = m.MuteCalls
+		r.DisappearAfterMs = m.DisappearAfterMs
 		r.AlertTone = m.AlertTone
 		if r.AlertTone == "" {
 			r.AlertTone = "default"

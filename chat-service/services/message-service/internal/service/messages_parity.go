@@ -112,6 +112,11 @@ func (s *Service) visibleMessage(ctx context.Context, userID, convID, msgID uuid
 	if msg == nil || msg.IsDeleted {
 		return nil, ErrMessageNotFound
 	}
+	// A disappearing message past its expiry is gone even before the
+	// worker deletes it (no forwarding, reacting or reporting it).
+	if len(dropExpired([]scylla.Message{*msg}, s.clock())) == 0 {
+		return nil, ErrMessageNotFound
+	}
 	kept, _, err := s.applyHistoryCutoff(ctx, userID, convID, []scylla.Message{*msg}, nil)
 	if err != nil {
 		return nil, err

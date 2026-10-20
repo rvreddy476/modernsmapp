@@ -94,6 +94,9 @@ func addExtraToFrame(body map[string]interface{}, e *MessageExtra) {
 	if e.Media != nil {
 		body["media"] = e.Media
 	}
+	if e.ExpiresAt != nil {
+		body["expires_at"] = e.ExpiresAt
+	}
 }
 
 // resolveStickerURLs fills sticker URLs (as the viewer) for catalogue

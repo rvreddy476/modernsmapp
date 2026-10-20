@@ -190,6 +190,13 @@ func main() {
 	// MP-LB-1: resumes durable preview-repair obligations (deleted-message
 	// inbox previews) after failures and restarts.
 	go svc.StartPreviewRepairWorker(ctx)
+	// Disappearing messages: deletes due messages for everyone along the
+	// unsend path. Safe with several replicas (SKIP LOCKED claims).
+	if cfg.DisappearingWorkerEnabled {
+		go svc.StartMessageExpiryWorker(ctx, cfg.DisappearingPollInterval, cfg.DisappearingBatch)
+	} else {
+		logger.Warn("disappearing-message expiry worker DISABLED by DISAPPEARING_MESSAGES_WORKER_ENABLED; due messages will not disappear")
+	}
 
 	// 9. HTTP Server
 	r := gin.New()

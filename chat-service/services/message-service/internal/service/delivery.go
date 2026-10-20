@@ -94,6 +94,12 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		Extra:           string(intent.Extra),
 		CreatedAt:       intent.MessageTS,
 	}
+	// Disappearing messages: the expiry row is written BEFORE the message,
+	// so no message that should disappear can exist without one. Replays
+	// re-run it as a no-op (the first row wins).
+	if err := s.scheduleExpiryFor(ctx, intent); err != nil {
+		return fmt.Errorf("schedule message expiry: %w", err)
+	}
 	if err := s.msgStore.CreateMessage(ctx, message); err != nil {
 		return fmt.Errorf("persist message: %w", err)
 	}
