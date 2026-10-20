@@ -60,15 +60,18 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import com.us.android.core.chat.data.DisappearTimer
 import com.us.android.core.chat.data.MAX_MESSAGE_LENGTH
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
+import com.us.android.core.chat.data.disappearingNote
 import com.us.android.core.chat.data.presenceLabel
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsAvatar
@@ -165,6 +168,7 @@ fun ChatThreadScreen(
                     presenceLabel(render.peerOnline, render.peerLastActiveAt, System.currentTimeMillis())
                 },
                 onMore = links.onOpenChatSettings?.takeIf { render.parityEnabled },
+                disappearing = render.disappearing,
                 onOpenPeer = links.onOpenProfile?.let { open ->
                     { render.peerUserId.takeIf { it.isNotBlank() }?.let(open) }
                 },
@@ -663,6 +667,8 @@ private fun ChatThreadTopBar(
     /** The ⋯ → Chat settings page; null hides it. */
     onMore: (() -> Unit)? = null,
     onOpenPeer: (() -> Unit)? = null,
+    /** The chat's disappearing-messages timer; on draws a timer by the name and a note under the bar. */
+    disappearing: DisappearTimer? = null,
 ) {
     Column {
         Row(
@@ -695,18 +701,32 @@ private fun ChatThreadTopBar(
                 modifier = if (onOpenPeer != null) Modifier.clickable(onClick = onOpenPeer) else Modifier,
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    // The name is the one piece of identity on this screen, so
-                    // it gets a treatment of its own: heavier than a title and
-                    // tracked tighter, which is what makes a name read as a
-                    // name rather than as another label.
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = NAME_TRACKING,
-                    color = UsTheme.extended.textPrimary,
-                    maxLines = 1,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                ) {
+                    Text(
+                        text = title,
+                        // The name is the one piece of identity on this screen, so
+                        // it gets a treatment of its own: heavier than a title and
+                        // tracked tighter, which is what makes a name read as a
+                        // name rather than as another label.
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = NAME_TRACKING,
+                        color = UsTheme.extended.textPrimary,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (disappearing?.isOn == true) {
+                        Icon(
+                            imageVector = UsIcons.Clock,
+                            contentDescription = "Disappearing messages: ${disappearing.label}",
+                            tint = UsTheme.extended.textMuted,
+                            modifier = Modifier.size(DISAPPEARING_ICON).testTag("thread-disappearing"),
+                        )
+                    }
+                }
                 if (typing) {
                     Text(
                         text = "typing…",
@@ -755,6 +775,19 @@ private fun ChatThreadTopBar(
                     Icon(imageVector = UsIcons.More, contentDescription = "Chat settings", tint = UsTheme.extended.textPrimary)
                 }
             }
+        }
+        disappearingNote(disappearing)?.let { note ->
+            Text(
+                text = note,
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textMuted,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.xs)
+                    .testTag("thread-disappearing-note"),
+            )
         }
         Box(
             modifier = Modifier
@@ -1690,6 +1723,7 @@ private val REMOVE_GLYPH = 12.dp
 private val NAME_TRACKING = (-0.5).sp
 
 private val HAIRLINE = 1.dp
+private val DISAPPEARING_ICON = 14.dp
 private val BUBBLE_CORNER = 18.dp
 private val BUBBLE_TAIL = 4.dp
 private val BUBBLE_MAX_WIDTH = 300.dp

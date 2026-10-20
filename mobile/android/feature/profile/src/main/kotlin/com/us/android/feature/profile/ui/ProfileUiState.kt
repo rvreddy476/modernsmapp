@@ -2,6 +2,7 @@ package com.us.android.feature.profile.ui
 
 import androidx.compose.runtime.Immutable
 import com.us.android.core.model.FollowCounts
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.Profile
 import com.us.android.core.model.ProfileCounts
 import com.us.android.core.model.ProfileRelationship
@@ -103,5 +104,15 @@ sealed interface ProfileUiState {
          * and the grid, and never says that a block is the reason.
          */
         val unavailable: Boolean get() = !profile.isOwnProfile && relationship.isBlockedByTarget
+
+        /**
+         * Whether the Followers / Following counts open their lists: the
+         * same rule the media grid follows. Always on the viewer's own
+         * profile; never on one that blocked the viewer, nor on a private
+         * account the viewer does not follow.
+         */
+        val canOpenConnections: Boolean
+            get() = profile.isOwnProfile ||
+                (!unavailable && (!profile.isPrivate || relationship.followStatus == FollowStatus.FOLLOWING))
     }
 }

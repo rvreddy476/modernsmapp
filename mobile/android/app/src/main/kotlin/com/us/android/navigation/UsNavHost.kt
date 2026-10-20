@@ -174,8 +174,10 @@ import com.us.android.feature.profile.navigation.SecuritySettingsRoute
 import com.us.android.feature.profile.navigation.SettingsDestinations
 import com.us.android.feature.profile.navigation.SettingsSections
 import com.us.android.feature.profile.navigation.editProfileScreen
+import com.us.android.feature.profile.navigation.followListScreen
 import com.us.android.feature.profile.navigation.followRequestsScreen
 import com.us.android.feature.profile.navigation.navigateToEditProfile
+import com.us.android.feature.profile.navigation.navigateToFollowList
 import com.us.android.feature.profile.navigation.navigateToFollowRequests
 import com.us.android.feature.profile.navigation.navigateToProfile
 import com.us.android.feature.profile.navigation.navigateToSettings
@@ -1255,8 +1257,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     // Two registrations, one screen: the Me tab is a root with no back
     // control; a pushed profile has one.
     ownProfileScreen(
-        onOpenFollowers = {},
-        onOpenFollowing = {},
+        onOpenFollowers = { navController.navigateToFollowList(it) },
+        onOpenFollowing = { navController.navigateToFollowList(it) },
         onEditProfile = { navController.navigateToEditProfile() },
         onOpenSettings = { navController.navigateToSettings() },
         onOpenFollowRequests = { navController.navigateToFollowRequests() },
@@ -1295,8 +1297,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onOpenUpload = onOpenUpload,
     )
     profileScreen(
-        onOpenFollowers = {},
-        onOpenFollowing = {},
+        onOpenFollowers = { navController.navigateToFollowList(it) },
+        onOpenFollowing = { navController.navigateToFollowList(it) },
         onBack = { navController.popBackStack() },
         // `:feature:profile` resolves the direct conversation through
         // `:core:chat`; :app alone knows which feature renders it.
@@ -1312,6 +1314,12 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     // The private-account owner's approval queue. Opening a row is the same
     // destination a Follow-back or any other profile link uses.
     followRequestsScreen(
+        onBack = { navController.popBackStack() },
+        onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+    )
+    // A profile's Followers / Following, opened from either count. A row
+    // opens that person's profile the same way every profile link does.
+    followListScreen(
         onBack = { navController.popBackStack() },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
     )

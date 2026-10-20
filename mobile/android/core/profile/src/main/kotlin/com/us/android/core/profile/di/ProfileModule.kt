@@ -6,6 +6,7 @@ import com.us.android.core.profile.data.DataStoreKeywordFiltersCache
 import com.us.android.core.profile.data.DataStoreModulePreferencesCache
 import com.us.android.core.profile.data.DataStoreWellbeingGuardCache
 import com.us.android.core.profile.data.DeviceSecurityApi
+import com.us.android.core.profile.data.FollowListApi
 import com.us.android.core.profile.data.GraphCountsApi
 import com.us.android.core.profile.data.KeywordFiltersApi
 import com.us.android.core.profile.data.KeywordFiltersCache
@@ -46,6 +47,10 @@ object ProfileModule {
     @Provides
     @Singleton
     fun provideGraphCountsApi(retrofit: Retrofit): GraphCountsApi = retrofit.create(GraphCountsApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideFollowListApi(retrofit: Retrofit): FollowListApi = retrofit.create(FollowListApi::class.java)
 
     @Provides
     @Singleton

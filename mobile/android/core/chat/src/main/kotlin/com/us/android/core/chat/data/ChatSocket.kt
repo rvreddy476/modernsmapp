@@ -9,6 +9,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -77,8 +78,28 @@ sealed interface ChatSocketEvent {
      */
     data class CallSignal(val type: String, val frame: JsonObject) : ChatSocketEvent
 
-    /** Chat parity (CONTRACT §2.3): a message was unsent for everyone. */
-    data class MessageDeleted(val conversationId: String, val messageId: String) : ChatSocketEvent
+    /**
+     * Chat parity (CONTRACT §2.3): a message was unsent for everyone.
+     *
+     * [expired]: the same frame with `"reason": "expired"` — a disappearing
+     * message whose timer ran out. The thread removes that bubble outright;
+     * a plain unsend keeps its "unsent" placeholder.
+     */
+    data class MessageDeleted(
+        val conversationId: String,
+        val messageId: String,
+        val expired: Boolean = false,
+    ) : ChatSocketEvent
+
+    /**
+     * Disappearing messages: someone in the chat changed its shared timer
+     * (`disappearing_timer_updated`). [disappearAfterMs] 0 is off.
+     */
+    data class DisappearingTimerUpdated(
+        val conversationId: String,
+        val disappearAfterMs: Long,
+        val updatedBy: String? = null,
+    ) : ChatSocketEvent
 
     /**
      * Chat parity (CONTRACT §2.5): one reaction added or removed. The server
@@ -440,6 +461,8 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
 
         FRAME_REACTION -> parseReaction(payload)
 
+        FRAME_DISAPPEARING_TIMER -> parseDisappearingTimer(payload)
+
         else -> ChatSocketEvent.Unknown(type)
     }
 }
@@ -450,7 +473,26 @@ private fun parseMessageDeleted(payload: JsonObject): ChatSocketEvent {
     return if (conversationId.isBlank() || messageId.isBlank()) {
         ChatSocketEvent.Malformed(FRAME_MESSAGE_DELETED, "missing or blank identifier")
     } else {
-        ChatSocketEvent.MessageDeleted(conversationId, messageId)
+        ChatSocketEvent.MessageDeleted(
+            conversationId = conversationId,
+            messageId = messageId,
+            expired = payload.str("reason") == DELETE_REASON_EXPIRED,
+        )
+    }
+}
+
+/**
+ * `disappearing_timer_updated {conversation_id, disappear_after_ms, updated_by, updated_at}`.
+ * Fail closed: no conversation, or no number, is malformed — a missing value
+ * must not read as "turned off".
+ */
+private fun parseDisappearingTimer(payload: JsonObject): ChatSocketEvent {
+    val conversationId = payload.str("conversation_id").orEmpty()
+    val millis = runCatching { payload["disappear_after_ms"]?.jsonPrimitive?.longOrNull }.getOrNull()
+    return if (conversationId.isBlank() || millis == null) {
+        ChatSocketEvent.Malformed(FRAME_DISAPPEARING_TIMER, "missing conversation or timer")
+    } else {
+        ChatSocketEvent.DisappearingTimerUpdated(conversationId, millis, payload.str("updated_by"))
     }
 }
 
@@ -564,6 +606,10 @@ private const val FRAME_TYPING = "typing"
 private const val FRAME_READ_RECEIPT = "read_receipt"
 private const val FRAME_SUBSCRIPTION_REVOKED = "subscription_revoked"
 private const val FRAME_MESSAGE_DELETED = "message_deleted"
+private const val FRAME_DISAPPEARING_TIMER = "disappearing_timer_updated"
+
+/** `message_deleted.reason` when a disappearing message's timer ran out. */
+private const val DELETE_REASON_EXPIRED = "expired"
 private const val FRAME_REACTION = "reaction"
 private const val FRAME_PRESENCE_UPDATE = "presence_update"
 

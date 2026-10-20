@@ -52,12 +52,14 @@ import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.ConversationPrefs
+import com.us.android.core.chat.data.DisappearTimer
 import com.us.android.core.chat.data.MessageHit
 import com.us.android.core.chat.data.MessageReportReason
 import com.us.android.core.chat.data.SHARED_MEDIA
 import com.us.android.core.chat.data.SHARED_POSTS
 import com.us.android.core.chat.data.SharedItem
 import com.us.android.core.chat.data.isMissingRoute
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
@@ -82,6 +84,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -146,6 +150,13 @@ class ChatSettingsViewModel @Inject constructor(
             val settings = privacy.get()
             if (settings is AppResult.Success) _state.update { it.copy(bubbleStyle = settings.data.chatBubbleStyle) }
         }
+        // The shared timer, live: another member changing it reaches this page
+        // through the thread beneath it (`disappearing_timer_updated`).
+        viewModelScope.launch {
+            parity.disappearing.map { it[conversationId] }.distinctUntilChanged().collect { timer ->
+                if (timer != null) _state.update { s -> s.copy(prefs = s.prefs?.copy(disappearing = timer)) }
+            }
+        }
         viewModelScope.launch {
             val posts = parity.shared(conversationId, SHARED_POSTS)
             _state.update { it.copy(sharedPosts = (posts as? AppResult.Success)?.data?.items.orEmpty()) }
@@ -160,6 +171,33 @@ class ChatSettingsViewModel @Inject constructor(
     fun setMuteCalls(on: Boolean) = savePrefs { it.copy(muteCalls = on) }
     fun setPinned(on: Boolean) = savePrefs { it.copy(isPinned = on) }
     fun setTone(tone: AlertTone) = savePrefs { it.copy(alertTone = tone) }
+
+    /**
+     * Disappearing messages, for everyone in the chat. Shown at once and put
+     * back if the server refuses; the saved value is what the thread's timer
+     * icon then reads.
+     */
+    fun setDisappearing(timer: DisappearTimer) {
+        val current = _state.value.prefs ?: return
+        val before = current.disappearing ?: return
+        if (timer == before) return
+        _state.update { s -> s.copy(prefs = s.prefs?.copy(disappearing = timer)) }
+        viewModelScope.launch {
+            when (val saved = parity.setDisappearing(conversationId, timer)) {
+                is AppResult.Success -> {
+                    _state.update { s -> s.copy(prefs = s.prefs?.copy(disappearing = saved.data)) }
+                    say(
+                        if (saved.data.isOn) "Messages now disappear after ${saved.data.label}." else "Disappearing messages are off.",
+                        UsMessageType.Success,
+                    )
+                }
+                is AppResult.Failure -> {
+                    _state.update { s -> s.copy(prefs = s.prefs?.copy(disappearing = before)) }
+                    say(disappearingRefusal(saved.error), UsMessageType.Error)
+                }
+            }
+        }
+    }
 
     private fun savePrefs(edit: (ConversationPrefs) -> ConversationPrefs) {
         val current = _state.value.prefs ?: return
@@ -295,7 +333,7 @@ class ChatSettingsViewModel @Inject constructor(
     }
 }
 
-private enum class SettingsSheet { BUBBLE, TONE, REPORT, BLOCK, CLEAR, DELETE, SEARCH }
+private enum class SettingsSheet { BUBBLE, TONE, DISAPPEARING, REPORT, BLOCK, CLEAR, DELETE, SEARCH }
 
 @Composable
 @Suppress("LongMethod", "CyclomaticComplexMethod")
@@ -360,6 +398,16 @@ fun ChatSettingsScreen(
                                 onCheckedChange = viewModel::setMuteCalls,
                             )
                             UsSettingsSwitchRow(title = "Pin to top", checked = prefs.isPinned, onCheckedChange = viewModel::setPinned)
+                            // Only once the server said what the timer is: an
+                            // inbox-row fallback does not know it.
+                            prefs.disappearing?.let { timer ->
+                                UsSettingsLinkRow(
+                                    title = "Disappearing messages",
+                                    value = timer.label,
+                                    onClick = { sheet = SettingsSheet.DISAPPEARING },
+                                    modifier = Modifier.testTag("chat_settings_disappearing"),
+                                )
+                            }
                         }
                     }
                 }
@@ -452,6 +500,14 @@ fun ChatSettingsScreen(
             current = state.prefs?.alertTone ?: AlertTone.DEFAULT,
             onPick = { tone ->
                 viewModel.setTone(tone)
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+        SettingsSheet.DISAPPEARING -> DisappearingSheet(
+            current = state.prefs?.disappearing ?: DisappearTimer.OFF,
+            onPick = { timer ->
+                viewModel.setDisappearing(timer)
                 sheet = null
             },
             onDismiss = { sheet = null },
@@ -586,6 +642,39 @@ private fun ToneSheet(current: AlertTone, onPick: (AlertTone) -> Unit, onDismiss
     }
 }
 
+/** Off / 24 hours / 7 days / 90 days, for everyone in the chat. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DisappearingSheet(current: DisappearTimer, onPick: (DisappearTimer) -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = UsTheme.extended.bgSheet) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .padding(bottom = UsTheme.spacing.l)
+                .testTag("disappearing_sheet"),
+        ) {
+            Text("Disappearing messages", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                "New messages are removed for everyone in this chat once the time is up. " +
+                    "Messages already sent keep the timer they were sent with.",
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier.padding(vertical = UsTheme.spacing.s),
+            )
+            DisappearTimer.entries.forEach { timer ->
+                UsSettingsRadioRow(
+                    title = timer.label,
+                    selected = timer == current,
+                    onClick = { onPick(timer) },
+                    modifier = Modifier.testTag("disappearing_option:${timer.name.lowercase()}"),
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SearchInChatSheet(
@@ -661,6 +750,15 @@ private val PREVIEW_CORNER = 18.dp
 private val SWATCH = 40.dp
 private val SWATCH_RING_ON = 3.dp
 private val SWATCH_RING_OFF = 1.dp
+
+/**
+ * What a refused timer change says. In a group only the owner and admins may
+ * change it (403); anything else is a plain failure to save.
+ */
+internal fun disappearingRefusal(error: AppError): String = when (error) {
+    is AppError.Forbidden -> "Only the group's owner or admins can change disappearing messages."
+    else -> "Couldn't change disappearing messages. Try again."
+}
 
 /**
  * Chat settings' Report (fix pass 2): the conversation report route; only a

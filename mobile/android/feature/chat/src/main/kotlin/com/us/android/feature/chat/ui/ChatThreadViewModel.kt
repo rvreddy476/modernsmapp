@@ -11,6 +11,7 @@ import com.us.android.core.chat.data.ChatSocketEvent
 import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.DELETE_SCOPE_EVERYONE
+import com.us.android.core.chat.data.DisappearTimer
 import com.us.android.core.chat.data.DELETE_SCOPE_ME
 import com.us.android.core.chat.data.ForwardOutcome
 import com.us.android.core.chat.data.GifInfo
@@ -131,6 +132,8 @@ data class ThreadRenderState(
     val notice: UsMessage? = null,
     /** False in a build without the parity seam (tests): every new affordance hides. */
     val parityEnabled: Boolean = false,
+    /** The chat's disappearing-messages timer; null until the settings read answered. */
+    val disappearing: DisappearTimer? = null,
 ) {
     /** Send is offered for text OR photos — a photo alone is a message. */
     val canSend: Boolean
@@ -638,6 +641,16 @@ class ChatThreadViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            // The disappearing timer: one read seeds it, and the shared map
+            // carries any change saved on the chat settings page while this
+            // thread stays open beneath it.
+            extras.parity.prefs(conversationId)
+            extras.parity.disappearing
+                .map { it[conversationId] }
+                .distinctUntilChanged()
+                .collect { timer -> if (timer != null) _state.update { it.copy(disappearing = timer) } }
+        }
+        viewModelScope.launch {
             val packs = extras.parity.stickers()
             if (packs is AppResult.Success) _state.update { it.copy(stickerPacks = packs.data) }
         }
@@ -968,6 +981,11 @@ class ChatThreadViewModel @Inject constructor(
     }
 
     private suspend fun applySocketEvent(event: ChatSocketEvent) {
+        // The shared disappearing timer changed: through the parity map, so
+        // this header and a settings page over it both follow.
+        if (event is ChatSocketEvent.DisappearingTimerUpdated && event.conversationId == conversationId) {
+            extras?.parity?.applyRemoteDisappearing(event.conversationId, event.disappearAfterMs)
+        }
         controller.onSocketEvent(event)?.let {
             _state.value = _state.value.copy(thread = it)
         }

@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
@@ -59,6 +60,7 @@ import com.us.android.core.ui.UsPostReportState
 import com.us.android.core.ui.UsReportReason
 import com.us.android.core.ui.UsStat
 import com.us.android.core.ui.UsStatRow
+import com.us.android.feature.profile.navigation.FollowListRoute
 import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
 
 /**
@@ -87,6 +89,13 @@ fun ProfileScreen(
     val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
     val reportState by reportViewModel.report.collectAsStateWithLifecycle()
     val shareProfile = rememberProfileSharer()
+
+    // Back from the follower lists (or anywhere a follow may have moved):
+    // the header's counts are read again. A no-op until the profile loaded.
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshFollowCounts()
+        onPauseOrDispose { }
+    }
 
     val loadedProfile = (state as? ProfileUiState.Content)?.profile
     LaunchedEffect(loadedProfile?.avatarMediaId, loadedProfile?.coverMediaId) {
@@ -136,8 +145,8 @@ fun ProfileScreen(
 }
 
 data class ProfileDestinations(
-    val onOpenFollowers: (userId: String) -> Unit,
-    val onOpenFollowing: (userId: String) -> Unit,
+    val onOpenFollowers: (FollowListRoute) -> Unit,
+    val onOpenFollowing: (FollowListRoute) -> Unit,
     val onBack: (() -> Unit)? = null,
     val onEditProfile: (() -> Unit)? = null,
     val onOpenSettings: (() -> Unit)? = null,
@@ -398,6 +407,10 @@ private fun ProfileMedia(
     }
 }
 
+/** The list screen for [profile], opened on [tab], titled with its handle. */
+internal fun followListRoute(profile: Profile, tab: FollowListTab) =
+    FollowListRoute(userId = profile.userId, handle = profile.username, tab = tab.wire)
+
 private fun ProfileUiState.title(): String = when (this) {
     is ProfileUiState.Content -> if (profile.isOwnProfile) "My profile" else profile.nameForDisplay
     else -> "Profile"
@@ -424,11 +437,31 @@ private fun LoadedProfile(
         ) {
             ProfileHeader(profile = profile, avatarUrl = media.avatar, coverUrl = media.cover)
 
+            // The counts open the lists only where the viewer may see them:
+            // a private account they do not follow, or one that blocked them,
+            // keeps plain numbers.
+            val canOpen = state.canOpenConnections
             UsStatRow(
                 stats = listOf(
                     UsStat("Posts", state.counts.posts),
-                    UsStat("Followers", state.counts.followers) { destinations.onOpenFollowers(profile.userId) },
-                    UsStat("Following", state.counts.following) { destinations.onOpenFollowing(profile.userId) },
+                    UsStat(
+                        "Followers",
+                        state.counts.followers,
+                        onClick = if (canOpen) {
+                            { destinations.onOpenFollowers(followListRoute(profile, FollowListTab.FOLLOWERS)) }
+                        } else {
+                            null
+                        },
+                    ),
+                    UsStat(
+                        "Following",
+                        state.counts.following,
+                        onClick = if (canOpen) {
+                            { destinations.onOpenFollowing(followListRoute(profile, FollowListTab.FOLLOWING)) }
+                        } else {
+                            null
+                        },
+                    ),
                 ),
             )
 

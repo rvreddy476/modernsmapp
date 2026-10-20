@@ -15,6 +15,8 @@ import androidx.navigation.compose.composable
 import com.us.android.feature.profile.ui.AppearanceViewModel
 import com.us.android.feature.profile.ui.DirectMessagesScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
+import com.us.android.feature.profile.ui.FollowListScreen
+import com.us.android.feature.profile.ui.FollowListTab
 import com.us.android.feature.profile.ui.FollowRequestsScreen
 import com.us.android.feature.profile.ui.NotificationSettingsScreen
 import com.us.android.feature.profile.ui.PrivacySettingsScreen
@@ -63,8 +65,8 @@ data object OwnProfileRoute
  * become mutually dependent.
  */
 fun NavGraphBuilder.profileScreen(
-    onOpenFollowers: (userId: String) -> Unit,
-    onOpenFollowing: (userId: String) -> Unit,
+    onOpenFollowers: (FollowListRoute) -> Unit,
+    onOpenFollowing: (FollowListRoute) -> Unit,
     onBack: () -> Unit,
     onOpenChat: (conversationId: String, title: String) -> Unit,
     /** A tile of the media grid; `:app` opens a long video in Tube and anything else as a post. */
@@ -96,8 +98,8 @@ fun NavGraphBuilder.profileScreen(
  */
 @Suppress("LongParameterList") // one callback per door out of the Me tab, all owned by :app
 fun NavGraphBuilder.ownProfileScreen(
-    onOpenFollowers: (userId: String) -> Unit,
-    onOpenFollowing: (userId: String) -> Unit,
+    onOpenFollowers: (FollowListRoute) -> Unit,
+    onOpenFollowing: (FollowListRoute) -> Unit,
     onEditProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenFollowRequests: () -> Unit,
@@ -178,6 +180,32 @@ fun NavGraphBuilder.followRequestsScreen(
 }
 
 fun NavController.navigateToFollowRequests() = navigate(FollowRequestsRoute)
+
+/**
+ * A profile's Followers / Following lists, one screen with a tab each.
+ *
+ * [handle] rides along so the title is right on the first frame — the
+ * profile that opened it already knows it, and nothing on this screen would
+ * otherwise need the profile read again. [tab] is a [FollowListTab.wire]:
+ * the count the viewer tapped is the tab it opens on.
+ */
+@Serializable
+data class FollowListRoute(
+    val userId: String,
+    val handle: String = "",
+    val tab: String = FollowListTab.FOLLOWERS.wire,
+)
+
+fun NavGraphBuilder.followListScreen(
+    onBack: () -> Unit,
+    onOpenProfile: (userId: String) -> Unit,
+) {
+    composable<FollowListRoute> {
+        FollowListScreen(onBack = onBack, onOpenProfile = onOpenProfile)
+    }
+}
+
+fun NavController.navigateToFollowList(route: FollowListRoute) = navigate(route)
 
 /**
  * Editing the signed-in user's own profile.

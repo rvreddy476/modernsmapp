@@ -8,6 +8,10 @@ import com.us.android.core.network.apiCall
 import com.us.android.core.network.listApiCall
 import com.us.android.core.network.noContentApiCall
 import com.us.android.core.network.pagedApiCall
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -201,7 +205,43 @@ data class ConversationPrefs(
     val isPinned: Boolean,
     val muteCalls: Boolean,
     val alertTone: AlertTone,
+    /**
+     * The conversation's disappearing-messages timer, shared by every member.
+     * Null when the server was not asked (a fallback built from the inbox
+     * row), which is not the same as [DisappearTimer.OFF].
+     */
+    val disappearing: DisappearTimer? = null,
 )
+
+/**
+ * Disappearing messages: how long after sending a message is removed for
+ * everyone. The server accepts exactly these four values (milliseconds).
+ */
+enum class DisappearTimer(val millis: Long, val label: String) {
+    OFF(0L, "Off"),
+    DAY(86_400_000L, "24 hours"),
+    WEEK(604_800_000L, "7 days"),
+    NINETY_DAYS(7_776_000_000L, "90 days"),
+    ;
+
+    val isOn: Boolean get() = this != OFF
+
+    companion object {
+        /**
+         * Absent, null and 0 are all off. A value outside the four is read
+         * as the nearest longer setting rather than off — a timer the server
+         * says is on must never be shown as off.
+         */
+        fun fromMillis(millis: Long?): DisappearTimer = when {
+            millis == null || millis <= 0L -> OFF
+            else -> entries.firstOrNull { it.isOn && it.millis >= millis } ?: NINETY_DAYS
+        }
+    }
+}
+
+/** The one-line note a thread shows while its timer is on; null when off. */
+fun disappearingNote(timer: DisappearTimer?): String? =
+    timer?.takeIf { it.isOn }?.let { "New messages disappear ${it.label} after they're sent." }
 
 // ── Mapping ──────────────────────────────────────────────────────────────
 
@@ -506,8 +546,36 @@ class ChatParityRepository @Inject constructor(
         apiCall(errorMapper) { api.presenceDetails(BulkPresenceRequest(userIds.distinct().take(PRESENCE_CAP))) }
             .mapOk { presenceOf(it) }
 
+    private val _disappearing = MutableStateFlow<Map<String, DisappearTimer>>(emptyMap())
+
+    /**
+     * Conversation id → its disappearing timer, as last read or saved on this
+     * device. The settings page writes through [setDisappearing]; an open
+     * thread watches this to draw its timer icon without a second read.
+     */
+    val disappearing: StateFlow<Map<String, DisappearTimer>> = _disappearing.asStateFlow()
+
     suspend fun prefs(conversationId: String): AppResult<ConversationPrefs> =
         apiCall(errorMapper) { api.settings(conversationId) }.mapOk { it.toPrefs() }
+            .also { result -> (result as? AppResult.Success)?.data?.disappearing?.let { remember(conversationId, it) } }
+
+    /**
+     * Sets the conversation's disappearing timer (Off is sent as 0). The
+     * server's echo wins when it carries the field; an echo without it is
+     * taken to mean the value sent was stored.
+     */
+    suspend fun setDisappearing(conversationId: String, timer: DisappearTimer): AppResult<DisappearTimer> =
+        apiCall(errorMapper) { api.updateDisappearing(conversationId, DisappearingRequest(timer.millis)) }
+            .mapOk { echo -> echo.disappearAfterMs?.let { DisappearTimer.fromMillis(it) } ?: timer }
+            .also { result -> (result as? AppResult.Success)?.data?.let { remember(conversationId, it) } }
+
+    /** A `disappearing_timer_updated` frame: another member (or device) changed the shared timer. */
+    fun applyRemoteDisappearing(conversationId: String, disappearAfterMs: Long) {
+        if (conversationId.isNotBlank()) remember(conversationId, DisappearTimer.fromMillis(disappearAfterMs))
+    }
+
+    private fun remember(conversationId: String, timer: DisappearTimer) =
+        _disappearing.update { it + (conversationId to timer) }
 
     /** Writes every switch at once — the server's echo is what the page then shows. */
     suspend fun savePrefs(conversationId: String, prefs: ConversationPrefs): AppResult<ConversationPrefs> =
@@ -548,6 +616,13 @@ private fun ConversationSettingsDto.toPrefs(fallback: ConversationPrefs? = null)
     isPinned = isPinned,
     muteCalls = muteCalls ?: fallback?.muteCalls ?: false,
     alertTone = alertTone?.let { AlertTone.fromWire(it) } ?: fallback?.alertTone ?: AlertTone.DEFAULT,
+    // The savePrefs PUT never carries the timer, so its echo is no news about
+    // it: keep what the page already knew. A plain read is the answer.
+    disappearing = if (fallback != null) {
+        fallback.disappearing ?: DisappearTimer.fromMillis(disappearAfterMs)
+    } else {
+        DisappearTimer.fromMillis(disappearAfterMs)
+    },
 )
 
 private inline fun <T, R> AppResult<T>.mapOk(block: (T) -> R): AppResult<R> = when (this) {

@@ -158,6 +158,13 @@ interface ChatParityApi {
     @GET("v1/chat/conversations/{id}/settings")
     suspend fun settings(@Path("id") conversationId: String): ApiEnvelope<ConversationSettingsDto>
 
+    /** Disappearing messages: the same settings PUT, carrying only `disappear_after_ms`. */
+    @PUT("v1/chat/conversations/{id}/settings")
+    suspend fun updateDisappearing(
+        @Path("id") conversationId: String,
+        @Body body: DisappearingRequest,
+    ): ApiEnvelope<ConversationSettingsDto>
+
     /** The send route again, so a forward-free typed send never needs [ChatApi] changes. */
     @POST("v1/chat/conversations/{id}/messages")
     suspend fun send(

@@ -293,8 +293,11 @@ class ThreadController(
         // surfaces the server's refusal.
         // Chat parity: an unsend leaves a tombstone where the message was,
         // so the conversation does not silently close up around a gap.
+        // A disappearing message that expired leaves no placeholder: the
+        // timer was the point, so the bubble goes entirely.
         is ChatSocketEvent.MessageDeleted -> when {
             event.conversationId != conversationId -> null
+            event.expired -> onMessageExpired(event.messageId)
             else -> onMessageUnsent(event.messageId)
         }
 
@@ -314,6 +317,9 @@ class ThreadController(
         // Call signaling belongs to :core:call's CallSessionManager; a chat
         // thread renders nothing for it.
         is ChatSocketEvent.CallSignal,
+        // The shared disappearing timer is the header's business; the
+        // ViewModel applies it. Messages already sent keep their own expiry.
+        is ChatSocketEvent.DisappearingTimerUpdated,
         is ChatSocketEvent.Unknown,
         is ChatSocketEvent.Malformed,
         -> null
@@ -465,6 +471,17 @@ class ThreadController(
         )
         return state.copy(messages = state.messages.map { if (it.id == messageId) tombstone else it })
             .also { state = it }
+    }
+
+    /**
+     * A disappearing message's timer ran out (`message_deleted` with
+     * `reason: expired`): the row leaves the thread with no tombstone.
+     * Null when it was not on screen. (Android threads carry no message
+     * pins, so there is no pin to drop with it.)
+     */
+    fun onMessageExpired(messageId: String): ThreadUiState? {
+        if (state.messages.none { it.id == messageId }) return null
+        return state.copy(messages = state.messages.filterNot { it.id == messageId }).also { state = it }
     }
 
     /** One realtime reaction, idempotent. Returns null when nothing changed. */

@@ -308,6 +308,16 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The screen is shown again — back from the follower lists, where the
+     * viewer may have followed or unfollowed people — so the header's live
+     * counts are read again. Nothing happens before the profile has loaded.
+     */
+    fun refreshFollowCounts() {
+        val content = _state.value as? ProfileUiState.Content ?: return
+        viewModelScope.launch { refreshCounts(content.profile.userId) }
+    }
+
     fun dismissActionError() = _state.update {
         (it as? ProfileUiState.Content)?.copy(actionError = null) ?: it
     }

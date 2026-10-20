@@ -427,6 +427,25 @@ data class ConversationSettingsDto(
     @SerialName("alert_tone") val alertTone: String? = null,
     /** `archived|none` on the PUT. */
     val label: String? = null,
+    /**
+     * Disappearing messages: the conversation's timer in milliseconds,
+     * shared by every member. Absent, null and 0 all read as off. Omitted
+     * from a PUT when null, so a screen that is only toggling mute never
+     * moves it; [DisappearingRequest] is the body that sets it.
+     */
+    @SerialName("disappear_after_ms") val disappearAfterMs: Long? = null,
+)
+
+/**
+ * The PUT body that sets ONLY the disappearing-messages timer. The handler
+ * merges and ignores null, so Off is sent as `0`, never omitted or null —
+ * hence @EncodeDefault on a non-null field. Nothing else rides along, so a
+ * member changing the timer never rewrites their own mute or pin.
+ */
+@Serializable
+data class DisappearingRequest(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    @SerialName("disappear_after_ms") val disappearAfterMs: Long = 0,
 )
 
 @Serializable
