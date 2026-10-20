@@ -19,14 +19,17 @@ class InboxSettingOptionsTest {
 
     @Test
     fun `every B3 value has words`() {
+        // DM consent (2026-10-20): exactly the four choices, each with its one line.
         assertThat(InboxSettingOptions.whoCanMessage.map { it.value }).containsExactly(
-            "everyone_message_requests", "followers_message_requests", "friends_of_friends_requests",
-            "connections_and_mutual_followers", "connections_only", "no_one",
-        )
+            "everyone_message_requests", "followers_message_requests", "people_i_follow", "no_one",
+        ).inOrder()
+        assertThat(InboxSettingOptions.whoCanMessage.map { it.label })
+            .containsExactly("Everyone", "Followers", "People I follow", "No one").inOrder()
+        assertThat(InboxSettingOptions.whoCanMessage.all { it.description.isNotBlank() }).isTrue()
         assertThat(InboxSettingOptions.whoCanAddToGroups.map { it.value }).containsExactly(
             "everyone_with_approval", "friends_of_friends_invites", "connections_and_contacts", "connections_only", "no_one",
         )
-        assertThat(InboxSettingOptions.whoCanCall.map { it.value }).containsExactly("accepted_chats_only", "connections_only", "no_one")
+        assertThat(InboxSettingOptions.whoCanCall.map { it.value }).containsExactly("accepted_chats_only", "no_one")
         assertThat(InboxSettingOptions.audience.map { it.value }).containsExactly("everyone", "connections_only", "no_one")
         assertThat(InboxSettingOptions.bubbleStyles.map { it.value })
             .containsExactly("default", "ocean", "ember", "forest", "violet", "mono")
@@ -37,8 +40,38 @@ class InboxSettingOptionsTest {
         val options = InboxSettingOptions.withCurrent(InboxSettingOptions.whoCanCall, "minors_contacts_only")
         assertThat(options.last().value).isEqualTo("minors_contacts_only")
         assertThat(options.last().label).isEqualTo("Minors contacts only")
-        assertThat(InboxSettingOptions.withCurrent(InboxSettingOptions.whoCanCall, "no_one")).hasSize(3)
+        assertThat(InboxSettingOptions.withCurrent(InboxSettingOptions.whoCanCall, "no_one")).hasSize(2)
         assertThat(InboxSettingOptions.labelOf(InboxSettingOptions.audience, "no_one")).isEqualTo("No one")
+    }
+
+    @Test
+    fun `retired who_can_message values show as the choice the server maps them to`() {
+        assertThat(InboxSettingOptions.whoCanMessageChoice("connections_only")).isEqualTo("people_i_follow")
+        assertThat(InboxSettingOptions.whoCanMessageChoice("connections_and_mutual_followers")).isEqualTo("people_i_follow")
+        assertThat(InboxSettingOptions.whoCanMessageChoice("friends_of_friends_requests")).isEqualTo("followers_message_requests")
+        for (value in listOf("everyone_message_requests", "followers_message_requests", "people_i_follow", "no_one")) {
+            assertThat(InboxSettingOptions.whoCanMessageChoice(value)).isEqualTo(value)
+        }
+        // Unknown never reads wider than it is.
+        assertThat(InboxSettingOptions.whoCanMessageChoice("")).isEqualTo("people_i_follow")
+    }
+
+    @Test
+    fun `an under-18 account is offered neither Everyone nor Followers`() {
+        assertThat(InboxSettingOptions.whoCanMessageChoices(minor = true).map { it.value })
+            .containsExactly("people_i_follow", "no_one").inOrder()
+        assertThat(InboxSettingOptions.whoCanMessageChoices(minor = false)).hasSize(4)
+        assertThat(InboxSettingOptions.shownWhoCanMessage("everyone_message_requests", minor = true)).isEqualTo("people_i_follow")
+        assertThat(InboxSettingOptions.shownWhoCanMessage("no_one", minor = true)).isEqualTo("no_one")
+        assertThat(InboxSettingOptions.shownWhoCanMessage("friends_of_friends_requests", minor = false))
+            .isEqualTo("followers_message_requests")
+    }
+
+    @Test
+    fun `a settings read without who_can_message or who_can_call takes the strict defaults`() {
+        val dto = json.decodeFromString(PrivacySettingsDto.serializer(), "{}")
+        assertThat(dto.whoCanMessage).isEqualTo("people_i_follow")
+        assertThat(dto.whoCanCall).isEqualTo("accepted_chats_only")
     }
 
     @Test

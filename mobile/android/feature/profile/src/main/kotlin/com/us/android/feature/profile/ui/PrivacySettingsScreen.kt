@@ -40,7 +40,7 @@ import com.us.android.core.ui.UsSettingsSwitchRow
 @Composable
 fun PrivacySettingsScreen(
     onBack: () -> Unit,
-    onDirectMessages: () -> Unit,
+    onMessagesSettings: () -> Unit,
     viewModel: PrivacySettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -56,7 +56,7 @@ fun PrivacySettingsScreen(
                 UsErrorState(current.message, Modifier.padding(padding), onRetry = viewModel::load)
 
             is PrivacySettingsUiState.Editing ->
-                PrivacySettingsForm(current, viewModel, onDirectMessages, Modifier.padding(padding))
+                PrivacySettingsForm(current, viewModel, onMessagesSettings, Modifier.padding(padding))
         }
     }
 }
@@ -65,7 +65,7 @@ fun PrivacySettingsScreen(
 private fun PrivacySettingsForm(
     state: PrivacySettingsUiState.Editing,
     viewModel: PrivacySettingsViewModel,
-    onDirectMessages: () -> Unit,
+    onMessagesSettings: () -> Unit,
     modifier: Modifier,
 ) {
     val value = state.value
@@ -84,7 +84,7 @@ private fun PrivacySettingsForm(
             )
         }
         DiscoverabilitySection(state, viewModel)
-        InteractionsSection(value, state.saving, viewModel, onDirectMessages)
+        InteractionsSection(value, state.saving, viewModel, onMessagesSettings)
         ContactPermissionSection(value, policyLocked, viewModel)
         ProfileVisibilitySection(value, policyLocked, viewModel)
         ProtectionSection(state, viewModel)
@@ -155,7 +155,7 @@ private fun InteractionsSection(
     value: PrivacySettings,
     saving: Boolean,
     viewModel: PrivacySettingsViewModel,
-    onDirectMessages: () -> Unit,
+    onMessagesSettings: () -> Unit,
 ) {
     UsSettingsSection("Interactions") {
         UsSettingsSelectRow(
@@ -166,10 +166,12 @@ private fun InteractionsSection(
             description = "Who can comment on your posts",
             enabled = !saving,
         )
+        // DM consent: the ONE Messages settings screen (the master switch and
+        // who can message you). Nothing here edits either.
         UsSettingsLinkRow(
-            title = "Direct messages",
-            onClick = onDirectMessages,
-            description = "Who can send you messages",
+            title = "Messages",
+            onClick = onMessagesSettings,
+            description = "Turn messages on or off, and choose who can message you",
         )
     }
 }
@@ -180,21 +182,19 @@ private fun ContactPermissionSection(
     locked: Boolean,
     viewModel: PrivacySettingsViewModel,
 ) {
-    // Messaging audience lives under Interactions → Direct messages; a second
-    // control for the same setting here would only invite disagreement.
+    // Messaging audience and the Messages on/off switch live on the Messages
+    // screen (Interactions → Messages); a second control for the same setting
+    // here would only invite disagreement.
     UsSettingsSection("Contact permissions") {
         PrivacySelect("Who can add you to groups", value.whoCanAddToGroups, GROUP_ADD_OPTIONS, locked) {
             viewModel.select(PrivacyEnumField.GROUP_ADD, it)
         }
     }
     // Production chat pass (directive §3.2): every control below has a named
-    // server-side consumer — pause gates creation and sends, the visibility
-    // trio gates presence/receipt disclosure, typing gates the actor's own
-    // indicator, and the preview toggle gates push text.
+    // server-side consumer — the visibility trio gates presence/receipt
+    // disclosure, typing gates the actor's own indicator, and the preview
+    // toggle gates push text. Pause is the Messages switch (Messages screen).
     UsSettingsSection("Chat") {
-        PrivacySelect("Chat availability", value.chatAvailability, CHAT_AVAILABILITY_OPTIONS, false) {
-            viewModel.select(PrivacyEnumField.CHAT_AVAILABILITY, it)
-        }
         PrivacySelect("Who sees you online", value.whoCanSeeOnlineStatus, VISIBILITY_OPTIONS, locked) {
             viewModel.select(PrivacyEnumField.ONLINE, it)
         }
@@ -283,11 +283,6 @@ private val GROUP_ADD_OPTIONS = options(
     "connections_only" to "Connections",
     "friends_of_friends_invites" to "Friends of friends, by invite",
     "everyone_with_approval" to "Anyone, with your approval",
-)
-
-private val CHAT_AVAILABILITY_OPTIONS = options(
-    "enabled" to "On",
-    "paused" to "Paused — no new messages in or out",
 )
 
 private val COMMENTS_OPTIONS = options(

@@ -53,7 +53,7 @@ internal fun ChatsTab(
     val search = state.search.takeIf { searching }
     when {
         state.loading && state.conversations.isEmpty() -> UsLoadingState(label = "Loading conversations")
-        chats.isEmpty() && state.requests.isEmpty() && state.notes == null && search == null -> UsEmptyState(
+        chats.isEmpty() && state.requestCount == 0 && state.notes == null && search == null -> UsEmptyState(
             title = if (state.query.isBlank()) "No chats yet" else "No chats match",
             detail = if (state.query.isBlank()) {
                 "Start from Suggestions — people you follow can message you here."
@@ -84,8 +84,10 @@ internal fun ChatsTab(
                     OnlineNowRail(online = online, viewerId = state.viewerId, onOpen = onOpenConversation)
                 }
             }
-            if (state.requests.isNotEmpty() && !searching) {
-                item(key = "requests") { RequestsDoor(count = state.requestCount, onClick = onOpenRequests) }
+            if (state.requestCount > 0 && !searching) {
+                item(key = "requests") {
+                    RequestsDoor(count = state.requestCount, label = state.requestCountLabel, onClick = onOpenRequests)
+                }
             }
             if (search != null) {
                 searchResultItems(
@@ -125,7 +127,7 @@ private fun Conversation.isOnline(state: ChatHomeUiState): Boolean =
 
 /** The door to message requests: a raised row with the count in the accent. */
 @Composable
-private fun RequestsDoor(count: Int, onClick: () -> Unit) {
+private fun RequestsDoor(count: Int, label: String, onClick: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
@@ -161,7 +163,7 @@ private fun RequestsDoor(count: Int, onClick: () -> Unit) {
                 text = if (count == 1) {
                     "1 person is waiting for your answer"
                 } else {
-                    "$count people are waiting for your answer"
+                    "$label people are waiting for your answer"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textMuted,

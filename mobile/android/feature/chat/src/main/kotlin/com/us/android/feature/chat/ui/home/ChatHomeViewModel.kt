@@ -86,6 +86,14 @@ data class ChatHomeUiState(
     val activityStatus: String? = null,
     /** Presence details per user (online + last active), from `POST /v1/chat/presence`. */
     val presence: Map<String, PresenceInfo> = emptyMap(),
+    /**
+     * DM consent: the server's count of waiting requests (the folder is
+     * paged, so the cached first page is not the total); null until read, or
+     * on a server without the count route — the cached rows count instead.
+     */
+    val serverRequestCount: Int? = null,
+    /** The server stopped counting: the badge reads "999+". */
+    val requestCountCapped: Boolean = false,
 ) {
     /**
      * The rows Messages may show. A Pulse match's chat lives in the dating
@@ -108,14 +116,18 @@ data class ChatHomeUiState(
     /** The tabs wearing an unread dot: Chats for direct, Groups for groups. */
     val unreadTabs: Set<ChatHomeTab>
         get() = buildSet {
-            if (inbox.any { it.type != ChatHomeFilters.GROUP_TYPE && it.hasUnread } || inboxRequests.isNotEmpty()) {
+            if (inbox.any { it.type != ChatHomeFilters.GROUP_TYPE && it.hasUnread } || requestCount > 0) {
                 add(ChatHomeTab.Chats)
             }
             if (inbox.any { it.type == ChatHomeFilters.GROUP_TYPE && it.hasUnread } || invitationCount > 0) {
                 add(ChatHomeTab.Groups)
             }
         }
-    val requestCount: Int get() = inboxRequests.size
+    val requestCount: Int get() = serverRequestCount ?: inboxRequests.size
+
+    /** [requestCount] as the badge and the door say it. */
+    val requestCountLabel: String
+        get() = com.us.android.core.chat.data.requestCountLabel(requestCount, capped = requestCountCapped && serverRequestCount != null)
 }
 
 /**
@@ -226,6 +238,7 @@ class ChatHomeViewModel @Inject constructor(
                     invitationCount = (invitations as? AppResult.Success)?.data?.size ?: current.invitationCount,
                 )
             }
+            refreshRequestCounts()
             refreshPresence()
             loadNotes()
         }
@@ -274,9 +287,26 @@ class ChatHomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * DM consent: the Requests badge from the server's count (the folder is
+     * paged, so the cached rows are not the total). A failed read keeps the
+     * last answer; a server without the route falls back to the cached rows.
+     */
+    private suspend fun refreshRequestCounts() {
+        when (val counts = sources.consent.requestCounts()) {
+            is AppResult.Success -> _state.update {
+                it.copy(serverRequestCount = counts.data?.count, requestCountCapped = counts.data?.capped == true)
+            }
+            is AppResult.Failure -> Unit
+        }
+    }
+
     /** `presence_update` frames move the online dots without a refresh. */
     private fun observePresence() = viewModelScope.launch {
         session.events.collect { event ->
+            // DM consent: an expired request left Requests — the cache row is
+            // already gone (ChatSessionManager); the badge is read again.
+            if (event is ChatSocketEvent.MessageRequestRemoved) refreshRequestCounts()
             if (event is ChatSocketEvent.PresenceUpdate) {
                 _state.update { current ->
                     current.copy(

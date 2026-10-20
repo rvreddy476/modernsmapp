@@ -561,6 +561,15 @@ class ChatStore @Inject constructor(
         }
     }
 
+    /**
+     * DM consent: a request left the viewer's Requests (`message_request_removed`,
+     * it expired). The cached row goes; a request was never a chat, so nothing
+     * of the viewer's own is lost.
+     */
+    suspend fun removeRequest(conversationId: String) {
+        guardedWrite { dao.deleteConversation(conversationId) }
+    }
+
     /** A realtime unsend: the cached copy must not survive it. */
     suspend fun applyDeleted(messageId: String) {
         guardedWrite { dao.deleteMessage(messageId) }

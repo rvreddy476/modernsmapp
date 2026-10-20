@@ -17,6 +17,8 @@ import com.us.android.core.chat.data.ForwardOutcome
 import com.us.android.core.chat.data.GifInfo
 import com.us.android.core.chat.data.MAX_FORWARD_TARGETS
 import com.us.android.core.chat.data.MessageReportReason
+import com.us.android.core.chat.data.RequestComposerRules
+import com.us.android.core.chat.data.RequestDraftProblem
 import com.us.android.core.chat.data.StickerInfo
 import com.us.android.core.chat.data.StickerPack
 import com.us.android.core.chat.data.TypedSend
@@ -137,7 +139,44 @@ data class ThreadRenderState(
 ) {
     /** Send is offered for text OR photos — a photo alone is a message. */
     val canSend: Boolean
-        get() = (thread.canSend || staged.isNotEmpty()) && !sendInFlight && !thread.draftTooLong
+        get() = (thread.canSend || staged.isNotEmpty()) && !sendInFlight && !thread.draftTooLong && requestAllowsSend
+
+    // ── DM consent (2026-10-20): the viewer's own pending request ──────
+
+    /**
+     * True while this is a request the viewer SENT and the other person has
+     * not answered. A reply from them accepts it (the server's rule), so a
+     * message from anyone else ends the pending state here too, before the
+     * conversation is read again.
+     */
+    val outgoingRequest: Boolean
+        get() = RequestComposerRules.isOutgoingPending(conversation, viewerId) &&
+            thread.messages.none { it.senderId.isNotBlank() && it.senderId != viewerId }
+
+    /** The request's one message is already sent or on its way. */
+    val requestMessageSent: Boolean
+        get() = outgoingRequest &&
+            (thread.messages.any { it.senderId == viewerId && !it.deleted } || pendingSends.any { !it.failed })
+
+    /** A request's one message that went and was refused (kept on the outbox, parked). */
+    val requestMessageRefused: Boolean
+        get() = outgoingRequest && pendingSends.any { it.failed }
+
+    /** What is wrong with the draft as the request's message; null when nothing is. */
+    val requestDraftProblem: RequestDraftProblem?
+        get() = if (outgoingRequest) RequestComposerRules.problem(thread.draft) else null
+
+    /** Who the request waits on, for the banner: @username, else their name. */
+    val requestRecipient: String
+        get() {
+            val peer = conversation?.peer
+            peer?.username?.trim()?.removePrefix("@")?.takeIf { it.isNotEmpty() }?.let { return "@$it" }
+            return peer?.displayName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: loadedTitle.ifBlank { "they" }
+        }
+
+    private val requestAllowsSend: Boolean
+        get() = !outgoingRequest || (!requestMessageSent && staged.isEmpty() && requestDraftProblem == null)
 }
 
 /**
@@ -396,8 +435,30 @@ class ChatThreadViewModel @Inject constructor(
         }
     }
 
+    /**
+     * DM consent: before the request is accepted only ONE text message may go
+     * (≤500 characters, no links). Anything richer is refused here with the
+     * reason, before the server has to refuse it. True when [what] may go.
+     */
+    private fun requestPermits(what: RequestSendKind): Boolean {
+        val s = _state.value
+        if (!s.outgoingRequest) return true
+        val problem = s.requestDraftProblem
+        val refusal = when {
+            s.requestMessageSent -> requestSentText(s.requestRecipient)
+            what != RequestSendKind.Text || s.staged.isNotEmpty() -> REQUEST_TEXT_ONLY
+            problem != null -> requestDraftProblemText(problem)
+            else -> null
+        } ?: return true
+        notice(refusal, UsMessageType.Warning)
+        return false
+    }
+
+    private enum class RequestSendKind { Text, Rich }
+
     private fun sendNow() {
         if (_state.value.sendInFlight) return
+        if (!requestPermits(RequestSendKind.Text)) return
         stopTyping()
         if (_state.value.staged.isNotEmpty()) {
             sendStagedAttachments()
@@ -554,6 +615,7 @@ class ChatThreadViewModel @Inject constructor(
      */
     fun stageAttachments(uris: List<Uri>) {
         if (uris.isEmpty()) return
+        if (!requestPermits(RequestSendKind.Rich)) return
         _state.update { state ->
             val existing = state.staged.map { it.uri }.toSet()
             val room = MAX_ATTACHMENTS - state.staged.size
@@ -718,6 +780,10 @@ class ChatThreadViewModel @Inject constructor(
 
     /** A recorded voice message: upload as audio, then the durable outbox (`type: voice`). */
     fun sendVoice(file: java.io.File, durationMs: Long, amplitudes: List<Int>) {
+        if (!requestPermits(RequestSendKind.Rich)) {
+            file.delete()
+            return
+        }
         if (durationMs < MIN_VOICE_MILLIS) {
             file.delete()
             notice("Hold to record a voice message.", UsMessageType.Info)
@@ -753,6 +819,7 @@ class ChatThreadViewModel @Inject constructor(
     fun sendGif(gif: GifInfo) = sendTyped(TypedSend.gif(gif))
 
     private fun sendTyped(typed: TypedSend) = viewModelScope.launch {
+        if (!requestPermits(RequestSendKind.Rich)) return@launch
         if (store.enqueueTypedSend(conversationId, typed) == null) {
             notice("Chat is finishing a security cleanup. Try again.")
         }
@@ -1086,4 +1153,25 @@ class ChatThreadViewModel @Inject constructor(
         /** Shorter than this is a tap, not a recording. */
         const val MIN_VOICE_MILLIS = 800L
     }
+}
+
+// ── DM consent: the words for an outgoing request (2026-10-20) ─────────────
+
+/** The banner over the composer of a request the viewer sent. */
+internal fun requestWaitingText(recipient: String): String =
+    "Your request is waiting. You can send one message (text only, no links) until $recipient accepts."
+
+/** Once the one message went. */
+internal fun requestSentText(recipient: String): String =
+    "You've sent your message. You can send more once $recipient accepts."
+
+internal const val REQUEST_TEXT_ONLY =
+    "Only a text message can go with a request. Photos, voice, GIFs and stickers can wait until it's accepted."
+
+internal const val REQUEST_REFUSED =
+    "Your message couldn't go with the request. Keep it to text, under 500 characters, with no links."
+
+internal fun requestDraftProblemText(problem: RequestDraftProblem): String = when (problem) {
+    RequestDraftProblem.TooLong -> "A request's message can be up to ${RequestComposerRules.MAX_CHARS} characters."
+    RequestDraftProblem.HasLink -> "Links can't go in a request. Send them once it's accepted."
 }

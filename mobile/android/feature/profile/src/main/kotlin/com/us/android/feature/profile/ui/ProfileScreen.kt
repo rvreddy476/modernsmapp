@@ -104,6 +104,24 @@ fun ProfileScreen(
         }
     }
 
+    // DM consent: the Message button is drawn from graph-service's decision,
+    // read when someone else's profile loads, after a follow changes (it can
+    // earn a request) and on every return here (a request may have been sent
+    // or answered meanwhile).
+    val loadedContent = state as? ProfileUiState.Content
+    val messageTarget = loadedContent?.profile?.takeUnless { it.isOwnProfile || loadedContent.unavailable }
+    val followStatus = loadedContent?.relationship?.followStatus
+    val checkMessage = {
+        messageTarget?.let {
+            startChatViewModel.check(it.userId, it.nameForDisplay, profileHandle(it.username, it.nameForDisplay))
+        }
+    }
+    LaunchedEffect(messageTarget?.userId, followStatus) { checkMessage() }
+    LifecycleResumeEffect(startChatViewModel, messageTarget?.userId) {
+        checkMessage()
+        onPauseOrDispose { }
+    }
+
     // The server returns the conversation; the host decides that opening it
     // means pushing the thread. Consumed once and cleared, or the thread would
     // be pushed again every time this screen resumed.
@@ -127,7 +145,9 @@ fun ProfileScreen(
             onMessage = if (destinations.onOpenChat == null) {
                 null
             } else {
-                { userId, name -> startChatViewModel.open(userId, name) }
+                { userId, name ->
+                    startChatViewModel.open(userId, name, profileHandle(loadedProfile?.username.orEmpty(), name))
+                }
             },
             onDismissChatError = startChatViewModel::dismissError,
             onOpenMenu = reportViewModel::reset,
@@ -670,12 +690,13 @@ private fun CancelRequestDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 /**
  * Start a conversation with the person whose profile this is.
  *
- * The button is ALWAYS offered when the host has somewhere to open a thread —
- * it is never pre-filtered on a locally known privacy setting. graph-service
- * owns that decision and re-evaluates it on every attempt; a client-side copy
- * would be a second implementation of the privacy matrix that goes stale the
- * moment somebody changes a setting, and stale in whichever direction the last
- * deploy happened to choose. A refusal is answered with a reason instead.
+ * The button is never pre-filtered on a locally known privacy setting: a
+ * client-side copy would be a second implementation of the privacy matrix
+ * that goes stale the moment somebody changes a setting. It is drawn from
+ * graph-service's own `message` decision instead (DM consent, 2026-10-20) —
+ * Message, Send request, Requested, or a disabled Message with the reason —
+ * and the server decides again when it is tapped. A refusal is answered
+ * with a reason.
  */
 @Composable
 private fun MessageControls(
@@ -684,20 +705,46 @@ private fun MessageControls(
     onMessage: ((userId: String, displayName: String) -> Unit)?,
     onDismissChatError: () -> Unit,
 ) {
+    // DM consent: the label, whether it is offered at all, and the reason
+    // when it is not, are graph-service's decision (see MessageButtonState).
+    val button = chatState.button
     if (onMessage != null) {
-        UsSecondaryButton(
-            text = "Message",
-            onClick = { onMessage(profile.userId, profile.nameForDisplay) },
-            enabled = !chatState.busy,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        when (button) {
+            MessageButtonState.Hidden -> Unit
+            is MessageButtonState.Enabled -> UsSecondaryButton(
+                text = button.label,
+                onClick = { onMessage(profile.userId, profile.nameForDisplay) },
+                enabled = !chatState.busy,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("profile_message"),
+            )
+            is MessageButtonState.Disabled -> {
+                UsSecondaryButton(
+                    text = button.label,
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("profile_message"),
+                )
+                Text(
+                    text = button.explanation,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = UsTheme.extended.textMuted,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("profile_message_reason"),
+                )
+            }
+        }
     }
 
     // A policy refusal is NOT retryable, so it gets no retry control. The
     // answer stays the same until the other person changes their settings, and
     // a button that cannot work reads as a broken app rather than as a
-    // boundary somebody set.
-    chatState.notAllowed?.let { message ->
+    // boundary somebody set. Not repeated when the button already says it.
+    chatState.notAllowed?.takeUnless { (button as? MessageButtonState.Disabled)?.explanation == it }?.let { message ->
         Text(
             text = message,
             style = MaterialTheme.typography.bodyMedium,

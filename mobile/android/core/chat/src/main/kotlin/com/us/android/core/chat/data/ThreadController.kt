@@ -311,6 +311,9 @@ class ThreadController(
 
         // Presence is the header's business (the ViewModel knows the peer).
         is ChatSocketEvent.PresenceUpdate,
+        // An expired request is the Requests list's business (the recipient
+        // never had a thread open on it).
+        is ChatSocketEvent.MessageRequestRemoved,
         is ChatSocketEvent.Connected,
         is ChatSocketEvent.Disconnected,
         is ChatSocketEvent.SubscriptionRevoked,

@@ -259,7 +259,9 @@ private fun HeaderMenu(state: ChatHomeUiState, destinations: ChatHomeDestination
                 menuOpen = false
                 action()
             }
-            MenuRow("Requests", state.requestCount, "chat_home_requests") { open(destinations.onOpenRequests) }
+            MenuRow("Requests", state.requestCount, "chat_home_requests", state.requestCountLabel) {
+                open(destinations.onOpenRequests)
+            }
             MenuRow("Group invites", state.invitationCount, "chat_home_invites") {
                 open(destinations.onOpenInvitations)
             }
@@ -293,7 +295,7 @@ private fun PendingBadge(pending: Int, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun MenuRow(label: String, count: Int, tag: String, onClick: () -> Unit) {
+private fun MenuRow(label: String, count: Int, tag: String, countLabel: String = count.toString(), onClick: () -> Unit) {
     DropdownMenuItem(
         text = {
             Row(
@@ -303,7 +305,7 @@ private fun MenuRow(label: String, count: Int, tag: String, onClick: () -> Unit)
                 Text(label)
                 if (count > 0) {
                     Text(
-                        text = count.toString(),
+                        text = countLabel,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = UsTheme.extended.accentSolid,

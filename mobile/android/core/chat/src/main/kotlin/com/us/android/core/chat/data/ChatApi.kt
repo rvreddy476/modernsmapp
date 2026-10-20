@@ -524,6 +524,14 @@ data class ConversationDto(
     // and — on a request row and request detail — who sent it.
     @SerialName("marked_unread") val markedUnread: Boolean = false,
     val sender: RequestSenderDto? = null,
+    // DM consent (2026-10-20): a requests-list row also says whether the
+    // viewer received it ("incoming") or sent it ("outgoing"), and whether
+    // safe requests set it aside. Absent on every other route.
+    val direction: String? = null,
+    val filtered: Boolean? = null,
+    /** A requests-list row: its one message, and when it was sent. */
+    val preview: String? = null,
+    @SerialName("requested_at") val requestedAt: String? = null,
 )
 
 /**

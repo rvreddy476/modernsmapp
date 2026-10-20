@@ -57,6 +57,12 @@ object ChatApisModule {
     fun provideChatParityApi(retrofit: Retrofit): com.us.android.core.chat.data.ChatParityApi =
         retrofit.create(com.us.android.core.chat.data.ChatParityApi::class.java)
 
+    /** DM consent (2026-10-20): the message permission read and the paged requests folder. */
+    @Provides
+    @Singleton
+    fun provideMessageConsentApi(retrofit: Retrofit): com.us.android.core.chat.data.MessageConsentApi =
+        retrofit.create(com.us.android.core.chat.data.MessageConsentApi::class.java)
+
     /** A post's share sheet (2026-10-17) reads the inbox and sends the card through the one repository. */
     @Provides
     fun providePostShareChats(repository: ChatRepository): PostShareChats = repository

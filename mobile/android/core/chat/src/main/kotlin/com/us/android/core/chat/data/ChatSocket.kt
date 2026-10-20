@@ -92,6 +92,16 @@ sealed interface ChatSocketEvent {
     ) : ChatSocketEvent
 
     /**
+     * DM consent (2026-10-20): a request left the viewer's Requests
+     * (`message_request_removed {conversation_id, reason}`; reason `expired`
+     * after 30 days unanswered). Only the recipient gets it.
+     */
+    data class MessageRequestRemoved(
+        val conversationId: String,
+        val reason: String? = null,
+    ) : ChatSocketEvent
+
+    /**
      * Disappearing messages: someone in the chat changed its shared timer
      * (`disappearing_timer_updated`). [disappearAfterMs] 0 is off.
      */
@@ -463,6 +473,10 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
 
         FRAME_DISAPPEARING_TIMER -> parseDisappearingTimer(payload)
 
+        FRAME_MESSAGE_REQUEST_REMOVED -> payload.str("conversation_id")?.takeIf { it.isNotBlank() }
+            ?.let { ChatSocketEvent.MessageRequestRemoved(it, payload.str("reason")) }
+            ?: ChatSocketEvent.Malformed(FRAME_MESSAGE_REQUEST_REMOVED, "missing conversation")
+
         else -> ChatSocketEvent.Unknown(type)
     }
 }
@@ -610,6 +624,9 @@ private const val FRAME_DISAPPEARING_TIMER = "disappearing_timer_updated"
 
 /** `message_deleted.reason` when a disappearing message's timer ran out. */
 private const val DELETE_REASON_EXPIRED = "expired"
+
+/** DM consent: a request left the recipient's Requests (it expired). */
+private const val FRAME_MESSAGE_REQUEST_REMOVED = "message_request_removed"
 private const val FRAME_REACTION = "reaction"
 private const val FRAME_PRESENCE_UPDATE = "presence_update"
 

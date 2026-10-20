@@ -10,9 +10,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -22,8 +25,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -34,6 +39,7 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.profile.data.InboxSettingOptions
 import com.us.android.core.profile.data.PrivacySettings
@@ -63,7 +69,8 @@ sealed interface InboxSettingsUiState {
 }
 
 /**
- * Settings › Inbox & messaging (chat parity, CONTRACT §7/§9). Every row
+ * Settings › Inbox & messaging (chat parity, CONTRACT §7/§9) — and, since DM
+ * consent (2026-10-20), the ONE Messages settings screen. Every row
  * commits the moment it is changed, through the same full-snapshot route as
  * Privacy, against the server's CURRENT settings — and then shows what the
  * server answered, which for a strict or minor account may be a clamped
@@ -136,15 +143,8 @@ private fun InboxSettingsForm(state: InboxSettingsUiState.Loaded, viewModel: Inb
         state.saveError?.let {
             Text(it, color = UsTheme.extended.statusDanger, style = MaterialTheme.typography.bodySmall)
         }
-        UsSettingsSection("Who can reach you") {
-            UsSettingsSelectRow(
-                title = "Who can message you",
-                selected = s.whoCanMessage,
-                options = InboxSettingOptions.whoCanMessage.forRow(s.whoCanMessage),
-                onSelected = { value -> viewModel.update { it.copy(whoCanMessage = value) } },
-                enabled = enabled,
-                modifier = Modifier.testTag("inbox_who_can_message"),
-            )
+        MessagesSection(s, enabled, viewModel)
+        UsSettingsSection("Groups and calls") {
             UsSettingsSelectRow(
                 title = "Who can add you to groups",
                 selected = s.whoCanAddToGroups,
@@ -254,6 +254,92 @@ private fun InboxSettingsForm(state: InboxSettingsUiState.Loaded, viewModel: Inb
             },
             onDismiss = { keywordsOpen = false },
         )
+    }
+}
+
+/**
+ * DM consent (2026-10-20): the master switch and who can message you — the
+ * one place either is set. The four choices each carry their one-line
+ * explanation; an under-18 account is offered only People I follow and No
+ * one. A retired stored value shows as the choice the server maps it to.
+ */
+@Composable
+private fun MessagesSection(s: PrivacySettings, enabled: Boolean, viewModel: InboxSettingsViewModel) {
+    val messagesOn = s.chatAvailability != InboxSettingOptions.CHAT_PAUSED
+    val chosen = InboxSettingOptions.shownWhoCanMessage(s.whoCanMessage, minor = s.under18Mode)
+    UsSettingsSection("Messages") {
+        UsSettingsSwitchRow(
+            title = "Messages",
+            description = if (messagesOn) {
+                "On: people can message you as you choose below."
+            } else {
+                "Off: no one can start a chat or message you, and you can't send. Your chats stay readable."
+            },
+            checked = messagesOn,
+            onCheckedChange = { on ->
+                viewModel.update {
+                    it.copy(chatAvailability = if (on) InboxSettingOptions.CHAT_ENABLED else InboxSettingOptions.CHAT_PAUSED)
+                }
+            },
+            enabled = enabled,
+            modifier = Modifier.testTag("inbox_messages_switch"),
+        )
+        Text(
+            "Who can message you",
+            style = MaterialTheme.typography.bodyLarge,
+            color = UsTheme.extended.textPrimary,
+            modifier = Modifier.padding(top = UsTheme.spacing.l, bottom = UsTheme.spacing.s),
+        )
+        Column(modifier = Modifier.selectableGroup().testTag("inbox_who_can_message")) {
+            InboxSettingOptions.whoCanMessageChoices(minor = s.under18Mode).forEach { option ->
+                WhoCanMessageChoice(
+                    option = option,
+                    selected = option.value == chosen,
+                    enabled = enabled && messagesOn,
+                    onSelect = { viewModel.update { it.copy(whoCanMessage = option.value) } },
+                )
+            }
+        }
+        if (s.under18Mode) {
+            Text(
+                "Accounts under 18 can only get messages from people they follow.",
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier.padding(vertical = UsTheme.spacing.s),
+            )
+        }
+    }
+}
+
+/** One of the four choices: its name, its one line, and a check when chosen. */
+@Composable
+private fun WhoCanMessageChoice(
+    option: InboxSettingOptions.Option,
+    selected: Boolean,
+    enabled: Boolean,
+    onSelect: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onSelect)
+            .padding(vertical = UsTheme.spacing.m)
+            .testTag("inbox_who_can_message:${option.value}"),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
+            Text(
+                option.label,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (enabled) UsTheme.extended.textPrimary else UsTheme.extended.textMuted,
+            )
+            Text(option.description, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+        }
+        if (selected) {
+            Icon(UsIcons.Check, contentDescription = "Selected", tint = UsTheme.extended.textPrimary)
+        }
     }
 }
 

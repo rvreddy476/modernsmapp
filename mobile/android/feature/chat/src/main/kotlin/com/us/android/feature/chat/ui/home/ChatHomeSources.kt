@@ -2,6 +2,7 @@ package com.us.android.feature.chat.ui.home
 
 import com.us.android.core.chat.data.ChatParityRepository
 import com.us.android.core.chat.data.CommunityRepository
+import com.us.android.core.chat.data.MessageConsentRepository
 import com.us.android.core.chat.data.SuggestionsRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.profile.data.PrivacySettingsRepository
@@ -25,4 +26,6 @@ class ChatHomeSources @Inject constructor(
     val profiles: ProfileRepository,
     val parity: ChatParityRepository,
     val privacy: PrivacySettingsRepository,
+    /** DM consent (2026-10-20): the waiting-requests badge count. */
+    val consent: MessageConsentRepository,
 )

@@ -407,6 +407,10 @@ data class Conversation(
     val markedUnread: Boolean = false,
     /** Fix pass 2: a request's sender (requests list and request detail only). */
     val sender: RequestSender? = null,
+    /** Who opened the conversation (`created_by`); blank when the server did not say. */
+    val createdBy: String = "",
+    /** A requests-list row only: `incoming` or `outgoing`; null everywhere else. */
+    val requestDirection: String? = null,
 ) {
     /**
      * A Pulse match's chat. It belongs to the dating feature (founder,

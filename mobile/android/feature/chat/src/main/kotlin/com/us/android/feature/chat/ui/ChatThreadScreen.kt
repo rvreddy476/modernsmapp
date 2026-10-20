@@ -176,7 +176,8 @@ fun ChatThreadScreen(
                 // once the roster resolved the peer. Whether the peer may
                 // actually be called is the server's decision when the button
                 // is pressed — visibility here is not permission.
-                showCalls = !isGroup && !render.loadedIsGroup && render.peerUserId.isNotBlank(),
+                // DM consent: no calls on a request that has not been accepted.
+                showCalls = !isGroup && !render.loadedIsGroup && render.peerUserId.isNotBlank() && !render.outgoingRequest,
                 showGroupInfo = isGroup || render.loadedIsGroup,
                 onBack = onBack,
                 onAudioCall = {
@@ -358,7 +359,10 @@ fun ChatThreadScreen(
                 }
             }
 
-            Composer(
+            // DM consent: a request the viewer sent takes ONE text message.
+            // Once it went, the composer steps aside for the banner; until
+            // then it is text only — no attach, camera, voice, GIF or sticker.
+            if (!render.requestMessageSent) Composer(
                 draft = state.draft,
                 // One send at a time: while an enqueue awaits Room, a second
                 // tap must not mint a second outbox row for the same text.
@@ -369,18 +373,20 @@ fun ChatThreadScreen(
                     viewModel.sendTyping()
                 },
                 onSend = viewModel::send,
-                onAttach = {
-                    pickImages.launch(
-                        PickVisualMediaRequest(
-                            if (render.parityEnabled) {
-                                ActivityResultContracts.PickVisualMedia.ImageAndVideo
-                            } else {
-                                ActivityResultContracts.PickVisualMedia.ImageOnly
-                            },
-                        ),
-                    )
+                onAttach = if (render.outgoingRequest) null else {
+                    {
+                        pickImages.launch(
+                            PickVisualMediaRequest(
+                                if (render.parityEnabled) {
+                                    ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                                } else {
+                                    ActivityResultContracts.PickVisualMedia.ImageOnly
+                                },
+                            ),
+                        )
+                    }
                 },
-                parity = if (render.parityEnabled) {
+                parity = if (render.parityEnabled && !render.outgoingRequest) {
                     ComposerParity(
                         stickerPacks = render.stickerPacks,
                         onCamera = { cameraOpen = true },
@@ -922,6 +928,9 @@ private fun ComposerStatus(
     // Typing lives in the HEADER now (98:340) — one live state line beside
     // the name, instead of a floating caption over the composer.
     val state = render.thread
+    if (render.outgoingRequest) {
+        OutgoingRequestBanner(render)
+    }
     if (state.draftTooLong) {
         Text(
             text = "That's longer than a message can be. " +
@@ -964,6 +973,49 @@ private fun ComposerStatus(
 }
 
 /**
+ * DM consent: over the composer of a request the viewer sent — what may go
+ * before the other person accepts, then (once it went) that the rest waits,
+ * and the draft's problem, if it has one, before Send is tried.
+ */
+@Composable
+private fun OutgoingRequestBanner(render: ThreadRenderState) {
+    val problem = render.requestDraftProblem
+    Column(
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s)
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.bgCardSolid)
+            .padding(UsTheme.spacing.l)
+            .testTag("thread-request-banner"),
+    ) {
+        Text(
+            text = if (render.requestMessageSent) {
+                requestSentText(render.requestRecipient)
+            } else {
+                requestWaitingText(render.requestRecipient)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textPrimary,
+        )
+        val warning = when {
+            render.requestMessageRefused -> REQUEST_REFUSED
+            problem != null -> requestDraftProblemText(problem)
+            else -> null
+        }
+        warning?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag("thread-request-problem"),
+            )
+        }
+    }
+}
+
+/**
  * The input bar, per the Figma conversation frame (98:365): a card-dark bar
  * over a hairline — plus for attachments, a full-round pill field with the
  * camera inside it, and the circular chat-green send button that dims when
@@ -976,7 +1028,8 @@ private fun Composer(
     attaching: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
-    onAttach: () -> Unit,
+    /** Null for a text-only composer (an outgoing request): no attach or camera. */
+    onAttach: (() -> Unit)?,
     parity: ComposerParity? = null,
 ) {
     var emojiOpen by remember { mutableStateOf(false) }
@@ -1024,16 +1077,18 @@ private fun Composer(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
-            IconButton(
-                onClick = onAttach,
-                enabled = !attaching,
-                modifier = Modifier.testTag("thread-attach"),
-            ) {
-                Icon(
-                    imageVector = UsIcons.Create,
-                    contentDescription = "Attach a photo",
-                    tint = UsTheme.extended.textPrimary,
-                )
+            if (onAttach != null) {
+                IconButton(
+                    onClick = onAttach,
+                    enabled = !attaching,
+                    modifier = Modifier.testTag("thread-attach"),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.Create,
+                        contentDescription = "Attach a photo",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
             }
             ComposerField(
                 draft = draft,
@@ -1082,7 +1137,7 @@ private fun ComposerField(
     attaching: Boolean,
     emojiOpen: Boolean,
     onDraftChange: (String) -> Unit,
-    onAttach: () -> Unit,
+    onAttach: (() -> Unit)?,
     onToggleEmoji: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1136,15 +1191,17 @@ private fun ComposerField(
                     .semantics { contentDescription = "Message" },
             )
         }
-        Icon(
-            imageVector = UsIcons.Camera,
-            contentDescription = "Attach a photo",
-            tint = UsTheme.extended.textMuted,
-            modifier = Modifier
-                .size(COMPOSER_GLYPH)
-                .clip(CircleShape)
-                .clickable(enabled = !attaching, onClick = onAttach),
-        )
+        if (onAttach != null) {
+            Icon(
+                imageVector = UsIcons.Camera,
+                contentDescription = "Attach a photo",
+                tint = UsTheme.extended.textMuted,
+                modifier = Modifier
+                    .size(COMPOSER_GLYPH)
+                    .clip(CircleShape)
+                    .clickable(enabled = !attaching, onClick = onAttach),
+            )
+        }
     }
 }
 

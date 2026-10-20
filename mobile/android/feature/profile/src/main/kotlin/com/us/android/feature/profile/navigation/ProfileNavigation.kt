@@ -13,7 +13,6 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.us.android.feature.profile.ui.AppearanceViewModel
-import com.us.android.feature.profile.ui.DirectMessagesScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.FollowListScreen
 import com.us.android.feature.profile.ui.FollowListTab
@@ -228,8 +227,6 @@ data object EditProfileRoute
 
 @Serializable data object ProfileDetailsRoute
 
-/** "Who can message you", the three-row picker pushed from Privacy. */
-@Serializable data object DirectMessagesRoute
 
 /** Settings › Inbox & messaging (chat parity, 2026-10-18). */
 @Serializable data object InboxSettingsRoute
@@ -283,9 +280,8 @@ fun NavGraphBuilder.settingsScreens(
     }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
     composable<PrivacySettingsRoute> {
-        PrivacySettingsScreen(destinations.onBack, destinations.onDirectMessages)
+        PrivacySettingsScreen(destinations.onBack, destinations.onMessagesSettings)
     }
-    composable<DirectMessagesRoute> { DirectMessagesScreen(destinations.onBack) }
     composable<InboxSettingsRoute> { com.us.android.feature.profile.ui.InboxSettingsScreen(destinations.onBack) }
     composable<NotificationSettingsRoute> { NotificationSettingsScreen(destinations.onBack) }
     composable<SecuritySettingsRoute> {
@@ -297,7 +293,7 @@ data class SettingsDestinations(
     val onBack: () -> Unit,
     val onEditProfile: () -> Unit,
     val onProfileDetails: () -> Unit,
-    val onDirectMessages: () -> Unit,
+    val onMessagesSettings: () -> Unit,
     val onSignedOut: () -> Unit,
     val sections: SettingsSections,
     /** The app's version name for the line at the foot of Settings; `:app` owns BuildConfig. */

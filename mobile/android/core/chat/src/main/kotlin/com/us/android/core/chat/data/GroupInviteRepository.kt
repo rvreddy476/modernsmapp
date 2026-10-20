@@ -163,7 +163,8 @@ internal fun ConversationDto.toDomain(): Conversation = Conversation(
     updatedAt = updatedAt,
     avatarMediaId = avatarMediaId,
     lastMessageAt = lastMessageAt,
-    lastMessagePreview = lastMessagePreview,
+    // A requests-list row carries its one message as `preview`.
+    lastMessagePreview = lastMessagePreview.ifBlank { preview.orEmpty() },
     lastMessageSender = lastMessageSender,
     hasUnread = hasUnread,
     isPinned = isPinned,
@@ -189,4 +190,6 @@ internal fun ConversationDto.toDomain(): Conversation = Conversation(
     markedUnread = markedUnread,
     sender = sender?.takeIf { it.deleted || it.userId.isNotBlank() || it.displayName.isNotBlank() || it.username.isNotBlank() }
         ?.let { RequestSender(it.userId, it.displayName, it.username, it.avatarUrl?.takeIf { url -> url.isNotBlank() }, it.deleted) },
+    createdBy = createdBy,
+    requestDirection = direction?.takeIf { it.isNotBlank() },
 )

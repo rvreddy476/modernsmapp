@@ -33,8 +33,8 @@ import com.us.android.core.ui.UsLoadingState
  *
  * The sender's single introduction renders read-only — no composer, no
  * receipts, no presence. Four decisions, all idempotent server transitions:
- * Accept opens the thread; Decline quietly parks it (with a server-side
- * re-request cooldown); Block severs both sides; Report severs and files the
+ * Accept opens the thread; Delete quietly parks it (the sender is not told,
+ * and a server-side 7-day cooldown stops them asking again); Block severs both sides; Report severs and files the
  * stored preview with trust & safety.
  */
 @Composable
@@ -108,7 +108,8 @@ fun ChatRequestScreen(
             }
 
             Text(
-                "They won't see whether you've read this, or when you're online, unless you accept.",
+                "They won't see whether you've read this, or when you're online, unless you accept. " +
+                    "Replying accepts. If you delete it, they aren't told.",
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textMuted,
                 modifier = Modifier.padding(top = UsTheme.spacing.l),
@@ -134,8 +135,10 @@ fun ChatRequestScreen(
                     .testTag("request-accept"),
             )
             Spacer(Modifier.height(UsTheme.spacing.s))
+            // Delete (the server's "decline"): the request leaves Requests,
+            // the sender isn't told, and they can't ask again for 7 days.
             UsSecondaryButton(
-                text = "Decline",
+                text = "Delete",
                 onClick = viewModel::decline,
                 enabled = !state.busy,
                 modifier = Modifier

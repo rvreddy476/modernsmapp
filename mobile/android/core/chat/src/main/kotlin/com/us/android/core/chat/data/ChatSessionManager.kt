@@ -259,6 +259,8 @@ open class ChatSessionManager @Inject constructor(
                     // cached thread must not resurrect an unsent message or
                     // forget a reaction when it is next opened offline.
                     is ChatSocketEvent.MessageDeleted -> store.applyDeleted(event.messageId)
+                    // DM consent: an expired request leaves the cached Requests.
+                    is ChatSocketEvent.MessageRequestRemoved -> store.removeRequest(event.conversationId)
                     is ChatSocketEvent.ReactionChanged ->
                         store.applyReaction(event.messageId, event.emoji, event.userId, event.added)
                     // The peer read my last message: the inbox row's "Sent"

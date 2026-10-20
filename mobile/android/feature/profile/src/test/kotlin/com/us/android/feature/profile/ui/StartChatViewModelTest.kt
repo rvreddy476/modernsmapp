@@ -255,4 +255,109 @@ class StartChatViewModelTest {
         assertThat(state.error).isNull()
         assertThat(state.openConversation).isNull()
     }
+
+    // ── DM consent (2026-10-20): the button drawn from the decision ─────
+
+    private class FakeConsentApi(
+        private val decision: com.us.android.core.chat.data.PermissionDecisionDto,
+        private val outgoing: List<ConversationDto> = emptyList(),
+    ) : com.us.android.core.chat.data.MessageConsentApi {
+        val checked = mutableListOf<String>()
+
+        override suspend fun checkPermission(targetUserId: String, actions: String) = ApiEnvelope(
+            data = com.us.android.core.chat.data.PermissionCheckDto(
+                targetUserId = targetUserId,
+                decisions = mapOf(actions to decision),
+            ),
+        ).also { checked += "$targetUserId:$actions" }
+
+        override suspend fun requestsPage(
+            direction: String,
+            filtered: Boolean,
+            limit: Int,
+            cursor: String?,
+        ) = ApiEnvelope(data = if (direction == "outgoing") outgoing else emptyList())
+
+        override suspend fun requestsCount() =
+            ApiEnvelope(data = com.us.android.core.chat.data.RequestCountDto(0))
+    }
+
+    private fun consentViewModel(api: FakeChatApi, consent: FakeConsentApi) = StartChatViewModel(
+        ChatRepository(api, ErrorMapper(json)),
+        com.us.android.core.chat.data.MessageConsentRepository(consent, ErrorMapper(json)),
+    )
+
+    @Test
+    fun `a request decision draws Send request`() = runTest {
+        val consent = FakeConsentApi(com.us.android.core.chat.data.PermissionDecisionDto(fallback = "message_request"))
+        val viewModel = consentViewModel(FakeChatApi(), consent)
+
+        viewModel.check("u2", "Bravo", "@bravo")
+
+        assertThat(consent.checked).containsExactly("u2:message")
+        assertThat((viewModel.state.value.button as MessageButtonState.Enabled).label).isEqualTo("Send request")
+    }
+
+    @Test
+    fun `a waiting request draws Requested, and tapping opens it without a new start`() = runTest {
+        val consent = FakeConsentApi(
+            com.us.android.core.chat.data.PermissionDecisionDto(fallback = "message_request"),
+            outgoing = listOf(
+                ConversationDto(
+                    id = "req-1",
+                    type = "direct",
+                    isRequest = true,
+                    direction = "outgoing",
+                    members = listOf(ConversationMemberDto("me", "member", "", "Alpha"), ConversationMemberDto("u2", "member", "", "Bravo")),
+                ),
+            ),
+        )
+        val chat = FakeChatApi()
+        val viewModel = consentViewModel(chat, consent)
+
+        viewModel.check("u2", "Bravo", "@bravo")
+        assertThat((viewModel.state.value.button as MessageButtonState.Enabled).label).isEqualTo("Requested")
+
+        viewModel.open("u2", "Bravo", "@bravo")
+
+        assertThat(viewModel.state.value.openConversation?.conversationId).isEqualTo("req-1")
+        assertThat(chat.createDirectCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun `a deny draws a disabled Message with the reason, and unavailable hides it`() = runTest {
+        val viewModel = consentViewModel(
+            FakeChatApi(),
+            FakeConsentApi(com.us.android.core.chat.data.PermissionDecisionDto(reason = "followers_only")),
+        )
+        viewModel.check("u2", "Bravo", "@bravo")
+        assertThat(viewModel.state.value.button).isEqualTo(MessageButtonState.Disabled("Follow @bravo to send a request"))
+
+        val hidden = consentViewModel(
+            FakeChatApi(),
+            FakeConsentApi(com.us.android.core.chat.data.PermissionDecisionDto(reason = "unavailable")),
+        )
+        hidden.check("u2", "Bravo", "@bravo")
+        assertThat(hidden.state.value.button).isEqualTo(MessageButtonState.Hidden)
+    }
+
+    @Test
+    fun `a refused start explains itself with the server's reason`() = runTest {
+        val api = FakeChatApi().apply {
+            responses += {
+                throw HttpException(
+                    Response.error<ConversationDto>(
+                        403,
+                        """{"error":{"code":"MESSAGING_NOT_ALLOWED","message":"no","details":{"reason":"messages_off"}}}"""
+                            .toResponseBody("application/json".toMediaType()),
+                    ),
+                )
+            }
+        }
+        val viewModel = viewModel(api)
+
+        viewModel.open("u2", "Bravo", "@bravo")
+
+        assertThat(viewModel.state.value.notAllowed).isEqualTo("@bravo isn't taking messages")
+    }
 }

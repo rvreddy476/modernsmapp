@@ -165,7 +165,6 @@ import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.navigateToStudio
 import com.us.android.feature.post.navigation.postScreen
 import com.us.android.feature.post.navigation.studioScreen
-import com.us.android.feature.profile.navigation.DirectMessagesRoute
 import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
 import com.us.android.feature.profile.navigation.NotificationSettingsRoute
 import com.us.android.feature.profile.navigation.PrivacySettingsRoute
@@ -1336,7 +1335,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             onBack = { navController.popBackStack() },
             onEditProfile = { navController.navigateToEditProfile() },
             onProfileDetails = { navController.navigate(ProfileDetailsRoute) },
-            onDirectMessages = { navController.navigate(DirectMessagesRoute) },
+            // DM consent: one Messages settings screen; Privacy links to it.
+            onMessagesSettings = { navController.navigate(com.us.android.feature.profile.navigation.InboxSettingsRoute) },
             onSignedOut = onSignedOut,
             sections = SettingsSections(
                 onManageAccount = { navController.navigateToManageAccount() },

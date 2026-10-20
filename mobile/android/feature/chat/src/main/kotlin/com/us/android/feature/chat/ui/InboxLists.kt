@@ -44,7 +44,6 @@ import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.LABEL_NONE
 import com.us.android.core.chat.data.LANE_ARCHIVED
 import com.us.android.core.chat.data.PeopleLookupRepository
-import com.us.android.core.chat.data.REQUESTS_FILTERED
 import com.us.android.core.chat.data.StartDirectController
 import com.us.android.core.chat.data.StartDirectResult
 import com.us.android.core.chat.data.SuggestionsRepository
@@ -77,63 +76,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-
-// ── Filtered requests (CONTRACT §7, dm_safe_mode) ─────────────────────────
-
-/** The requests safe mode set aside; null = route not there (the tab hides). */
-@HiltViewModel
-class FilteredRequestsViewModel @Inject constructor(private val parity: ChatParityRepository) : ViewModel() {
-    private val _rows = MutableStateFlow<List<Conversation>?>(null)
-    val rows: StateFlow<List<Conversation>?> = _rows.asStateFlow()
-
-    init {
-        viewModelScope.launch {
-            when (val result = parity.requests(REQUESTS_FILTERED)) {
-                is AppResult.Success -> _rows.value = result.data.withoutDatingChats()
-                is AppResult.Failure -> if (!result.error.isMissingRoute()) _rows.value = emptyList()
-            }
-        }
-    }
-}
-
-/** The two request lists' tab row: All and Filtered (when the server sets any aside). */
-@Composable
-internal fun RequestFilterTabs(filteredCount: Int, showingFiltered: Boolean, onSelect: (Boolean) -> Unit) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s),
-    ) {
-        FilterChip("All", selected = !showingFiltered, tag = "chat_requests_all") { onSelect(false) }
-        FilterChip(
-            if (filteredCount > 0) "Filtered · $filteredCount" else "Filtered",
-            selected = showingFiltered,
-            tag = "chat_requests_filtered",
-        ) { onSelect(true) }
-    }
-}
-
-@Composable
-private fun FilterChip(label: String, selected: Boolean, tag: String, onClick: () -> Unit) {
-    val shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.full)
-    Text(
-        text = label,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.SemiBold,
-        color = if (selected) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
-        modifier = Modifier
-            .background(if (selected) UsTheme.extended.selectedPill else UsTheme.extended.glassBg, shape)
-            .border(HAIRLINE, if (selected) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder, shape)
-            .clickable(onClick = onClick)
-            .semantics {
-                role = Role.Tab
-                this.selected = selected
-            }
-            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
-            .testTag(tag),
-    )
-}
 
 // ── Archived chats (CONTRACT §1, lane=archived) ──────────────────────────
 
