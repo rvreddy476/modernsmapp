@@ -130,9 +130,9 @@ func validSettings() *store.UserSettings {
 	return &store.UserSettings{
 		AccountVisibility:           "public",
 		AllowCommentsFrom:           "everyone",
-		WhoCanMessage:               "connections_only",
+		WhoCanMessage:               "everyone_message_requests",
 		WhoCanSendConnectionRequest: "everyone",
-		WhoCanCall:                  "connections_only",
+		WhoCanCall:                  "accepted_chats_only",
 		WhoCanAddToGroups:           "connections_only",
 		WhoCanSeeOnlineStatus:       "everyone",
 		WhoCanSeeReadReceipts:       "everyone",

@@ -125,8 +125,9 @@ func New(db *pgxpool.Pool) *Store {
 
 // CreateUser creates a core user record with default settings (called by the
 // event consumer). New users get the strict spec defaults; a minor (under18)
-// additionally locks down calls, group-adds and profile-photo visibility per
-// the Strict Privacy Mode rules (spec §5.4).
+// additionally starts on who_can_message = people_i_follow and locks down
+// calls, group-adds and profile-photo visibility per the Strict Privacy Mode
+// rules (spec §5.4).
 func (s *Store) CreateUser(ctx context.Context, id uuid.UUID, under18 bool) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -144,18 +145,26 @@ func (s *Store) CreateUser(ctx context.Context, id uuid.UUID, under18 bool) erro
 		return err
 	}
 
-	whoCanCall, whoCanAddToGroups, whoCanSeeProfilePhoto := "connections_only", "connections_only", "everyone"
+	// DM consent model (2026-10-20): adults default to message requests from
+	// everyone and calls from accepted chats; a minor starts on
+	// people_i_follow. Written explicitly rather than left to the column
+	// defaults. When auth-service already inserted the row (the normal
+	// registration path) this is a no-op and service.CreateUser applies the
+	// minor profile to the existing row.
+	whoCanMessage := "everyone_message_requests"
+	whoCanCall, whoCanAddToGroups, whoCanSeeProfilePhoto := "accepted_chats_only", "connections_only", "everyone"
 	if under18 {
+		whoCanMessage = "people_i_follow"
 		whoCanCall, whoCanAddToGroups, whoCanSeeProfilePhoto = "no_one", "no_one", "connections_only"
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO usr.user_settings
 			(user_id, account_visibility, allow_messages_from, allow_comments_from,
-			 under_18_mode, who_can_call, who_can_add_to_groups, who_can_see_profile_photo,
+			 under_18_mode, who_can_message, who_can_call, who_can_add_to_groups, who_can_see_profile_photo,
 			 created_at, updated_at)
-		VALUES ($1, 'public', 'everyone', 'everyone', $3, $4, $5, $6, $2, $2)
+		VALUES ($1, 'public', 'everyone', 'everyone', $3, $4, $5, $6, $7, $2, $2)
 		ON CONFLICT (user_id) DO NOTHING
-	`, id, now, under18, whoCanCall, whoCanAddToGroups, whoCanSeeProfilePhoto)
+	`, id, now, under18, whoCanMessage, whoCanCall, whoCanAddToGroups, whoCanSeeProfilePhoto)
 	if err != nil {
 		return err
 	}

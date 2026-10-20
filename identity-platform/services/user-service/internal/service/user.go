@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -36,20 +37,24 @@ var allowedPrivacyValues = map[string]map[string]bool{
 	"allow_comments_from": {
 		"everyone": true, "friends": true,
 	},
+	// DM consent model (founder-approved 2026-10-20): exactly four values.
+	// "Recipient follows sender" is the consent signal graph-service applies.
+	// The pre-consent values are still ACCEPTED on write (old app versions)
+	// but are mapped by normaliseLegacySettings before this check runs, so
+	// they never reach the table or a read.
 	"who_can_message": {
-		"no_one": true, "connections_only": true, "connections_and_mutual_followers": true,
-		"followers_message_requests": true, "everyone_message_requests": true,
-		// Production chat pass (directive §3.2): friends-of-friends may open a
-		// MESSAGE REQUEST, never a direct thread. Resolved by graph-service
-		// second-degree facts — the client never sees adjacency lists.
-		"friends_of_friends_requests": true,
+		"everyone_message_requests": true, "followers_message_requests": true,
+		"people_i_follow": true, "no_one": true,
 	},
 	"who_can_send_connection_request": {
 		"no_one": true, "friends_of_friends_or_contacts": true, "friends_of_friends": true,
 		"contacts_only": true, "everyone": true,
 	},
+	// connections_only is legacy: accepting a message request no longer
+	// creates a graph connection, so it is mapped to accepted_chats_only on
+	// write (normaliseLegacySettings) and never stored.
 	"who_can_call": {
-		"no_one": true, "connections_only": true, "accepted_chats_only": true,
+		"no_one": true, "accepted_chats_only": true,
 	},
 	"who_can_add_to_groups": {
 		"no_one": true, "connections_only": true, "connections_and_contacts": true,
@@ -73,6 +78,61 @@ var allowedPrivacyValues = map[string]map[string]bool{
 // name. Keep in step with the CHECK in database/setup.sql.
 var allowedChatBubbleStyles = map[string]bool{
 	"default": true, "ocean": true, "ember": true, "forest": true, "violet": true, "mono": true,
+}
+
+// legacyWhoCanMessage maps the pre-consent-model who_can_message values to
+// the four the DM consent contract allows. The SAME map is applied to stored
+// rows by the boot-time UPDATE in database/setup.sql; keep the two in step.
+var legacyWhoCanMessage = map[string]string{
+	"connections_only":                 "people_i_follow",
+	"connections_and_mutual_followers": "people_i_follow",
+	"friends_of_friends_requests":      "followers_message_requests",
+}
+
+// legacyWhoCanCall maps the retired who_can_call value (also in setup.sql).
+var legacyWhoCanCall = map[string]string{
+	"connections_only": "accepted_chats_only",
+}
+
+// Values a minor (or Strict Privacy Mode) may never hold for who_can_message:
+// both let a stranger reach the account with a request.
+var openWhoCanMessage = map[string]bool{
+	"everyone_message_requests":  true,
+	"followers_message_requests": true,
+}
+
+// normaliseLegacySettings rewrites legacy who_can_message / who_can_call
+// values to their contract equivalents. Applied before validation on every
+// write and to every read, so a row or cache entry written by an older build
+// never surfaces a legacy value.
+func normaliseLegacySettings(s *store.UserSettings) {
+	if v, ok := legacyWhoCanMessage[s.WhoCanMessage]; ok {
+		s.WhoCanMessage = v
+	}
+	if v, ok := legacyWhoCanCall[s.WhoCanCall]; ok {
+		s.WhoCanCall = v
+	}
+}
+
+// clampMinorMessaging keeps a minor (or a Strict Privacy Mode account) out of
+// the two request-open values: they become people_i_follow. no_one and
+// people_i_follow are left alone, and an unknown value is left for
+// validation to refuse rather than silently rewritten.
+func clampMinorMessaging(s *store.UserSettings) {
+	if !s.StrictPrivacyMode && !s.Under18Mode {
+		return
+	}
+	if openWhoCanMessage[s.WhoCanMessage] {
+		s.WhoCanMessage = "people_i_follow"
+	}
+}
+
+// normaliseForRead is what every settings read passes through: legacy values
+// mapped and the minor clamp re-applied, so the settings API and the internal
+// route graph-service reads only ever return the contract's value set.
+func normaliseForRead(s *store.UserSettings) {
+	normaliseLegacySettings(s)
+	clampMinorMessaging(s)
 }
 
 // Filtered-keyword limits (CONTRACT §7).
@@ -178,7 +238,9 @@ func applyStrictMode(s *store.UserSettings) {
 	if !s.StrictPrivacyMode && !s.Under18Mode {
 		return
 	}
-	s.WhoCanMessage = "connections_only"
+	// DM consent model: only people this account follows may message it
+	// (or no one, if that was chosen).
+	clampMinorMessaging(s)
 	s.WhoCanCall = "no_one"
 	s.WhoCanAddToGroups = "no_one"
 	s.WhoCanSeeOnlineStatus = "connections_only"
@@ -231,8 +293,55 @@ func (s *Service) WithProducer(p SettingsChangedPublisher) *Service {
 // CreateUser handles user creation from a UserRegistered event. under18 is
 // derived from the registrant's date of birth and pins the account into the
 // minor-safety profile (spec §5.4, §11.1).
+//
+// The settings row usually exists already: auth-service inserts it, with
+// adult column defaults, in the registration transaction, so the store's
+// INSERT is a no-op. For a minor the full Strict Privacy Mode profile
+// (including who_can_message = people_i_follow) is therefore applied here, at
+// creation, rather than waiting for the account's first settings save.
+// Idempotent: a redelivered event finds nothing to change and writes nothing.
 func (s *Service) CreateUser(ctx context.Context, id uuid.UUID, under18 bool) error {
-	return s.store.CreateUser(ctx, id, under18)
+	if err := s.store.CreateUser(ctx, id, under18); err != nil {
+		return err
+	}
+	if !under18 {
+		return nil
+	}
+	cur, err := s.store.GetSettings(ctx, id)
+	if err != nil {
+		return err
+	}
+	if cur == nil {
+		return fmt.Errorf("settings row missing after create for user %s", id)
+	}
+	next, changed, err := minorProfile(cur)
+	if err != nil || !changed {
+		return err
+	}
+	_, err = s.UpdateSettings(ctx, next)
+	return err
+}
+
+// minorProfile returns cur pinned into the minor-safety profile: under-18
+// mode on and the strict clamp applied. changed is false when the row already
+// matches, so creation never writes (or bumps privacy_version) needlessly.
+func minorProfile(cur *store.UserSettings) (*store.UserSettings, bool, error) {
+	next := *cur
+	next.DmFilteredKeywords = append([]string(nil), cur.DmFilteredKeywords...)
+	next.Under18Mode = true
+	if err := prepareSettings(&next); err != nil {
+		return nil, false, err
+	}
+	before := *cur
+	before.DmFilteredKeywords = keywordsOrEmpty(before.DmFilteredKeywords)
+	return &next, !reflect.DeepEqual(before, next), nil
+}
+
+func keywordsOrEmpty(k []string) []string {
+	if k == nil {
+		return []string{}
+	}
+	return k
 }
 
 // GetUser returns core user record.
@@ -305,6 +414,7 @@ func (s *Service) GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSet
 	if cached, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
 		var us store.UserSettings
 		if jsonErr := json.Unmarshal([]byte(cached), &us); jsonErr == nil {
+			normaliseForRead(&us)
 			return &us, nil
 		} else {
 			s.log.Warn("failed to unmarshal settings cache", "err", jsonErr, "cache_key", cacheKey)
@@ -317,6 +427,7 @@ func (s *Service) GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSet
 	if err != nil || us == nil {
 		return us, err
 	}
+	normaliseForRead(us)
 
 	go func() {
 		data, err := json.Marshal(us)
@@ -332,10 +443,11 @@ func (s *Service) GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSet
 	return us, nil
 }
 
-// prepareSettings is the pure pre-write step: clamp for strict mode/minors,
-// normalise the keyword list, then validate every enum. Split out so the
-// rules are table-testable without Postgres or Redis.
+// prepareSettings is the pure pre-write step: map legacy values, clamp for
+// strict mode/minors, normalise the keyword list, then validate every enum.
+// Split out so the rules are table-testable without Postgres or Redis.
 func prepareSettings(settings *store.UserSettings) error {
+	normaliseLegacySettings(settings)
 	applyStrictMode(settings)
 	keywords, err := NormaliseFilteredKeywords(settings.DmFilteredKeywords)
 	if err != nil {

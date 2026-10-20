@@ -105,3 +105,47 @@ ALTER TABLE usr.user_settings DROP CONSTRAINT IF EXISTS user_settings_dm_filtere
 ALTER TABLE usr.user_settings ADD CONSTRAINT user_settings_dm_filtered_keywords_max CHECK (
     cardinality(dm_filtered_keywords) <= 100
 );
+
+-- DM consent model (founder-approved 2026-10-20) — value migration.
+--
+-- who_can_message now has exactly four values: everyone_message_requests,
+-- followers_message_requests, people_i_follow, no_one. who_can_call drops
+-- connections_only (accepting a request no longer creates a graph
+-- connection), leaving no_one and accepted_chats_only. The service maps the
+-- legacy values on every write and read (internal/service/user.go
+-- legacyWhoCanMessage / legacyWhoCanCall — keep the maps identical); these
+-- UPDATEs bring stored rows into line.
+--
+-- Safe to run on every boot: each statement only matches a value the service
+-- can no longer store, so once a row is migrated it is never matched again
+-- and no later user choice is overwritten. privacy_version is bumped on the
+-- rows that change so downstream permission caches keyed by it re-fetch.
+UPDATE usr.user_settings
+   SET who_can_message = 'people_i_follow',
+       privacy_version = privacy_version + 1, updated_at = NOW()
+ WHERE who_can_message IN ('connections_only', 'connections_and_mutual_followers');
+
+UPDATE usr.user_settings
+   SET who_can_message = 'followers_message_requests',
+       privacy_version = privacy_version + 1, updated_at = NOW()
+ WHERE who_can_message = 'friends_of_friends_requests';
+
+-- Minors (and Strict Privacy Mode accounts, which share the clamp) may never
+-- hold a request-open value. The service clamps on write; this backfills rows
+-- written before the clamp existed. Runs AFTER the legacy map above, so a
+-- minor's friends_of_friends_requests is clamped in the same boot.
+UPDATE usr.user_settings
+   SET who_can_message = 'people_i_follow',
+       privacy_version = privacy_version + 1, updated_at = NOW()
+ WHERE (under_18_mode OR strict_privacy_mode)
+   AND who_can_message IN ('everyone_message_requests', 'followers_message_requests');
+
+UPDATE usr.user_settings
+   SET who_can_call = 'accepted_chats_only',
+       privacy_version = privacy_version + 1, updated_at = NOW()
+ WHERE who_can_call = 'connections_only';
+
+-- New rows: the column default moves with the contract. auth-service's
+-- setup.sql (which creates the column) sets the same default; repeating it
+-- here keeps a user-service-first deploy from inserting the retired value.
+ALTER TABLE usr.user_settings ALTER COLUMN who_can_call SET DEFAULT 'accepted_chats_only';

@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS usr.user_settings (
 ALTER TABLE usr.user_settings
     ADD COLUMN IF NOT EXISTS who_can_message                   TEXT    NOT NULL DEFAULT 'everyone_message_requests',
     ADD COLUMN IF NOT EXISTS who_can_send_connection_request   TEXT    NOT NULL DEFAULT 'everyone',
-    ADD COLUMN IF NOT EXISTS who_can_call                      TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_call                      TEXT    NOT NULL DEFAULT 'accepted_chats_only',
     ADD COLUMN IF NOT EXISTS who_can_add_to_groups             TEXT    NOT NULL DEFAULT 'connections_only',
     ADD COLUMN IF NOT EXISTS who_can_see_online_status         TEXT    NOT NULL DEFAULT 'connections_only',
     ADD COLUMN IF NOT EXISTS who_can_see_read_receipts         TEXT    NOT NULL DEFAULT 'connections_only',
@@ -636,6 +636,13 @@ COMMENT ON TABLE auth.idempotency_keys IS
 --   UPDATE usr.user_settings SET who_can_message = 'everyone_message_requests'
 --   WHERE who_can_message = 'connections_only';
 ALTER TABLE usr.user_settings ALTER COLUMN who_can_message SET DEFAULT 'everyone_message_requests';
+
+-- DM consent model (founder-approved 2026-10-20): accepting a message request
+-- no longer creates a graph connection, so "calls from connections" would
+-- shut out every chat accepted from now on. New accounts default to calls
+-- from accepted chats. Existing connections_only rows are migrated by
+-- user-service's setup.sql, which owns the settings vocabulary.
+ALTER TABLE usr.user_settings ALTER COLUMN who_can_call SET DEFAULT 'accepted_chats_only';
 
 -- ---------------------------------------------------------------------------
 -- Account control (2026-09-02): deactivate + delete-with-30-day-window + purge
