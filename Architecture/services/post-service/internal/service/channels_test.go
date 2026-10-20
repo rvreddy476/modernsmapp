@@ -123,6 +123,9 @@ func (f *fakeChannelStore) CreateChannel(_ context.Context, ch *postgres.Channel
 	if f.createErr != nil {
 		return f.createErr
 	}
+	if taken, _ := f.ChannelNameTaken(context.Background(), ch.Name, ch.UserID); taken {
+		return postgres.ErrChannelNameTaken
+	}
 	if _, ok := f.byHandle[ch.Handle]; ok {
 		return postgres.ErrHandleTaken
 	}
@@ -152,6 +155,9 @@ func (f *fakeChannelStore) UpdateChannel(_ context.Context, userID uuid.UUID, pa
 		f.byHandle[ch.Handle] = ch
 	}
 	if patch.Name != nil {
+		if taken, _ := f.ChannelNameTaken(context.Background(), *patch.Name, userID); taken {
+			return nil, postgres.ErrChannelNameTaken
+		}
 		ch.Name = *patch.Name
 	}
 	if patch.About != nil {
@@ -186,6 +192,16 @@ func (f *fakeChannelStore) GetChannelByHandle(_ context.Context, handle string) 
 func (f *fakeChannelStore) ChannelHandleExists(_ context.Context, handle string) (bool, error) {
 	_, ok := f.byHandle[handle]
 	return ok, nil
+}
+
+// ChannelNameTaken mirrors uq_channels_name_lower: case-insensitive.
+func (f *fakeChannelStore) ChannelNameTaken(_ context.Context, name string, except uuid.UUID) (bool, error) {
+	for owner, ch := range f.byUser {
+		if owner != except && strings.EqualFold(ch.Name, name) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeChannelStore) GetChannelsByUserIDs(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]*postgres.Channel, error) {

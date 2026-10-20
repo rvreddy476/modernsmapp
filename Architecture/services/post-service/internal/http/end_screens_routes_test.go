@@ -184,6 +184,9 @@ func (f *esChannels) GetChannelByHandle(context.Context, string) (*postgres.Chan
 	return nil, nil
 }
 func (f *esChannels) ChannelHandleExists(context.Context, string) (bool, error) { return false, nil }
+func (f *esChannels) ChannelNameTaken(context.Context, string, uuid.UUID) (bool, error) {
+	return false, nil
+}
 func (f *esChannels) GetChannelsByUserIDs(context.Context, []uuid.UUID) (map[uuid.UUID]*postgres.Channel, error) {
 	return nil, nil
 }

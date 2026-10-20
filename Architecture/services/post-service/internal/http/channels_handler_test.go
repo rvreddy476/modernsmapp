@@ -41,6 +41,7 @@ func TestWriteChannelErrorCodes(t *testing.T) {
 		{service.ErrInvalidChannelAbout, http.StatusBadRequest, "INVALID_ABOUT", true},
 		{postgres.ErrChannelExists, http.StatusConflict, "CHANNEL_EXISTS", true},
 		{postgres.ErrHandleTaken, http.StatusConflict, "HANDLE_TAKEN", true},
+		{postgres.ErrChannelNameTaken, http.StatusConflict, "CHANNEL_NAME_TAKEN", true},
 		{errors.New("boom"), 0, "", false},
 	}
 	for _, tc := range cases {

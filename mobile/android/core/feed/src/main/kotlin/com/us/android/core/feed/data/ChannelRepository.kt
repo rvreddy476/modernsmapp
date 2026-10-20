@@ -164,6 +164,8 @@ class ChannelRepository @Inject constructor(
     companion object {
         const val CODE_CHANNEL_EXISTS = "CHANNEL_EXISTS"
         const val CODE_HANDLE_TAKEN = "HANDLE_TAKEN"
+        /** Channel names are unique, ignoring case (post-service migration 067). */
+        const val CODE_CHANNEL_NAME_TAKEN = "CHANNEL_NAME_TAKEN"
         const val CODE_INVALID_NAME = "INVALID_NAME"
         const val CODE_INVALID_HANDLE = "INVALID_HANDLE"
         const val CODE_INVALID_ABOUT = "INVALID_ABOUT"
@@ -180,6 +182,7 @@ class ChannelRepository @Inject constructor(
         fun createError(error: AppError): ChannelCreateError = when (error.contractCode()) {
             CODE_HANDLE_TAKEN -> ChannelCreateError.HandleTaken
             CODE_CHANNEL_EXISTS -> ChannelCreateError.ChannelExists
+            CODE_CHANNEL_NAME_TAKEN -> ChannelCreateError.InvalidName("That channel name is taken. Names are unique.")
             CODE_INVALID_NAME -> ChannelCreateError.InvalidName("That name isn't allowed.")
             CODE_INVALID_HANDLE -> ChannelCreateError.InvalidHandle("That handle isn't allowed.")
             CODE_INVALID_ABOUT -> ChannelCreateError.InvalidAbout("That description isn't allowed.")

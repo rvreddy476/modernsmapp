@@ -21,6 +21,7 @@ import (
 //	GET   /v1/channels/me                 the caller's channel (404 NO_CHANNEL)
 //	PATCH /v1/channels/me                 any subset of name/handle/about/avatar_media_id
 //	GET   /v1/channels/handle-available   ?handle= -> {available, suggestion}
+//	GET   /v1/channels/name-available     ?name= -> {available, suggestion} (names are unique, ignoring case)
 //	GET   /v1/channels/batch              ?user_ids=a,b -> {user_id: channel ref} (feed hydration)
 //	GET   /v1/channels/search             ?q=&limit= -> {"data":[channel…]} (Tube search page)
 //	GET   /v1/channels/subscriptions      ?limit&cursor -> the caller's subscriptions, newest first
@@ -47,6 +48,7 @@ func (h *Handler) registerChannelRoutes(r *gin.Engine) {
 		channels.GET("/me", h.GetMyChannel)
 		channels.PATCH("/me", h.UpdateMyChannel)
 		channels.GET("/handle-available", h.ChannelHandleAvailable)
+		channels.GET("/name-available", h.ChannelNameAvailable)
 		channels.GET("/batch", h.GetChannelsBatch)
 		channels.GET("/search", h.SearchChannels)
 		// Static, registered before /:ref like /me so "subscriptions" is
@@ -156,6 +158,8 @@ func writeChannelError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, "CHANNEL_EXISTS", "This account already has a channel", nil)
 	case errors.Is(err, postgres.ErrHandleTaken):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, "HANDLE_TAKEN", "That handle is taken", nil)
+	case errors.Is(err, postgres.ErrChannelNameTaken):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, "CHANNEL_NAME_TAKEN", "That channel name is taken", nil)
 	case errors.Is(err, postgres.ErrChannelOwnerUnknown):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "UNKNOWN_OWNER", "Account is not provisioned for channels yet", nil)
 	// Branding (2026-09-27, channel_branding.go).
@@ -326,6 +330,25 @@ func (h *Handler) ChannelHandleAvailable(c *gin.Context) {
 	}
 	available, suggestion, err := h.svc.ChannelHandleAvailability(c.Request.Context(), userID, c.Query("handle"), c.Query("name"))
 	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"available": available, "suggestion": suggestion}, nil)
+}
+
+// ChannelNameAvailable handles GET /v1/channels/name-available?name= — the
+// caller's own channel name counts as available; a taken name comes back
+// with a free variant to offer.
+func (h *Handler) ChannelNameAvailable(c *gin.Context) {
+	userID, ok := channelCaller(c)
+	if !ok {
+		return
+	}
+	available, suggestion, err := h.svc.ChannelNameAvailability(c.Request.Context(), userID, c.Query("name"))
+	if err != nil {
+		if writeChannelError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

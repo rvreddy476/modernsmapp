@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/atpost/post-service/internal/store/postgres"
 )
 
 func TestDefaultChannelName(t *testing.T) {
@@ -98,5 +101,77 @@ func TestEnsureDefaultChannelConcurrentCallsMakeOne(t *testing.T) {
 	wg.Wait()
 	if n := len(store.byUser); n != 1 {
 		t.Fatalf("channels = %d, want 1", n)
+	}
+}
+
+// Channel names are unique, ignoring case (founder, 2026-10-21).
+func TestEnsureDefaultChannelPicksAFreeName(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeChannelStore()
+	svc := newChannelTestService(store)
+	a, _, err := svc.EnsureDefaultChannel(ctx, uuid.New(), "Raghuvaran Nalabolu", "prvr2023")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := svc.EnsureDefaultChannel(ctx, uuid.New(), "raghuvaran nalabolu", "reddyraghuvaran1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name != "Raghuvaran Nalabolu" || b.Name != "raghuvaran nalabolu 2" {
+		t.Fatalf("names: %q, %q", a.Name, b.Name)
+	}
+}
+
+func TestChannelNameVariantStaysWithinTheLimit(t *testing.T) {
+	long := strings.Repeat("x", MaxChannelNameRunes)
+	got := channelNameVariant(long, 12)
+	if n := len([]rune(got)); n != MaxChannelNameRunes || !strings.HasSuffix(got, " 12") {
+		t.Fatalf("variant %q (%d runes)", got, n)
+	}
+}
+
+func TestChannelNameAvailability(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeChannelStore()
+	svc := newChannelTestService(store)
+	owner, other := uuid.New(), uuid.New()
+	if _, err := svc.CreateChannel(ctx, owner, CreateChannelInput{Name: "Call B Studio", Handle: "call.b"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, suggestion, err := svc.ChannelNameAvailability(ctx, other, "  call b studio "); err != nil || ok || suggestion != "call b studio 2" {
+		t.Fatalf("taken: ok=%v suggestion=%q err=%v", ok, suggestion, err)
+	}
+	if ok, _, err := svc.ChannelNameAvailability(ctx, owner, "CALL B STUDIO"); err != nil || !ok {
+		t.Fatalf("own name must be available to its owner: ok=%v err=%v", ok, err)
+	}
+	if ok, s, err := svc.ChannelNameAvailability(ctx, other, "Fresh Name"); err != nil || !ok || s != "Fresh Name" {
+		t.Fatalf("free: ok=%v s=%q err=%v", ok, s, err)
+	}
+	if _, _, err := svc.ChannelNameAvailability(ctx, other, "ab"); !errors.Is(err, ErrInvalidChannelName) {
+		t.Fatalf("invalid: %v", err)
+	}
+}
+
+func TestCreateAndRenameRefuseATakenName(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeChannelStore()
+	svc := newChannelTestService(store)
+	owner, other := uuid.New(), uuid.New()
+	if _, err := svc.CreateChannel(ctx, owner, CreateChannelInput{Name: "Call B Studio", Handle: "call.b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateChannel(ctx, other, CreateChannelInput{Name: "CALL B STUDIO", Handle: "other"}); !errors.Is(err, postgres.ErrChannelNameTaken) {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, other, CreateChannelInput{Name: "Other Studio", Handle: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	taken := "call b studio"
+	if _, err := svc.UpdateMyChannel(ctx, other, UpdateChannelInput{Name: &taken}); !errors.Is(err, postgres.ErrChannelNameTaken) {
+		t.Fatalf("rename: %v", err)
+	}
+	recase := "CALL B STUDIO"
+	if _, err := svc.UpdateMyChannel(ctx, owner, UpdateChannelInput{Name: &recase}); err != nil {
+		t.Fatalf("re-casing your own name must work: %v", err)
 	}
 }

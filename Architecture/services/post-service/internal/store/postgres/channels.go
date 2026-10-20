@@ -79,6 +79,9 @@ var (
 	ErrChannelExists = errors.New("channel already exists for this account")
 	// ErrHandleTaken: another channel owns the handle.
 	ErrHandleTaken = errors.New("channel handle is taken")
+	// ErrChannelNameTaken: another channel has this name, ignoring case
+	// (uq_channels_name_lower, migration 067; founder 2026-10-21).
+	ErrChannelNameTaken = errors.New("channel name is taken")
 	// ErrChannelNotFound: no channel for the user / handle.
 	ErrChannelNotFound = errors.New("channel not found")
 	// ErrChannelOwnerUnknown: the owner has no row in the shared users
@@ -144,6 +147,9 @@ func mapChannelWriteError(err error) error {
 	}
 	switch pgErr.Code {
 	case "23505": // unique_violation
+		if pgErr.ConstraintName == "uq_channels_name_lower" {
+			return ErrChannelNameTaken
+		}
 		if strings.Contains(pgErr.ConstraintName, "handle") {
 			return ErrHandleTaken
 		}
@@ -252,6 +258,17 @@ func (s *Store) ChannelHandleExists(ctx context.Context, handle string) (bool, e
 	var exists bool
 	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM channels WHERE handle = $1)`, handle).Scan(&exists)
 	return exists, err
+}
+
+// ChannelNameTaken reports whether a channel other than exceptUserID's has
+// the name, ignoring case — the same comparison uq_channels_name_lower makes.
+// Pass uuid.Nil to check against every channel.
+func (s *Store) ChannelNameTaken(ctx context.Context, name string, exceptUserID uuid.UUID) (bool, error) {
+	var taken bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM channels WHERE lower(name) = lower($1) AND user_id <> $2)`,
+		name, exceptUserID).Scan(&taken)
+	return taken, err
 }
 
 // GetChannelsByUserIDs loads the channels of a page of authors in one query.

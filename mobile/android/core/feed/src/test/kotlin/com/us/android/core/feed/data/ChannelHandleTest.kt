@@ -61,6 +61,8 @@ class ChannelHandleTest {
     fun `a create refusal is read by code, never by message`() {
         assertThat(ChannelRepository.createError(AppError.Unknown(code = "HANDLE_TAKEN", statusCode = 409)))
             .isEqualTo(ChannelCreateError.HandleTaken)
+        assertThat(ChannelRepository.createError(AppError.Unknown(code = "CHANNEL_NAME_TAKEN", statusCode = 409)))
+            .isEqualTo(ChannelCreateError.InvalidName("That channel name is taken. Names are unique."))
         assertThat(ChannelRepository.createError(AppError.Unknown(code = "CHANNEL_EXISTS", statusCode = 409)))
             .isEqualTo(ChannelCreateError.ChannelExists)
         assertThat(ChannelRepository.createError(AppError.Unknown(code = "INVALID_HANDLE", statusCode = 400)))

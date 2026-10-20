@@ -129,6 +129,7 @@ type channelStore interface {
 	GetChannelByUserID(ctx context.Context, userID uuid.UUID) (*postgres.Channel, error)
 	GetChannelByHandle(ctx context.Context, handle string) (*postgres.Channel, error)
 	ChannelHandleExists(ctx context.Context, handle string) (bool, error)
+	ChannelNameTaken(ctx context.Context, name string, exceptUserID uuid.UUID) (bool, error)
 	GetChannelsByUserIDs(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]*postgres.Channel, error)
 	CountChannelVideos(ctx context.Context, userID uuid.UUID) (int, error)
 	CountChannelVideosBatch(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]int, error)
