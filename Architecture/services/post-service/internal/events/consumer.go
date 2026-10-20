@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/atpost/post-service/internal/purge"
@@ -25,6 +26,22 @@ type Consumer struct {
 	// a Tube subscription is a follow plus a bell, so when the follow goes
 	// away through any door the subscription goes with it. Optional.
 	subscriptions subscriptionRemover
+	// defaultChannels handles UserRegistered (identity.events.v1): every
+	// account gets its channel when it is created. Optional.
+	defaultChannels defaultChannelMaker
+}
+
+// defaultChannelMaker is the one service call the UserRegistered handler
+// needs, an interface so the consumer test drives it with a fake.
+type defaultChannelMaker interface {
+	EnsureDefaultChannel(ctx context.Context, userID uuid.UUID, displayName, username string) (*postgres.Channel, bool, error)
+}
+
+// WithDefaultChannels wires the service so UserRegistered creates the new
+// account's default channel.
+func (c *Consumer) WithDefaultChannels(m defaultChannelMaker) *Consumer {
+	c.defaultChannels = m
+	return c
 }
 
 // subscriptionRemover is the one store write the UserUnfollowed handler
@@ -136,6 +153,17 @@ func (c *Consumer) handleUntilDurable(ctx context.Context, m kafka.Message) bool
 		})
 	}
 
+	if envelope.EventType == events.UserRegistered {
+		if c.defaultChannels == nil {
+			return true // this instance is not wired for registrations
+		}
+		// Held like the others: a dropped registration leaves the account
+		// without its channel until a lazy path notices.
+		return c.retryUntilDurable(ctx, events.UserRegistered, func() error {
+			return c.handleUserRegistered(ctx, envelope.Payload)
+		})
+	}
+
 	if envelope.EventType != events.EventUserDeletionRequested {
 		// Not the legacy (kept-for-compatibility, no longer emitted)
 		// deletion event. If it's one of the account-lifecycle events
@@ -205,6 +233,28 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, payload json.RawMes
 	}
 	if deleted {
 		log.Printf("Dropped channel subscription %s -> %s on unfollow\n", followerID, followeeID)
+	}
+	return nil
+}
+
+// handleUserRegistered creates the new account's default channel, named
+// after the person with their username as the handle. A malformed id can
+// never succeed and is skipped; an account that already has a channel is a
+// clean no-op, which makes redelivery harmless.
+func (c *Consumer) handleUserRegistered(ctx context.Context, payload json.RawMessage) error {
+	var p events.UserRegisteredPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		log.Printf("UserRegistered: undecodable payload (skipping): %v\n", err)
+		return nil
+	}
+	userID, err := uuid.Parse(p.UserID)
+	if err != nil {
+		log.Printf("UserRegistered: bad user_id %q (skipping): %v\n", p.UserID, err)
+		return nil
+	}
+	displayName := strings.TrimSpace(p.FirstName + " " + p.LastName)
+	if _, _, err := c.defaultChannels.EnsureDefaultChannel(ctx, userID, displayName, p.Username); err != nil {
+		return fmt.Errorf("user registered: default channel: %w", err)
 	}
 	return nil
 }

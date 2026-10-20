@@ -283,7 +283,8 @@ func main() {
 	purgeAcks := purge.NewKafkaAckPublisher(brokers, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
 	defer purgeAcks.Close()
 	identityConsumer := postEvents.NewConsumer(brokers, env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), dbPool).
-		WithLifecycleHandler(purge.NewHandler("post", pgStore, purgeAcks, pgStore, slog.Default()))
+		WithLifecycleHandler(purge.NewHandler("post", pgStore, purgeAcks, pgStore, slog.Default())).
+		WithDefaultChannels(postSvc)
 	go identityConsumer.Start(consumerCtx)
 	defer identityConsumer.Close()
 	slog.Info("account lifecycle (deactivate/delete/purge) consumer started")

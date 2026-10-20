@@ -106,6 +106,9 @@ type fakeChannelStore struct {
 	videos   map[uuid.UUID]int
 	// subState is the subscription half (channel_subscriptions_test.go).
 	subState *fakeSubState
+	// createErr, when set, fails every CreateChannel: the default-channel
+	// path that cannot make a channel must still fail closed.
+	createErr error
 }
 
 func newFakeChannelStore() *fakeChannelStore {
@@ -117,6 +120,9 @@ func newFakeChannelStore() *fakeChannelStore {
 }
 
 func (f *fakeChannelStore) CreateChannel(_ context.Context, ch *postgres.Channel) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
 	if _, ok := f.byHandle[ch.Handle]; ok {
 		return postgres.ErrHandleTaken
 	}
@@ -370,9 +376,9 @@ func TestCreateChannelValidatesAndConflicts(t *testing.T) {
 	if err != nil || me.Handle != "call.b" {
 		t.Fatalf("me: %+v %v", me, err)
 	}
-	if _, err := svc.GetMyChannel(ctx, other); !errors.Is(err, ErrChannelNotFound) {
-		t.Fatalf("no channel: %v", err)
-	}
+	// GetMyChannel for an account without one now makes its default channel
+	// (TestGetMyChannelCreatesTheDefaultChannel); `other` stays channel-less
+	// here for the patch check below.
 	if got, err := svc.GetChannelByRef(ctx, other, "@Call.B"); err != nil || got.UserID != owner {
 		t.Fatalf("by handle: %+v %v", got, err)
 	}
@@ -426,11 +432,13 @@ func TestChannelHandleAvailabilitySuggestsFreeVariant(t *testing.T) {
 }
 
 // The founder's gate: a long video needs a channel; reels/flicks never do.
+// Every account has one (2026-10-21), so an account without one gets its
+// default channel at the gate instead of a refusal.
 func TestGateVideoBehindChannel(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeChannelStore()
 	svc := newChannelTestService(store)
-	withChannel, without := uuid.New(), uuid.New()
+	withChannel, without, notGated := uuid.New(), uuid.New(), uuid.New()
 	if _, err := svc.CreateChannel(ctx, withChannel, CreateChannelInput{Name: "Call B Studio", Handle: "call.b"}); err != nil {
 		t.Fatal(err)
 	}
@@ -441,12 +449,12 @@ func TestGateVideoBehindChannel(t *testing.T) {
 		contentType string
 		wantErr     error
 	}{
-		{"long_video without channel", without, "long_video", ErrChannelRequired},
-		{"legacy video without channel", without, "video", ErrChannelRequired},
 		{"long_video with channel", withChannel, "long_video", nil},
-		{"flick without channel is not gated", without, "flick", nil},
-		{"post without channel is not gated", without, "post", nil},
-		{"poll without channel is not gated", without, "poll", nil},
+		{"long_video without channel gets its default channel", without, "long_video", nil},
+		{"legacy video, channel already made above", without, "video", nil},
+		{"flick without channel is not gated", notGated, "flick", nil},
+		{"post without channel is not gated", notGated, "post", nil},
+		{"poll without channel is not gated", notGated, "poll", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -456,6 +464,12 @@ func TestGateVideoBehindChannel(t *testing.T) {
 			}
 		})
 	}
+	if store.byUser[without] == nil {
+		t.Fatal("the gate must leave the author with a channel")
+	}
+	if store.byUser[notGated] != nil {
+		t.Fatal("a reel or post must not create a channel")
+	}
 
 	// No store at all fails closed.
 	if err := (&Service{}).gateVideoBehindChannel(ctx, withChannel, "long_video"); !errors.Is(err, ErrChannelRequired) {
@@ -463,10 +477,13 @@ func TestGateVideoBehindChannel(t *testing.T) {
 	}
 }
 
-// End to end through CreatePost: the gate fires before anything is written
-// (and before any other store is touched — this Service has no pgStore).
-func TestCreatePostLongVideoRequiresChannel(t *testing.T) {
-	svc := newChannelTestService(newFakeChannelStore())
+// End to end through CreatePost: when no channel can be made, the gate
+// refuses before anything is written (and before any other store is
+// touched — this Service has no pgStore).
+func TestCreatePostLongVideoRefusedWhenNoChannelCanBeMade(t *testing.T) {
+	store := newFakeChannelStore()
+	store.createErr = errors.New("database down")
+	svc := newChannelTestService(store)
 	for _, ct := range []string{"long_video", "video"} {
 		_, err := svc.CreatePost(context.Background(), &CreatePostInput{
 			AuthorID:    uuid.New(),

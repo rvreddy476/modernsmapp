@@ -252,7 +252,11 @@ func (s *Service) GetMyChannel(ctx context.Context, userID uuid.UUID) (*ChannelV
 		return nil, err
 	}
 	if ch == nil {
-		return nil, ErrChannelNotFound
+		// Every account has a channel (channel_default.go); one created
+		// before that rule, or whose UserRegistered was missed, gets it now.
+		if ch, err = s.ensureChannelFromProfile(ctx, userID); err != nil {
+			return nil, err
+		}
 	}
 	return s.channelView(ctx, userID, ch), nil
 }
@@ -398,7 +402,9 @@ func (s *Service) handleSeedFromProfile(ctx context.Context, userID uuid.UUID) s
 }
 
 // RequireChannelForVideo is the founder's gate: a long video needs a channel.
-// Fails closed — no store, no channel.
+// Every account has one (channel_default.go), so an account without one gets
+// its default channel here rather than a refusal. Fails closed — no store,
+// or the channel cannot be made, and the video is refused.
 func (s *Service) RequireChannelForVideo(ctx context.Context, authorID uuid.UUID) error {
 	if s.channels == nil {
 		return ErrChannelRequired
@@ -407,7 +413,11 @@ func (s *Service) RequireChannelForVideo(ctx context.Context, authorID uuid.UUID
 	if err != nil {
 		return fmt.Errorf("channel lookup: %w", err)
 	}
-	if ch == nil {
+	if ch != nil {
+		return nil
+	}
+	if _, err := s.ensureChannelFromProfile(ctx, authorID); err != nil {
+		slog.ErrorContext(ctx, "default channel at publish failed", "user_id", authorID, "err", err)
 		return ErrChannelRequired
 	}
 	return nil
