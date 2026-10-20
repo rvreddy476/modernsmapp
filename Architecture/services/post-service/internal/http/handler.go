@@ -39,6 +39,8 @@ type Handler struct {
 	restrictionVerifier *moderationcap.RestrictionVerifier
 	// restrictions overrides the service as the restriction store (tests).
 	restrictions restrictionStore
+	// places is the location search (places_handler.go). nil: 503.
+	places placeSearcher
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
@@ -256,6 +258,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		UserRate: 0.5, UserBurst: 5,
 	})
 	r.GET("/v1/hashtags/search", hashtagSearchLimit, h.SearchHashtags)
+	// Location search (places_handler.go): every call is a billed Google
+	// request, so the same small per-user budget as hashtag search.
+	placesLimit := sharedmiddleware.RateLimit(sharedmiddleware.RateLimitConfig{
+		IPRate: 1, IPBurst: 10,
+		UserRate: 1, UserBurst: 10,
+	})
+	r.GET("/v1/posts/places/autocomplete", placesLimit, h.AutocompletePlaces)
 	r.GET("/v1/hashtags/:tag/posts", h.GetPostsByHashtag)
 	// Real-time hashtag-feed push. Holds an SSE connection open and
 	// forwards every new post that includes :tag (via Redis pub/sub

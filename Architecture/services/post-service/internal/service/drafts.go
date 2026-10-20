@@ -49,6 +49,10 @@ type UpdateDraftInput struct {
 	CommentAccess     *string  `json:"comment_access"`
 	RecordingDate     *string  `json:"recording_date"`
 	RecordingLocation *string  `json:"recording_location"`
+	// Upload studio (migration 068). "" clears location_name / place id.
+	AIGenerated     *bool   `json:"ai_generated"`
+	LocationName    *string `json:"location_name"`
+	LocationPlaceID *string `json:"location_place_id"`
 	AudioTrackID      *string  `json:"audio_track_id"`
 	AudioStartMs      *int     `json:"audio_start_ms"`
 	OriginalAudioVol  *float32 `json:"original_audio_volume"`
@@ -245,6 +249,29 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	if input.RecordingLocation != nil {
 		updates["recording_location"] = *input.RecordingLocation
 	}
+	if input.AIGenerated != nil {
+		updates["ai_generated"] = *input.AIGenerated
+	}
+	if input.LocationName != nil {
+		if name := strings.TrimSpace(*input.LocationName); name == "" {
+			updates["location_name"] = nil
+		} else {
+			updates["location_name"] = name
+		}
+	}
+	if input.LocationPlaceID != nil {
+		// The post's own rule, so a draft can never hold an id the
+		// publish would refuse. "" clears it.
+		placeID, err := NormalizeLocationPlaceID(input.LocationPlaceID)
+		if err != nil {
+			return nil, err
+		}
+		if placeID == nil {
+			updates["location_place_id"] = nil
+		} else {
+			updates["location_place_id"] = *placeID
+		}
+	}
 	if input.OriginalAudioVol != nil {
 		updates["original_audio_volume"] = *input.OriginalAudioVol
 	}
@@ -362,6 +389,7 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 		OriginalAudioVol:  draft.OriginalAudioVol,
 		OverlayAudioVol:   draft.OverlayAudioVol,
 	}
+	applyDraftScreenFields(input, draft)
 
 	post, err := s.CreatePost(ctx, input)
 	if err != nil {
@@ -383,6 +411,18 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 	}
 
 	return post, nil
+}
+
+// applyDraftScreenFields copies what the upload studio saves beyond the
+// original draft columns (migration 068) onto the post being created. Both
+// publish paths — the person's and the schedule worker's — call it, so the
+// AI label and the tagged place survive a saved draft.
+func applyDraftScreenFields(input *CreatePostInput, draft *postgres.ReelDraft) {
+	input.AIGenerated = draft.AIGenerated
+	if draft.LocationName != nil && strings.TrimSpace(*draft.LocationName) != "" {
+		input.LocationName = draft.LocationName
+		input.LocationPlaceID = draft.LocationPlaceID
+	}
 }
 
 // PublishScheduledDrafts claims due reel drafts (SKIP LOCKED — safe with
@@ -465,6 +505,7 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		OriginalAudioVol:  draft.OriginalAudioVol,
 		OverlayAudioVol:   draft.OverlayAudioVol,
 	}
+	applyDraftScreenFields(input, draft)
 	post, err := s.CreatePost(ctx, input)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {

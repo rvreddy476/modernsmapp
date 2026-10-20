@@ -16,6 +16,7 @@ import (
 	"github.com/atpost/post-service/internal/http"
 	"github.com/atpost/post-service/internal/postpurge"
 	"github.com/atpost/post-service/internal/postschedule"
+	"github.com/atpost/post-service/internal/places"
 	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
@@ -573,7 +574,8 @@ func main() {
 		WithInternalKey(internalServiceKey).
 		WithModerationVerifier(postModerationVerifier).
 		WithRestrictionVerifier(postRestrictionVerifier).
-		WithServiceAuth(serviceVerifier)
+		WithServiceAuth(serviceVerifier).
+		WithPlaces(places.New(os.Getenv("GOOGLE_MAPS_SERVER_KEY")))
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

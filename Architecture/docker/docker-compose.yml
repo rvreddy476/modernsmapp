@@ -734,6 +734,9 @@ services:
       # Unset means the production values (20/hour, 50/day).
       MAX_POSTS_PER_HOUR: "${MAX_POSTS_PER_HOUR:-20}"
       MAX_POSTS_PER_DAY: "${MAX_POSTS_PER_DAY:-50}"
+      # Location search (internal/places): Google Places Autocomplete with
+      # the server key Feast already uses. Unset = free-text location only.
+      GOOGLE_MAPS_SERVER_KEY: ${GOOGLE_MAPS_SERVER_KEY:-}
       <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8084"
       POSTGRES_DSN: *app_postgres_dsn

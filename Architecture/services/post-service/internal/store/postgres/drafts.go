@@ -66,6 +66,10 @@ type ReelDraft struct {
 	// parked the draft (migration 055): author_suspended…, or
 	// standing_unavailable after 24 h without an answer from trust-safety.
 	BlockedReason *string `json:"blocked_reason,omitempty"`
+	// Upload studio (migration 068): copied onto the post at publish.
+	AIGenerated     bool    `json:"ai_generated"`
+	LocationName    *string `json:"location_name,omitempty"`
+	LocationPlaceID *string `json:"location_place_id,omitempty"`
 }
 
 const draftCols = `id, author_id, media_id,
@@ -80,7 +84,8 @@ const draftCols = `id, author_id, media_id,
 	audio_track_id, audio_start_ms, original_audio_volume, overlay_audio_volume,
 	cover_media_id, schedule_at,
 	status, moderation_status, published_post_id,
-	created_at, updated_at, blocked_reason`
+	created_at, updated_at, blocked_reason,
+	ai_generated, location_name, location_place_id`
 
 func scanDraft(row pgx.Row) (*ReelDraft, error) {
 	var d ReelDraft
@@ -98,6 +103,7 @@ func scanDraft(row pgx.Row) (*ReelDraft, error) {
 		&d.CoverMediaID, &d.ScheduleAt,
 		&d.Status, &d.ModerationStatus, &d.PublishedPostID,
 		&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
+		&d.AIGenerated, &d.LocationName, &d.LocationPlaceID,
 	)
 	if err != nil {
 		return nil, err
@@ -123,6 +129,7 @@ func scanDraftRows(rows pgx.Rows) ([]ReelDraft, error) {
 			&d.CoverMediaID, &d.ScheduleAt,
 			&d.Status, &d.ModerationStatus, &d.PublishedPostID,
 			&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
+			&d.AIGenerated, &d.LocationName, &d.LocationPlaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -148,7 +155,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO reel_drafts (`+draftCols+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45)`,
 		d.ID, d.AuthorID, d.MediaID,
 		d.Title, d.Caption, d.Hashtags, d.Tags,
 		d.Visibility, d.TopicID, d.Category, d.Language, d.SEOTitle,
@@ -162,6 +169,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 		d.CoverMediaID, d.ScheduleAt,
 		d.Status, d.ModerationStatus, d.PublishedPostID,
 		d.CreatedAt, d.UpdatedAt, d.BlockedReason,
+		d.AIGenerated, d.LocationName, d.LocationPlaceID,
 	)
 	return err
 }

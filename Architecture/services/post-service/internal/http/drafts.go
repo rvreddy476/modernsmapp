@@ -112,7 +112,7 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 	draft, err := h.svc.UpdateDraft(c.Request.Context(), draftID, authorID, &input)
 	if err != nil {
 		// audio_track_id is a sound id, or "" to remove the sound.
-		if errors.Is(err, service.ErrInvalidDraftSound) {
+		if errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 			return
 		}
