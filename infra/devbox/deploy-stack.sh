@@ -5,7 +5,7 @@
 #
 #   AWS_PROFILE=atpost-qa ./deploy-stack.sh
 #
-# Optional: DEVBOX_NIGHTLY=true (stop 23:30 / start 08:00 IST),
+# Optional: DEVBOX_NIGHTLY=true (stop 02:30 / start 08:00 IST),
 # DEVBOX_INSTANCE_TYPE=m7i.2xlarge, DEVBOX_SUBNET_ID=subnet-... (default: the
 # default VPC's subnet in ap-south-1a), DEVBOX_EGRESS_USER=false.
 source "$(dirname "$0")/lib.sh"

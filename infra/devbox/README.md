@@ -72,7 +72,7 @@ export AWS_PROFILE=atpost-qa
    ```bash
    bash deploy-stack.sh
    ```
-   To stop the server every night (23:30 IST) and start it every morning
+   To stop the server every night (02:30 IST) and start it every morning
    (08:00 IST), use this instead:
    ```bash
    DEVBOX_NIGHTLY=true bash deploy-stack.sh
@@ -285,12 +285,12 @@ Recordings are the one difference:
 | Item | Per month |
 |---|---|
 | m7i.2xlarge, $0.4242/h, running 24×7 | ~$310 |
-| m7i.2xlarge, running about 15.5 h/day (nightly stop 23:30–08:00) | ~$200 |
+| m7i.2xlarge, running about 18.5 h/day (nightly stop 02:30–08:00) | ~$240 |
 | 200 GB gp3, $0.0912/GB-month (billed even while stopped) | ~$18 |
 | Public IPv4 address, $0.005/h while running | ~$2–4 |
 | S3 Standard, $0.025/GB-month (e.g. 100 GB) plus requests | ~$3 |
 | Data out to the internet, through the tunnel and direct S3 links. The first 100 GB/month across the account is free, then about $0.11/GB. | $0–10 |
-| **Total** | **about $335 (24×7) or $225 (nightly stop)** |
+| **Total** | **about $335 (24×7) or $265 (nightly stop at 02:30)** |
 
 These are estimates. Rekognition and SES are billed per call if you turn
 them on.

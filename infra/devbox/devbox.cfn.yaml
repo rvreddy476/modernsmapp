@@ -43,8 +43,8 @@ Parameters:
     Description: Stop the instance at night and start it in the morning (IST).
   StopScheduleExpression:
     Type: String
-    Default: cron(30 23 * * ? *)
-    Description: When to stop, in Asia/Kolkata time (default 23:30 IST).
+    Default: cron(30 2 * * ? *)
+    Description: When to stop, in Asia/Kolkata time (default 02:30 IST).
   StartScheduleExpression:
     Type: String
     Default: cron(0 8 * * ? *)
