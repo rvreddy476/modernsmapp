@@ -11,15 +11,19 @@ package permission
 type Action string
 
 const (
-	ActionMessage         Action = "message"
-	ActionCall            Action = "call"
-	ActionConnect         Action = "connect"
-	ActionFollow          Action = "follow"
-	ActionAddToGroup      Action = "add_to_group"
-	ActionSeeOnlineStatus Action = "see_online_status"
-	ActionSeeReadReceipts Action = "see_read_receipts"
-	ActionSeeLastSeen     Action = "see_last_seen"
-	ActionViewProfile     Action = "view_profile"
+	ActionMessage Action = "message"
+	// ActionStartConversation is an alias of ActionMessage (DM consent
+	// contract §4 names both); it resolves through the same decision and is
+	// keyed by its own name in the response.
+	ActionStartConversation Action = "start_conversation"
+	ActionCall              Action = "call"
+	ActionConnect           Action = "connect"
+	ActionFollow            Action = "follow"
+	ActionAddToGroup        Action = "add_to_group"
+	ActionSeeOnlineStatus   Action = "see_online_status"
+	ActionSeeReadReceipts   Action = "see_read_receipts"
+	ActionSeeLastSeen       Action = "see_last_seen"
+	ActionViewProfile       Action = "view_profile"
 	// ActionComment gates commenting on the target's content
 	// (allow_comments_from: everyone | friends).
 	ActionComment Action = "comment"
@@ -54,6 +58,21 @@ type Facts struct {
 	// fails CLOSED: an unreachable or erroring provider yields false, which
 	// reduces the call rule to exactly its pre-flag behaviour.
 	DatingMatch bool
+	// AcceptedChat is true when the pair holds an ACCEPTED 1:1 chat (a direct
+	// conversation, or a message request the recipient accepted). It grants
+	// calls under who_can_call=accepted_chats_only and nothing else. The
+	// state lives in chat message-service; like DatingMatch it is populated
+	// only when its provider is wired (ACCEPTED_CHAT_CALLS_ENABLED) and fails
+	// CLOSED to false.
+	AcceptedChat bool
+	// ActorChatPaused is the SENDER's own chat_availability=paused. A paused
+	// account cannot start or send either (DM consent contract §2), so the
+	// message decision denies it with reason you_paused.
+	ActorChatPaused bool
+	// ActorSettingsUnavailable is true when the sender's settings could not
+	// be read. The message decision fails closed (reason unavailable) rather
+	// than guess whether the sender is paused.
+	ActorSettingsUnavailable bool
 }
 
 func (f Facts) mutualFollow() bool { return f.ActorFollowsTarget && f.TargetFollowsActor }
@@ -82,6 +101,11 @@ type Privacy struct {
 	// AllowCommentsFrom is "everyone" or "friends". Empty means UNKNOWN and
 	// denies (fail closed).
 	AllowCommentsFrom string
+	// Unavailable marks the strict-default snapshot used when the target's
+	// real settings could not be fetched. It is never serialised (only
+	// successful fetches are cached), so a cached record is always real.
+	// The message decision reports it as reason unavailable.
+	Unavailable bool `json:"-"`
 }
 
 // privateAccount reports whether the target has EXPLICITLY chosen a private
@@ -95,6 +119,15 @@ func (p Privacy) chatPaused() bool { return p.ChatAvailability == "paused" }
 // Decision is the resolved outcome for one action. Fallback names an
 // alternative path when the direct action is denied — e.g. message_direct is
 // denied but a Message Request is permitted (spec §9.8 response shape).
+//
+// For message / start_conversation there are exactly three outcomes:
+//
+//	allow            {"allowed":true}
+//	message_request  {"allowed":false,"fallback":"message_request"}
+//	deny             {"allowed":false,"reason":<one of the Reason* consts>}
+//
+// A block is ALWAYS reported as reason "unavailable", for every action, so a
+// permission answer can never be used to discover a block.
 type Decision struct {
 	Allowed  bool   `json:"allowed"`
 	Fallback string `json:"fallback,omitempty"`
@@ -103,12 +136,14 @@ type Decision struct {
 
 // Resolve decides a single action.
 func Resolve(action Action, f Facts, p Privacy) Decision {
-	// A block in either direction denies everything (spec §4).
+	// A block in either direction denies everything (spec §4). The reason is
+	// "unavailable", never "blocked": the blocked party must not be able to
+	// tell a block from an unreachable account (DM consent contract §4).
 	if f.Blocked {
-		return Decision{Allowed: false, Reason: "blocked"}
+		return Decision{Allowed: false, Reason: ReasonUnavailable}
 	}
 	switch action {
-	case ActionMessage:
+	case ActionMessage, ActionStartConversation:
 		return resolveMessage(f, p)
 	case ActionCall:
 		return resolveCall(f, p)
@@ -156,46 +191,102 @@ func ResolveAll(actions []Action, f Facts, p Privacy) map[Action]Decision {
 	return out
 }
 
-// resolveMessage implements the "Send DM (direct)" row of §4. A non-connection
-// who is denied a direct DM may still be offered the Message Request channel
-// (Fallback = "message_request").
+// Message deny reasons (DM consent contract §4). Every message /
+// start_conversation deny carries exactly one of these.
+const (
+	// ReasonUnavailable covers a block in either direction, a hidden
+	// (deactivated / deletion-scheduled) account, and unreadable settings on
+	// either side. Clients hide the Message button.
+	ReasonUnavailable = "unavailable"
+	// ReasonMessagesOff: the recipient has paused messages.
+	ReasonMessagesOff = "messages_off"
+	// ReasonYouPaused: the sender has paused their own messages.
+	ReasonYouPaused = "you_paused"
+	// ReasonNoOne: the recipient's who_can_message is no_one.
+	ReasonNoOne = "no_one"
+	// ReasonFollowersOnly: followers_message_requests and the sender does not
+	// follow the recipient — following them would earn a request.
+	ReasonFollowersOnly = "followers_only"
+	// ReasonPeopleIFollow: people_i_follow and the recipient does not follow
+	// the sender.
+	ReasonPeopleIFollow = "people_i_follow"
+)
+
+// FallbackMessageRequest is the request channel offered instead of a direct
+// thread.
+const FallbackMessageRequest = "message_request"
+
+// The four who_can_message values (DM consent contract §1).
+const (
+	WhoCanMessageEveryone      = "everyone_message_requests"
+	WhoCanMessageFollowers     = "followers_message_requests"
+	WhoCanMessagePeopleIFollow = "people_i_follow"
+	WhoCanMessageNoOne         = "no_one"
+)
+
+// canonicalWhoCanMessage folds legacy stored values onto the four current
+// ones with the same map identity applies on write and in its migration.
+// Anything unrecognised (including empty) takes the strictest non-no_one
+// value, people_i_follow: an unknown setting never opens a request channel.
+func canonicalWhoCanMessage(v string) string {
+	switch v {
+	case WhoCanMessageEveryone, WhoCanMessageFollowers, WhoCanMessagePeopleIFollow, WhoCanMessageNoOne:
+		return v
+	case "friends_of_friends_requests":
+		return WhoCanMessageFollowers
+	default: // connections_only, connections_and_mutual_followers, unknown
+		return WhoCanMessagePeopleIFollow
+	}
+}
+
+// resolveMessage implements the message / start_conversation decision of the
+// DM consent contract §4. The order is the contract's and is load-bearing:
+//
+//  1. block either way            -> deny unavailable (checked in Resolve)
+//     settings unreadable (either) -> deny unavailable (fail closed)
+//  2. recipient paused            -> deny messages_off
+//  3. sender paused               -> deny you_paused
+//  4. no_one                      -> deny no_one
+//  5. recipient follows sender, or a legacy accepted connection -> allow
+//  6. by value:
+//     everyone        -> message_request
+//     followers       -> sender follows recipient ? message_request : deny followers_only
+//     people_i_follow -> deny people_i_follow
+//
+// "Recipient follows sender" is the consent signal: following someone IS
+// consent to hear from them.
 func resolveMessage(f Facts, p Privacy) Decision {
-	// Chat pause is stronger than every who_can_message value and has NO
-	// request fallback (directive §3.2/§3.3): a paused account receives no
-	// new conversations, requests or messages until it unpauses.
+	if p.Unavailable || f.ActorSettingsUnavailable {
+		return Decision{Allowed: false, Reason: ReasonUnavailable}
+	}
+	// Pause is stronger than every who_can_message value and has NO request
+	// fallback: a paused account receives no new conversations, requests or
+	// messages until it unpauses.
 	if p.chatPaused() {
-		return Decision{Allowed: false, Reason: "chat_paused"}
+		return Decision{Allowed: false, Reason: ReasonMessagesOff}
 	}
-	// no_one is stricter than connections_only — even connections cannot
-	// message, so it is checked before the connection shortcut.
-	if p.WhoCanMessage == "no_one" {
-		return Decision{Allowed: false, Reason: "privacy_no_one"}
+	if f.ActorChatPaused {
+		return Decision{Allowed: false, Reason: ReasonYouPaused}
 	}
-	if f.IsConnection {
+	value := canonicalWhoCanMessage(p.WhoCanMessage)
+	// no_one beats every relationship, the follow-consent and legacy
+	// connections included.
+	if value == WhoCanMessageNoOne {
+		return Decision{Allowed: false, Reason: ReasonNoOne}
+	}
+	if f.TargetFollowsActor || f.IsConnection {
 		return Decision{Allowed: true}
 	}
-	switch p.WhoCanMessage {
-	case "connections_and_mutual_followers":
-		if f.mutualFollow() {
-			return Decision{Allowed: true}
-		}
-		return Decision{Allowed: false, Reason: "not_connected"}
-	case "followers_message_requests":
+	switch value {
+	case WhoCanMessageEveryone:
+		return Decision{Allowed: false, Fallback: FallbackMessageRequest}
+	case WhoCanMessageFollowers:
 		if f.ActorFollowsTarget {
-			return Decision{Allowed: false, Fallback: "message_request", Reason: "not_connected"}
+			return Decision{Allowed: false, Fallback: FallbackMessageRequest}
 		}
-		return Decision{Allowed: false, Reason: "privacy_disallows"}
-	case "friends_of_friends_requests":
-		// Directive §3.1/§3.3: a shared accepted connection earns a MESSAGE
-		// REQUEST, never a direct thread.
-		if f.SecondDegree {
-			return Decision{Allowed: false, Fallback: "message_request", Reason: "not_connected"}
-		}
-		return Decision{Allowed: false, Reason: "privacy_disallows"}
-	case "everyone_message_requests":
-		return Decision{Allowed: false, Fallback: "message_request", Reason: "not_connected"}
-	default: // connections_only
-		return Decision{Allowed: false, Reason: "privacy_connections_only"}
+		return Decision{Allowed: false, Reason: ReasonFollowersOnly}
+	default: // people_i_follow
+		return Decision{Allowed: false, Reason: ReasonPeopleIFollow}
 	}
 }
 
@@ -204,7 +295,7 @@ func resolveMessage(f Facts, p Privacy) Decision {
 //
 //	allow = !blocked
 //	        && who_can_call != "no_one"
-//	        && (IsConnection || DatingMatch)
+//	        && (IsConnection || AcceptedChat || DatingMatch)
 //
 // Order matters and is load-bearing:
 //   - Blocked is fatal before this function is reached (top of Resolve), so a
@@ -214,17 +305,24 @@ func resolveMessage(f Facts, p Privacy) Decision {
 //     opens a channel, it does not overrule the callee's own setting.
 //   - The dating grant sits alongside IsConnection, never above no_one.
 //
-// DatingMatch is false whenever the feature flag is off or its provider
-// errored, so this collapses to the previous connection-only rule.
+// DatingMatch and AcceptedChat are false whenever their feature flag is off or
+// their provider errored, so this collapses to the previous connection-only
+// rule.
 func resolveCall(f Facts, p Privacy) Decision {
 	switch p.WhoCanCall {
 	case "no_one":
 		return Decision{Allowed: false, Reason: "privacy_no_one"}
 	case "connections_only", "accepted_chats_only":
-		// accepted_chats_only is approximated as "is a connection" in
-		// Phase 1; true accepted-chat state lives in chat-service.
+		// connections_only is the legacy value identity maps onto
+		// accepted_chats_only, so both resolve the same way. An accepted 1:1
+		// chat grants the call (AcceptedChat, read from chat message-service);
+		// a legacy accepted connection keeps granting it, because accepting a
+		// message request used to create one.
 		if f.IsConnection {
 			return Decision{Allowed: true}
+		}
+		if f.AcceptedChat {
+			return Decision{Allowed: true, Reason: "accepted_chat"}
 		}
 		if f.DatingMatch {
 			return Decision{Allowed: true, Reason: "dating_match"}
@@ -348,17 +446,18 @@ func resolveVisibility(f Facts, setting string) Decision {
 // ParseActions maps spec action names to Action values, skipping unknowns.
 func ParseActions(names []string) []Action {
 	known := map[string]Action{
-		"message":           ActionMessage,
-		"call":              ActionCall,
-		"connect":           ActionConnect,
-		"follow":            ActionFollow,
-		"add_to_group":      ActionAddToGroup,
-		"see_online_status": ActionSeeOnlineStatus,
-		"see_read_receipts": ActionSeeReadReceipts,
-		"see_last_seen":     ActionSeeLastSeen,
-		"view_profile":      ActionViewProfile,
-		"comment":           ActionComment,
-		"view_posts":        ActionViewPosts,
+		"message":            ActionMessage,
+		"start_conversation": ActionStartConversation,
+		"call":               ActionCall,
+		"connect":            ActionConnect,
+		"follow":             ActionFollow,
+		"add_to_group":       ActionAddToGroup,
+		"see_online_status":  ActionSeeOnlineStatus,
+		"see_read_receipts":  ActionSeeReadReceipts,
+		"see_last_seen":      ActionSeeLastSeen,
+		"view_profile":       ActionViewProfile,
+		"comment":            ActionComment,
+		"view_posts":         ActionViewPosts,
 	}
 	out := make([]Action, 0, len(names))
 	for _, n := range names {

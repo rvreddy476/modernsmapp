@@ -79,6 +79,13 @@ type Service struct {
 	// as it did before the feature existed. Wired via WithDatingCalls.
 	datingCallsEnabled bool
 	datingMatches      DatingMatchProvider
+
+	// Accepted-chat call grant (ACCEPTED_CHAT_CALLS_ENABLED). acceptedChats
+	// asks chat message-service whether a pair holds an accepted 1:1 chat,
+	// for who_can_call=accepted_chats_only. Off/nil means calls stay
+	// connection-only. Wired via WithAcceptedChatCalls.
+	acceptedChatCallsEnabled bool
+	acceptedChats            AcceptedChatProvider
 }
 
 func New(s *store.Store, rdb *redis.Client, producer *events.Producer) *Service {

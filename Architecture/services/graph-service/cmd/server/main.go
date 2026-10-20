@@ -45,6 +45,10 @@ func main() {
 	// Dating-match call grant. Default OFF: absent or unparseable means the
 	// feature is not running, and call permissions stay connection-only.
 	datingCallsEnabled := envBool("DATING_CALLS_ENABLED", false)
+	// Accepted-chat call grant (who_can_call=accepted_chats_only). Default
+	// OFF until message-service serves POST /internal/v1/chat/direct-chat/state;
+	// off means calls stay connection-only.
+	acceptedChatCallsEnabled := envBool("ACCEPTED_CHAT_CALLS_ENABLED", false)
 	messageServiceURL := env("MESSAGE_SERVICE_URL", "")
 
 	// 3. Database
@@ -140,6 +144,18 @@ func main() {
 		slog.Info("graph-service: dating-match call grant enabled", "message_service_url", messageServiceURL)
 	} else {
 		slog.Info("graph-service: dating-match call grant disabled (DATING_CALLS_ENABLED not true)")
+	}
+	// Same fatal-on-misconfiguration rule as the dating grant.
+	if acceptedChatCallsEnabled {
+		provider, err := service.NewHTTPAcceptedChatProvider(messageServiceURL, internalKey, nil)
+		if err != nil {
+			slog.Error("ACCEPTED_CHAT_CALLS_ENABLED=true but the accepted-chat provider cannot be configured", "error", err)
+			os.Exit(1)
+		}
+		graphSvc.WithAcceptedChatCalls(true, provider)
+		slog.Info("graph-service: accepted-chat call grant enabled", "message_service_url", messageServiceURL)
+	} else {
+		slog.Info("graph-service: accepted-chat call grant disabled (ACCEPTED_CHAT_CALLS_ENABLED not true)")
 	}
 	// Wire read-through repair of the app.users projection for close-friends.
 	graphSvc.WithUserEnsurer(userclient.New(appUserURL, internalKey))

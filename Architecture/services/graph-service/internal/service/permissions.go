@@ -22,7 +22,33 @@ func (s *Service) ResolvePermissions(ctx context.Context, actorID, targetID uuid
 		return nil, err
 	}
 	privacy := s.fetchPrivacy(ctx, targetID)
+	// Action-scoped facts: fetched only when an action that reads them was
+	// requested, and never for a blocked pair (a block is fatal anyway).
+	if !facts.Blocked {
+		if wantsAction(actions, permission.ActionMessage, permission.ActionStartConversation) {
+			// The SENDER's own pause (DM consent contract §2/§4). Same cached,
+			// fail-closed fetch as the target's settings.
+			actorPrivacy := s.fetchPrivacy(ctx, actorID)
+			facts.ActorSettingsUnavailable = actorPrivacy.Unavailable
+			facts.ActorChatPaused = actorPrivacy.ChatAvailability == "paused"
+		}
+		if !facts.IsConnection && wantsAction(actions, permission.ActionCall) {
+			facts.AcceptedChat = s.acceptedChatFact(ctx, actorID, targetID)
+		}
+	}
 	return permission.ResolveAll(actions, facts, privacy), nil
+}
+
+// wantsAction reports whether any of want is among the requested actions.
+func wantsAction(actions []permission.Action, want ...permission.Action) bool {
+	for _, a := range actions {
+		for _, w := range want {
+			if a == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // permissionFacts assembles the relationship snapshot. GetRelationshipFull
@@ -108,6 +134,12 @@ func strictPrivacyDefaults() permission.Privacy {
 		// path only converts to a request on an EXPLICIT "private" — so an
 		// identity outage neither exposes a private account's posts nor
 		// strands public follows as pending requests.
+
+		// Marks the snapshot as unreadable so the message decision answers
+		// reason "unavailable" (DM consent contract §4) instead of the
+		// no_one the fail-safe value would otherwise report as the user's
+		// own choice. Never cached: only successful fetches are.
+		Unavailable: true,
 	}
 }
 

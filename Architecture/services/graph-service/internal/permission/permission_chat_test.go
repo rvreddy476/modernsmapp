@@ -19,28 +19,31 @@ func TestResolveMessageChatRules(t *testing.T) {
 			facts:   Facts{IsConnection: true},
 			privacy: Privacy{WhoCanMessage: "everyone_message_requests", ChatAvailability: "paused"},
 			want:    false,
-			reason:  "chat_paused",
+			reason:  "messages_off",
 		},
 		{
 			name:    "paused denies the stranger request fallback too",
 			facts:   Facts{},
 			privacy: Privacy{WhoCanMessage: "everyone_message_requests", ChatAvailability: "paused"},
 			want:    false,
-			reason:  "chat_paused",
+			reason:  "messages_off",
 		},
 		{
-			name:     "second degree earns a REQUEST under friends_of_friends_requests",
-			facts:    Facts{SecondDegree: true},
-			privacy:  Privacy{WhoCanMessage: "friends_of_friends_requests"},
-			want:     false,
-			fallback: "message_request",
+			// DM consent contract: friends_of_friends_requests is read as
+			// followers_message_requests, so second degree alone no longer
+			// earns a request.
+			name:    "second degree alone is denied under legacy friends_of_friends_requests",
+			facts:   Facts{SecondDegree: true},
+			privacy: Privacy{WhoCanMessage: "friends_of_friends_requests"},
+			want:    false,
+			reason:  "followers_only",
 		},
 		{
 			name:    "true stranger denied under friends_of_friends_requests",
 			facts:   Facts{},
 			privacy: Privacy{WhoCanMessage: "friends_of_friends_requests"},
 			want:    false,
-			reason:  "privacy_disallows",
+			reason:  "followers_only",
 		},
 		{
 			name:    "connection still DMs directly under friends_of_friends_requests",

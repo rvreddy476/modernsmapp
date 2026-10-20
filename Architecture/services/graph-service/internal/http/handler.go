@@ -28,6 +28,14 @@ type Handler struct {
 	// relationships serves the two relationship read routes. It is svc in
 	// production; tests substitute a fake to pin the wire contract.
 	relationships relationshipReader
+	// permissions serves /v1/permissions/check and /check-batch. It is svc in
+	// production; tests substitute a fake to pin the response shape.
+	permissions permissionResolver
+}
+
+// permissionResolver is the slice of the service the permission routes need.
+type permissionResolver interface {
+	ResolvePermissions(ctx context.Context, actorID, targetID uuid.UUID, actions []permission.Action) (map[permission.Action]permission.Decision, error)
 }
 
 // relationshipReader is the slice of the service the relationship read
@@ -47,7 +55,7 @@ func (h *Handler) WithCanonicalWriteSource(strict bool, warn func(string, ...any
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc, relationships: svc}
+	return &Handler{svc: svc, relationships: svc, permissions: svc}
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -183,7 +191,7 @@ func (h *Handler) CheckPermission(c *gin.Context) {
 		return
 	}
 
-	decisions, err := h.svc.ResolvePermissions(c.Request.Context(), actorID, targetID, actions)
+	decisions, err := h.permissions.ResolvePermissions(c.Request.Context(), actorID, targetID, actions)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -225,7 +233,7 @@ func (h *Handler) CheckPermissionBatch(c *gin.Context) {
 		if err != nil {
 			continue
 		}
-		decisions, err := h.svc.ResolvePermissions(c.Request.Context(), actorID, targetID, actions)
+		decisions, err := h.permissions.ResolvePermissions(c.Request.Context(), actorID, targetID, actions)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 			return

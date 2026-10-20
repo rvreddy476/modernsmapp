@@ -41,21 +41,21 @@ func TestResolveCallDatingMatrix(t *testing.T) {
 			facts:   Facts{Blocked: true, DatingMatch: true},
 			privacy: Privacy{WhoCanCall: "connections_only"},
 			want:    false,
-			reason:  "blocked",
+			reason:  "unavailable",
 		},
 		{
 			name:    "match + blocked denies under accepted_chats_only too",
 			facts:   Facts{Blocked: true, DatingMatch: true},
 			privacy: Privacy{WhoCanCall: "accepted_chats_only"},
 			want:    false,
-			reason:  "blocked",
+			reason:  "unavailable",
 		},
 		{
 			name:    "connection + match + blocked denies",
 			facts:   Facts{Blocked: true, IsConnection: true, DatingMatch: true},
 			privacy: Privacy{WhoCanCall: "connections_only"},
 			want:    false,
-			reason:  "blocked",
+			reason:  "unavailable",
 		},
 
 		// --- the grant itself ----------------------------------------------
