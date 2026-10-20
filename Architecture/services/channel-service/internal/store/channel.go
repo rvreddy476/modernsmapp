@@ -839,7 +839,7 @@ func (s *Store) PinComment(ctx context.Context, commentID uuid.UUID) error {
 
 func (s *Store) VoteOnPoll(ctx context.Context, updateID, userID uuid.UUID, optionIndexes []int) error {
 	for _, idx := range optionIndexes {
-		query := `INSERT INTO poll_votes (update_id, user_id, option_index, created_at) VALUES ($1, $2, $3, NOW())`
+		query := `INSERT INTO channel_poll_votes (update_id, user_id, option_index, created_at) VALUES ($1, $2, $3, NOW())`
 		if _, err := s.db.Exec(ctx, query, updateID, userID, idx); err != nil {
 			return err
 		}
@@ -848,7 +848,7 @@ func (s *Store) VoteOnPoll(ctx context.Context, updateID, userID uuid.UUID, opti
 }
 
 func (s *Store) GetPollResults(ctx context.Context, updateID uuid.UUID) ([]PollResult, error) {
-	query := `SELECT option_index, COUNT(*) as vote_count FROM poll_votes
+	query := `SELECT option_index, COUNT(*) as vote_count FROM channel_poll_votes
 		WHERE update_id = $1 GROUP BY option_index ORDER BY option_index`
 	rows, err := s.db.Query(ctx, query, updateID)
 	if err != nil {
@@ -868,12 +868,12 @@ func (s *Store) GetPollResults(ctx context.Context, updateID uuid.UUID) ([]PollR
 
 func (s *Store) HasUserVoted(ctx context.Context, updateID, userID uuid.UUID) (bool, error) {
 	var count int
-	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM poll_votes WHERE update_id = $1 AND user_id = $2`, updateID, userID).Scan(&count)
+	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM channel_poll_votes WHERE update_id = $1 AND user_id = $2`, updateID, userID).Scan(&count)
 	return count > 0, err
 }
 
 func (s *Store) RSVPEvent(ctx context.Context, updateID, userID uuid.UUID, status string) error {
-	query := `INSERT INTO event_rsvps (update_id, user_id, status, created_at)
+	query := `INSERT INTO channel_event_rsvps (update_id, user_id, status, created_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (update_id, user_id) DO UPDATE SET status = $3`
 	_, err := s.db.Exec(ctx, query, updateID, userID, status)
@@ -884,12 +884,12 @@ func (s *Store) ListAttendees(ctx context.Context, updateID uuid.UUID, status st
 	var query string
 	var args []any
 	if status != "" {
-		query = `SELECT user_id, status, created_at FROM event_rsvps
+		query = `SELECT user_id, status, created_at FROM channel_event_rsvps
 			WHERE update_id = $1 AND status = $2
 			ORDER BY created_at DESC LIMIT $3 OFFSET $4`
 		args = []any{updateID, status, limit, offset}
 	} else {
-		query = `SELECT user_id, status, created_at FROM event_rsvps
+		query = `SELECT user_id, status, created_at FROM channel_event_rsvps
 			WHERE update_id = $1
 			ORDER BY created_at DESC LIMIT $2 OFFSET $3`
 		args = []any{updateID, limit, offset}

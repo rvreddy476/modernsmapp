@@ -130,7 +130,37 @@ CREATE TABLE IF NOT EXISTS update_comments (
 CREATE INDEX IF NOT EXISTS idx_uc_update ON update_comments(update_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_uc_author ON update_comments(author_id);
 
-CREATE TABLE IF NOT EXISTS poll_votes (
+-- Poll votes and event RSVPs on updates live in channel_poll_votes and
+-- channel_event_rsvps. Until 20 Oct 2026 they were called poll_votes and
+-- event_rsvps, names post-service also uses in this shared app database for
+-- its own polls and events, with different columns. Whichever service booted
+-- first got the table and the other's CREATE TABLE IF NOT EXISTS did nothing:
+-- on the laptop post-service won (channel votes and RSVPs could never be
+-- written), on a fresh database channel-service won and post-service's
+-- setup.sql died on `poll_votes(option_id)`. A table this service made under
+-- the old name (it has update_id) is renamed here, rows and all;
+-- post-service's setup.sql carries the same block, so either one repairs it.
+DO $$
+BEGIN
+    IF to_regclass('channel_poll_votes') IS NULL AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'poll_votes' AND column_name = 'update_id'
+    ) THEN
+        ALTER TABLE poll_votes RENAME TO channel_poll_votes;
+        ALTER TABLE channel_poll_votes RENAME CONSTRAINT poll_votes_pkey TO channel_poll_votes_pkey;
+    END IF;
+    IF to_regclass('channel_event_rsvps') IS NULL AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'event_rsvps' AND column_name = 'update_id'
+    ) THEN
+        ALTER TABLE event_rsvps RENAME TO channel_event_rsvps;
+        ALTER TABLE channel_event_rsvps RENAME CONSTRAINT event_rsvps_pkey TO channel_event_rsvps_pkey;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS channel_poll_votes (
     update_id UUID NOT NULL REFERENCES channel_updates(id) ON DELETE CASCADE,
     user_id UUID NOT NULL,
     option_index INT NOT NULL,
@@ -138,7 +168,7 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     PRIMARY KEY (update_id, user_id, option_index)
 );
 
-CREATE TABLE IF NOT EXISTS event_rsvps (
+CREATE TABLE IF NOT EXISTS channel_event_rsvps (
     update_id UUID NOT NULL REFERENCES channel_updates(id) ON DELETE CASCADE,
     user_id UUID NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('going','interested','not_going')),

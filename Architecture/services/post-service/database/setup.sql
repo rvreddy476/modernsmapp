@@ -26,6 +26,34 @@ CREATE TABLE IF NOT EXISTS post_media (
     PRIMARY KEY (post_id, media_id)
 );
 
+-- poll_votes and event_rsvps (migration 010) are post-service names in the
+-- shared app database. channel-service used the same two names for its own
+-- tables (update_id, option_index) until 20 Oct 2026; on a fresh database it
+-- could boot first, and the CREATE TABLE below then did nothing and the
+-- option_id index failed (SQLSTATE 42703). channel-service now uses
+-- channel_poll_votes / channel_event_rsvps; a table it left under the old
+-- name is moved there, rows and all. channel-service's setup.sql runs the
+-- same block, so whichever service boots first repairs it.
+DO $$
+BEGIN
+    IF to_regclass('channel_poll_votes') IS NULL AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'poll_votes' AND column_name = 'update_id'
+    ) THEN
+        ALTER TABLE poll_votes RENAME TO channel_poll_votes;
+        ALTER TABLE channel_poll_votes RENAME CONSTRAINT poll_votes_pkey TO channel_poll_votes_pkey;
+    END IF;
+    IF to_regclass('channel_event_rsvps') IS NULL AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'event_rsvps' AND column_name = 'update_id'
+    ) THEN
+        ALTER TABLE event_rsvps RENAME TO channel_event_rsvps;
+        ALTER TABLE channel_event_rsvps RENAME CONSTRAINT event_rsvps_pkey TO channel_event_rsvps_pkey;
+    END IF;
+END $$;
+
 -- Polls
 CREATE TABLE IF NOT EXISTS polls (
     post_id UUID PRIMARY KEY REFERENCES posts(id),

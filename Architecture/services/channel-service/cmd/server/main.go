@@ -310,14 +310,16 @@ func runMigrations(ctx context.Context, db *pgxpool.Pool) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_uc_update ON update_comments(update_id, created_at DESC)`,
-		`CREATE TABLE IF NOT EXISTS poll_votes (
+		// channel_ names: post-service owns poll_votes and event_rsvps in
+		// this shared database (see database/setup.sql).
+		`CREATE TABLE IF NOT EXISTS channel_poll_votes (
 			update_id UUID NOT NULL REFERENCES channel_updates(id) ON DELETE CASCADE,
 			user_id UUID NOT NULL,
 			option_index INT NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (update_id, user_id, option_index)
 		)`,
-		`CREATE TABLE IF NOT EXISTS event_rsvps (
+		`CREATE TABLE IF NOT EXISTS channel_event_rsvps (
 			update_id UUID NOT NULL REFERENCES channel_updates(id) ON DELETE CASCADE,
 			user_id UUID NOT NULL,
 			status TEXT NOT NULL CHECK (status IN ('going','interested','not_going')),

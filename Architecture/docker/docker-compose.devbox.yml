@@ -69,6 +69,8 @@ services:
       S3_BUCKET: ${DEVBOX_MEDIA_BUCKET:?DEVBOX_MEDIA_BUCKET must be set in .env (infra/devbox/push-env.sh)}
       # Egress MP4s are imported (server-side copy) from this bucket.
       MEDIA_LIVE_RECORDINGS_BUCKET: ${DEVBOX_LIVE_RECORDINGS_BUCKET:?DEVBOX_LIVE_RECORDINGS_BUCKET must be set in .env}
+    # Fresh-volume gap, see group-service below.
+    restart: on-failure
     depends_on: !override
       postgres:
         condition: service_healthy
@@ -83,6 +85,8 @@ services:
       # The base file gives the worker no ENV; the instance-role opt-in is
       # honoured only on a local/dev ENV, so say which one this is.
       ENV: local
+    # Fresh-volume gap, see group-service below.
+    restart: on-failure
     depends_on: !override
       postgres:
         condition: service_healthy
@@ -105,6 +109,8 @@ services:
       <<: *devbox_s3
       FOOD_BLOB_BACKEND: s3
       FOOD_BLOB_BUCKET: ${DEVBOX_FOOD_FILES_BUCKET:?DEVBOX_FOOD_FILES_BUCKET must be set in .env}
+    # Fresh-volume gap, see group-service below.
+    restart: on-failure
 
   # ----------------------------------------------------------------- live --
   # The S3 target live-service-v2 sends on every StartRoomCompositeEgress
@@ -180,6 +186,28 @@ services:
   # (with no restart policy) stays down. Retry until post-service has made
   # the table, as graph-service and post-service already do.
   group-service:
+    restart: on-failure
+
+  # The same, for every other service whose boot needs another service's
+  # schema in the shared app database. Each exits on a missing object and
+  # converges on a later attempt:
+  #   media-service / media-worker  migration 018 reads group_posts.is_anonymous
+  #                                 once group_posts exists (group-service 013,
+  #                                 which itself waits for post-service);
+  #   user-service                  phase-6 migration races post-service 041
+  #                                 and channel-service on channels /
+  #                                 channel_members (pg_type_typname_nsp_index);
+  #   monetization-service          needs analytics.v_creator_daily_metrics_v1
+  #                                 (analytics-service migration 012);
+  #   food-service / doorstep       need partner_work.authority, which
+  #                                 rider-service migrates.
+  # media-service, media-worker and food-service carry theirs in their blocks
+  # above (one key per service in this file).
+  user-service:
+    restart: on-failure
+  monetization-service:
+    restart: on-failure
+  doorstep-service:
     restart: on-failure
 
   # Topics services use that init-topics.sh does not create. Redpanda here
