@@ -210,6 +210,15 @@ services:
   doorstep-service:
     restart: on-failure
 
+  # Account email through Amazon SES (founder, 2026-10-20). The instance role
+  # already allows ses:SendEmail. Off until DEVBOX_SES_FROM is set in .env
+  # (e.g. no-reply@cleestudio.com, once SES shows the domain verified): blank
+  # keeps the development log sender, which writes codes to the log.
+  identity-auth:
+    environment:
+      AWS_REGION: ap-south-1
+      SES_FROM_ADDRESS: ${DEVBOX_SES_FROM:-}
+
   # Topics services use that init-topics.sh does not create. Redpanda here
   # does not auto-create topics; the laptop had these from manual runs.
   # Idempotent: an existing topic is left alone.
