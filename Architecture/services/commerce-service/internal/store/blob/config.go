@@ -32,6 +32,10 @@ const (
 	EnvS3Endpoint = "COMMERCE_S3_ENDPOINT"
 
 	EnvAWSRegion = "AWS_REGION"
+	// EnvAllowInstanceRole lets a development host without a web identity
+	// (the single EC2 dev server, infra/devbox) use its instance role.
+	// Ignored in production.
+	EnvAllowInstanceRole = "S3_ALLOW_INSTANCE_ROLE"
 
 	EnvMinIOEndpoint       = "MINIO_ENDPOINT"
 	EnvMinIOAccessKey      = "MINIO_ACCESS_KEY"
@@ -106,7 +110,13 @@ func ConfigFromEnv(getenv func(string) string, production bool) (Config, error) 
 			return Config{}, errors.New("blob: static AWS credentials are forbidden; the S3 backend uses the IAM web-identity role (IRSA) only")
 		}
 		if get("AWS_WEB_IDENTITY_TOKEN_FILE") == "" || get("AWS_ROLE_ARN") == "" {
-			return Config{}, errors.New("blob: AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are required for the S3 backend; node-role fallback is forbidden")
+			// The one exception: a development host on EC2 (infra/devbox)
+			// that opted in. credentials.NewIAM then reads the instance
+			// role from IMDSv2. Never in production, whatever is set.
+			if production || !strings.EqualFold(get(EnvAllowInstanceRole), "true") {
+				return Config{}, errors.New("blob: AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are required for the S3 backend; node-role fallback is forbidden " +
+					"(a development EC2 host may set " + EnvAllowInstanceRole + "=true)")
+			}
 		}
 		cfg.S3Endpoint = get(EnvS3Endpoint)
 		if cfg.S3Endpoint != "" {

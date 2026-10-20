@@ -73,7 +73,8 @@ func openS3(ctx context.Context, cfg Config) (*Store, error) {
 	// credentials.NewIAM resolves AWS_WEB_IDENTITY_TOKEN_FILE + AWS_ROLE_ARN
 	// through STS (IRSA). ConfigFromEnv has already refused static keys and
 	// required the two web-identity variables, so the node role is never
-	// what this ends up using.
+	// what this ends up using — except on a development host that set
+	// S3_ALLOW_INSTANCE_ROLE=true, where NewIAM reads the EC2 instance role.
 	return openS3WithCredentials(ctx, cfg, credentials.NewIAM(""))
 }
 

@@ -1,0 +1,597 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  atpost devbox - the founder's whole Docker Compose dev stack on one EC2
+  server, with S3 in place of MinIO. No inbound ports: reached through SSM
+  Session Manager, published through a Cloudflare tunnel running on the
+  server. Deploy with infra/devbox/deploy-stack.sh (plain
+  `aws cloudformation deploy`). See infra/devbox/README.md.
+
+# Everything here is development-only. The S3 buckets are private; the
+# containers reach them with the instance role (IMDSv2, hop limit 2). No
+# static AWS key is created except, optionally, the access key of the
+# live-egress user, which the founder creates by hand (make-egress-key.sh)
+# for LiveKit Cloud, the one uploader outside AWS.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: m7i.2xlarge
+    Description: 8 vCPU / 32 GiB. The laptop stack was sized for 8 CPUs / 16 GB.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The default VPC (deploy-stack.sh looks it up).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: A default subnet of that VPC (public, auto-assigns a public IPv4, which the server needs for outbound traffic; nothing inbound is allowed).
+  ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Ubuntu 24.04 LTS (amd64) from Canonical's public SSM parameter.
+  RootVolumeSizeGiB:
+    Type: Number
+    Default: 200
+    MinValue: 50
+    MaxValue: 2000
+  WebOrigins:
+    Type: CommaDelimitedList
+    Default: "https://cleestudio.com,https://www.cleestudio.com,https://partner.cleestudio.com,https://api-dev.cleestudio.com,https://admin.cleestudio.com,http://localhost:3000"
+    Description: Origins allowed by the media / commerce / food bucket CORS (browser GET, HEAD, PUT, POST).
+  EnableNightlySchedule:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Stop the instance at night and start it in the morning (IST).
+  StopScheduleExpression:
+    Type: String
+    Default: cron(30 23 * * ? *)
+    Description: When to stop, in Asia/Kolkata time (default 23:30 IST).
+  StartScheduleExpression:
+    Type: String
+    Default: cron(0 8 * * ? *)
+    Description: When to start, in Asia/Kolkata time (default 08:00 IST).
+  CreateLiveEgressUser:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      An IAM user that may only PutObject into the live-recordings bucket, for
+      LiveKit Cloud egress (it has no AWS identity). No access key is created
+      here; make-egress-key.sh creates one into the laptop .env.
+
+Conditions:
+  NightlySchedule: !Equals [!Ref EnableNightlySchedule, "true"]
+  LiveEgressUser: !Equals [!Ref CreateLiveEgressUser, "true"]
+
+Resources:
+  # ------------------------------------------------------------- buckets --
+  # Private, BlockPublicAccess, SSE-S3, versioning off, owner-enforced,
+  # TLS-only. Names are global, so they carry the account id. The data
+  # buckets are retained if the stack is deleted (delete them by hand).
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-media-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # Browser and app traffic goes straight to presigned S3 URLs: PUT on
+      # upload, GET (with Range) on playback and images. Mirrors
+      # infra/terraform/modules/media aws_s3_bucket_cors_configuration.
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref WebOrigins
+            AllowedMethods: [GET, HEAD, PUT, POST]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [ETag, Content-Length, Content-Range, Accept-Ranges]
+            MaxAge: 3000
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - { Key: atpost:env, Value: devbox }
+
+  LiveRecordingsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-live-recordings-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - { Key: atpost:env, Value: devbox }
+
+  CommerceInvoicesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-commerce-invoices-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # Sellers PUT bulk-import CSVs to a presigned URL from the web.
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref WebOrigins
+            AllowedMethods: [GET, HEAD, PUT, POST]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [ETag, Content-Length]
+            MaxAge: 3000
+      Tags:
+        - { Key: atpost:env, Value: devbox }
+
+  FoodFilesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-food-files-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref WebOrigins
+            AllowedMethods: [GET, HEAD, PUT, POST]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [ETag, Content-Length]
+            MaxAge: 3000
+      Tags:
+        - { Key: atpost:env, Value: devbox }
+
+  # Code bundles, the .env hand-off, tunnel credentials and SSM command
+  # output. Everything expires after 7 days; the scripts delete secrets as
+  # soon as the server has read them.
+  TransferBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-transfer-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-after-7-days
+            Status: Enabled
+            ExpirationInDays: 7
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - { Key: atpost:env, Value: devbox }
+
+  # TLS only, on every bucket (presigned links and the SDKs are all HTTPS).
+  MediaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt MediaBucket.Arn, !Sub "${MediaBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+  LiveRecordingsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LiveRecordingsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt LiveRecordingsBucket.Arn, !Sub "${LiveRecordingsBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+  CommerceInvoicesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CommerceInvoicesBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt CommerceInvoicesBucket.Arn, !Sub "${CommerceInvoicesBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+  FoodFilesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FoodFilesBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt FoodFilesBucket.Arn, !Sub "${FoodFilesBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+  TransferBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TransferBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt TransferBucket.Arn, !Sub "${TransferBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  # ---------------------------------------------------------------- role --
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-instance"
+      Description: atpost devbox EC2 server - SSM, the devbox buckets, Rekognition, SES.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      Policies:
+        - PolicyName: devbox-buckets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Buckets
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                  - s3:ListBucketMultipartUploads
+                Resource:
+                  - !GetAtt MediaBucket.Arn
+                  - !GetAtt LiveRecordingsBucket.Arn
+                  - !GetAtt CommerceInvoicesBucket.Arn
+                  - !GetAtt FoodFilesBucket.Arn
+                  - !GetAtt TransferBucket.Arn
+              - Sid: Objects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource:
+                  - !Sub "${MediaBucket.Arn}/*"
+                  - !Sub "${LiveRecordingsBucket.Arn}/*"
+                  - !Sub "${CommerceInvoicesBucket.Arn}/*"
+                  - !Sub "${FoodFilesBucket.Arn}/*"
+                  - !Sub "${TransferBucket.Arn}/*"
+        - PolicyName: media-moderation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Rekognition
+                Effect: Allow
+                Action:
+                  - rekognition:DetectModerationLabels
+                  - rekognition:DetectLabels
+                  - rekognition:DetectFaces
+                  - rekognition:CompareFaces
+                Resource: "*"
+        - PolicyName: mail
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Ses
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+      Tags:
+        - { Key: atpost:env, Value: devbox }
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${AWS::StackName}-instance"
+      Roles: [!Ref InstanceRole]
+
+  # -------------------------------------------------------------- network --
+  # No ingress at all. The Cloudflare tunnel, SSM, S3, image pulls and apt
+  # are all outbound.
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: atpost devbox - no inbound; outbound only
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - Description: All outbound (tunnel, SSM, S3, registries, apt)
+          IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}" }
+        - { Key: atpost:env, Value: devbox }
+
+  # ------------------------------------------------------------- instance --
+  # The launch template carries what AWS::EC2::Instance cannot: IMDSv2
+  # required, with hop limit 2 so a container behind the Docker bridge can
+  # reach the instance role.
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}"
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+          InstanceMetadataTags: disabled
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: !Ref RootVolumeSizeGiB
+              Encrypted: true
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - { Key: Name, Value: !Sub "${AWS::StackName}-root" }
+              - { Key: atpost:env, Value: devbox }
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref SecurityGroup]
+      IamInstanceProfile: !Ref InstanceProfile
+      InstanceInitiatedShutdownBehavior: stop
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}" }
+        - { Key: atpost:env, Value: devbox }
+      # First boot only. Progress: /var/log/atpost-devbox-init.log; done when
+      # /var/lib/atpost-devbox/ready exists (deploy-stack.sh waits for it).
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          exec > >(tee -a /var/log/atpost-devbox-init.log) 2>&1
+          export DEBIAN_FRONTEND=noninteractive
+
+          # Kernel settings: OpenSearch needs a large map count, Scylla
+          # needs async-IO slots.
+          cat > /etc/sysctl.d/90-atpost-devbox.conf <<'EOF'
+          vm.max_map_count=262144
+          fs.aio-max-nr=1048576
+          vm.swappiness=10
+          EOF
+          sysctl --system
+
+          # 8 GiB swap on the root volume.
+          if [ ! -f /swapfile ]; then
+            fallocate -l 8G /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+          fi
+          swapon --show | grep -q '^/swapfile' || swapon /swapfile
+          grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+          apt-get update
+          apt-get install -y ca-certificates curl gnupg git unzip jq python3
+
+          # Docker Engine + compose plugin from Docker's official apt repo.
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+
+          # cloudflared from Cloudflare's official apt repo.
+          mkdir -p --mode=0755 /usr/share/keyrings
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' > /etc/apt/sources.list.d/cloudflared.list
+
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin cloudflared
+
+          # Bounded container logs: 57 services on one disk.
+          mkdir -p /etc/docker
+          cat > /etc/docker/daemon.json <<'EOF'
+          {"log-driver": "json-file", "log-opts": {"max-size": "20m", "max-file": "3"}}
+          EOF
+          systemctl enable docker
+          systemctl restart docker
+          usermod -aG docker ubuntu || true
+
+          # AWS CLI v2 (official installer).
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+            unzip -q -o /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install
+            rm -rf /tmp/aws /tmp/awscliv2.zip
+          fi
+
+          # The SSM agent ships with Canonical's AMI as a snap.
+          systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+
+          mkdir -p /srv/atpost/logs /var/lib/atpost-devbox
+          touch /var/lib/atpost-devbox/ready
+
+  # -------------------------------------------------- night stop / start --
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Condition: NightlySchedule
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: stop-start-devbox
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ec2:StopInstances, ec2:StartInstances]
+                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}"
+              # The root volume is encrypted with the AWS-managed EBS key;
+              # starting the instance needs it to be usable by the caller.
+              - Effect: Allow
+                Action: kms:CreateGrant
+                Resource: "*"
+                Condition:
+                  Bool: { "kms:GrantIsForAWSResource": "true" }
+
+  StopSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: NightlySchedule
+    Properties:
+      Description: Stop the atpost devbox at night (IST)
+      ScheduleExpression: !Ref StopScheduleExpression
+      ScheduleExpressionTimezone: Asia/Kolkata
+      FlexibleTimeWindow: { Mode: "OFF" }
+      State: ENABLED
+      Target:
+        Arn: !Sub "arn:${AWS::Partition}:scheduler:::aws-sdk:ec2:stopInstances"
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds": ["${Instance}"]}'
+
+  StartSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: NightlySchedule
+    Properties:
+      Description: Start the atpost devbox in the morning (IST)
+      ScheduleExpression: !Ref StartScheduleExpression
+      ScheduleExpressionTimezone: Asia/Kolkata
+      FlexibleTimeWindow: { Mode: "OFF" }
+      State: ENABLED
+      Target:
+        Arn: !Sub "arn:${AWS::Partition}:scheduler:::aws-sdk:ec2:startInstances"
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds": ["${Instance}"]}'
+
+  # ------------------------------------------------- LiveKit Cloud egress --
+  # LiveKit Cloud uploads recordings from outside AWS, so it needs a key.
+  # This user can only write recordings; the key is made by hand.
+  LiveEgressUser:
+    Type: AWS::IAM::User
+    Condition: LiveEgressUser
+    Properties:
+      UserName: !Sub "${AWS::StackName}-live-egress"
+      Policies:
+        - PolicyName: put-live-recordings
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource: !Sub "${LiveRecordingsBucket.Arn}/*"
+              - Effect: Allow
+                Action: s3:GetBucketLocation
+                Resource: !GetAtt LiveRecordingsBucket.Arn
+      Tags:
+        - { Key: atpost:env, Value: devbox }
+
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  RoleName:
+    Value: !Ref InstanceRole
+  SecurityGroupId:
+    Value: !Ref SecurityGroup
+  MediaBucketName:
+    Value: !Ref MediaBucket
+  LiveRecordingsBucketName:
+    Value: !Ref LiveRecordingsBucket
+  CommerceInvoicesBucketName:
+    Value: !Ref CommerceInvoicesBucket
+  FoodFilesBucketName:
+    Value: !Ref FoodFilesBucket
+  TransferBucketName:
+    Value: !Ref TransferBucket
+  LiveEgressUserName:
+    Condition: LiveEgressUser
+    Value: !Ref LiveEgressUser

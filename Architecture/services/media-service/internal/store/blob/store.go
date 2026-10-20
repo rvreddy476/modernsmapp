@@ -45,18 +45,62 @@ func New(endpoint, accessKey, secretKey, bucket string, useSSL bool) (*Store, er
 	return NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket, useSSL, "")
 }
 
+// EnvAllowInstanceRole opts a local/dev host into the EC2 instance-profile
+// credential when it has no web identity: the single-server dev stack
+// (infra/devbox) runs on EC2 with an instance role and no EKS. It is honoured
+// only when ENV is local/dev/development and no other environment variable
+// names anything else, so a production or QA pod can never take it.
+const EnvAllowInstanceRole = "S3_ALLOW_INSTANCE_ROLE"
+
+// checkS3Credentials is NewS3IRSA's credential rule. Static keys are refused
+// everywhere. A web identity (IRSA) is required, except on a local/dev host
+// that set S3_ALLOW_INSTANCE_ROLE=true, where credentials.NewIAM falls
+// through to the EC2 instance metadata service (IMDSv2).
+func checkS3Credentials(getenv func(string) string) error {
+	if getenv("AWS_ACCESS_KEY_ID") != "" || getenv("AWS_SECRET_ACCESS_KEY") != "" {
+		return fmt.Errorf("s3/irsa: static AWS credentials are forbidden")
+	}
+	if getenv("AWS_WEB_IDENTITY_TOKEN_FILE") != "" && getenv("AWS_ROLE_ARN") != "" {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(getenv(EnvAllowInstanceRole)), "true") && isLocalDevEnv(getenv) {
+		return nil
+	}
+	return fmt.Errorf("s3/irsa: AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are required; node-role fallback is forbidden " +
+		"(a local/dev EC2 host may set " + EnvAllowInstanceRole + "=true)")
+}
+
+// isLocalDevEnv: ENV is local/dev/development and none of DEPLOY_ENV,
+// APP_ENV, ENVIRONMENT names another environment. A blank ENV is not local.
+func isLocalDevEnv(getenv func(string) string) bool {
+	local := func(v string) bool {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "local", "dev", "development":
+			return true
+		}
+		return false
+	}
+	if !local(getenv("ENV")) {
+		return false
+	}
+	for _, k := range []string{"DEPLOY_ENV", "APP_ENV", "ENVIRONMENT"} {
+		if v := strings.TrimSpace(getenv(k)); v != "" && !local(v) {
+			return false
+		}
+	}
+	return true
+}
+
 // NewS3IRSA configures the existing S3-compatible client for AWS S3 using an
-// EKS web-identity credential only. It deliberately refuses static keys and
-// does not fall back to the node instance profile.
+// EKS web-identity credential. It deliberately refuses static keys and does
+// not fall back to the node instance profile, except on an explicitly opted-in
+// local/dev host (checkS3Credentials).
 func NewS3IRSA(region, bucket string) (*Store, error) {
 	if strings.TrimSpace(region) == "" || strings.TrimSpace(bucket) == "" {
 		return nil, fmt.Errorf("s3/irsa: AWS_REGION and S3_BUCKET are required")
 	}
-	if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
-		return nil, fmt.Errorf("s3/irsa: static AWS credentials are forbidden")
-	}
-	if os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") == "" || os.Getenv("AWS_ROLE_ARN") == "" {
-		return nil, fmt.Errorf("s3/irsa: AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are required; node-role fallback is forbidden")
+	if err := checkS3Credentials(os.Getenv); err != nil {
+		return nil, err
 	}
 
 	endpoint := "s3." + region + ".amazonaws.com"

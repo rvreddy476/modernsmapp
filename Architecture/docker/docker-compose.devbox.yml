@@ -1,0 +1,217 @@
+# DEVBOX — the whole dev stack on ONE EC2 server (AWS account 551626543760,
+# ap-south-1), with AWS S3 in place of MinIO. Applied LAST, on top of the
+# laptop's file list:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.admin-local.yml \
+#     -f docker-compose.google-routing.local.yml -f docker-compose.partner-local.yml \
+#     -f docker-compose.partner-rollout.yml -f /srv/atpost/web-from-parity.yml \
+#     -f docker-compose.devbox.yml up -d --build
+#
+# infra/devbox/up.sh runs exactly that; infra/devbox/README.md is the guide.
+#
+# WHAT CHANGES, AND NOTHING ELSE
+#
+#   * Storage. Every object-store user goes to S3 through the EC2 instance
+#     role (IMDSv2, hop limit 2 so containers reach it). No static AWS key is
+#     set anywhere; the services refuse one. The three Go clients reach the
+#     role through S3_ALLOW_INSTANCE_ROLE=true, which they honour only on a
+#     local/dev ENV (media-service blob.checkS3Credentials, commerce/food
+#     blob.ConfigFromEnv) — QA and production still require IRSA.
+#   * Links. Presigned S3 URLs, virtual-hosted and HTTPS
+#     (https://<bucket>.s3.ap-south-1.amazonaws.com/<key>?X-Amz-...), exactly
+#     the shape the laptop's MinIO links had but on a public TLS host, so the
+#     browser at https://cleestudio.com and the Android app reach them
+#     directly; the media bucket's CORS (infra/devbox/devbox.cfn.yaml) admits
+#     the web origins. There is no CloudFront here: without
+#     MEDIA_CLOUDFRONT_KEY_PAIR_ID media-service keeps its local signer
+#     (cmd/server/main.go buildDeliveryGate), which presigns against S3.
+#   * MinIO, its bucket job and minio-edge are behind the `minio` profile, so
+#     `up` never starts them. The tunnel's media-dev.cleestudio.com rule
+#     (localhost:9002) has nothing behind it any more and answers 502; no
+#     link points there once MINIO_PUBLIC_ENDPOINT is no longer used.
+#   * A fresh server starts with EMPTY volumes (founder, 20 Oct 2026: no data
+#     migration). Every service creates its own schema at boot; the three
+#     gaps the laptop only covered with old state are closed here:
+#     devbox-topics (Kafka topics init-topics.sh does not create),
+#     devbox-studio-schema (database/08-creative-studio.sql, which no
+#     service applies) and group-service's restart policy (its migration
+#     ALTERs post-service's `posts` and fails if it wins the race).
+#
+# Bucket names come from the CloudFormation outputs; infra/devbox/push-env.sh
+# appends them to the server's .env as DEVBOX_* variables. A missing one
+# stops compose with the message below rather than starting against MinIO.
+
+x-devbox-s3: &devbox_s3
+  AWS_REGION: ap-south-1
+  # Local/dev only: lets the S3 clients use the EC2 instance role when there
+  # is no web identity. Ignored (refused) in QA and production.
+  S3_ALLOW_INSTANCE_ROLE: "true"
+
+services:
+  # ---------------------------------------------------------------- MinIO --
+  # Off. `docker compose --profile minio ...` would bring them back, but no
+  # service below points at them.
+  minio:
+    profiles: ["minio"]
+  minio-edge:
+    profiles: ["minio"]
+  live-recordings-bucket:
+    profiles: ["minio"]
+
+  # ---------------------------------------------------------------- media --
+  # The production path (deploy/services/media-service/values-qa.yaml):
+  # MEDIA_STORAGE_BACKEND=s3 + S3_BUCKET + AWS_REGION. The MINIO_* values the
+  # base file sets are not read once the backend is s3.
+  media-service:
+    environment:
+      <<: *devbox_s3
+      MEDIA_STORAGE_BACKEND: s3
+      S3_BUCKET: ${DEVBOX_MEDIA_BUCKET:?DEVBOX_MEDIA_BUCKET must be set in .env (infra/devbox/push-env.sh)}
+      # Egress MP4s are imported (server-side copy) from this bucket.
+      MEDIA_LIVE_RECORDINGS_BUCKET: ${DEVBOX_LIVE_RECORDINGS_BUCKET:?DEVBOX_LIVE_RECORDINGS_BUCKET must be set in .env}
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  media-worker:
+    environment:
+      <<: *devbox_s3
+      MEDIA_STORAGE_BACKEND: s3
+      S3_BUCKET: ${DEVBOX_MEDIA_BUCKET:?DEVBOX_MEDIA_BUCKET must be set in .env}
+      # The base file gives the worker no ENV; the instance-role opt-in is
+      # honoured only on a local/dev ENV, so say which one this is.
+      ENV: local
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  # -------------------------------------------------- commerce and food --
+  # The W7a path (commit 8c6c030f): <SVC>_BLOB_BACKEND=s3 + <SVC>_BLOB_BUCKET.
+  commerce-service:
+    environment:
+      <<: *devbox_s3
+      COMMERCE_BLOB_BACKEND: s3
+      COMMERCE_BLOB_BUCKET: ${DEVBOX_COMMERCE_INVOICES_BUCKET:?DEVBOX_COMMERCE_INVOICES_BUCKET must be set in .env}
+
+  # On the laptop food had no object store (no MINIO_ENDPOINT: settlement
+  # files stayed inline in the database). Here it uses its own bucket, as in
+  # QA; an S3 failure only logs, outside production.
+  food-service:
+    environment:
+      <<: *devbox_s3
+      FOOD_BLOB_BACKEND: s3
+      FOOD_BLOB_BUCKET: ${DEVBOX_FOOD_FILES_BUCKET:?DEVBOX_FOOD_FILES_BUCKET must be set in .env}
+
+  # ----------------------------------------------------------------- live --
+  # The S3 target live-service-v2 sends on every StartRoomCompositeEgress
+  # (internal/livekit/client.go StartEgressToS3), as in values-qa.yaml:
+  # regional endpoint, TLS, ap-south-1, LIVE_EGRESS_S3_ENDPOINT empty so the
+  # endpoint below is used.
+  #
+  # Credentials: with the pair EMPTY nothing is sent and the egress worker
+  # uses its own ambient credentials — the in-stack livekit-egress below
+  # gets the instance role. .env points live at LiveKit CLOUD, whose egress
+  # has no AWS identity: there the pair must be the access key of the
+  # devbox live-egress IAM user (PutObject on the recordings bucket only),
+  # which infra/devbox/make-egress-key.sh writes into the laptop's .env.
+  # Without it streams work and recordings fail to upload.
+  live-service-v2:
+    environment:
+      MINIO_ENDPOINT: https://s3.ap-south-1.amazonaws.com
+      MINIO_USE_SSL: "true"
+      MINIO_REGION: ap-south-1
+      MINIO_BUCKET_LIVE_RECORDINGS: ${DEVBOX_LIVE_RECORDINGS_BUCKET:?DEVBOX_LIVE_RECORDINGS_BUCKET must be set in .env}
+      MINIO_ACCESS_KEY: ${DEVBOX_LIVE_EGRESS_ACCESS_KEY_ID:-}
+      MINIO_SECRET_KEY: ${DEVBOX_LIVE_EGRESS_SECRET_ACCESS_KEY:-}
+      LIVE_EGRESS_S3_ENDPOINT: ""
+      LIVE_RECORDING_PUBLIC_BASE_URL: ""
+
+  # The base file's config with only `storage` changed: no keys, so egress
+  # (aws-sdk-go-v2 LoadDefaultConfig) takes the instance role.
+  livekit-egress:
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${LIVEKIT_API_KEY:-devkey}
+        api_secret: ${LIVEKIT_API_SECRET:-devsecret0000000000000000000000000}
+        ws_url: ws://livekit:7880
+        insecure: true
+        health_port: 9090
+        logging:
+          level: info
+        redis:
+          address: redis:6379
+          username: "${REDIS_USERNAME:-}"
+          password: "${REDIS_PASSWORD:-}"
+          db: ${REDIS_DB:-0}
+        cpu_cost:
+          room_composite_cpu_cost: 1.0
+          audio_room_composite_cpu_cost: 0.5
+          web_cpu_cost: 1.0
+          track_composite_cpu_cost: 1.0
+          track_cpu_cost: 0.5
+        storage:
+          s3:
+            region: ap-south-1
+            endpoint: https://s3.ap-south-1.amazonaws.com
+            bucket: ${DEVBOX_LIVE_RECORDINGS_BUCKET:?DEVBOX_LIVE_RECORDINGS_BUCKET must be set in .env}
+            force_path_style: true
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+
+  # ------------------------------------------------------------------ web --
+  # The /v1 proxy's MinIO short-cut is for a storage host on this machine.
+  # Empty (as in production) it follows the media-service redirect to S3
+  # itself: server to S3 in the same region, then out through the tunnel.
+  web:
+    environment:
+      MEDIA_STORAGE_PUBLIC_ORIGIN: ""
+      MEDIA_STORAGE_INTERNAL_ORIGIN: ""
+
+  # ------------------------------------------------- fresh-volume gaps --
+  # group-service migration 002 runs `ALTER TABLE posts`, a post-service
+  # table. On an empty database group-service usually boots first, fails and
+  # (with no restart policy) stays down. Retry until post-service has made
+  # the table, as graph-service and post-service already do.
+  group-service:
+    restart: on-failure
+
+  # Topics services use that init-topics.sh does not create. Redpanda here
+  # does not auto-create topics; the laptop had these from manual runs.
+  # Idempotent: an existing topic is left alone.
+  devbox-topics:
+    image: redpandadata/redpanda:latest
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      RPK_BROKERS: redpanda:9092
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        for t in platform.purge-acks.v1 monetization.events food-events group-events community-events channel-events search.events.v1.dlq media.events.dlq; do
+          rpk topic create "$$t" -p 12 -r 1 >/dev/null 2>&1 && echo "created $$t" || echo "kept $$t"
+        done
+    restart: "no"
+
+  # Creative Studio tables (editor sessions, stickers, templates, overlays,
+  # export jobs, filter presets). media-service queries them but no service
+  # creates them; on the laptop they came from a one-off run of this file.
+  # Every statement is CREATE ... IF NOT EXISTS.
+  devbox-studio-schema:
+    image: postgis/postgis:16-3.4
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - ./database/08-creative-studio.sql:/devbox/08-creative-studio.sql:ro
+    entrypoint: ["psql", "-h", "postgres", "-U", "${POSTGRES_USER:-postgres}", "-d", "app", "-v", "ON_ERROR_STOP=1", "-q", "-f", "/devbox/08-creative-studio.sql"]
+    restart: "no"

@@ -59,6 +59,12 @@ func TestConfigFromEnv(t *testing.T) {
 		{"s3 with a static secret key", getenvMap(webIdentity, map[string]string{EnvBackend: "s3", EnvBucket: "b", "AWS_SECRET_ACCESS_KEY": "x"}), false, "", nil, "static AWS credentials are forbidden"},
 		{"s3 without the web-identity token", getenvMap(webIdentity, map[string]string{EnvBackend: "s3", EnvBucket: "b", "AWS_WEB_IDENTITY_TOKEN_FILE": ""}), true, "", nil, "node-role fallback is forbidden"},
 		{"s3 without the role arn", getenvMap(webIdentity, map[string]string{EnvBackend: "s3", EnvBucket: "b", "AWS_ROLE_ARN": ""}), true, "", nil, "node-role fallback is forbidden"},
+		// The EC2 dev server (infra/devbox): instance role, no web identity.
+		{"s3 instance role opted in on dev", map[string]string{"AWS_REGION": "ap-south-1", EnvBackend: "s3", EnvBucket: "b", EnvAllowInstanceRole: "true"}, false, BackendS3, nil, ""},
+		{"s3 instance role without the opt-in on dev", map[string]string{"AWS_REGION": "ap-south-1", EnvBackend: "s3", EnvBucket: "b"}, false, "", nil, "node-role fallback is forbidden"},
+		{"s3 instance role opt-in must say true", map[string]string{"AWS_REGION": "ap-south-1", EnvBackend: "s3", EnvBucket: "b", EnvAllowInstanceRole: "yes"}, false, "", nil, "node-role fallback is forbidden"},
+		{"s3 instance role opt-in is ignored in prod", map[string]string{"AWS_REGION": "ap-south-1", EnvBackend: "s3", EnvBucket: "b", EnvAllowInstanceRole: "true"}, true, "", nil, "node-role fallback is forbidden"},
+		{"s3 instance role opt-in still refuses static keys", map[string]string{"AWS_REGION": "ap-south-1", EnvBackend: "s3", EnvBucket: "b", EnvAllowInstanceRole: "true", "AWS_ACCESS_KEY_ID": "AKIAEXAMPLE"}, false, "", nil, "static AWS credentials are forbidden"},
 		{"s3 endpoint override in dev", getenvMap(webIdentity, map[string]string{EnvBackend: "s3", EnvBucket: "b", EnvS3Endpoint: "http://127.0.0.1:9000"}), false, BackendS3, nil, ""},
 		{"s3 endpoint override in prod is refused", getenvMap(webIdentity, map[string]string{EnvBackend: "s3", EnvBucket: "b", EnvS3Endpoint: "http://127.0.0.1:9000"}), true, "", ErrProductionRefused, "test-only override"},
 		{"s3 endpoint override must parse", getenvMap(webIdentity, map[string]string{EnvBackend: "s3", EnvBucket: "b", EnvS3Endpoint: "http://"}), false, "", nil, "has no host"},
