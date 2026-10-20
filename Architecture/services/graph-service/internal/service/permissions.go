@@ -32,7 +32,9 @@ func (s *Service) ResolvePermissions(ctx context.Context, actorID, targetID uuid
 			facts.ActorSettingsUnavailable = actorPrivacy.Unavailable
 			facts.ActorChatPaused = actorPrivacy.ChatAvailability == "paused"
 		}
-		if !facts.IsConnection && wantsAction(actions, permission.ActionCall) {
+		// An accepted 1:1 chat grants calls, and lets the pair keep messaging
+		// (the profile button reads "Message", not "Send request").
+		if !facts.IsConnection && wantsAction(actions, permission.ActionCall, permission.ActionMessage, permission.ActionStartConversation) {
 			facts.AcceptedChat = s.acceptedChatFact(ctx, actorID, targetID)
 		}
 	}

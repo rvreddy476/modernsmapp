@@ -184,6 +184,33 @@ func TestDMConsentOrder(t *testing.T) {
 	}
 }
 
+// An accepted 1:1 chat keeps the pair messaging under every value (no_one
+// included: "chats you already have stay"); only a block or a pause ends it.
+func TestAcceptedChatKeepsMessaging(t *testing.T) {
+	for _, value := range []string{"everyone_message_requests", "followers_message_requests", "people_i_follow", "no_one"} {
+		for _, action := range []Action{ActionMessage, ActionStartConversation} {
+			t.Run(value+"/"+string(action), func(t *testing.T) {
+				checkDMDecision(t, Resolve(action, Facts{AcceptedChat: true}, Privacy{WhoCanMessage: value}), outAllow)
+			})
+		}
+	}
+	cases := []struct {
+		name    string
+		facts   Facts
+		privacy Privacy
+		want    string
+	}{
+		{"block beats an accepted chat", Facts{AcceptedChat: true, Blocked: true}, Privacy{WhoCanMessage: "everyone_message_requests"}, ReasonUnavailable},
+		{"recipient pause beats an accepted chat", Facts{AcceptedChat: true}, Privacy{WhoCanMessage: "everyone_message_requests", ChatAvailability: "paused"}, ReasonMessagesOff},
+		{"sender pause beats an accepted chat", Facts{AcceptedChat: true, ActorChatPaused: true}, Privacy{WhoCanMessage: "everyone_message_requests"}, ReasonYouPaused},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			checkDMDecision(t, Resolve(ActionMessage, tc.facts, tc.privacy), tc.want)
+		})
+	}
+}
+
 // Every message deny reason is one of the six the contract lists.
 func TestDMConsentReasonsAreTheContractSet(t *testing.T) {
 	allowed := map[string]bool{
@@ -249,12 +276,13 @@ func TestCallAcceptedChatsOnly(t *testing.T) {
 			}
 		})
 	}
-	// The accepted chat grants calls and nothing else.
+	// The accepted chat grants calls and messaging (TestAcceptedChatKeepsMessaging)
+	// and nothing else: no group-adds, no online status.
 	f := Facts{AcceptedChat: true}
 	p := Privacy{WhoCanMessage: "people_i_follow", WhoCanAddToGroups: "connections_only", WhoCanSeeOnlineStatus: "connections_only"}
-	for _, a := range []Action{ActionMessage, ActionAddToGroup, ActionSeeOnlineStatus} {
+	for _, a := range []Action{ActionAddToGroup, ActionSeeOnlineStatus} {
 		if d := Resolve(a, f, p); d.Allowed {
-			t.Errorf("%s allowed on a bare accepted chat; it must grant calls only", a)
+			t.Errorf("%s allowed on a bare accepted chat; it must grant calls and messaging only", a)
 		}
 	}
 }

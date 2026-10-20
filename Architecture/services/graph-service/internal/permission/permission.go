@@ -268,6 +268,12 @@ func resolveMessage(f Facts, p Privacy) Decision {
 	if f.ActorChatPaused {
 		return Decision{Allowed: false, Reason: ReasonYouPaused}
 	}
+	// An accepted 1:1 chat is consent already given: the pair keeps
+	// messaging under every value, no_one included ("chats you already have
+	// stay"). Only a block or a pause, above, ends it.
+	if f.AcceptedChat {
+		return Decision{Allowed: true}
+	}
 	value := canonicalWhoCanMessage(p.WhoCanMessage)
 	// no_one beats every relationship, the follow-consent and legacy
 	// connections included.
