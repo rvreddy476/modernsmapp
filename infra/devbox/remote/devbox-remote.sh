@@ -55,9 +55,10 @@ checkout_bundle() {
   local bucket="$1" key="$2" dir="$3" bundle
   bundle="$(mktemp --suffix=.bundle)"
   aws s3 cp "s3://$bucket/$key" "$bundle" --only-show-errors
-  git bundle verify -q "$bundle" >/dev/null
+  # verify needs a repository to run in, so the target is initialised first.
   [ -d "$dir/.git" ] || git init -q "$dir"
   git config --global --add safe.directory "$dir" 2>/dev/null || true
+  git -C "$dir" bundle verify -q "$bundle" >/dev/null
   git -C "$dir" fetch -q "$bundle" HEAD
   # Untracked files (.env, .secrets) are gitignored and survive this.
   git -C "$dir" checkout -q --force --detach FETCH_HEAD

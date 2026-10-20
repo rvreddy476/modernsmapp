@@ -11,21 +11,23 @@ source "$(dirname "$0")/lib.sh"
 check_account
 load_stack
 make_tmp
+# Git for Windows may not read Git Bash's /c/... paths: hand it C:/... ones.
+lgit() { local dir="$1"; shift; git -C "$(winpath "$dir")" "$@"; }
 
 [ -d "$WEB_REPO" ] || die "web repo not found at $WEB_REPO (set DEVBOX_WEB_REPO)"
-git -C "$REPO_ROOT" cat-file -e HEAD:Architecture/docker/docker-compose.devbox.yml 2>/dev/null \
+lgit "$REPO_ROOT" cat-file -e HEAD:Architecture/docker/docker-compose.devbox.yml 2>/dev/null \
   || die "Architecture/docker/docker-compose.devbox.yml is not committed at HEAD; commit it first"
 
 for repo in "$REPO_ROOT" "$WEB_REPO"; do
-  dirty="$(git -C "$repo" status --porcelain --untracked-files=no | wc -l | tr -d ' ')"
+  dirty="$(lgit "$repo" status --porcelain --untracked-files=no | wc -l | tr -d ' ')"
   [ "$dirty" = "0" ] || warn "$repo has $dirty modified tracked files; only the commit at HEAD is copied"
-  log "$repo: $(git -C "$repo" rev-parse --abbrev-ref HEAD) @ $(git -C "$repo" log -1 --format='%h %s')"
+  log "$repo: $(lgit "$repo" rev-parse --abbrev-ref HEAD) @ $(lgit "$repo" log -1 --format='%h %s')"
 done
 
 APP_KEY="$(handoff_key modernsmapp .bundle)"
 WEB_KEY="$(handoff_key web .bundle)"
-git -C "$REPO_ROOT" bundle create -q "$DEVBOX_TMP/modernsmapp.bundle" HEAD
-git -C "$WEB_REPO" bundle create -q "$DEVBOX_TMP/web.bundle" HEAD
+lgit "$REPO_ROOT" bundle create -q "$(winpath "$DEVBOX_TMP/modernsmapp.bundle")" HEAD
+lgit "$WEB_REPO" bundle create -q "$(winpath "$DEVBOX_TMP/web.bundle")" HEAD
 log "bundles: modernsmapp $(du -h "$DEVBOX_TMP/modernsmapp.bundle" | cut -f1), web $(du -h "$DEVBOX_TMP/web.bundle" | cut -f1); uploading ..."
 aws s3 cp "$(winpath "$DEVBOX_TMP/modernsmapp.bundle")" "s3://$TRANSFER_BUCKET/$APP_KEY" --only-show-errors
 aws s3 cp "$(winpath "$DEVBOX_TMP/web.bundle")" "s3://$TRANSFER_BUCKET/$WEB_KEY" --only-show-errors
