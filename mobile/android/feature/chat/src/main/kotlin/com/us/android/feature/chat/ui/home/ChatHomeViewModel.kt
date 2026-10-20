@@ -94,6 +94,8 @@ data class ChatHomeUiState(
     val serverRequestCount: Int? = null,
     /** The server stopped counting: the badge reads "999+". */
     val requestCountCapped: Boolean = false,
+    /** Requests the safety filter set aside (Hidden requests); 0 until the server count is read. */
+    val hiddenRequestCount: Int = 0,
 ) {
     /**
      * The rows Messages may show. A Pulse match's chat lives in the dating
@@ -124,6 +126,9 @@ data class ChatHomeUiState(
             }
         }
     val requestCount: Int get() = serverRequestCount ?: inboxRequests.size
+
+    /** The requests door shows while anything waits, hidden requests included (founder, 2026-10-20). */
+    val showRequestsDoor: Boolean get() = requestCount > 0 || hiddenRequestCount > 0
 
     /** [requestCount] as the badge and the door say it. */
     val requestCountLabel: String
@@ -295,7 +300,11 @@ class ChatHomeViewModel @Inject constructor(
     private suspend fun refreshRequestCounts() {
         when (val counts = sources.consent.requestCounts()) {
             is AppResult.Success -> _state.update {
-                it.copy(serverRequestCount = counts.data?.count, requestCountCapped = counts.data?.capped == true)
+                it.copy(
+                    serverRequestCount = counts.data?.count,
+                    requestCountCapped = counts.data?.capped == true,
+                    hiddenRequestCount = counts.data?.hidden ?: 0,
+                )
             }
             is AppResult.Failure -> Unit
         }

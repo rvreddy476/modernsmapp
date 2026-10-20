@@ -53,7 +53,7 @@ internal fun ChatsTab(
     val search = state.search.takeIf { searching }
     when {
         state.loading && state.conversations.isEmpty() -> UsLoadingState(label = "Loading conversations")
-        chats.isEmpty() && state.requestCount == 0 && state.notes == null && search == null -> UsEmptyState(
+        chats.isEmpty() && !state.showRequestsDoor && state.notes == null && search == null -> UsEmptyState(
             title = if (state.query.isBlank()) "No chats yet" else "No chats match",
             detail = if (state.query.isBlank()) {
                 "Start from Suggestions — people you follow can message you here."
@@ -84,9 +84,12 @@ internal fun ChatsTab(
                     OnlineNowRail(online = online, viewerId = state.viewerId, onOpen = onOpenConversation)
                 }
             }
-            if (state.requestCount > 0 && !searching) {
+            if (state.showRequestsDoor && !searching) {
                 item(key = "requests") {
-                    RequestsDoor(count = state.requestCount, label = state.requestCountLabel, onClick = onOpenRequests)
+                    RequestsDoor(
+                        subtitle = requestsDoorSubtitle(state.requestCount, state.requestCountLabel, state.hiddenRequestCount),
+                        onClick = onOpenRequests,
+                    )
                 }
             }
             if (search != null) {
@@ -127,7 +130,7 @@ private fun Conversation.isOnline(state: ChatHomeUiState): Boolean =
 
 /** The door to message requests: a raised row with the count in the accent. */
 @Composable
-private fun RequestsDoor(count: Int, label: String, onClick: () -> Unit) {
+private fun RequestsDoor(subtitle: String, onClick: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
@@ -160,17 +163,25 @@ private fun RequestsDoor(count: Int, label: String, onClick: () -> Unit) {
                 color = UsTheme.extended.textPrimary,
             )
             Text(
-                text = if (count == 1) {
-                    "1 person is waiting for your answer"
-                } else {
-                    "$label people are waiting for your answer"
-                },
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textMuted,
             )
         }
         Icon(imageVector = UsIcons.ChevronRight, contentDescription = null, tint = UsTheme.extended.textMuted)
     }
+}
+
+/**
+ * The requests door's second line. Waiting requests come first; when only
+ * the safety filter's Hidden requests wait, the door still shows and says so
+ * (founder, 2026-10-20), so they are never out of sight. Pure.
+ */
+internal fun requestsDoorSubtitle(count: Int, label: String, hidden: Int): String = when {
+    count == 1 -> "1 person is waiting for your answer"
+    count > 1 -> "$label people are waiting for your answer"
+    hidden == 1 -> "1 hidden request"
+    else -> "$hidden hidden requests"
 }
 
 private val ROW_GAP = 8.dp
