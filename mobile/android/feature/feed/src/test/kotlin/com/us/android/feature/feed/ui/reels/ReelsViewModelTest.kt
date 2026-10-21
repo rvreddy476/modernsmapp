@@ -1,5 +1,7 @@
 package com.us.android.feature.feed.ui.reels
 
+import androidx.paging.PagingDataEvent
+import androidx.paging.PagingDataPresenter
 import androidx.paging.testing.asSnapshot
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.analytics.AnalyticsEvent
@@ -30,6 +32,7 @@ import com.us.android.core.feed.data.SoundRowDto
 import com.us.android.core.feed.data.SoundsApi
 import com.us.android.core.feed.data.SoundsRepository
 import com.us.android.core.feed.data.UseSoundDto
+import com.us.android.core.feed.data.dto.FeedAuthorDto
 import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedMediaDto
@@ -76,14 +79,19 @@ import com.us.android.feature.feed.data.RecordingChannelApi
 import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.followGraph
 import com.us.android.feature.feed.data.subscriptionGraph
+import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -125,10 +133,22 @@ class ReelsViewModelTest {
         ),
     )
 
-    /** Records how the ranked surface was asked for; answers one empty page. */
-    private class RecordingApi(private val post: FeedItemDto? = null) : FeedApi {
+    /**
+     * Records how the ranked surface was asked for. Answers [feedPages] in
+     * order, one per request — a null entry is a request that fails on the
+     * wire — and an empty page once they run out.
+     */
+    private class RecordingApi(
+        private val post: FeedItemDto? = null,
+        feedPages: List<List<String>?> = emptyList(),
+    ) : FeedApi {
         val followingOnly = mutableListOf<Boolean?>()
+        val cursors = mutableListOf<String?>()
         val postRequests = mutableListOf<String>()
+        private val pages = ArrayDeque(feedPages)
+
+        /** Holds every feed request until completed, to keep a refresh on the wire. */
+        var gate: CompletableDeferred<Unit>? = null
 
         override suspend fun getFeed(
             surface: String,
@@ -139,7 +159,10 @@ class ReelsViewModelTest {
             feedMode: String?,
         ): ApiEnvelope<List<FeedItemDto>> {
             this.followingOnly += followingOnly
-            return ApiEnvelope(data = emptyList(), meta = null)
+            cursors += cursor
+            gate?.await()
+            val ids = if (pages.isEmpty()) emptyList() else pages.removeFirst() ?: throw IOException("offline")
+            return ApiEnvelope(data = ids.map { FeedItemDto(id = it, postType = "video") }, meta = null)
         }
 
         override suspend fun getPost(postId: String): ApiEnvelope<FeedItemDto> {
@@ -1219,6 +1242,179 @@ class ReelsViewModelTest {
         vm.items.asSnapshot()
 
         assertThat(h.api.followingOnly).containsExactly(null)
+    }
+
+    // ── Refresh (founder, 2026-10-21) ───────────────────────────────────
+
+    /** What the screen shows: the presenter `LazyPagingItems` is built on, so a kept list is really kept. */
+    private class ShownReels : PagingDataPresenter<FeedItem>() {
+        override suspend fun presentPagingDataEvent(event: PagingDataEvent<FeedItem>) = Unit
+
+        val ids: List<String> get() = snapshot().items.map { it.id }
+    }
+
+    private fun TestScope.show(vm: ReelsViewModel): ShownReels {
+        val shown = ShownReels()
+        backgroundScope.launch { vm.items.collectLatest(shown::collectFrom) }
+        return shown
+    }
+
+    /**
+     * Lets the paging chain run. A refresh resumes it on the unconfined test
+     * Main, and those resumptions wait on the test thread's event loop until
+     * the test body really suspends: neither `advanceUntilIdle` from the
+     * running body nor a `yield` (the body is runnable again at once) gets
+     * there. A one-millisecond virtual delay does.
+     */
+    private suspend fun TestScope.settle() {
+        delay(1)
+        advanceUntilIdle()
+    }
+
+    private fun reelDto(id: String, authorId: String) =
+        FeedItemDto(id = id, authorId = authorId, author = FeedAuthorDto(id = authorId), postType = "video")
+
+    /**
+     * A pull at the first reel: the feed is asked again from its first page
+     * (no cursor), the fresh batch replaces the reels, and the pager is sent
+     * to the top. The screen's first load is not a refresh and sends nothing.
+     */
+    @Test
+    fun `a refresh reloads from the first page, replaces the reels and goes to the top`() = runTest {
+        val h = Harness(api = RecordingApi(feedPages = listOf(listOf("r1", "r2"), listOf("n1", "n2", "n3"))))
+        val vm = viewModel(h)
+        val shown = show(vm)
+        settle()
+        assertThat(shown.ids).containsExactly("r1", "r2").inOrder()
+        assertThat(vm.scrollToTop.value).isFalse()
+
+        vm.refresh()
+        settle()
+
+        assertThat(h.api.cursors).containsExactly(null, null)
+        assertThat(shown.ids).containsExactly("n1", "n2", "n3").inOrder()
+        assertThat(vm.scrollToTop.value).isTrue()
+        assertThat(vm.refreshing.value).isFalse()
+        assertThat(vm.refreshFailure.value).isNull()
+
+        vm.onScrolledToTop()
+        assertThat(vm.scrollToTop.value).isFalse()
+    }
+
+    /** While the fresh batch is on the wire the reels on screen stay, and nothing moves the pager. */
+    @Test
+    fun `the reels stay on screen until the fresh batch is in`() = runTest {
+        val h = Harness(api = RecordingApi(feedPages = listOf(listOf("r1"), listOf("n1"))))
+        val vm = viewModel(h)
+        val shown = show(vm)
+        settle()
+        val gate = CompletableDeferred<Unit>()
+        h.api.gate = gate
+
+        vm.refresh()
+        settle()
+
+        assertThat(vm.refreshing.value).isTrue()
+        assertThat(shown.ids).containsExactly("r1")
+        assertThat(vm.scrollToTop.value).isFalse()
+
+        gate.complete(Unit)
+        settle()
+
+        assertThat(shown.ids).containsExactly("n1")
+        assertThat(vm.refreshing.value).isFalse()
+        assertThat(vm.scrollToTop.value).isTrue()
+    }
+
+    /**
+     * A refresh that fails never empties the screen: the old reels stay,
+     * the pager stays where it is, and one line says so. The next pull
+     * still works.
+     */
+    @Test
+    fun `a failed refresh keeps the reels and says so`() = runTest {
+        val h = Harness(api = RecordingApi(feedPages = listOf(listOf("r1", "r2"), null, listOf("n1"))))
+        val vm = viewModel(h)
+        val shown = show(vm)
+        settle()
+
+        vm.refresh()
+        settle()
+
+        assertThat(shown.ids).containsExactly("r1", "r2").inOrder()
+        assertThat(vm.refreshFailure.value).isNotNull()
+        assertThat(vm.scrollToTop.value).isFalse()
+        assertThat(vm.refreshing.value).isFalse()
+
+        vm.dismissRefreshFailure()
+        assertThat(vm.refreshFailure.value).isNull()
+
+        vm.refresh()
+        settle()
+
+        assertThat(shown.ids).containsExactly("n1")
+        assertThat(vm.scrollToTop.value).isTrue()
+    }
+
+    /** A second pull, or a tab tap, while a refresh is on the wire is the same wish: one request. */
+    @Test
+    fun `a refresh while one is running is ignored`() = runTest {
+        val h = Harness(api = RecordingApi(feedPages = listOf(listOf("r1"), listOf("n1"), listOf("x1"))))
+        val vm = viewModel(h)
+        val shown = show(vm)
+        settle()
+        val gate = CompletableDeferred<Unit>()
+        h.api.gate = gate
+
+        vm.refresh()
+        settle()
+        vm.refresh()
+        settle()
+        gate.complete(Unit)
+        settle()
+
+        assertThat(h.api.cursors).hasSize(2)
+        assertThat(shown.ids).containsExactly("n1")
+    }
+
+    /**
+     * A reel a feed tap pinned above the ranked reels goes with the old
+     * batch: the viewer asked for new reels, not the one they were on.
+     */
+    @Test
+    fun `a refresh lets go of a reel a feed tap pinned`() = runTest {
+        val api = RecordingApi(post = reelDto("from-feed", authorId = "a"), feedPages = listOf(listOf("r1"), listOf("n1")))
+        val h = Harness(api = api)
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        show(vm)
+        h.entry.open("from-feed")
+        vm.resolveEntry(listOf("r1"))
+        settle()
+        assertThat(vm.head.value).isInstanceOf(ReelsHead.Live::class.java)
+
+        vm.refresh()
+        settle()
+
+        assertThat(vm.head.value).isNull()
+    }
+
+    /** The viewer's OWN just-posted reel stays pinned: until the ranked feed carries it, that slot is where it shows. */
+    @Test
+    fun `a refresh keeps the viewer's own pinned reel`() = runTest {
+        val api = RecordingApi(post = reelDto("mine", authorId = "me"), feedPages = listOf(listOf("r1"), listOf("n1")))
+        val h = Harness(api = api)
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        show(vm)
+        h.entry.open("mine")
+        vm.resolveEntry(listOf("r1"))
+        settle()
+
+        vm.refresh()
+        settle()
+
+        assertThat((vm.head.value as ReelsHead.Live).item.id).isEqualTo("mine")
     }
 
     // ── Follow ──────────────────────────────────────────────────────────

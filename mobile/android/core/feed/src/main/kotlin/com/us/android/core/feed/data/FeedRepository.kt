@@ -9,6 +9,7 @@ import com.us.android.core.model.FeedSurface
 import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -55,6 +56,29 @@ class FeedRepository @Inject constructor(
      * items that may not exist is worse than one that simply ends.
      */
     fun feed(query: FeedQuery): Flow<PagingData<FeedItem>> = pager { page(query, it.limit, it.cursor) }
+
+    /**
+     * [feed], with each generation's FIRST page reported as it lands: true
+     * when it loaded, false when it failed. The paging source turns a failure
+     * into a `LoadResult.Error` the caller never sees, so this is how a
+     * refresh the viewer asked for (Reels' pull-to-refresh, 2026-10-21) learns
+     * whether the fresh batch is in. A cancelled load reports nothing.
+     */
+    @Suppress("TooGenericExceptionCaught") // Reported, then rethrown for the source to classify.
+    fun feed(query: FeedQuery, onFirstPage: (loaded: Boolean) -> Unit): Flow<PagingData<FeedItem>> =
+        pager { request ->
+            if (request.cursor != null) return@pager page(query, request.limit, request.cursor)
+            val first = try {
+                page(query, request.limit, cursor = null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                onFirstPage(false)
+                throw e
+            }
+            onFirstPage(first.errorCode == null)
+            first
+        }
 
     /**
      * [primary] that never ends: past its last page it carries on with

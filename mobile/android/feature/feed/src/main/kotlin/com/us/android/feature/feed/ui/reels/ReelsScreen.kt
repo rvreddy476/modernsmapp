@@ -30,10 +30,15 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -78,6 +84,7 @@ import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsHeaderCornerAction
 import com.us.android.core.designsystem.component.UsHomeTopBar
+import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
@@ -109,6 +116,7 @@ import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.canUseSound
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.LightSystemBarGlyphs
+import com.us.android.core.ui.LocalChromeVisibility
 import com.us.android.core.ui.PLAYBACK_SPEEDS
 import com.us.android.core.ui.SPEED_NORMAL
 import com.us.android.core.ui.StageBottomScrim
@@ -128,10 +136,12 @@ import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.core.ui.stagePressScale
+import com.us.android.feature.feed.R
 import com.us.android.feature.feed.ui.stageRailControls
 import com.us.android.feature.feed.ui.watchProbe
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -232,6 +242,8 @@ fun ReelsScreen(
     val subscriptionEdges by viewModel.subscriptionEdges.collectAsStateWithLifecycle()
     val items = viewModel.items.collectAsLazyPagingItems()
     val pagerState = rememberReelsPager(viewModel, items, head)
+    val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+    RefreshTriggers(viewModel = viewModel, pagerState = pagerState)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
     // The reel the pager has settled on — what the header's More opens
@@ -308,6 +320,8 @@ fun ReelsScreen(
                 onSettledReel = { settledReel = it },
                 onSettledPlayer = { settledPlayer = it },
             ),
+            refreshing = refreshing,
+            onRefresh = viewModel::refresh,
         )
 
         ScreenChrome(
@@ -447,11 +461,18 @@ private fun BoxScope.ReelsMessages(viewModel: ReelsViewModel, more: PostMoreView
     val engagementMessage by viewModel.engagementMessage.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
     val shareMessage by sharing.message.collectAsStateWithLifecycle()
+    // A refresh that failed: the reels stay, and one line says the batch did not come.
+    val refreshFailure by viewModel.refreshFailure.collectAsStateWithLifecycle()
+    val refreshFailedText = stringResource(R.string.reels_refresh_failed)
+    val refreshMessage = remember(refreshFailure, refreshFailedText) {
+        refreshFailure?.let { at -> UsMessage(text = refreshFailedText, id = at) }
+    }
     UsMessageHost(
-        message = soundMessage ?: engagementMessage ?: moreMessage ?: shareMessage,
+        message = soundMessage ?: engagementMessage ?: refreshMessage ?: moreMessage ?: shareMessage,
         onDismiss = {
             viewModel.dismissSoundMessage()
             viewModel.dismissEngagementMessage()
+            viewModel.dismissRefreshFailure()
             more.dismissMessage()
             sharing.dismissMessage()
         },
@@ -528,6 +549,32 @@ private fun OpenOnEntry(
         val page = entryPage(postId, headId, items.itemSnapshotList.items.map { it.id }) ?: return@LaunchedEffect
         pagerState.scrollToPage(page)
         viewModel.onEntryShown()
+    }
+}
+
+/**
+ * The refreshes the viewer asks for, and only those (founder, 2026-10-21:
+ * nothing refreshes Reels by itself while someone is watching — no refresh
+ * on a return to the app, unlike Home). The pull is [ReelsPullToRefresh];
+ * the other is the Reels tab tapped again while Reels is on screen, Home's
+ * reselect: back to the first reel, then a fresh batch. When the batch is
+ * in, the pager goes to its first reel — no animation, the old reels are
+ * gone.
+ */
+@Composable
+private fun RefreshTriggers(viewModel: ReelsViewModel, pagerState: PagerState) {
+    val reselected = LocalChromeVisibility.current?.reselected ?: emptyFlow()
+    LaunchedEffect(reselected, viewModel) {
+        reselected.collect {
+            pagerState.animateScrollToPage(0)
+            viewModel.refresh()
+        }
+    }
+    val scrollToTop by viewModel.scrollToTop.collectAsStateWithLifecycle()
+    LaunchedEffect(scrollToTop) {
+        if (!scrollToTop) return@LaunchedEffect
+        pagerState.scrollToPage(0)
+        viewModel.onScrolledToTop()
     }
 }
 
@@ -844,6 +891,9 @@ private fun ReelsBody(
     /** The added sound a reel's page plays, from its stored copy when the reel plays from the device. */
     soundTrackFor: (FeedItem) -> SoundTrack?,
     actions: ReelActions,
+    /** A refresh the viewer asked for is on the wire ([ReelsViewModel.refreshing]). */
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
 ) {
     val refresh = items.loadState.refresh
     val empty = items.itemCount == 0 && head == null
@@ -860,21 +910,69 @@ private fun ReelsBody(
             detail = "Short videos from people you follow will show up here.",
         )
 
-        else -> ReelsPager(
-            items = items,
-            head = head,
-            pagerState = pagerState,
-            pool = pool,
-            sound = sound,
-            view = view,
-            overlays = overlays,
-            followEdges = followEdges,
-            subscriptionEdges = subscriptionEdges,
-            ownUserId = ownUserId,
-            playbackFor = playbackFor,
-            soundTrackFor = soundTrackFor,
-            actions = actions,
-        )
+        else -> ReelsPullToRefresh(
+            refreshing = refreshing,
+            onRefresh = onRefresh,
+            underHeader = view.chrome.showHeader,
+        ) {
+            ReelsPager(
+                items = items,
+                head = head,
+                pagerState = pagerState,
+                pool = pool,
+                sound = sound,
+                view = view,
+                overlays = overlays,
+                followEdges = followEdges,
+                subscriptionEdges = subscriptionEdges,
+                ownUserId = ownUserId,
+                playbackFor = playbackFor,
+                soundTrackFor = soundTrackFor,
+                actions = actions,
+            )
+        }
+    }
+}
+
+/**
+ * Pull down at the first reel for a fresh batch (founder, 2026-10-21,
+ * TikTok-style) — Home's pull ([com.us.android.feature.feed.ui.FeedContent]):
+ * the same box, the same indicator, on the dark stage's colours.
+ *
+ * It never fights the pager. The pull is fed by nested scroll, so it only
+ * receives the drag the pager could not use — a downward drag with the
+ * pager on its first page and at its top. Anywhere else the pager takes
+ * the whole drag and swipes to the reel above.
+ *
+ * The indicator comes down under the header, or under the status bar in
+ * full mode, where there is no header.
+ */
+// Kotlin's opt-in: the file's `OptIn` import is androidx's, for media3.
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReelsPullToRefresh(
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+    underHeader: Boolean,
+    content: @Composable () -> Unit,
+) {
+    val pullState = rememberPullToRefreshState()
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = onRefresh,
+        modifier = Modifier.fillMaxSize().testTag("reels_refresh"),
+        state = pullState,
+        indicator = {
+            val place = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = if (underHeader) TopAppBarDefaults.TopAppBarExpandedHeight else 0.dp)
+            UsTheme(darkTheme = true) {
+                PullToRefreshDefaults.Indicator(state = pullState, isRefreshing = refreshing, modifier = place)
+            }
+        },
+    ) {
+        content()
     }
 }
 
@@ -909,8 +1007,13 @@ private fun ReelsPager(
     AutoScrollOnEnd(player = settledPlayer, pagerState = pagerState, autoScroll = view.autoScroll)
 
     // Keyed on the SETTLED page rather than the scroll offset: a fast flick
-    // through five reels must start one playback, not five.
-    LaunchedEffect(pagerState.settledPage, pageCount, head) {
+    // through five reels must start one playback, not five. And on the reel
+    // there: a refresh replaces the reel under a pager that does not move
+    // (it is already on the first page), and the new one must be shown and
+    // played as if swiped to. Until the fresh batch is in, the old reel keeps
+    // playing — nothing pauses for a refresh still on the wire.
+    val settledReelId = reelAt(pagerState.settledPage)?.id
+    LaunchedEffect(pagerState.settledPage, pageCount, head, settledReelId) {
         val current = pagerState.settledPage
         val reel = reelAt(current)
         val player = reel?.let(playbackFor)?.let { pool.acquire(current, it) }

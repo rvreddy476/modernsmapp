@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Reels pull-to-refresh (2026-10-21): the fresh batch did not come; the reels on screen stay. -->
+    <string name="reels_refresh_failed">Couldn\'t refresh reels. Try again.</string>
+</resources>

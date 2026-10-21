@@ -59,6 +59,7 @@ import com.us.android.core.ui.SPEED_NORMAL
 import com.us.android.core.ui.UsCaptionOption
 import com.us.android.core.ui.UsReelQuality
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -68,6 +69,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -313,6 +315,82 @@ class ReelsViewModel @Inject constructor(
      */
     private val _live = MutableStateFlow<FeedItem?>(null)
 
+    // ── Refresh ─────────────────────────────────────────────────────────
+
+    /** Which Pager the ranked reels come from; [refresh] moves it on. Declared before [items], which reads it. */
+    private val generation = MutableStateFlow(0)
+
+    private val _refreshing = MutableStateFlow(false)
+
+    /**
+     * A refresh the viewer asked for is on the wire (founder, 2026-10-21:
+     * TikTok-style, and only ever the viewer's own ask — nothing here
+     * refreshes Reels by itself while someone is watching).
+     */
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
+    private val _scrollToTop = MutableStateFlow(false)
+
+    /**
+     * The fresh batch is in: the pager goes to its first reel and calls
+     * [onScrolledToTop]. False the rest of the time.
+     */
+    val scrollToTop: StateFlow<Boolean> = _scrollToTop.asStateFlow()
+
+    private val _refreshFailure = MutableStateFlow<Long?>(null)
+
+    /**
+     * A refresh that failed, by when it failed (the message's id, so a second
+     * failure is said again); null when there is nothing to say. The reels
+     * on screen stay where they are.
+     */
+    val refreshFailure: StateFlow<Long?> = _refreshFailure.asStateFlow()
+
+    /**
+     * Pull-to-refresh at the first reel, or the Reels tab tapped again: a
+     * fresh batch from the first page. The reels on screen stay, and keep
+     * playing, until it lands; then they are replaced and the pager goes to
+     * the top ([scrollToTop]). A failure keeps them and says so
+     * ([refreshFailure]). One at a time: a second ask while one is on the
+     * wire is the same wish.
+     */
+    fun refresh() {
+        if (_refreshing.value) return
+        _refreshing.value = true
+        _refreshFailure.value = null
+        generation.value += 1
+    }
+
+    /** The pager is on the first reel of the fresh batch. */
+    fun onScrolledToTop() {
+        _scrollToTop.value = false
+    }
+
+    fun dismissRefreshFailure() {
+        _refreshFailure.value = null
+    }
+
+    /**
+     * A generation's first page landed. Only the one [refresh] asked for
+     * counts: the first load of the screen is not a refresh, and says nothing.
+     *
+     * A reel a feed tap pinned above the ranked reels goes with the old
+     * batch — the viewer asked for new reels, and the pinned one would put
+     * them back on the reel they were watching. The viewer's OWN just-posted
+     * reel stays: until the ranked feed carries it, that slot is the only
+     * place it shows.
+     */
+    private fun onFirstPage(asked: Int, loaded: Boolean) {
+        if (!_refreshing.value || asked != generation.value) return
+        _refreshing.value = false
+        if (!loaded) {
+            _refreshFailure.value = System.currentTimeMillis()
+            return
+        }
+        if (_live.value?.isOwnedBy(ownUserId) == false) _live.value = null
+        _scrollToTop.value = true
+    }
+
     /**
      * The ranked reels surface, one cached stream: `cachedIn` replays the
      * pages across rotation rather than refetching and dropping the viewer
@@ -323,7 +401,12 @@ class ReelsViewModel @Inject constructor(
      * once the feed carries it: the head slot already shows it, and the same
      * reel twice in a row is the one thing the slot must not produce.
      */
-    val items: Flow<PagingData<FeedItem>> = repository.feed(FeedQuery.Reels)
+    // A pull or a second tap on the tab ([refresh]) is a new generation: a
+    // fresh Pager from the first page. Paging keeps the list on screen until
+    // that generation's first page is presented, and keeps it on a failure.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val items: Flow<PagingData<FeedItem>> = generation
+        .flatMapLatest { asked -> repository.feed(FeedQuery.Reels) { loaded -> onFirstPage(asked, loaded) } }
         .cachedIn(viewModelScope)
         // A long video is not a reel, whatever the row is tagged
         // (founder, 2026-09-06) — see [belongsInReels]. Applied AFTER the
