@@ -438,11 +438,12 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
 internal fun UsPostMoreState.offlineRows(): List<UsPostMoreRow> {
     val state = offline ?: return emptyList()
     return when (state.action) {
-        // No "Save offline" any more (founder, 2026-10-19). A save already
-        // running can still be cancelled, and a stored copy removed.
-        UsOfflineAction.SAVE -> emptyList()
-        UsOfflineAction.CANCEL -> listOf(UsPostMoreRow.CANCEL_OFFLINE)
-        UsOfflineAction.REMOVE -> listOf(UsPostMoreRow.REMOVE_OFFLINE)
+        // No "Save offline" any more (founder, 2026-10-19), and no Cancel or
+        // Remove either (founder, 2026-10-21, matching the web): a running
+        // save and the stored copies are managed on the Offline page.
+        UsOfflineAction.SAVE,
+        UsOfflineAction.CANCEL,
+        UsOfflineAction.REMOVE,
         UsOfflineAction.NONE -> emptyList()
     }
 }

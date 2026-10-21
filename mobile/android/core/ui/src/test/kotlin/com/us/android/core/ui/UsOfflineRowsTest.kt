@@ -64,18 +64,14 @@ class UsOfflineRowsTest {
         assertThat(rows).isEmpty()
     }
 
+    /** Founder, 2026-10-21: no offline row on a video's More at all, as on the web; copies are managed on the Offline page. */
     @Test
-    fun `a save in flight offers cancel in save's place`() {
-        val rows = state(UsOfflineMoreState(UsOfflineAction.CANCEL, progress = 0.4f)).offlineOnly()
+    fun `a save in flight or a stored copy offers no offline row either`() {
+        val inFlight = state(UsOfflineMoreState(UsOfflineAction.CANCEL, progress = 0.4f)).offlineOnly()
+        val stored = state(UsOfflineMoreState(UsOfflineAction.REMOVE)).offlineOnly()
 
-        assertThat(rows).containsExactly(UsPostMoreRow.CANCEL_OFFLINE)
-    }
-
-    @Test
-    fun `a stored copy offers remove in save's place`() {
-        val rows = state(UsOfflineMoreState(UsOfflineAction.REMOVE)).offlineOnly()
-
-        assertThat(rows).containsExactly(UsPostMoreRow.REMOVE_OFFLINE)
+        assertThat(inFlight).isEmpty()
+        assertThat(stored).isEmpty()
     }
 
     /**
@@ -112,7 +108,7 @@ class UsOfflineRowsTest {
     }
 
     @Test
-    fun `the offline row sits in the sheet's alphabetical order`() {
+    fun `the sheet stays alphabetical and never carries an offline row`() {
         val labels = state(UsOfflineMoreState(UsOfflineAction.REMOVE)).labels()
 
         assertThat(labels).containsExactly(
@@ -120,7 +116,6 @@ class UsOfflineRowsTest {
             "Description",
             "Don't recommend this channel",
             "Quality",
-            "Remove offline copy",
             "Report",
         ).inOrder()
         for (action in UsOfflineAction.entries) {
