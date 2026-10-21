@@ -2802,6 +2802,12 @@ services:
         # Chat GIF picker: Giphy web SDK key (client-side by Giphy's terms —
         # search is never proxied). Empty hides the GIF tab.
         NEXT_PUBLIC_GIPHY_SDK_KEY: ${CHAT_GIF_API_KEY_WEB:-}
+        # "Open in app" on shared links (postbook-ui features/share): the Play
+        # Store page (empty = no "Get the app" button) and the Android package
+        # the intent:// link names (empty = com.us.android; the dev web names
+        # the dev flavour).
+        NEXT_PUBLIC_PLAY_STORE_URL: ${NEXT_PUBLIC_PLAY_STORE_URL:-}
+        NEXT_PUBLIC_ANDROID_PACKAGE: ${NEXT_PUBLIC_ANDROID_PACKAGE:-com.us.android.dev}
     ports:
       - "3000:3000"
     environment:
@@ -2809,6 +2815,11 @@ services:
       # INSIDE this container, so they must be compose service names.
       # localhost here would mean the container itself.
       API_GATEWAY_URL: http://api-gateway:8080
+      # /.well-known/assetlinks.json: the signing-certificate fingerprints
+      # Android checks before opening a cleestudio.com link in the app
+      # (`keytool -list -v` on the dev keystore; "package=fingerprint" per
+      # flavour, see postbook-ui .env.example). Empty serves `[]`.
+      ANDROID_APP_LINK_FINGERPRINTS: ${ANDROID_APP_LINK_FINGERPRINTS:-}
       # Absolute host for feed enclosures and artwork: the web proxy follows media
       # redirects, so podcast apps must fetch files from the API host directly.
       FEED_MEDIA_BASE_URL: ${FEED_MEDIA_BASE_URL:-https://api-dev.cleestudio.com}
