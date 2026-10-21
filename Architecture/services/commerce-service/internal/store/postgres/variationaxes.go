@@ -247,6 +247,32 @@ func (s *Store) VariantOptionCodes(ctx context.Context, variantID uuid.UUID) (ma
 	return out, rows.Err()
 }
 
+// ProductVariantOptions reads every variant's stored options for a product,
+// keyed by variant id — the shape VariationUpdate.VariantOptions carries, so
+// a caller can ask whether a matrix patch would change anything before it is
+// treated as a reviewed-content edit.
+func (s *Store) ProductVariantOptions(ctx context.Context, productID uuid.UUID) (map[uuid.UUID][]VariantOption, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT variant_id, definition_id, value_code
+		  FROM product_variant_options
+		 WHERE product_id = $1
+		 ORDER BY variant_id, definition_id`, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[uuid.UUID][]VariantOption{}
+	for rows.Next() {
+		var variantID uuid.UUID
+		var o VariantOption
+		if err := rows.Scan(&variantID, &o.DefinitionID, &o.ValueCode); err != nil {
+			return nil, err
+		}
+		out[variantID] = append(out[variantID], o)
+	}
+	return out, rows.Err()
+}
+
 // VariantIdentity is the minimum needed to talk about a variant in a refusal
 // and to key its options by.
 type VariantIdentity struct {

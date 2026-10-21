@@ -446,6 +446,23 @@ func writeProductWriteError(c *gin.Context, err error) {
 		// rather than that one field needed changing.
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "SKU_TAKEN",
 			"one of these SKUs is already in use; a SKU has to be unique across the catalogue", nil)
+	case errors.Is(err, service.ErrSKULocked):
+		// 409: the request is well-formed; the listing's state is what
+		// refuses it. Named, with the field, so a form can put the message
+		// under the SKU control rather than at the top of the page.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "SKU_LOCKED",
+			"the SKU cannot be changed once a listing has been approved; archive this variant "+
+				"and add a new one with the new SKU", gin.H{"field": "sku"})
+	case errors.Is(err, service.ErrVariantStatusInvalid):
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "VARIANT_STATUS_INVALID",
+			"status must be one of active, inactive, out_of_stock (DELETE the variant to archive it)",
+			gin.H{"field": "status", "allowed": []string{"active", "inactive", "out_of_stock"}})
+	case errors.Is(err, service.ErrStockNegative):
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "INVALID_BODY",
+			"stock_qty cannot be negative", gin.H{"field": "stock_qty"})
+	case errors.Is(err, service.ErrVariantFieldRequired):
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "INVALID_BODY",
+			"sku cannot be blank", gin.H{"field": "sku"})
 	default:
 		writeCommerceError(c, err)
 	}

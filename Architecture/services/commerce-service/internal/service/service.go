@@ -728,11 +728,16 @@ func (s *Service) ListProductVariants(ctx context.Context, productID uuid.UUID) 
 	return s.store.GetVariantsByProduct(ctx, productID)
 }
 
-// AddProductVariant creates a new variant on an existing product.
+// ErrStockNegative is returned when a variant is added with a negative
+// opening stock. Zero is a real answer ("not in yet"); a negative is not.
+var ErrStockNegative = errors.New("commerce: stock_qty cannot be negative")
+
+// AddProductVariant creates a new variant on an existing product, with its
+// opening stock.
 // Authorization: actor must be the owning seller of the product. The
 // SKU must be unique per seller (the import path enforces this; here
 // the DB UNIQUE constraint on (sku, seller_id) is the final guard).
-func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid.UUID, v *postgres.ProductVariant) (*postgres.ProductVariant, error) {
+func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid.UUID, v *postgres.ProductVariant, stockQty int) (*postgres.ProductVariant, error) {
 	product, err := s.store.GetProductByID(ctx, productID)
 	if err != nil {
 		return nil, err
@@ -761,6 +766,9 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 	if v.MRPMinorIn == nil || *v.MRPMinorIn <= 0 {
 		return nil, fmt.Errorf("%w: mrp_minor", postgres.ErrPriceNotPositive)
 	}
+	if stockQty < 0 {
+		return nil, ErrStockNegative
+	}
 	v.ProductID = productID
 	if v.Status == "" {
 		v.Status = "active"
@@ -768,21 +776,17 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 	if v.CurrencyCode == "" {
 		v.CurrencyCode = "INR"
 	}
-	if err := s.store.CreateVariant(ctx, v); err != nil {
-		return nil, err
-	}
-	// Give the variant a stock row, at zero.
+	// The variant and its stock row, in one transaction.
 	//
-	// POST /products does this for the variants it creates; this route did
-	// not, so a variant added after launch had NO inventory_items row at
-	// all. With `available_qty` now on the wire that difference is visible:
-	// the variant reported no stock figure rather than "0 in stock", and the
-	// seller's only way to create the row was PATCH …/stock, which needs a
-	// row to adjust. Zero is the honest starting quantity — the seller sets
-	// the real one next.
-	if err := s.store.UpsertInventory(ctx, v.ID, product.SellerID, 0); err != nil {
-		slog.Warn("failed to initialise inventory for a new variant",
-			"variant_id", v.ID, "error", err)
+	// POST /products writes the two together for the variants it creates;
+	// this route inserted the variant and then upserted a stock row of ZERO
+	// — the request carried no stock figure at all, so a seller adding
+	// "size XL, 40 in stock" to a live listing got a variant with nothing to
+	// sell and no error, and the inventory failure was swallowed into a log
+	// line. The opening stock now travels with the variant, exactly as it
+	// does on create.
+	if err := s.store.CreateVariantWithStock(ctx, v, product.SellerID, stockQty); err != nil {
+		return nil, err
 	}
 	// Return what was STORED, not what was built in memory.
 	//
@@ -805,30 +809,91 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 
 // UpdateProductVariant patches an existing variant. Authorization same
 // as AddProductVariant — actor must own the parent product's seller.
-func (s *Service) UpdateProductVariant(ctx context.Context, actorID, variantID uuid.UUID, updates map[string]any) (*postgres.ProductVariant, error) {
+//
+// Three rules on top of ownership, all decided against what the variant
+// HOLDS rather than what the body carries (see reviewedcontent.go):
+//
+//   - the SKU is editable while the listing is a draft and locked once it
+//     has been approved (ErrSKULocked). It used to be dropped silently;
+//   - a price, option, image or SKU change on an APPROVED listing is a
+//     reviewed-content change: refused with RevalidationRequiredError until
+//     the caller acknowledges it with `ack`, then applied and the listing
+//     returned to review in the same transaction. Re-sending the price the
+//     variant already has is not a change;
+//   - `status` must be one of the values the schema allows.
+//
+// Returns whether the listing was sent back to review, so the handler can
+// say so in the same response as the success.
+func (s *Service) UpdateProductVariant(ctx context.Context, actorID, variantID uuid.UUID, updates map[string]any, ack bool) (*postgres.ProductVariant, bool, error) {
 	variant, err := s.store.GetVariantByID(ctx, variantID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if variant == nil {
-		return nil, postgres.ErrProductNotFound
+		return nil, false, postgres.ErrProductNotFound
 	}
 	product, err := s.store.GetProductByID(ctx, variant.ProductID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	seller, err := s.GetSellerProfile(ctx, actorID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if seller == nil || seller.ID != product.SellerID {
-		return nil, ErrNotProductOwner
+		return nil, false, ErrNotProductOwner
 	}
-	if err := s.store.UpdateVariant(ctx, variantID, updates); err != nil {
-		return nil, err
+
+	if raw, ok := updates["status"]; ok {
+		status, _ := raw.(string)
+		if !variantSettableStatuses[status] {
+			return nil, false, fmt.Errorf("%w: got %q", ErrVariantStatusInvalid, status)
+		}
 	}
-	return s.store.GetVariantByID(ctx, variantID)
+
+	changed := variantSubstantiveChanges(variant, updates)
+	if raw, ok := updates["sku"]; ok {
+		sku, _ := raw.(string)
+		sku = strings.TrimSpace(sku)
+		if sku == "" {
+			return nil, false, fmt.Errorf("%w: sku", ErrVariantFieldRequired)
+		}
+		if sku == variant.SKU {
+			// Re-sending the SKU the variant already has is not an edit.
+			delete(updates, "sku")
+		} else {
+			// Locked once live: the editable-without-revalidation arm of
+			// ProductEditability is exactly "still a draft".
+			editable, needsRevalidation := postgres.ProductEditability(product.ApprovalStatus)
+			if !editable || needsRevalidation {
+				return nil, false, ErrSKULocked
+			}
+			updates["sku"] = sku
+		}
+	}
+
+	revalidate, err := gateApprovedEdit(product, changed, ack)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.store.UpdateVariant(ctx, variantID, updates, revalidate); err != nil {
+		return nil, false, err
+	}
+	if revalidate {
+		s.publish(ctx, "commerce.product.updated", map[string]any{
+			"product_id": product.ID, "seller_id": product.SellerID, "revalidated": true,
+		})
+		// The listing has left sale; search must stop offering it. Same
+		// transition PATCH /products takes, see UpdateProduct.
+		s.publishProductVisibility(ctx, product.ID)
+	}
+	stored, err := s.store.GetVariantByID(ctx, variantID)
+	return stored, revalidate, err
 }
+
+// ErrVariantFieldRequired is returned when a PATCH /variants/:id body blanks
+// a field the row cannot do without.
+var ErrVariantFieldRequired = errors.New("commerce: this variant field cannot be blank")
 
 // ArchiveProductVariant soft-deletes (status=archived) a variant.
 // Deleting variants is intentionally not supported — orders + cart
@@ -3055,8 +3120,17 @@ func (s *Service) assertProductSeller(ctx context.Context, productID, actorUserI
 }
 
 // AddProductMedia attaches a media-service asset to a product's gallery.
-func (s *Service) AddProductMedia(ctx context.Context, productID, actorUserID, mediaID uuid.UUID, mediaType string, sortOrder int) ([]postgres.ProductMedia, error) {
-	if err := s.assertProductSeller(ctx, productID, actorUserID); err != nil {
+//
+// An append to an approved listing's gallery is a reviewed-content change:
+// refused until `ack`, then applied and the listing returned to review. See
+// reviewedcontent.go.
+func (s *Service) AddProductMedia(ctx context.Context, productID, actorUserID, mediaID uuid.UUID, mediaType string, sortOrder int, ack bool) ([]postgres.ProductMedia, error) {
+	current, err := s.store.ProductMediaIDs(ctx, productID)
+	if err != nil {
+		return nil, err
+	}
+	product, revalidate, err := s.galleryEditGate(ctx, productID, actorUserID, append(current, mediaID), ack)
+	if err != nil {
 		return nil, err
 	}
 	// Owning the product is not owning the media. This route checked the
@@ -3069,8 +3143,11 @@ func (s *Service) AddProductMedia(ctx context.Context, productID, actorUserID, m
 	if err := s.verifyMedia(ctx, actorUserID, media.KindAny, &mediaID); err != nil {
 		return nil, err
 	}
-	if err := s.store.AddProductMedia(ctx, productID, mediaID, mediaType, sortOrder); err != nil {
+	if err := s.store.AddProductMedia(ctx, productID, mediaID, mediaType, sortOrder, revalidate); err != nil {
 		return nil, err
+	}
+	if revalidate {
+		s.afterGalleryRevalidation(ctx, product)
 	}
 	return s.store.ListProductMedia(ctx, productID)
 }

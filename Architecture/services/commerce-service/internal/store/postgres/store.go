@@ -282,16 +282,30 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 // AddProductMedia attaches an image / video / size-chart / infographic
 // (already uploaded via media-service) to a product, ordering it among
 // the product's gallery.
-func (s *Store) AddProductMedia(ctx context.Context, productID, mediaID uuid.UUID, mediaType string, sortOrder int) error {
+func (s *Store) AddProductMedia(ctx context.Context, productID, mediaID uuid.UUID, mediaType string, sortOrder int, revalidate bool) error {
 	if mediaType == "" {
 		mediaType = "image"
 	}
-	_, err := s.db.Exec(ctx,
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO product_media (product_id, media_id, media_type, sort_order)
 		 VALUES ($1, $2, $3, $4)`,
 		productID, mediaID, mediaType, sortOrder,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	// A gallery change on an approved listing is a reviewed-content change;
+	// the review state moves in the same transaction. See revalidateProductTx.
+	if revalidate {
+		if err := revalidateProductTx(ctx, tx, productID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ListProductMedia returns the gallery for a product, ordered for display.
@@ -815,15 +829,24 @@ func (s *Store) GetVariantsByProduct(ctx context.Context, productID uuid.UUID) (
 }
 
 // UpdateVariant patches the mutable fields of an existing variant.
-// Returns ErrProductNotFound when the variant doesn't exist. The
-// product_id + sku are intentionally NOT updatable (sku is used as the
-// merge key for bulk import; product_id is a foreign key that defines
-// what the variant belongs to — moving it would break orders + carts).
-func (s *Store) UpdateVariant(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	if len(updates) == 0 {
+// Returns ErrProductNotFound when the variant doesn't exist. product_id is
+// intentionally NOT updatable: it is the foreign key that defines what the
+// variant belongs to, and moving it would break orders + carts.
+//
+// `sku` IS updatable here, and was not: it was silently dropped, so a seller
+// who corrected a typo in a draft's SKU was told 200 and saw the old code
+// come back. Whether a given caller may change it is the SERVICE's rule
+// (locked once the listing is approved, see service.ErrSKULocked); the store
+// writes what it is handed and reports a collision as ErrDuplicateSKU.
+//
+// `revalidate` sends the parent product back to review in the same
+// transaction — see revalidateProductTx.
+func (s *Store) UpdateVariant(ctx context.Context, id uuid.UUID, updates map[string]any, revalidate bool) error {
+	if len(updates) == 0 && !revalidate {
 		return nil
 	}
 	allowed := map[string]bool{
+		"sku":           true,
 		"option_1_name": true, "option_1_value": true,
 		"option_2_name": true, "option_2_value": true,
 		"option_3_name": true, "option_3_value": true,
@@ -871,21 +894,42 @@ func (s *Store) UpdateVariant(ctx context.Context, id uuid.UUID, updates map[str
 		args = append(args, m.rupees, m.minor)
 		idx += 2
 	}
-	if len(setClauses) == 0 {
+	if len(setClauses) == 0 && !revalidate {
 		return nil
 	}
-	setClauses = append(setClauses, "updated_at = NOW()")
-	args = append(args, id)
-	q := "UPDATE product_variants SET " + strings.Join(setClauses, ", ") +
-		" WHERE id = $" + strconv.Itoa(idx)
-	cmd, err := s.db.Exec(ctx, q, args...)
+
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if cmd.RowsAffected() == 0 {
-		return ErrProductNotFound
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var productID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT product_id FROM product_variants WHERE id = $1`, id).Scan(&productID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrProductNotFound
+		}
+		return err
 	}
-	return nil
+	if len(setClauses) > 0 {
+		setClauses = append(setClauses, "updated_at = NOW()")
+		args = append(args, id)
+		q := "UPDATE product_variants SET " + strings.Join(setClauses, ", ") +
+			" WHERE id = $" + strconv.Itoa(idx)
+		if _, err := tx.Exec(ctx, q, args...); err != nil {
+			sku, _ := updates["sku"].(string)
+			return asDuplicateSKU(err, sku)
+		}
+	}
+	// A price, SKU or option change on an approved listing is a
+	// reviewed-content change; the review state moves in the same
+	// transaction. See revalidateProductTx.
+	if revalidate {
+		if err := revalidateProductTx(ctx, tx, productID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ArchiveVariant flips a variant to status='archived' so it's hidden

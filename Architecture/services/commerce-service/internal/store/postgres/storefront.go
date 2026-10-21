@@ -229,7 +229,11 @@ const MaxProductMedia = 8
 // stops a failure halfway through leaving the product with no images at all.
 //
 // sort_order is the slice index, so the first id is the cover.
-func (s *Store) SetProductMedia(ctx context.Context, productID uuid.UUID, mediaIDs []uuid.UUID) error {
+//
+// `revalidate` sends the product back to review in the same transaction —
+// a gallery change on an approved listing is a reviewed-content change, and
+// the review state must not be able to lag behind it. See revalidateProductTx.
+func (s *Store) SetProductMedia(ctx context.Context, productID uuid.UUID, mediaIDs []uuid.UUID, revalidate bool) error {
 	if len(mediaIDs) > MaxProductMedia {
 		return fmt.Errorf("commerce: a product may carry at most %d media", MaxProductMedia)
 	}
@@ -261,13 +265,21 @@ func (s *Store) SetProductMedia(ctx context.Context, productID uuid.UUID, mediaI
 		productID, cover); err != nil {
 		return err
 	}
+	if revalidate {
+		if err := revalidateProductTx(ctx, tx, productID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 
 // DeleteProductMediaByMediaID removes one asset from a product's gallery and
 // re-densifies sort_order so the remaining images keep their relative order
 // without a hole. Returns whether a row was actually removed.
-func (s *Store) DeleteProductMediaByMediaID(ctx context.Context, productID, mediaID uuid.UUID) (bool, error) {
+//
+// `revalidate` is applied only when a row WAS removed: an id that was not on
+// the gallery changed nothing a reviewer saw. See revalidateProductTx.
+func (s *Store) DeleteProductMediaByMediaID(ctx context.Context, productID, mediaID uuid.UUID, revalidate bool) (bool, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -301,6 +313,11 @@ func (s *Store) DeleteProductMediaByMediaID(ctx context.Context, productID, medi
 		), updated_at=NOW()
 		WHERE id=$1`, productID); err != nil {
 		return false, err
+	}
+	if revalidate {
+		if err := revalidateProductTx(ctx, tx, productID); err != nil {
+			return false, err
+		}
 	}
 	return true, tx.Commit(ctx)
 }

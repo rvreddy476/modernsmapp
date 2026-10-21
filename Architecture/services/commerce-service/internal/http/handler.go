@@ -665,7 +665,7 @@ func (h *Handler) AddProductMedia(c *gin.Context) {
 		return
 
 	case len(req.MediaIDs) > 0:
-		out, err := h.svc.SetProductMedia(c.Request.Context(), productID, userID, req.MediaIDs)
+		out, err := h.svc.SetProductMedia(c.Request.Context(), productID, userID, req.MediaIDs, revalidateAck(c, req.Revalidate))
 		if err != nil {
 			writeStorefrontError(c, err)
 			return
@@ -674,7 +674,7 @@ func (h *Handler) AddProductMedia(c *gin.Context) {
 
 	case req.MediaID != nil:
 		if _, err := h.svc.AddProductMedia(c.Request.Context(), productID, userID,
-			*req.MediaID, req.MediaType, req.SortOrder); err != nil {
+			*req.MediaID, req.MediaType, req.SortOrder, revalidateAck(c, req.Revalidate)); err != nil {
 			if errors.Is(err, service.ErrNotOrderOwner) {
 				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
 				return
@@ -842,11 +842,16 @@ type addVariantReq struct {
 	CostPrice    *float64 `json:"cost_price"`
 	CurrencyCode string   `json:"currency_code"`
 	WeightGrams  *int     `json:"weight_grams"`
+
+	// StockQty is the opening stock, the same key POST /products takes per
+	// variant. It was not on this body at all, so a variant added after
+	// create always started at zero whatever the seller typed.
+	StockQty int `json:"stock_qty"`
 }
 
 // AddProductVariant — POST /v1/commerce/products/:productId/variants
-// Seller adds a new variant to an existing product. Idempotent on
-// (sku, seller_id) via DB UNIQUE; a re-post returns the existing row.
+// Seller adds a new variant to an existing product, with its opening stock.
+// A duplicate SKU is 409 SKU_TAKEN, as on create.
 func (h *Handler) AddProductVariant(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -888,9 +893,9 @@ func (h *Handler) AddProductVariant(c *gin.Context) {
 		CurrencyCode:        req.CurrencyCode,
 		WeightGrams:         req.WeightGrams,
 	}
-	out, err := h.svc.AddProductVariant(c.Request.Context(), userID, productID, v)
+	out, err := h.svc.AddProductVariant(c.Request.Context(), userID, productID, v, req.StockQty)
 	if err != nil {
-		handleErr(c, err)
+		writeProductWriteError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, out, nil)
@@ -899,6 +904,12 @@ func (h *Handler) AddProductVariant(c *gin.Context) {
 // UpdateProductVariant — PATCH /v1/commerce/variants/:variantId
 // Sparse update — only fields in the JSON body are written. Seller
 // ownership is verified against the parent product.
+//
+// `revalidate: true` is the acknowledgement an APPROVED listing's price,
+// option, image or SKU change needs — the same key, the same 409
+// REVALIDATION_REQUIRED refusal and the same `revalidated`/`notice` answer as
+// PATCH /products/:id, so a client handles one flow. A SKU change after
+// approval is 409 SKU_LOCKED whatever the acknowledgement says.
 func (h *Handler) UpdateProductVariant(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -914,12 +925,42 @@ func (h *Handler) UpdateProductVariant(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	out, err := h.svc.UpdateProductVariant(c.Request.Context(), userID, variantID, raw)
+	ack := false
+	if v, present := raw["revalidate"]; present {
+		b, isBool := v.(bool)
+		if !isBool {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+				"INVALID_BODY", "revalidate must be true or false", nil)
+			return
+		}
+		ack = b
+		delete(raw, "revalidate")
+	}
+	out, revalidated, err := h.svc.UpdateProductVariant(c.Request.Context(), userID, variantID, raw, revalidateAck(c, ack))
 	if err != nil {
-		handleErr(c, err)
+		writeProductWriteError(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, out, nil)
+	// `data` stays the variant, byte-for-byte what it was: two shipped
+	// clients decode it. The bounce travels in `meta`, which both ignore
+	// until they look for it.
+	var meta *api.Meta
+	if revalidated {
+		meta = &api.Meta{Revalidated: true, Notice: revalidatedNotice}
+	}
+	api.JSON(c.Writer, http.StatusOK, out, meta)
+}
+
+// revalidatedNotice is said in the same response as a success that sent the
+// listing back to review, so the seller finds out here and not from their
+// sales figures.
+const revalidatedNotice = "this edit changed reviewed content, so the listing has returned to " +
+	"review and is no longer on sale until it is approved again"
+
+// revalidateAck reads the revalidation acknowledgement: the body flag, or
+// `?revalidate=true` for the routes that carry no body (DELETE).
+func revalidateAck(c *gin.Context, body bool) bool {
+	return body || c.Query("revalidate") == "true"
 }
 
 // ArchiveProductVariant — DELETE /v1/commerce/variants/:variantId

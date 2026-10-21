@@ -26,6 +26,13 @@ type APIError struct {
 type Meta struct {
 	RequestID  string `json:"request_id,omitempty"`
 	NextCursor string `json:"next_cursor,omitempty"`
+
+	// Revalidated and Notice say, in the same response as a success, that
+	// the edit sent an approved listing back to review. They live in meta so
+	// a route whose `data` is a bare entity (PATCH /variants/:id) can say so
+	// without changing the shape two shipped clients decode.
+	Revalidated bool   `json:"revalidated,omitempty"`
+	Notice      string `json:"notice,omitempty"`
 }
 
 // JSON sends a standard success response relative to the context.

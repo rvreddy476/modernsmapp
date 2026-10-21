@@ -550,6 +550,53 @@ func upsertInventoryTx(ctx context.Context, tx pgx.Tx, variantID, sellerID uuid.
 	return err
 }
 
+// revalidateProductTx sends an approved product back to review:
+// approval_status='submitted', status='draft', published_at=NULL — the same
+// three literals ProductPatch.Revalidate writes, for the edits that do not
+// travel through PatchProduct (the gallery and the variants).
+//
+// In the caller's transaction, so the reviewed content and the review state
+// move together: a gallery that changed while the listing stayed on sale is
+// the moderation bypass the revalidation rule exists to refuse, and two
+// statements with a crash between them would produce exactly that.
+func revalidateProductTx(ctx context.Context, tx pgx.Tx, productID uuid.UUID) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE products
+		   SET approval_status='submitted', status='draft', published_at=NULL, updated_at=NOW()
+		 WHERE id=$1`, productID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrProductNotFound
+	}
+	return syncOfferLifecycleTx(ctx, tx, productID)
+}
+
+// CreateVariantWithStock inserts a variant AND its opening stock in one
+// transaction.
+//
+// POST /products/:id/variants used to insert the row and then upsert an
+// inventory row of zero, swallowing the inventory error into a log line. The
+// request carried no stock figure at all, so a seller adding "size XL, 40 in
+// stock" to a live listing got a variant with 0 in stock and no error. The
+// create path has always written the two together (CreateProductAtomic); this
+// is the same pair for a variant added later.
+func (s *Store) CreateVariantWithStock(ctx context.Context, v *ProductVariant, sellerID uuid.UUID, stockQty int) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := insertVariantTx(ctx, tx, v); err != nil {
+		return asDuplicateSKU(err, v.SKU)
+	}
+	if err := upsertInventoryTx(ctx, tx, v.ID, sellerID, stockQty); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // ─── Editability ────────────────────────────────────────────────────────
 
 // ProductEditability answers "may this product be patched, and does patching

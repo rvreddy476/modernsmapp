@@ -405,33 +405,46 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// reviewNeutralPatch reports whether a patch touches only fields no reviewer
-// looks at. See RevalidationRequiredError for the list and the argument.
-func substantiveFields(p postgres.ProductPatch, attrs int, variation bool) []string {
+// substantiveFields names the reviewed fields this patch would CHANGE on
+// `cur`. See RevalidationRequiredError for the list and the argument.
+//
+// Change, not presence. The first version counted a field as substantive
+// when the request CARRIED it, and the web editor sends the whole form on
+// every save — so correcting a parcel weight on a live listing re-sent an
+// unchanged title alongside it and the listing went back to review for an
+// edit a reviewer would not have been able to find. Every field is compared
+// against the stored value, through the same normalisation the store applies
+// on the way in (blank text is NULL, a nil uuid is NULL), so re-sending what
+// is already there costs nothing.
+//
+// `attrs` and `variation` are the two non-column halves, already compared by
+// the caller against what the product holds (see attributeSetsChange and
+// variationChanges).
+func substantiveFields(cur *postgres.Product, p postgres.ProductPatch, attrs bool, variation bool) []string {
 	out := []string{}
 	add := func(name string, changed bool) {
 		if changed {
 			out = append(out, name)
 		}
 	}
-	add("category_id", p.CategoryID != nil)
-	add("brand_id", p.BrandID != nil)
-	add("title", p.Title != nil)
-	add("short_title", p.ShortTitle != nil)
-	add("description", p.Description != nil)
-	add("short_description", p.ShortDescription != nil)
-	add("brand_name", p.BrandName != nil)
-	add("manufacturer_name", p.ManufacturerName != nil)
-	add("product_type", p.ProductType != nil)
-	add("condition", p.Condition != nil)
-	add("primary_image_media_id", p.PrimaryImageMediaID != nil)
-	add("video_media_id", p.VideoMediaID != nil)
-	add("country_of_origin", p.CountryOfOrigin != nil)
-	add("warranty_info", p.WarrantyInfo != nil)
-	add("return_policy_type", p.ReturnPolicyType != nil)
-	add("return_policy_days", p.ReturnPolicyDays != nil)
-	add("hsn_code", p.HSNCode != nil)
-	add("attributes", attrs > 0)
+	add("category_id", uuidPtrChanges(p.CategoryID, cur.CategoryID))
+	add("brand_id", uuidPtrChanges(p.BrandID, cur.BrandID))
+	add("title", textChanges(p.Title, &cur.Title))
+	add("short_title", textChanges(p.ShortTitle, cur.ShortTitle))
+	add("description", textChanges(p.Description, cur.Description))
+	add("short_description", textChanges(p.ShortDescription, cur.ShortDescription))
+	add("brand_name", textChanges(p.BrandName, cur.BrandName))
+	add("manufacturer_name", textChanges(p.ManufacturerName, cur.ManufacturerName))
+	add("product_type", textChanges(p.ProductType, &cur.ProductType))
+	add("condition", textChanges(p.Condition, &cur.Condition))
+	add("primary_image_media_id", uuidPtrChanges(p.PrimaryImageMediaID, cur.PrimaryImageMediaID))
+	add("video_media_id", uuidPtrChanges(p.VideoMediaID, cur.VideoMediaID))
+	add("country_of_origin", textChanges(p.CountryOfOrigin, cur.CountryOfOrigin))
+	add("warranty_info", textChanges(p.WarrantyInfo, cur.WarrantyInfo))
+	add("return_policy_type", textChanges(p.ReturnPolicyType, &cur.ReturnPolicyType))
+	add("return_policy_days", p.ReturnPolicyDays != nil && *p.ReturnPolicyDays != cur.ReturnPolicyDays)
+	add("hsn_code", textChanges(p.HSNCode, cur.HSNCode))
+	add("attributes", attrs)
 	// A reviewer read a listing that varied on two axes with six
 	// combinations. Changing which axes it varies on, or which combination
 	// each variant is, changes what was permitted just as squarely as
@@ -439,6 +452,35 @@ func substantiveFields(p postgres.ProductPatch, attrs int, variation bool) []str
 	// doing quietly, because the price and the stock hang off it.
 	add("variation_axes", variation)
 	return out
+}
+
+// textChanges reports whether a sent text differs from the stored one, with
+// blank and NULL treated as the same thing — the store writes "" as NULL for
+// every nullable text column (postgres.nilIfEmpty), so they ARE the same
+// thing once saved.
+func textChanges(sent *string, stored *string) bool {
+	if sent == nil {
+		return false
+	}
+	have := ""
+	if stored != nil {
+		have = strings.TrimSpace(*stored)
+	}
+	return strings.TrimSpace(*sent) != have
+}
+
+// uuidPtrChanges reports whether a sent id differs from the stored one. A
+// JSON null decodes to uuid.Nil (see http.decodeAs), which is the client
+// clearing the field, so Nil and NULL compare equal.
+func uuidPtrChanges(sent *uuid.UUID, stored *uuid.UUID) bool {
+	if sent == nil {
+		return false
+	}
+	have := uuid.Nil
+	if stored != nil {
+		have = *stored
+	}
+	return *sent != have
 }
 
 // ─── The compliance-gap carve-out ───────────────────────────────────────
@@ -620,7 +662,15 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 
 	patch := in.Fields
 	if needsRevalidation {
-		if changed := substantiveFields(patch, len(sets), variation != nil); len(changed) > 0 {
+		attrsChanged, err := s.attributeSetsChange(ctx, in.ProductID, sets)
+		if err != nil {
+			return nil, err
+		}
+		variationChanged, err := s.variationChanges(ctx, in.ProductID, variation)
+		if err != nil {
+			return nil, err
+		}
+		if changed := substantiveFields(product, patch, attrsChanged, variationChanged); len(changed) > 0 {
 			if s.editOnlyFillsOpenComplianceGaps(ctx, in.ProductID, changed, sets) {
 				// The carve-out. The edit is not substantive after all, so
 				// AckRevalidation is moot here in exactly the way it is moot

@@ -115,12 +115,19 @@ func normaliseMediaIDs(ids []uuid.UUID) ([]uuid.UUID, error) {
 //
 // Media verification happens BEFORE the write, and a single refusal aborts
 // the whole batch, so a half-applied gallery is not a state this can produce.
-func (s *Service) SetProductMedia(ctx context.Context, productID, actorUserID uuid.UUID, mediaIDs []uuid.UUID) ([]ProductMediaItem, error) {
+//
+// And a third rule, for an APPROVED listing: a gallery that differs from the
+// one a reviewer saw is a reviewed-content change, refused until `ack` and
+// then applied with the listing returned to review — the same rule PATCH
+// /products/:id applies to the title. Re-sending the gallery the product
+// already has is not a change. See reviewedcontent.go.
+func (s *Service) SetProductMedia(ctx context.Context, productID, actorUserID uuid.UUID, mediaIDs []uuid.UUID, ack bool) ([]ProductMediaItem, error) {
 	ordered, err := normaliseMediaIDs(mediaIDs)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.assertProductSeller(ctx, productID, actorUserID); err != nil {
+	product, revalidate, err := s.galleryEditGate(ctx, productID, actorUserID, ordered, ack)
+	if err != nil {
 		return nil, err
 	}
 	ptrs := make([]*uuid.UUID, len(ordered))
@@ -130,8 +137,11 @@ func (s *Service) SetProductMedia(ctx context.Context, productID, actorUserID uu
 	if err := s.verifyMedia(ctx, actorUserID, media.KindImage, ptrs...); err != nil {
 		return nil, err
 	}
-	if err := s.store.SetProductMedia(ctx, productID, ordered); err != nil {
+	if err := s.store.SetProductMedia(ctx, productID, ordered, revalidate); err != nil {
 		return nil, err
+	}
+	if revalidate {
+		s.afterGalleryRevalidation(ctx, product)
 	}
 	return s.ProductMedia(ctx, productID)
 }
@@ -142,12 +152,17 @@ func (s *Service) SetProductMedia(ctx context.Context, productID, actorUserID uu
 // has. Accepting a partial list would make "reorder" quietly delete whatever
 // the client forgot to send — the failure mode of a client that pages its
 // gallery editor.
-func (s *Service) ReorderProductMedia(ctx context.Context, productID, actorUserID uuid.UUID, mediaIDs []uuid.UUID) ([]ProductMediaItem, error) {
+//
+// A new order on an approved listing is a reviewed-content change too: the
+// first image is the cover, and a reviewer approved a particular one. Same
+// gate as SetProductMedia.
+func (s *Service) ReorderProductMedia(ctx context.Context, productID, actorUserID uuid.UUID, mediaIDs []uuid.UUID, ack bool) ([]ProductMediaItem, error) {
 	ordered, err := normaliseMediaIDs(mediaIDs)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.assertProductSeller(ctx, productID, actorUserID); err != nil {
+	product, revalidate, err := s.galleryEditGate(ctx, productID, actorUserID, ordered, ack)
+	if err != nil {
 		return nil, err
 	}
 	existing, err := s.store.ProductMediaIDs(ctx, productID)
@@ -169,23 +184,44 @@ func (s *Service) ReorderProductMedia(ctx context.Context, productID, actorUserI
 	// No media-service round trip: these ids are already on the product, so
 	// they were verified when they were attached. Re-verifying would make
 	// dragging a thumbnail depend on media-service being up.
-	if err := s.store.SetProductMedia(ctx, productID, ordered); err != nil {
+	if err := s.store.SetProductMedia(ctx, productID, ordered, revalidate); err != nil {
 		return nil, err
+	}
+	if revalidate {
+		s.afterGalleryRevalidation(ctx, product)
 	}
 	return s.ProductMedia(ctx, productID)
 }
 
 // DeleteProductMedia removes one asset from a product's gallery.
-func (s *Service) DeleteProductMedia(ctx context.Context, productID, actorUserID, mediaID uuid.UUID) ([]ProductMediaItem, error) {
-	if err := s.assertProductSeller(ctx, productID, actorUserID); err != nil {
+//
+// On an approved listing, removing an image a reviewer saw is a
+// reviewed-content change: same gate as SetProductMedia. Removing an id that
+// is not on the gallery changes nothing and is refused as before.
+func (s *Service) DeleteProductMedia(ctx context.Context, productID, actorUserID, mediaID uuid.UUID, ack bool) ([]ProductMediaItem, error) {
+	current, err := s.store.ProductMediaIDs(ctx, productID)
+	if err != nil {
 		return nil, err
 	}
-	removed, err := s.store.DeleteProductMediaByMediaID(ctx, productID, mediaID)
+	next := make([]uuid.UUID, 0, len(current))
+	for _, id := range current {
+		if id != mediaID {
+			next = append(next, id)
+		}
+	}
+	product, revalidate, err := s.galleryEditGate(ctx, productID, actorUserID, next, ack)
+	if err != nil {
+		return nil, err
+	}
+	removed, err := s.store.DeleteProductMediaByMediaID(ctx, productID, mediaID, revalidate)
 	if err != nil {
 		return nil, err
 	}
 	if !removed {
 		return nil, ErrMediaNotOnProduct
+	}
+	if revalidate {
+		s.afterGalleryRevalidation(ctx, product)
 	}
 	return s.ProductMedia(ctx, productID)
 }

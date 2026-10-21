@@ -107,7 +107,7 @@ func TestRepricingAVariantMovesThePriceCheckoutReads(t *testing.T) {
 	store := New(testPool)
 	id := pricedVariant(t, 1500.00, 1299.00)
 
-	if err := store.UpdateVariant(ctx, id, map[string]any{"selling_price": 999.50}); err != nil {
+	if err := store.UpdateVariant(ctx, id, map[string]any{"selling_price": 999.50}, false); err != nil {
 		t.Fatalf("UpdateVariant: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestANonNumericPriceIsRefused(t *testing.T) {
 	id := pricedVariant(t, 1500.00, 1299.00)
 
 	for _, bad := range []any{"1299", true, []any{1299}, map[string]any{"v": 1}} {
-		if err := store.UpdateVariant(ctx, id, map[string]any{"selling_price": bad}); err == nil {
+		if err := store.UpdateVariant(ctx, id, map[string]any{"selling_price": bad}, false); err == nil {
 			t.Fatalf("a %T price was accepted; a coerced zero prices the variant at free", bad)
 		}
 	}

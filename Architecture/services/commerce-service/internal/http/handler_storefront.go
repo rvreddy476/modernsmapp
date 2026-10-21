@@ -96,6 +96,14 @@ func optionalUserID(c *gin.Context) uuid.UUID {
 // preserve, which a generic 500 would erase.
 func writeStorefrontError(c *gin.Context, err error) {
 	ctx := c.Request.Context()
+	// A gallery edit on an approved listing is refused exactly as a title
+	// edit is — same code, same acknowledgement — so the product-write mapper
+	// answers it, and the client that handles one 409 handles both.
+	var reval *service.RevalidationRequiredError
+	if errors.As(err, &reval) || errors.Is(err, service.ErrProductNotEditable) {
+		writeProductWriteError(c, err)
+		return
+	}
 	switch {
 	case errors.Is(err, postgres.ErrActorRequired):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, CodeActorRequired, err.Error(), nil)
@@ -161,6 +169,12 @@ type setProductMediaReq struct {
 	MediaID   *uuid.UUID `json:"media_id"`
 	MediaType string     `json:"media_type"`
 	SortOrder int        `json:"sort_order"`
+
+	// Revalidate acknowledges that changing an APPROVED listing's gallery
+	// returns it to review — the same key PATCH /products/:id takes, and
+	// the same 409 REVALIDATION_REQUIRED refusal without it. DELETE carries
+	// no body and takes `?revalidate=true` instead.
+	Revalidate bool `json:"revalidate"`
 }
 
 // ReorderProductMedia PUT /v1/commerce/products/:productId/media/order —
@@ -181,7 +195,7 @@ func (h *Handler) ReorderProductMedia(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	out, err := h.svc.ReorderProductMedia(c.Request.Context(), productID, userID, req.MediaIDs)
+	out, err := h.svc.ReorderProductMedia(c.Request.Context(), productID, userID, req.MediaIDs, revalidateAck(c, req.Revalidate))
 	if err != nil {
 		writeStorefrontError(c, err)
 		return
@@ -205,7 +219,7 @@ func (h *Handler) DeleteProductMedia(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.DeleteProductMedia(c.Request.Context(), productID, userID, mediaID)
+	out, err := h.svc.DeleteProductMedia(c.Request.Context(), productID, userID, mediaID, revalidateAck(c, false))
 	if err != nil {
 		writeStorefrontError(c, err)
 		return

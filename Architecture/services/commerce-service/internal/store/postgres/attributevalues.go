@@ -208,6 +208,34 @@ type AttributeValueSet struct {
 	Values       []ProductAttributeValue
 }
 
+// ProductAttributeValuesByDefinition reads the product's stored answers keyed
+// by definition, each list in position order — the shape PutProductAttributeValues
+// writes, so a caller can ask "would this set change anything?" before writing.
+//
+// No category join: the question is what the row HOLDS, not what its current
+// form asks, and a value on a definition the category no longer binds is
+// still a value an edit may leave untouched.
+func (s *Store) ProductAttributeValuesByDefinition(ctx context.Context, productID uuid.UUID) (map[uuid.UUID][]ProductAttributeValue, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+attributeValueColumns+`
+		  FROM product_attributes pa
+		 WHERE pa.product_id = $1 AND pa.definition_id IS NOT NULL
+		 ORDER BY pa.definition_id, pa.position`, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[uuid.UUID][]ProductAttributeValue{}
+	for rows.Next() {
+		var v ProductAttributeValue
+		if err := scanAttributeValue(rows, &v); err != nil {
+			return nil, err
+		}
+		out[v.DefinitionID] = append(out[v.DefinitionID], v)
+	}
+	return out, rows.Err()
+}
+
 // PutProductAttributeValues replaces the stored values for each named
 // definition and rebuilds the product's attributes_doc, in one transaction.
 //
