@@ -40,8 +40,11 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.feed.data.VideoLibraryState
 import com.us.android.core.feed.data.offersSubscribe
+import com.us.android.core.feed.data.videoMediaId
 import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.ui.audio.AudioTracksSheet
 import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.edit.PostEditSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.feed.ui.share.PostShareSheetHost
@@ -224,6 +227,12 @@ private class WatchSheets {
 
     /** The post the Share sheet is open for. */
     var shareFor by mutableStateOf<FeedItem?>(null)
+
+    /** The owner's Edit (2026-10-21): the video being edited. */
+    var editFor by mutableStateOf<FeedItem?>(null)
+
+    /** The owner's Audio tracks (2026-10-21): the media whose dubs are managed. */
+    var audioFor by mutableStateOf<String?>(null)
 }
 
 /** The four sheets, mounted over the screen when asked for. */
@@ -301,10 +310,14 @@ private fun WatchSheetsHost(
                 speed = speed,
                 captions = captions.map { UsCaptionOption(language = it.language, label = it.label) },
                 captionLanguage = captionLanguage,
-            ),
+            ).withAudioOf(viewModel, item),
             onSelectQuality = viewModel::selectQuality,
             onSelectSpeed = viewModel::selectSpeed,
             onSelectCaption = viewModel::selectCaption,
+            onSelectAudioTrack = { trackId -> viewModel.selectAudioTrack(item, trackId) },
+            // The owner's two context rows, the web's watch page's: Edit and Audio tracks.
+            onEdit = { sheets.editFor = it },
+            onManageAudio = { video -> sheets.audioFor = video.videoMediaId() },
             // What makes it the long video's: the words that say "video", and the channel a block names.
             longVideo = UsLongVideoMoreState(
                 channelName = item.creatorName,
@@ -317,6 +330,32 @@ private fun WatchSheetsHost(
     }
     sheets.collectionFor?.let { postId ->
         CollectionPickerSheet(postId = postId, onDismiss = { sheets.collectionFor = null })
+    }
+    OwnerSheets(sheets)
+}
+
+/**
+ * "Audio track" (2026-10-21): the original and each ready dub, offered once
+ * the video has one — to the owner too, as on the web — with the one playing.
+ */
+@Composable
+private fun UsReelMoreState.withAudioOf(viewModel: WatchViewModel, item: FeedItem): UsReelMoreState {
+    val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
+    val audioLanguage by viewModel.audioLanguage.collectAsStateWithLifecycle()
+    return copy(
+        audioTracks = remember(audioTracks, item.id) { viewModel.audioOptions(item) },
+        audioTrackId = remember(audioTracks, audioLanguage, item.id) { viewModel.audioTrackId(item) },
+    )
+}
+
+/** The owner's two sheets from More (2026-10-21): Edit, and the dub manager. */
+@Composable
+private fun OwnerSheets(sheets: WatchSheets) {
+    sheets.editFor?.let { item ->
+        PostEditSheet(postId = item.id, longVideo = true, onDismiss = { sheets.editFor = null })
+    }
+    sheets.audioFor?.let { mediaId ->
+        AudioTracksSheet(mediaId = mediaId, onDismiss = { sheets.audioFor = null })
     }
 }
 

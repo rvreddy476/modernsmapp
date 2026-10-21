@@ -21,12 +21,17 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.PostEdits
 import com.us.android.core.feed.data.SubscriptionGraph
+import com.us.android.core.feed.data.VideoAudio
 import com.us.android.core.feed.data.VideoLibraryState
 import com.us.android.core.feed.data.VideoLibraryStore
 import com.us.android.core.feed.data.VideoThumb
+import com.us.android.core.feed.data.activeAudioTrackId
+import com.us.android.core.feed.data.applyTo
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.feed.offline.OfflineLibrary
@@ -45,6 +50,7 @@ import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.NotifyOn
+import com.us.android.core.ui.UsAudioTrackOption
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.feature.tube.data.SeriesEpisode
 import com.us.android.feature.tube.data.SeriesInfo
@@ -150,6 +156,10 @@ class WatchViewModel @Inject constructor(
     library: VideoLibraryStore,
     /** Offline copies (2026-10-02): a stored copy is what plays, and it opens with no network. */
     private val offline: OfflineLibrary,
+    /** Alternate audio (2026-10-21): each video's tracks and the viewer's one language. */
+    private val audio: VideoAudio,
+    /** The owner's saved edits (2026-10-21), layered over the video on screen. */
+    private val edits: PostEdits,
     /** Progress reports outlive the screen: the last one is sent as the ViewModel clears. */
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
@@ -281,6 +291,24 @@ class WatchViewModel @Inject constructor(
     /** A refused Like, Dislike, Watch later or Save, to say over the screen. */
     val actionMessage: StateFlow<UsMessage?> = actions.message
 
+    /** What the video plays with its own audio — a stored copy or the network — for the current video. */
+    private var basePlayback: Playback? = null
+
+    /** [basePlayback] is a copy on the device. */
+    private var baseOffline = false
+
+    /**
+     * The viewer's audio language (2026-10-21), or null for the original: the
+     * ONE preference Reels reads too, kept across restarts. Eager, because the
+     * first frame of a video already plays it when the tracks are known.
+     * Declared before `init`, which reads it.
+     */
+    val audioLanguage: StateFlow<String?> = audio.language
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Media id → its tracks, for every video asked about. */
+    val audioTracks: StateFlow<Map<String, List<AudioTrack>>> = audio.tracks
+
     init {
         // Watch later and dislike are private to the viewer and keyed by post
         // id alone: a different account on this process starts clean.
@@ -295,6 +323,55 @@ class WatchViewModel @Inject constructor(
                 if (player.isPlaying) report()
             }
         }
+        // A pick from "Audio track", or tracks read after the first frame:
+        // the player follows, where it is.
+        viewModelScope.launch {
+            combine(audio.tracks, audioLanguage, ::Pair).collect { (tracks, language) -> applyAudio(tracks, language) }
+        }
+        // The owner's Edit (2026-10-21): the new words on the video at once.
+        viewModelScope.launch {
+            edits.edits.collect { saved ->
+                _content.update { current ->
+                    if (current is WatchContent.Ready) current.copy(item = saved.applyTo(current.item)) else current
+                }
+            }
+        }
+    }
+
+    // ── Alternate audio (2026-10-21) ─────────────────────────────────────
+
+    /** The "Audio track" picker's choices for [item]: the original, then each ready dub; empty until read. */
+    fun audioOptions(item: FeedItem): List<UsAudioTrackOption> = audio.options(item)
+
+    /** The track [item] plays now, by id. */
+    fun audioTrackId(item: FeedItem): String = activeAudioTrackId(audio.tracksOf(item), audioLanguage.value)
+
+    /** A pick from the "Audio track" row: its language becomes the viewer's; [applyAudio] does the rest. */
+    fun selectAudioTrack(item: FeedItem, trackId: String) {
+        viewModelScope.launch { audio.choose(item, trackId) }
+    }
+
+    /**
+     * Plays what the viewer's language asks for on the current video: its
+     * ready dub, else its own audio. The swap keeps the playhead and the play
+     * state, as the web's does. A dub is ONE rendition, so the quality goes
+     * to Auto and the gear's ladder is gone while it plays (the playback is
+     * no longer HLS); back on the original, the viewer's rung is applied again.
+     */
+    private fun applyAudio(tracks: Map<String, List<AudioTrack>>, language: String?) {
+        val ready = _content.value as? WatchContent.Ready ?: return
+        val base = basePlayback ?: return
+        val dub = audio.dubPlayback(ready.item, language, tracks)
+        val target = dub ?: base
+        if (target == ready.playback) return
+        val position = player.currentPosition
+        val playing = player.playWhenReady
+        player.setMediaSource(sources.create(target))
+        player.prepare()
+        player.seekTo(position)
+        player.playWhenReady = playing
+        _content.value = ready.copy(playback = target, offlineCopy = baseOffline && dub == null)
+        player.applyQuality(if (dub == null) _quality.value else UsReelQuality.Auto)
     }
 
     /**
@@ -326,10 +403,22 @@ class WatchViewModel @Inject constructor(
         // A row fetched by id IS the post detail; a list row, and a kept one, is refreshed from it.
         if (listed == null && kept == null) actions.adopt(item) else launchRefreshViewerState(postId)
         launchLoadSeries(postId)
-        val playback = stored?.playback() ?: urlResolver.playbackFor(item)
-        _content.value = WatchContent.Ready(item, playback, offlineCopy = stored != null)
-        offerCaptions(playback)
+        val base = stored?.playback() ?: urlResolver.playbackFor(item)
+        basePlayback = base
+        baseOffline = stored != null
+        // A ready dub in the viewer's language plays from the first frame
+        // when its tracks are already known; otherwise [applyAudio] swaps to
+        // it, where the video is, once they are read.
+        val dub = base?.let { audio.dubPlayback(item, audioLanguage.value) }
+        val playback = dub ?: base
+        _content.value = WatchContent.Ready(
+            item = edits.edits.value.applyTo(item),
+            playback = playback,
+            offlineCopy = stored != null && dub == null,
+        )
+        offerCaptions(base)
         launchKnowAuthor(item)
+        viewModelScope.launch { audio.ensure(item) }
         if (playback == null) {
             player.stop()
             player.clearMediaItems()

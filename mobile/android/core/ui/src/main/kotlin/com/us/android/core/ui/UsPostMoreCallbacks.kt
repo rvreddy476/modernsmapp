@@ -64,4 +64,14 @@ class UsPostMoreCallbacks(
     val onSelectCaption: (String?) -> Unit = {},
     /** Reels only (T-32): "Auto scroll" was tapped; the host flips and stores it. The sheet stays. */
     val onToggleAutoScroll: () -> Unit = {},
+    /**
+     * Videos with more than one audio track (2026-10-21): a track was picked
+     * by its id ("original" for the original). The host stores the language
+     * and switches the player where it is. The sheet stays.
+     */
+    val onSelectAudioTrack: (String) -> Unit = {},
+    /** The owner's video (2026-10-21): "Audio tracks". The sheet has already left; the host opens the dub manager. */
+    val onManageAudio: () -> Unit = {},
+    /** The owner's video (2026-10-21): "Edit". The sheet has already left; the host opens the edit sheet. */
+    val onEdit: () -> Unit = {},
 )

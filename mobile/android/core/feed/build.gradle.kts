@@ -47,6 +47,9 @@ dependencies {
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.hilt.navigation.compose)
+    // The creator's audio tracks sheet (2026-10-21) picks a dub file with
+    // the system's document picker.
+    implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.serialization.json)
     // Paging is part of this module's public surface: FeedRepository returns
     // Flow<PagingData<FeedItem>>, so consumers need the type.

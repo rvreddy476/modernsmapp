@@ -38,3 +38,11 @@ fun captionValueLabel(options: List<UsCaptionOption>, language: String?): String
 
 /** The Captions picker's first option, and the row's value while none is on. */
 const val CAPTIONS_OFF = "Off"
+
+/**
+ * What the "Audio track" row reads at its right (2026-10-21): the track
+ * playing, else the first option — the original, which is what plays when
+ * the viewer's language has no ready track here.
+ */
+fun audioTrackValueLabel(options: List<UsAudioTrackOption>, trackId: String?): String =
+    (options.firstOrNull { it.id == trackId } ?: options.firstOrNull())?.label.orEmpty()

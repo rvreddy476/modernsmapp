@@ -1,9 +1,11 @@
 package com.us.android.core.feed.di
 
+import com.us.android.core.feed.data.AudioTracksApi
 import com.us.android.core.feed.data.ChannelApi
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedItemHydrator
 import com.us.android.core.feed.data.HashtagPostHydrator
+import com.us.android.core.feed.data.PostEditApi
 import com.us.android.core.feed.data.SoundsApi
 import com.us.android.core.feed.data.VideoFeedApi
 import com.us.android.core.feed.data.VideoLibraryApi
@@ -43,6 +45,16 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideVideoLibraryApi(retrofit: Retrofit): VideoLibraryApi = retrofit.create(VideoLibraryApi::class.java)
+
+    /** media-service's alternate audio tracks (2026-10-21): the picker and the creator's dub manager. */
+    @Provides
+    @Singleton
+    fun provideAudioTracksApi(retrofit: Retrofit): AudioTracksApi = retrofit.create(AudioTracksApi::class.java)
+
+    /** The owner's edit of a published post (2026-10-21). */
+    @Provides
+    @Singleton
+    fun providePostEditApi(retrofit: Retrofit): PostEditApi = retrofit.create(PostEditApi::class.java)
 
     /** The store writes through the repository; tests hand it a fake. */
     @Provides

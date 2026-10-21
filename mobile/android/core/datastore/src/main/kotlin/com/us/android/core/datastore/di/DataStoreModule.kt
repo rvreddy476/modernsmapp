@@ -1,7 +1,9 @@
 package com.us.android.core.datastore.di
 
 import com.us.android.core.datastore.AppearanceStore
+import com.us.android.core.datastore.AudioLanguageStore
 import com.us.android.core.datastore.DataStoreAppearanceStore
+import com.us.android.core.datastore.DataStoreAudioLanguageStore
 import com.us.android.core.datastore.DataStoreOfflinePrefs
 import com.us.android.core.datastore.DataStoreReelsAutoScrollStore
 import com.us.android.core.datastore.DataStoreReelsSoundStore
@@ -32,4 +34,7 @@ abstract class DataStoreModule {
 
     @Binds
     abstract fun bindOfflinePrefs(store: DataStoreOfflinePrefs): OfflinePrefs
+
+    @Binds
+    abstract fun bindAudioLanguageStore(store: DataStoreAudioLanguageStore): AudioLanguageStore
 }

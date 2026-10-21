@@ -13,6 +13,7 @@ import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.datastore.AudioLanguageStore
 import com.us.android.core.datastore.ReelsAutoScrollStore
 import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.engagement.data.EngagementAction
@@ -21,17 +22,24 @@ import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
 import com.us.android.core.engagement.data.HiddenPosts
+import com.us.android.core.feed.data.AudioTrackDto
+import com.us.android.core.feed.data.AudioTracksApi
+import com.us.android.core.feed.data.AudioTracksDto
+import com.us.android.core.feed.data.AudioTracksRepository
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedFeedbackRequest
 import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.feed.data.GenerateAudioTrackRequest
 import com.us.android.core.feed.data.LibrarySoundUseDto
 import com.us.android.core.feed.data.LibraryTracksDto
 import com.us.android.core.feed.data.PollVoteRequest
+import com.us.android.core.feed.data.PostEdits
 import com.us.android.core.feed.data.SoundReelsDto
 import com.us.android.core.feed.data.SoundRowDto
 import com.us.android.core.feed.data.SoundsApi
 import com.us.android.core.feed.data.SoundsRepository
 import com.us.android.core.feed.data.UseSoundDto
+import com.us.android.core.feed.data.VideoAudio
 import com.us.android.core.feed.data.dto.FeedAuthorDto
 import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.feed.data.dto.FeedItemDto
@@ -79,7 +87,6 @@ import com.us.android.feature.feed.data.RecordingChannelApi
 import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.followGraph
 import com.us.android.feature.feed.data.subscriptionGraph
-import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -99,8 +106,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.MultipartBody
+import okhttp3.RequestBody
 import org.junit.Rule
 import org.junit.Test
+import java.io.IOException
 
 /**
  * The Reels tab's rules: what plays, which tab fetches what, what sits above
@@ -320,7 +330,42 @@ class ReelsViewModelTest {
         val watch: VideoWatchTracker = VideoWatchTracker.disabled(),
         val writes: EngagementWrites = AcceptingWrites(),
         val offline: OfflineLibrary = NoOfflineLibrary,
+        val audioApi: FakeAudioTracksApi = FakeAudioTracksApi(),
+        val audioLanguage: FakeAudioLanguageStore = FakeAudioLanguageStore(),
+        val edits: PostEdits = PostEdits(),
     )
+
+    /** media-service's audio-tracks routes, answering one list for every video. */
+    private class FakeAudioTracksApi(var tracks: List<AudioTrackDto> = emptyList()) : AudioTracksApi {
+        var lists = 0
+
+        override suspend fun list(mediaId: String): ApiEnvelope<AudioTracksDto> {
+            lists++
+            return ApiEnvelope(data = AudioTracksDto(tracks))
+        }
+
+        override suspend fun upload(
+            mediaId: String,
+            file: MultipartBody.Part,
+            language: RequestBody,
+            label: RequestBody?,
+        ): ApiEnvelope<AudioTrackDto> = error("not used")
+
+        override suspend fun generate(mediaId: String, body: GenerateAudioTrackRequest): ApiEnvelope<AudioTrackDto> =
+            error("not used")
+
+        override suspend fun delete(mediaId: String, trackId: String) = error("not used")
+    }
+
+    /** The viewer's audio language, in memory (2026-10-21). */
+    private class FakeAudioLanguageStore(initial: String? = null) : AudioLanguageStore {
+        val stored = MutableStateFlow(initial)
+        override val language: Flow<String?> = stored
+
+        override suspend fun setLanguage(language: String?) {
+            stored.value = language
+        }
+    }
 
     private fun viewModel(h: Harness = Harness(), store: EngagementStore = EngagementStore(h.writes)) = ReelsViewModel(
         repository = FeedRepository(h.api, ErrorMapper(json)) { it },
@@ -340,6 +385,8 @@ class ReelsViewModelTest {
         autoScrollStore = h.autoScrollStore,
         offline = h.offline,
         hidden = HiddenPosts(),
+        audio = VideoAudio(AudioTracksRepository(h.audioApi, ErrorMapper(json)), h.audioLanguage, resolver),
+        edits = h.edits,
     )
 
     private fun item(vararg media: FeedMedia, controls: FeedPostControls = FeedPostControls()) = FeedItem(
@@ -1846,5 +1893,93 @@ class ReelsViewModelTest {
 
         assertThat(vm.muted.value).isTrue()
         assertThat(h.soundStore.writes).isEmpty()
+    }
+
+    // ── Alternate audio (2026-10-21) ────────────────────────────────────
+
+    private val hindiReady = AudioTrackDto(
+        id = "t-hi",
+        language = "hi",
+        label = "Hindi",
+        source = "uploaded",
+        status = "ready",
+        playbackUrl = "/v1/media/m/serve/dub_hi_720p",
+    )
+    private val original = AudioTrackDto(id = "original", language = "und", label = "Original", source = "original", status = "ready")
+
+    @Test
+    fun `a reel plays the ready dub in the viewer's language, keeping one rendition`() = runTest {
+        val h = Harness(
+            audioApi = FakeAudioTracksApi(listOf(original, hindiReady)),
+            audioLanguage = FakeAudioLanguageStore("hi"),
+        )
+        val vm = viewModel(h)
+        val reel = item(video())
+
+        vm.onReelShown(reel)
+        advanceUntilIdle()
+
+        val playback = vm.playback(reel)!!
+        assertThat(playback.url).isEqualTo("http://127.0.0.1:8080/v1/media/m/serve/dub_hi_720p")
+        // A dub is one MP4, so the Quality row has Auto alone: the quality is fixed.
+        assertThat(playback.kind).isEqualTo(PlaybackKind.Progressive)
+        assertThat(vm.audioTrackId(reel)).isEqualTo("t-hi")
+        assertThat(vm.audioOptions(reel).map { it.label }).containsExactly("Original", "Hindi").inOrder()
+    }
+
+    @Test
+    fun `a language the reel has no ready track in plays the original`() = runTest {
+        val pending = hindiReady.copy(status = "processing", playbackUrl = null)
+        val h = Harness(
+            audioApi = FakeAudioTracksApi(listOf(original, pending)),
+            audioLanguage = FakeAudioLanguageStore("hi"),
+        )
+        val vm = viewModel(h)
+        val reel = item(video())
+
+        vm.onReelShown(reel)
+        advanceUntilIdle()
+
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+        assertThat(vm.audioTrackId(reel)).isEqualTo("original")
+        // The original alone is not a choice: the row is withheld.
+        assertThat(vm.audioOptions(reel).map { it.id }).containsExactly("original")
+    }
+
+    @Test
+    fun `picking a track stores its language, and picking the original clears it`() = runTest {
+        val h = Harness(audioApi = FakeAudioTracksApi(listOf(original, hindiReady)))
+        val vm = viewModel(h)
+        val reel = item(video())
+        vm.onReelShown(reel)
+        advanceUntilIdle()
+
+        vm.selectQuality(UsReelQuality.Height(720))
+        vm.selectAudioTrack(reel, "t-hi")
+        advanceUntilIdle()
+        assertThat(h.audioLanguage.stored.value).isEqualTo("hi")
+        assertThat(vm.playback(reel)!!.url).endsWith("/serve/dub_hi_720p")
+        // A rung picked on the ladder means nothing on a one-rendition dub.
+        assertThat(vm.quality.value).isEqualTo(UsReelQuality.Auto)
+
+        vm.selectAudioTrack(reel, "original")
+        advanceUntilIdle()
+        assertThat(h.audioLanguage.stored.value).isNull()
+        assertThat(vm.playback(reel)!!.kind).isEqualTo(PlaybackKind.Hls)
+    }
+
+    @Test
+    fun `a reel's tracks are read once however often it settles`() = runTest {
+        val h = Harness(audioApi = FakeAudioTracksApi(listOf(original)))
+        val vm = viewModel(h)
+        val reel = item(video())
+
+        vm.onReelShown(reel)
+        vm.onReelShown(reel)
+        advanceUntilIdle()
+        vm.onReelShown(reel)
+        advanceUntilIdle()
+
+        assertThat(h.audioApi.lists).isEqualTo(1)
     }
 }

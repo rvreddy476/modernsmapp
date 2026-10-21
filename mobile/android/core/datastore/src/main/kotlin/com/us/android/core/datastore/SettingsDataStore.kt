@@ -222,6 +222,23 @@ class SettingsDataStore @Inject constructor(
     }
 
     /**
+     * The viewer's audio language (founder, 2026-10-21: the app matches the
+     * web's `audioLanguage`): a lowercase language tag such as `hi`, or null
+     * for the original. ONE preference for reels and long videos alike, kept
+     * across restarts; every video that has a READY track in that language
+     * plays it, everything else plays the original.
+     */
+    val audioLanguage: Flow<String?> = store.data
+        .safe()
+        .map { prefs -> prefs[KEY_AUDIO_LANGUAGE]?.takeIf { it.isNotBlank() } }
+
+    suspend fun setAudioLanguage(language: String?) {
+        store.edit { prefs ->
+            if (language.isNullOrBlank()) prefs.remove(KEY_AUDIO_LANGUAGE) else prefs[KEY_AUDIO_LANGUAGE] = language
+        }
+    }
+
+    /**
      * The Appearance setting (T-32, 2026-10-15): System, Light or Dark.
      * System until the viewer picks, which is what the app did before the
      * setting existed.
@@ -290,6 +307,7 @@ class SettingsDataStore @Inject constructor(
         val KEY_REELS_AUTO_SCROLL = booleanPreferencesKey("reels_auto_scroll")
         val KEY_APPEARANCE_MODE = stringPreferencesKey("appearance_mode")
         val KEY_OFFLINE_DEVICE_ID = stringPreferencesKey("offline_device_id")
+        val KEY_AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
         const val KEYWORD_SEPARATOR = ","
     }
 }

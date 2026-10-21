@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
+import androidx.paging.map
 import com.us.android.core.analytics.AnalyticsEventType
 import com.us.android.core.analytics.AnalyticsRecorder
 import com.us.android.core.analytics.AnalyticsSurface
@@ -22,10 +23,15 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
+import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.PostEdits
 import com.us.android.core.feed.data.SoundsRepository
 import com.us.android.core.feed.data.SubscriptionGraph
+import com.us.android.core.feed.data.VideoAudio
+import com.us.android.core.feed.data.activeAudioTrackId
+import com.us.android.core.feed.data.applyTo
 import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.soundRefusalMessage
@@ -56,6 +62,7 @@ import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.ReelSound
 import com.us.android.core.model.canUseSound
 import com.us.android.core.ui.SPEED_NORMAL
+import com.us.android.core.ui.UsAudioTrackOption
 import com.us.android.core.ui.UsCaptionOption
 import com.us.android.core.ui.UsReelQuality
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -296,6 +303,10 @@ class ReelsViewModel @Inject constructor(
     /** Offline copies (2026-10-02): a stored reel plays from the device, and opens with no network. */
     private val offline: OfflineLibrary,
     hidden: HiddenPosts,
+    /** Alternate audio (2026-10-21): each reel's tracks and the viewer's one language. */
+    private val audio: VideoAudio,
+    /** The owner's saved edits (2026-10-21), layered over the rows. */
+    edits: PostEdits,
 ) : ViewModel() {
 
     /**
@@ -420,6 +431,11 @@ class ReelsViewModel @Inject constructor(
             // "Not interested" and Block from the more sheet — removed at once,
             // the same way the home feed removes them.
             if (set.isEmpty) page else page.filter { !set.hides(it) }
+        }
+        .combine(edits.edits) { page, saved ->
+            // The owner's Edit from the more sheet (2026-10-21): the new words
+            // at once, on the reel they were made on.
+            if (saved.isEmpty()) page else page.map { saved.applyTo(it) }
         }
 
     /**
@@ -734,7 +750,40 @@ class ReelsViewModel @Inject constructor(
      * processing asset's original — is [playbackFor].
      */
     fun playback(item: FeedItem): Playback? =
-        reelPlayback(storedCopy(item.id)?.playback(), urlResolver.playbackFor(item))
+        // A ready dub in the viewer's language wins over everything, the
+        // stored copy included, as the web's `sourceOverride` does.
+        audio.dubPlayback(item, audioLanguage.value, audioTracks.value)
+            ?: reelPlayback(storedCopy(item.id)?.playback(), urlResolver.playbackFor(item))
+
+    // ── Alternate audio (2026-10-21) ─────────────────────────────────────
+
+    /**
+     * The viewer's audio language, or null for the original: ONE preference
+     * for reels and long videos alike, kept across restarts. Eager, because
+     * [playback] reads it the moment the first reel is drawn.
+     */
+    val audioLanguage: StateFlow<String?> = audio.language
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Media id → its tracks, for every reel asked about. */
+    val audioTracks: StateFlow<Map<String, List<AudioTrack>>> = audio.tracks
+
+    /** The "Audio track" picker's choices for [item]: the original, then each ready dub; empty until read. */
+    fun audioOptions(item: FeedItem): List<UsAudioTrackOption> = audio.options(item)
+
+    /** The track [item] plays now, by id. */
+    fun audioTrackId(item: FeedItem): String = activeAudioTrackId(audio.tracksOf(item), audioLanguage.value)
+
+    /**
+     * A pick from "Audio track": its language becomes the viewer's, and the
+     * reel's page re-prepares onto the dub where it was ([PlayerPool] keeps
+     * the place for the same reel). Quality goes back to Auto: a dub is one
+     * rendition, so a rung picked on the ladder means nothing on it.
+     */
+    fun selectAudioTrack(item: FeedItem, trackId: String) {
+        viewModelScope.launch { audio.choose(item, trackId) }
+        _quality.value = UsReelQuality.Auto
+    }
 
     /**
      * The copy of a reel that plays from the device, or null when it plays
@@ -939,6 +988,9 @@ class ReelsViewModel @Inject constructor(
         (reelRelationship(item) as? ReelRelationship.Subscribe)?.let { subscribe ->
             viewModelScope.launch { subscriptions.ensureKnown(listOf(subscribe.ref)) }
         }
+        // Its audio tracks, once: the More sheet's "Audio track" row, and the
+        // viewer's language played when this reel has it.
+        viewModelScope.launch { audio.ensure(item) }
         startWatchAnalytics(item, probe, page)
     }
 

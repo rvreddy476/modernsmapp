@@ -26,6 +26,27 @@ class DataStoreReelsAutoScrollStore @Inject constructor(
 }
 
 /**
+ * The viewer's audio language (2026-10-21), ONE preference for reels and
+ * long videos alike, as the web keeps `audioLanguage`. A seam for the same
+ * reason [ReelsAutoScrollStore] is one: both video ViewModels are tested on
+ * the JVM against an in-memory store.
+ */
+interface AudioLanguageStore {
+    /** A lowercase language tag, or null for the original audio, which is where every viewer starts. */
+    val language: Flow<String?>
+
+    suspend fun setLanguage(language: String?)
+}
+
+class DataStoreAudioLanguageStore @Inject constructor(
+    private val dataStore: SettingsDataStore,
+) : AudioLanguageStore {
+    override val language: Flow<String?> get() = dataStore.audioLanguage
+
+    override suspend fun setLanguage(language: String?) = dataStore.setAudioLanguage(language)
+}
+
+/**
  * The Appearance setting (T-32, 2026-10-15): System, Light or Dark. Read by
  * the app's root, which hands the answer to `UsTheme(darkTheme =)`, and
  * written by the settings screen.

@@ -183,21 +183,7 @@ fun UsPostMoreSheet(
                     state = state,
                     ui = ui,
                     onRow = ::onRow,
-                    // A pick folds its picker and applies; the sheet stays.
-                    picks = MorePicks(
-                        onSelectQuality = { quality ->
-                            ui.qualityOpen = false
-                            callbacks.onSelectQuality(quality)
-                        },
-                        onSelectSpeed = { speed ->
-                            ui.speedOpen = false
-                            callbacks.onSelectSpeed(speed)
-                        },
-                        onSelectCaption = { language ->
-                            ui.captionsOpen = false
-                            callbacks.onSelectCaption(language)
-                        },
-                    ),
+                    picks = ui.picks(callbacks),
                 )
 
                 MoreStep.REPORT -> UsPostReportStep(
@@ -271,6 +257,27 @@ private class MorePresentation {
     var qualityOpen by mutableStateOf(false)
     var speedOpen by mutableStateOf(false)
     var captionsOpen by mutableStateOf(false)
+    var audioOpen by mutableStateOf(false)
+
+    /** What the pickers answer with: a pick folds its picker and applies; the sheet stays. */
+    fun picks(callbacks: UsPostMoreCallbacks) = MorePicks(
+        onSelectQuality = { quality ->
+            qualityOpen = false
+            callbacks.onSelectQuality(quality)
+        },
+        onSelectSpeed = { speed ->
+            speedOpen = false
+            callbacks.onSelectSpeed(speed)
+        },
+        onSelectCaption = { language ->
+            captionsOpen = false
+            callbacks.onSelectCaption(language)
+        },
+        onSelectAudioTrack = { trackId ->
+            audioOpen = false
+            callbacks.onSelectAudioTrack(trackId)
+        },
+    )
     var confirmBlock by mutableStateOf(false)
     var confirmDelete by mutableStateOf(false)
     var linkCopied by mutableStateOf(false)
@@ -301,6 +308,9 @@ private class MorePresentation {
             UsPostMoreRow.SAVE_OFFLINE,
             UsPostMoreRow.CANCEL_OFFLINE,
             UsPostMoreRow.REMOVE_OFFLINE,
+            UsPostMoreRow.AUDIO_TRACK,
+            UsPostMoreRow.MANAGE_AUDIO,
+            UsPostMoreRow.EDIT,
             -> onReelRow(row, callbacks, leaveThen)
             UsPostMoreRow.SAVE, UsPostMoreRow.UNSAVE -> callbacks.onToggleSave()
             UsPostMoreRow.COPY_LINK -> {
@@ -332,6 +342,9 @@ private class MorePresentation {
      * And the player's rows (T-32, 2026-10-15): Playback speed and Captions
      * unfold their pickers in place, like Quality; Auto scroll flips where it
      * is, so the viewer sees "On" before they leave.
+     *
+     * And the dub rows (2026-10-21): Audio track unfolds its picker in place;
+     * the owner's Audio tracks and Edit leave and then open their own sheet.
      */
     private fun onReelRow(row: UsPostMoreRow, callbacks: UsPostMoreCallbacks, leaveThen: (() -> Unit) -> Unit) {
         when (row) {
@@ -339,6 +352,9 @@ private class MorePresentation {
             UsPostMoreRow.QUALITY -> qualityOpen = !qualityOpen
             UsPostMoreRow.PLAYBACK_SPEED -> speedOpen = !speedOpen
             UsPostMoreRow.CAPTIONS -> captionsOpen = !captionsOpen
+            UsPostMoreRow.AUDIO_TRACK -> audioOpen = !audioOpen
+            UsPostMoreRow.MANAGE_AUDIO -> leaveThen(callbacks.onManageAudio)
+            UsPostMoreRow.EDIT -> leaveThen(callbacks.onEdit)
             UsPostMoreRow.AUTO_SCROLL -> callbacks.onToggleAutoScroll()
             UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS -> leaveThen(callbacks.onClearScreen)
             UsPostMoreRow.USE_SOUND -> leaveThen(callbacks.onUseSound)
@@ -351,11 +367,12 @@ private class MorePresentation {
 
 // ── The menu ────────────────────────────────────────────────────────────
 
-/** What the three pickers under a video's rows answer with: a rung, a speed, a caption track (null is Off). */
+/** What the four pickers under a video's rows answer with: a rung, a speed, a caption track (null is Off), an audio track. */
 private class MorePicks(
     val onSelectQuality: (UsReelQuality) -> Unit,
     val onSelectSpeed: (Float) -> Unit,
     val onSelectCaption: (String?) -> Unit,
+    val onSelectAudioTrack: (String) -> Unit,
 )
 
 /** The rows, one list, with the "Link copied" pill floating over the top. */
@@ -518,6 +535,15 @@ private fun playerValue(row: UsPostMoreRow, reel: UsReelMoreState?, ui: MorePres
                 )
             }
         }
+        UsPostMoreRow.AUDIO_TRACK -> {
+            {
+                RowValue(
+                    text = audioTrackValueLabel(reel?.audioTracks.orEmpty(), reel?.audioTrackId),
+                    open = ui.audioOpen,
+                    testTag = "post_more_audio_value",
+                )
+            }
+        }
         else -> null
     }
 
@@ -569,6 +595,15 @@ private fun PlayerPicker(row: UsPostMoreRow, reel: UsReelMoreState?, ui: MorePre
                     }
                 },
             tagPrefix = "post_more_captions",
+        )
+        // The original first, then each ready dub — the host's order.
+        UsPostMoreRow.AUDIO_TRACK -> OptionPicker(
+            open = ui.audioOpen,
+            options = reel.audioTracks.map { track ->
+                val chosen = track.id == (reel.audioTrackId ?: reel.audioTracks.firstOrNull()?.id)
+                PickerOption(track.label, track.id, chosen) { picks.onSelectAudioTrack(track.id) }
+            },
+            tagPrefix = "post_more_audio",
         )
         else -> Unit
     }
@@ -688,7 +723,7 @@ private fun OptionLine(option: PickerOption, testTag: String) {
  * sliders · music), the four about the author (user-x · user-minus · user-plus ·
  * ban), then the post's own.
  */
-private fun UsPostMoreRow.icon(): ImageVector = reelIcon() ?: personIcon() ?: postIcon()
+private fun UsPostMoreRow.icon(): ImageVector = reelIcon() ?: dubIcon() ?: personIcon() ?: postIcon()
 
 private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.DESCRIPTION -> UsIcons.FileText
@@ -702,6 +737,14 @@ private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.SAVE_OFFLINE -> UsIcons.Download
     UsPostMoreRow.CANCEL_OFFLINE -> UsIcons.Close
     UsPostMoreRow.REMOVE_OFFLINE -> UsIcons.Trash
+    else -> null
+}
+
+/** A video's dub and owner rows (2026-10-21), the web's glyphs (VideoMoreMenu): audio-lines, languages, pencil. */
+private fun UsPostMoreRow.dubIcon(): ImageVector? = when (this) {
+    UsPostMoreRow.AUDIO_TRACK -> UsIcons.AudioLines
+    UsPostMoreRow.MANAGE_AUDIO -> UsIcons.Languages
+    UsPostMoreRow.EDIT -> UsIcons.Pencil
     else -> null
 }
 
@@ -727,6 +770,9 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.SAVE_OFFLINE,
     UsPostMoreRow.CANCEL_OFFLINE,
     UsPostMoreRow.REMOVE_OFFLINE,
+    UsPostMoreRow.AUDIO_TRACK,
+    UsPostMoreRow.MANAGE_AUDIO,
+    UsPostMoreRow.EDIT,
     -> error("a reel row: $this")
     UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK ->
         error("a row about the author: $this")

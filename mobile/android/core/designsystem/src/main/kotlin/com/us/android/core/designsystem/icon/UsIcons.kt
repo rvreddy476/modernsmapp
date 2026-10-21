@@ -915,6 +915,40 @@ object UsIcons {
         "M16 3l-2 18",
     )
 
+    /** Lucide `audio-lines` — a video's "Audio track" row, the viewer's pick of dub (2026-10-21, as the web). */
+    val AudioLines: ImageVector = lucideStroked(
+        "AudioLines",
+        "M2 10v3",
+        "M6 6v11",
+        "M10 3v18",
+        "M14 8v7",
+        "M18 5v13",
+        "M22 10v3",
+    )
+
+    /** Lucide `languages` — the creator's "Audio tracks" row: upload or generate a dub (2026-10-21, as the web). */
+    val Languages: ImageVector = lucideStroked(
+        "Languages",
+        "m5 8 6 6",
+        "m4 14 6-6 2-3",
+        "M2 5h12",
+        "M7 2h1",
+        "m22 22-5-10-5 10",
+        "M14 18h6",
+    )
+
+    /** Lucide `sparkles` — "Generate a dub" in the creator's audio tracks sheet. */
+    val Sparkles: ImageVector = lucideStroked(
+        "Sparkles",
+        "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5" +
+            "l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964" +
+            "L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z",
+        "M20 3v4",
+        "M22 5h-4",
+        "M4 17v2",
+        "M5 18H3",
+    )
+
     /**
      * Lucide `music` — the note on a reel's sound line, and wherever a sound
      * is named (original sounds, 2026-09-30).

@@ -21,9 +21,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
@@ -89,11 +89,15 @@ import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.feed.data.AudioTrack
+import com.us.android.core.feed.data.videoMediaId
 import com.us.android.core.feed.offline.OfflineEntry
 import com.us.android.core.feed.offline.OfflinePhase
 import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.offline.WAITING_FOR_NETWORK
+import com.us.android.core.feed.ui.audio.AudioTracksSheet
 import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.edit.PostEditSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.feed.ui.share.PostShareSheetHost
@@ -123,10 +127,10 @@ import com.us.android.core.ui.StageBottomScrim
 import com.us.android.core.ui.StageCaption
 import com.us.android.core.ui.StageCaptionState
 import com.us.android.core.ui.StagePausedGlyph
+import com.us.android.core.ui.StagePlayheadLine
 import com.us.android.core.ui.StageRail
 import com.us.android.core.ui.StageRailAuthor
 import com.us.android.core.ui.StageRailBadge
-import com.us.android.core.ui.StagePlayheadLine
 import com.us.android.core.ui.StageVolumeControl
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -139,11 +143,11 @@ import com.us.android.core.ui.stagePressScale
 import com.us.android.feature.feed.R
 import com.us.android.feature.feed.ui.stageRailControls
 import com.us.android.feature.feed.ui.watchProbe
-import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * The reels surface: Instagram Reels on Momentum's palette (founder,
@@ -246,6 +250,9 @@ fun ReelsScreen(
     RefreshTriggers(viewModel = viewModel, pagerState = pagerState)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
+    // The owner's Edit and Audio tracks (2026-10-21): the reel being edited, the media whose dubs are managed.
+    var editFor by remember { mutableStateOf<FeedItem?>(null) }
+    var audioFor by remember { mutableStateOf<String?>(null) }
     // The reel the pager has settled on — what the header's More opens
     // the more sheet FOR. Null over the pending head, where there is no
     // reel yet to describe or report; More then does nothing.
@@ -329,7 +336,9 @@ fun ReelsScreen(
             showHeader = chrome.showHeader,
             // With no reel to open the sheet for (the feed did not load, as with no
             // network), More goes straight to what the device keeps.
-            onOpenMenu = { settledReel?.let { moreFor = it } ?: onOpenOffline() },
+            // The row as the list has it NOW: an Edit saved since the reel
+            // settled is in the list, not in the reel captured at the settle.
+            onOpenMenu = { settledReel?.let { moreFor = items.current(it) } ?: onOpenOffline() },
             onClearScreen = viewModel::toggleMode,
             muted = view.muted,
             onToggleMute = viewModel::toggleMuted,
@@ -355,8 +364,12 @@ fun ReelsScreen(
             trackHeights = trackHeights,
             onShare = onShare,
             onDismiss = { moreFor = null },
+            onEdit = { editFor = it },
+            onManageAudio = { reel -> audioFor = reel.videoMediaId() },
         )
     }
+
+    ReelOwnerSheets(editFor, audioFor, onCloseEdit = { editFor = null }, onCloseAudio = { audioFor = null })
 
     shareFor?.let { item ->
         PostShareSheetHost(
@@ -366,6 +379,17 @@ fun ReelsScreen(
             onDismiss = { shareFor = null },
         )
     }
+}
+
+/** [reel] as the loaded pages hold it now, else as it was handed over (the head slot's reel). */
+private fun LazyPagingItems<FeedItem>.current(reel: FeedItem): FeedItem =
+    itemSnapshotList.items.firstOrNull { it.id == reel.id } ?: reel
+
+/** The owner's two sheets from More (2026-10-21), over the playing reel: Edit, and the dub manager. */
+@Composable
+private fun ReelOwnerSheets(editFor: FeedItem?, audioFor: String?, onCloseEdit: () -> Unit, onCloseAudio: () -> Unit) {
+    editFor?.let { item -> PostEditSheet(postId = item.id, longVideo = false, onDismiss = onCloseEdit) }
+    audioFor?.let { mediaId -> AudioTracksSheet(mediaId = mediaId, onDismiss = onCloseAudio) }
 }
 
 /**
@@ -383,6 +407,10 @@ private fun ReelMoreSheet(
     trackHeights: List<Int>,
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
+    /** The owner's Edit (2026-10-21): the screen opens the edit sheet. */
+    onEdit: (FeedItem) -> Unit,
+    /** The owner's Audio tracks (2026-10-21): the screen opens the dub manager. */
+    onManageAudio: (FeedItem) -> Unit,
 ) {
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
@@ -391,6 +419,9 @@ private fun ReelMoreSheet(
     val autoScroll by viewModel.autoScroll.collectAsStateWithLifecycle()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
+    // Read so a pick, or tracks that land while the sheet is open, re-draw the Audio track row.
+    val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
+    val audioLanguage by viewModel.audioLanguage.collectAsStateWithLifecycle()
     PostMoreSheetHost(
         item = item,
         overlay = overlays[item.id] ?: EngagementOverlay(),
@@ -414,6 +445,9 @@ private fun ReelMoreSheet(
             captions = viewModel.captions(item),
             captionLanguage = captionLanguage,
             autoScroll = autoScroll,
+            // "Audio track" (2026-10-21): offered once the reel has a ready dub.
+            audioTracks = remember(audioTracks, item.id) { viewModel.audioOptions(item) },
+            audioTrackId = remember(audioTracks, audioLanguage, item.id) { viewModel.audioTrackId(item) },
         ),
         onClearScreen = viewModel::toggleMode,
         onSelectQuality = viewModel::selectQuality,
@@ -422,6 +456,9 @@ private fun ReelMoreSheet(
         onSelectSpeed = viewModel::selectSpeed,
         onSelectCaption = viewModel::selectCaption,
         onToggleAutoScroll = viewModel::toggleAutoScroll,
+        onSelectAudioTrack = { trackId -> viewModel.selectAudioTrack(item, trackId) },
+        onEdit = onEdit,
+        onManageAudio = onManageAudio,
     )
 }
 
@@ -437,6 +474,8 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
     val autoScroll by viewModel.autoScroll.collectAsStateWithLifecycle()
     val captionLanguage by viewModel.captionLanguage.collectAsStateWithLifecycle()
     val offline by viewModel.offlineState.collectAsStateWithLifecycle()
+    val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
+    val audioLanguage by viewModel.audioLanguage.collectAsStateWithLifecycle()
     return ReelsViewState(
         muted = muted,
         paused = paused,
@@ -448,6 +487,8 @@ private fun rememberReelsViewState(viewModel: ReelsViewModel): ReelsViewState {
         soundChoiceRead = soundChoiceRead,
         fullMode = mode == ReelsMode.FULL,
         offline = offline,
+        audioTracks = audioTracks,
+        audioLanguage = audioLanguage,
     )
 }
 
@@ -693,6 +734,13 @@ internal data class ReelsViewState(
     val fullMode: Boolean = false,
     /** Where each reel's offline copy stands on this device (2026-10-02). */
     val offline: OfflineState = OfflineState(),
+    /**
+     * Alternate audio (2026-10-21): the tracks known and the viewer's language.
+     * Here so a pick re-draws the pages and each asks its playback again — a
+     * ready dub in that language is what plays ([ReelsViewModel.playback]).
+     */
+    val audioTracks: Map<String, List<AudioTrack>> = emptyMap(),
+    val audioLanguage: String? = null,
 ) {
     /** The settled reel may run: not paused, and the viewer's choice of sound is known. */
     val mayPlay: Boolean get() = reelMayPlay(paused, soundChoiceRead)
@@ -1016,7 +1064,7 @@ private fun ReelsPager(
     LaunchedEffect(pagerState.settledPage, pageCount, head, settledReelId) {
         val current = pagerState.settledPage
         val reel = reelAt(current)
-        val player = reel?.let(playbackFor)?.let { pool.acquire(current, it) }
+        val player = reel?.let(playbackFor)?.let { pool.acquire(current, it, reel.id) }
         settledPlayer = player
         actions.onSettledReel(reel)
         actions.onSettledPlayer(player)
@@ -1030,7 +1078,7 @@ private fun ReelsPager(
         // it; what may still hold the reel is the choice of sound.
         if (soundChoiceRead) pool.playOnly(current)
         listOf(current - 1, current + 1).forEach { index ->
-            reelAt(index)?.let(playbackFor)?.let { pool.preload(index, it) }
+            reelAt(index)?.let { neighbour -> playbackFor(neighbour)?.let { pool.preload(index, it, neighbour.id) } }
         }
     }
 
@@ -1306,6 +1354,7 @@ private fun ReelPage(
         if (playback != null) {
             ReelVideo(
                 playback = playback,
+                contentId = item.id,
                 mixed = settled && item.sound != null,
                 pool = pool,
                 sound = sound,
@@ -1416,6 +1465,8 @@ private fun ReelPage(
 @Composable
 private fun ReelVideo(
     playback: Playback,
+    /** The reel's post id: a new [playback] for the SAME reel (an audio track picked) keeps its place. */
+    contentId: String,
     mixed: Boolean,
     pool: PlayerPool,
     sound: ReelSoundPlayer,
@@ -1426,7 +1477,7 @@ private fun ReelVideo(
     offline: OfflineEntry?,
     onProgress: (Float) -> Unit,
 ) {
-    val player = remember(page, playback) { pool.acquire(page, playback) }
+    val player = remember(page, playback) { pool.acquire(page, playback, contentId) }
     LaunchedEffect(view.muted, player, mixed) {
         if (!mixed) player.volume = appliedVolume(PLAIN_LEVEL, view.muted)
     }

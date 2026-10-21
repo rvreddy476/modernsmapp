@@ -167,6 +167,24 @@ data class UsReelMoreState(
      * to; its "Autoplay next episode" is on the gear's sheet.
      */
     val autoScroll: Boolean? = null,
+    /**
+     * "Audio track" (2026-10-21, the web's row): the original first, then
+     * every READY alternate. The row is offered only when there is more than
+     * one — the original counts as one — and to the owner too, as on the web.
+     */
+    val audioTracks: List<UsAudioTrackOption> = emptyList(),
+    /** The track playing now, by [UsAudioTrackOption.id]; shown at the right of the row. */
+    val audioTrackId: String? = null,
+    /**
+     * The owner's "Edit" (2026-10-21): the host has an edit sheet for this
+     * video. Read only on the viewer's OWN video — see [videoRows].
+     */
+    val canEdit: Boolean = false,
+    /**
+     * The owner's "Audio tracks" (2026-10-21): the host can open the dub
+     * manager for this video (it has a media id). Own videos only.
+     */
+    val canManageAudio: Boolean = false,
 ) {
     /**
      * Auto alone means there is nothing to pick — the reel plays its original
@@ -175,6 +193,14 @@ data class UsReelMoreState(
      */
     val canPickQuality: Boolean get() = qualities.size > 1
 }
+
+/**
+ * One choice of the "Audio track" picker: the original, or a ready dub. The
+ * id is the server's track id ("original" for the original), the label what
+ * the creator called it, else the language's name.
+ */
+@Immutable
+data class UsAudioTrackOption(val id: String, val label: String)
 
 /** One entry of the reel's quality picker: the player's own choice, or one rung of the HLS ladder. */
 sealed interface UsReelQuality {
@@ -274,6 +300,15 @@ enum class UsPostMoreRow(val label: String) {
 
     /** Reels only: make a reel with this reel's sound. */
     USE_SOUND("Use this sound"),
+
+    /** Videos with more than one audio track (2026-10-21): the original and each ready dub, the one playing at the right. */
+    AUDIO_TRACK("Audio track"),
+
+    /** The owner's video (2026-10-21): the dub manager — list, upload, generate, delete. */
+    MANAGE_AUDIO("Audio tracks"),
+
+    /** The owner's video (2026-10-21): the edit sheet — title, description, visibility and the rest. */
+    EDIT("Edit"),
 
     /** Videos: keep this video inside the app, to watch with no network. Never a file download. */
     SAVE_OFFLINE("Save offline"),
@@ -387,7 +422,13 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
  *  - "Use this sound": a reel whose sound may be reused ([UsReelMoreState.canUseSound]).
  *  - The owner's rows: on the viewer's OWN video, Delete stands in for the four
  *    rows that act on "the channel" or judge the video (Block, Don't recommend,
- *    Not interested, Report) — nobody blocks or reports themselves.
+ *    Not interested, Report) — nobody blocks or reports themselves — and,
+ *    since 2026-10-21 (the web's context rows), "Audio tracks" and "Edit"
+ *    where the host has those screens ([UsReelMoreState.canManageAudio],
+ *    [UsReelMoreState.canEdit]).
+ *
+ * "Audio track" (2026-10-21) is a shared row, the owner's too: offered when
+ * the video has more than one track, the original counting as one.
  *
  * And one rule that is the creator's, the same on both: Share is withheld
  * when they turned sharing off (`hide_share`), as the reel's rail already
@@ -413,9 +454,17 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
     // No Share row (founder, 2026-10-19): a reel has Share on its rail, a
     // long video on the action row under it.
     if (reel?.canUseSound == true) add(UsPostMoreRow.USE_SOUND)
+    // The web's rule (moreRows.ts): a picker with one entry is not a choice,
+    // so the row needs the original AND a ready dub. Shared: the owner gets
+    // it too, to hear their own dubs.
+    if ((reel?.audioTracks?.size ?: 0) > 1) add(UsPostMoreRow.AUDIO_TRACK)
     addAll(offlineRows())
     if (isOwnPost) {
         add(UsPostMoreRow.DELETE)
+        // The owner's context rows, each only where its screen exists on
+        // this host (the web's `can.manageAudio` and `can.edit`).
+        if (reel?.canManageAudio == true) add(UsPostMoreRow.MANAGE_AUDIO)
+        if (reel?.canEdit == true) add(UsPostMoreRow.EDIT)
         return@buildList
     }
     // The web's list (founder, 2026-10-21: "both web and app should be the

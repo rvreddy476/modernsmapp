@@ -59,4 +59,18 @@ class PlayerPrefsTest {
             assertThat(DataStoreAppearanceStore(settings()).mode.first()).isEqualTo(mode)
         }
     }
+
+    @Test
+    fun `the audio language is the original for a viewer who never chose`() = runTest {
+        assertThat(DataStoreAudioLanguageStore(settings()).language.first()).isNull()
+    }
+
+    @Test
+    fun `an audio language is kept, and the original again too`() = runTest {
+        DataStoreAudioLanguageStore(settings()).setLanguage("hi")
+        assertThat(DataStoreAudioLanguageStore(settings()).language.first()).isEqualTo("hi")
+
+        DataStoreAudioLanguageStore(settings()).setLanguage(null)
+        assertThat(DataStoreAudioLanguageStore(settings()).language.first()).isNull()
+    }
 }

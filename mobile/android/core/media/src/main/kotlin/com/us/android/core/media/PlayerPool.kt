@@ -56,12 +56,26 @@ class PlayerPool @Inject constructor(
      * rather than a new one allocated. Reclaiming stops playback and clears
      * the media item, so the returned instance is always in a known state.
      */
-    fun acquire(pageIndex: Int, playback: Playback): ExoPlayer {
+    fun acquire(pageIndex: Int, playback: Playback, contentId: String? = null): ExoPlayer {
         players[pageIndex]?.let { existing ->
-            if (playbacks[pageIndex] == playback) return existing
+            if (playbacks[pageIndex] == playback) {
+                if (contentId != null) contents[pageIndex] = contentId
+                return existing
+            }
+            // The SAME video with another source — its audio track switched
+            // (2026-10-21) — keeps its place and its play state, as the web's
+            // player does; a different video at this index starts clean.
+            val keep = keepsPlace(contents[pageIndex], contentId)
+            val position = existing.currentPosition
+            val playing = existing.playWhenReady
             existing.stop()
             existing.clearMediaItems()
-            return prepare(existing, pageIndex, playback)
+            return prepare(existing, pageIndex, playback, contentId).also { player ->
+                if (keep) {
+                    player.seekTo(position)
+                    player.playWhenReady = playing
+                }
+            }
         }
 
         val player = if (players.size >= MAX_PLAYERS) {
@@ -69,16 +83,24 @@ class PlayerPool @Inject constructor(
         } else {
             playerFactory.create()
         }
-        return prepare(player, pageIndex, playback)
+        return prepare(player, pageIndex, playback, contentId)
     }
 
-    private fun prepare(player: ExoPlayer, pageIndex: Int, playback: Playback): ExoPlayer {
+    private fun prepare(player: ExoPlayer, pageIndex: Int, playback: Playback, contentId: String?): ExoPlayer {
         player.setMediaSource(sources.create(playback))
         player.prepare()
         players[pageIndex] = player
         playbacks[pageIndex] = playback
+        if (contentId != null) contents[pageIndex] = contentId else contents.remove(pageIndex)
         return player
     }
+
+    /**
+     * Which video (by the caller's id — a post id) each player holds, when
+     * the caller said. What tells an audio-track swap on the same reel, which
+     * keeps its place, from an index shift onto another reel, which must not.
+     */
+    private val contents = mutableMapOf<Int, String>()
 
     /**
      * Warms the item at [pageIndex] without playing it.
@@ -88,9 +110,9 @@ class PlayerPool @Inject constructor(
      * immediate neighbours: preloading further ahead spends the user's data on
      * videos most of them will never reach.
      */
-    fun preload(pageIndex: Int, playback: Playback) {
+    fun preload(pageIndex: Int, playback: Playback, contentId: String? = null) {
         if (playbacks[pageIndex] == playback) return
-        acquire(pageIndex, playback).playWhenReady = false
+        acquire(pageIndex, playback, contentId).playWhenReady = false
     }
 
     /** Plays [pageIndex] and pauses every other player. */
@@ -118,6 +140,7 @@ class PlayerPool @Inject constructor(
         players.values.forEach { it.release() }
         players.clear()
         playbacks.clear()
+        contents.clear()
     }
 
     private fun recycleFurthestFrom(pageIndex: Int): ExoPlayer {
@@ -125,6 +148,7 @@ class PlayerPool @Inject constructor(
             ?: error("pool reported full but held no players")
         val player = players.remove(victim)!!
         playbacks.remove(victim)
+        contents.remove(victim)
         player.stop()
         player.clearMediaItems()
         return player
@@ -184,3 +208,11 @@ internal const val UNSET_POSITION = C.TIME_UNSET
 /** Convenience for surfaces that only care whether something is playing. */
 val Player.isActuallyPlaying: Boolean
     get() = playWhenReady && playbackState == Player.STATE_READY
+
+/**
+ * Whether a re-prepare at one page keeps the playhead: only when the caller
+ * named the video both times and it is the same video — a source swap such
+ * as an audio track (2026-10-21). Anything unnamed starts from the top, as
+ * every re-prepare did before.
+ */
+internal fun keepsPlace(before: String?, after: String?): Boolean = before != null && before == after

@@ -8,6 +8,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
+import com.us.android.core.feed.data.videoMediaId
 import com.us.android.core.feed.offline.offlineMoreState
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
@@ -91,6 +92,23 @@ fun PostMoreSheetHost(
     onSelectCaption: (String?) -> Unit = {},
     /** Reels alone (T-32): "Auto scroll" was tapped; the host flips and stores it. */
     onToggleAutoScroll: () -> Unit = {},
+    /**
+     * The video hosts (2026-10-21): an audio track was picked by id from the
+     * "Audio track" row ([UsReelMoreState.audioTracks] feeds it); the host
+     * stores the language and switches its player where it is.
+     */
+    onSelectAudioTrack: (String) -> Unit = {},
+    /**
+     * The video hosts (2026-10-21): the owner's "Edit". Non-null means this
+     * host HAS the edit sheet, which is what offers the row — the web's
+     * `can.edit`. The sheet has left when it fires.
+     */
+    onEdit: ((FeedItem) -> Unit)? = null,
+    /**
+     * The video hosts (2026-10-21): the owner's "Audio tracks", the dub
+     * manager. Non-null offers the row, for a video that has a media id.
+     */
+    onManageAudio: ((FeedItem) -> Unit)? = null,
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
@@ -113,6 +131,9 @@ fun PostMoreSheetHost(
         onSelectSpeed,
         onSelectCaption,
         onToggleAutoScroll,
+        onSelectAudioTrack,
+        onEdit,
+        onManageAudio,
     ) {
         UsPostMoreCallbacks(
             onToggleSave = { viewModel.toggleSave(item) },
@@ -136,6 +157,9 @@ fun PostMoreSheetHost(
             onSelectSpeed = onSelectSpeed,
             onSelectCaption = onSelectCaption,
             onToggleAutoScroll = onToggleAutoScroll,
+            onSelectAudioTrack = onSelectAudioTrack,
+            onEdit = { onEdit?.invoke(item) },
+            onManageAudio = { onManageAudio?.invoke(item) },
         )
     }
     UsPostMoreSheet(
@@ -145,7 +169,7 @@ fun PostMoreSheetHost(
             ownUserId = ownUserId,
             report = report,
             delete = delete,
-            reel = reel,
+            reel = reel?.withOwnerSheets(item, edit = onEdit != null, manageAudio = onManageAudio != null),
             dontRecommend = dontRecommend,
             suggested = suggested,
             longVideo = longVideo,
@@ -164,6 +188,14 @@ fun PostMoreSheetHost(
         onDismiss = onDismiss,
     )
 }
+
+/**
+ * The owner's two rows (2026-10-21) exist only where the host has their
+ * sheets — the web's `can.edit` and `can.manageAudio` — and the dub manager
+ * only for a video with a media id to hang tracks off.
+ */
+private fun UsReelMoreState.withOwnerSheets(item: FeedItem, edit: Boolean, manageAudio: Boolean): UsReelMoreState =
+    copy(canEdit = edit, canManageAudio = manageAudio && item.videoMediaId() != null)
 
 /**
  * The sheet's state for one row: the server's values with this session's
