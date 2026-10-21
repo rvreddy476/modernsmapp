@@ -112,9 +112,11 @@ class UsOfflineRowsTest {
         val labels = state(UsOfflineMoreState(UsOfflineAction.REMOVE)).labels()
 
         assertThat(labels).containsExactly(
+            "Block @raghu",
             "Copy link",
             "Description",
             "Don't recommend this channel",
+            "Not interested",
             "Quality",
             "Report",
         ).inOrder()
@@ -137,9 +139,11 @@ class UsOfflineRowsTest {
     fun `a host that keeps no offline copies shows the list it showed before`() {
         assertThat(state(offline = null).offlineOnly()).isEmpty()
         assertThat(state(offline = null).labels()).containsExactly(
+            "Block @raghu",
             "Copy link",
             "Description",
             "Don't recommend this channel",
+            "Not interested",
             "Quality",
             "Report",
         ).inOrder()

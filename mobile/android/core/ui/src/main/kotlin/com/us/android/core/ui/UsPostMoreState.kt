@@ -16,6 +16,8 @@ data class UsPostMoreState(
     val postId: String,
     /** The handle without `@`, or the display name when the account has none. */
     val username: String,
+    /** The channel's name (else the author's display name) a video's "Block <channel>" row reads; blank → the handle. */
+    val channelName: String = "",
     /** The viewer's own post: no Interested / Not interested, no Follow, no Block, no Report — Delete instead. */
     val isOwnPost: Boolean,
     /** Server value with this session's tap layered in — flips the Save row's label. */
@@ -368,10 +370,11 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
  * must be the same in Reels and in long videos"). One function, so the two
  * cannot drift again; [rows] puts it in alphabetical order:
  *
- *   Copy link · Description · Don't recommend this channel · Playback speed ·
- *   Quality · Report
+ *   Block <channel> · Copy link · Description · Don't recommend this channel ·
+ *   Not interested · Playback speed · Quality · Report
  *
- * (2026-10-19: Block, Not interested, Share and Save offline left the sheet.)
+ * (2026-10-19: Share and Save offline left the sheet; 2026-10-21: Block and
+ * Not interested are back, so the list matches the web's moreRows.)
  *
  * Playback speed is listed when the host offers speeds (T-32, 2026-10-15:
  * both do), and Captions only when the video HAS caption tracks — a row that
@@ -415,9 +418,12 @@ internal fun UsPostMoreState.videoRows(): List<UsPostMoreRow> = buildList {
         add(UsPostMoreRow.DELETE)
         return@buildList
     }
-    // No Block here (2026-10-19): it is on the channel's profile.
-    // One "show me less" row (2026-10-19): Don't recommend; no Not interested.
+    // The web's list (founder, 2026-10-21: "both web and app should be the
+    // same"): Block, and both "show me less" rows — Not interested hides this
+    // video, Don't recommend the whole channel.
+    add(UsPostMoreRow.BLOCK)
     add(UsPostMoreRow.DONT_RECOMMEND)
+    add(UsPostMoreRow.NOT_INTERESTED)
     add(UsPostMoreRow.REPORT)
 }
 
@@ -467,27 +473,27 @@ private const val PERCENT = 100
  *
  * On a feed post the rows that act on the author carry the handle
  * ([menuLabel]). On a video — a reel and a long video alike (2026-10-02) —
- * the words are fixed: "Block channel", "Don't recommend this channel" and a
- * plain "Delete". Fixed, not "Block <name>", so the list reads the same, in
- * the same order, on every video; WHO is blocked is named where it is
- * confirmed ([blockConfirmTitle]).
+ * the words are the web's (2026-10-21): "Block <channel>", "Don't recommend
+ * this channel" and a plain "Delete".
  */
 fun UsPostMoreState.labelOf(row: UsPostMoreRow): String = when (surface) {
     UsPostMoreSurface.POST -> row.menuLabel(username)
     UsPostMoreSurface.REEL, UsPostMoreSurface.LONG_VIDEO -> when (row) {
-        UsPostMoreRow.BLOCK -> BLOCK_CHANNEL
+        UsPostMoreRow.BLOCK -> "Block ${videoChannelName()}"
         UsPostMoreRow.DONT_RECOMMEND -> DONT_RECOMMEND_CHANNEL
         UsPostMoreRow.DELETE -> "Delete"
         else -> row.label
     }
 }
 
-/** "Block <who>?": the confirmation names the channel a video's "Block channel" row did not. */
-fun UsPostMoreState.blockConfirmTitle(): String = when (surface) {
-    UsPostMoreSurface.POST -> "${labelOf(UsPostMoreRow.BLOCK)}?"
-    UsPostMoreSurface.REEL, UsPostMoreSurface.LONG_VIDEO ->
-        "Block ${longVideo?.channelName?.takeIf { it.isNotBlank() } ?: "@$username"}?"
-}
+/** "Block <who>?": the confirmation repeats the row's words. */
+fun UsPostMoreState.blockConfirmTitle(): String = "${labelOf(UsPostMoreRow.BLOCK)}?"
+
+/** The channel a video's Block row names, as the web's menu does: its name, else the handle. */
+private fun UsPostMoreState.videoChannelName(): String =
+    longVideo?.channelName?.takeIf { it.isNotBlank() }
+        ?: channelName.takeIf { it.isNotBlank() }
+        ?: "@$username"
 
 /** What the delete confirmation asks, by what is being deleted. */
 fun UsPostMoreState.deleteConfirmTitle(): String = "Delete ${thingName()}?"
@@ -503,9 +509,6 @@ private fun UsPostMoreState.thingName(): String = when (surface) {
 
 /** What a video with no caption unfolds under Description. */
 const val NO_DESCRIPTION = "No description"
-
-/** A video's Block row, on a reel and a long video alike. */
-private const val BLOCK_CHANNEL = "Block channel"
 
 /** A video's "Don't recommend" row, on a reel and a long video alike. */
 private const val DONT_RECOMMEND_CHANNEL = "Don't recommend this channel"

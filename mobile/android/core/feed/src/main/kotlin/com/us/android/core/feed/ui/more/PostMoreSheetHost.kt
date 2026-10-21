@@ -186,6 +186,7 @@ fun FeedItem.toMoreState(
     return UsPostMoreState(
         postId = id,
         username = author.username?.takeIf { it.isNotBlank() } ?: author.nameForDisplay,
+        channelName = creatorName,
         isOwnPost = own,
         isBookmarked = overlay.bookmarkedOr(viewer.isBookmarked),
         followRow = if (own) UsPostMoreFollowRow.HIDDEN else moreFollowRow(followEdge),

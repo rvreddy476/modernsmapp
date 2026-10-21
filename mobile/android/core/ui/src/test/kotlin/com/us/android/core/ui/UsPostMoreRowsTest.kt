@@ -136,9 +136,11 @@ class UsPostMoreRowsTest {
         val labels = state(reason = "Trending").copy(reel = reel(canUseSound = true)).labels()
 
         assertThat(labels).containsExactly(
+            "Block @call_userb",
             "Copy link",
             "Description",
             "Don't recommend this channel",
+            "Not interested",
             "Quality",
             "Report",
             "Use this sound",
@@ -150,9 +152,11 @@ class UsPostMoreRowsTest {
         val labels = state(follow = UsPostMoreFollowRow.UNFOLLOW).copy(reel = reel(), longVideo = longVideo()).labels()
 
         assertThat(labels).containsExactly(
+            "Block Clee Builds",
             "Copy link",
             "Description",
             "Don't recommend this channel",
+            "Not interested",
             "Quality",
             "Report",
         ).inOrder()
@@ -174,9 +178,9 @@ class UsPostMoreRowsTest {
 
     /** The same row reads differently on a feed post and on a video, and the sheet draws and sorts by what it reads. */
     @Test
-    fun `a video's words are fixed and the same on a reel and a long video, a feed post's carry the handle`() {
+    fun `a video's words are the web's and the same on a reel and a long video, a feed post's carry the handle`() {
         val post = state()
-        val onReel = state().copy(reel = reel())
+        val onReel = state().copy(reel = reel(), channelName = "Clee Builds")
         val onVideo = state().copy(reel = reel(), longVideo = longVideo())
 
         assertThat(post.labelOf(UsPostMoreRow.DONT_RECOMMEND)).isEqualTo("Don't recommend @call_userb")
@@ -185,7 +189,7 @@ class UsPostMoreRowsTest {
 
         for (video in listOf(onReel, onVideo)) {
             assertThat(video.labelOf(UsPostMoreRow.DONT_RECOMMEND)).isEqualTo("Don't recommend this channel")
-            assertThat(video.labelOf(UsPostMoreRow.BLOCK)).isEqualTo("Block channel")
+            assertThat(video.labelOf(UsPostMoreRow.BLOCK)).isEqualTo("Block Clee Builds")
             assertThat(video.labelOf(UsPostMoreRow.DELETE)).isEqualTo("Delete")
             assertThat(video.labelOf(UsPostMoreRow.COPY_LINK)).isEqualTo("Copy link")
         }
@@ -193,11 +197,12 @@ class UsPostMoreRowsTest {
         assertThat(onReel.labels()).isEqualTo(onVideo.labels())
     }
 
-    /** "Block channel" does not say who: the confirmation does. */
+    /** The confirmation names who is blocked, in the row's words. */
     @Test
     fun `the block confirmation names who is blocked`() {
         assertThat(state().blockConfirmTitle()).isEqualTo("Block @call_userb?")
         assertThat(state().copy(reel = reel()).blockConfirmTitle()).isEqualTo("Block @call_userb?")
+        assertThat(state().copy(reel = reel(), channelName = "Ada").blockConfirmTitle()).isEqualTo("Block Ada?")
         assertThat(state().copy(longVideo = longVideo()).blockConfirmTitle()).isEqualTo("Block Clee Builds?")
         // A channel with no name still names someone: the handle.
         assertThat(state().copy(longVideo = longVideo(channel = "")).blockConfirmTitle())
@@ -262,7 +267,7 @@ class UsPostMoreRowsTest {
      * on TikTok and YouTube it lives on the person's profile.
      */
     @Test
-    fun `report is offered on another person's post only, and block never`() {
+    fun `report is offered on another person's content only, and block on a video only`() {
         for (follow in UsPostMoreFollowRow.entries) {
             val other = state(own = false, follow = follow).rows()
             assertThat(other).contains(UsPostMoreRow.REPORT)
@@ -271,10 +276,10 @@ class UsPostMoreRowsTest {
             val own = state(own = true, follow = follow).rows()
             assertThat(own).containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
         }
-        // A video (a reel, a long video) follows the same rule.
+        // A video (a reel, a long video) carries Block, as the web's menu does
+        // (founder, 2026-10-21) — never on the viewer's own.
         for (video in listOf(state().copy(reel = reel()), state().copy(longVideo = longVideo()))) {
-            assertThat(video.rows()).contains(UsPostMoreRow.REPORT)
-            assertThat(video.rows()).doesNotContain(UsPostMoreRow.BLOCK)
+            assertThat(video.rows()).containsAtLeast(UsPostMoreRow.BLOCK, UsPostMoreRow.NOT_INTERESTED, UsPostMoreRow.REPORT)
             assertThat(video.copy(isOwnPost = true).rows()).containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
         }
     }
@@ -394,9 +399,11 @@ class UsPostMoreRowsTest {
 
     /** The rows the founder listed for another person's video; Share left More on 2026-10-19. */
     private val viewerRows = listOf(
+        UsPostMoreRow.BLOCK,
         UsPostMoreRow.COPY_LINK,
         UsPostMoreRow.DESCRIPTION,
         UsPostMoreRow.DONT_RECOMMEND,
+        UsPostMoreRow.NOT_INTERESTED,
         UsPostMoreRow.QUALITY,
         UsPostMoreRow.REPORT,
     )
@@ -406,7 +413,7 @@ class UsPostMoreRowsTest {
         base: UsPostMoreState,
         video: UsReelMoreState = reel(),
     ): Pair<UsPostMoreState, UsPostMoreState> =
-        base.copy(reel = video) to base.copy(reel = video, longVideo = longVideo())
+        base.copy(reel = video, channelName = "Clee Builds") to base.copy(reel = video, longVideo = longVideo())
 
     /** Every state that could change a list: owner or not, each follow edge, saved or not, with or without a reason. */
     private fun everyBase(): List<UsPostMoreState> = listOf(false, true).flatMap { own ->
@@ -443,7 +450,7 @@ class UsPostMoreRowsTest {
     }
 
     @Test
-    fun `another person's video offers exactly the founder's five rows, on a reel and on a long video`() {
+    fun `another person's video offers exactly the web's rows, on a reel and on a long video`() {
         val (onReel, onVideo) = bothVideos(state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "Trending"))
 
         assertThat(onReel.rows()).containsExactlyElementsIn(viewerRows).inOrder()

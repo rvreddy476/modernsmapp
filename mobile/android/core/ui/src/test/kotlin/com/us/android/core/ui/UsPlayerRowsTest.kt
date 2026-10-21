@@ -53,10 +53,12 @@ class UsPlayerRowsTest {
 
         assertThat(labels).containsExactly(
             "Auto scroll",
+            "Block @call_userb",
             "Captions",
             "Copy link",
             "Description",
             "Don't recommend this channel",
+            "Not interested",
             "Playback speed",
             "Quality",
             "Report",
