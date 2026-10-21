@@ -257,6 +257,41 @@ func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	return userID, true
 }
 
+// boundActor resolves the actor of a viewer-scoped read that also accepts an
+// explicit id (`user_id` on /relationship and /mutuals, `viewer_id` on
+// /relationships/batch) without letting one user name another and read that
+// person's blocks, mutes and follows (security sweep, 21 Oct 2026: the
+// relationship contract promises "never 'blocked'" to the blocked party, and
+// an explicit actor id handed exactly that away).
+//
+// The gateway stamps X-Graph-Write-Source on EVERY /v1/graph request, reads
+// included, after stripping any client-supplied value — so its presence means
+// edge traffic: the actor is the gateway-set X-User-Id (absent → 401) and an
+// explicit id may only repeat it, else 400 VIEWER_BOUND, the rule
+// GetBlockedAndMuted already applies. Without the header the caller is an
+// in-cluster service behind the internal key (dating, feed, live) that names
+// the actor explicitly, as before.
+func boundActor(c *gin.Context, explicit string) (uuid.UUID, bool) {
+	if c.GetHeader(GraphWriteSourceHeader) == "" {
+		id, err := uuid.Parse(explicit)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
+			return uuid.Nil, false
+		}
+		return id, true
+	}
+	actor, ok := getUserID(c)
+	if !ok {
+		return uuid.Nil, false
+	}
+	if explicit != "" && explicit != actor.String() {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"VIEWER_BOUND", "user_id cannot name another viewer", nil)
+		return uuid.Nil, false
+	}
+	return actor, true
+}
+
 type UserIDRequest struct {
 	UserID string `json:"user_id" binding:"required"`
 }
@@ -532,9 +567,8 @@ func (h *Handler) Block(c *gin.Context) {
 }
 
 func (h *Handler) GetRelationship(c *gin.Context) {
-	actorID, err := uuid.Parse(c.Query("user_id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
+	actorID, ok := boundActor(c, c.Query("user_id"))
+	if !ok {
 		return
 	}
 	targetID, err := uuid.Parse(c.Query("other_id"))
@@ -689,11 +723,9 @@ func (h *Handler) callerAllowedToReadConnections(c *gin.Context, ownerID uuid.UU
 }
 
 func (h *Handler) GetMutualFollowers(c *gin.Context) {
-	userIDStr := c.Query("user_id")
 	otherIDStr := c.Query("other_id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
+	userID, ok := boundActor(c, c.Query("user_id"))
+	if !ok {
 		return
 	}
 	otherID, err := uuid.Parse(otherIDStr)
@@ -1096,9 +1128,8 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-	viewerID, err := uuid.Parse(req.ViewerID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
+	viewerID, ok := boundActor(c, req.ViewerID)
+	if !ok {
 		return
 	}
 	// M4-P0-1: an unparseable target used to be skipped silently. The caller
