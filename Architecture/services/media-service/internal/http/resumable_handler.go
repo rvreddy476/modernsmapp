@@ -1,9 +1,11 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -41,6 +43,11 @@ func (h *Handler) InitResumableUpload(c *gin.Context) {
 
 	resp, err := h.svc.InitResumableUpload(c.Request.Context(), userID, req.FileType, req.MimeType, req.TotalBytes)
 	if err != nil {
+		if errors.Is(err, service.ErrResumableUploadTooLarge) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", err.Error(),
+				map[string]any{"max_bytes": service.MaxResumableUploadBytes})
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}

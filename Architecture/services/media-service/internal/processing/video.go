@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/atpost/shared/postclassify"
 )
 
 // HLSVariant describes a single HLS quality level.
@@ -306,10 +308,26 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 }
 
 // ReelMaxDurationSeconds is the maximum duration (inclusive) for a video to be
-// classified as a flick (short-form). Videos longer than this are considered long-form.
-// 300s = 5 minutes (founder: shorts max 3–5 min; 5 chosen, 2026-09-05). Keep in
-// sync with shared/postclassify.FlickMaxDurationSeconds in post-service.
-const ReelMaxDurationSeconds = 300
+// classified as a flick (short-form). Videos longer than this are considered
+// long-form. It IS shared/postclassify.FlickMaxDurationSeconds (600 s = 10
+// minutes, founder 2026-10-21; was 300 s) so media-service and post-service
+// can never disagree about where shorts end.
+const ReelMaxDurationSeconds = postclassify.FlickMaxDurationSeconds
+
+// IsShortFormEncode reports whether the worker should take the short-form
+// encode path (fast preset, renditions capped at 720p) for a probed video.
+// It is the same rule post-service classifies by — at most
+// ReelMaxDurationSeconds AND portrait or square — so a landscape video, which
+// is a long video at any length, keeps its 1080p/4K rungs. Before the
+// boundary moved to 10 minutes this looked at duration alone; with the wider
+// window that would have capped every 5–10 minute landscape upload at 720p.
+// Unknown duration or dimensions are long-form, as in postclassify.
+func IsShortFormEncode(meta *VideoMeta) bool {
+	if meta == nil {
+		return false
+	}
+	return postclassify.Classify(meta.DurationSeconds, meta.Width, meta.Height) == postclassify.Flick
+}
 
 // MinVideoDurationSeconds is the minimum accepted video duration.
 const MinVideoDurationSeconds = 3

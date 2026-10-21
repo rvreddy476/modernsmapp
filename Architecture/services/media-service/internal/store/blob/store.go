@@ -303,7 +303,9 @@ func (s *Store) OpenObject(ctx context.Context, objectKey string) (io.ReadCloser
 	return obj, ObjectInfo{Size: st.Size, ContentType: st.ContentType, ETag: st.ETag}, nil
 }
 
-// DownloadObject fetches an object's content from the bucket.
+// DownloadObject fetches an object's content from the bucket into memory.
+// Use it only for objects with a known small bound (images, playlists,
+// audio); a video original or rendition goes through DownloadObjectToFile.
 func (s *Store) DownloadObject(ctx context.Context, objectKey string) ([]byte, error) {
 	obj, err := s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
 	if err != nil {
@@ -316,6 +318,60 @@ func (s *Store) DownloadObject(ctx context.Context, objectKey string) ([]byte, e
 		return nil, normalizeObjectError(objectKey, err)
 	}
 	return data, nil
+}
+
+// DownloadObjectToFile streams an object straight into a new file at path
+// and returns the number of bytes written. Nothing is buffered whole: long
+// videos have no size limit (founder, 2026-10-21), and an original of
+// several GiB read with io.ReadAll would blow the worker's memory limit.
+// The file is created (or truncated) with mode 0600; on any error the
+// partial file is removed. The caller needs free disk for the whole object.
+// A missing object is reported as ErrObjectNotFound.
+func (s *Store) DownloadObjectToFile(ctx context.Context, objectKey, path string) (int64, error) {
+	rc, _, err := s.OpenObject(ctx, objectKey)
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+	n, err := copyToFile(path, rc)
+	if err != nil {
+		return n, normalizeObjectError(objectKey, err)
+	}
+	return n, nil
+}
+
+// copyToFile is DownloadObjectToFile's streaming half, split out so it can
+// be tested without an object store. io.Copy moves the bytes through a
+// small fixed buffer (or the platform's file ReadFrom), never the whole
+// stream at once.
+func copyToFile(path string, r io.Reader) (int64, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(f, r)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return n, err
+	}
+	return n, nil
+}
+
+// UploadFile streams a local file into the bucket at objectKey and returns
+// its size. The client reads the file by offset part by part (multipart for
+// anything past 16 MiB), so a multi-GiB rendition is never held in memory
+// the way UploadObject's []byte would hold it.
+func (s *Store) UploadFile(ctx context.Context, objectKey, path, contentType string) (int64, error) {
+	info, err := s.client.FPutObject(ctx, s.bucket, objectKey, path, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to upload file to object %s: %w", objectKey, err)
+	}
+	return info.Size, nil
 }
 
 func normalizeObjectError(objectKey string, err error) error {

@@ -67,7 +67,7 @@ import (
 // exactly the kind of rule a new endpoint quietly breaks.
 //
 // (Worth recording: the split is enforced by content_type, not by
-// duration, and the duration boundary in shared/postclassify is 300
+// duration, and the duration boundary in shared/postclassify is 600
 // seconds, not the 90 that gets quoted. content_type is the authoritative
 // answer — post-service classifies once on upload and the timeline stores
 // the result — so nothing here needs to know the threshold. But the two

@@ -276,6 +276,11 @@ func (h *Handler) InitUpload(c *gin.Context) {
 	if err != nil {
 		msg := err.Error()
 		switch {
+		case errors.Is(err, service.ErrUseResumableUpload):
+			// Not a refusal of the file: too big for one PUT. The client
+			// switches to POST /v1/media/upload/resumable/init.
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "USE_RESUMABLE_UPLOAD", msg,
+				map[string]any{"max_simple_upload_bytes": service.MaxSimpleVideoUploadBytes, "resumable_init": "/v1/media/upload/resumable/init"})
 		case strings.Contains(msg, "file too large"):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", msg, nil)
 		case strings.Contains(msg, "invalid video type") || strings.Contains(msg, "invalid image type"):

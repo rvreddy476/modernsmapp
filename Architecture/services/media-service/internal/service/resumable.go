@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -12,11 +13,61 @@ import (
 )
 
 const (
-	// defaultChunkSize is also the S3/MinIO minimum part size — every part
-	// except the last must be at least this large.
-	defaultChunkSize   = 5 * 1024 * 1024 // 5 MB
+	mib = 1024 * 1024
+
+	// minChunkSize is the S3/MinIO minimum part size — every part except
+	// the last must be at least this large. Small uploads keep 5 MiB chunks.
+	minChunkSize = 5 * mib
+	// maxChunkSize bounds one chunk request. Every chunk crosses Cloudflare,
+	// which refuses request bodies past ~100 MB, so 64 MiB leaves headroom.
+	maxChunkSize = 64 * mib
+	// maxUploadParts is S3's ceiling on parts in one multipart upload.
+	maxUploadParts = 10_000
+	// chunkTargetParts is the part count the chunk size aims for: the
+	// chunk grows with the file so a long upload stays under 9,000 parts,
+	// leaving 1,000 parts of headroom below maxUploadParts.
+	chunkTargetParts = 9_000
+
+	// MaxResumableUploadBytes is the largest file the resumable path can
+	// take: 10,000 parts of 64 MiB = 625 GiB. Long videos have no size
+	// limit of their own (founder, 2026-10-21); this is only the arithmetic
+	// of S3 parts and Cloudflare's request cap.
+	MaxResumableUploadBytes int64 = maxChunkSize * maxUploadParts
+
 	resumableUploadTTL = 24 * time.Hour
 )
+
+// ErrResumableUploadTooLarge is returned when a file would need more than
+// maxUploadParts chunks even at maxChunkSize.
+var ErrResumableUploadTooLarge = errors.New("file too large for a resumable upload")
+
+// resumableChunkPlan sizes a resumable upload's chunks:
+//
+//	chunk = max(5 MiB, ceil(total / 9000)), rounded up to a whole MiB,
+//	        at most 64 MiB
+//	parts = ceil(total / chunk)
+//
+// and refuses a file whose parts would exceed 10,000 at 64 MiB (≈ 625 GiB).
+// Clients must upload in the returned chunk size, not assume 5 MiB.
+func resumableChunkPlan(totalBytes int64) (chunkSize, totalParts int, err error) {
+	if totalBytes <= 0 {
+		return 0, 0, fmt.Errorf("total_bytes must be positive")
+	}
+	chunk := (totalBytes + chunkTargetParts - 1) / chunkTargetParts // ceil(total / 9000)
+	chunk = (chunk + mib - 1) / mib * mib                           // up to a whole MiB
+	if chunk < minChunkSize {
+		chunk = minChunkSize
+	}
+	if chunk > maxChunkSize {
+		chunk = maxChunkSize
+	}
+	parts := (totalBytes + chunk - 1) / chunk
+	if parts > maxUploadParts {
+		return 0, 0, fmt.Errorf("%w: %d bytes needs %d parts of %d MiB (max %d parts, %d bytes)",
+			ErrResumableUploadTooLarge, totalBytes, parts, chunk/mib, maxUploadParts, MaxResumableUploadBytes)
+	}
+	return int(chunk), int(parts), nil
+}
 
 // InitResumableUploadResponse is returned when initiating a multipart upload.
 type InitResumableUploadResponse struct {
@@ -30,7 +81,18 @@ type InitResumableUploadResponse struct {
 // InitResumableUpload creates a media asset record, opens an object-store
 // multipart upload, and records a resumable upload session.
 func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fileType, mimeType string, totalBytes int64) (*InitResumableUploadResponse, error) {
+	// No total size cap for video here (founder, 2026-10-21); ValidateUpload
+	// still caps images. The chunk plan refuses only what S3's part limit
+	// cannot hold.
+	//
+	// NOTE: unlike InitUpload this path does not call CheckUploadRateLimit,
+	// so resumable inits are not counted against the per-user hourly/daily
+	// upload limits. Left as it was on purpose (2026-10-21); worth closing.
 	if err := ValidateUpload(fileType, "general", mimeType, totalBytes); err != nil {
+		return nil, err
+	}
+	chunkSize, totalParts, err := resumableChunkPlan(totalBytes)
+	if err != nil {
 		return nil, err
 	}
 
@@ -59,12 +121,6 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 	if err := s.pgStore.CreateMedia(ctx, media); err != nil {
 		_ = s.blobStore.AbortMultipartUpload(ctx, objectKey, storageUploadID)
 		return nil, fmt.Errorf("create media record: %w", err)
-	}
-
-	chunkSize := defaultChunkSize
-	totalParts := int(totalBytes / int64(chunkSize))
-	if totalBytes%int64(chunkSize) != 0 {
-		totalParts++
 	}
 
 	expiresAt := time.Now().Add(resumableUploadTTL)
@@ -234,8 +290,21 @@ func (s *Service) CompleteResumableUpload(ctx context.Context, uploadID, userID 
 	for i, p := range parts {
 		blobParts[i] = blob.MultipartPart{PartNumber: p.PartNumber, ETag: p.ETag, Size: p.SizeBytes}
 	}
+	// Timing: one CompleteMultipartUpload call for up to 10,000 parts. S3
+	// usually answers in seconds but documents that a large assembly "could
+	// take several minutes", which is past Cloudflare's ~100 s origin
+	// timeout; the server's own write timeout is 10 min (cmd/server). If the
+	// edge gives up first, S3 still finishes, and the client's retry lands
+	// here with the upload already assembled: S3 then answers NoSuchUpload.
+	// The object at this key can only have come from this upload (the key
+	// embeds the media id), so an object of exactly the declared size means
+	// an earlier complete succeeded — carry on to confirm, which re-checks
+	// size and magic bytes.
 	if err := s.blobStore.CompleteMultipartUpload(ctx, upload.ObjectKey, upload.StorageUploadID, blobParts); err != nil {
-		return nil, err
+		info, statErr := s.blobStore.StatObject(ctx, upload.ObjectKey)
+		if statErr != nil || info.Size != upload.TotalBytes {
+			return nil, err
+		}
 	}
 
 	if err := s.pgStore.CompleteResumableUpload(ctx, uploadID); err != nil {

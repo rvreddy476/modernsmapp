@@ -13,7 +13,7 @@ import "github.com/atpost/shared/postclassify"
 // a second, disagreeing answer to "what kind of post is this".
 //
 // It is not. The platform has exactly one content-type rule and it lives
-// in shared/postclassify: <=300s AND portrait/square is a flick,
+// in shared/postclassify: <=600s AND portrait/square is a flick,
 // everything else is a long_video. That is what post-service stores on
 // the timeline, what PostCreated carries into analytics.content_ownership,
 // and what monetization-service resolves its per-content-type RPM rate

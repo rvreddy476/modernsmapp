@@ -14,15 +14,20 @@ func TestClassify(t *testing.T) {
 	}{
 		// Happy paths
 		{"30s portrait → flick", 30, 720, 1280, Flick},
-		{"300s portrait at the cap → flick", 300, 720, 1280, Flick},
 		{"181s portrait (old 3-min cap) → flick", 181, 720, 1280, Flick},
-		{"square video at boundary → flick", 60, 1080, 1080, Flick},
+		{"301s portrait (old 5-min cap) → flick", 301, 720, 1280, Flick},
+		{"599s portrait → flick", 599, 720, 1280, Flick},
+		{"600s portrait at the cap → flick", 600, 720, 1280, Flick},
+		{"600s square at the cap → flick", 600, 1080, 1080, Flick},
+		{"square video → flick", 60, 1080, 1080, Flick},
 
 		// Long-form paths
-		{"301s portrait → long_video (over cap)", 301, 720, 1280, LongVideo},
+		{"601s portrait → long_video (over cap)", 601, 720, 1280, LongVideo},
+		{"601s square → long_video (over cap)", 601, 1080, 1080, LongVideo},
 		{"30s landscape → long_video (orientation)", 30, 1920, 1080, LongVideo},
-		{"5min landscape → long_video", 300, 1920, 1080, LongVideo},
+		{"599s landscape → long_video (orientation)", 599, 1920, 1080, LongVideo},
 		{"10min landscape → long_video", 600, 1920, 1080, LongVideo},
+		{"3h portrait → long_video", 3 * 60 * 60, 720, 1280, LongVideo},
 
 		// Unknown-input paths default safely to long_video
 		{"duration 0 → long_video (unknown)", 0, 720, 1280, LongVideo},
@@ -32,6 +37,9 @@ func TestClassify(t *testing.T) {
 
 		// Negatives treated as unknown
 		{"negative duration → long_video", -1, 720, 1280, LongVideo},
+	}
+	if FlickMaxDurationSeconds != 600 {
+		t.Fatalf("FlickMaxDurationSeconds = %d, want 600 (founder 2026-10-21: shorts up to 10 minutes)", FlickMaxDurationSeconds)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

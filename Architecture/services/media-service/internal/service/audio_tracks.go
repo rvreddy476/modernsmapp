@@ -90,6 +90,45 @@ type AudioTrackBlobs interface {
 	DeleteObject(ctx context.Context, objectKey string) error
 }
 
+// audioTrackFileBlobs is the streaming half *blob.Store also implements. The
+// video rungs a dub is muxed into are renditions of a long video, which has
+// no size or length limit (founder, 2026-10-21), so with a store that offers
+// it they go disk-to-object and back without being read into memory. A
+// store without it (the test fakes) falls back to the []byte calls.
+type audioTrackFileBlobs interface {
+	DownloadObjectToFile(ctx context.Context, objectKey, path string) (int64, error)
+	UploadFile(ctx context.Context, objectKey, path, contentType string) (int64, error)
+}
+
+// downloadToFile writes an object to path, streaming when the store can.
+func (a *AudioTracks) downloadToFile(ctx context.Context, key, path string) error {
+	if fb, ok := a.blobs.(audioTrackFileBlobs); ok {
+		_, err := fb.DownloadObjectToFile(ctx, key, path)
+		return err
+	}
+	data, err := a.blobs.DownloadObject(ctx, key)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+// uploadFromFile stores the file at path under key, streaming when the store
+// can, and returns its size.
+func (a *AudioTracks) uploadFromFile(ctx context.Context, key, path, contentType string) (int64, error) {
+	if fb, ok := a.blobs.(audioTrackFileBlobs); ok {
+		return fb.UploadFile(ctx, key, path, contentType)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	if err := a.blobs.UploadObject(ctx, key, data, contentType); err != nil {
+		return 0, err
+	}
+	return int64(len(data)), nil
+}
+
 // AudioTracks is the feature. Every ffmpeg step is a field so it can be
 // replaced in tests (the test machines have no ffmpeg).
 type AudioTracks struct {
@@ -640,13 +679,9 @@ func (a *AudioTracks) process(ctx context.Context, t *postgres.MediaAudioTrack) 
 		if p, ok := videoPaths[r.Name]; ok {
 			return p, nil
 		}
-		data, err := a.blobs.DownloadObject(ctx, r.ObjectKey)
-		if err != nil {
-			return "", fmt.Errorf("download %s: %w", r.Name, err)
-		}
 		p := filepath.Join(tmp, "video-"+r.Name+".mp4")
-		if err := os.WriteFile(p, data, 0o600); err != nil {
-			return "", err
+		if err := a.downloadToFile(ctx, r.ObjectKey, p); err != nil {
+			return "", fmt.Errorf("download %s: %w", r.Name, err)
 		}
 		videoPaths[r.Name] = p
 		return p, nil
@@ -715,15 +750,11 @@ func (a *AudioTracks) process(ctx context.Context, t *postgres.MediaAudioTrack) 
 		if err := a.mux(ctx, videoPath, sourcePath, outPath); err != nil {
 			return nil, fmt.Errorf("mux %s: %w", r.Name, err)
 		}
-		out, err := os.ReadFile(outPath)
-		if err != nil {
-			return nil, err
-		}
 		key := audioTrackRungKey(media.UploaderID, media.ID, t.Language, r.Name)
-		if err := a.blobs.UploadObject(ctx, key, out, "video/mp4"); err != nil {
+		size, err := a.uploadFromFile(ctx, key, outPath, "video/mp4")
+		if err != nil {
 			return nil, fmt.Errorf("upload %s: %w", r.Name, err)
 		}
-		size := int64(len(out))
 		if err := a.store.InsertVariants(ctx, []postgres.MediaVariant{{
 			MediaAssetID: media.ID,
 			Name:         DubVariantName(t.Language, r.Name),

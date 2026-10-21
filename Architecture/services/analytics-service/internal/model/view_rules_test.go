@@ -8,7 +8,7 @@ import (
 
 // The bug this file pins down: analytics used to own a second
 // content-type rule (durationMS <= 90000 -> "reel") that disagreed with
-// shared/postclassify (<=300s portrait/square -> "flick"). The label now
+// shared/postclassify (<=600s portrait/square -> "flick"). The label now
 // comes from postclassify alone, and the 90 seconds survives only as the
 // view-counting bar it always was.
 

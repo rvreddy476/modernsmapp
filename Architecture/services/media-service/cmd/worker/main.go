@@ -493,16 +493,12 @@ func handleUntilDurable(
 }
 
 func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgres.TranscodeRequestPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner, moderationResult *string) error {
-	// 1. Download original video from MinIO
-	videoData, err := blobStore.DownloadObject(ctx, payload.StorageKey)
-	if err != nil {
-		if errors.Is(err, blob.ErrObjectNotFound) {
-			return permanentTranscode(fmt.Errorf("download original: %w", err))
-		}
-		return fmt.Errorf("download original: %w", err)
-	}
-
-	// 2. Write to temp file
+	// 1+2. Stream the original from object storage straight into a temp
+	// file. Long videos have no size or length limit (founder, 2026-10-21),
+	// so the original is never read into memory: the worker container runs
+	// under a 2G limit and a multi-GiB io.ReadAll would be OOM-killed. The
+	// temp volume needs room for the original plus every rendition and the
+	// HLS ladder (roughly 2-3x the original for a long video).
 	tmpDir, err := os.MkdirTemp("", "transcode-"+payload.MediaAssetID)
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -510,10 +506,12 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	defer os.RemoveAll(tmpDir)
 
 	inputPath := tmpDir + "/original"
-	if err := os.WriteFile(inputPath, videoData, 0644); err != nil {
-		return fmt.Errorf("write temp file: %w", err)
+	if _, err := blobStore.DownloadObjectToFile(ctx, payload.StorageKey, inputPath); err != nil {
+		if errors.Is(err, blob.ErrObjectNotFound) {
+			return permanentTranscode(fmt.Errorf("download original: %w", err))
+		}
+		return fmt.Errorf("download original: %w", err)
 	}
-	videoData = nil // the file is the working copy from here on
 
 	// 2b. Operator rotation override (reprocess only). The pixels are
 	// sideways and the container says nothing about it; stamp the display
@@ -526,18 +524,15 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		if err := processing.ApplyDisplayRotation(ctx, inputPath, rotatedPath, payload.RotateDegrees); err != nil {
 			return permanentUnlessCancelled(ctx, fmt.Errorf("apply rotation override: %w", err))
 		}
-		rotated, err := os.ReadFile(rotatedPath)
+		rotatedSize, err := blobStore.UploadFile(ctx, payload.StorageKey, rotatedPath, payload.MimeType)
 		if err != nil {
-			return fmt.Errorf("read rotated original: %w", err)
-		}
-		if err := blobStore.UploadObject(ctx, payload.StorageKey, rotated, payload.MimeType); err != nil {
 			return fmt.Errorf("replace original with rotated copy: %w", err)
 		}
-		if err := pgStore.UpdateMediaFileSize(ctx, mediaAssetID, int64(len(rotated))); err != nil {
+		if err := pgStore.UpdateMediaFileSize(ctx, mediaAssetID, rotatedSize); err != nil {
 			return fmt.Errorf("update original size: %w", err)
 		}
 		log.Printf("Rotation override %d° applied to original of media %s (%d bytes)",
-			payload.RotateDegrees, payload.MediaAssetID, len(rotated))
+			payload.RotateDegrees, payload.MediaAssetID, rotatedSize)
 		inputPath = rotatedPath
 	}
 
@@ -554,8 +549,9 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		return permanentUnlessCancelled(ctx, fmt.Errorf("probe video: %w", err))
 	}
 
-	// Determine if this is a reel (short-form video)
-	isReel := meta.DurationSeconds > 0 && meta.DurationSeconds <= processing.ReelMaxDurationSeconds
+	// Determine if this is a reel (short-form video): ≤ 10 minutes and
+	// portrait/square. Landscape is long-form at any length.
+	isReel := processing.IsShortFormEncode(meta)
 
 	qualityHeights := []struct {
 		name   string
@@ -624,23 +620,20 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	var variants []postgres.MediaVariant
 
 	for _, out := range outputs {
-		data, err := os.ReadFile(out.FilePath)
-		if err != nil {
-			return fmt.Errorf("read transcode output %s: %w", out.Name, err)
-		}
-
 		objectName := out.ObjectName
 		if objectName == "" {
 			objectName = out.Name
 		}
 		objectKey := fmt.Sprintf("%s/%s", baseKey, objectName)
-		if err := blobStore.UploadObject(ctx, objectKey, data, out.Mime); err != nil {
+		// Streamed from disk: a 1080p/4K rendition of an hours-long video is
+		// GiBs and must not be read into memory first.
+		sz, err := blobStore.UploadFile(ctx, objectKey, out.FilePath, out.Mime)
+		if err != nil {
 			return fmt.Errorf("upload transcode variant %s: %w", out.Name, err)
 		}
 
 		w := out.Width
 		h := out.Height
-		sz := int64(len(data))
 		variants = append(variants, postgres.MediaVariant{
 			MediaAssetID: mediaAssetID,
 			Name:         out.Name,

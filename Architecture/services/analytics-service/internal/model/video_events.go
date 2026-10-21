@@ -4,7 +4,7 @@ import "github.com/atpost/shared/postclassify"
 
 // ContentType constants for video analytics. These are aliases of the
 // platform-wide values in shared/postclassify, which is the single
-// authority on what kind of post something is (<=300s portrait/square is
+// authority on what kind of post something is (<=600s portrait/square is
 // a flick, everything else is a long_video). Analytics does not classify
 // content — it reads the label post-service put on the timeline row and
 // carried into analytics.content_ownership via PostCreated.
@@ -140,7 +140,7 @@ var ReelMilestones = struct {
 
 // LongVideoMilestones — the ladder for everything else: a long_video,
 // or a flick longer than the short-form view bar. A flick can run to
-// 300s (shared/postclassify.FlickMaxDurationSeconds), so the ladder it
+// 600s (shared/postclassify.FlickMaxDurationSeconds), so the ladder it
 // needs is chosen by duration, not by which feed it lives in.
 var LongVideoMilestones = struct {
 	Time    []string

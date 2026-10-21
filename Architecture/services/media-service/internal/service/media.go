@@ -23,6 +23,8 @@ import (
 // Size limits per subtype/file_type
 const (
 	MaxImageSize  int64 = 20 * 1024 * 1024       // 20 MB
+	// MaxVideoSize no longer caps user uploads (see ValidateUpload); it is
+	// the default bound on a live-recording import (DefaultLiveRecordingMaxBytes).
 	MaxVideoSize  int64 = 2 * 1024 * 1024 * 1024 // 2 GB
 	MaxAvatarSize int64 = 10 * 1024 * 1024       // 10 MB
 	MaxCoverSize  int64 = 10 * 1024 * 1024       // 10 MB
@@ -243,9 +245,10 @@ func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64
 			return fmt.Errorf("invalid mime type for image: %s", mimeType)
 		}
 	case "video":
-		if fileSizeBytes > MaxVideoSize {
-			return fmt.Errorf("video size exceeds %d MB limit", MaxVideoSize/(1024*1024))
-		}
+		// No total size cap (founder, 2026-10-21: long videos have no size
+		// and no length limit). The simple path is bounded by
+		// ValidateUploadSize (5 GiB single PUT); the resumable path only by
+		// S3's part arithmetic (resumableChunkPlan).
 		validMimes := map[string]bool{"video/mp4": true, "video/webm": true, "video/quicktime": true}
 		if !validMimes[mimeType] {
 			return fmt.Errorf("invalid mime type for video: %s", mimeType)
@@ -265,7 +268,7 @@ func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64
 
 func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string, decorative bool, uploadPurpose string) (*InitUploadResponse, error) {
 	// Absolute size cap (applies to all file types)
-	if err := ValidateUploadSize(fileSizeBytes); err != nil {
+	if err := ValidateUploadSize(fileType, fileSizeBytes); err != nil {
 		return nil, err
 	}
 

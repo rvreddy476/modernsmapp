@@ -773,8 +773,9 @@ func DetectAndStoreMentions(ctx context.Context, postID uuid.UUID, postType stri
 
 // flickMaxDurationSeconds is the maximum duration (inclusive) for a video to
 // be auto-classified as a "reel" (Flick). Videos longer than this are "video" (Long Video).
-// Flick = up to 5 minutes, Long Video = more than 5 minutes (founder: shorts
-// max 3–5 min; 5 chosen, 2026-09-05). Must match postclassify.FlickMaxDurationSeconds.
+// Flick = up to 10 minutes, Long Video = more than 10 minutes (founder,
+// 2026-10-21; was 5 minutes from 2026-09-05). It IS
+// postclassify.FlickMaxDurationSeconds — change it there, never here.
 const flickMaxDurationSeconds = postclassify.FlickMaxDurationSeconds
 
 // validContentTypes is the allowed set for content_type.

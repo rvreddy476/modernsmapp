@@ -40,21 +40,17 @@ func (s *Service) ExtractFrames(ctx context.Context, mediaID uuid.UUID, userID u
 		numFrames = 5
 	}
 
-	// Download original video
-	videoData, err := s.blobStore.DownloadObject(ctx, media.StorageKey)
-	if err != nil {
-		return nil, fmt.Errorf("download video: %w", err)
-	}
-
 	tmpDir, err := os.MkdirTemp("", "frames-"+mediaID.String())
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// Stream the original to disk: long videos have no size limit, so it is
+	// never read into the API process's memory.
 	inputPath := tmpDir + "/input"
-	if err := os.WriteFile(inputPath, videoData, 0644); err != nil {
-		return nil, fmt.Errorf("write temp: %w", err)
+	if _, err := s.blobStore.DownloadObjectToFile(ctx, media.StorageKey, inputPath); err != nil {
+		return nil, fmt.Errorf("download video: %w", err)
 	}
 
 	framePaths, err := processing.ExtractFrames(ctx, inputPath, tmpDir, numFrames)

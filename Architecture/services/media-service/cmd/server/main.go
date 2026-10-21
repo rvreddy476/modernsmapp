@@ -441,6 +441,13 @@ func main() {
 	if err := server.Run(r, server.Config{
 		Port:            port,
 		ShutdownTimeout: 10 * time.Second,
+		// Long uploads (founder, 2026-10-21: no size limit for long video).
+		// A resumable chunk is up to 64 MiB — about 55 s at 10 Mbps — and
+		// /complete assembles up to 10,000 parts; the shared 15 s read /
+		// 30 s write defaults would cut both off. These apply to every
+		// media-service route; the 5 s ReadHeaderTimeout is unchanged.
+		ReadTimeout:  10 * time.Minute,
+		WriteTimeout: 10 * time.Minute,
 		OnShutdown: func() {
 			if rdb != nil {
 				_ = rdb.Close()

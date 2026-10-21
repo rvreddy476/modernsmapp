@@ -6,7 +6,7 @@
 //
 // The rule, per spec v2.1:
 //
-//	flick      ≤300s AND (portrait OR square)
+//	flick      ≤600s AND (portrait OR square)
 //	long_video everything else
 //
 // "Reel" / "short" are legacy synonyms that map to "flick".
@@ -14,10 +14,12 @@ package postclassify
 
 import "strings"
 
-// FlickMaxDurationSeconds is the upper bound on flick duration.
-// 300s = 5 minutes (founder: shorts max 3–5 min; 5 chosen, 2026-09-05).
-// Sits above YouTube Shorts / Instagram Reels (3 min).
-const FlickMaxDurationSeconds = 300
+// FlickMaxDurationSeconds is the upper bound (inclusive) on flick duration.
+// 600s = 10 minutes (founder, 2026-10-21: shorts run up to 10 minutes;
+// anything longer is a long video automatically). It was 300s from
+// 2026-09-05. media-service's processing.ReelMaxDurationSeconds and
+// post-service's flickMaxDurationSeconds are this same constant.
+const FlickMaxDurationSeconds = 600
 
 // ContentType strings used across the platform. Defined here so any
 // caller can compare against the canonical constants instead of
@@ -27,7 +29,7 @@ const (
 	LongVideo = "long_video"
 )
 
-// Classify returns "flick" if the video qualifies (≤300s, portrait
+// Classify returns "flick" if the video qualifies (≤600s, portrait
 // or square), otherwise "long_video". Inputs are the post-transcode
 // values from the media-service pipeline:
 //

@@ -1,15 +1,29 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
 
 const (
-	// MaxUploadSizeBytes is the absolute maximum file size accepted (500 MB).
+	// MaxUploadSizeBytes is the absolute maximum file size a simple
+	// (single presigned PUT) upload accepts for anything that is not a
+	// video (500 MB). Images, GIFs and audio have tighter caps of their own
+	// in ValidateUpload.
 	MaxUploadSizeBytes int64 = 500 * 1024 * 1024
 
-	// Reel duration constraints (seconds).
+	// MaxSimpleVideoUploadBytes is the largest video a simple upload takes:
+	// 5 GiB, S3's single-PUT maximum (founder, 2026-10-21, lifting the old
+	// 500 MB limit). A larger video is not refused — it must use the
+	// resumable (multipart) upload, which has no total cap for video; the
+	// error is ErrUseResumableUpload so clients can switch.
+	MaxSimpleVideoUploadBytes int64 = 5 * 1024 * 1024 * 1024
+
+	// Reel duration constraints (seconds). NOT enforced anywhere (nothing
+	// reads them, 2026-10-21). The shorts boundary is
+	// postclassify.FlickMaxDurationSeconds (600 s); long videos have no
+	// maximum duration.
 	MaxReelDurationSec = 90
 	MinReelDurationSec = 3
 
@@ -84,8 +98,21 @@ func ValidateUploadMIME(contentType string, mediaType string) error {
 	return nil
 }
 
-// ValidateUploadSize rejects files that exceed MaxUploadSizeBytes.
-func ValidateUploadSize(size int64) error {
+// ErrUseResumableUpload: a video too large for one presigned PUT. The HTTP
+// layer answers 413 USE_RESUMABLE_UPLOAD; the client retries the same file
+// through POST /v1/media/upload/resumable/init.
+var ErrUseResumableUpload = errors.New("video too large for a simple upload: use the resumable upload")
+
+// ValidateUploadSize is the simple-upload size gate. A video may be up to
+// MaxSimpleVideoUploadBytes (beyond that: ErrUseResumableUpload); anything
+// else up to MaxUploadSizeBytes.
+func ValidateUploadSize(fileType string, size int64) error {
+	if fileType == "video" {
+		if size > MaxSimpleVideoUploadBytes {
+			return fmt.Errorf("%w: %d bytes (simple upload max %d)", ErrUseResumableUpload, size, MaxSimpleVideoUploadBytes)
+		}
+		return nil
+	}
 	if size > MaxUploadSizeBytes {
 		return fmt.Errorf("file too large: %d bytes (max %d)", size, MaxUploadSizeBytes)
 	}

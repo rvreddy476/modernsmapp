@@ -69,3 +69,73 @@ func TestValidateCategoryOverrideUnchanged(t *testing.T) {
 		t.Fatalf("portrait short → flick override refused: %v", err)
 	}
 }
+
+// Founder, 2026-10-21: shorts run up to 10 minutes; anything longer is a
+// long video automatically. The boundary is inclusive at 600 s and the
+// frame still matters — landscape is long-form at any length.
+func TestShortsBoundaryIsTenMinutes(t *testing.T) {
+	if flickMaxDurationSeconds != 600 {
+		t.Fatalf("flickMaxDurationSeconds = %d, want 600", flickMaxDurationSeconds)
+	}
+	cases := []struct {
+		name     string
+		duration float64
+		w, h     int
+		want     string
+	}{
+		{"599 s portrait", 599, 1080, 1920, "flick"},
+		{"600 s portrait (inclusive)", 600, 1080, 1920, "flick"},
+		{"601 s portrait", 601, 1080, 1920, "long_video"},
+		{"600.4 s portrait (just over)", 600.4, 1080, 1920, "long_video"},
+		{"600 s square", 600, 1080, 1080, "flick"},
+		{"601 s square", 601, 1080, 1080, "long_video"},
+		{"599 s landscape", 599, 1920, 1080, "long_video"},
+		{"600 s landscape", 600, 1920, 1080, "long_video"},
+		{"601 s landscape", 601, 1920, 1080, "long_video"},
+		{"old 5-min boundary + 1 s portrait is now a flick", 301, 1080, 1920, "flick"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := ClassifyVideo(tc.duration, tc.w, tc.h); got != tc.want {
+				t.Fatalf("ClassifyVideo(%v, %dx%d) = %q, want %q", tc.duration, tc.w, tc.h, got, tc.want)
+			}
+		})
+	}
+	// The integer path used when no orientation is known.
+	for d, want := range map[int]string{599: "flick", 600: "flick", 601: "long_video"} {
+		if got := classifyVideoContentType(d); got != want {
+			t.Errorf("classifyVideoContentType(%d) = %q, want %q", d, got, want)
+		}
+	}
+	// An unlabelled video (a poll) reaching the measurement branch.
+	for d, want := range map[int]string{599: "flick", 600: "flick", 601: "long_video"} {
+		if got, explicit := resolveVideoContentType("poll", d, 1080, 1920); got != want || explicit {
+			t.Errorf("resolveVideoContentType(poll, %d, portrait) = (%q, %v), want (%q, false)", d, got, explicit, want)
+		}
+	}
+}
+
+func TestValidateCategoryOverrideAtTenMinutes(t *testing.T) {
+	meta := func(duration float64, orientation string) *postgres.VideoMetadata {
+		return &postgres.VideoMetadata{DurationSeconds: duration, Orientation: orientation}
+	}
+	for _, d := range []float64{301, 599, 600} {
+		if err := ValidateCategoryOverride(meta(d, "portrait"), "flick"); err != nil {
+			t.Errorf("%v s portrait → flick refused: %v", d, err)
+		}
+		if err := ValidateCategoryOverride(meta(d, "square"), "flick"); err != nil {
+			t.Errorf("%v s square → flick refused: %v", d, err)
+		}
+	}
+	for _, d := range []float64{600.5, 601, 3 * 60 * 60} {
+		if err := ValidateCategoryOverride(meta(d, "portrait"), "flick"); err == nil {
+			t.Errorf("%v s portrait → flick accepted", d)
+		}
+		if err := ValidateCategoryOverride(meta(d, "portrait"), "long_video"); err != nil {
+			t.Errorf("%v s portrait → long_video refused: %v", d, err)
+		}
+	}
+	if err := ValidateCategoryOverride(meta(600, "landscape"), "flick"); err == nil {
+		t.Error("600 s landscape → flick accepted")
+	}
+}
