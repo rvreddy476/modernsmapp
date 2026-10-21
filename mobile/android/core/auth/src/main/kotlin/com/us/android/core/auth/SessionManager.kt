@@ -193,9 +193,17 @@ class SessionManager @Inject constructor(
      */
     fun applyAuthResponse(dto: AuthResponseDto): SessionState {
         val next = when {
-            dto.requires2fa -> SessionState.PendingTwoFactor(dto.pendingToken)
+            // The user id travels with the token: /2fa/verify binds it
+            // required and checks it against the pending session.
+            dto.requires2fa -> SessionState.PendingTwoFactor(
+                pendingToken = dto.pendingToken,
+                userId = dto.user?.id.orEmpty(),
+            )
 
-            dto.requiresStepUp -> SessionState.PendingStepUp(dto.stepUpMethods)
+            dto.requiresStepUp -> SessionState.PendingStepUp(
+                methods = dto.stepUpMethods,
+                pendingToken = dto.pendingToken,
+            )
 
             dto.requiresVerification -> SessionState.PendingVerification(
                 token = dto.verificationToken,

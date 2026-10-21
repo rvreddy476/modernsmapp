@@ -285,7 +285,11 @@ fun NavGraphBuilder.settingsScreens(
     composable<InboxSettingsRoute> { com.us.android.feature.profile.ui.InboxSettingsScreen(destinations.onBack) }
     composable<NotificationSettingsRoute> { NotificationSettingsScreen(destinations.onBack) }
     composable<SecuritySettingsRoute> {
-        SecuritySettingsScreen(destinations.onBack, destinations.onSignedOut)
+        SecuritySettingsScreen(
+            destinations.onBack,
+            destinations.onSignedOut,
+            onChangePassword = destinations.onChangePassword,
+        )
     }
 }
 
@@ -296,6 +300,12 @@ data class SettingsDestinations(
     val onMessagesSettings: () -> Unit,
     val onSignedOut: () -> Unit,
     val sections: SettingsSections,
+    /**
+     * Security › Change password, with the account's email (web parity,
+     * 2026-10-21). `:feature:auth` owns the reset flow; `:app` joins the two.
+     * Defaulted so a host without the flow still builds — the row then hides.
+     */
+    val onChangePassword: ((email: String) -> Unit)? = null,
     /** The app's version name for the line at the foot of Settings; `:app` owns BuildConfig. */
     val versionName: String = "",
 )

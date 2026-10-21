@@ -96,6 +96,24 @@
                 <data android:host="app.cleestudio.com" />
                 <data android:pathPrefix="/post/" />
             </intent-filter>
+            <!--
+              Google sign-in's browser redirect (web parity, founder 21 Oct
+              2026): the OAuth consent page sends the authorization code back
+              on the app's own scheme, `com.googleusercontent.apps.<client id>`,
+              which `us.android.google-signin` derives from
+              .secrets/google-oauth-android-app.client-id (gitignored). With no
+              file the placeholder is an inert scheme nothing ever opens.
+              Scheme only: a custom-scheme URI has no host, and Android
+              ignores path attributes without one — GoogleSignIn checks the
+              full redirect URI itself. singleTop above means a live activity
+              receives it in onNewIntent and hands it to GoogleSignIn.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="${GOOGLE_OAUTH_REDIRECT_SCHEME}" />
+            </intent-filter>
         </activity>
 
 

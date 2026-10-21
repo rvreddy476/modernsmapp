@@ -3,19 +3,28 @@ package com.us.android.core.auth
 import com.us.android.core.auth.dto.AccountDeactivatedDto
 import com.us.android.core.auth.dto.AccountDeletionScheduledDto
 import com.us.android.core.auth.dto.AuthResponseDto
+import com.us.android.core.auth.dto.ForgotPasswordRequestDto
 import com.us.android.core.auth.dto.LoginRequestDto
 import com.us.android.core.auth.dto.MessageDto
+import com.us.android.core.auth.dto.OAuthCompleteSignupRequestDto
+import com.us.android.core.auth.dto.OAuthTokenRequestDto
+import com.us.android.core.auth.dto.OAuthVerifySignupRequestDto
 import com.us.android.core.auth.dto.PasswordRequestDto
 import com.us.android.core.auth.dto.RefreshRequestDto
 import com.us.android.core.auth.dto.RegisterRequestDto
 import com.us.android.core.auth.dto.ResendVerificationRequestDto
+import com.us.android.core.auth.dto.ResetPasswordRequestDto
+import com.us.android.core.auth.dto.StepUpVerifyRequestDto
+import com.us.android.core.auth.dto.Verify2FARequestDto
 import com.us.android.core.auth.dto.VerifyEmailRequestDto
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.retry.Retryable
+import kotlinx.serialization.json.JsonObject
 import retrofit2.http.Body
 import retrofit2.http.HTTP
 import retrofit2.http.Header
 import retrofit2.http.POST
+import retrofit2.http.Path
 
 interface AuthApi {
 
@@ -76,6 +85,69 @@ interface AuthApi {
 
     @POST("v1/auth/logout")
     suspend fun logout(): ApiEnvelope<Unit>
+
+    // ── Sign-in security (web parity, founder 21 Oct 2026) ──────────────
+
+    /**
+     * Finishes a sign-in that returned `requires_2fa`. Public, behind the
+     * login rate limiter (5/identifier + 10/IP per 15 min). Every failure —
+     * wrong code, replayed code, expired pending session, user mismatch — is
+     * ONE response, 401 `AUTH_FAILED` (twofa.go:124); a 429 is the lockout.
+     * Success is a full session, like [login].
+     */
+    @POST("v1/auth/2fa/verify")
+    suspend fun verifyTwoFactor(@Body body: Verify2FARequestDto): ApiEnvelope<AuthResponseDto>
+
+    /**
+     * Finishes an unusual sign-in with the emailed code. 401 with a specific
+     * code: `STEP_UP_EXPIRED` (sign in again), `STEP_UP_CODE_INVALID`,
+     * `STEP_UP_CODE_REPLAYED`, `STEP_UP_UNAVAILABLE` (anomaly.go:76).
+     */
+    @POST("v1/auth/anomaly/verify-email")
+    suspend fun verifyStepUpEmail(@Body body: StepUpVerifyRequestDto): ApiEnvelope<AuthResponseDto>
+
+    /** As [verifyStepUpEmail], with a TOTP or recovery code. Same codes. */
+    @POST("v1/auth/anomaly/verify-2fa")
+    suspend fun verifyStepUpTwoFactor(@Body body: StepUpVerifyRequestDto): ApiEnvelope<AuthResponseDto>
+
+    /**
+     * Always 200 — "If the account exists, a reset code has been sent" — so
+     * nobody can learn which addresses are registered (handler.go:1084).
+     * Recovery is EMAIL ONLY at launch: a phone identifier is accepted and
+     * silently delivers nothing (auth.go:1153).
+     */
+    @POST("v1/auth/forgot-password")
+    suspend fun forgotPassword(@Body body: ForgotPasswordRequestDto): ApiEnvelope<MessageDto>
+
+    /**
+     * Consumes the code, sets the password and revokes EVERY session in one
+     * transaction (auth.go:1215). 422 `WEAK_PASSWORD` leaves the code usable;
+     * 400 `RESET_FAILED` for anything else, deliberately unspecific.
+     */
+    @POST("v1/auth/reset-password")
+    suspend fun resetPassword(@Body body: ResetPasswordRequestDto): ApiEnvelope<MessageDto>
+
+    /**
+     * Signs in with a provider ACCESS token (oauth.go:84). Two success shapes:
+     * 200 with a normal [AuthResponseDto] (which may itself say
+     * `requires_2fa`), or 202 with an [OAuthPendingSignupDto] when the
+     * provider did not vouch for the email and no account exists. Decoded in
+     * `AuthRepository` from the raw object, because one Retrofit return type
+     * cannot name both. 401 `AUTH_FAILED` otherwise.
+     */
+    @POST("v1/auth/oauth/{provider}/token")
+    suspend fun oauthToken(
+        @Path("provider") provider: String,
+        @Body body: OAuthTokenRequestDto,
+    ): ApiEnvelope<JsonObject>
+
+    /** Attaches a phone to a pending OAuth signup; 200 `{"message":"otp sent"}`, 400 `OAUTH_SIGNUP_FAILED`. */
+    @POST("v1/auth/oauth/complete-signup")
+    suspend fun oauthCompleteSignup(@Body body: OAuthCompleteSignupRequestDto): ApiEnvelope<MessageDto>
+
+    /** Creates the account and issues a session: **201**, not 200. 401 `OAUTH_VERIFY_FAILED`. */
+    @POST("v1/auth/oauth/verify-signup")
+    suspend fun oauthVerifySignup(@Body body: OAuthVerifySignupRequestDto): ApiEnvelope<AuthResponseDto>
 
     /**
      * Deactivates the account. Every session is revoked server-side on

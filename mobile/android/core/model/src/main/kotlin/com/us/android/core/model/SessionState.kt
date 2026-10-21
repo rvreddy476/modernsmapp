@@ -35,14 +35,28 @@ sealed interface SessionState {
     /** No credentials, or refresh failed and storage was cleared. */
     data object Unauthenticated : SessionState
 
-    /** Password accepted; a second factor is outstanding. Not yet a session. */
-    data class PendingTwoFactor(val pendingToken: String) : SessionState
+    /**
+     * Password accepted; a second factor is outstanding. Not yet a session.
+     *
+     * [userId] rides along because `POST /v1/auth/2fa/verify` binds `user_id`
+     * required and checks it against the pending session (twofa.go:180); the
+     * login response carries the user beside the pending token for exactly
+     * this reason. Defaulted so fixtures that only name the token still read.
+     */
+    data class PendingTwoFactor(
+        val pendingToken: String,
+        val userId: String = "",
+    ) : SessionState
 
     /**
      * Password accepted but the risk band demanded a second channel.
      * [methods] enumerates what the server will accept, e.g. ["email_otp", "totp"].
+     * [pendingToken] is what both `/v1/auth/anomaly/verify-*` routes consume.
      */
-    data class PendingStepUp(val methods: List<String>) : SessionState
+    data class PendingStepUp(
+        val methods: List<String>,
+        val pendingToken: String = "",
+    ) : SessionState
 
     /**
      * The account exists but its email is unverified. [token] authorises

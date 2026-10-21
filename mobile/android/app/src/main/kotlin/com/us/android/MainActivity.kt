@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import com.us.android.core.auth.oauth.GoogleSignIn
 import com.us.android.core.datastore.AppearanceStore
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
@@ -59,6 +60,14 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
 
     @Inject
     lateinit var pushDestinations: PushDestinations
+
+    /**
+     * Google sign-in's browser redirect (`com.googleusercontent.apps.<id>:/oauth2redirect`)
+     * lands on this activity through the manifest's scheme filter; the flow
+     * decides whether an incoming URI is its own, so every link is offered.
+     */
+    @Inject
+    lateinit var googleSignIn: GoogleSignIn
 
     /**
      * Where the PSP's result goes — the launcher holding the in-flight sheet.
@@ -113,7 +122,9 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
         )
         super.onCreate(savedInstanceState)
         offerPushDestination(intent)
-        pushDestinations.offerLink(intent?.data)
+        // The OAuth redirect is not a deep link; claimed first, it never
+        // reaches the link parser (which would refuse it anyway).
+        if (!googleSignIn.offerRedirect(intent?.data?.toString())) pushDestinations.offerLink(intent?.data)
 
         setContent {
             // The Appearance setting (T-32, 2026-10-15): System follows the
@@ -177,8 +188,9 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
         super.onNewIntent(intent)
         setIntent(intent)
         offerPushDestination(intent)
-        // An App Link (atpost.app/chat/join/…) arriving on the live activity.
-        pushDestinations.offerLink(intent.data)
+        // Google's redirect arriving on the live activity, or an App Link
+        // (atpost.app/chat/join/…) — one or the other, never both.
+        if (!googleSignIn.offerRedirect(intent.data?.toString())) pushDestinations.offerLink(intent.data)
     }
 
     /**

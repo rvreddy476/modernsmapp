@@ -85,6 +85,24 @@ class AccountControlViewModelTest {
         override suspend fun verifyPartnerPhone(body: com.us.android.core.auth.dto.PartnerPhoneVerifyDto): ApiEnvelope<AuthResponseDto> =
             error("not used in account-control tests")
 
+        // Sign-in security routes (2FA, step-up, reset, OAuth) are not exercised here either.
+        override suspend fun verifyTwoFactor(body: com.us.android.core.auth.dto.Verify2FARequestDto): ApiEnvelope<AuthResponseDto> =
+            error("not used in account-control tests")
+        override suspend fun verifyStepUpEmail(body: com.us.android.core.auth.dto.StepUpVerifyRequestDto): ApiEnvelope<AuthResponseDto> =
+            error("not used in account-control tests")
+        override suspend fun verifyStepUpTwoFactor(body: com.us.android.core.auth.dto.StepUpVerifyRequestDto): ApiEnvelope<AuthResponseDto> =
+            error("not used in account-control tests")
+        override suspend fun forgotPassword(body: com.us.android.core.auth.dto.ForgotPasswordRequestDto): ApiEnvelope<MessageDto> =
+            error("not used in account-control tests")
+        override suspend fun resetPassword(body: com.us.android.core.auth.dto.ResetPasswordRequestDto): ApiEnvelope<MessageDto> =
+            error("not used in account-control tests")
+        override suspend fun oauthToken(provider: String, body: com.us.android.core.auth.dto.OAuthTokenRequestDto): ApiEnvelope<kotlinx.serialization.json.JsonObject> =
+            error("not used in account-control tests")
+        override suspend fun oauthCompleteSignup(body: com.us.android.core.auth.dto.OAuthCompleteSignupRequestDto): ApiEnvelope<MessageDto> =
+            error("not used in account-control tests")
+        override suspend fun oauthVerifySignup(body: com.us.android.core.auth.dto.OAuthVerifySignupRequestDto): ApiEnvelope<AuthResponseDto> =
+            error("not used in account-control tests")
+
         override suspend fun deactivateAccount(body: PasswordRequestDto): ApiEnvelope<AccountDeactivatedDto> {
             deactivateError?.let { throw it }
             return ApiEnvelope(AccountDeactivatedDto())
@@ -114,7 +132,7 @@ class AccountControlViewModelTest {
             telemetry = NoOpTelemetry,
             scope = scope,
         )
-        val authRepository = AuthRepository(api, sessionManager, ErrorMapper(json), emptySet())
+        val authRepository = AuthRepository(api, sessionManager, ErrorMapper(json), emptySet(), json)
         return AccountControlViewModel(authRepository)
     }
 

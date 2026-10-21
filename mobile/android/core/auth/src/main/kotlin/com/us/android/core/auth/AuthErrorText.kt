@@ -1,6 +1,7 @@
 package com.us.android.core.auth
 
 import com.us.android.core.common.error.AppError
+import com.us.android.core.network.ErrorMapper
 
 /**
  * Turns backend failures into sentences a person can act on.
@@ -73,6 +74,90 @@ object AuthErrorText {
         "REGISTRATION_FAILED" -> "We couldn't create your account. Please try again."
         else -> null
     }
+
+    // ── Sign-in security (web parity, founder 21 Oct 2026) ──────────────
+
+    /**
+     * `POST /v1/auth/2fa/verify`. The server gives ONE code for every
+     * verification failure — wrong, replayed, expired pending session, user
+     * mismatch (twofa.go:124) — so this names the likely causes without
+     * claiming to know which applies. A 429 from the login limiter is the
+     * lockout: five tries per account per fifteen minutes.
+     */
+    fun forTwoFactor(error: AppError): String = when (error) {
+        is AppError.AuthFailed ->
+            "That code didn't work. Check your authenticator app and try again, " +
+                "or sign in again if it has been a while."
+        is AppError.RateLimited -> lockedOutText(error)
+        else -> forLogin(error)
+    }
+
+    /**
+     * `POST /v1/auth/anomaly/verify-*`. Here the 401 carries a specific code
+     * (anomaly.go:76), so the sentence can say what to do next.
+     */
+    fun forStepUp(error: AppError): String = when (error) {
+        is AppError.AuthFailed -> when (error.code) {
+            STEP_UP_EXPIRED -> "This verification has expired. Please sign in again."
+            STEP_UP_CODE_REPLAYED -> "That code has already been used. Wait for a new one and try again."
+            ErrorMapper.CODE_STEP_UP_UNAVAILABLE ->
+                "That way of confirming isn't available for your account. Try the other option."
+            else -> "That code isn't right. Please try again."
+        }
+        is AppError.RateLimited -> lockedOutText(error)
+        else -> forLogin(error)
+    }
+
+    /** `POST /v1/auth/forgot-password`. Always 200 on a reachable server; the rest is transport. */
+    fun forForgotPassword(error: AppError): String = when (error) {
+        is AppError.RateLimited -> lockedOutText(error)
+        is AppError.InvalidRequest -> "Enter the email address you signed up with."
+        else -> forLogin(error)
+    }
+
+    /**
+     * `POST /v1/auth/reset-password`. 422 `WEAK_PASSWORD` leaves the code
+     * usable, so the sentence points at the password; 400 `RESET_FAILED` is
+     * deliberately unspecific server-side (wrong code, expired code, unknown
+     * account) and stays unspecific here.
+     */
+    fun forResetPassword(error: AppError): String = when (error) {
+        is AppError.Unknown -> when (error.code) {
+            WEAK_PASSWORD -> "That password is too weak. ${PasswordRules.RULES_TEXT}"
+            else -> RESET_FAILED_TEXT
+        }
+        is AppError.InvalidRequest -> RESET_FAILED_TEXT
+        is AppError.RateLimited -> lockedOutText(error)
+        else -> forLogin(error)
+    }
+
+    /** The Google button and the two OAuth signup steps. */
+    fun forOAuth(error: AppError): String = when (error) {
+        is AppError.AuthFailed -> when (error.code) {
+            OAUTH_VERIFY_FAILED -> "That code didn't work. Check the message and try again."
+            else -> "We couldn't sign you in with Google. Please try again."
+        }
+        is AppError.Unknown -> when (error.code) {
+            OAUTH_SIGNUP_FAILED ->
+                "We couldn't use that phone number. Check it, or try a different one."
+            else -> "We couldn't sign you in with Google. Please try again."
+        }
+        is AppError.RateLimited -> lockedOutText(error)
+        else -> forLogin(error)
+    }
+
+    private fun lockedOutText(error: AppError.RateLimited): String =
+        error.retryAfterSeconds
+            ?.let { "Too many attempts. For your security, try again in ${it.humanSeconds()}." }
+            ?: "Too many attempts. For your security, wait a few minutes and try again."
+
+    private const val STEP_UP_EXPIRED = "STEP_UP_EXPIRED"
+    private const val STEP_UP_CODE_REPLAYED = "STEP_UP_CODE_REPLAYED"
+    private const val WEAK_PASSWORD = "WEAK_PASSWORD"
+    private const val OAUTH_VERIFY_FAILED = "OAUTH_VERIFY_FAILED"
+    private const val OAUTH_SIGNUP_FAILED = "OAUTH_SIGNUP_FAILED"
+    private const val RESET_FAILED_TEXT =
+        "That code didn't work. It may have expired — request a new one and try again."
 
     private fun forbiddenText(code: String): String = when (code) {
         ErrorMapperCodes.EMAIL_NOT_VERIFIED ->

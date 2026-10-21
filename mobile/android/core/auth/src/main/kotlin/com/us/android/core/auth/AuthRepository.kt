@@ -1,9 +1,18 @@
 package com.us.android.core.auth
 
+import com.us.android.core.auth.dto.AuthResponseDto
+import com.us.android.core.auth.dto.ForgotPasswordRequestDto
 import com.us.android.core.auth.dto.LoginRequestDto
+import com.us.android.core.auth.dto.OAuthCompleteSignupRequestDto
+import com.us.android.core.auth.dto.OAuthPendingSignupDto
+import com.us.android.core.auth.dto.OAuthTokenRequestDto
+import com.us.android.core.auth.dto.OAuthVerifySignupRequestDto
 import com.us.android.core.auth.dto.PasswordRequestDto
 import com.us.android.core.auth.dto.RegisterRequestDto
 import com.us.android.core.auth.dto.ResendVerificationRequestDto
+import com.us.android.core.auth.dto.ResetPasswordRequestDto
+import com.us.android.core.auth.dto.StepUpVerifyRequestDto
+import com.us.android.core.auth.dto.Verify2FARequestDto
 import com.us.android.core.auth.dto.VerifyEmailRequestDto
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
@@ -14,6 +23,7 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.json.Json
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,6 +40,11 @@ class AuthRepository @Inject constructor(
      * learn what needs tearing down. See [SessionTeardownTask].
      */
     private val teardownTasks: Set<@JvmSuppressWildcards SessionTeardownTask>,
+    /**
+     * The shared `Json` from NetworkModule, for the one endpoint whose two
+     * success bodies share no type — see [signInWithOAuth].
+     */
+    private val json: Json,
 ) : SessionStateProvider {
 
     override val sessionState: StateFlow<SessionState> = sessionManager.state
@@ -161,6 +176,120 @@ class AuthRepository @Inject constructor(
             )
         }.map { }
 
+    // ── Sign-in security (web parity, founder 21 Oct 2026) ──────────────
+
+    /**
+     * Second step of a sign-in that came back [SessionState.PendingTwoFactor].
+     *
+     * [code] is a TOTP or a recovery code; the server tries both. Success is
+     * applied through [SessionManager.applyAuthResponse] like a password
+     * sign-in, so the shell flips to signed-in from the session state alone.
+     */
+    suspend fun verifyTwoFactor(
+        userId: String,
+        pendingToken: String,
+        code: String,
+    ): AppResult<SessionState> = apiCall(errorMapper) {
+        authApi.verifyTwoFactor(
+            Verify2FARequestDto(userId = userId, code = code.trim(), pendingToken = pendingToken),
+        )
+    }.map(sessionManager::applyAuthResponse)
+
+    /**
+     * Second step of an unusual sign-in ([SessionState.PendingStepUp]).
+     * [method] is one of the server's `step_up_methods`; anything other than
+     * `email_otp` goes down the TOTP route, which also accepts recovery codes.
+     */
+    suspend fun verifyStepUp(
+        method: String,
+        pendingToken: String,
+        code: String,
+    ): AppResult<SessionState> = apiCall(errorMapper) {
+        val body = StepUpVerifyRequestDto(pendingToken = pendingToken, code = code.trim())
+        if (method == STEP_UP_METHOD_EMAIL) {
+            authApi.verifyStepUpEmail(body)
+        } else {
+            authApi.verifyStepUpTwoFactor(body)
+        }
+    }.map(sessionManager::applyAuthResponse)
+
+    /** Asks for a reset code. Success says nothing about whether the account exists. */
+    suspend fun forgotPassword(identifier: String): AppResult<Unit> =
+        apiCall(errorMapper) {
+            authApi.forgotPassword(ForgotPasswordRequestDto(identifier = identifier.trim()))
+        }.map { }
+
+    /**
+     * Sets a new password with the emailed code.
+     *
+     * The server revokes EVERY session on success, this device's included.
+     * A signed-in caller (Settings › Change password) must therefore follow
+     * up with [endSessionAfterPasswordReset] — deliberately a second call,
+     * so the screen can show "Password updated" before the shell flips to
+     * Login (clearing the session re-roots the navigation graph, and a
+     * confirmation cleared in the same breath is never seen). Nothing calls
+     * the API in between, so the dead refresh token does no harm meanwhile.
+     */
+    suspend fun resetPassword(identifier: String, code: String, newPassword: String): AppResult<Unit> =
+        apiCall(errorMapper) {
+            authApi.resetPassword(
+                ResetPasswordRequestDto(
+                    identifier = identifier.trim(),
+                    code = code.trim(),
+                    newPassword = newPassword,
+                ),
+            )
+        }.map { }
+
+    /**
+     * The local half of a password reset made while signed in: the server
+     * has already revoked this session, so this is the same teardown-then-
+     * clear that deactivation uses, with no logout call. Leaving the refresh
+     * token in place would only produce a silent 401 on the next request and
+     * an unexplained bounce to Login. A no-op when nobody is signed in.
+     */
+    suspend fun endSessionAfterPasswordReset() {
+        if (sessionState.value.isAuthenticated) endRevokedSession()
+    }
+
+    /**
+     * Signs in with a Google ACCESS token (not an ID token — see
+     * [OAuthTokenRequestDto]). Three outcomes, by shape rather than by status:
+     * a session (possibly `requires_2fa`, which [SessionManager] turns into
+     * the pending state the two-step screen handles), or a pending signup
+     * that needs a phone number first.
+     */
+    suspend fun signInWithOAuth(provider: String, accessToken: String): AppResult<OAuthSignInOutcome> =
+        apiCall(errorMapper) { authApi.oauthToken(provider, OAuthTokenRequestDto(accessToken)) }
+            .map { raw ->
+                val pending = json.decodeFromJsonElement(OAuthPendingSignupDto.serializer(), raw)
+                if (pending.isPendingSignup) {
+                    OAuthSignInOutcome.PendingSignup(
+                        pendingToken = pending.pendingToken,
+                        provider = pending.provider.ifBlank { provider },
+                        email = pending.email,
+                        name = pending.name,
+                    )
+                } else {
+                    val auth = json.decodeFromJsonElement(AuthResponseDto.serializer(), raw)
+                    OAuthSignInOutcome.SignedIn(sessionManager.applyAuthResponse(auth))
+                }
+            }
+
+    /** Attaches a phone to the pending OAuth signup; the server then sends (or fails to send) the code. */
+    suspend fun completeOAuthSignup(pendingToken: String, phone: String): AppResult<Unit> =
+        apiCall(errorMapper) {
+            authApi.oauthCompleteSignup(OAuthCompleteSignupRequestDto(pendingToken, phone.trim()))
+        }.map { }
+
+    /** Confirms the phone code; the account is created and a session issued (201). */
+    suspend fun verifyOAuthSignup(pendingToken: String, otp: String, deviceId: String): AppResult<SessionState> =
+        apiCall(errorMapper) {
+            authApi.oauthVerifySignup(
+                OAuthVerifySignupRequestDto(pendingToken = pendingToken, otp = otp.trim(), deviceId = deviceId),
+            )
+        }.map(sessionManager::applyAuthResponse)
+
     /**
      * Signs out. The local session is cleared regardless of what the server
      * says: a user who taps "log out" must end up logged out even if the
@@ -241,7 +370,16 @@ class AuthRepository @Inject constructor(
         sessionManager.clearSession()
     }
 
-    private companion object {
-        const val VERIFICATION_TOKEN_KEY = "verification_token"
+    companion object {
+        private const val VERIFICATION_TOKEN_KEY = "verification_token"
+
+        /** The server's name for the emailed step-up channel (auth.go, `step_up_methods`). */
+        const val STEP_UP_METHOD_EMAIL = "email_otp"
+
+        /** The server's name for the authenticator-app channel. */
+        const val STEP_UP_METHOD_TOTP = "totp"
+
+        /** The only provider the Android sign-in button offers (A5: google, github, apple). */
+        const val OAUTH_PROVIDER_GOOGLE = "google"
     }
 }

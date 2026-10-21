@@ -38,8 +38,19 @@ sealed interface AppError {
         override val requestId: String? = null,
     ) : AppError
 
-    /** 401 AUTH_FAILED — bad credentials, or a refresh that could not be recovered. */
-    data class AuthFailed(override val requestId: String? = null) : AppError
+    /**
+     * 401 — bad credentials, or a refresh that could not be recovered.
+     *
+     * [code] is the server's contract string when the body carried one, kept
+     * because not every 401 is `AUTH_FAILED`: the anomaly step-up routes answer
+     * `STEP_UP_EXPIRED`, `STEP_UP_CODE_INVALID` and `STEP_UP_CODE_REPLAYED`
+     * (anomaly.go), and the screen must tell "sign in again" from "try the
+     * code again". Null when the body had none.
+     */
+    data class AuthFailed(
+        override val requestId: String? = null,
+        val code: String? = null,
+    ) : AppError
 
     /**
      * 403. [code] is the discriminator.

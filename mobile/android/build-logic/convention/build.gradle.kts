@@ -49,6 +49,12 @@ gradlePlugin {
             id = "us.android.banuba"
             implementationClass = "BanubaLicenseConventionPlugin"
         }
+        // The Google OAuth client, applied by :app ONLY — the one app with a
+        // "Continue with Google" button (web parity, 2026-10-21).
+        register("googleSignIn") {
+            id = "us.android.google-signin"
+            implementationClass = "GoogleSignInConventionPlugin"
+        }
         register("jvmLibrary") {
             id = "us.jvm.library"
             implementationClass = "JvmLibraryConventionPlugin"

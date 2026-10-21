@@ -4,6 +4,10 @@ plugins {
     // it must come AFTER us.android.application and never be applied to a
     // Feast partner app (Feast A0, 2026-09-13).
     id("us.android.banuba")
+    // The Google OAuth client id (web parity, 2026-10-21), from the gitignored
+    // .secrets/google-oauth-android-app.client-id. Same rule as Banuba: after
+    // us.android.application, and only on the app that shows the button.
+    id("us.android.google-signin")
     id("us.android.compose")
     id("us.android.hilt")
     // Navigation Compose's type-safe routes are @Serializable objects, so

@@ -37,6 +37,8 @@ import com.us.android.core.ui.UsSettingsSection
 fun SecuritySettingsScreen(
     onBack: () -> Unit,
     onSignedOut: () -> Unit,
+    /** Opens the change-password flow with the account's email; null hides the row. */
+    onChangePassword: ((email: String) -> Unit)? = null,
     viewModel: SecuritySettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -63,6 +65,7 @@ fun SecuritySettingsScreen(
                 current,
                 viewModel,
                 Modifier.padding(padding),
+                onChangePassword = onChangePassword,
             )
         }
     }
@@ -73,6 +76,7 @@ private fun SecurityContent(
     state: SecuritySettingsUiState.Content,
     vm: SecuritySettingsViewModel,
     modifier: Modifier,
+    onChangePassword: ((email: String) -> Unit)?,
 ) {
     var code by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -84,6 +88,7 @@ private fun SecurityContent(
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
     ) {
         AccountSection(state)
+        if (onChangePassword != null) PasswordSection(state, onChangePassword)
         TwoFactorSection(state, vm, code, { code = it }, password, { password = it })
         SessionSection(state, vm)
         TrustedDevicesSection(state, vm)
@@ -110,6 +115,31 @@ private fun AccountSection(state: SecuritySettingsUiState.Content) {
         )
         UsSettingsLinkRow("Account status", {}, value = state.account.accountStatus, enabled = false)
         UsSettingsLinkRow("Age verification", {}, value = state.account.ageVerification, enabled = false)
+    }
+}
+
+/**
+ * The web's Security › Change password card: there is no "current password
+ * → new password" route server-side, so changing it means a reset code sent
+ * to the account's email. Setting the new password signs out everywhere.
+ * Without a verified email there is nowhere to send the code (recovery is
+ * email-only at launch), so the row says so and stays disabled.
+ */
+@Composable
+private fun PasswordSection(state: SecuritySettingsUiState.Content, onChangePassword: (email: String) -> Unit) {
+    val email = state.account.email
+    val canReset = email.isNotBlank() && state.account.emailVerified
+    UsSettingsSection("Password") {
+        UsSettingsLinkRow(
+            "Change password",
+            { onChangePassword(email) },
+            description = if (canReset) {
+                "We'll email a 6-digit code to $email. Setting a new password signs you out on every device."
+            } else {
+                "Add and verify an email address first — the reset code is sent there."
+            },
+            enabled = canReset,
+        )
     }
 }
 

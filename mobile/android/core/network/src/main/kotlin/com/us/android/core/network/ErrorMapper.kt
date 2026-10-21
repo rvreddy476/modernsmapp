@@ -52,7 +52,7 @@ class ErrorMapper @Inject constructor(
                 requestId = requestId,
             )
 
-            code == CODE_AUTH_FAILED -> AppError.AuthFailed(requestId)
+            code == CODE_AUTH_FAILED -> AppError.AuthFailed(requestId, code)
 
             // EMAIL_NOT_VERIFIED is deliberately NOT flattened into Forbidden.
             // core:auth needs to pull `verification_token` out of details, so
@@ -63,7 +63,9 @@ class ErrorMapper @Inject constructor(
                 requestId = requestId,
             )
 
-            e.code() == HTTP_UNAUTHORIZED -> AppError.AuthFailed(requestId)
+            // The code survives: the step-up routes tell an expired pending
+            // session from a wrong code on the same status (anomaly.go).
+            e.code() == HTTP_UNAUTHORIZED -> AppError.AuthFailed(requestId, code)
             e.code() == HTTP_NOT_FOUND -> AppError.NotFound(requestId)
 
             e.code() == HTTP_TOO_MANY_REQUESTS -> AppError.RateLimited(

@@ -55,6 +55,11 @@ import com.us.android.explore.LauncherApp
 import com.us.android.explore.LauncherTile
 import com.us.android.explore.launcherTiles
 import com.us.android.feature.auth.login.LoginRoute
+import com.us.android.feature.auth.navigation.SignInSecurityDestinations
+import com.us.android.feature.auth.navigation.navigateToChangePassword
+import com.us.android.feature.auth.navigation.navigateToForgotPassword
+import com.us.android.feature.auth.navigation.navigateToSignInStep
+import com.us.android.feature.auth.navigation.signInSecurityScreens
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
 import com.us.android.feature.call.navigation.CallRoute
@@ -633,6 +638,11 @@ private fun NavHostController.openPushDestination(
  * [TopLevelDestination.forDestination] returns null for them.
  */
 private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
+    val backToLogin: () -> Unit = {
+        navController.navigate(LoginRoute) {
+            popUpTo<LoginRoute> { inclusive = true }
+        }
+    }
     composable<LoginRoute> {
         LoginRoute(
             onCreateAccount = { navController.navigate(RegisterRoute) },
@@ -643,8 +653,35 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
             onNeedsVerification = { token, email ->
                 navController.navigate(VerifyEmailRoute(token, email))
             },
+            // Sign-in security (web parity, founder 21 Oct 2026): the
+            // second steps are screens, not messages. A person with
+            // two-step verification could not sign in on Android at all
+            // before this.
+            onForgotPassword = { email -> navController.navigateToForgotPassword(email) },
+            onNavigate = { step -> navController.navigateToSignInStep(step) },
         )
     }
+    // Two-step code, unusual sign-in, password reset, Google signup
+    // completion — declared once in :feature:auth. Success stores a session
+    // and the shell flips; every exit is "back to sign in" with the step
+    // popped, so a used pending token never sits behind Back.
+    signInSecurityScreens(
+        SignInSecurityDestinations(
+            onBackToLogin = backToLogin,
+            // From Settings the session was just cleared: land on Login the
+            // way sign-out does, with the whole tab stack behind it gone.
+            onPasswordResetDone = { fromSettings ->
+                if (fromSettings) {
+                    navController.navigate(LoginRoute) {
+                        popUpTo<FeedRoute> { inclusive = true }
+                    }
+                } else {
+                    backToLogin()
+                }
+            },
+            onPasswordResetCancelled = { navController.popBackStack() },
+        ),
+    )
     composable<RegisterRoute> {
         RegisterRoute(
             onNeedsVerification = { token, email ->
@@ -1338,6 +1375,10 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             // DM consent: one Messages settings screen; Privacy links to it.
             onMessagesSettings = { navController.navigate(com.us.android.feature.profile.navigation.InboxSettingsRoute) },
             onSignedOut = onSignedOut,
+            // Security › Change password is the reset flow with the account's
+            // own email locked in (the web's card does the same); setting the
+            // password signs out everywhere, this device included.
+            onChangePassword = { email -> navController.navigateToChangePassword(email) },
             sections = SettingsSections(
                 onManageAccount = { navController.navigateToManageAccount() },
                 onPrivacy = { navController.navigate(PrivacySettingsRoute) },

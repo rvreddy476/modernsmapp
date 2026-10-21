@@ -58,7 +58,7 @@ class AuthRepositoryTest {
             telemetry = NoOpTelemetry,
             scope = scope,
         )
-        return AuthRepository(api, sessionManager, ErrorMapper(json), teardownTasks)
+        return AuthRepository(api, sessionManager, ErrorMapper(json), teardownTasks, json)
     }
 
     private fun enqueue(code: Int, body: String) {

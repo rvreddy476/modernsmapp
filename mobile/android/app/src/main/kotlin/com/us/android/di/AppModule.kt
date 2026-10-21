@@ -1,6 +1,7 @@
 package com.us.android.di
 
 import com.us.android.BuildConfig
+import com.us.android.core.auth.oauth.GoogleOAuthConfig
 import com.us.android.core.facear.FaceArConfig
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.telemetry.TelemetryConfig
@@ -77,5 +78,19 @@ object AppModule {
     @Singleton
     fun provideFaceArConfig(): FaceArConfig = FaceArConfig(
         licenseToken = BuildConfig.BANUBA_LICENSE_TOKEN,
+    )
+
+    /**
+     * Google sign-in (web parity, founder 21 Oct 2026). The client id is
+     * filled by `us.android.google-signin` from
+     * `.secrets/google-oauth-android-app.client-id`; blank when the file is
+     * absent, and the Login screen then shows no Google button. The same
+     * plugin derives the manifest's redirect scheme from the same value.
+     * Never logged.
+     */
+    @Provides
+    @Singleton
+    fun provideGoogleOAuthConfig(): GoogleOAuthConfig = GoogleOAuthConfig(
+        clientId = BuildConfig.GOOGLE_OAUTH_ANDROID_CLIENT_ID,
     )
 }

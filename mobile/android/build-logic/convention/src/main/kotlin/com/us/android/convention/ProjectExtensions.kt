@@ -308,6 +308,39 @@ internal fun Project.googleMaps3DAndroidKey(): String = providers
     .fileContents(layout.projectDirectory.file("../../../.secrets/google-maps3d-android-${project.name}.key"))
     .asText.map { it.trim() }.orElse("").get()
 
+/**
+ * The Google OAuth Android client id for THIS application module, raw and
+ * trimmed, or `""` when the secrets file is absent or empty — see
+ * GoogleSignInConventionPlugin. Same location rule as [googleMapsAndroidKey]
+ * (`.secrets/google-oauth-android-app.client-id` at the repo root), same
+ * tracked read, and NEVER logged.
+ */
+internal fun Project.googleOAuthAndroidClientId(): String = providers
+    .fileContents(layout.projectDirectory.file("../../../.secrets/google-oauth-android-${project.name}.client-id"))
+    .asText
+    .map { it.trim() }
+    .orElse("")
+    .get()
+
+/**
+ * The custom scheme Google redirects an installed-app client to: the client
+ * id reversed, `1234-abc.apps.googleusercontent.com` →
+ * `com.googleusercontent.apps.1234-abc`. Mirrors
+ * `GoogleOAuthConfig.redirectSchemeFor` in `:core:auth`, which must agree
+ * with the manifest for the redirect to reach the app. A blank id yields an
+ * inert scheme that nothing opens, so the manifest stays valid.
+ */
+internal fun googleOAuthRedirectScheme(clientId: String): String {
+    val id = clientId.trim()
+    if (id.isEmpty()) return "com.us.android.oauth.unconfigured"
+    val suffix = ".apps.googleusercontent.com"
+    return if (id.endsWith(suffix)) {
+        "com.googleusercontent.apps." + id.removeSuffix(suffix)
+    } else {
+        id.split('.').reversed().joinToString(".")
+    }
+}
+
 /** [value] as a Java string literal for `buildConfigField`, quotes included. */
 internal fun javaStringLiteral(value: String): String {
     val escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
