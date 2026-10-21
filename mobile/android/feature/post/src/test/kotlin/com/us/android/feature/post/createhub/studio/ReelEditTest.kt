@@ -35,13 +35,15 @@ class ReelEditTest {
     }
 
     @Test
-    fun `the five minute cap applies to the export, so speed can bring a long clip under it`() {
-        val tenMinutes = edit(durationUs = 600_000_000L)
-        assertThat(tenMinutes.exceedsReelCap).isTrue()
-        assertThat(tenMinutes.copy(speed = ReelSpeed.DOUBLE).exceedsReelCap).isFalse()
-        assertThat(tenMinutes.withTrimEnd(300_000_000L).exceedsReelCap).isFalse()
-        assertThat(tenMinutes.withTrimEnd(300_000_001L).exceedsReelCap).isTrue()
-        assertThat(edit(durationUs = 200_000_000L).copy(speed = ReelSpeed.HALF).exceedsReelCap).isTrue()
+    fun `the ten minute cap applies to the export, so speed can bring a long clip under it`() {
+        val twentyMinutes = edit(durationUs = 1_200_000_000L)
+        assertThat(twentyMinutes.exceedsReelCap).isTrue()
+        assertThat(edit(durationUs = 600_000_000L).exceedsReelCap).isFalse()
+        assertThat(edit(durationUs = 600_000_001L).exceedsReelCap).isTrue()
+        assertThat(twentyMinutes.copy(speed = ReelSpeed.DOUBLE).exceedsReelCap).isFalse()
+        assertThat(twentyMinutes.withTrimEnd(600_000_000L).exceedsReelCap).isFalse()
+        assertThat(twentyMinutes.withTrimEnd(600_000_001L).exceedsReelCap).isTrue()
+        assertThat(edit(durationUs = 400_000_000L).copy(speed = ReelSpeed.HALF).exceedsReelCap).isTrue()
     }
 
     @Test

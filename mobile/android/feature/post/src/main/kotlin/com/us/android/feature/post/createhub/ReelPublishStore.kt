@@ -6,6 +6,7 @@ import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.upload.MediaSourceResolver
 import com.us.android.core.media.upload.PickedMedia
+import com.us.android.core.media.upload.ResumableSession
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,6 +20,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -91,6 +93,13 @@ data class PendingReelPublish(
      */
     val confirmedVideoId: String? = null,
     /**
+     * A big video's open resumable upload (2026-10-21), saved before its first
+     * part goes up and cleared once it is confirmed. A worker stopped mid-way
+     * — the ten-minute background limit, a reboot — resumes THIS session and
+     * sends only the parts the server does not have yet.
+     */
+    val resumableSession: ResumableSession? = null,
+    /**
      * FALLBACK ONLY: when the pre-instant server's `MEDIA_NOT_READY` first
      * sent the pipeline polling — the 30-minute window runs from here.
      */
@@ -132,6 +141,31 @@ interface ReelPublishStore {
 /** An app-private copy of the picked video. */
 data class StashedVideo(val path: String, val mimeType: String)
 
+/** What became of copying the picked video into app storage. */
+sealed interface StashResult {
+    data class Stashed(val video: StashedVideo) : StashResult
+
+    /** The picked file could not be read (gone, or the grant lapsed). */
+    data object Unreadable : StashResult
+
+    /**
+     * The copy would not fit with [STASH_HEADROOM_BYTES] left over. There is
+     * no size limit on a long video (2026-10-21), so the phone's free space
+     * is the only bound: [shortBytes] more must be freed to post it.
+     */
+    data class NoSpace(val shortBytes: Long) : StashResult
+}
+
+/** Space that must stay free after the copy: a full phone breaks more than this upload. */
+const val STASH_HEADROOM_BYTES: Long = 200L * 1024L * 1024L
+
+/**
+ * How many bytes short the device is of copying [sizeBytes] with the
+ * headroom kept — zero when it fits. Pure, so the boundary is a table test.
+ */
+fun stashShortfall(sizeBytes: Long, freeBytes: Long): Long =
+    (sizeBytes + STASH_HEADROOM_BYTES - freeBytes).coerceAtLeast(0L)
+
 /**
  * The files a pending publish owns: the video copy and the cover JPEG.
  *
@@ -139,8 +173,8 @@ data class StashedVideo(val path: String, val mimeType: String)
  * the Android implementation lives in `cacheDir/reel_publish`.
  */
 interface ReelPublishFiles {
-    /** Copy the picked video into app storage. Null when it cannot be read. */
-    suspend fun stashVideo(uri: String, creationKey: String): StashedVideo?
+    /** Copy the picked video into app storage, when it can be read and there is room. */
+    suspend fun stashVideo(uri: String, creationKey: String): StashResult
 
     /**
      * Where the studio's export lands for [creationKey] — the same place a
@@ -229,7 +263,8 @@ class FileReelPublishStore @Inject constructor(
 }
 
 /**
- * `cacheDir/reel_publish/<key>.video` and `<key>.jpg`.
+ * `cacheDir/reel_publish/<key>.video` (a studio export) and `<key>.jpg`; a
+ * copy of a picked file is `noBackupFilesDir/reel_publish/<key>.video`.
  *
  * The copy exists because a content URI from the system picker is a grant
  * to THIS process; after a process death the worker's restart cannot open
@@ -247,17 +282,32 @@ class AndroidReelPublishFiles @Inject constructor(
     private val dir: File
         get() = File(context.cacheDir, DIR).apply { mkdirs() }
 
-    override suspend fun stashVideo(uri: String, creationKey: String): StashedVideo? = withContext(io) {
-        val picked = sources.resolve(uri) ?: return@withContext null
-        val target = File(dir, "$creationKey.video")
+    /**
+     * Copies of picked files live OUTSIDE the cache (2026-10-21). A long video
+     * may now be gigabytes and take hours to upload, and the system clears an
+     * app's cache under storage pressure — biggest holders first — which
+     * would delete the file mid-upload. The copy is still removed when the
+     * publish completes or is discarded.
+     */
+    private val stashDir: File
+        get() = File(context.noBackupFilesDir, DIR).apply { mkdirs() }
+
+    override suspend fun stashVideo(uri: String, creationKey: String): StashResult = withContext(io) {
+        val picked = sources.resolve(uri) ?: return@withContext StashResult.Unreadable
+        val target = File(stashDir, "$creationKey.video")
+        // Checked before a byte is written, against what the copy will take.
+        val short = stashShortfall(picked.sizeBytes, stashDir.usableSpace + target.length())
+        if (short > 0L) return@withContext StashResult.NoSpace(short)
         val copied = runCatching {
-            picked.source.open().use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+            picked.source.open().use { input ->
+                target.outputStream().use { output -> input.copyTo(output, COPY_BUFFER_BYTES) }
+            }
         }.isSuccess
         if (!copied || target.length() <= 0L) {
             target.delete()
-            return@withContext null
+            return@withContext StashResult.Unreadable
         }
-        StashedVideo(path = target.absolutePath, mimeType = picked.mimeType)
+        StashResult.Stashed(StashedVideo(path = target.absolutePath, mimeType = picked.mimeType))
     }
 
     override fun exportTarget(creationKey: String): String = File(dir, "$creationKey.video").absolutePath
@@ -275,11 +325,23 @@ class AndroidReelPublishFiles @Inject constructor(
             uri = file.toURI().toString(),
             mimeType = mimeType,
             sizeBytes = size,
-            source = UploadSource {
-                if (!file.exists()) throw IOException("Stashed video is gone")
-                FileInputStream(file)
-            },
+            source = StashedFileSource(file),
         )
+    }
+
+    /**
+     * Re-openable, and seekable: a resumed part-by-part upload of a multi-GB
+     * file opens part N at its offset with a seek, not by reading the parts
+     * before it.
+     */
+    private class StashedFileSource(private val file: File) : UploadSource {
+        override fun open(): InputStream = openAt(0L)
+
+        override fun openAt(offset: Long): InputStream {
+            if (!file.exists()) throw IOException("Stashed video is gone")
+            if (offset > file.length()) throw IOException("Offset $offset is past the end of the stashed video")
+            return FileInputStream(file).also { stream -> stream.channel.position(offset) }
+        }
     }
 
     override suspend fun readBytes(path: String): ByteArray? = withContext(io) {
@@ -292,5 +354,6 @@ class AndroidReelPublishFiles @Inject constructor(
 
     private companion object {
         const val DIR = "reel_publish"
+        const val COPY_BUFFER_BYTES = 256 * 1024
     }
 }

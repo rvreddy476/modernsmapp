@@ -192,7 +192,7 @@ enum class AnalyticsContentType(val wire: String) {
          * ninety seconds is still under the bar.
          *
          * Deliberately NOT the flick cap — that is
-         * `core.media.publish.REEL_MAX_DURATION_MS`, which is 300 000 and
+         * `core.media.publish.REEL_MAX_DURATION_MS`, which is 600 000 and
          * governs what may be published as a reel. The two constants were both
          * called `REEL_MAX_DURATION_MS` until 2026-09-07 and meant different
          * things; if you are reaching for a limit on how long a reel may be,

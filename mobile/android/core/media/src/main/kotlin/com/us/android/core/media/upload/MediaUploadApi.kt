@@ -4,12 +4,14 @@ import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import okhttp3.RequestBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * The three-step media upload, and nothing about what the media is FOR.
@@ -259,3 +261,110 @@ data class MediaAltTextRequest(
     @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val decorative: Boolean = false,
 )
+
+// ════════════════════════════════════════════════════════════════════════
+// Resumable (multipart) upload — for videos too big for one presigned PUT
+// ════════════════════════════════════════════════════════════════════════
+
+/**
+ * media-service's resumable upload, transcribed from
+ * `media-service/internal/http/resumable_handler.go`.
+ *
+ * `init` → one `chunk` per part → `complete`. Every part goes THROUGH our API
+ * (media-service streams it into the object store's multipart upload), so
+ * unlike the presigned `PUT` these calls carry the bearer and use the
+ * authenticated client's interceptors and token refresh.
+ *
+ * A separate interface from [MediaUploadApi] because it is created on a
+ * Retrofit whose client has no whole-call timeout: one part is up to 64 MiB
+ * pushed over a phone uplink, and the app-wide 45-second call ceiling would
+ * kill it mid-body. See `MediaApiModule.provideResumableUploadApi`.
+ */
+interface ResumableUploadApi {
+
+    /** Opens a session: a media row at `pending_upload` and the part plan. */
+    @POST("v1/media/upload/resumable/init")
+    suspend fun init(@Body body: ResumableInitRequest): ApiEnvelope<ResumableInitDto>
+
+    /**
+     * One part's raw bytes, 1-based [partNumber]. The server checks the size
+     * from `Content-Length` against the plan (every part [ResumableInitDto.chunkSize],
+     * the last the remainder) — so [bytes] must report its exact length.
+     * Re-sending a part number is safe: the server overwrites it.
+     */
+    @POST("v1/media/upload/resumable/{uploadId}/chunk")
+    suspend fun uploadPart(
+        @Path("uploadId") uploadId: String,
+        @Query("part_number") partNumber: Int,
+        @Body bytes: RequestBody,
+    ): ApiEnvelope<ResumableChunkDto>
+
+    /**
+     * Assembles the parts and runs the same confirm as a simple upload (the
+     * transcode is queued). Idempotent: a repeated complete re-confirms.
+     */
+    @POST("v1/media/upload/resumable/{uploadId}/complete")
+    suspend fun complete(@Path("uploadId") uploadId: String): ApiEnvelope<MediaAssetDto>
+
+    /** The session, with the part numbers already stored — what a resume skips. */
+    @GET("v1/media/upload/resumable/{uploadId}")
+    suspend fun status(@Path("uploadId") uploadId: String): ApiEnvelope<ResumableStatusDto>
+}
+
+@Serializable
+data class ResumableInitRequest(
+    // Explicit for the same reason as MediaInitRequest.fileType: the server
+    // binds `required,oneof=image video`, and a default-equal value would be
+    // dropped from the wire without the annotation.
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    @SerialName("file_type") val fileType: String = FILE_TYPE_VIDEO,
+    @SerialName("mime_type") val mimeType: String,
+    @SerialName("total_bytes") val totalBytes: Long,
+)
+
+@Serializable
+data class ResumableInitDto(
+    @SerialName("upload_id") val uploadId: String = "",
+    @SerialName("media_id") val mediaId: String = "",
+    /** Bytes per part; every part but the last is exactly this long. */
+    @SerialName("chunk_size") val chunkSize: Long = 0L,
+    @SerialName("total_parts") val totalParts: Int = 0,
+    @SerialName("expires_at") val expiresAt: String = "",
+)
+
+@Serializable
+data class ResumableChunkDto(
+    @SerialName("upload_id") val uploadId: String = "",
+    @SerialName("part_number") val partNumber: Int = 0,
+    @SerialName("uploaded_bytes") val uploadedBytes: Long = 0L,
+    @SerialName("total_bytes") val totalBytes: Long = 0L,
+    @SerialName("all_parts_in") val allPartsIn: Boolean = false,
+)
+
+@Serializable
+data class ResumableStatusDto(
+    @SerialName("upload_id") val uploadId: String = "",
+    @SerialName("media_id") val mediaId: String = "",
+    @SerialName("total_bytes") val totalBytes: Long = 0L,
+    @SerialName("uploaded_bytes") val uploadedBytes: Long = 0L,
+    @SerialName("chunk_size") val chunkSize: Long = 0L,
+    @SerialName("total_parts") val totalParts: Int = 0,
+    /** `initiated`, `uploading`, `completed` or `expired`. */
+    val status: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
+    /** Go marshals an empty slice as null; the default keeps that an empty list. */
+    @SerialName("uploaded_parts") val uploadedParts: List<Int> = emptyList(),
+)
+
+/** The session status after `complete` succeeded once. */
+const val RESUMABLE_STATUS_COMPLETED = "completed"
+
+/** The session status once its 24-hour window has passed. */
+const val RESUMABLE_STATUS_EXPIRED = "expired"
+
+/**
+ * The code media-service answers a simple `init` with (HTTP 413) when the
+ * file is too big for one presigned PUT. The client switches to the
+ * resumable path on it rather than failing.
+ */
+const val CODE_USE_RESUMABLE_UPLOAD = "USE_RESUMABLE_UPLOAD"

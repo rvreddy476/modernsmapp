@@ -380,17 +380,18 @@ class ReelsViewModelTest {
     // ── A long video is not a reel ──────────────────────────────────────
 
     /**
-     * Founder, 2026-09-06: a video over five minutes "should not appear in
+     * Founder, 2026-09-06 (cap raised to ten minutes 2026-10-21): a video over the cap "should not appear in
      * the reels section". The client already refuses to POST one as a reel;
      * this is the other half — a row the server hands back as a `flick`
      * anyway is judged on its transcode length, not on its label.
      */
     @Test
-    fun `a row longer than five minutes does not belong in Reels`() {
-        val fiveMinutes = 5L * 60L * 1_000L
+    fun `a row longer than ten minutes does not belong in Reels`() {
+        val tenMinutes = 10L * 60L * 1_000L
 
-        assertThat(item(video().copy(durationMs = fiveMinutes)).belongsInReels()).isTrue()
-        assertThat(item(video().copy(durationMs = fiveMinutes + 1)).belongsInReels()).isFalse()
+        assertThat(item(video().copy(durationMs = 5L * 60L * 1_000L + 1)).belongsInReels()).isTrue()
+        assertThat(item(video().copy(durationMs = tenMinutes)).belongsInReels()).isTrue()
+        assertThat(item(video().copy(durationMs = tenMinutes + 1)).belongsInReels()).isFalse()
     }
 
     @Test

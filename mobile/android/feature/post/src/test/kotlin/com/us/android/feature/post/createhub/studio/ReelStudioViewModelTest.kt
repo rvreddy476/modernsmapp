@@ -190,7 +190,7 @@ class ReelStudioViewModelTest {
 
     @Test
     fun `an edit over the reel cap cannot be exported until it is trimmed or sped up`() = runTest {
-        val long = ReelSourceReader { uri -> ReelSource(uri, 1080, 1920, durationUs = 600L * 1_000_000L) }
+        val long = ReelSourceReader { uri -> ReelSource(uri, 1080, 1920, durationUs = 1_200L * 1_000_000L) }
         val exporter = FakeExporter()
         val vm = viewModel(sources = long, exporter = exporter)
         vm.setSource("content://v/1")

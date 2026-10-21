@@ -116,8 +116,12 @@ class ReelPublishPipeline @Inject constructor(
     private suspend fun stashVideo(run: Run, pending: PendingReelPublish): PendingReelPublish {
         if (pending.videoPath != null) return pending
         report(run, ReelPublishState.Preparing)
-        val stashed = files.stashVideo(pending.videoUri, pending.creationKey)
-            ?: fail(run, pending, "That video can't be read. Pick it again.", retryable = false)
+        val stashed = when (val result = files.stashVideo(pending.videoUri, pending.creationKey)) {
+            is StashResult.Stashed -> result.video
+            StashResult.Unreadable -> fail(run, pending, "That video can't be read. Pick it again.", retryable = false)
+            // Retryable: freeing space and tapping Retry is exactly the fix.
+            is StashResult.NoSpace -> fail(run, pending, noSpaceMessage(result.shortBytes), retryable = true)
+        }
         return checkpoint(run, pending.copy(videoPath = stashed.path, videoMimeType = stashed.mimeType))
     }
 
@@ -127,8 +131,16 @@ class ReelPublishPipeline @Inject constructor(
             ?: fail(run, pending, "That video can't be read. Pick it again.", retryable = false)
         report(run, ReelPublishState.Uploading(0f))
         var lastPercent = -1
+        // Updated by every session checkpoint, so the failure or the confirm
+        // below is written over the record that holds the session, not the
+        // one this step started with.
+        var current = pending
         val outcome = uploadOrDiscard(run) {
-            uploads.uploadVideo(picked) { fraction ->
+            uploads.uploadVideo(
+                video = picked,
+                resume = pending.resumableSession,
+                onSession = { session -> current = checkpoint(run, current.copy(resumableSession = session)) },
+            ) { fraction ->
                 // A discarded publish stops the bytes here: the PUT fails, the
                 // step reports, and nothing of it is written back.
                 if (run.isDiscarded()) throw IOException("Publish discarded")
@@ -144,9 +156,9 @@ class ReelPublishPipeline @Inject constructor(
         return when (outcome) {
             is ReelMediaUploads.Outcome.Ready -> checkpoint(
                 run,
-                pending.copy(confirmedVideoId = outcome.mediaId, processingSinceMillis = null),
+                current.copy(confirmedVideoId = outcome.mediaId, processingSinceMillis = null, resumableSession = null),
             )
-            is ReelMediaUploads.Outcome.Failed -> fail(run, pending, outcome.message, outcome.retryable)
+            is ReelMediaUploads.Outcome.Failed -> fail(run, current, outcome.message, outcome.retryable)
         }
     }
 
@@ -281,6 +293,28 @@ class ReelPublishPipeline @Inject constructor(
 
     companion object {
         private const val PERCENT = 100
+        private const val BYTES_PER_MB = 1024L * 1024L
+        private const val MB_PER_GB = 1024L
+        private const val TENTHS = 10L
+
+        /**
+         * What the pending tile says when the phone has no room for the copy
+         * the upload reads from — with the amount to free, rounded UP (so
+         * freeing what it says is always enough), in MB under a gigabyte and
+         * in tenths of a GB above.
+         */
+        fun noSpaceMessage(shortBytes: Long): String {
+            val mb = ceilDiv(shortBytes, BYTES_PER_MB).coerceAtLeast(1L)
+            val amount = if (mb >= MB_PER_GB) {
+                val tenths = ceilDiv(mb * TENTHS, MB_PER_GB)
+                "${tenths / TENTHS}.${tenths % TENTHS} GB"
+            } else {
+                "$mb MB"
+            }
+            return "Not enough space on your phone to upload this video. Free up $amount and try again."
+        }
+
+        private fun ceilDiv(value: Long, by: Long): Long = (value + by - 1) / by
 
         /** post-service's refusal of a confirmed-but-untranscoded video. */
         const val MEDIA_NOT_READY = "MEDIA_NOT_READY"

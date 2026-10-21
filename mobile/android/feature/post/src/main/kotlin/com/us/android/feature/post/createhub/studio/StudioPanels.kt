@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.publish.REEL_MAX_MINUTES
 import com.us.android.feature.post.createhub.CoverFrame
 import com.us.android.feature.post.createhub.Filmstrip
 import com.us.android.feature.post.createhub.ReelInputField
@@ -113,7 +114,7 @@ internal fun TrimPanel(
             )
             Text(
                 text = if (edit.exceedsReelCap) {
-                    "Over 5 minutes — trim it or speed it up."
+                    "Over $REEL_MAX_MINUTES minutes — trim it or speed it up."
                 } else {
                     "${Filmstrip.format(edit.exportedUs)} at ${edit.speed.label}"
                 },

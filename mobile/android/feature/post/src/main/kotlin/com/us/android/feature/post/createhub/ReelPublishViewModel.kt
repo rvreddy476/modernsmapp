@@ -64,10 +64,10 @@ import javax.inject.Inject
  * ## THE GATE
  *
  * A picked video is probed for its length and size before anything else
- * ([ReelVideoProbe]); [videoGate] decides. A reel over five minutes is not
+ * ([ReelVideoProbe]); [videoGate] decides. A reel over ten minutes is not
  * refused: the form says so and offers [switchToLong], which keeps the
  * selection, the cover and every field and only changes what the post will
- * be. A file over 500 MB is refused for either kind.
+ * be. There is no size limit (2026-10-21): a big file uploads part by part.
  *
  * ## SCHEDULE
  *
@@ -469,7 +469,7 @@ class ReelPublishViewModel @Inject constructor(
     }
 
     /**
-     * The gate's way out for a reel over five minutes: the same video, the
+     * The gate's way out for a reel over ten minutes: the same video, the
      * same cover and every field, posted as a long video instead. The reel's
      * remix switch simply stops applying, and the channel is asked for.
      */

@@ -13,7 +13,12 @@ import com.us.android.core.media.upload.PROCESSING_READY
 import com.us.android.core.media.upload.PROCESSING_REJECTED
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.PresignedPutResult
+import com.us.android.core.media.upload.RESUMABLE_THRESHOLD_BYTES
+import com.us.android.core.media.upload.ResumableOutcome
+import com.us.android.core.media.upload.ResumableSession
+import com.us.android.core.media.upload.ResumableUploader
 import com.us.android.core.media.upload.UploadSource
+import com.us.android.core.media.upload.asksForResumableUpload
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -50,6 +55,7 @@ import javax.inject.Singleton
 @Singleton
 class ReelMediaUploads @Inject constructor(
     private val uploader: MediaUploader,
+    private val resumable: ResumableUploader,
     @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
 ) {
 
@@ -70,10 +76,35 @@ class ReelMediaUploads @Inject constructor(
         data class Failed(val message: String, val retryable: Boolean) : Readiness
     }
 
-    /** Reserve, PUT with progress, confirm. Ready here means CONFIRMED. */
-    suspend fun uploadVideo(video: PickedMedia, onProgress: (Float) -> Unit): Outcome {
+    /**
+     * The video's bytes up, and confirmed. Ready here means CONFIRMED.
+     *
+     * Two paths (2026-10-21, no size limit for long videos):
+     *  - under [RESUMABLE_THRESHOLD_BYTES]: reserve, ONE presigned PUT with
+     *    progress, confirm — as before;
+     *  - at or over it, or when the simple reserve answers 413
+     *    `USE_RESUMABLE_UPLOAD`, or when a previous run left a [resume]
+     *    session: part by part through [ResumableUploader], whose `complete`
+     *    is the confirm.
+     *
+     * [onSession] receives the resumable session to persist (null once it
+     * must be forgotten), so a stopped worker resumes the same upload.
+     */
+    suspend fun uploadVideo(
+        video: PickedMedia,
+        resume: ResumableSession? = null,
+        onSession: suspend (ResumableSession?) -> Unit = {},
+        onProgress: (Float) -> Unit,
+    ): Outcome {
+        if (resume != null || video.sizeBytes >= RESUMABLE_THRESHOLD_BYTES) {
+            return uploadResumable(video, resume, onSession, onProgress)
+        }
         val init = when (val reserved = uploader.reserve(video.mimeType, video.sizeBytes, fileType = FILE_TYPE_VIDEO)) {
-            is AppResult.Failure -> return Outcome.Failed("Couldn't start the upload. Check your connection.", true)
+            is AppResult.Failure -> return if (reserved.error.asksForResumableUpload()) {
+                uploadResumable(video, resume = null, onSession, onProgress)
+            } else {
+                Outcome.Failed("Couldn't start the upload. Check your connection.", true)
+            }
             is AppResult.Success -> reserved.data
         }
         val put = withContext(io) {
@@ -92,6 +123,29 @@ class ReelMediaUploads @Inject constructor(
             return Outcome.Failed("The server didn't confirm the upload. Try again.", retryable = true)
         }
         return Outcome.Ready(init.mediaId)
+    }
+
+    private suspend fun uploadResumable(
+        video: PickedMedia,
+        resume: ResumableSession?,
+        onSession: suspend (ResumableSession?) -> Unit,
+        onProgress: (Float) -> Unit,
+    ): Outcome {
+        val outcome = resumable.upload(
+            mimeType = video.mimeType,
+            totalBytes = video.sizeBytes,
+            source = video.source,
+            resume = resume,
+            onSession = { onSession(it) },
+            onProgress = { sent, total -> if (total > 0) onProgress(sent.toFloat() / total) },
+        )
+        return when (outcome) {
+            is ResumableOutcome.Completed -> Outcome.Ready(outcome.mediaId)
+            is ResumableOutcome.Failed -> {
+                if (outcome.discardSession) onSession(null)
+                Outcome.Failed(outcome.message, outcome.retryable)
+            }
+        }
     }
 
     /**

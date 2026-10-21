@@ -191,7 +191,8 @@ fun ReelsMode.chrome(): ReelsChrome = when (this) {
  */
 /**
  * Whether this row belongs in the Reels feed at all (founder, 2026-09-06:
- * a video over five minutes "should not appear in the reels section").
+ * a video over the reel cap — ten minutes since 2026-10-21 — "should not
+ * appear in the reels section").
  *
  * The client refuses to POST a long capture as a reel — `videoGate` in
  * `:feature:post` disables Post for it — but that only covers what THIS

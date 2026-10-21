@@ -47,8 +47,8 @@ data class TextPill(
  * Pure. The rules the tests own:
  *  - the trim keeps at least [MIN_TRIM_US] and never runs past the source;
  *  - what is EXPORTED is the trimmed span divided by the speed, and that is
- *    what the five-minute reel cap applies to — a ten-minute clip at 2×
- *    is a legal five-minute reel;
+ *    what the ten-minute reel cap applies to — a twenty-minute clip at 2×
+ *    is a legal ten-minute reel;
  *  - a handle dragged over the other pushes the other, rather than crossing it.
  */
 data class ReelEdit(
@@ -74,7 +74,7 @@ data class ReelEdit(
     val exportedUs: Long
         get() = (trimmedUs / speed.factor.toDouble()).toLong()
 
-    /** Whether the export would breach the reel cap (the server's five minutes). */
+    /** Whether the export would breach the reel cap (ten minutes, [REEL_MAX_DURATION_MS]). */
     val exceedsReelCap: Boolean
         get() = exportedUs > REEL_MAX_DURATION_MS * MICROS_PER_MILLI
 

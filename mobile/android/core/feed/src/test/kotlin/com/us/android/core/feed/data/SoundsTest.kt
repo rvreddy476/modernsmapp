@@ -139,7 +139,7 @@ class SoundsTest {
                 flick("a"),
                 flick("long", contentType = "long_video"),
                 flick("post", contentType = "post"),
-                flick("over", durationMs = 5L * 60L * 1_000L + 1L),
+                flick("over", durationMs = 10L * 60L * 1_000L + 1L),
                 flick("gone").copy(deletedAt = "2026-09-29T10:00:00Z"),
                 flick(""),
                 flick("image").copy(media = listOf(FeedMediaDto(mediaId = "i", kind = "image"))),

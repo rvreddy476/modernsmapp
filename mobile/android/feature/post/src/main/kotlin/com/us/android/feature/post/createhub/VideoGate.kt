@@ -33,13 +33,15 @@ fun interface ReelVideoProbe {
 }
 
 /**
- * Whether the picked video may be posted as [PublishKind] (founder, 2026-09-05).
+ * Whether the picked video may be posted as [PublishKind] (founder,
+ * 2026-09-05; limits changed 2026-10-21).
  *
- *  - A REEL is at most five minutes — the server's cap since 2026-09-05.
- *    Anything longer is not refused outright: the form offers to post it as
- *    a long video instead, keeping the selection ([TooLongForReel]).
- *  - A LONG video has no duration cap. Both kinds share the upload ceiling of
- *    500 MB ([TooLarge]); a file over it cannot be helped by switching kind.
+ *  - A REEL is at most ten minutes ([REEL_MAX_DURATION_MS]). Anything longer
+ *    is not refused outright: the form offers to post it as a long video
+ *    instead, keeping the selection ([TooLongForReel]).
+ *  - A LONG video has no duration cap and NO size cap. The 500 MB ceiling is
+ *    gone (founder, 2026-10-21): a big file goes up through the resumable,
+ *    part-by-part upload instead of being refused here.
  *
  * Pure, so it is a table test. Unknown values ([VideoProbe] nulls) pass:
  * the client must not refuse a post on a fact it could not establish.
@@ -50,15 +52,10 @@ sealed interface VideoGate {
     /** Over the reel cap; the same file is fine as a long video. */
     data class TooLongForReel(val durationMs: Long) : VideoGate
 
-    /** Over the upload ceiling for either kind. */
-    data class TooLarge(val sizeBytes: Long) : VideoGate
-
     val allowsPost: Boolean get() = this is Ok
 }
 
 fun videoGate(kind: PublishKind, probe: VideoProbe?): VideoGate {
-    val size = probe?.sizeBytes
-    if (size != null && size > MAX_UPLOAD_BYTES) return VideoGate.TooLarge(size)
     val duration = probe?.durationMs
     if (kind == PublishKind.REEL && duration != null && duration > REEL_MAX_DURATION_MS) {
         return VideoGate.TooLongForReel(duration)
@@ -66,12 +63,9 @@ fun videoGate(kind: PublishKind, probe: VideoProbe?): VideoGate {
     return VideoGate.Ok
 }
 
-// The five-minute cap itself now lives in :core:media
-// (`publish/ReelLength.kt`), because the Reels FEED has to apply the same
-// number and cannot see this module. Imported above, not redeclared.
-
-/** The upload ceiling for any video: 500 MB. */
-const val MAX_UPLOAD_BYTES: Long = 500L * 1024L * 1024L
+// The ten-minute cap itself lives in :core:media (`publish/ReelLength.kt`),
+// because the Reels FEED has to apply the same number and cannot see this
+// module. Imported above, not redeclared.
 
 /**
  * `MediaMetadataRetriever` for the duration — a header read, not a decode —

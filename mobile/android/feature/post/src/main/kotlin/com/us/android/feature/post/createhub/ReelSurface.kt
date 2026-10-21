@@ -83,6 +83,7 @@ import com.us.android.core.feed.ui.sound.SoundPreviewButton
 import com.us.android.core.feed.ui.sound.SoundPreviewViewModel
 import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.publish.PublishKind
+import com.us.android.core.media.publish.REEL_MAX_MINUTES
 import com.us.android.core.media.sound.SoundPreview
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.usSwitchColors
@@ -112,7 +113,7 @@ import kotlin.math.roundToInt
  * video: a required title on top, a 16:9 cover, no remix switch — and a
  * channel first: without one the "Create your channel" sheet opens over
  * the picker and the form continues once it exists. The ViewModel reads
- * which kind from the route; a reel over five minutes can switch to a
+ * which kind from the route; a reel over ten minutes can switch to a
  * video in place ([GateNotice]).
  *
  * A REEL goes through the studio first (2026-09-05): pick, edit — frame,
@@ -1248,10 +1249,10 @@ private fun TitleField(
 
 /**
  * What stops a post, said inline under the cover row (founder,
- * 2026-09-05): a reel over five minutes offers "Post as a Video" — the
- * same video, cover and fields, as a long video — and a file over 500 MB
- * says so and offers nothing, because no kind can take it. Nothing is
- * drawn while the gate is open.
+ * 2026-09-05): a reel over ten minutes offers "Post as a Video" — the
+ * same video, cover and fields, as a long video. There is no size refusal
+ * any more (2026-10-21): a long video may be any size. Nothing is drawn
+ * while the gate is open.
  */
 @Composable
 private fun GateNotice(
@@ -1292,8 +1293,8 @@ private fun GateNotice(
 /** The gate's one sentence, shared by the notice and the Post pill's description. */
 internal fun gateMessage(gate: VideoGate): String = when (gate) {
     VideoGate.Ok -> ""
-    is VideoGate.TooLongForReel -> "Reels are up to 5 minutes. Post it as a Video instead"
-    is VideoGate.TooLarge -> "Videos are up to 500 MB. Pick a smaller file."
+    is VideoGate.TooLongForReel ->
+        "Reels are up to $REEL_MAX_MINUTES minutes. Post it as a Video instead — videos have no length limit."
 }
 
 // ── Status ──────────────────────────────────────────────────────────────

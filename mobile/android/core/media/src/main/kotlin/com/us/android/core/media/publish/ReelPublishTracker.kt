@@ -68,7 +68,7 @@ sealed interface ReelPublishState {
 /**
  * Which kind of post a publish is making.
  *
- * A [REEL] is a `flick` — vertical, up to five minutes, lands on the Reels
+ * A [REEL] is a `flick` — vertical, up to ten minutes, lands on the Reels
  * tab; a [LONG] video is a `long_video` with a required title that lands in
  * Tube; a [PHOTO] is an ordinary photo post (one picture or a carousel) that
  * lands on the home feed and the profile's Posts tab.

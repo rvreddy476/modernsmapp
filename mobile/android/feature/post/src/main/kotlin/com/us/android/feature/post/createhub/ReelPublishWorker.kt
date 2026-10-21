@@ -1,6 +1,7 @@
 package com.us.android.feature.post.createhub
 
 import android.content.Context
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -18,6 +19,8 @@ import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishPreview
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.media.upload.MediaSourceResolver
+import com.us.android.core.media.upload.RESUMABLE_THRESHOLD_BYTES
 import com.us.android.feature.post.studio.PendingPhotoPublish
 import com.us.android.feature.post.studio.PhotoPublishRecords
 import com.us.android.feature.post.studio.PublishWorker
@@ -32,6 +35,7 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -78,6 +82,7 @@ class ReelPublishWorker @AssistedInject constructor(
     private val files: ReelPublishFiles,
     private val tracker: ReelPublishTracker,
     private val discards: ReelPublishDiscards,
+    private val sources: MediaSourceResolver,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
@@ -88,6 +93,7 @@ class ReelPublishWorker @AssistedInject constructor(
         val pending = store.load(key) ?: return Result.success()
         val retry = inputData.getBoolean(KEY_RETRY, false)
         if (pending.failure != null && !retry) return Result.success()
+        if (needsForeground(pending.confirmedVideoId != null, videoBytes(pending))) promoteToForeground()
 
         return when (val outcome = pipeline.run(pending, isDiscarded = { discards.isDiscarded(key) })) {
             is ReelPublishPipeline.Outcome.Published -> {
@@ -112,7 +118,43 @@ class ReelPublishWorker @AssistedInject constructor(
         }
     }
 
+    /** The bytes this run will push: the stashed copy's, else the picked file's; null when unknown. */
+    private fun videoBytes(pending: PendingReelPublish): Long? =
+        pending.videoPath?.let { File(it).length().takeIf { bytes -> bytes > 0L } }
+            ?: runCatching { sources.resolve(pending.videoUri)?.sizeBytes }.getOrNull()
+
+    /**
+     * A big upload runs as a FOREGROUND worker (2026-10-21): a multi-GB long
+     * video takes far longer than the ten minutes WorkManager gives a
+     * background run, and must keep going with the screen off. The ongoing
+     * notification is the price, so a small reel does not pay it.
+     *
+     * Best effort. Android 12+ refuses a foreground start while the app is in
+     * the background (a resumed run after a reboot, say); the run then goes on
+     * as an ordinary worker, and if it is stopped at ten minutes WorkManager
+     * reruns it and the resumable session picks up at the next part.
+     */
+    private suspend fun promoteToForeground() {
+        try {
+            setForeground(uploadForegroundInfo(applicationContext))
+        } catch (e: IllegalStateException) {
+            Log.i(TAG, "Upload continues in the background: ${e.message}")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Upload continues in the background: ${e.message}")
+        }
+    }
+
     companion object {
+        private const val TAG = "ReelPublishWorker"
+
+        /**
+         * Whether this run should hold a foreground notification: there are
+         * still video bytes to send (nothing to send once confirmed) and they
+         * are big — at least [RESUMABLE_THRESHOLD_BYTES] — or of unknown size.
+         */
+        fun needsForeground(videoConfirmed: Boolean, videoBytes: Long?): Boolean =
+            !videoConfirmed && (videoBytes == null || videoBytes >= RESUMABLE_THRESHOLD_BYTES)
+
         const val KEY_CREATION_KEY = "creationKey"
         const val KEY_RETRY = "retry"
         const val KEY_POST_ID = "postId"

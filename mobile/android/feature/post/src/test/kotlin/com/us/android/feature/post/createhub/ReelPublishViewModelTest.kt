@@ -57,7 +57,7 @@ class ReelPublishViewModelTest {
     private class FakeFiles : ReelPublishFiles {
         val covers = mutableListOf<ByteArray>()
         var refuseCover = false
-        override suspend fun stashVideo(uri: String, creationKey: String): StashedVideo? = null
+        override suspend fun stashVideo(uri: String, creationKey: String): StashResult = StashResult.Unreadable
         override fun exportTarget(creationKey: String): String = "/cache/$creationKey.video"
         override suspend fun writeCover(bytes: ByteArray, creationKey: String): String? {
             if (refuseCover) return null
@@ -666,9 +666,9 @@ class ReelPublishViewModelTest {
     }
 
     @Test
-    fun `a reel over five minutes cannot post until it is switched to a video, keeping the selection`() = runTest {
+    fun `a reel over ten minutes cannot post until it is switched to a video, keeping the selection`() = runTest {
         val launcher = FakeLauncher()
-        val vm = viewModel(launcher = launcher, probe = probe(durationMs = 6L * 60L * 1_000L))
+        val vm = viewModel(launcher = launcher, probe = probe(durationMs = 11L * 60L * 1_000L))
 
         vm.onVideoPicked("content://video/1")
         vm.onCaptionChanged("six minutes")
@@ -676,7 +676,7 @@ class ReelPublishViewModelTest {
         vm.chooseFrame(2)
         advanceUntilIdle()
 
-        assertThat(vm.state.value.gate).isEqualTo(VideoGate.TooLongForReel(360_000L))
+        assertThat(vm.state.value.gate).isEqualTo(VideoGate.TooLongForReel(660_000L))
         assertThat(vm.state.value.canPost).isFalse()
         vm.onPost()
         advanceUntilIdle()
@@ -701,21 +701,20 @@ class ReelPublishViewModelTest {
         assertThat(launcher.enqueued.single().caption).isEqualTo("six minutes")
     }
 
+    /** Founder, 2026-10-21: no size limit — the 500 MB refusal is gone for both kinds. */
     @Test
-    fun `a file over 500 MB is refused for either kind`() = runTest {
-        val tooBig = 501L * 1024 * 1024
-        val reel = viewModel(probe = probe(sizeBytes = tooBig))
+    fun `a file of several gigabytes is not refused for either kind`() = runTest {
+        val threeGb = 3L * 1024 * 1024 * 1024
+        val reel = viewModel(probe = probe(sizeBytes = threeGb))
         reel.onVideoPicked("content://video/1")
         advanceUntilIdle()
-        assertThat(reel.state.value.gate).isEqualTo(VideoGate.TooLarge(tooBig))
-        assertThat(reel.state.value.canPost).isFalse()
+        assertThat(reel.state.value.gate).isEqualTo(VideoGate.Ok)
 
-        val video = viewModel(probe = probe(sizeBytes = tooBig), surface = CreateSurface.Video)
+        val video = viewModel(probe = probe(sizeBytes = threeGb), surface = CreateSurface.Video)
         video.onVideoPicked("content://video/1")
         video.onTitleChanged("Big")
         advanceUntilIdle()
-        assertThat(video.state.value.gate).isEqualTo(VideoGate.TooLarge(tooBig))
-        assertThat(video.state.value.canPost).isFalse()
+        assertThat(video.state.value.gate).isEqualTo(VideoGate.Ok)
     }
 
     // ── Channel before video (2026-09-05) ───────────────────────────────

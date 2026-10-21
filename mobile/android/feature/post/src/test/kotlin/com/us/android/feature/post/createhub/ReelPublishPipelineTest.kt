@@ -19,6 +19,14 @@ import com.us.android.core.media.upload.MediaUploader
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.core.media.upload.PresignedUploader
+import com.us.android.core.media.upload.RESUMABLE_THRESHOLD_BYTES
+import com.us.android.core.media.upload.ResumableChunkDto
+import com.us.android.core.media.upload.ResumableInitDto
+import com.us.android.core.media.upload.ResumableInitRequest
+import com.us.android.core.media.upload.ResumableSession
+import com.us.android.core.media.upload.ResumableStatusDto
+import com.us.android.core.media.upload.ResumableUploadTransport
+import com.us.android.core.media.upload.ResumableUploader
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
@@ -41,7 +49,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Test
+import retrofit2.HttpException
+import retrofit2.Response
 import java.io.ByteArrayInputStream
 
 /**
@@ -71,6 +83,9 @@ class ReelPublishPipelineTest {
     private class FakeUploadApi : MediaUploadApi {
         val inits = mutableListOf<MediaInitRequest>()
         var refuseFileType: String? = null
+
+        /** media-service over its simple-upload ceiling: 413 USE_RESUMABLE_UPLOAD for a video. */
+        var videoTooLargeForSimple = false
         val statuses = ArrayDeque<MediaStatusDto>()
         var statusCalls = 0
         private var nextId = 0
@@ -78,6 +93,7 @@ class ReelPublishPipelineTest {
         override suspend fun init(body: MediaInitRequest): ApiEnvelope<MediaInitDto> {
             inits += body
             if (body.fileType == refuseFileType) error("init refused for ${body.fileType}")
+            if (videoTooLargeForSimple && body.fileType == "video") throw useResumable()
             val id = "${body.fileType}-${++nextId}"
             return ApiEnvelope(MediaInitDto(mediaId = id, uploadUrl = "https://obj/put/$id"))
         }
@@ -158,23 +174,75 @@ class ReelPublishPipelineTest {
 
     private class FakeFiles : ReelPublishFiles {
         var unreadable = false
+        var shortBytes: Long? = null
+        var videoBytes = 1_000L
         val stashed = mutableListOf<String>()
-        override suspend fun stashVideo(uri: String, creationKey: String): StashedVideo? {
-            if (unreadable) return null
+        override suspend fun stashVideo(uri: String, creationKey: String): StashResult {
+            if (unreadable) return StashResult.Unreadable
+            shortBytes?.let { return StashResult.NoSpace(it) }
             stashed += uri
-            return StashedVideo(path = "/cache/$creationKey.video", mimeType = "video/mp4")
+            return StashResult.Stashed(StashedVideo(path = "/cache/$creationKey.video", mimeType = "video/mp4"))
         }
 
         override fun exportTarget(creationKey: String): String = "/cache/$creationKey.video"
 
         override suspend fun writeCover(bytes: ByteArray, creationKey: String): String = "/cache/$creationKey.jpg"
 
+        // The source is never read by the fakes for a big video: the resumable
+        // fake takes each part's declared length, so no gigabytes are allocated.
         override fun openVideo(path: String, mimeType: String): PickedMedia =
-            PickedMedia(path, mimeType, 1_000, UploadSource { ByteArrayInputStream(ByteArray(8)) })
+            PickedMedia(path, mimeType, videoBytes, UploadSource { ByteArrayInputStream(ByteArray(8)) })
 
         override suspend fun readBytes(path: String): ByteArray = ByteArray(64)
 
         override suspend fun delete(paths: List<String?>) = Unit
+    }
+
+    /**
+     * media-service's resumable routes in memory: 5 MiB parts, every call
+     * recorded. [failPart] fails that part number on the transport [failTimes]
+     * times; [onPart] sees each part as it is sent.
+     */
+    private class FakeResumableTransport : ResumableUploadTransport {
+        val inits = mutableListOf<ResumableInitRequest>()
+        val parts = mutableListOf<Pair<Int, Long>>()
+        val completes = mutableListOf<String>()
+        val stored = mutableSetOf<Int>()
+        var failPart: Int? = null
+        var failTimes = 0
+        var onPart: (Int) -> Unit = {}
+        private val chunk = 5L * 1024L * 1024L
+
+        override suspend fun init(request: ResumableInitRequest): AppResult<ResumableInitDto> {
+            inits += request
+            val parts = ((request.totalBytes + chunk - 1) / chunk).toInt()
+            return AppResult.Success(ResumableInitDto("up-${inits.size}", "video-big-${inits.size}", chunk, parts, ""))
+        }
+
+        override suspend fun uploadPart(
+            uploadId: String,
+            partNumber: Int,
+            body: RequestBody,
+        ): AppResult<ResumableChunkDto> {
+            onPart(partNumber)
+            if (partNumber == failPart && failTimes > 0) {
+                failTimes--
+                return AppResult.Failure(AppError.NoNetwork())
+            }
+            parts += partNumber to body.contentLength()
+            stored += partNumber
+            return AppResult.Success(ResumableChunkDto(uploadId = uploadId, partNumber = partNumber))
+        }
+
+        override suspend fun complete(uploadId: String): AppResult<MediaAssetDto> {
+            completes += uploadId
+            return AppResult.Success(MediaAssetDto(id = "video-big-${uploadId.removePrefix("up-")}"))
+        }
+
+        override suspend fun status(uploadId: String): AppResult<ResumableStatusDto> =
+            AppResult.Success(
+                ResumableStatusDto(uploadId = uploadId, status = "uploading", uploadedParts = stored.toList()),
+            )
     }
 
     private class Harness(
@@ -183,12 +251,14 @@ class ReelPublishPipelineTest {
         val store: InMemoryStore = InMemoryStore(),
         val files: FakeFiles = FakeFiles(),
         val tracker: ReelPublishTracker = ReelPublishTracker(),
+        val resumable: FakeResumableTransport = FakeResumableTransport(),
         json: Json,
     ) {
         val pipeline = ReelPublishPipeline(
             repository = repository,
             uploads = ReelMediaUploads(
                 uploader = MediaUploader(api = api, presigned = AlwaysSucceedingPut(), errorMapper = ErrorMapper(json)),
+                resumable = ResumableUploader(resumable),
                 io = Dispatchers.Unconfined,
             ),
             files = files,
@@ -837,4 +907,153 @@ class ReelPublishPipelineTest {
         assertThat(h.repository.keys).containsExactly("key-1", "key-2").inOrder()
         assertThat(h.tracker.items.value.map { it.creationKey }).containsExactly("key-1", "key-2").inOrder()
     }
+
+    // ── Big videos: no size limit, part by part (2026-10-21) ────────────
+
+    private val bigVideo = RESUMABLE_THRESHOLD_BYTES + 3L * 1024L * 1024L + 7L
+
+    @Test
+    fun `a video at the threshold goes up part by part and is created from the completed id`() = runTest {
+        val h = harness(files = FakeFiles().apply { videoBytes = bigVideo })
+        val sessionsSeenAtFirstPart = mutableListOf<ResumableSession?>()
+        h.resumable.onPart = { part -> if (part == 1) sessionsSeenAtFirstPart += h.store.record?.resumableSession }
+        h.store.save(pending())
+
+        val outcome = run(h, pending())
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        // No simple init for the video at all: only the cover's.
+        assertThat(h.api.inits.map { it.fileType }).containsExactly(FILE_TYPE_IMAGE)
+        assertThat(h.resumable.inits.single().totalBytes).isEqualTo(bigVideo)
+        assertThat(h.resumable.inits.single().fileType).isEqualTo(FILE_TYPE_VIDEO)
+        // The session was durable BEFORE the first byte went up.
+        assertThat(sessionsSeenAtFirstPart.single()?.uploadId).isEqualTo("up-1")
+        assertThat(h.resumable.completes).containsExactly("up-1")
+        assertThat(h.repository.requests.single().mediaIds).containsExactly("video-big-1")
+        assertThat(h.store.record?.confirmedVideoId).isEqualTo("video-big-1")
+        assertThat(h.store.record?.resumableSession).isNull()
+    }
+
+    @Test
+    fun `a stopped big upload keeps its session and the retry sends only the missing parts`() = runTest {
+        val transport = FakeResumableTransport().apply {
+            failPart = 3
+            failTimes = ResumableUploader.MAX_ATTEMPTS
+        }
+        val h = Harness(
+            repository = RecordingRepository(json),
+            files = FakeFiles().apply { videoBytes = bigVideo },
+            resumable = transport,
+            json = json,
+        )
+        h.store.save(pending())
+
+        val first = run(h, pending())
+
+        assertThat(first).isInstanceOf(ReelPublishPipeline.Outcome.Failed::class.java)
+        assertThat((first as ReelPublishPipeline.Outcome.Failed).retryable).isTrue()
+        val kept = h.store.record!!
+        assertThat(kept.resumableSession?.uploadId).isEqualTo("up-1")
+        assertThat(kept.failure?.retryable).isTrue()
+        assertThat(transport.parts.map { it.first }).containsExactly(1, 2).inOrder()
+        assertThat(transport.completes).isEmpty()
+
+        // The retry (network back): same session, parts 1-2 skipped.
+        transport.parts.clear()
+        val second = run(h, kept.copy(failure = null))
+
+        assertThat(second).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(transport.inits).hasSize(1)
+        val total = transport.inits.single().let { ((it.totalBytes + (5L shl 20) - 1) / (5L shl 20)).toInt() }
+        assertThat(transport.parts.map { it.first }).containsExactlyElementsIn(3..total).inOrder()
+        assertThat(transport.completes).containsExactly("up-1")
+        assertThat(h.store.record?.resumableSession).isNull()
+    }
+
+    @Test
+    fun `a small video the server says is too big for one PUT switches to the resumable path`() = runTest {
+        val api = FakeUploadApi().apply { videoTooLargeForSimple = true }
+        val h = harness(api = api, files = FakeFiles().apply { videoBytes = 40L * 1024L * 1024L })
+        h.store.save(pending())
+
+        val outcome = run(h, pending())
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(h.resumable.inits.single().totalBytes).isEqualTo(40L * 1024L * 1024L)
+        assertThat(h.resumable.parts).hasSize(8)
+        assertThat(h.repository.requests.single().mediaIds).containsExactly("video-big-1")
+    }
+
+    @Test
+    fun `a small video keeps the single presigned PUT`() = runTest {
+        val h = harness()
+        h.store.save(pending())
+
+        run(h, pending())
+
+        assertThat(h.resumable.inits).isEmpty()
+        assertThat(h.api.inits.map { it.fileType }).contains(FILE_TYPE_VIDEO)
+    }
+
+    @Test
+    fun `no room for the copy fails retryably with the space to free and uploads nothing`() = runTest {
+        val h = harness(files = FakeFiles().apply { shortBytes = 1_536L * 1024L * 1024L })
+        h.store.save(pending())
+
+        val outcome = run(h, pending())
+
+        assertThat(outcome).isEqualTo(
+            ReelPublishPipeline.Outcome.Failed(ReelPublishPipeline.noSpaceMessage(1_536L * 1024L * 1024L), true),
+        )
+        assertThat(h.store.record?.failure?.message).contains("Free up 1.5 GB")
+        assertThat(h.api.inits).isEmpty()
+        assertThat(h.resumable.inits).isEmpty()
+    }
+
+    @Test
+    fun `the space message rounds up, in MB under a gigabyte and tenths of a GB above`() {
+        assertThat(ReelPublishPipeline.noSpaceMessage(1L)).contains("Free up 1 MB")
+        assertThat(ReelPublishPipeline.noSpaceMessage(300L * 1024L * 1024L + 1)).contains("Free up 301 MB")
+        assertThat(ReelPublishPipeline.noSpaceMessage(1024L * 1024L * 1024L)).contains("Free up 1.0 GB")
+        assertThat(ReelPublishPipeline.noSpaceMessage(2_200L * 1024L * 1024L)).contains("Free up 2.2 GB")
+        assertThat(ReelPublishPipeline.noSpaceMessage(2_049L * 1024L * 1024L)).contains("Free up 2.1 GB")
+    }
+
+    @Test
+    fun `a big upload needs the foreground and a small or finished one does not`() {
+        assertThat(ReelPublishWorker.needsForeground(false, RESUMABLE_THRESHOLD_BYTES)).isTrue()
+        assertThat(ReelPublishWorker.needsForeground(false, 3L * 1024L * 1024L * 1024L)).isTrue()
+        assertThat(ReelPublishWorker.needsForeground(false, null)).isTrue()
+        assertThat(ReelPublishWorker.needsForeground(false, RESUMABLE_THRESHOLD_BYTES - 1)).isFalse()
+        assertThat(ReelPublishWorker.needsForeground(true, 3L * 1024L * 1024L * 1024L)).isFalse()
+    }
+
+    @Test
+    fun `a video of exactly the threshold already goes part by part`() = runTest {
+        val h = harness(files = FakeFiles().apply { videoBytes = RESUMABLE_THRESHOLD_BYTES })
+        h.store.save(pending())
+
+        run(h, pending())
+
+        assertThat(h.resumable.inits.single().totalBytes).isEqualTo(RESUMABLE_THRESHOLD_BYTES)
+        assertThat(h.api.inits.map { it.fileType }).doesNotContain(FILE_TYPE_VIDEO)
+    }
+
+    @Test
+    fun `the copy must leave the headroom free, to the byte`() {
+        val size = 3L * 1024L * 1024L * 1024L
+        assertThat(stashShortfall(size, size + STASH_HEADROOM_BYTES)).isEqualTo(0L)
+        assertThat(stashShortfall(size, size + STASH_HEADROOM_BYTES + 1)).isEqualTo(0L)
+        assertThat(stashShortfall(size, size + STASH_HEADROOM_BYTES - 1)).isEqualTo(1L)
+        assertThat(stashShortfall(size, 0L)).isEqualTo(size + STASH_HEADROOM_BYTES)
+    }
 }
+
+/** What media-service answers a simple init over its single-PUT ceiling. */
+private fun useResumable(): HttpException = HttpException(
+    Response.error<Any>(
+        413,
+        """{"error":{"code":"USE_RESUMABLE_UPLOAD","message":"use the resumable upload"}}"""
+            .toResponseBody(),
+    ),
+)

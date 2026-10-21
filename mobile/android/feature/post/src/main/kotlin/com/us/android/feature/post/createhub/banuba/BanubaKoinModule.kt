@@ -15,6 +15,7 @@ import com.banuba.sdk.export.data.ExportParamsProvider
 import com.banuba.sdk.veui.data.EditorConfig
 import com.banuba.sdk.veui.domain.textonvideo.TextOnVideoTypeface
 import com.banuba.sdk.veui.ui.TextOnVideoTypefaceProvider
+import com.us.android.core.media.publish.CAMERA_MAX_RECORDING_MS
 import com.us.android.core.media.publish.REEL_MAX_DURATION_MS
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.Module
@@ -24,7 +25,10 @@ import java.io.File
 import java.lang.ref.WeakReference
 import com.us.android.core.designsystem.R as DesignR
 
-/** Reel recording lengths offered by the camera's duration switcher: the cap, a minute, fifteen seconds. */
+/**
+ * Reel recording lengths offered by the camera's duration switcher: ten
+ * minutes (the per-clip cap), a minute, fifteen seconds.
+ */
 private const val ONE_MINUTE_MS = 60_000L
 private const val FIFTEEN_SECONDS_MS = 15_000L
 
@@ -33,9 +37,10 @@ private const val FIFTEEN_SECONDS_MS = 15_000L
  * `allowOverride(true)` each of these replaces the vendor's binding.
  *
  *  - export: 1080p H.264 into the publish store ([MomentumExportParamsProvider]);
- *  - camera: five-minute cap (the reel cap), no external music;
- *  - editor: same cap, transitions on, stickers off (no Giphy key), music
- *    mixer off (music is off for now), drafts off;
+ *  - camera: ten minutes per recording (founder, 2026-10-21 — the reel cap,
+ *    [CAMERA_MAX_RECORDING_MS]), no external music;
+ *  - editor: the reel cap (ten minutes), transitions on, stickers off (no
+ *    Giphy key), music mixer off (music is off for now), drafts off;
  *  - text on video: Outfit and Figtree, not the SDK's Roboto.
  */
 internal fun momentumBanubaModule(exportTarget: BanubaExportTarget): Module = module {
@@ -53,8 +58,8 @@ internal fun momentumBanubaModule(exportTarget: BanubaExportTarget): Module = mo
     }
     single<CameraConfig> {
         CameraConfig(
-            maxRecordedTotalVideoDurationMs = REEL_MAX_DURATION_MS,
-            videoDurations = listOf(REEL_MAX_DURATION_MS, ONE_MINUTE_MS, FIFTEEN_SECONDS_MS),
+            maxRecordedTotalVideoDurationMs = CAMERA_MAX_RECORDING_MS,
+            videoDurations = listOf(CAMERA_MAX_RECORDING_MS, ONE_MINUTE_MS, FIFTEEN_SECONDS_MS),
             supportsExternalMusic = false,
             supportsTopAddAudio = false,
         )

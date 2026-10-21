@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- The in-app gallery grid (create hub) reads the device media library.
          API 33+ splits the permission by kind; 34+ adds the partial-access
          grant; below 33 it is the legacy storage read. -->
@@ -14,4 +15,18 @@
          on open: the surface also offers picking an existing file, which
          needs no microphone at all. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- A long video has no size limit (2026-10-21): a multi-GB upload runs as
+         a FOREGROUND WorkManager worker (ReelPublishWorker) so it outlives the
+         ten-minute background limit and the screen turning off. Android 14+
+         requires the service's type and the matching permission; dataSync is
+         the type Android names for uploads. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <application>
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+    </application>
 </manifest>

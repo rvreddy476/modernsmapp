@@ -26,6 +26,41 @@ fun interface UploadSource {
      */
     @Throws(IOException::class)
     fun open(): InputStream
+
+    /**
+     * Opens a NEW stream positioned [offset] bytes in — the resumable upload's
+     * way to read part N without reading parts 1..N-1 into anything.
+     *
+     * The default opens and skips, which is correct for any source; a file
+     * source overrides it with a seek so a resumed multi-GB upload does not
+     * re-read gigabytes to find its place. Throws when the content is shorter
+     * than [offset]: a part that starts past the end is a file that changed.
+     */
+    @Throws(IOException::class)
+    fun openAt(offset: Long): InputStream = open().also { input ->
+        try {
+            input.skipFully(offset)
+        } catch (e: IOException) {
+            input.close()
+            throw e
+        }
+    }
+}
+
+/** Skips exactly [count] bytes, or throws: `InputStream.skip` may skip fewer, or none. */
+@Throws(IOException::class)
+internal fun InputStream.skipFully(count: Long) {
+    var remaining = count
+    while (remaining > 0L) {
+        val skipped = skip(remaining)
+        if (skipped > 0L) {
+            remaining -= skipped
+        } else {
+            // skip() may return 0 without being at the end; one read tells.
+            if (read() == -1) throw IOException("Source ended $remaining bytes before offset $count")
+            remaining--
+        }
+    }
 }
 
 /** Outcome of pushing bytes to the object store. */

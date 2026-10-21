@@ -17,6 +17,7 @@ import com.us.android.core.media.PlaylistAwareDataSourceFactory
 import com.us.android.core.media.data.MediaApi
 import com.us.android.core.media.reelsLoadControl
 import com.us.android.core.media.upload.MediaUploadApi
+import com.us.android.core.media.upload.ResumableUploadApi
 import com.us.android.core.network.di.AuthenticatedClient
 import dagger.Module
 import dagger.Provides
@@ -25,6 +26,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import okhttp3.OkHttpClient
 import java.io.File
+import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
 @Module
@@ -150,4 +152,34 @@ object MediaApiModule {
     @Singleton
     fun provideMediaUploadApi(retrofit: retrofit2.Retrofit): MediaUploadApi =
         retrofit.create(MediaUploadApi::class.java)
+
+    /**
+     * The resumable upload endpoints, on the app-wide Retrofit with ONE
+     * change to its client: no whole-call ceiling and long socket windows.
+     *
+     * A part is up to 64 MiB, and the authenticated client's 45-second call
+     * timeout would cut it off mid-body on any phone uplink slower than about
+     * 12 Mbit/s. `newBuilder()` keeps the SAME interceptors, authenticator and
+     * cookie jar instances — the same single-flight token refresh — so this is
+     * the app's client with longer patience, not a second HTTP stack. Every
+     * other call keeps the 45-second ceiling.
+     */
+    @Provides
+    @Singleton
+    fun provideResumableUploadApi(
+        retrofit: retrofit2.Retrofit,
+        @AuthenticatedClient client: OkHttpClient,
+    ): ResumableUploadApi {
+        val transferClient = client.newBuilder()
+            .callTimeout(0L, TimeUnit.MILLISECONDS)
+            // Per socket operation, not per part: a stalled uplink still fails.
+            .writeTimeout(TRANSFER_WRITE_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            // `complete` assembles every part server-side before it answers.
+            .readTimeout(TRANSFER_READ_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .build()
+        return retrofit.newBuilder().client(transferClient).build().create(ResumableUploadApi::class.java)
+    }
+
+    private const val TRANSFER_WRITE_TIMEOUT_MINUTES = 2L
+    private const val TRANSFER_READ_TIMEOUT_MINUTES = 3L
 }

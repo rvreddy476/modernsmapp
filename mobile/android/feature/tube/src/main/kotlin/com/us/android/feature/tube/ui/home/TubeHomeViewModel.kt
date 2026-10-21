@@ -56,7 +56,7 @@ data class TubeShelves(
     val channels: List<TubeChannelBubble> = emptyList(),
 )
 
-/** Whether a row is short enough to be a reel — the app's one five-minute rule. */
+/** Whether a row is short enough to be a reel — the app's one reel-length rule (ten minutes). */
 private fun FeedItem.isReelLength(): Boolean =
     playsInReels(feedContentType, media.maxOfOrNull { it.durationMs } ?: 0L)
 
@@ -196,7 +196,7 @@ class TubeHomeViewModel @Inject constructor(
                 val channel = async { channels.refresh() }
                 _shelves.value = TubeShelves(
                     continueWatching = continueWatching.await(),
-                    // The same five-minute rule the Reels feed applies
+                    // The same reel-length rule the Reels feed applies
                     // (founder, 2026-09-06): a mistagged long video is not a
                     // reel and does not belong on a shelf called Reels.
                     reels = reels.await().filter { it.isReelLength() },
