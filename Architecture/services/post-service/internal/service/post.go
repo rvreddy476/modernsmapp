@@ -2097,6 +2097,10 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 		return err
 	}
 	s.invalidateFeedHydration(ctx, userID, postID)
+	// The "Liked videos" collection follows a like made through the
+	// reactions route too (Android likes this way; the web uses /like), and a
+	// like changed to another reaction leaves it.
+	s.syncLikedCollection(ctx, userID, post, reaction == "like")
 
 	// Audit H4: PostReacted via outbox. Synchronous insert so a
 	// process crash in the React goroutine window doesn't drop the
@@ -2149,6 +2153,12 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 		return err
 	}
 	s.invalidateFeedHydration(ctx, userID, postID)
+	// An unlike through the reactions route leaves "Liked videos" too.
+	if removed {
+		if post, getErr := s.pgStore.GetPost(ctx, postID); getErr == nil {
+			s.syncLikedCollection(ctx, userID, post, false)
+		}
+	}
 
 	// PostUnreacted, so feed-service's velocity counter comes back down
 	// (it used to only ever go up). Only when a reaction was actually
